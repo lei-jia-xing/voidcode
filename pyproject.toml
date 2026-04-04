@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "voidcode"
 version = "0.1.0"
 description = "Local-first coding agent runtime inspired by OpenCode and Claude Code"
-readme = "voidcode-architecture-v1.md"
+readme = "README.md"
 requires-python = ">=3.12,<3.15"
 license = { text = "MIT" }
 authors = [
@@ -46,9 +46,9 @@ dev = [
 voidcode = "voidcode.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/ulw/voidcode"
-Repository = "https://github.com/ulw/voidcode"
-Documentation = "https://github.com/ulw/voidcode"
+Homepage = "https://github.com/lei-jia-xing/voidcode"
+Repository = "https://github.com/lei-jia-xing/voidcode"
+Documentation = "https://github.com/lei-jia-xing/voidcode"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/voidcode"]

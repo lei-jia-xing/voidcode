@@ -4,7 +4,7 @@ This document is an English summary of `voidcode-backlog-v1.md`.
 
 ## Current status
 
-VoidCode is still in pre-MVP development. The roadmap is organized from foundation work through MVP integration, and the project is currently treated as being in **Epic 0: Foundation** from a delivery perspective, even though some bootstrap artifacts already exist in the repository.
+VoidCode is still in pre-MVP development. The roadmap is organized from foundation work through MVP integration. The repository has completed the initial environment/bootstrap work and now also includes one deterministic read-only CLI → runtime → graph → tool slice, but the broader MVP remains incomplete.
 
 ## MVP boundary
 
@@ -32,6 +32,8 @@ VoidCode is still in pre-MVP development. The roadmap is organized from foundati
 ### Epic 0: Foundation
 
 Create the baseline repository and development environment: Python version policy, `uv`, `mise`, repository structure, and CI baseline.
+
+**Current status:** substantially complete. The repo now has working developer setup, CI, contributor docs, and a first deterministic read-only runtime slice proving the architecture boundary.
 
 ### Epic 1: LangGraph Core Loop
 
@@ -71,7 +73,7 @@ Connect the full path into a demoable product loop with end-to-end testing, fail
 
 ## Wave overview
 
-- **Wave 1:** foundation, initial graph work, and runtime skeleton
+- **Wave 1:** foundation, initial graph work, and runtime skeleton (**partially complete in repository form**)
 - **Wave 2:** tool execution, permissions, and hooks
 - **Wave 3:** storage, recovery, context, and observability
 - **Wave 4:** entrypoints, integration, and MVP demo readiness

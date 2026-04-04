@@ -1,6 +1,6 @@
 [![Python](https://img.shields.io/badge/python-3.12%20%7C%203.13%20%7C%203.14-blue)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
-[![CI](https://img.shields.io/badge/CI-pending-lightgrey.svg)](#development-workflow)
+[![CI](https://github.com/lei-jia-xing/voidcode/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/lei-jia-xing/voidcode/actions/workflows/ci.yml)
 
 # VoidCode
 
@@ -24,12 +24,26 @@ The current direction is intentionally narrow: ship a stable single-agent MVP lo
 
 ## Quickstart
 
-Preferred local setup uses Python 3.14. If 3.14 is blocked on your machine, Python 3.13 or 3.12 are acceptable fallbacks.
+Preferred local setup uses uv-managed Python environments and Bun. Python 3.14 is preferred; if 3.14 is blocked on your machine, Python 3.13 or 3.12 are acceptable fallbacks within the supported `>=3.12,<3.15` range.
+
+> **Note:** The current implementation includes a real deterministic CLI → runtime → read-only tool slice for local file reads, plus a Bun frontend shell. The frontend is still mock-backed; there is no live backend API integration yet.
 
 ```bash
+# Setup tools and Python environment
 mise install
 uv sync --extra dev
+
+# Setup frontend environment
+mise run frontend:install
+
+# Start the CLI
 uv run voidcode --help
+
+# Prove the deterministic read-only slice
+uv run voidcode run "read README.md" --workspace .
+
+# Start the web frontend (mock-backed)
+mise run frontend:dev
 ```
 
 ## Architecture summary
@@ -76,11 +90,22 @@ uv sync --extra dev
 Common tasks are defined in `mise.toml`:
 
 ```bash
+# Python tasks
 mise run lint
 mise run format
 mise run typecheck
 mise run test
+
+# Frontend tasks (Bun)
+mise run frontend:install
+mise run frontend:dev
+mise run frontend:lint
+mise run frontend:typecheck
+
+# Combined check (Python + Frontend)
 mise run check
+
+# Pre-commit
 mise run pre-commit
 ```
 
@@ -90,7 +115,7 @@ Set up pre-commit hooks locally:
 uv run pre-commit install
 ```
 
-The current pre-commit configuration runs repository hygiene checks plus Ruff and mypy.
+The current pre-commit configuration runs repository hygiene checks plus Ruff and mypy. `mise` loads the existing `.venv` for task execution; uv remains the source of truth for Python environments and dependencies.
 
 ## Contributing and community
 

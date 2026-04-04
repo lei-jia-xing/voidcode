@@ -2,11 +2,11 @@
 
 ## Supported versions
 
-VoidCode is still in early development. At this stage, only the `main` branch is considered supported for security fixes.
+VoidCode is still in early development. At this stage, only the `master` branch is considered supported for security fixes.
 
 | Version | Supported |
 | --- | --- |
-| `main` | Yes |
+| `master` | Yes |
 | Released tags | No |
 
 ## Reporting a vulnerability
