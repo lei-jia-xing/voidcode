@@ -7,4 +7,4 @@ and this project aims to follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-- Initialized project changelog.
+- Clarified the current deterministic backend slice, mock-backed frontend status, and pre-MVP release posture across contributor-facing docs.
