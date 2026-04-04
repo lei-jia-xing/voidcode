@@ -2,6 +2,8 @@
 
 This guide summarizes the local workflow for contributing to VoidCode.
 
+For repository coding expectations, see [`docs/coding-standards.md`](./coding-standards.md).
+
 ## Tooling baseline
 
 VoidCode uses:
@@ -26,6 +28,8 @@ Confirm the CLI entrypoint is available:
 ```bash
 uv run voidcode --help
 uv run voidcode run "read README.md" --workspace .
+uv run voidcode sessions list --workspace .
+uv run voidcode sessions resume local-cli-session --workspace .
 ```
 
 ## mise tasks
