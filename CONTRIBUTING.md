@@ -4,7 +4,7 @@ Thanks for contributing to VoidCode. The project is still pre-MVP, so clear comm
 
 ## Development setup
 
-Preferred local setup uses an uv-managed Python environment. Python 3.14 is preferred; if 3.14 is unavailable, Python 3.13 or 3.12 are acceptable temporary fallbacks.
+Preferred local setup uses a uv-managed Python environment. Python 3.14 is the supported version.
 
 ```bash
 mise install
@@ -19,6 +19,8 @@ uv run pre-commit install
 ```
 
 ## Code style and quality gates
+
+See [`docs/coding-standards.md`](./docs/coding-standards.md) for the repository coding standards.
 
 VoidCode currently uses:
 
