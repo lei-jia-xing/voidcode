@@ -41,18 +41,27 @@ bun run preview
 
 ### Project Structure
 
+**Current structure** (as of this commit):
+
 ```
 frontend/
 ├── src/
-│   ├── components/        # Reusable UI components
-│   ├── pages/            # Route pages
-│   ├── stores/           # Zustand state stores
-│   ├── hooks/            # Custom React hooks
-│   ├── lib/              # Utilities and API clients
-│   ├── types/            # TypeScript type definitions
-│   └── styles/           # Global styles and Tailwind config
-├── public/               # Static assets
-└── index.html            # Entry HTML
+│   ├── App.tsx           # Main UI shell
+│   ├── main.tsx          # React entry point
+│   ├── index.css         # Global styles
+│   ├── store/            # Zustand state stores
+│   ├── i18n/             # Translations (en, zh-CN)
+│   └── types/            # TypeScript type definitions
+└── public/               # Static assets
+```
+
+**Intended growth** (planned, not yet implemented):
+```
+frontend/src/
+├── components/           # Reusable UI components (planned)
+├── pages/                # Route pages (planned)
+├── hooks/                # Custom React hooks (planned)
+└── lib/                  # Utilities and API clients (planned)
 ```
 
 ## Implementation Status
