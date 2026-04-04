@@ -2,6 +2,8 @@
 
 This document is an English summary of `voidcode-backlog-v1.md`.
 
+For the execution-focused checklist that turns this roadmap into concrete delivery phases, see [`docs/mvp-todo-plan.md`](./mvp-todo-plan.md).
+
 ## Current status
 
 VoidCode is still in pre-MVP development. The roadmap is organized from foundation work through MVP integration. The repository has completed the initial environment/bootstrap work and now also includes one deterministic read-only CLI → runtime → graph → tool slice, but the broader MVP remains incomplete.

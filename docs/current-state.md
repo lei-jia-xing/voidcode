@@ -2,6 +2,8 @@
 
 This document provides a truthful snapshot of the VoidCode repository as of April 2026. VoidCode is currently in the **pre-MVP foundation stage with one real deterministic backend slice**.
 
+For the concrete delivery checklist that connects the current repo state to the intended MVP, see [`docs/mvp-todo-plan.md`](./mvp-todo-plan.md).
+
 ## Overview
 The repository contains two primary, independent components:
 1.  **Python Backend Slice**: A typed contract layer plus one deterministic local read-only execution path.

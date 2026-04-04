@@ -77,6 +77,7 @@ For the English-facing architecture and roadmap summaries, see:
 
 - [`docs/architecture.md`](./docs/architecture.md)
 - [`docs/roadmap.md`](./docs/roadmap.md)
+- [`docs/mvp-todo-plan.md`](./docs/mvp-todo-plan.md)
 - [`docs/development.md`](./docs/development.md)
 
 The original planning sources remain in Chinese:
