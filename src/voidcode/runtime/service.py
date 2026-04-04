@@ -1,5 +1,3 @@
-"""In-memory runtime entrypoint for the deterministic read-only slice."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -12,7 +10,8 @@ from ..tools.contracts import ToolDefinition
 from ..tools.read_file import ReadFileTool
 from .contracts import RuntimeRequest, RuntimeResponse
 from .events import EventEnvelope
-from .session import SessionRef, SessionState
+from .session import SessionRef, SessionState, StoredSessionSummary
+from .storage import SessionStore, SqliteSessionStore
 
 
 @dataclass(slots=True)
@@ -43,16 +42,19 @@ class VoidCodeRuntime:
     _workspace: Path
     _tool_registry: ToolRegistry
     _graph: DeterministicReadOnlyGraph
+    _session_store: SessionStore
 
     def __init__(
         self,
         *,
         workspace: Path,
         tool_registry: ToolRegistry | None = None,
+        session_store: SessionStore | None = None,
     ) -> None:
         self._workspace = workspace.resolve()
         self._tool_registry = tool_registry or ToolRegistry.with_defaults()
         self._graph = DeterministicReadOnlyGraph()
+        self._session_store = session_store or SqliteSessionStore()
 
     def run(self, request: RuntimeRequest) -> RuntimeResponse:
         session = SessionState(
@@ -133,8 +135,16 @@ class VoidCodeRuntime:
             tool_result,
             session=completed_session,
         )
-        return RuntimeResponse(
+        response = RuntimeResponse(
             session=graph_result.session,
             events=tuple(events) + graph_result.events,
             output=graph_result.output,
         )
+        self._session_store.save_run(workspace=self._workspace, request=request, response=response)
+        return response
+
+    def list_sessions(self) -> tuple[StoredSessionSummary, ...]:
+        return self._session_store.list_sessions(workspace=self._workspace)
+
+    def resume(self, session_id: str) -> RuntimeResponse:
+        return self._session_store.load_session(workspace=self._workspace, session_id=session_id)

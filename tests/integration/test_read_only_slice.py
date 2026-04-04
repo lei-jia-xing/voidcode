@@ -15,7 +15,16 @@ class EventLike(Protocol):
 
 
 class SessionLike(Protocol):
+    session: object
     status: str
+
+
+class SessionRefLike(Protocol):
+    id: str
+
+
+class StoredSessionSummaryLike(Protocol):
+    session: SessionRefLike
 
 
 class RuntimeResponseLike(Protocol):
@@ -29,11 +38,15 @@ class RuntimeRequestLike(Protocol):
 
 
 class RuntimeRequestFactory(Protocol):
-    def __call__(self, *, prompt: str) -> RuntimeRequestLike: ...
+    def __call__(self, *, prompt: str, session_id: str | None = None) -> RuntimeRequestLike: ...
 
 
 class RuntimeRunner(Protocol):
     def run(self, request: RuntimeRequestLike) -> RuntimeResponseLike: ...
+
+    def list_sessions(self) -> tuple[StoredSessionSummaryLike, ...]: ...
+
+    def resume(self, session_id: str) -> RuntimeResponseLike: ...
 
 
 class RuntimeFactory(Protocol):
@@ -99,3 +112,93 @@ def test_cli_run_command_prints_events_and_file_contents(tmp_path: Path) -> None
     assert "EVENT runtime.tool_completed" in result.stdout
     assert "RESULT" in result.stdout
     assert "slice proof" in result.stdout
+
+
+def test_runtime_persists_and_resumes_session_across_instances(tmp_path: Path) -> None:
+    sample_file = tmp_path / "sample.txt"
+    _ = sample_file.write_text("persisted slice\n", encoding="utf-8")
+    runtime_request, runtime_class = _load_runtime_types()
+
+    first_runtime = runtime_class(workspace=tmp_path)
+    first_result = first_runtime.run(
+        runtime_request(prompt="read sample.txt", session_id="demo-session")
+    )
+
+    second_runtime = runtime_class(workspace=tmp_path)
+    sessions = second_runtime.list_sessions()
+    resumed = second_runtime.resume("demo-session")
+
+    assert [summary.session.id for summary in sessions] == ["demo-session"]
+    assert first_result.output == resumed.output
+    assert [event.event_type for event in resumed.events] == [
+        "runtime.request_received",
+        "graph.tool_request_created",
+        "runtime.tool_lookup_succeeded",
+        "runtime.permission_resolved",
+        "runtime.tool_completed",
+        "graph.response_ready",
+    ]
+
+
+def test_cli_lists_and_resumes_persisted_session(tmp_path: Path) -> None:
+    sample_file = tmp_path / "sample.txt"
+    _ = sample_file.write_text("resume proof\n", encoding="utf-8")
+
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[2] / "src")
+
+    first_result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "voidcode",
+            "run",
+            "read sample.txt",
+            "--workspace",
+            str(tmp_path),
+            "--session-id",
+            "demo-session",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    list_result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "voidcode",
+            "sessions",
+            "list",
+            "--workspace",
+            str(tmp_path),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    resume_result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "voidcode",
+            "sessions",
+            "resume",
+            "demo-session",
+            "--workspace",
+            str(tmp_path),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+
+    assert first_result.returncode == 0
+    assert list_result.returncode == 0
+    assert resume_result.returncode == 0
+    assert "SESSION id=demo-session status=completed" in list_result.stdout
+    assert "RESULT" in resume_result.stdout
+    assert "resume proof" in resume_result.stdout
