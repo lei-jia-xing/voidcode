@@ -1,7 +1,5 @@
 # VoidCode Architecture Summary
 
-This document is an English summary of the planning decisions captured in `voidcode-architecture-v1.md`.
-
 ## Status and intent
 
 VoidCode is a pre-MVP, local-first coding agent runtime inspired by OpenCode and Claude Code. The immediate goal is not to build a complete platform, but to make one developer task loop reliable from end to end:

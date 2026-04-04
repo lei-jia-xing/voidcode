@@ -1,7 +1,5 @@
 # VoidCode Roadmap Summary
 
-This document is an English summary of `voidcode-backlog-v1.md`.
-
 For the execution-focused checklist that turns this roadmap into concrete delivery phases, see [`docs/mvp-todo-plan.md`](./mvp-todo-plan.md).
 
 ## Current status
