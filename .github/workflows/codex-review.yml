@@ -1,0 +1,47 @@
+name: Codex Review
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+
+jobs:
+  codex-review:
+    if: ${{ secrets.OPENAI_API_KEY != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          ref: refs/pull/${{ github.event.pull_request.number }}/merge
+
+      - name: Pre-fetch base and head refs
+        run: |
+          git fetch --no-tags origin \
+            ${{ github.event.pull_request.base.ref }} \
+            +refs/pull/${{ github.event.pull_request.number }}/head
+
+      - name: Run Codex review
+        id: codex
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          prompt: |
+            Review only the changes introduced by this pull request.
+            Focus on correctness, regressions, and maintainability.
+            Be concise and specific.
+          safety-strategy: drop-sudo
+
+  codex-review-skipped:
+    if: ${{ secrets.OPENAI_API_KEY == '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report missing Codex secret
+        run: |
+          echo "OPENAI_API_KEY is not configured; Codex review was skipped."
