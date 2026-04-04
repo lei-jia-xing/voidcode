@@ -47,6 +47,13 @@ def test_contract_modules_export_expected_symbols() -> None:
     runtime_request = runtime.RuntimeRequest(
         prompt="Inspect the repo", session_id=session.session.id
     )
+    session_summary = runtime.StoredSessionSummary(
+        session=session.session,
+        status="completed",
+        turn=1,
+        prompt=runtime_request.prompt,
+        updated_at=1,
+    )
     runtime_response = runtime.RuntimeResponse(session=session, events=(event,), output="done")
     graph_request = graph.GraphRunRequest(session=session, prompt=runtime_request.prompt)
     graph_result = graph.GraphRunResult(session=session, events=(event,), tool_results=(result,))
@@ -56,6 +63,7 @@ def test_contract_modules_export_expected_symbols() -> None:
     assert tool.read_only is True
     assert call.arguments == {"path": "README.md"}
     assert runtime_response.events == (event,)
+    assert session_summary.session.id == "session-1"
     assert graph_request.available_tools == ()
     assert graph_result.tool_results == (result,)
 

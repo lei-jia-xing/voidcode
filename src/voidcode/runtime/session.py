@@ -17,3 +17,12 @@ class SessionState:
     status: SessionStatus = "idle"
     turn: int = 0
     metadata: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class StoredSessionSummary:
+    session: SessionRef
+    status: SessionStatus
+    turn: int
+    prompt: str
+    updated_at: int
