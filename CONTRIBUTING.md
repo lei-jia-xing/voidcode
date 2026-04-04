@@ -20,6 +20,8 @@ uv run pre-commit install
 
 ## Code style and quality gates
 
+See [`docs/coding-standards.md`](./docs/coding-standards.md) for the repository coding standards.
+
 VoidCode currently uses:
 
 ### Python

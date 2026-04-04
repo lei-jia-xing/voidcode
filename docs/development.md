@@ -2,6 +2,8 @@
 
 This guide summarizes the local workflow for contributing to VoidCode.
 
+For repository coding expectations, see [`docs/coding-standards.md`](./coding-standards.md).
+
 ## Tooling baseline
 
 VoidCode uses:

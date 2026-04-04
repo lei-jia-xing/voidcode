@@ -20,3 +20,4 @@ htmlcov/
 .pre-commit-cache/
 .playwright-mcp/
 .coverage
+.voidcode/

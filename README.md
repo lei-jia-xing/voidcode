@@ -42,6 +42,12 @@ uv run voidcode --help
 # Prove the deterministic read-only slice
 uv run voidcode run "read README.md" --workspace .
 
+# List persisted sessions
+uv run voidcode sessions list --workspace .
+
+# Resume a persisted session
+uv run voidcode sessions resume local-cli-session --workspace .
+
 # Start the web frontend (mock-backed)
 mise run frontend:dev
 ```

@@ -1,7 +1,8 @@
 from .contracts import RuntimeEntrypoint, RuntimeRequest, RuntimeResponse
 from .events import EventEnvelope, EventSource
 from .service import ToolRegistry, VoidCodeRuntime
-from .session import SessionRef, SessionState, SessionStatus
+from .session import SessionRef, SessionState, SessionStatus, StoredSessionSummary
+from .storage import SessionStore
 
 __all__ = [
     "EventEnvelope",
@@ -12,6 +13,8 @@ __all__ = [
     "SessionRef",
     "SessionState",
     "SessionStatus",
+    "SessionStore",
+    "StoredSessionSummary",
     "ToolRegistry",
     "VoidCodeRuntime",
 ]
