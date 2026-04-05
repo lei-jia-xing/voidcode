@@ -9,6 +9,7 @@ from ..tools.contracts import ToolCall, ToolDefinition, ToolResult
 from .contracts import GraphRunRequest, GraphRunResult
 
 READ_REQUEST_PATTERN = re.compile(r"^(read|show)\s+(?P<path>.+)$", re.IGNORECASE)
+RUN_REQUEST_PATTERN = re.compile(r"^run\s+(?P<command>.+)$", re.IGNORECASE)
 WRITE_REQUEST_PATTERN = re.compile(r"^write\s+(?P<path>\S+)\s+(?P<content>.+)$", re.IGNORECASE)
 
 
@@ -31,6 +32,17 @@ class DeterministicReadOnlyGraph:
                 tool_call=ToolCall(tool_name="read_file", arguments={"path": path_text})
             )
 
+        run_match = RUN_REQUEST_PATTERN.match(prompt)
+        if run_match is not None:
+            command_text = run_match.group("command").strip()
+            if not command_text:
+                raise ValueError("request command must not be empty")
+
+            self._ensure_shell_exec_tool_available(request.available_tools)
+            return DeterministicReadOnlyPlan(
+                tool_call=ToolCall(tool_name="shell_exec", arguments={"command": command_text})
+            )
+
         write_match = WRITE_REQUEST_PATTERN.match(prompt)
         if write_match is not None:
             path_text = write_match.group("path").strip()
@@ -50,7 +62,7 @@ class DeterministicReadOnlyGraph:
 
         msg = (
             "unsupported request: use 'read <relative-path>', 'show <relative-path>', "
-            "or 'write <relative-path> <content>'"
+            "'run <command>', or 'write <relative-path> <content>'"
         )
         raise ValueError(msg)
 
@@ -85,3 +97,8 @@ class DeterministicReadOnlyGraph:
         if any(tool.name == "write_file" and not tool.read_only for tool in tools):
             return
         raise ValueError("write_file tool is not registered for graph execution")
+
+    def _ensure_shell_exec_tool_available(self, tools: tuple[ToolDefinition, ...]) -> None:
+        if any(tool.name == "shell_exec" and not tool.read_only for tool in tools):
+            return
+        raise ValueError("shell_exec tool is not registered for graph execution")
