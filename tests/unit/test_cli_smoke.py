@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import importlib
 import os
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 
 def test_python_module_help_works() -> None:
@@ -105,3 +107,24 @@ def test_sessions_resume_surfaces_approval_resolution_errors_cleanly() -> None:
     assert "error:" in resume_result.stderr
     assert "approval" in resume_result.stderr.lower() or "pending" in resume_result.stderr.lower()
     assert "Traceback" not in resume_result.stderr
+
+
+def test_serve_command_forwards_host_port_and_workspace() -> None:
+    cli = importlib.import_module("voidcode.cli")
+    workspace = Path("/tmp/demo-workspace")
+
+    with patch.object(cli, "serve", autospec=True) as serve_mock:
+        result = cli.main(
+            [
+                "serve",
+                "--workspace",
+                str(workspace),
+                "--host",
+                "0.0.0.0",
+                "--port",
+                "9000",
+            ]
+        )
+
+    assert result == 0
+    serve_mock.assert_called_once_with(workspace=workspace, host="0.0.0.0", port=9000)

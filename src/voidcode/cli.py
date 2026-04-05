@@ -10,6 +10,7 @@ from .runtime.contracts import RuntimeRequest
 from .runtime.permission import PermissionResolution
 from .runtime.service import VoidCodeRuntime
 from .runtime.session import StoredSessionSummary
+from .server import serve
 
 Handler = Callable[[argparse.Namespace], int]
 
@@ -81,6 +82,15 @@ def _handle_sessions_resume_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def _handle_serve_command(args: argparse.Namespace) -> int:
+    serve(
+        workspace=cast(Path, args.workspace),
+        host=cast(str, args.host),
+        port=cast(int, args.port),
+    )
+    return 0
+
+
 class EventLikeProtocol(Protocol):
     event_type: str
     source: str
@@ -125,6 +135,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional session identifier used for persisted runs.",
     )
     run_parser.set_defaults(handler=_handle_run_command)
+
+    serve_parser = subparsers.add_parser(
+        "serve",
+        help="Serve the local HTTP runtime transport.",
+    )
+    _ = serve_parser.add_argument(
+        "--workspace",
+        type=Path,
+        default=Path.cwd(),
+        help="Workspace root used by the local runtime and session database.",
+    )
+    _ = serve_parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Host interface for the local transport server.",
+    )
+    _ = serve_parser.add_argument(
+        "--port",
+        type=int,
+        default=8000,
+        help="Port for the local transport server.",
+    )
+    serve_parser.set_defaults(handler=_handle_serve_command)
 
     sessions_parser = subparsers.add_parser("sessions", help="Inspect persisted local sessions.")
     sessions_subparsers = sessions_parser.add_subparsers(dest="sessions_command")
