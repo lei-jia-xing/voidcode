@@ -16,8 +16,11 @@ interface AppState {
 
   sessionsStatus: 'idle' | 'loading' | 'success' | 'error';
   sessionsError: string | null;
+  replayStatus: 'idle' | 'loading' | 'success' | 'error';
+  replayError: string | null;
   runStatus: 'idle' | 'running' | 'success' | 'error';
   runError: string | null;
+  replayRequestId: number;
 
   setLanguage: (lang: 'en' | 'zh-CN') => void;
   loadSessions: () => Promise<void>;
@@ -43,8 +46,11 @@ export const useAppStore = create<AppState>()(
 
       sessionsStatus: 'idle',
       sessionsError: null,
+      replayStatus: 'idle',
+      replayError: null,
       runStatus: 'idle',
       runError: null,
+      replayRequestId: 0,
 
       setLanguage: (language) => set({ language }),
 
@@ -64,21 +70,44 @@ export const useAppStore = create<AppState>()(
             currentSessionId: null,
             currentSessionState: null,
             currentSessionEvents: [],
+            replayStatus: 'idle',
+            replayError: null,
             runStatus: 'idle',
             runError: null
           });
           return;
         }
 
-        set({ currentSessionId: sessionId, runStatus: 'idle', runError: null });
+        const requestId = get().replayRequestId + 1;
+        set({
+          currentSessionId: sessionId,
+          replayStatus: 'loading',
+          replayError: null,
+          replayRequestId: requestId,
+          runStatus: 'idle',
+          runError: null
+        });
+
         try {
           const replay = await RuntimeClient.getSessionReplay(sessionId);
+          if (get().replayRequestId !== requestId || get().currentSessionId !== sessionId) {
+            return;
+          }
+
           set({
             currentSessionState: replay.session,
-            currentSessionEvents: replay.events
+            currentSessionEvents: replay.events,
+            replayStatus: 'success'
           });
         } catch (err) {
-          console.error("Failed to load session:", err);
+          if (get().replayRequestId !== requestId || get().currentSessionId !== sessionId) {
+            return;
+          }
+
+          set({
+            replayStatus: 'error',
+            replayError: (err as Error).message
+          });
         }
       },
 

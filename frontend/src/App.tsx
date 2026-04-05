@@ -7,8 +7,8 @@ import { RuntimeDebug } from './components/RuntimeDebug';
 function App() {
   const {
     tasks, activities, language, setLanguage,
-    sessions, currentSessionId, currentSessionState, currentSessionEvents,
-    loadSessions, selectSession, runTask, runStatus, runError
+    sessions, currentSessionId, currentSessionEvents,
+    loadSessions, sessionsStatus, sessionsError, selectSession, runTask, replayError, runStatus, runError
   } = useAppStore();
   const { t, i18n } = useTranslation();
 
@@ -22,20 +22,18 @@ function App() {
     loadSessions();
   }, [loadSessions]);
 
-  useEffect(() => {
-    if (currentSessionId && currentSessionId !== currentSessionState?.session.id) {
-      selectSession(currentSessionId);
-    }
-  }, [currentSessionId, currentSessionState, selectSession]);
-
   const toggleLanguage = () => {
     setLanguage(language === 'en' ? 'zh-CN' : 'en');
   };
 
-  const handleRunTask = () => {
+  const handleRunTask = async () => {
     if (!promptInput.trim()) return;
-    runTask(promptInput);
-    setPromptInput('');
+    const nextPrompt = promptInput;
+    await runTask(nextPrompt);
+    const { runStatus: latestRunStatus } = useAppStore.getState();
+    if (latestRunStatus !== 'error') {
+      setPromptInput('');
+    }
   };
 
   const isRunning = runStatus === 'running';
@@ -63,14 +61,14 @@ function App() {
           </nav>
 
           <div className="p-3 flex-1 overflow-y-auto border-t border-slate-800 hidden md:block">
-            <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3 px-4">Sessions</div>
+            <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3 px-4">{t('session.listHeader')}</div>
             <div className="space-y-1">
               <button
                 type="button"
                 onClick={() => selectSession('')}
                 className={`w-full flex items-center justify-start px-4 py-2 rounded-lg transition-colors ${!currentSessionId ? 'bg-emerald-500/10 text-emerald-400' : 'text-slate-400 hover:bg-slate-800/50 hover:text-slate-200'}`}
               >
-                <span className="font-medium text-sm">+ New Session</span>
+                <span className="font-medium text-sm">{t('session.newSession')}</span>
               </button>
               {sessions.map((s) => (
                 <button
@@ -84,6 +82,12 @@ function App() {
                 </button>
               ))}
             </div>
+            {sessionsStatus === 'loading' && (
+              <p className="mt-3 px-4 text-xs text-slate-500">{t('session.loadingList')}</p>
+            )}
+            {sessionsError && (
+              <p className="mt-3 px-4 text-xs text-rose-400">{t('session.loadError', { message: sessionsError })}</p>
+            )}
           </div>
         </div>
 
@@ -115,10 +119,10 @@ function App() {
           <div className="flex items-center space-x-4">
              <span className={`px-3 py-1 rounded-full text-xs font-medium flex items-center border ${isRunning ? 'bg-amber-500/10 text-amber-400 border-amber-500/20' : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'}`}>
                <span className={`w-2 h-2 rounded-full mr-2 ${isRunning ? 'bg-amber-500 animate-pulse' : 'bg-emerald-500'}`}></span>
-               {isRunning ? t('session.agentBusy', 'Agent Busy') : t('session.agentIdle')}
-             </span>
-          </div>
-        </header>
+                {isRunning ? t('session.agentBusy') : t('session.agentIdle')}
+              </span>
+           </div>
+         </header>
 
         <div className="flex-1 flex overflow-hidden bg-[#0a0a0c]">
 
@@ -127,29 +131,30 @@ function App() {
 
               <div className="bg-slate-800/30 border border-slate-700/50 rounded-xl p-6 shadow-sm flex flex-col">
                 <div className="flex items-center justify-between mb-4">
-                  <h2 className="text-lg font-medium text-slate-200">Submit Task</h2>
+                  <h2 className="text-lg font-medium text-slate-200">{t('task.submitHeading')}</h2>
                 </div>
                 <div className="flex space-x-3">
                   <input
                     type="text"
                     value={promptInput}
                     onChange={(e) => setPromptInput(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === 'Enter') handleRunTask() }}
-                    placeholder="Enter a task to run..."
+                    onKeyDown={(e) => { if (e.key === 'Enter') void handleRunTask() }}
+                    placeholder={t('task.promptPlaceholder')}
                     className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-4 py-2 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-colors"
                     disabled={isRunning}
                   />
                   <button
                     type="button"
-                    onClick={handleRunTask}
+                    onClick={() => void handleRunTask()}
                     disabled={isRunning || !promptInput.trim()}
                     className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white px-6 py-2 rounded-lg text-sm font-medium transition-colors flex items-center shadow-sm shadow-indigo-500/20"
                   >
                     <Play className="w-4 h-4 mr-2" />
-                    {isRunning ? 'Running...' : t('task.newTask')}
+                    {isRunning ? t('task.running') : t('task.newTask')}
                   </button>
                 </div>
-                {runError && <div className="mt-3 text-red-400 text-sm">Error: {runError}</div>}
+                {runError && <div className="mt-3 text-red-400 text-sm">{t('common.errorWithMessage', { message: runError })}</div>}
+                {replayError && <div className="mt-3 text-amber-400 text-sm">{t('session.replayError', { message: replayError })}</div>}
               </div>
 
               <div className="bg-slate-800/30 border border-slate-700/50 rounded-xl p-6 shadow-sm flex-1 overflow-y-auto min-h-0">
@@ -180,12 +185,12 @@ function App() {
 
                  {currentSessionEvents.length > 0 && (
                    <div className="mt-8 p-4 bg-slate-900/30 rounded-lg border border-slate-800 border-dashed">
-                     <p className="text-slate-400 text-sm">
-                       <span className="font-semibold text-indigo-400 mr-2">{currentSessionEvents.length}</span>
-                       runtime events loaded in state (Full timeline rendering deferred to #25)
-                     </p>
-                   </div>
-                 )}
+                      <p className="text-slate-400 text-sm">
+                        <span className="font-semibold text-indigo-400 mr-2">{currentSessionEvents.length}</span>
+                        {t('session.eventsLoadedNote')}
+                      </p>
+                    </div>
+                  )}
               </div>
 
             </div>
@@ -199,20 +204,20 @@ function App() {
                {activities.map((activity) => (
                  <div key={activity.id} className="relative pl-4 border-l border-slate-800">
                    <div className="absolute -left-1.5 top-1.5 w-3 h-3 rounded-full bg-slate-800 border-2 border-[#0c0c0e]"></div>
-                   <p className="text-sm text-slate-300 mb-1">{activity.message}</p>
-                   <span className="text-xs text-slate-500">
-                     Placeholder (non-integrated)
-                   </span>
-                 </div>
-               ))}
+                    <p className="text-sm text-slate-300 mb-1">{activity.message}</p>
+                    <span className="text-xs text-slate-500">
+                      {t('activity.placeholderNote')}
+                    </span>
+                  </div>
+                ))}
 
                {currentSessionEvents.length > 0 && (
-                 <div className="mt-4 p-3 bg-slate-900/30 rounded border border-slate-800 border-dashed">
-                   <p className="text-xs text-slate-500 text-center">
-                     Runtime events arriving.<br/>Rendering deferred to #25.
-                   </p>
-                 </div>
-               )}
+                  <div className="mt-4 p-3 bg-slate-900/30 rounded border border-slate-800 border-dashed">
+                    <p className="text-xs text-slate-500 text-center">
+                      {t('activity.eventsDeferredLine1')}<br/>{t('activity.eventsDeferredLine2')}
+                    </p>
+                  </div>
+                )}
              </div>
           </aside>
 
