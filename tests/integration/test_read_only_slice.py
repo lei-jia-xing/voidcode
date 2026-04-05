@@ -8,7 +8,8 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, cast
 from unittest.mock import patch
@@ -49,6 +50,7 @@ class RuntimeResponseLike(Protocol):
 
 class RuntimeRequestLike(Protocol):
     prompt: str
+    metadata: dict[str, object]
 
 
 class RuntimeRequestFactory(Protocol):
@@ -62,11 +64,80 @@ class RuntimeRunner(Protocol):
 
     def list_sessions(self) -> tuple[StoredSessionSummaryLike, ...]: ...
 
-    def resume(self, session_id: str) -> RuntimeResponseLike: ...
+    def resume(
+        self,
+        session_id: str,
+        *,
+        approval_request_id: str | None = None,
+        approval_decision: str | None = None,
+    ) -> RuntimeResponseLike: ...
 
 
 class RuntimeFactory(Protocol):
-    def __call__(self, *, workspace: Path) -> RuntimeRunner: ...
+    def __call__(
+        self, *, workspace: Path, tool_registry: object | None = None
+    ) -> RuntimeRunner: ...
+
+
+class ToolDefinitionFactory(Protocol):
+    def __call__(
+        self,
+        *,
+        name: str,
+        description: str,
+        input_schema: dict[str, object],
+        read_only: bool,
+    ) -> object: ...
+
+
+class ToolCallFactory(Protocol):
+    def __call__(self, *, tool_name: str, arguments: dict[str, object]) -> object: ...
+
+
+class ToolResultFactory(Protocol):
+    def __call__(
+        self,
+        *,
+        tool_name: str,
+        status: str,
+        content: str | None = None,
+        data: dict[str, object] | None = None,
+    ) -> object: ...
+
+
+class EventEnvelopeFactory(Protocol):
+    def __call__(
+        self,
+        *,
+        session_id: str,
+        sequence: int,
+        event_type: str,
+        source: str,
+        payload: dict[str, object] | None = None,
+    ) -> object: ...
+
+
+class GraphRunResultFactory(Protocol):
+    def __call__(
+        self,
+        *,
+        session: object,
+        events: tuple[object, ...] = (),
+        tool_results: tuple[object, ...] = (),
+        output: str | None = None,
+    ) -> object: ...
+
+
+class ToolRegistryFactory(Protocol):
+    def __call__(self, *, tools: dict[str, object]) -> object: ...
+
+
+class GraphInjectableRuntime(RuntimeRunner, Protocol):
+    _graph: object
+
+
+class ReadFileToolType(Protocol):
+    invoke: Callable[..., object]
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
@@ -78,6 +149,79 @@ def _load_runtime_types() -> tuple[RuntimeRequestFactory, RuntimeFactory]:
     runtime_request = cast(RuntimeRequestFactory, contracts_module.RuntimeRequest)
     runtime_class = cast(RuntimeFactory, service_module.VoidCodeRuntime)
     return runtime_request, runtime_class
+
+
+@dataclass(frozen=True, slots=True)
+class _WritePlan:
+    tool_call: object
+
+
+def _permission_runtime(tmp_path: Path) -> tuple[RuntimeRequestFactory, RuntimeRunner]:
+    runtime_request, runtime_class = _load_runtime_types()
+    service_module = importlib.import_module("voidcode.runtime.service")
+    graph_contracts = importlib.import_module("voidcode.graph.contracts")
+    runtime_events = importlib.import_module("voidcode.runtime.events")
+    tool_contracts = importlib.import_module("voidcode.tools.contracts")
+    tool_definition = cast(ToolDefinitionFactory, tool_contracts.ToolDefinition)
+    tool_call = cast(ToolCallFactory, tool_contracts.ToolCall)
+    tool_result = cast(ToolResultFactory, tool_contracts.ToolResult)
+    event_envelope = cast(EventEnvelopeFactory, runtime_events.EventEnvelope)
+    graph_run_result = cast(GraphRunResultFactory, graph_contracts.GraphRunResult)
+    tool_registry_factory = cast(ToolRegistryFactory, service_module.ToolRegistry)
+
+    class WriteTool:
+        definition: object = tool_definition(
+            name="write_file",
+            description="Write a file",
+            input_schema={"path": {"type": "string"}},
+            read_only=False,
+        )
+
+        def invoke(self, _call: object, *, workspace: Path) -> object:
+            _ = workspace
+            return tool_result(
+                tool_name="write_file",
+                status="ok",
+                content="write ok",
+                data={"path": "danger.txt"},
+            )
+
+    class WriteGraph:
+        def plan(self, _request: object) -> object:
+            return _WritePlan(
+                tool_call=tool_call(
+                    tool_name="write_file",
+                    arguments={"path": "danger.txt"},
+                )
+            )
+
+        def finalize(self, request: object, tool_result: object, *, session: object) -> object:
+            typed_session = cast(SessionLike, session)
+            session_ref = cast(SessionRefLike, typed_session.session)
+            typed_request = cast(RuntimeRequestLike, request)
+            sequence = cast(int, typed_request.metadata.get("response_sequence", 6))
+            return graph_run_result(
+                session=session,
+                events=(
+                    event_envelope(
+                        session_id=session_ref.id,
+                        sequence=sequence,
+                        event_type="graph.response_ready",
+                        source="graph",
+                        payload={"output_preview": "write ok"},
+                    ),
+                ),
+                tool_results=(tool_result,),
+                output="write ok",
+            )
+
+    tool_registry = tool_registry_factory(tools={"write_file": WriteTool()})
+    runtime = cast(
+        GraphInjectableRuntime,
+        cast(object, runtime_class(workspace=tmp_path, tool_registry=tool_registry)),
+    )
+    runtime._graph = WriteGraph()
+    return runtime_request, runtime
 
 
 def test_runtime_executes_read_only_slice_and_emits_events(tmp_path: Path) -> None:
@@ -98,6 +242,59 @@ def test_runtime_executes_read_only_slice_and_emits_events(tmp_path: Path) -> No
     ]
     assert result.session.status == "completed"
     assert result.output == "alpha\nbeta\n"
+
+
+def test_runtime_allows_non_read_only_tool_after_explicit_resume_approval(tmp_path: Path) -> None:
+    runtime_request, runtime = _permission_runtime(tmp_path)
+
+    waiting = runtime.run(runtime_request(prompt="write danger.txt", session_id="approval-session"))
+
+    assert waiting.session.status == "waiting"
+    assert [event.event_type for event in waiting.events] == [
+        "runtime.request_received",
+        "graph.tool_request_created",
+        "runtime.tool_lookup_succeeded",
+        "runtime.approval_requested",
+    ]
+    approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
+
+    resumed = runtime.resume(
+        "approval-session",
+        approval_request_id=approval_request_id,
+        approval_decision="allow",
+    )
+
+    assert resumed.session.status == "completed"
+    assert [event.event_type for event in resumed.events] == [
+        "runtime.request_received",
+        "graph.tool_request_created",
+        "runtime.tool_lookup_succeeded",
+        "runtime.approval_requested",
+        "runtime.approval_resolved",
+        "runtime.tool_completed",
+        "graph.response_ready",
+    ]
+    assert resumed.output == "write ok"
+
+
+def test_runtime_denies_non_read_only_tool_on_resume(tmp_path: Path) -> None:
+    runtime_request, runtime = _permission_runtime(tmp_path)
+
+    waiting = runtime.run(runtime_request(prompt="write danger.txt", session_id="approval-session"))
+    approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
+
+    denied = runtime.resume(
+        "approval-session",
+        approval_request_id=approval_request_id,
+        approval_decision="deny",
+    )
+
+    assert denied.session.status == "failed"
+    assert [event.event_type for event in denied.events[-2:]] == [
+        "runtime.approval_resolved",
+        "runtime.failed",
+    ]
+    assert denied.output is None
 
 
 def test_cli_run_command_prints_events_and_file_contents(tmp_path: Path) -> None:
@@ -194,22 +391,22 @@ def test_runtime_stream_yields_before_tool_completion(tmp_path: Path) -> None:
     sample_file = tmp_path / "sample.txt"
     _ = sample_file.write_text("delayed stream\n", encoding="utf-8")
     runtime_request, runtime_class = _load_runtime_types()
-    from voidcode.tools.contracts import ToolCall, ToolResult
-    from voidcode.tools.read_file import ReadFileTool
+    read_file_module = importlib.import_module("voidcode.tools.read_file")
 
     tool_started = threading.Event()
     allow_tool_completion = threading.Event()
     fifth_chunk_ready = threading.Event()
     fifth_chunk: list[StreamChunkLike] = []
 
-    original_invoke = ReadFileTool.invoke
+    read_file_tool = cast(ReadFileToolType, read_file_module.ReadFileTool)
+    original_invoke = read_file_tool.invoke
 
-    def _blocking_invoke(self: ReadFileTool, call: ToolCall, *, workspace: Path) -> ToolResult:
+    def _blocking_invoke(self: object, _call: object, *, workspace: Path) -> object:
         tool_started.set()
         _ = allow_tool_completion.wait(timeout=2)
-        return original_invoke(self, call, workspace=workspace)
+        return original_invoke(self, _call, workspace=workspace)
 
-    with patch.object(ReadFileTool, "invoke", autospec=True, side_effect=_blocking_invoke):
+    with patch.object(read_file_tool, "invoke", autospec=True, side_effect=_blocking_invoke):
         runtime = runtime_class(workspace=tmp_path)
         stream = runtime.run_stream(runtime_request(prompt="read sample.txt"))
 
@@ -261,13 +458,14 @@ def test_runtime_stream_emits_failed_terminal_chunk_before_tool_error(tmp_path: 
     sample_file = tmp_path / "sample.txt"
     _ = sample_file.write_text("failure proof\n", encoding="utf-8")
     runtime_request, runtime_class = _load_runtime_types()
-    from voidcode.tools.contracts import ToolCall
-    from voidcode.tools.read_file import ReadFileTool
+    read_file_module = importlib.import_module("voidcode.tools.read_file")
+    read_file_tool = cast(ReadFileToolType, read_file_module.ReadFileTool)
 
-    def _failing_invoke(self: ReadFileTool, call: ToolCall, *, workspace: Path) -> object:
+    def _failing_invoke(_self: object, _call: object, *, workspace: Path) -> object:
+        _ = workspace
         raise ValueError("boom from tool")
 
-    with patch.object(ReadFileTool, "invoke", autospec=True, side_effect=_failing_invoke):
+    with patch.object(read_file_tool, "invoke", autospec=True, side_effect=_failing_invoke):
         runtime = runtime_class(workspace=tmp_path)
         stream = runtime.run_stream(runtime_request(prompt="read sample.txt"))
 
