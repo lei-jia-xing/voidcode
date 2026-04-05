@@ -32,7 +32,7 @@ export class RuntimeClient {
     const decoder = new TextDecoder();
 
     let buffer = '';
-    let dataBuffer = '';
+    let dataLines: string[] = [];
 
     while (true) {
       const { value, done } = await reader.read();
@@ -48,18 +48,18 @@ export class RuntimeClient {
 
         if (trimmedLine === '') {
           // Empty line indicates end of an SSE event
-          if (dataBuffer) {
+          if (dataLines.length > 0) {
             try {
-              const chunk = JSON.parse(dataBuffer) as RuntimeStreamChunk;
+              const chunk = JSON.parse(dataLines.join('\n')) as RuntimeStreamChunk;
               yield chunk;
             } catch (e) {
-              console.warn('Failed to parse SSE data chunk:', dataBuffer, e);
+              console.warn('Failed to parse SSE data chunk:', dataLines.join('\n'), e);
             }
-            dataBuffer = '';
+            dataLines = [];
           }
         } else if (trimmedLine.startsWith('data:')) {
-          const data = trimmedLine.slice(5).trimStart();
-          dataBuffer += data;
+          const data = trimmedLine.slice(5).replace(/^ /, '');
+          dataLines.push(data);
         }
 
         eolIndex = buffer.indexOf('\n');
@@ -67,12 +67,12 @@ export class RuntimeClient {
     }
 
     // Process any remaining buffered data after stream closes
-    if (dataBuffer) {
+    if (dataLines.length > 0) {
       try {
-        const chunk = JSON.parse(dataBuffer) as RuntimeStreamChunk;
+        const chunk = JSON.parse(dataLines.join('\n')) as RuntimeStreamChunk;
         yield chunk;
       } catch (e) {
-        console.warn('Failed to parse trailing SSE data chunk:', dataBuffer, e);
+        console.warn('Failed to parse trailing SSE data chunk:', dataLines.join('\n'), e);
       }
     }
   }
