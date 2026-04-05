@@ -29,6 +29,7 @@ dependencies = [
   "langgraph",
   "pydantic",
   "typing-extensions",
+  "uvicorn",
 ]
 
 [project.optional-dependencies]
