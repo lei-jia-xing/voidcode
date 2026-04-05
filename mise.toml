@@ -1,6 +1,6 @@
 [tools]
-uv = "latest"
-bun = "latest"
+uv = "0.11.3"
+bun = "1.3.11"
 
 [env]
 _.python.venv = { path = ".venv" }
