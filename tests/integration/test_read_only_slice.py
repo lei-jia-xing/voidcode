@@ -14,6 +14,12 @@ class EventLike(Protocol):
     event_type: str
 
 
+class StreamChunkLike(Protocol):
+    kind: str
+    event: EventLike | None
+    output: str | None
+
+
 class SessionLike(Protocol):
     session: object
     status: str
@@ -43,6 +49,8 @@ class RuntimeRequestFactory(Protocol):
 
 class RuntimeRunner(Protocol):
     def run(self, request: RuntimeRequestLike) -> RuntimeResponseLike: ...
+
+    def run_stream(self, request: RuntimeRequestLike) -> tuple[StreamChunkLike, ...]: ...
 
     def list_sessions(self) -> tuple[StoredSessionSummaryLike, ...]: ...
 
@@ -138,6 +146,28 @@ def test_runtime_persists_and_resumes_session_across_instances(tmp_path: Path) -
         "runtime.tool_completed",
         "graph.response_ready",
     ]
+
+
+def test_runtime_stream_exposes_ordered_events_and_final_output(tmp_path: Path) -> None:
+    sample_file = tmp_path / "sample.txt"
+    _ = sample_file.write_text("stream proof\n", encoding="utf-8")
+    runtime_request, runtime_class = _load_runtime_types()
+
+    runtime = runtime_class(workspace=tmp_path)
+    stream = runtime.run_stream(runtime_request(prompt="read sample.txt"))
+
+    event_types = [chunk.event.event_type for chunk in stream if chunk.event is not None]
+    output_chunks = [chunk.output for chunk in stream if chunk.kind == "output"]
+
+    assert event_types == [
+        "runtime.request_received",
+        "graph.tool_request_created",
+        "runtime.tool_lookup_succeeded",
+        "runtime.permission_resolved",
+        "runtime.tool_completed",
+        "graph.response_ready",
+    ]
+    assert output_chunks == ["stream proof\n"]
 
 
 def test_cli_lists_and_resumes_persisted_session(tmp_path: Path) -> None:

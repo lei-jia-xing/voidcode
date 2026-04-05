@@ -8,7 +8,7 @@ from ..graph.contracts import GraphRunRequest
 from ..graph.read_only_slice import DeterministicReadOnlyGraph
 from ..tools.contracts import ToolDefinition
 from ..tools.read_file import ReadFileTool
-from .contracts import RuntimeRequest, RuntimeResponse
+from .contracts import RuntimeRequest, RuntimeResponse, RuntimeStreamChunk
 from .events import EventEnvelope
 from .session import SessionRef, SessionState, StoredSessionSummary
 from .storage import SessionStore, SqliteSessionStore
@@ -57,6 +57,18 @@ class VoidCodeRuntime:
         self._session_store = session_store or SqliteSessionStore()
 
     def run(self, request: RuntimeRequest) -> RuntimeResponse:
+        stream = self.run_stream(request)
+        events = tuple(chunk.event for chunk in stream if chunk.event is not None)
+        output = next(
+            (chunk.output for chunk in reversed(stream) if chunk.kind == "output"),
+            None,
+        )
+        final_session = stream[-1].session
+        response = RuntimeResponse(session=final_session, events=events, output=output)
+        self._session_store.save_run(workspace=self._workspace, request=request, response=response)
+        return response
+
+    def run_stream(self, request: RuntimeRequest) -> tuple[RuntimeStreamChunk, ...]:
         session = SessionState(
             session=SessionRef(id=request.session_id or "local-cli-session"),
             status="running",
@@ -135,13 +147,18 @@ class VoidCodeRuntime:
             tool_result,
             session=completed_session,
         )
-        response = RuntimeResponse(
-            session=graph_result.session,
-            events=tuple(events) + graph_result.events,
-            output=graph_result.output,
+        final_events = tuple(events) + graph_result.events
+        chunks = tuple(
+            RuntimeStreamChunk(kind="event", session=graph_result.session, event=event)
+            for event in final_events
+        ) + (
+            RuntimeStreamChunk(
+                kind="output",
+                session=graph_result.session,
+                output=graph_result.output or "",
+            ),
         )
-        self._session_store.save_run(workspace=self._workspace, request=request, response=response)
-        return response
+        return chunks
 
     def list_sessions(self) -> tuple[StoredSessionSummary, ...]:
         return self._session_store.list_sessions(workspace=self._workspace)
