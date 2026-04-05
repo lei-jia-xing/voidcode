@@ -4,6 +4,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, cast, final
+from uuid import uuid4
 
 from ..graph.contracts import GraphRunRequest, GraphRunResult
 from ..graph.read_only_slice import DeterministicReadOnlyGraph
@@ -146,8 +147,9 @@ class VoidCodeRuntime:
         self._persist_response(request=request, response=response)
 
     def _stream_chunks(self, request: RuntimeRequest) -> Iterator[RuntimeStreamChunk]:
+        session_id = self._resolve_session_id(request)
         session = SessionState(
-            session=SessionRef(id=request.session_id or "local-cli-session"),
+            session=SessionRef(id=session_id),
             status="running",
             turn=1,
             metadata={"workspace": str(self._workspace), **request.metadata},
@@ -624,7 +626,16 @@ class VoidCodeRuntime:
             prompt=request.prompt,
             session_id=validate_session_id(request.session_id),
             metadata=request.metadata,
+            allocate_session_id=request.allocate_session_id,
         )
+
+    @staticmethod
+    def _resolve_session_id(request: RuntimeRequest) -> str:
+        if request.session_id is not None:
+            return request.session_id
+        if request.allocate_session_id:
+            return f"session-{uuid4().hex}"
+        return "local-cli-session"
 
     @staticmethod
     def _prompt_from_events(events: tuple[EventEnvelope, ...]) -> str:

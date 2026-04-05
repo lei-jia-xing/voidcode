@@ -263,6 +263,25 @@ def _run_non_http_scope(app: TransportAppLike, scope_type: str) -> RuntimeError:
     raise AssertionError(f"expected RuntimeError for unsupported scope {scope_type!r}")
 
 
+def _run_lifespan(app: TransportAppLike) -> list[dict[str, object]]:
+    messages: list[dict[str, object]] = [
+        {"type": "lifespan.startup"},
+        {"type": "lifespan.shutdown"},
+    ]
+    sent: list[dict[str, object]] = []
+
+    async def _receive() -> dict[str, object]:
+        if messages:
+            return messages.pop(0)
+        return {"type": "lifespan.disconnect"}
+
+    async def _send(message: dict[str, object]) -> None:
+        sent.append(message)
+
+    asyncio.run(app({"type": "lifespan"}, _receive, _send))
+    return sent
+
+
 def test_transport_lists_sessions_as_json(tmp_path: Path) -> None:
     sample_file = tmp_path / "sample.txt"
     _ = sample_file.write_text("http list\n", encoding="utf-8")
@@ -288,13 +307,25 @@ def test_transport_lists_sessions_as_json(tmp_path: Path) -> None:
     ]
 
 
-def test_transport_rejects_unsupported_lifespan_scope(tmp_path: Path) -> None:
+def test_transport_handles_lifespan_startup_and_shutdown(tmp_path: Path) -> None:
     create_runtime_app = _load_transport_app_factory()
     app = create_runtime_app(workspace=tmp_path)
 
-    error = _run_non_http_scope(app, "lifespan")
+    sent = _run_lifespan(app)
 
-    assert str(error) == "unsupported scope type: 'lifespan'"
+    assert sent == [
+        {"type": "lifespan.startup.complete"},
+        {"type": "lifespan.shutdown.complete"},
+    ]
+
+
+def test_transport_rejects_other_unsupported_scope_types(tmp_path: Path) -> None:
+    create_runtime_app = _load_transport_app_factory()
+    app = create_runtime_app(workspace=tmp_path)
+
+    error = _run_non_http_scope(app, "websocket")
+
+    assert str(error) == "unsupported scope type: 'websocket'"
 
 
 def test_transport_replays_session_as_json_runtime_response(tmp_path: Path) -> None:
@@ -475,6 +506,77 @@ def test_transport_persists_streamed_run_for_session_listing_and_replay(tmp_path
         "runtime.tool_completed",
         "graph.response_ready",
     ]
+
+
+def test_transport_allocates_distinct_anonymous_stream_sessions(tmp_path: Path) -> None:
+    sample_file = tmp_path / "sample.txt"
+    _ = sample_file.write_text("anonymous stream\n", encoding="utf-8")
+    create_runtime_app = _load_transport_app_factory()
+    app = create_runtime_app(workspace=tmp_path)
+
+    first_stream_response = _run_app(
+        app,
+        method="POST",
+        path="/api/runtime/run/stream",
+        body=json.dumps({"prompt": "read sample.txt"}).encode("utf-8"),
+    )
+    second_stream_response = _run_app(
+        app,
+        method="POST",
+        path="/api/runtime/run/stream",
+        body=json.dumps({"prompt": "read sample.txt"}).encode("utf-8"),
+    )
+    first_payloads = _parse_sse_payloads(first_stream_response)
+    second_payloads = _parse_sse_payloads(second_stream_response)
+
+    first_session_id = cast(
+        str,
+        cast(dict[str, object], cast(dict[str, object], first_payloads[0]["session"])["session"])[
+            "id"
+        ],
+    )
+    second_session_id = cast(
+        str,
+        cast(dict[str, object], cast(dict[str, object], second_payloads[0]["session"])["session"])[
+            "id"
+        ],
+    )
+
+    list_response = _run_app(app, method="GET", path="/api/sessions")
+    listed_sessions = cast(list[dict[str, object]], list_response.json())
+    listed_session_ids = [
+        cast(str, cast(dict[str, object], item["session"])["id"]) for item in listed_sessions
+    ]
+
+    first_replay_response = _run_app(app, method="GET", path=f"/api/sessions/{first_session_id}")
+    second_replay_response = _run_app(app, method="GET", path=f"/api/sessions/{second_session_id}")
+    first_replay_payload = cast(dict[str, object], first_replay_response.json())
+    second_replay_payload = cast(dict[str, object], second_replay_response.json())
+
+    assert first_stream_response.status == 200
+    assert second_stream_response.status == 200
+    assert first_session_id.startswith("session-")
+    assert second_session_id.startswith("session-")
+    assert first_session_id != second_session_id
+    assert list_response.status == 200
+    assert listed_session_ids == [second_session_id, first_session_id]
+    assert [item["prompt"] for item in listed_sessions] == ["read sample.txt", "read sample.txt"]
+    assert first_replay_response.status == 200
+    assert second_replay_response.status == 200
+    assert first_replay_payload["session"] == {
+        "session": {"id": first_session_id},
+        "status": "completed",
+        "turn": 1,
+        "metadata": {"workspace": str(tmp_path)},
+    }
+    assert second_replay_payload["session"] == {
+        "session": {"id": second_session_id},
+        "status": "completed",
+        "turn": 1,
+        "metadata": {"workspace": str(tmp_path)},
+    }
+    assert first_replay_payload["output"] == "anonymous stream\n"
+    assert second_replay_payload["output"] == "anonymous stream\n"
 
 
 def test_transport_stream_preserves_failed_chunk_before_termination() -> None:

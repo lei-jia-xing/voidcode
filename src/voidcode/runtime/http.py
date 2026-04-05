@@ -46,8 +46,12 @@ class RuntimeTransportApp:
         receive: Receive,
         send: Send,
     ) -> None:
-        if scope.get("type") != "http":
-            raise RuntimeError(f"unsupported scope type: {scope.get('type')!r}")
+        scope_type = scope.get("type")
+        if scope_type == "lifespan":
+            await self._handle_lifespan(receive, send)
+            return
+        if scope_type != "http":
+            raise RuntimeError(f"unsupported scope type: {scope_type!r}")
 
         method = cast(str, scope.get("method", "GET"))
         path = cast(str, scope.get("path", "/"))
@@ -97,6 +101,20 @@ class RuntimeTransportApp:
             return
 
         await self._json_response(send, status=404, payload={"error": "not found"})
+
+    async def _handle_lifespan(self, receive: Receive, send: Send) -> None:
+        while True:
+            message = await receive()
+            message_type = message.get("type")
+            if message_type == "lifespan.startup":
+                await send({"type": "lifespan.startup.complete"})
+                continue
+            if message_type == "lifespan.shutdown":
+                await send({"type": "lifespan.shutdown.complete"})
+                return
+            if message_type == "lifespan.disconnect":
+                return
+            raise RuntimeError(f"unsupported lifespan message type: {message_type!r}")
 
     async def _handle_run_stream(self, receive: Receive, send: Send) -> None:
         try:
@@ -212,6 +230,7 @@ class RuntimeTransportApp:
             prompt=prompt,
             session_id=session_id,
             metadata=cast(dict[str, object], metadata),
+            allocate_session_id=session_id is None,
         )
 
     @staticmethod
