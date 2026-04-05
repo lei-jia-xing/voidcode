@@ -1,0 +1,50 @@
+export type SessionStatus = "idle" | "running" | "waiting" | "completed" | "failed";
+export type EventSource = "runtime" | "graph" | "tool";
+
+export interface SessionRef {
+  id: string;
+}
+
+export interface SessionState {
+  session: SessionRef;
+  status: SessionStatus;
+  turn: number;
+  metadata: Record<string, unknown>;
+}
+
+export interface StoredSessionSummary {
+  session: SessionRef;
+  status: SessionStatus;
+  turn: number;
+  prompt: string;
+  updated_at: number;
+}
+
+export interface EventEnvelope {
+  session_id: string;
+  sequence: number;
+  event_type: string;
+  source: EventSource;
+  payload: Record<string, unknown>;
+}
+
+export interface RuntimeRequest {
+  prompt: string;
+  session_id?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface RuntimeResponse {
+  session: SessionState;
+  events: EventEnvelope[];
+  output: string | null;
+}
+
+export type RuntimeStreamChunkKind = "event" | "output";
+
+export interface RuntimeStreamChunk {
+  kind: RuntimeStreamChunkKind;
+  session: SessionState;
+  event?: EventEnvelope;
+  output?: string;
+}
