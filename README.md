@@ -127,7 +127,7 @@ Set up pre-commit hooks locally:
 uv run pre-commit install
 ```
 
-The current pre-commit configuration runs repository hygiene checks plus Ruff and mypy. `mise` loads the existing `.venv` for task execution; uv remains the source of truth for Python environments and dependencies.
+The current pre-commit configuration runs repository hygiene checks plus Ruff and basedpyright. `mise` loads the existing `.venv` for task execution; uv remains the source of truth for Python environments and dependencies.
 
 ## Contributing and community
 

@@ -19,7 +19,7 @@ The repository contains two primary, independent components:
 - [x] **Project Structure**: Hatch/UV-ready layout with `src/voidcode/runtime`, `src/voidcode/graph`, and `src/voidcode/tools`.
 - [x] **CLI Entrypoints**: `voidcode --help` and `voidcode run "read <path>" --workspace <dir>` both work.
 - [x] **Dependency Management**: Fully configured `pyproject.toml` and `mise.toml` for local development.
-- [x] **Development Tooling**: Ruff (lint/format), mypy (types), and pytest (tests) are integrated and functional.
+- [x] **Development Tooling**: Ruff (lint/format), basedpyright (types), and pytest (tests) are integrated and functional.
 - [x] **Contract Layer**: Typed session, event, runtime, graph, and tool contracts exist in code.
 - [x] **Deterministic Read-Only Slice**: The CLI can execute a governed local read-only file request through runtime, graph, and tool boundaries and emit observable events.
 

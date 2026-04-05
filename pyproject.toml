@@ -33,7 +33,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-  "mypy",
+  "basedpyright",
   "pre-commit",
   "pytest",
   "pytest-cov",
@@ -65,13 +65,15 @@ select = ["B", "E", "F", "I", "UP"]
 quote-style = "double"
 indent-style = "space"
 
-[tool.mypy]
-python_version = "3.14"
-strict = true
-pretty = true
-show_error_codes = true
-warn_redundant_casts = true
-warn_unused_configs = true
+[tool.basedpyright]
+pythonVersion = "3.14"
+typeCheckingMode = "strict"
+include = ["src"]
+failOnWarnings = true
+
+[[tool.basedpyright.executionEnvironments]]
+root = "."
+extraPaths = ["src"]
 
 [tool.pytest.ini_options]
 addopts = "--cov=src --cov-report=term-missing"

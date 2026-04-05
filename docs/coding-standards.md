@@ -13,7 +13,7 @@ VoidCode is still pre-MVP. Favor clarity, small changes, and repeatable verifica
 
 - Match the existing runtime/graph/tools boundaries.
 - Keep functions small and deterministic where practical.
-- Use Ruff formatting/linting and keep mypy clean.
+- Use Ruff formatting/linting and keep basedpyright clean.
 - Add or update tests when behavior changes.
 - Avoid introducing new dependencies unless they are necessary.
 

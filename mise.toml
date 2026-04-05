@@ -36,7 +36,7 @@ run = "uv run ruff check ."
 run = "uv run ruff format ."
 
 [tasks.typecheck]
-run = "uv run mypy src"
+run = "uv run basedpyright --warnings src"
 
 [tasks.test]
 run = "uv run pytest"

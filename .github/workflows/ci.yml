@@ -33,8 +33,8 @@ jobs:
       - name: Check formatting with Ruff
         run: uv run ruff format --check .
 
-      - name: Type-check with mypy
-        run: uv run mypy src
+      - name: Type-check with basedpyright
+        run: uv run basedpyright --warnings src
 
       - name: Run tests with coverage
         run: uv run pytest --cov=voidcode --cov-report=xml

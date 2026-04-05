@@ -26,7 +26,7 @@ VoidCode currently uses:
 
 ### Python
 - **Ruff** for linting and formatting
-- **mypy** for static type checking
+- **basedpyright** for static type checking
 - **pytest** for tests
 
 ### Frontend (Bun)
@@ -50,7 +50,7 @@ Direct `uv` commands are also available when needed:
 ```bash
 uv run ruff check .
 uv run ruff format .
-uv run mypy src
+uv run basedpyright --warnings src
 uv run pytest
 uv run pre-commit run --all-files
 ```

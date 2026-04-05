@@ -23,9 +23,9 @@ repos:
         pass_filenames: false
         types_or: [python, pyi]
 
-      - id: mypy
-        name: mypy
-        entry: uv run mypy src
+      - id: basedpyright
+        name: basedpyright
+        entry: uv run basedpyright --warnings src
         language: system
         pass_filenames: false
         types_or: [python, pyi]

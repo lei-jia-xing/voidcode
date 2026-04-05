@@ -40,7 +40,7 @@ The repository defines these `mise` tasks:
 
 - `mise run lint` → `uv run ruff check .`
 - `mise run format` → `uv run ruff format .`
-- `mise run typecheck` → `uv run mypy src`
+- `mise run typecheck` → `uv run basedpyright --warnings src`
 - `mise run test` → `uv run pytest`
 
 ### Frontend tasks

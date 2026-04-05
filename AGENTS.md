@@ -49,7 +49,7 @@ voidcode/
 - Python is pinned to 3.14 only.
 - Use `uv` for Python env/deps; `mise` only orchestrates tasks and `.venv` loading.
 - Repo-level verification is `mise run check`; it chains Python and frontend checks.
-- Pre-commit runs hygiene + Ruff + mypy through `uv run`.
+- Pre-commit runs hygiene + Ruff + basedpyright through `uv run`.
 - Commit messages follow Conventional Commits as documented in `docs/coding-standards.md`.
 - Tests import from `src/` layout directly; integration coverage lives in `tests/integration/`.
 
