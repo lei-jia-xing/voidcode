@@ -9,6 +9,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, cast
+from unittest.mock import patch
 
 import pytest
 
@@ -412,6 +413,70 @@ def test_transport_streams_runtime_chunks_in_sse_order() -> None:
     assert payloads[-1]["output"] == "transported"
 
 
+def test_transport_persists_streamed_run_for_session_listing_and_replay(tmp_path: Path) -> None:
+    sample_file = tmp_path / "sample.txt"
+    _ = sample_file.write_text("stream replay\n", encoding="utf-8")
+    create_runtime_app = _load_transport_app_factory()
+
+    app = create_runtime_app(workspace=tmp_path)
+
+    stream_response = _run_app(
+        app,
+        method="POST",
+        path="/api/runtime/run/stream",
+        body=json.dumps(
+            {
+                "prompt": "read sample.txt",
+                "session_id": "streamed-session",
+            }
+        ).encode("utf-8"),
+    )
+    stream_payloads = _parse_sse_payloads(stream_response)
+
+    list_response = _run_app(app, method="GET", path="/api/sessions")
+    replay_response = _run_app(app, method="GET", path="/api/sessions/streamed-session")
+    replay_payload = cast(dict[str, object], replay_response.json())
+
+    assert stream_response.status == 200
+    assert [payload["kind"] for payload in stream_payloads] == [
+        "event",
+        "event",
+        "event",
+        "event",
+        "event",
+        "event",
+        "output",
+    ]
+    assert list_response.status == 200
+    assert list_response.json() == [
+        {
+            "session": {"id": "streamed-session"},
+            "status": "completed",
+            "turn": 1,
+            "prompt": "read sample.txt",
+            "updated_at": 1,
+        }
+    ]
+    assert replay_response.status == 200
+    assert replay_payload["session"] == {
+        "session": {"id": "streamed-session"},
+        "status": "completed",
+        "turn": 1,
+        "metadata": {"workspace": str(tmp_path)},
+    }
+    assert replay_payload["output"] == "stream replay\n"
+    assert [
+        event["event_type"] for event in cast(list[dict[str, object]], replay_payload["events"])
+    ] == [
+        "runtime.request_received",
+        "graph.tool_request_created",
+        "runtime.tool_lookup_succeeded",
+        "runtime.permission_resolved",
+        "runtime.tool_completed",
+        "graph.response_ready",
+    ]
+
+
 def test_transport_stream_preserves_failed_chunk_before_termination() -> None:
     create_runtime_app = _load_transport_app_factory()
     runtime_stream_chunk, session_ref, session_state, event_envelope = _load_stream_types()
@@ -480,6 +545,73 @@ def test_transport_stream_preserves_failed_chunk_before_termination() -> None:
     assert response.body.endswith(b"\n\n")
 
 
+def test_transport_persists_failed_stream_for_replay(tmp_path: Path) -> None:
+    sample_file = tmp_path / "sample.txt"
+    _ = sample_file.write_text("broken\n", encoding="utf-8")
+    create_runtime_app = _load_transport_app_factory()
+    read_file_module = importlib.import_module("voidcode.tools.read_file")
+    read_file_tool = cast(type[object], read_file_module.ReadFileTool)
+
+    def _failing_invoke(_self: object, _call: object, *, workspace: Path) -> object:
+        _ = workspace
+        raise ValueError("boom from transport stream")
+
+    app = create_runtime_app(workspace=tmp_path)
+
+    with patch.object(read_file_tool, "invoke", autospec=True, side_effect=_failing_invoke):
+        stream_response = _run_app(
+            app,
+            method="POST",
+            path="/api/runtime/run/stream",
+            body=json.dumps(
+                {
+                    "prompt": "read sample.txt",
+                    "session_id": "failed-stream-session",
+                }
+            ).encode("utf-8"),
+        )
+
+    payloads = _parse_sse_payloads(stream_response)
+    list_response = _run_app(app, method="GET", path="/api/sessions")
+    replay_response = _run_app(app, method="GET", path="/api/sessions/failed-stream-session")
+    replay_payload = cast(dict[str, object], replay_response.json())
+
+    assert stream_response.status == 200
+    assert payloads[-1]["event"] == {
+        "session_id": "failed-stream-session",
+        "sequence": 5,
+        "event_type": "runtime.failed",
+        "source": "runtime",
+        "payload": {"error": "boom from transport stream"},
+    }
+    assert list_response.json() == [
+        {
+            "session": {"id": "failed-stream-session"},
+            "status": "failed",
+            "turn": 1,
+            "prompt": "read sample.txt",
+            "updated_at": 1,
+        }
+    ]
+    assert replay_response.status == 200
+    assert replay_payload["session"] == {
+        "session": {"id": "failed-stream-session"},
+        "status": "failed",
+        "turn": 1,
+        "metadata": {"workspace": str(tmp_path)},
+    }
+    assert replay_payload["output"] is None
+    assert [
+        event["event_type"] for event in cast(list[dict[str, object]], replay_payload["events"])
+    ] == [
+        "runtime.request_received",
+        "graph.tool_request_created",
+        "runtime.tool_lookup_succeeded",
+        "runtime.permission_resolved",
+        "runtime.failed",
+    ]
+
+
 def test_transport_logs_unexpected_streaming_errors(caplog: pytest.LogCaptureFixture) -> None:
     create_runtime_app = _load_transport_app_factory()
 
@@ -542,6 +674,21 @@ def test_transport_rejects_empty_session_id_in_run_stream_payload() -> None:
     assert response.json() == {"error": "session_id must be a non-empty string when provided"}
 
 
+def test_transport_rejects_unreplayable_session_id_in_run_stream_payload() -> None:
+    create_runtime_app = _load_transport_app_factory()
+    app = create_runtime_app(workspace=Path("/tmp/workspace"))
+
+    response = _run_app(
+        app,
+        method="POST",
+        path="/api/runtime/run/stream",
+        body=json.dumps({"prompt": "read sample.txt", "session_id": "bad/session"}).encode("utf-8"),
+    )
+
+    assert response.status == 400
+    assert response.json() == {"error": "session_id must not contain '/'"}
+
+
 def test_transport_returns_not_found_for_unknown_session(tmp_path: Path) -> None:
     create_runtime_app = _load_transport_app_factory()
     app = create_runtime_app(workspace=tmp_path)
@@ -550,3 +697,13 @@ def test_transport_returns_not_found_for_unknown_session(tmp_path: Path) -> None
 
     assert response.status == 404
     assert response.json() == {"error": "unknown session: missing-session"}
+
+
+def test_transport_returns_not_found_for_unaddressable_session_id(tmp_path: Path) -> None:
+    create_runtime_app = _load_transport_app_factory()
+    app = create_runtime_app(workspace=tmp_path)
+
+    response = _run_app(app, method="GET", path="/api/sessions/bad/session")
+
+    assert response.status == 404
+    assert response.json() == {"error": "not found"}

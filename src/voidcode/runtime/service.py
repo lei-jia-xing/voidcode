@@ -9,7 +9,7 @@ from ..graph.contracts import GraphRunRequest, GraphRunResult
 from ..graph.read_only_slice import DeterministicReadOnlyGraph
 from ..tools.contracts import Tool, ToolCall, ToolDefinition, ToolResult
 from ..tools.read_file import ReadFileTool
-from .contracts import RuntimeRequest, RuntimeResponse, RuntimeStreamChunk
+from .contracts import RuntimeRequest, RuntimeResponse, RuntimeStreamChunk, validate_session_id
 from .events import EventEnvelope
 from .permission import (
     PendingApproval,
@@ -86,12 +86,13 @@ class VoidCodeRuntime:
         self._session_store = session_store or SqliteSessionStore()
 
     def run(self, request: RuntimeRequest) -> RuntimeResponse:
+        request = self._validated_request(request)
         events: list[EventEnvelope] = []
         output: str | None = None
         final_session: SessionState | None = None
 
         try:
-            for chunk in self.run_stream(request):
+            for chunk in self._stream_chunks(request):
                 final_session = chunk.session
                 if chunk.event is not None:
                     events.append(chunk.event)
@@ -115,6 +116,36 @@ class VoidCodeRuntime:
         return response
 
     def run_stream(self, request: RuntimeRequest) -> Iterator[RuntimeStreamChunk]:
+        request = self._validated_request(request)
+        events: list[EventEnvelope] = []
+        output: str | None = None
+        final_session: SessionState | None = None
+
+        try:
+            for chunk in self._stream_chunks(request):
+                final_session = chunk.session
+                if chunk.event is not None:
+                    events.append(chunk.event)
+                if chunk.kind == "output":
+                    if output is not None:
+                        raise ValueError("runtime stream emitted multiple output chunks")
+                    output = chunk.output
+                yield chunk
+        except Exception:
+            if final_session is not None and final_session.status == "failed":
+                response = RuntimeResponse(
+                    session=final_session, events=tuple(events), output=output
+                )
+                self._persist_response(request=request, response=response)
+            raise
+
+        if final_session is None:
+            raise ValueError("runtime stream emitted no chunks")
+
+        response = RuntimeResponse(session=final_session, events=tuple(events), output=output)
+        self._persist_response(request=request, response=response)
+
+    def _stream_chunks(self, request: RuntimeRequest) -> Iterator[RuntimeStreamChunk]:
         session = SessionState(
             session=SessionRef(id=request.session_id or "local-cli-session"),
             status="running",
@@ -399,6 +430,7 @@ class VoidCodeRuntime:
         approval_request_id: str | None = None,
         approval_decision: PermissionResolution | None = None,
     ) -> RuntimeResponse:
+        validate_session_id(session_id)
         if approval_request_id is None and approval_decision is None:
             return self._session_store.load_session(
                 workspace=self._workspace, session_id=session_id
@@ -583,6 +615,16 @@ class VoidCodeRuntime:
             clear_pending_approval=True,
         )
         return response
+
+    @staticmethod
+    def _validated_request(request: RuntimeRequest) -> RuntimeRequest:
+        if request.session_id is None:
+            return request
+        return RuntimeRequest(
+            prompt=request.prompt,
+            session_id=validate_session_id(request.session_id),
+            metadata=request.metadata,
+        )
 
     @staticmethod
     def _prompt_from_events(events: tuple[EventEnvelope, ...]) -> str:

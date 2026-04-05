@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-from collections.abc import Callable, Iterator
+import queue
+import threading
+from collections.abc import AsyncIterator, Callable, Iterator
 from pathlib import Path
 from typing import Protocol, cast, final
 
-from .contracts import RuntimeRequest, RuntimeResponse, RuntimeStreamChunk
+from .contracts import RuntimeRequest, RuntimeResponse, RuntimeStreamChunk, validate_session_id
 from .events import EventEnvelope
 from .service import VoidCodeRuntime
 from .session import SessionRef, SessionState, StoredSessionSummary
@@ -81,7 +84,9 @@ class RuntimeTransportApp:
                 )
                 return
             session_id = path.removeprefix(session_prefix)
-            if not session_id or "/" in session_id:
+            try:
+                validate_session_id(session_id)
+            except ValueError:
                 await self._json_response(
                     send,
                     status=404,
@@ -115,7 +120,7 @@ class RuntimeTransportApp:
 
         emitted_failed_chunk = False
         try:
-            for chunk in runtime.run_stream(request):
+            async for chunk in self._stream_runtime_chunks(runtime, request):
                 payload = self._serialize_runtime_stream_chunk(chunk)
                 emitted_failed_chunk = emitted_failed_chunk or (
                     chunk.event is not None and chunk.event.event_type == "runtime.failed"
@@ -196,8 +201,8 @@ class RuntimeTransportApp:
         session_id = payload.get("session_id")
         if session_id is not None and not isinstance(session_id, str):
             raise ValueError("session_id must be a string when provided")
-        if session_id == "":
-            raise ValueError("session_id must be a non-empty string when provided")
+        if session_id is not None:
+            validate_session_id(session_id)
 
         metadata = payload.get("metadata", {})
         if not isinstance(metadata, dict):
@@ -260,6 +265,36 @@ class RuntimeTransportApp:
             "source": event.source,
             "payload": event.payload,
         }
+
+    async def _stream_runtime_chunks(
+        self,
+        runtime: RuntimeTransport,
+        request: RuntimeRequest,
+    ) -> AsyncIterator[RuntimeStreamChunk]:
+        chunk_queue: queue.Queue[object] = queue.Queue()
+        sentinel = object()
+
+        def _produce() -> None:
+            try:
+                for chunk in runtime.run_stream(request):
+                    chunk_queue.put(chunk)
+            except Exception as exc:
+                chunk_queue.put(exc)
+            finally:
+                chunk_queue.put(sentinel)
+
+        worker = threading.Thread(target=_produce, name="runtime-stream-worker", daemon=True)
+        worker.start()
+
+        while True:
+            item = await asyncio.to_thread(chunk_queue.get)
+            if item is sentinel:
+                break
+            if isinstance(item, Exception):
+                raise item
+            yield cast(RuntimeStreamChunk, item)
+
+        worker.join(timeout=0)
 
 
 def create_runtime_app(
