@@ -57,6 +57,10 @@ The repository defines these `mise` tasks:
 - `mise run check` → runs all Python and frontend checks
 - `mise run pre-commit` → `uv run pre-commit run --all-files`
 
+## MVP Demo and Verification
+
+For the canonical end-to-end demo flow and the full verification ladder (unit, integration, and smoke), see [`docs/mvp-demo-guide.md`](./mvp-demo-guide.md). Use this guide to verify that the core "read-only" runtime loop and session persistence are functional on your machine.
+
 `mise.toml` does not manage Python installation directly; it sources the repository's existing `.venv` and delegates Python dependency/environment management to `uv`.
 
 ## Frontend Development

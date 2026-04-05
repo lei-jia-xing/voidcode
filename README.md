@@ -10,7 +10,7 @@ VoidCode is a local-first coding agent runtime inspired by OpenCode and Claude C
 
 > **Status:** VoidCode is pre-MVP software in early development. The repository currently focuses on establishing the runtime foundations, architecture boundaries, and developer workflow needed for the first end-to-end agent loop.
 
-> **Current truth-source split:** `docs/current-state.md` describes what exists now, `docs/roadmap.md` describes high-level phases, `docs/mvp-todo-plan.md` describes the execution checklist, and `docs/contracts/` defines client-facing runtime contracts.
+> **Current truth-source split:** `docs/current-state.md` describes what exists now, `docs/roadmap.md` describes high-level phases, `docs/mvp-todo-plan.md` describes the execution checklist, `docs/mvp-demo-guide.md` provides the end-to-end verification ladder, and `docs/contracts/` defines client-facing runtime contracts.
 
 ## What VoidCode is aiming to build
 
@@ -85,6 +85,7 @@ For the English-facing architecture and roadmap summaries, see:
 - [`docs/architecture.md`](./docs/architecture.md)
 - [`docs/roadmap.md`](./docs/roadmap.md)
 - [`docs/mvp-todo-plan.md`](./docs/mvp-todo-plan.md)
+- [`docs/mvp-demo-guide.md`](./docs/mvp-demo-guide.md)
 - [`docs/contracts/README.md`](./docs/contracts/README.md)
 - [`docs/development.md`](./docs/development.md)
 
