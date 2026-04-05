@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal
+from pathlib import Path
+from typing import ClassVar, Literal, Protocol, runtime_checkable
 
 type ToolResultStatus = Literal["ok", "error"]
 
@@ -33,3 +34,10 @@ class ToolResult:
             raise ValueError("error results must include an error message")
         if self.status == "ok" and self.error is not None:
             raise ValueError("successful results cannot include an error message")
+
+
+@runtime_checkable
+class Tool(Protocol):
+    definition: ClassVar[ToolDefinition]
+
+    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult: ...

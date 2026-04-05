@@ -7,7 +7,7 @@ from typing import Protocol, cast, final
 
 from ..graph.contracts import GraphRunRequest, GraphRunResult
 from ..graph.read_only_slice import DeterministicReadOnlyGraph
-from ..tools.contracts import ToolCall, ToolDefinition, ToolResult
+from ..tools.contracts import Tool, ToolCall, ToolDefinition, ToolResult
 from ..tools.read_file import ReadFileTool
 from .contracts import RuntimeRequest, RuntimeResponse, RuntimeStreamChunk
 from .events import EventEnvelope
@@ -42,17 +42,18 @@ class RuntimeGraph(Protocol):
 class ToolRegistry:
     """Small in-memory registry used by the runtime boundary."""
 
-    tools: dict[str, ReadFileTool] = field(default_factory=dict)
+    tools: dict[str, Tool] = field(default_factory=dict)
 
     @classmethod
     def with_defaults(cls) -> ToolRegistry:
         read_tool = ReadFileTool()
-        return cls(tools={read_tool.definition.name: read_tool})
+        tools: dict[str, Tool] = {read_tool.definition.name: read_tool}
+        return cls(tools=tools)
 
     def definitions(self) -> tuple[ToolDefinition, ...]:
         return tuple(tool.definition for tool in self.tools.values())
 
-    def resolve(self, tool_name: str) -> ReadFileTool:
+    def resolve(self, tool_name: str) -> Tool:
         try:
             return self.tools[tool_name]
         except KeyError as exc:
