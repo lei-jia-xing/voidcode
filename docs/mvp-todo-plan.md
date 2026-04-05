@@ -128,24 +128,25 @@ Goal: prove the runtime is configurable without exploding the surface area.
 
 Goal: ship a keyboard-first client with the same core interaction shape users expect from terminal-native coding agents.
 
-There is no TUI in the repository today. This phase covers designing and building it as a client on top of the runtime boundary.
+This phase implements the **TUI MVP Spec** in [`docs/tui-mvp-spec.md`](./tui-mvp-spec.md). Follow-on implementation tasks should be sliced directly from that spec.
 
 ### TODO
 
-- [ ] define whether the TUI replaces or wraps the current CLI surface
-- [ ] implement prompt entry and session navigation
-- [ ] render streaming runtime events in a readable activity timeline
-- [ ] render tool calls and outputs in collapsible or grouped form
-- [ ] support approval prompts directly in the TUI
-- [ ] support persisted session list and resume inside the TUI
-- [ ] add smoke/e2e tests for one complete task flow in the TUI
+- [ ] finalize the TUI MVP specification in `docs/tui-mvp-spec.md`
+- [ ] implement the terminal layout with distinct prompt and activity zones
+- [ ] render streaming runtime events into a scrollable, readable timeline
+- [ ] implement collapsible tool call and result blocks in the activity feed
+- [ ] integrate interactive approval prompts for risky tool executions
+- [ ] implement session management (list, load, resume) directly in the TUI
+- [ ] add automated smoke tests for the canonical TUI smoke flow defined in `docs/tui-mvp-spec.md`
 
 ### Acceptance criteria
 
-- a user can complete one end-to-end task from the TUI alone
-- the TUI shows progress during tool execution rather than appearing frozen
-- approvals can be resolved without dropping back to raw shell commands
-- the TUI uses runtime events and persistence rather than private client state
+- **Single-task completion**: a user can successfully finish one "read and edit" task using only the TUI
+- **Activity visibility**: streaming events (turns, tool starts, tool outputs) are visible without UI flickering or blocking
+- **Approval flow**: risky actions pause execution and display a clear TUI prompt that accepts immediate user input
+- **Persistence parity**: the TUI correctly lists and resumes sessions created by other clients (CLI) using shared runtime storage
+- **Spec alignment**: the final implementation meets the acceptance criteria defined in `docs/tui-mvp-spec.md`
 
 ## Phase 4 — web client MVP alignment
 
