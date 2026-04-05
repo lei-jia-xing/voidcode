@@ -464,7 +464,7 @@ class VoidCodeRuntime:
             tool = self._tool_registry.resolve(pending.tool_name)
             tool_call = ToolCall(tool_name=pending.tool_name, arguments=pending.arguments)
             tool_result = tool.invoke(tool_call, workspace=self._workspace)
-        except ValueError as exc:
+        except Exception as exc:
             failed_event = self._failed_chunk(
                 session=session,
                 sequence=permission_outcome.last_sequence + 1,

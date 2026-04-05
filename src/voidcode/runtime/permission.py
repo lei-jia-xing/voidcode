@@ -22,7 +22,7 @@ class PermissionOutcome:
 
 @dataclass(frozen=True, slots=True)
 class PermissionPolicy:
-    mode: PermissionDecision = "allow"
+    mode: PermissionDecision = "ask"
 
 
 @dataclass(frozen=True, slots=True)

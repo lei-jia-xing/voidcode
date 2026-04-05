@@ -464,7 +464,7 @@ def test_runtime_marks_resumed_approval_failure_and_clears_pending_request(tmp_p
 
     def _failing_write_invoke(_call: object, *, workspace: Path) -> object:
         _ = workspace
-        raise ValueError("resume boom")
+        raise RuntimeError("resume boom")
 
     with patch.object(write_tool, "invoke", autospec=True, side_effect=_failing_write_invoke):
         resumed_runtime_class = _load_runtime_types()[1]
