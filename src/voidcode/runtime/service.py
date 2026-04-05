@@ -418,13 +418,17 @@ class VoidCodeRuntime:
         if approval_event.event_type != "runtime.approval_requested":
             raise ValueError("waiting runtime response must end with approval request")
         payload = approval_event.payload
+        raw_policy = cast(dict[str, object], payload.get("policy", {}))
+        raw_policy_mode = raw_policy.get("mode", "ask")
+        if raw_policy_mode not in ("allow", "deny", "ask"):
+            raise ValueError(f"invalid approval policy mode: {raw_policy_mode}")
         return PendingApproval(
             request_id=str(payload["request_id"]),
             tool_name=str(payload["tool"]),
             arguments=cast(dict[str, object], payload.get("arguments", {})),
             target_summary=str(payload.get("target_summary", "")),
             reason=str(payload.get("reason", "")),
-            policy_mode="ask",
+            policy_mode=raw_policy_mode,
         )
 
     def _resume_pending_approval(
@@ -560,7 +564,14 @@ class VoidCodeRuntime:
             return response
         response = RuntimeResponse(
             session=graph_result.session,
-            events=stored.events + new_events + (tool_completed_event,) + graph_result.events,
+            events=stored.events
+            + new_events
+            + (tool_completed_event,)
+            + self._renumber_events(
+                graph_result.events,
+                session_id=session.session.id,
+                start_sequence=tool_completed_event.sequence + 1,
+            ),
             output=graph_result.output,
         )
         self._session_store.save_run(
@@ -581,6 +592,21 @@ class VoidCodeRuntime:
         if isinstance(prompt, str):
             return prompt
         return ""
+
+    @staticmethod
+    def _renumber_events(
+        events: tuple[EventEnvelope, ...], *, session_id: str, start_sequence: int
+    ) -> tuple[EventEnvelope, ...]:
+        return tuple(
+            EventEnvelope(
+                session_id=session_id,
+                sequence=start_sequence + index,
+                event_type=event.event_type,
+                source=event.source,
+                payload=event.payload,
+            )
+            for index, event in enumerate(events)
+        )
 
 
 @dataclass(frozen=True, slots=True)

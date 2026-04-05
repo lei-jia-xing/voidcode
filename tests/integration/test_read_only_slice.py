@@ -21,6 +21,7 @@ import pytest
 class EventLike(Protocol):
     event_type: str
     payload: dict[str, object]
+    sequence: int
 
 
 class StreamChunkLike(Protocol):
@@ -604,6 +605,23 @@ def test_runtime_allows_non_read_only_tool_after_explicit_resume_approval(tmp_pa
     assert resumed.output == "write ok"
 
 
+def test_runtime_resumed_approval_renumbers_fixed_finalize_sequences(tmp_path: Path) -> None:
+    runtime_request, runtime, _, _, _ = _permission_runtime(tmp_path, mode="ask")
+
+    waiting = runtime.run(runtime_request(prompt="write danger.txt", session_id="approval-session"))
+    approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
+
+    resumed = runtime.resume(
+        "approval-session",
+        approval_request_id=approval_request_id,
+        approval_decision="allow",
+    )
+
+    assert resumed.session.status == "completed"
+    assert [event.sequence for event in resumed.events] == [1, 2, 3, 4, 5, 6, 7]
+    assert resumed.events[-1].event_type == "graph.response_ready"
+
+
 def test_runtime_persists_pending_approval_until_single_resume_resolution(tmp_path: Path) -> None:
     runtime_request, runtime, tool_registry, permission_policy, graph = _permission_runtime(
         tmp_path, mode="ask"
@@ -637,6 +655,7 @@ def test_runtime_persists_pending_approval_until_single_resume_resolution(tmp_pa
 
     assert replay.session.status == "waiting"
     assert replay.events[-1].event_type == "runtime.approval_requested"
+    assert replay.events[-1].payload["policy"] == {"mode": "ask"}
     assert resolved.session.status == "completed"
     with pytest.raises(ValueError, match="no pending approval"):
         _ = resumed_runtime.resume(
