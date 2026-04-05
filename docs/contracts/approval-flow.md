@@ -37,6 +37,40 @@ An approval request must be representable with at least:
 
 This should be emitted as a runtime event rather than as client-only UI state.
 
+### Planned approval request shape
+
+The MVP contract should support an approval-request event payload with at least:
+
+```json
+{
+  "request_id": "approval-1",
+  "session_id": "session-123",
+  "sequence": 4,
+  "tool": "write_file",
+  "decision": "ask",
+  "arguments": {
+    "path": "README.md"
+  },
+  "target_summary": "write README.md",
+  "reason": "write-capable tool invocation",
+  "policy": {
+    "mode": "ask"
+  }
+}
+```
+
+Field intent:
+
+- `request_id`: stable identifier for later resolution and replay
+- `session_id`: owning session
+- `sequence`: ordering marker in the event stream
+- `tool`: tool name awaiting approval
+- `decision`: `ask` for pending approval requests
+- `arguments`: proposed tool arguments or a redacted equivalent
+- `target_summary`: human-readable target summary for clients
+- `reason`: why approval is required
+- `policy`: policy context relevant to the decision
+
 ## Approval resolution contract
 
 An approval resolution must be able to record:
@@ -46,6 +80,49 @@ An approval resolution must be able to record:
 - `decision`: `allow` / `deny`
 - optional operator note
 - timestamp or ordering marker sufficient for resume/replay
+
+### Planned approval resolution shape
+
+The MVP contract should support a resolution payload with at least:
+
+```json
+{
+  "request_id": "approval-1",
+  "session_id": "session-123",
+  "decision": "allow",
+  "note": "approved from tui",
+  "resolved_sequence": 5
+}
+```
+
+Field intent:
+
+- `request_id`: correlates the resolution with the original approval request
+- `session_id`: owning session
+- `decision`: final decision, either `allow` or `deny`
+- `note`: optional operator or client note
+- `resolved_sequence`: ordering marker sufficient for replay and resume
+
+### Client-to-runtime decision submission
+
+Clients should return approval decisions to the runtime as a runtime-owned action, not as direct tool execution.
+
+The minimum client submission shape should be:
+
+```json
+{
+  "request_id": "approval-1",
+  "decision": "allow",
+  "note": "approved from web"
+}
+```
+
+The runtime is responsible for validating that:
+
+- the request still exists
+- the request belongs to the active session
+- the request has not already been resolved
+- execution resumes or terminates according to the recorded decision
 
 ## MVP invariants
 
@@ -65,6 +142,20 @@ Planned MVP behavior:
 - runtime can pause on `ask`
 - clients can resolve approvals against runtime state
 - persisted sessions can replay approval history and resume correctly
+
+## Persistence and resume expectations
+
+The persisted session state must be able to preserve:
+
+- unresolved approval requests
+- resolved approval history
+- the final decision associated with each `request_id`
+- enough ordering information to replay approval history in sequence
+
+Resume behavior must support both cases:
+
+- unresolved approval request: session resumes in a waiting state and clients can still act on the pending request
+- resolved approval request: session replay shows the decision as part of the historical event stream
 
 ## Related clients
 
