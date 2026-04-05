@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import sys
+from collections.abc import Iterator
 from dataclasses import FrozenInstanceError, asdict
 from pathlib import Path
 from types import ModuleType
@@ -116,6 +117,31 @@ def test_runtime_and_graph_protocols_are_runtime_checkable() -> None:
                 output=typed_request.prompt.upper(),
             )
 
+        def run_stream(self, request: Any) -> Iterator[Any]:
+            typed_request = runtime_module.RuntimeRequest(**asdict(request))
+            session = runtime_module.SessionState(
+                session=runtime_module.SessionRef(id=typed_request.session_id or "new-session"),
+                status="running",
+            )
+            yield runtime_module.RuntimeStreamChunk(
+                kind="event",
+                session=session,
+                event=runtime_module.EventEnvelope(
+                    session_id=session.session.id,
+                    sequence=1,
+                    event_type="runtime.request_received",
+                    source="runtime",
+                ),
+            )
+            yield runtime_module.RuntimeStreamChunk(
+                kind="output",
+                session=runtime_module.SessionState(
+                    session=session.session,
+                    status="completed",
+                ),
+                output=typed_request.prompt.upper(),
+            )
+
     class StubGraphRunner:
         def run(self, request: Any) -> Any:
             typed_request = graph_module.GraphRunRequest(**asdict(request))
@@ -128,8 +154,12 @@ def test_runtime_and_graph_protocols_are_runtime_checkable() -> None:
     graph_runner = StubGraphRunner()
 
     assert isinstance(runtime, runtime_module.RuntimeEntrypoint)
+    assert isinstance(runtime, runtime_module.StreamingRuntimeEntrypoint)
     assert isinstance(graph_runner, graph_module.GraphRunner)
     assert runtime.run(runtime_module.RuntimeRequest(prompt="hello")).output == "HELLO"
+    stream = runtime.run_stream(runtime_module.RuntimeRequest(prompt="hello"))
+    assert isinstance(stream, Iterator)
+    assert [chunk.session.status for chunk in stream] == ["running", "completed"]
     assert (
         graph_runner.run(
             graph_module.GraphRunRequest(

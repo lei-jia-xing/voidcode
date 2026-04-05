@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Literal, Protocol, runtime_checkable
 
@@ -45,4 +46,4 @@ class RuntimeEntrypoint(Protocol):
 
 @runtime_checkable
 class StreamingRuntimeEntrypoint(Protocol):
-    def run_stream(self, request: RuntimeRequest) -> tuple[RuntimeStreamChunk, ...]: ...
+    def run_stream(self, request: RuntimeRequest) -> Iterator[RuntimeStreamChunk]: ...
