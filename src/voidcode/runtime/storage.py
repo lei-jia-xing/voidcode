@@ -82,6 +82,14 @@ class SqliteSessionStore:
             )
             """
         )
+        columns = {
+            cast(str, row["name"])
+            for row in cast(
+                list[sqlite3.Row], connection.execute("PRAGMA table_info(sessions)").fetchall()
+            )
+        }
+        if "pending_approval_json" not in columns:
+            _ = connection.execute("ALTER TABLE sessions ADD COLUMN pending_approval_json TEXT")
         _ = connection.execute(
             """
             CREATE TABLE IF NOT EXISTS session_events (
@@ -94,7 +102,7 @@ class SqliteSessionStore:
             )
             """
         )
-        _ = connection.execute("PRAGMA user_version = 1")
+        _ = connection.execute("PRAGMA user_version = 2")
         connection.commit()
 
     @staticmethod
