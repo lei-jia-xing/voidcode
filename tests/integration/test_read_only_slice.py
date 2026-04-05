@@ -87,57 +87,8 @@ class RuntimeFactory(Protocol):
     ) -> RuntimeRunner: ...
 
 
-class ToolDefinitionFactory(Protocol):
-    def __call__(
-        self,
-        *,
-        name: str,
-        description: str,
-        input_schema: dict[str, object],
-        read_only: bool,
-    ) -> object: ...
-
-
 class ToolCallFactory(Protocol):
     def __call__(self, *, tool_name: str, arguments: dict[str, object]) -> object: ...
-
-
-class ToolResultFactory(Protocol):
-    def __call__(
-        self,
-        *,
-        tool_name: str,
-        status: str,
-        content: str | None = None,
-        data: dict[str, object] | None = None,
-    ) -> object: ...
-
-
-class EventEnvelopeFactory(Protocol):
-    def __call__(
-        self,
-        *,
-        session_id: str,
-        sequence: int,
-        event_type: str,
-        source: str,
-        payload: dict[str, object] | None = None,
-    ) -> object: ...
-
-
-class GraphRunResultFactory(Protocol):
-    def __call__(
-        self,
-        *,
-        session: object,
-        events: tuple[object, ...] = (),
-        tool_results: tuple[object, ...] = (),
-        output: str | None = None,
-    ) -> object: ...
-
-
-class ToolRegistryFactory(Protocol):
-    def __call__(self, *, tools: dict[str, object]) -> object: ...
 
 
 class ReadFileToolType(Protocol):
@@ -192,11 +143,6 @@ class _WritePlan:
     tool_call: object
 
 
-@dataclass(frozen=True, slots=True)
-class _CommandPlan:
-    tool_call: object
-
-
 def _approval_runtime(
     tmp_path: Path, *, mode: str = "ask"
 ) -> tuple[RuntimeRequestFactory, RuntimeRunner]:
@@ -210,87 +156,6 @@ def _approval_runtime(
             object,
             runtime_class(
                 workspace=tmp_path,
-                permission_policy=policy,
-            ),
-        ),
-    )
-    return runtime_request, runtime
-
-
-def _command_permission_runtime(
-    tmp_path: Path, *, mode: str = "ask"
-) -> tuple[RuntimeRequestFactory, RuntimeRunner]:
-    runtime_request, runtime_class = _load_runtime_types()
-    service_module = importlib.import_module("voidcode.runtime.service")
-    graph_contracts = importlib.import_module("voidcode.graph.contracts")
-    runtime_events = importlib.import_module("voidcode.runtime.events")
-    permission_module = importlib.import_module("voidcode.runtime.permission")
-    tool_contracts = importlib.import_module("voidcode.tools.contracts")
-    tool_definition = cast(ToolDefinitionFactory, tool_contracts.ToolDefinition)
-    tool_call = cast(ToolCallFactory, tool_contracts.ToolCall)
-    tool_result = cast(ToolResultFactory, tool_contracts.ToolResult)
-    event_envelope = cast(EventEnvelopeFactory, runtime_events.EventEnvelope)
-    graph_run_result = cast(GraphRunResultFactory, graph_contracts.GraphRunResult)
-    tool_registry_factory = cast(ToolRegistryFactory, service_module.ToolRegistry)
-    permission_policy = cast(Callable[..., object], permission_module.PermissionPolicy)
-
-    class CommandTool:
-        definition: object = tool_definition(
-            name="shell_exec",
-            description="Run a shell command",
-            input_schema={"command": {"type": "string"}},
-            read_only=False,
-        )
-
-        def invoke(self, _call: object, *, workspace: Path) -> object:
-            _ = workspace
-            return tool_result(
-                tool_name="shell_exec",
-                status="ok",
-                content="command ok",
-                data={"command": "pwd"},
-            )
-
-    class CommandGraph:
-        def plan(self, _request: object) -> object:
-            return _CommandPlan(
-                tool_call=tool_call(
-                    tool_name="shell_exec",
-                    arguments={"command": "pwd"},
-                )
-            )
-
-        def finalize(self, request: object, tool_result: object, *, session: object) -> object:
-            typed_session = cast(SessionLike, session)
-            session_ref = cast(SessionRefLike, typed_session.session)
-            typed_request = cast(RuntimeRequestLike, request)
-            sequence = cast(int, typed_request.metadata.get("response_sequence", 6))
-            return graph_run_result(
-                session=session,
-                events=(
-                    event_envelope(
-                        session_id=session_ref.id,
-                        sequence=sequence,
-                        event_type="graph.response_ready",
-                        source="graph",
-                        payload={"output_preview": "command ok"},
-                    ),
-                ),
-                tool_results=(tool_result,),
-                output="command ok",
-            )
-
-    tool_registry = tool_registry_factory(tools={"shell_exec": CommandTool()})
-    policy = permission_policy(mode=mode)
-    graph = CommandGraph()
-    runtime = cast(
-        RuntimeRunner,
-        cast(
-            object,
-            runtime_class(
-                workspace=tmp_path,
-                tool_registry=tool_registry,
-                graph=graph,
                 permission_policy=policy,
             ),
         ),
@@ -320,7 +185,7 @@ def test_runtime_allows_non_read_only_tool_when_policy_is_allow(tmp_path: Path) 
 
 
 def test_runtime_tool_request_created_supports_non_path_tool_arguments(tmp_path: Path) -> None:
-    runtime_request, runtime = _command_permission_runtime(tmp_path, mode="allow")
+    runtime_request, runtime = _approval_runtime(tmp_path, mode="allow")
 
     result = runtime.run(runtime_request(prompt="run pwd", session_id="command-session"))
 
@@ -330,6 +195,80 @@ def test_runtime_tool_request_created_supports_non_path_tool_arguments(tmp_path:
         "tool": "shell_exec",
         "arguments": {"command": "pwd"},
     }
+
+
+def test_runtime_allows_shell_exec_tool_when_policy_is_allow(tmp_path: Path) -> None:
+    runtime_request, runtime = _approval_runtime(tmp_path, mode="allow")
+
+    allowed = runtime.run(runtime_request(prompt="run pwd", session_id="shell-allow-session"))
+
+    assert allowed.session.status == "completed"
+    assert [event.event_type for event in allowed.events] == [
+        "runtime.request_received",
+        "graph.tool_request_created",
+        "runtime.tool_lookup_succeeded",
+        "runtime.approval_resolved",
+        "runtime.tool_completed",
+        "graph.response_ready",
+    ]
+    assert allowed.events[3].payload["decision"] == "allow"
+    assert allowed.output == f"{tmp_path.resolve()}\n"
+    assert allowed.events[4].payload["command"] == "pwd"
+    assert allowed.events[4].payload["exit_code"] == 0
+
+
+def test_runtime_requests_and_resumes_shell_exec_approval(tmp_path: Path) -> None:
+    runtime_request, runtime = _approval_runtime(tmp_path, mode="ask")
+
+    waiting = runtime.run(runtime_request(prompt="run pwd", session_id="shell-approval-session"))
+
+    assert waiting.session.status == "waiting"
+    assert [event.event_type for event in waiting.events] == [
+        "runtime.request_received",
+        "graph.tool_request_created",
+        "runtime.tool_lookup_succeeded",
+        "runtime.approval_requested",
+    ]
+    assert waiting.events[-1].payload["tool"] == "shell_exec"
+    assert waiting.events[-1].payload["arguments"] == {"command": "pwd"}
+    approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
+
+    resumed = runtime.resume(
+        "shell-approval-session",
+        approval_request_id=approval_request_id,
+        approval_decision="allow",
+    )
+
+    assert resumed.session.status == "completed"
+    assert [event.event_type for event in resumed.events] == [
+        "runtime.request_received",
+        "graph.tool_request_created",
+        "runtime.tool_lookup_succeeded",
+        "runtime.approval_requested",
+        "runtime.approval_resolved",
+        "runtime.tool_completed",
+        "graph.response_ready",
+    ]
+    assert resumed.output == f"{tmp_path.resolve()}\n"
+    assert resumed.events[5].payload["command"] == "pwd"
+    assert resumed.events[5].payload["exit_code"] == 0
+
+
+def test_runtime_denies_shell_exec_tool_when_policy_is_deny(tmp_path: Path) -> None:
+    runtime_request, runtime = _approval_runtime(tmp_path, mode="deny")
+
+    denied = runtime.run(runtime_request(prompt="run pwd", session_id="shell-deny-session"))
+
+    assert denied.session.status == "failed"
+    assert [event.event_type for event in denied.events] == [
+        "runtime.request_received",
+        "graph.tool_request_created",
+        "runtime.tool_lookup_succeeded",
+        "runtime.approval_resolved",
+        "runtime.failed",
+    ]
+    assert denied.events[3].payload["decision"] == "deny"
+    assert denied.output is None
 
 
 def test_runtime_persists_initial_allow_tool_failure_for_resume(tmp_path: Path) -> None:
