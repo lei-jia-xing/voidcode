@@ -149,14 +149,19 @@ class VoidCodeRuntime:
                 source="graph",
                 payload={
                     "tool": plan.tool_call.tool_name,
-                    "path": plan.tool_call.arguments["path"],
+                    "arguments": dict(plan.tool_call.arguments),
+                    **(
+                        {"path": path}
+                        if isinstance((path := plan.tool_call.arguments.get("path")), str)
+                        else {}
+                    ),
                 },
             ),
         )
 
         try:
             tool = self._tool_registry.resolve(plan.tool_call.tool_name)
-        except ValueError as exc:
+        except Exception as exc:
             yield self._failed_chunk(session=session, sequence=sequence + 1, error=str(exc))
             raise
 
@@ -516,7 +521,39 @@ class VoidCodeRuntime:
                 "response_sequence": permission_outcome.last_sequence + 2,
             },
         )
-        graph_result = self._graph.finalize(graph_request, tool_result, session=completed_session)
+        try:
+            graph_result = self._graph.finalize(
+                graph_request, tool_result, session=completed_session
+            )
+        except Exception as exc:
+            failed_event = self._failed_chunk(
+                session=session,
+                sequence=permission_outcome.last_sequence + 2,
+                error=str(exc),
+            ).event
+            assert failed_event is not None
+            response = RuntimeResponse(
+                session=SessionState(
+                    session=session.session,
+                    status="failed",
+                    turn=session.turn,
+                    metadata=session.metadata,
+                ),
+                events=stored.events + new_events + (tool_completed_event, failed_event),
+                output=None,
+            )
+            self._session_store.clear_pending_approval(
+                workspace=self._workspace,
+                session_id=session_id,
+            )
+            self._session_store.save_run(
+                workspace=self._workspace,
+                request=RuntimeRequest(
+                    prompt=self._prompt_from_events(stored.events), session_id=session_id
+                ),
+                response=response,
+            )
+            return response
         response = RuntimeResponse(
             session=graph_result.session,
             events=stored.events + new_events + (tool_completed_event,) + graph_result.events,

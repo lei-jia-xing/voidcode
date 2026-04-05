@@ -162,6 +162,11 @@ class _WritePlan:
     tool_call: object
 
 
+@dataclass(frozen=True, slots=True)
+class _CommandPlan:
+    tool_call: object
+
+
 def _permission_runtime(
     tmp_path: Path, *, mode: str = "ask"
 ) -> tuple[RuntimeRequestFactory, RuntimeRunner, object, object, object]:
@@ -243,6 +248,87 @@ def _permission_runtime(
     return runtime_request, runtime, tool_registry, policy, graph
 
 
+def _command_permission_runtime(
+    tmp_path: Path, *, mode: str = "ask"
+) -> tuple[RuntimeRequestFactory, RuntimeRunner]:
+    runtime_request, runtime_class = _load_runtime_types()
+    service_module = importlib.import_module("voidcode.runtime.service")
+    graph_contracts = importlib.import_module("voidcode.graph.contracts")
+    runtime_events = importlib.import_module("voidcode.runtime.events")
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    tool_contracts = importlib.import_module("voidcode.tools.contracts")
+    tool_definition = cast(ToolDefinitionFactory, tool_contracts.ToolDefinition)
+    tool_call = cast(ToolCallFactory, tool_contracts.ToolCall)
+    tool_result = cast(ToolResultFactory, tool_contracts.ToolResult)
+    event_envelope = cast(EventEnvelopeFactory, runtime_events.EventEnvelope)
+    graph_run_result = cast(GraphRunResultFactory, graph_contracts.GraphRunResult)
+    tool_registry_factory = cast(ToolRegistryFactory, service_module.ToolRegistry)
+    permission_policy = cast(Callable[..., object], permission_module.PermissionPolicy)
+
+    class CommandTool:
+        definition: object = tool_definition(
+            name="shell_exec",
+            description="Run a shell command",
+            input_schema={"command": {"type": "string"}},
+            read_only=False,
+        )
+
+        def invoke(self, _call: object, *, workspace: Path) -> object:
+            _ = workspace
+            return tool_result(
+                tool_name="shell_exec",
+                status="ok",
+                content="command ok",
+                data={"command": "pwd"},
+            )
+
+    class CommandGraph:
+        def plan(self, _request: object) -> object:
+            return _CommandPlan(
+                tool_call=tool_call(
+                    tool_name="shell_exec",
+                    arguments={"command": "pwd"},
+                )
+            )
+
+        def finalize(self, request: object, tool_result: object, *, session: object) -> object:
+            typed_session = cast(SessionLike, session)
+            session_ref = cast(SessionRefLike, typed_session.session)
+            typed_request = cast(RuntimeRequestLike, request)
+            sequence = cast(int, typed_request.metadata.get("response_sequence", 6))
+            return graph_run_result(
+                session=session,
+                events=(
+                    event_envelope(
+                        session_id=session_ref.id,
+                        sequence=sequence,
+                        event_type="graph.response_ready",
+                        source="graph",
+                        payload={"output_preview": "command ok"},
+                    ),
+                ),
+                tool_results=(tool_result,),
+                output="command ok",
+            )
+
+    tool_registry = tool_registry_factory(tools={"shell_exec": CommandTool()})
+    policy = permission_policy(mode=mode)
+    graph = CommandGraph()
+    runtime = cast(
+        RuntimeRunner,
+        cast(
+            object,
+            runtime_class(
+                workspace=tmp_path,
+                tool_registry=tool_registry,
+                graph=graph,
+                permission_policy=policy,
+            ),
+        ),
+    )
+    return runtime_request, runtime
+
+
 def test_runtime_allows_non_read_only_tool_when_policy_is_allow(tmp_path: Path) -> None:
     runtime_request, runtime, _, _, _ = _permission_runtime(tmp_path, mode="allow")
 
@@ -259,6 +345,19 @@ def test_runtime_allows_non_read_only_tool_when_policy_is_allow(tmp_path: Path) 
     ]
     assert allowed.events[3].payload["decision"] == "allow"
     assert allowed.output == "write ok"
+
+
+def test_runtime_tool_request_created_supports_non_path_tool_arguments(tmp_path: Path) -> None:
+    runtime_request, runtime = _command_permission_runtime(tmp_path, mode="allow")
+
+    result = runtime.run(runtime_request(prompt="run pwd", session_id="command-session"))
+
+    tool_request_event = result.events[1]
+    assert tool_request_event.event_type == "graph.tool_request_created"
+    assert tool_request_event.payload == {
+        "tool": "shell_exec",
+        "arguments": {"command": "pwd"},
+    }
 
 
 def test_runtime_denies_non_read_only_tool_when_policy_is_deny(tmp_path: Path) -> None:
@@ -499,6 +598,75 @@ def test_runtime_marks_resumed_approval_failure_and_clears_pending_request(tmp_p
                 workspace=tmp_path,
                 tool_registry=tool_registry,
                 graph=graph,
+                permission_policy=permission_policy,
+            ),
+        ),
+    )
+    with pytest.raises(ValueError, match="no pending approval"):
+        _ = replay_runtime.resume(
+            "approval-session",
+            approval_request_id=approval_request_id,
+            approval_decision="allow",
+        )
+
+
+def test_runtime_marks_resumed_finalize_failure_and_clears_pending_request(tmp_path: Path) -> None:
+    runtime_request, runtime, tool_registry, permission_policy, _ = _permission_runtime(
+        tmp_path, mode="ask"
+    )
+
+    waiting = runtime.run(runtime_request(prompt="write danger.txt", session_id="approval-session"))
+    approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
+
+    class FailingFinalizeGraph:
+        def plan(self, _request: object) -> object:
+            return _WritePlan(
+                tool_call=cast(
+                    ToolCallFactory, importlib.import_module("voidcode.tools.contracts").ToolCall
+                )(
+                    tool_name="write_file",
+                    arguments={"path": "danger.txt"},
+                )
+            )
+
+        def finalize(self, request: object, tool_result: object, *, session: object) -> object:
+            _ = request
+            _ = tool_result
+            _ = session
+            raise RuntimeError("finalize boom")
+
+    resumed_runtime_class = _load_runtime_types()[1]
+    resumed_runtime = cast(
+        RuntimeRunner,
+        cast(
+            object,
+            resumed_runtime_class(
+                workspace=tmp_path,
+                tool_registry=tool_registry,
+                graph=FailingFinalizeGraph(),
+                permission_policy=permission_policy,
+            ),
+        ),
+    )
+    failed = resumed_runtime.resume(
+        "approval-session",
+        approval_request_id=approval_request_id,
+        approval_decision="allow",
+    )
+
+    assert failed.session.status == "failed"
+    assert failed.events[-2].event_type == "runtime.tool_completed"
+    assert failed.events[-1].event_type == "runtime.failed"
+    assert failed.events[-1].payload == {"error": "finalize boom"}
+
+    replay_runtime = cast(
+        RuntimeRunner,
+        cast(
+            object,
+            _load_runtime_types()[1](
+                workspace=tmp_path,
+                tool_registry=tool_registry,
+                graph=FailingFinalizeGraph(),
                 permission_policy=permission_policy,
             ),
         ),
