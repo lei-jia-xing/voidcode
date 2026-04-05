@@ -10,6 +10,7 @@ from ..graph.contracts import GraphRunRequest, GraphRunResult
 from ..graph.read_only_slice import DeterministicReadOnlyGraph
 from ..tools.contracts import Tool, ToolCall, ToolDefinition, ToolResult
 from ..tools.read_file import ReadFileTool
+from ..tools.write_file import WriteFileTool
 from .contracts import RuntimeRequest, RuntimeResponse, RuntimeStreamChunk, validate_session_id
 from .events import EventEnvelope
 from .permission import (
@@ -48,7 +49,11 @@ class ToolRegistry:
     @classmethod
     def with_defaults(cls) -> ToolRegistry:
         read_tool = ReadFileTool()
-        tools: dict[str, Tool] = {read_tool.definition.name: read_tool}
+        write_tool = WriteFileTool()
+        tools: dict[str, Tool] = {
+            read_tool.definition.name: read_tool,
+            write_tool.definition.name: write_tool,
+        }
         return cls(tools=tools)
 
     def definitions(self) -> tuple[ToolDefinition, ...]:
