@@ -38,6 +38,14 @@ function App() {
 
   const isRunning = runStatus === 'running';
 
+  useEffect(() => {
+    if (sessionsStatus !== 'success' || !currentSessionId || isRunning) {
+      return;
+    }
+
+    void selectSession(currentSessionId);
+  }, [currentSessionId, isRunning, selectSession, sessionsStatus]);
+
   return (
     <div className="flex h-screen bg-[#09090b] text-slate-300 font-sans overflow-hidden selection:bg-indigo-500/30">
 
@@ -66,6 +74,7 @@ function App() {
               <button
                 type="button"
                 onClick={() => selectSession('')}
+                disabled={isRunning}
                 className={`w-full flex items-center justify-start px-4 py-2 rounded-lg transition-colors ${!currentSessionId ? 'bg-emerald-500/10 text-emerald-400' : 'text-slate-400 hover:bg-slate-800/50 hover:text-slate-200'}`}
               >
                 <span className="font-medium text-sm">{t('session.newSession')}</span>
@@ -75,6 +84,7 @@ function App() {
                   key={s.session.id}
                   type="button"
                   onClick={() => selectSession(s.session.id)}
+                  disabled={isRunning}
                   className={`w-full flex items-center justify-start px-4 py-2 rounded-lg transition-colors truncate ${currentSessionId === s.session.id ? 'bg-indigo-500/10 text-indigo-400' : 'text-slate-400 hover:bg-slate-800/50 hover:text-slate-200'}`}
                 >
                   <Hash className="w-4 h-4 mr-3 flex-shrink-0" />

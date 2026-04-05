@@ -65,6 +65,10 @@ export const useAppStore = create<AppState>()(
       },
 
       selectSession: async (sessionId: string) => {
+        if (get().runStatus === 'running') {
+          return;
+        }
+
         if (!sessionId) {
           set({
             currentSessionId: null,
@@ -81,6 +85,8 @@ export const useAppStore = create<AppState>()(
         const requestId = get().replayRequestId + 1;
         set({
           currentSessionId: sessionId,
+          currentSessionState: null,
+          currentSessionEvents: [],
           replayStatus: 'loading',
           replayError: null,
           replayRequestId: requestId,
