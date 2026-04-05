@@ -118,8 +118,19 @@ export const useAppStore = create<AppState>()(
       },
 
       runTask: async (prompt: string) => {
+        if (get().replayStatus === 'loading') {
+          return;
+        }
+
+        const nextReplayRequestId = get().replayRequestId + 1;
         set({ runStatus: 'running', runError: null });
         const { currentSessionId } = get();
+        set({
+          replayStatus: 'idle',
+          replayError: null,
+          replayRequestId: nextReplayRequestId
+        });
+
         try {
           const stream = RuntimeClient.runStream({
             prompt,

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAppStore } from './store';
 import { Activity, Play, Settings, Code2, LayoutDashboard, CheckCircle2, Circle, Clock, Globe, Hash } from 'lucide-react';
@@ -8,11 +8,12 @@ function App() {
   const {
     tasks, activities, language, setLanguage,
     sessions, currentSessionId, currentSessionEvents,
-    loadSessions, sessionsStatus, sessionsError, selectSession, runTask, replayError, runStatus, runError
+    loadSessions, sessionsStatus, sessionsError, selectSession, runTask, replayStatus, replayError, runStatus, runError
   } = useAppStore();
   const { t, i18n } = useTranslation();
 
   const [promptInput, setPromptInput] = useState('');
+  const hydratedInitialSessionRef = useRef(false);
 
   useEffect(() => {
     i18n.changeLanguage(language);
@@ -37,9 +38,16 @@ function App() {
   };
 
   const isRunning = runStatus === 'running';
+  const isReplayLoading = replayStatus === 'loading';
 
   useEffect(() => {
-    if (sessionsStatus !== 'success' || !currentSessionId || isRunning) {
+    if (hydratedInitialSessionRef.current || sessionsStatus !== 'success') {
+      return;
+    }
+
+    hydratedInitialSessionRef.current = true;
+
+    if (!currentSessionId || isRunning) {
       return;
     }
 
@@ -74,7 +82,7 @@ function App() {
               <button
                 type="button"
                 onClick={() => selectSession('')}
-                disabled={isRunning}
+                disabled={isRunning || isReplayLoading}
                 className={`w-full flex items-center justify-start px-4 py-2 rounded-lg transition-colors ${!currentSessionId ? 'bg-emerald-500/10 text-emerald-400' : 'text-slate-400 hover:bg-slate-800/50 hover:text-slate-200'}`}
               >
                 <span className="font-medium text-sm">{t('session.newSession')}</span>
@@ -84,7 +92,7 @@ function App() {
                   key={s.session.id}
                   type="button"
                   onClick={() => selectSession(s.session.id)}
-                  disabled={isRunning}
+                  disabled={isRunning || isReplayLoading}
                   className={`w-full flex items-center justify-start px-4 py-2 rounded-lg transition-colors truncate ${currentSessionId === s.session.id ? 'bg-indigo-500/10 text-indigo-400' : 'text-slate-400 hover:bg-slate-800/50 hover:text-slate-200'}`}
                 >
                   <Hash className="w-4 h-4 mr-3 flex-shrink-0" />
@@ -151,12 +159,12 @@ function App() {
                     onKeyDown={(e) => { if (e.key === 'Enter') void handleRunTask() }}
                     placeholder={t('task.promptPlaceholder')}
                     className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-4 py-2 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-colors"
-                    disabled={isRunning}
+                    disabled={isRunning || isReplayLoading}
                   />
                   <button
                     type="button"
                     onClick={() => void handleRunTask()}
-                    disabled={isRunning || !promptInput.trim()}
+                    disabled={isRunning || isReplayLoading || !promptInput.trim()}
                     className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white px-6 py-2 rounded-lg text-sm font-medium transition-colors flex items-center shadow-sm shadow-indigo-500/20"
                   >
                     <Play className="w-4 h-4 mr-2" />
