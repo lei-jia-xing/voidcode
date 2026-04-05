@@ -89,14 +89,22 @@ class VoidCodeRuntime:
         output: str | None = None
         final_session: SessionState | None = None
 
-        for chunk in self.run_stream(request):
-            final_session = chunk.session
-            if chunk.event is not None:
-                events.append(chunk.event)
-            if chunk.kind == "output":
-                if output is not None:
-                    raise ValueError("runtime stream emitted multiple output chunks")
-                output = chunk.output
+        try:
+            for chunk in self.run_stream(request):
+                final_session = chunk.session
+                if chunk.event is not None:
+                    events.append(chunk.event)
+                if chunk.kind == "output":
+                    if output is not None:
+                        raise ValueError("runtime stream emitted multiple output chunks")
+                    output = chunk.output
+        except Exception:
+            if final_session is not None and final_session.status == "failed":
+                response = RuntimeResponse(
+                    session=final_session, events=tuple(events), output=output
+                )
+                self._persist_response(request=request, response=response)
+            raise
 
         if final_session is None:
             raise ValueError("runtime stream emitted no chunks")
@@ -195,7 +203,7 @@ class VoidCodeRuntime:
 
         try:
             tool_result = tool.invoke(plan.tool_call, workspace=self._workspace)
-        except ValueError as exc:
+        except Exception as exc:
             yield self._failed_chunk(session=session, sequence=sequence + 1, error=str(exc))
             raise
 
@@ -218,11 +226,15 @@ class VoidCodeRuntime:
             turn=session.turn,
             metadata=session.metadata,
         )
-        graph_result = self._graph.finalize(
-            graph_request,
-            tool_result,
-            session=completed_session,
-        )
+        try:
+            graph_result = self._graph.finalize(
+                graph_request,
+                tool_result,
+                session=completed_session,
+            )
+        except Exception as exc:
+            yield self._failed_chunk(session=session, sequence=sequence + 1, error=str(exc))
+            raise
         for event in graph_result.events:
             yield RuntimeStreamChunk(kind="event", session=graph_result.session, event=event)
 

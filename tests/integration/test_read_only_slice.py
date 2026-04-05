@@ -360,6 +360,100 @@ def test_runtime_tool_request_created_supports_non_path_tool_arguments(tmp_path:
     }
 
 
+def test_runtime_persists_initial_allow_tool_failure_for_resume(tmp_path: Path) -> None:
+    runtime_request, runtime, tool_registry, permission_policy, graph = _permission_runtime(
+        tmp_path, mode="allow"
+    )
+
+    typed_tool_registry = cast(ToolRegistryLike, tool_registry)
+    write_tool = cast(ReadFileToolType, typed_tool_registry.tools["write_file"])
+
+    def _failing_write_invoke(_call: object, *, workspace: Path) -> object:
+        _ = workspace
+        raise RuntimeError("boom")
+
+    with patch.object(write_tool, "invoke", autospec=True, side_effect=_failing_write_invoke):
+        with pytest.raises(RuntimeError, match="boom"):
+            _ = runtime.run(runtime_request(prompt="write danger.txt", session_id="s1"))
+
+    replay_runtime = cast(
+        RuntimeRunner,
+        cast(
+            object,
+            _load_runtime_types()[1](
+                workspace=tmp_path,
+                tool_registry=tool_registry,
+                graph=graph,
+                permission_policy=permission_policy,
+            ),
+        ),
+    )
+    resumed = replay_runtime.resume("s1")
+
+    assert resumed.session.status == "failed"
+    assert resumed.events[-1].event_type == "runtime.failed"
+    assert resumed.events[-1].payload == {"error": "boom"}
+
+
+def test_runtime_persists_initial_allow_finalize_failure_for_resume(tmp_path: Path) -> None:
+    runtime_request, _, tool_registry, permission_policy, _ = _permission_runtime(
+        tmp_path, mode="allow"
+    )
+
+    class FailingFinalizeGraph:
+        def plan(self, _request: object) -> object:
+            return _WritePlan(
+                tool_call=cast(
+                    ToolCallFactory, importlib.import_module("voidcode.tools.contracts").ToolCall
+                )(
+                    tool_name="write_file",
+                    arguments={"path": "danger.txt"},
+                )
+            )
+
+        def finalize(self, request: object, tool_result: object, *, session: object) -> object:
+            _ = request
+            _ = tool_result
+            _ = session
+            raise RuntimeError("finalize boom")
+
+    runtime_class = _load_runtime_types()[1]
+    failing_runtime = cast(
+        RuntimeRunner,
+        cast(
+            object,
+            runtime_class(
+                workspace=tmp_path,
+                tool_registry=tool_registry,
+                graph=FailingFinalizeGraph(),
+                permission_policy=permission_policy,
+            ),
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="finalize boom"):
+        _ = failing_runtime.run(runtime_request(prompt="write danger.txt", session_id="s1"))
+
+    replay_runtime = cast(
+        RuntimeRunner,
+        cast(
+            object,
+            runtime_class(
+                workspace=tmp_path,
+                tool_registry=tool_registry,
+                graph=FailingFinalizeGraph(),
+                permission_policy=permission_policy,
+            ),
+        ),
+    )
+    resumed = replay_runtime.resume("s1")
+
+    assert resumed.session.status == "failed"
+    assert resumed.events[-2].event_type == "runtime.tool_completed"
+    assert resumed.events[-1].event_type == "runtime.failed"
+    assert resumed.events[-1].payload == {"error": "finalize boom"}
+
+
 def test_runtime_denies_non_read_only_tool_when_policy_is_deny(tmp_path: Path) -> None:
     runtime_request, runtime, _, _, _ = _permission_runtime(tmp_path, mode="deny")
 
