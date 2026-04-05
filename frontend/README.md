@@ -28,6 +28,9 @@ bun run preview
 - `bun run lint` - Run ESLint
 - `bun run format` - Format code with Prettier
 - `bun run typecheck` - Run TypeScript type checking
+- `bun run test` - Run tests with Vitest
+- `bun run test:run` - Run tests once without watch mode
+- `bun run test:coverage` - Run tests with coverage reporting
 
 ### Tech Stack
 
@@ -82,4 +85,5 @@ Please follow the same guidelines as the main project:
 - Prefer the root `mise run frontend:*` tasks when working from the repo root; `bun install` and `bun run ...` in `frontend/` remain valid direct equivalents.
 - Run `bun run lint` before committing
 - Run `bun run typecheck` to ensure type safety
+- Run `bun run test:run` for component coverage changes
 - Follow the existing code style
