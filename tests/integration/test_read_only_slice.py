@@ -197,85 +197,24 @@ class _CommandPlan:
     tool_call: object
 
 
-def _permission_runtime(
+def _approval_runtime(
     tmp_path: Path, *, mode: str = "ask"
-) -> tuple[RuntimeRequestFactory, RuntimeRunner, object, object, object]:
+) -> tuple[RuntimeRequestFactory, RuntimeRunner]:
     runtime_request, runtime_class = _load_runtime_types()
-    service_module = importlib.import_module("voidcode.runtime.service")
-    graph_contracts = importlib.import_module("voidcode.graph.contracts")
-    runtime_events = importlib.import_module("voidcode.runtime.events")
     permission_module = importlib.import_module("voidcode.runtime.permission")
-    tool_contracts = importlib.import_module("voidcode.tools.contracts")
-    tool_definition = cast(ToolDefinitionFactory, tool_contracts.ToolDefinition)
-    tool_call = cast(ToolCallFactory, tool_contracts.ToolCall)
-    tool_result = cast(ToolResultFactory, tool_contracts.ToolResult)
-    event_envelope = cast(EventEnvelopeFactory, runtime_events.EventEnvelope)
-    graph_run_result = cast(GraphRunResultFactory, graph_contracts.GraphRunResult)
-    tool_registry_factory = cast(ToolRegistryFactory, service_module.ToolRegistry)
     permission_policy = cast(Callable[..., object], permission_module.PermissionPolicy)
-
-    class WriteTool:
-        definition: object = tool_definition(
-            name="write_file",
-            description="Write a file",
-            input_schema={"path": {"type": "string"}},
-            read_only=False,
-        )
-
-        def invoke(self, _call: object, *, workspace: Path) -> object:
-            _ = workspace
-            return tool_result(
-                tool_name="write_file",
-                status="ok",
-                content="write ok",
-                data={"path": "danger.txt"},
-            )
-
-    class WriteGraph:
-        def plan(self, _request: object) -> object:
-            return _WritePlan(
-                tool_call=tool_call(
-                    tool_name="write_file",
-                    arguments={"path": "danger.txt"},
-                )
-            )
-
-        def finalize(self, request: object, tool_result: object, *, session: object) -> object:
-            typed_session = cast(SessionLike, session)
-            session_ref = cast(SessionRefLike, typed_session.session)
-            typed_request = cast(RuntimeRequestLike, request)
-            sequence = cast(int, typed_request.metadata.get("response_sequence", 6))
-            return graph_run_result(
-                session=session,
-                events=(
-                    event_envelope(
-                        session_id=session_ref.id,
-                        sequence=sequence,
-                        event_type="graph.response_ready",
-                        source="graph",
-                        payload={"output_preview": "write ok"},
-                    ),
-                ),
-                tool_results=(tool_result,),
-                output="write ok",
-            )
-
-    tool_registry = tool_registry_factory(tools={"write_file": WriteTool()})
     policy = permission_policy(mode=mode)
-    graph = WriteGraph()
     runtime = cast(
         RuntimeRunner,
         cast(
             object,
             runtime_class(
                 workspace=tmp_path,
-                tool_registry=tool_registry,
-                graph=graph,
                 permission_policy=policy,
             ),
         ),
     )
-    return runtime_request, runtime, tool_registry, policy, graph
+    return runtime_request, runtime
 
 
 def _command_permission_runtime(
@@ -360,9 +299,11 @@ def _command_permission_runtime(
 
 
 def test_runtime_allows_non_read_only_tool_when_policy_is_allow(tmp_path: Path) -> None:
-    runtime_request, runtime, _, _, _ = _permission_runtime(tmp_path, mode="allow")
+    runtime_request, runtime = _approval_runtime(tmp_path, mode="allow")
 
-    allowed = runtime.run(runtime_request(prompt="write danger.txt", session_id="allow-session"))
+    allowed = runtime.run(
+        runtime_request(prompt="write danger.txt approved write", session_id="allow-session")
+    )
 
     assert allowed.session.status == "completed"
     assert [event.event_type for event in allowed.events] == [
@@ -374,7 +315,8 @@ def test_runtime_allows_non_read_only_tool_when_policy_is_allow(tmp_path: Path) 
         "graph.response_ready",
     ]
     assert allowed.events[3].payload["decision"] == "allow"
-    assert allowed.output == "write ok"
+    assert allowed.output == "approved write"
+    assert (tmp_path / "danger.txt").read_text(encoding="utf-8") == "approved write"
 
 
 def test_runtime_tool_request_created_supports_non_path_tool_arguments(tmp_path: Path) -> None:
@@ -391,20 +333,21 @@ def test_runtime_tool_request_created_supports_non_path_tool_arguments(tmp_path:
 
 
 def test_runtime_persists_initial_allow_tool_failure_for_resume(tmp_path: Path) -> None:
-    runtime_request, runtime, tool_registry, permission_policy, graph = _permission_runtime(
-        tmp_path, mode="allow"
-    )
+    runtime_request, runtime_class = _load_runtime_types()
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="allow")
+    runtime = runtime_class(workspace=tmp_path, permission_policy=policy)
+    write_file_module = importlib.import_module("voidcode.tools.write_file")
 
-    typed_tool_registry = cast(ToolRegistryLike, tool_registry)
-    write_tool = cast(ReadFileToolType, typed_tool_registry.tools["write_file"])
+    write_tool = cast(ReadFileToolType, write_file_module.WriteFileTool)
 
-    def _failing_write_invoke(_call: object, *, workspace: Path) -> object:
+    def _failing_write_invoke(_self: object, _call: object, *, workspace: Path) -> object:
         _ = workspace
         raise RuntimeError("boom")
 
     with patch.object(write_tool, "invoke", autospec=True, side_effect=_failing_write_invoke):
         with pytest.raises(RuntimeError, match="boom"):
-            _ = runtime.run(runtime_request(prompt="write danger.txt", session_id="s1"))
+            _ = runtime.run(runtime_request(prompt="write danger.txt broken", session_id="s1"))
 
     replay_runtime = cast(
         RuntimeRunner,
@@ -412,9 +355,7 @@ def test_runtime_persists_initial_allow_tool_failure_for_resume(tmp_path: Path) 
             object,
             _load_runtime_types()[1](
                 workspace=tmp_path,
-                tool_registry=tool_registry,
-                graph=graph,
-                permission_policy=permission_policy,
+                permission_policy=policy,
             ),
         ),
     )
@@ -426,9 +367,9 @@ def test_runtime_persists_initial_allow_tool_failure_for_resume(tmp_path: Path) 
 
 
 def test_runtime_persists_initial_allow_finalize_failure_for_resume(tmp_path: Path) -> None:
-    runtime_request, _, tool_registry, permission_policy, _ = _permission_runtime(
-        tmp_path, mode="allow"
-    )
+    runtime_request, runtime_class = _load_runtime_types()
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="allow")
 
     class FailingFinalizeGraph:
         def plan(self, _request: object) -> object:
@@ -437,7 +378,7 @@ def test_runtime_persists_initial_allow_finalize_failure_for_resume(tmp_path: Pa
                     ToolCallFactory, importlib.import_module("voidcode.tools.contracts").ToolCall
                 )(
                     tool_name="write_file",
-                    arguments={"path": "danger.txt"},
+                    arguments={"path": "danger.txt", "content": "broken finalize"},
                 )
             )
 
@@ -447,22 +388,22 @@ def test_runtime_persists_initial_allow_finalize_failure_for_resume(tmp_path: Pa
             _ = session
             raise RuntimeError("finalize boom")
 
-    runtime_class = _load_runtime_types()[1]
     failing_runtime = cast(
         RuntimeRunner,
         cast(
             object,
             runtime_class(
                 workspace=tmp_path,
-                tool_registry=tool_registry,
                 graph=FailingFinalizeGraph(),
-                permission_policy=permission_policy,
+                permission_policy=policy,
             ),
         ),
     )
 
     with pytest.raises(RuntimeError, match="finalize boom"):
-        _ = failing_runtime.run(runtime_request(prompt="write danger.txt", session_id="s1"))
+        _ = failing_runtime.run(
+            runtime_request(prompt="write danger.txt broken finalize", session_id="s1")
+        )
 
     replay_runtime = cast(
         RuntimeRunner,
@@ -470,9 +411,8 @@ def test_runtime_persists_initial_allow_finalize_failure_for_resume(tmp_path: Pa
             object,
             runtime_class(
                 workspace=tmp_path,
-                tool_registry=tool_registry,
                 graph=FailingFinalizeGraph(),
-                permission_policy=permission_policy,
+                permission_policy=policy,
             ),
         ),
     )
@@ -485,9 +425,9 @@ def test_runtime_persists_initial_allow_finalize_failure_for_resume(tmp_path: Pa
 
 
 def test_runtime_persists_initial_plan_failure_for_resume(tmp_path: Path) -> None:
-    runtime_request, _, tool_registry, permission_policy, _ = _permission_runtime(
-        tmp_path, mode="allow"
-    )
+    runtime_request, runtime_class = _load_runtime_types()
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="allow")
 
     class FailingPlanGraph:
         def plan(self, _request: object) -> object:
@@ -499,22 +439,22 @@ def test_runtime_persists_initial_plan_failure_for_resume(tmp_path: Path) -> Non
             _ = session
             raise AssertionError("finalize should not run")
 
-    runtime_class = _load_runtime_types()[1]
     failing_runtime = cast(
         RuntimeRunner,
         cast(
             object,
             runtime_class(
                 workspace=tmp_path,
-                tool_registry=tool_registry,
                 graph=FailingPlanGraph(),
-                permission_policy=permission_policy,
+                permission_policy=policy,
             ),
         ),
     )
 
     with pytest.raises(RuntimeError, match="plan boom"):
-        _ = failing_runtime.run(runtime_request(prompt="write danger.txt", session_id="s1"))
+        _ = failing_runtime.run(
+            runtime_request(prompt="write danger.txt anything", session_id="s1")
+        )
 
     replay_runtime = cast(
         RuntimeRunner,
@@ -522,9 +462,8 @@ def test_runtime_persists_initial_plan_failure_for_resume(tmp_path: Path) -> Non
             object,
             runtime_class(
                 workspace=tmp_path,
-                tool_registry=tool_registry,
                 graph=FailingPlanGraph(),
-                permission_policy=permission_policy,
+                permission_policy=policy,
             ),
         ),
     )
@@ -536,9 +475,11 @@ def test_runtime_persists_initial_plan_failure_for_resume(tmp_path: Path) -> Non
 
 
 def test_runtime_denies_non_read_only_tool_when_policy_is_deny(tmp_path: Path) -> None:
-    runtime_request, runtime, _, _, _ = _permission_runtime(tmp_path, mode="deny")
+    runtime_request, runtime = _approval_runtime(tmp_path, mode="deny")
 
-    denied = runtime.run(runtime_request(prompt="write danger.txt", session_id="deny-session"))
+    denied = runtime.run(
+        runtime_request(prompt="write danger.txt denied write", session_id="deny-session")
+    )
 
     assert denied.session.status == "failed"
     assert [event.event_type for event in denied.events] == [
@@ -550,6 +491,7 @@ def test_runtime_denies_non_read_only_tool_when_policy_is_deny(tmp_path: Path) -
     ]
     assert denied.events[3].payload["decision"] == "deny"
     assert denied.output is None
+    assert (tmp_path / "danger.txt").exists() is False
 
 
 def test_runtime_executes_read_only_slice_and_emits_events(tmp_path: Path) -> None:
@@ -573,9 +515,11 @@ def test_runtime_executes_read_only_slice_and_emits_events(tmp_path: Path) -> No
 
 
 def test_runtime_allows_non_read_only_tool_after_explicit_resume_approval(tmp_path: Path) -> None:
-    runtime_request, runtime, _, _, _ = _permission_runtime(tmp_path, mode="ask")
+    runtime_request, runtime = _approval_runtime(tmp_path, mode="ask")
 
-    waiting = runtime.run(runtime_request(prompt="write danger.txt", session_id="approval-session"))
+    waiting = runtime.run(
+        runtime_request(prompt="write danger.txt approved later", session_id="approval-session")
+    )
 
     assert waiting.session.status == "waiting"
     assert [event.event_type for event in waiting.events] == [
@@ -602,13 +546,16 @@ def test_runtime_allows_non_read_only_tool_after_explicit_resume_approval(tmp_pa
         "runtime.tool_completed",
         "graph.response_ready",
     ]
-    assert resumed.output == "write ok"
+    assert resumed.output == "approved later"
+    assert (tmp_path / "danger.txt").read_text(encoding="utf-8") == "approved later"
 
 
 def test_runtime_resumed_approval_renumbers_fixed_finalize_sequences(tmp_path: Path) -> None:
-    runtime_request, runtime, _, _, _ = _permission_runtime(tmp_path, mode="ask")
+    runtime_request, runtime = _approval_runtime(tmp_path, mode="ask")
 
-    waiting = runtime.run(runtime_request(prompt="write danger.txt", session_id="approval-session"))
+    waiting = runtime.run(
+        runtime_request(prompt="write danger.txt renumbered", session_id="approval-session")
+    )
     approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
 
     resumed = runtime.resume(
@@ -623,12 +570,14 @@ def test_runtime_resumed_approval_renumbers_fixed_finalize_sequences(tmp_path: P
 
 
 def test_runtime_persists_pending_approval_until_single_resume_resolution(tmp_path: Path) -> None:
-    runtime_request, runtime, tool_registry, permission_policy, graph = _permission_runtime(
-        tmp_path, mode="ask"
-    )
+    runtime_request, runtime = _approval_runtime(tmp_path, mode="ask")
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="ask")
 
     waiting = runtime.run(
-        runtime_request(prompt="write danger.txt", session_id="persisted-approval")
+        runtime_request(
+            prompt="write danger.txt persisted approval", session_id="persisted-approval"
+        )
     )
     approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
 
@@ -639,9 +588,7 @@ def test_runtime_persists_pending_approval_until_single_resume_resolution(tmp_pa
             object,
             replay_runtime_class(
                 workspace=tmp_path,
-                tool_registry=tool_registry,
-                graph=graph,
-                permission_policy=permission_policy,
+                permission_policy=policy,
             ),
         ),
     )
@@ -666,7 +613,7 @@ def test_runtime_persists_pending_approval_until_single_resume_resolution(tmp_pa
 
 
 def test_runtime_migrates_legacy_session_schema_for_pending_approval(tmp_path: Path) -> None:
-    runtime_request, runtime, _, _, _ = _permission_runtime(tmp_path, mode="ask")
+    runtime_request, runtime = _approval_runtime(tmp_path, mode="ask")
     database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
     database_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -705,7 +652,9 @@ def test_runtime_migrates_legacy_session_schema_for_pending_approval(tmp_path: P
     finally:
         connection.close()
 
-    waiting = runtime.run(runtime_request(prompt="write danger.txt", session_id="legacy-session"))
+    waiting = runtime.run(
+        runtime_request(prompt="write danger.txt legacy approval", session_id="legacy-session")
+    )
 
     assert waiting.session.status == "waiting"
 
@@ -724,9 +673,11 @@ def test_runtime_migrates_legacy_session_schema_for_pending_approval(tmp_path: P
 
 
 def test_runtime_denies_non_read_only_tool_on_resume(tmp_path: Path) -> None:
-    runtime_request, runtime, _, _, _ = _permission_runtime(tmp_path, mode="ask")
+    runtime_request, runtime = _approval_runtime(tmp_path, mode="ask")
 
-    waiting = runtime.run(runtime_request(prompt="write danger.txt", session_id="approval-session"))
+    waiting = runtime.run(
+        runtime_request(prompt="write danger.txt denied on resume", session_id="approval-session")
+    )
     approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
 
     denied = runtime.resume(
@@ -741,20 +692,23 @@ def test_runtime_denies_non_read_only_tool_on_resume(tmp_path: Path) -> None:
         "runtime.failed",
     ]
     assert denied.output is None
+    assert (tmp_path / "danger.txt").exists() is False
 
 
 def test_runtime_marks_resumed_approval_failure_and_clears_pending_request(tmp_path: Path) -> None:
-    runtime_request, runtime, tool_registry, permission_policy, graph = _permission_runtime(
-        tmp_path, mode="ask"
-    )
+    runtime_request, runtime = _approval_runtime(tmp_path, mode="ask")
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="ask")
 
-    waiting = runtime.run(runtime_request(prompt="write danger.txt", session_id="approval-session"))
+    waiting = runtime.run(
+        runtime_request(prompt="write danger.txt resume failure", session_id="approval-session")
+    )
     approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
 
-    typed_tool_registry = cast(ToolRegistryLike, tool_registry)
-    write_tool = cast(ReadFileToolType, typed_tool_registry.tools["write_file"])
+    write_file_module = importlib.import_module("voidcode.tools.write_file")
+    write_tool = cast(ReadFileToolType, write_file_module.WriteFileTool)
 
-    def _failing_write_invoke(_call: object, *, workspace: Path) -> object:
+    def _failing_write_invoke(_self: object, _call: object, *, workspace: Path) -> object:
         _ = workspace
         raise RuntimeError("resume boom")
 
@@ -766,9 +720,7 @@ def test_runtime_marks_resumed_approval_failure_and_clears_pending_request(tmp_p
                 object,
                 resumed_runtime_class(
                     workspace=tmp_path,
-                    tool_registry=tool_registry,
-                    graph=graph,
-                    permission_policy=permission_policy,
+                    permission_policy=policy,
                 ),
             ),
         )
@@ -789,9 +741,7 @@ def test_runtime_marks_resumed_approval_failure_and_clears_pending_request(tmp_p
             object,
             _load_runtime_types()[1](
                 workspace=tmp_path,
-                tool_registry=tool_registry,
-                graph=graph,
-                permission_policy=permission_policy,
+                permission_policy=policy,
             ),
         ),
     )
@@ -804,11 +754,13 @@ def test_runtime_marks_resumed_approval_failure_and_clears_pending_request(tmp_p
 
 
 def test_runtime_marks_resumed_finalize_failure_and_clears_pending_request(tmp_path: Path) -> None:
-    runtime_request, runtime, tool_registry, permission_policy, _ = _permission_runtime(
-        tmp_path, mode="ask"
-    )
+    runtime_request, runtime = _approval_runtime(tmp_path, mode="ask")
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="ask")
 
-    waiting = runtime.run(runtime_request(prompt="write danger.txt", session_id="approval-session"))
+    waiting = runtime.run(
+        runtime_request(prompt="write danger.txt finalize failure", session_id="approval-session")
+    )
     approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
 
     class FailingFinalizeGraph:
@@ -818,7 +770,7 @@ def test_runtime_marks_resumed_finalize_failure_and_clears_pending_request(tmp_p
                     ToolCallFactory, importlib.import_module("voidcode.tools.contracts").ToolCall
                 )(
                     tool_name="write_file",
-                    arguments={"path": "danger.txt"},
+                    arguments={"path": "danger.txt", "content": "finalize failure"},
                 )
             )
 
@@ -835,9 +787,8 @@ def test_runtime_marks_resumed_finalize_failure_and_clears_pending_request(tmp_p
             object,
             resumed_runtime_class(
                 workspace=tmp_path,
-                tool_registry=tool_registry,
                 graph=FailingFinalizeGraph(),
-                permission_policy=permission_policy,
+                permission_policy=policy,
             ),
         ),
     )
@@ -858,9 +809,8 @@ def test_runtime_marks_resumed_finalize_failure_and_clears_pending_request(tmp_p
             object,
             _load_runtime_types()[1](
                 workspace=tmp_path,
-                tool_registry=tool_registry,
                 graph=FailingFinalizeGraph(),
-                permission_policy=permission_policy,
+                permission_policy=policy,
             ),
         ),
     )
@@ -873,11 +823,13 @@ def test_runtime_marks_resumed_finalize_failure_and_clears_pending_request(tmp_p
 
 
 def test_runtime_preserves_pending_approval_when_terminal_save_fails(tmp_path: Path) -> None:
-    runtime_request, runtime, tool_registry, permission_policy, graph = _permission_runtime(
-        tmp_path, mode="ask"
-    )
+    runtime_request, runtime = _approval_runtime(tmp_path, mode="ask")
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="ask")
 
-    waiting = runtime.run(runtime_request(prompt="write danger.txt", session_id="approval-session"))
+    waiting = runtime.run(
+        runtime_request(prompt="write danger.txt save failure", session_id="approval-session")
+    )
     approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
 
     storage_module = importlib.import_module("voidcode.runtime.storage")
@@ -937,9 +889,7 @@ def test_runtime_preserves_pending_approval_when_terminal_save_fails(tmp_path: P
             object,
             resumed_runtime_class(
                 workspace=tmp_path,
-                tool_registry=tool_registry,
-                graph=graph,
-                permission_policy=permission_policy,
+                permission_policy=policy,
                 session_store=FailingTerminalSaveStore(),
             ),
         ),
@@ -958,9 +908,7 @@ def test_runtime_preserves_pending_approval_when_terminal_save_fails(tmp_path: P
             object,
             _load_runtime_types()[1](
                 workspace=tmp_path,
-                tool_registry=tool_registry,
-                graph=graph,
-                permission_policy=permission_policy,
+                permission_policy=policy,
             ),
         ),
     )
