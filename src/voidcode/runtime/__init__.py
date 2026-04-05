@@ -7,6 +7,7 @@ from .contracts import (
     StreamingRuntimeEntrypoint,
 )
 from .events import EventEnvelope, EventSource
+from .http import RuntimeTransportApp, create_runtime_app
 from .permission import PendingApproval, PermissionDecision, PermissionPolicy, PermissionResolution
 from .service import ToolRegistry, VoidCodeRuntime
 from .session import SessionRef, SessionState, SessionStatus, StoredSessionSummary
@@ -19,6 +20,7 @@ __all__ = [
     "PermissionDecision",
     "PermissionPolicy",
     "PermissionResolution",
+    "RuntimeTransportApp",
     "RuntimeEntrypoint",
     "RuntimeRequest",
     "RuntimeResponse",
@@ -32,4 +34,5 @@ __all__ = [
     "StoredSessionSummary",
     "ToolRegistry",
     "VoidCodeRuntime",
+    "create_runtime_app",
 ]
