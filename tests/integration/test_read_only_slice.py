@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import os
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -75,7 +76,12 @@ class RuntimeRunner(Protocol):
 
 class RuntimeFactory(Protocol):
     def __call__(
-        self, *, workspace: Path, tool_registry: object | None = None
+        self,
+        *,
+        workspace: Path,
+        tool_registry: object | None = None,
+        graph: object | None = None,
+        permission_policy: object | None = None,
     ) -> RuntimeRunner: ...
 
 
@@ -132,12 +138,12 @@ class ToolRegistryFactory(Protocol):
     def __call__(self, *, tools: dict[str, object]) -> object: ...
 
 
-class GraphInjectableRuntime(RuntimeRunner, Protocol):
-    _graph: object
-
-
 class ReadFileToolType(Protocol):
     invoke: Callable[..., object]
+
+
+class ToolRegistryLike(Protocol):
+    tools: dict[str, object]
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
@@ -156,11 +162,14 @@ class _WritePlan:
     tool_call: object
 
 
-def _permission_runtime(tmp_path: Path) -> tuple[RuntimeRequestFactory, RuntimeRunner]:
+def _permission_runtime(
+    tmp_path: Path, *, mode: str = "ask"
+) -> tuple[RuntimeRequestFactory, RuntimeRunner, object, object, object]:
     runtime_request, runtime_class = _load_runtime_types()
     service_module = importlib.import_module("voidcode.runtime.service")
     graph_contracts = importlib.import_module("voidcode.graph.contracts")
     runtime_events = importlib.import_module("voidcode.runtime.events")
+    permission_module = importlib.import_module("voidcode.runtime.permission")
     tool_contracts = importlib.import_module("voidcode.tools.contracts")
     tool_definition = cast(ToolDefinitionFactory, tool_contracts.ToolDefinition)
     tool_call = cast(ToolCallFactory, tool_contracts.ToolCall)
@@ -168,6 +177,7 @@ def _permission_runtime(tmp_path: Path) -> tuple[RuntimeRequestFactory, RuntimeR
     event_envelope = cast(EventEnvelopeFactory, runtime_events.EventEnvelope)
     graph_run_result = cast(GraphRunResultFactory, graph_contracts.GraphRunResult)
     tool_registry_factory = cast(ToolRegistryFactory, service_module.ToolRegistry)
+    permission_policy = cast(Callable[..., object], permission_module.PermissionPolicy)
 
     class WriteTool:
         definition: object = tool_definition(
@@ -216,12 +226,56 @@ def _permission_runtime(tmp_path: Path) -> tuple[RuntimeRequestFactory, RuntimeR
             )
 
     tool_registry = tool_registry_factory(tools={"write_file": WriteTool()})
+    policy = permission_policy(mode=mode)
+    graph = WriteGraph()
     runtime = cast(
-        GraphInjectableRuntime,
-        cast(object, runtime_class(workspace=tmp_path, tool_registry=tool_registry)),
+        RuntimeRunner,
+        cast(
+            object,
+            runtime_class(
+                workspace=tmp_path,
+                tool_registry=tool_registry,
+                graph=graph,
+                permission_policy=policy,
+            ),
+        ),
     )
-    runtime._graph = WriteGraph()
-    return runtime_request, runtime
+    return runtime_request, runtime, tool_registry, policy, graph
+
+
+def test_runtime_allows_non_read_only_tool_when_policy_is_allow(tmp_path: Path) -> None:
+    runtime_request, runtime, _, _, _ = _permission_runtime(tmp_path, mode="allow")
+
+    allowed = runtime.run(runtime_request(prompt="write danger.txt", session_id="allow-session"))
+
+    assert allowed.session.status == "completed"
+    assert [event.event_type for event in allowed.events] == [
+        "runtime.request_received",
+        "graph.tool_request_created",
+        "runtime.tool_lookup_succeeded",
+        "runtime.approval_resolved",
+        "runtime.tool_completed",
+        "graph.response_ready",
+    ]
+    assert allowed.events[3].payload["decision"] == "allow"
+    assert allowed.output == "write ok"
+
+
+def test_runtime_denies_non_read_only_tool_when_policy_is_deny(tmp_path: Path) -> None:
+    runtime_request, runtime, _, _, _ = _permission_runtime(tmp_path, mode="deny")
+
+    denied = runtime.run(runtime_request(prompt="write danger.txt", session_id="deny-session"))
+
+    assert denied.session.status == "failed"
+    assert [event.event_type for event in denied.events] == [
+        "runtime.request_received",
+        "graph.tool_request_created",
+        "runtime.tool_lookup_succeeded",
+        "runtime.approval_resolved",
+        "runtime.failed",
+    ]
+    assert denied.events[3].payload["decision"] == "deny"
+    assert denied.output is None
 
 
 def test_runtime_executes_read_only_slice_and_emits_events(tmp_path: Path) -> None:
@@ -245,7 +299,7 @@ def test_runtime_executes_read_only_slice_and_emits_events(tmp_path: Path) -> No
 
 
 def test_runtime_allows_non_read_only_tool_after_explicit_resume_approval(tmp_path: Path) -> None:
-    runtime_request, runtime = _permission_runtime(tmp_path)
+    runtime_request, runtime, _, _, _ = _permission_runtime(tmp_path, mode="ask")
 
     waiting = runtime.run(runtime_request(prompt="write danger.txt", session_id="approval-session"))
 
@@ -277,8 +331,108 @@ def test_runtime_allows_non_read_only_tool_after_explicit_resume_approval(tmp_pa
     assert resumed.output == "write ok"
 
 
+def test_runtime_persists_pending_approval_until_single_resume_resolution(tmp_path: Path) -> None:
+    runtime_request, runtime, tool_registry, permission_policy, graph = _permission_runtime(
+        tmp_path, mode="ask"
+    )
+
+    waiting = runtime.run(
+        runtime_request(prompt="write danger.txt", session_id="persisted-approval")
+    )
+    approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
+
+    _, replay_runtime_class = _load_runtime_types()
+    resumed_runtime = cast(
+        RuntimeRunner,
+        cast(
+            object,
+            replay_runtime_class(
+                workspace=tmp_path,
+                tool_registry=tool_registry,
+                graph=graph,
+                permission_policy=permission_policy,
+            ),
+        ),
+    )
+
+    replay = resumed_runtime.resume("persisted-approval")
+    resolved = resumed_runtime.resume(
+        "persisted-approval",
+        approval_request_id=approval_request_id,
+        approval_decision="allow",
+    )
+
+    assert replay.session.status == "waiting"
+    assert replay.events[-1].event_type == "runtime.approval_requested"
+    assert resolved.session.status == "completed"
+    with pytest.raises(ValueError, match="no pending approval"):
+        _ = resumed_runtime.resume(
+            "persisted-approval",
+            approval_request_id=approval_request_id,
+            approval_decision="allow",
+        )
+
+
+def test_runtime_migrates_legacy_session_schema_for_pending_approval(tmp_path: Path) -> None:
+    runtime_request, runtime, _, _, _ = _permission_runtime(tmp_path, mode="ask")
+    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    database_path.parent.mkdir(parents=True, exist_ok=True)
+
+    connection = sqlite3.connect(database_path)
+    try:
+        _ = connection.execute(
+            """
+            CREATE TABLE sessions (
+                session_id TEXT PRIMARY KEY,
+                workspace TEXT NOT NULL,
+                status TEXT NOT NULL,
+                turn INTEGER NOT NULL,
+                prompt TEXT NOT NULL,
+                output TEXT,
+                metadata_json TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                last_event_sequence INTEGER NOT NULL
+            )
+            """
+        )
+        _ = connection.execute(
+            """
+            CREATE TABLE session_events (
+                session_id TEXT NOT NULL,
+                sequence INTEGER NOT NULL,
+                event_type TEXT NOT NULL,
+                source TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                PRIMARY KEY (session_id, sequence)
+            )
+            """
+        )
+        _ = connection.execute("PRAGMA user_version = 1")
+        connection.commit()
+    finally:
+        connection.close()
+
+    waiting = runtime.run(runtime_request(prompt="write danger.txt", session_id="legacy-session"))
+
+    assert waiting.session.status == "waiting"
+
+    check = sqlite3.connect(database_path)
+    try:
+        rows = cast(
+            list[tuple[object, ...]], check.execute("PRAGMA table_info(sessions)").fetchall()
+        )
+        columns = [cast(str, row[1]) for row in rows]
+        user_version = cast(int, check.execute("PRAGMA user_version").fetchone()[0])
+    finally:
+        check.close()
+
+    assert "pending_approval_json" in columns
+    assert user_version == 2
+
+
 def test_runtime_denies_non_read_only_tool_on_resume(tmp_path: Path) -> None:
-    runtime_request, runtime = _permission_runtime(tmp_path)
+    runtime_request, runtime, _, _, _ = _permission_runtime(tmp_path, mode="ask")
 
     waiting = runtime.run(runtime_request(prompt="write danger.txt", session_id="approval-session"))
     approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
@@ -295,6 +449,66 @@ def test_runtime_denies_non_read_only_tool_on_resume(tmp_path: Path) -> None:
         "runtime.failed",
     ]
     assert denied.output is None
+
+
+def test_runtime_marks_resumed_approval_failure_and_clears_pending_request(tmp_path: Path) -> None:
+    runtime_request, runtime, tool_registry, permission_policy, graph = _permission_runtime(
+        tmp_path, mode="ask"
+    )
+
+    waiting = runtime.run(runtime_request(prompt="write danger.txt", session_id="approval-session"))
+    approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
+
+    typed_tool_registry = cast(ToolRegistryLike, tool_registry)
+    write_tool = cast(ReadFileToolType, typed_tool_registry.tools["write_file"])
+
+    def _failing_write_invoke(_call: object, *, workspace: Path) -> object:
+        _ = workspace
+        raise ValueError("resume boom")
+
+    with patch.object(write_tool, "invoke", autospec=True, side_effect=_failing_write_invoke):
+        resumed_runtime_class = _load_runtime_types()[1]
+        resumed_runtime = cast(
+            RuntimeRunner,
+            cast(
+                object,
+                resumed_runtime_class(
+                    workspace=tmp_path,
+                    tool_registry=tool_registry,
+                    graph=graph,
+                    permission_policy=permission_policy,
+                ),
+            ),
+        )
+        failed = resumed_runtime.resume(
+            "approval-session",
+            approval_request_id=approval_request_id,
+            approval_decision="allow",
+        )
+
+    assert failed.session.status == "failed"
+    assert failed.events[-2].event_type == "runtime.approval_resolved"
+    assert failed.events[-1].event_type == "runtime.failed"
+    assert failed.events[-1].payload == {"error": "resume boom"}
+
+    replay_runtime = cast(
+        RuntimeRunner,
+        cast(
+            object,
+            _load_runtime_types()[1](
+                workspace=tmp_path,
+                tool_registry=tool_registry,
+                graph=graph,
+                permission_policy=permission_policy,
+            ),
+        ),
+    )
+    with pytest.raises(ValueError, match="no pending approval"):
+        _ = replay_runtime.resume(
+            "approval-session",
+            approval_request_id=approval_request_id,
+            approval_decision="allow",
+        )
 
 
 def test_cli_run_command_prints_events_and_file_contents(tmp_path: Path) -> None:

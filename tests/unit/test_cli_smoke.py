@@ -28,3 +28,24 @@ def test_console_script_help_works() -> None:
 
     assert result.returncode == 0
     assert "usage:" in result.stdout.lower()
+
+
+def test_sessions_resume_rejects_partial_approval_flags() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "voidcode",
+            "sessions",
+            "resume",
+            "demo-session",
+            "--approval-decision",
+            "allow",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "must be provided together" in result.stderr
