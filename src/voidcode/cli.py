@@ -68,11 +68,14 @@ def _handle_sessions_resume_command(args: argparse.Namespace) -> int:
     session_id = cast(str, args.session_id)
     approval_decision = cast(PermissionResolution | None, getattr(args, "approval_decision", None))
     runtime = VoidCodeRuntime(workspace=workspace)
-    result = runtime.resume(
-        session_id,
-        approval_request_id=cast(str | None, getattr(args, "approval_request_id", None)),
-        approval_decision=approval_decision,
-    )
+    try:
+        result = runtime.resume(
+            session_id,
+            approval_request_id=cast(str | None, getattr(args, "approval_request_id", None)),
+            approval_decision=approval_decision,
+        )
+    except ValueError as exc:
+        raise SystemExit(f"error: {exc}") from None
 
     _print_runtime_response(result)
     return 0
