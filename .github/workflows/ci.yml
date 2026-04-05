@@ -64,6 +64,10 @@ jobs:
         working-directory: frontend
         run: bun run typecheck
 
+      - name: Run frontend tests with coverage
+        working-directory: frontend
+        run: bun run test:coverage
+
       - name: Build frontend
         working-directory: frontend
         run: bun run build

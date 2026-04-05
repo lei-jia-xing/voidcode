@@ -26,8 +26,16 @@ dir = "frontend"
 run = "bun run typecheck"
 dir = "frontend"
 
+[tasks."frontend:test"]
+run = "bun run test:run"
+dir = "frontend"
+
+[tasks."frontend:coverage"]
+run = "bun run test:coverage"
+dir = "frontend"
+
 [tasks."frontend:check"]
-run = "mise run frontend:lint && mise run frontend:typecheck"
+run = "mise run frontend:lint && mise run frontend:typecheck && mise run frontend:test"
 
 [tasks.lint]
 run = "uv run ruff check ."
