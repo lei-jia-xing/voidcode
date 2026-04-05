@@ -47,6 +47,7 @@ bun install
 bun run dev
 bun run lint
 bun run typecheck
+bun run test:run
 bun run build
 ```
 

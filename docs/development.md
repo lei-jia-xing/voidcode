@@ -49,6 +49,8 @@ The repository defines these `mise` tasks:
 - `mise run frontend:dev` → `bun run dev`
 - `mise run frontend:lint` → `bun run lint`
 - `mise run frontend:typecheck` → `bun run typecheck`
+- `mise run frontend:test` → `bun run test:run`
+- `mise run frontend:coverage` → `bun run test:coverage`
 
 ### Global tasks
 
@@ -70,7 +72,9 @@ The frontend is a Bun-powered React application located in `frontend/`.
 
 1.  **Install dependencies**: `mise run frontend:install`
 2.  **Start dev server**: `mise run frontend:dev` (runs on [http://localhost:5173](http://localhost:5173))
-3.  **Lint/Typecheck**: `mise run frontend:lint` and `mise run frontend:typecheck` or `mise run check` for all-up validation.
+3.  **Lint/Typecheck**: `mise run frontend:lint` and `mise run frontend:typecheck`
+4.  **Run component tests**: `mise run frontend:test`
+5.  **Run coverage**: `mise run frontend:coverage` or `mise run check` for all-up validation.
 
 ## Project layout
 
