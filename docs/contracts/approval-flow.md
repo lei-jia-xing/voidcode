@@ -28,6 +28,7 @@ The current deterministic runtime emits a permission event with `decision=allow`
 
 An approval request must be representable with at least:
 
+- `request_id`
 - `session_id`
 - `sequence`
 - `tool`
@@ -39,31 +40,40 @@ This should be emitted as a runtime event rather than as client-only UI state.
 
 ### Planned approval request shape
 
-The MVP contract should support an approval-request event payload with at least:
+The MVP contract should support an approval-request runtime event with at least:
 
 ```json
 {
-  "request_id": "approval-1",
+  "event_type": "runtime.approval_requested",
+  "source": "runtime",
   "session_id": "session-123",
   "sequence": 4,
-  "tool": "write_file",
-  "decision": "ask",
-  "arguments": {
-    "path": "README.md"
-  },
-  "target_summary": "write README.md",
-  "reason": "write-capable tool invocation",
-  "policy": {
-    "mode": "ask"
+  "payload": {
+    "request_id": "approval-1",
+    "tool": "write_file",
+    "decision": "ask",
+    "arguments": {
+      "path": "README.md"
+    },
+    "target_summary": "write README.md",
+    "reason": "write-capable tool invocation",
+    "policy": {
+      "mode": "ask"
+    }
   }
 }
 ```
 
-Field intent:
+Field intent for envelope:
 
-- `request_id`: stable identifier for later resolution and replay
+- `event_type`: `runtime.approval_requested` for pending approval requests
+- `source`: `runtime` as approvals are runtime-owned
 - `session_id`: owning session
 - `sequence`: ordering marker in the event stream
+
+Field intent for payload:
+
+- `request_id`: stable identifier for later resolution and replay
 - `tool`: tool name awaiting approval
 - `decision`: `ask` for pending approval requests
 - `arguments`: proposed tool arguments or a redacted equivalent
@@ -83,25 +93,34 @@ An approval resolution must be able to record:
 
 ### Planned approval resolution shape
 
-The MVP contract should support a resolution payload with at least:
+The MVP contract should support a resolution runtime event with at least:
 
 ```json
 {
-  "request_id": "approval-1",
+  "event_type": "runtime.approval_resolved",
+  "source": "runtime",
   "session_id": "session-123",
-  "decision": "allow",
-  "note": "approved from tui",
-  "resolved_sequence": 5
+  "sequence": 5,
+  "payload": {
+    "request_id": "approval-1",
+    "decision": "allow",
+    "note": "approved from tui"
+  }
 }
 ```
 
-Field intent:
+Field intent for envelope:
+
+- `event_type`: `runtime.approval_resolved` for resolved approval decisions
+- `source`: `runtime` as resolutions are runtime-owned
+- `session_id`: owning session
+- `sequence`: ordering marker sufficient for replay and resume
+
+Field intent for payload:
 
 - `request_id`: correlates the resolution with the original approval request
-- `session_id`: owning session
 - `decision`: final decision, either `allow` or `deny`
 - `note`: optional operator or client note
-- `resolved_sequence`: ordering marker sufficient for replay and resume
 
 ### Client-to-runtime decision submission
 
