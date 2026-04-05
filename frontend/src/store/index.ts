@@ -1,12 +1,9 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { Task, Activity } from '../types';
 import { RuntimeClient } from '../lib/runtime/client';
 import { StoredSessionSummary, SessionState, EventEnvelope } from '../lib/runtime/types';
 
 interface AppState {
-  tasks: Task[];
-  activities: Activity[];
   language: 'en' | 'zh-CN';
 
   sessions: StoredSessionSummary[];
@@ -31,12 +28,6 @@ interface AppState {
 export const useAppStore = create<AppState>()(
   persist(
     (set, get) => ({
-      tasks: [
-        { id: 'mock-1', title: 'Task queue UI placeholder', status: 'pending', createdAt: new Date().toISOString() }
-      ],
-      activities: [
-        { id: 'mock-1', type: 'log', message: 'Activity log UI placeholder (non-integrated)', timestamp: new Date().toISOString() }
-      ],
       language: 'en',
 
       sessions: [],
