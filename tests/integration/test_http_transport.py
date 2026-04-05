@@ -3,11 +3,14 @@ from __future__ import annotations
 import asyncio
 import importlib
 import json
+import logging
 import sys
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, cast
+
+import pytest
 
 
 class SessionRefLike(Protocol):
@@ -244,6 +247,21 @@ def _parse_sse_payloads(response: _TransportResponse) -> list[dict[str, object]]
     return payloads
 
 
+def _run_non_http_scope(app: TransportAppLike, scope_type: str) -> RuntimeError:
+    async def _receive() -> dict[str, object]:
+        return {"type": f"{scope_type}.startup"}
+
+    async def _send(message: dict[str, object]) -> None:
+        raise AssertionError(f"send should not be called for {scope_type!r}: {message}")
+
+    try:
+        asyncio.run(app({"type": scope_type}, _receive, _send))
+    except RuntimeError as exc:
+        return exc
+
+    raise AssertionError(f"expected RuntimeError for unsupported scope {scope_type!r}")
+
+
 def test_transport_lists_sessions_as_json(tmp_path: Path) -> None:
     sample_file = tmp_path / "sample.txt"
     _ = sample_file.write_text("http list\n", encoding="utf-8")
@@ -267,6 +285,15 @@ def test_transport_lists_sessions_as_json(tmp_path: Path) -> None:
             "updated_at": 1,
         }
     ]
+
+
+def test_transport_rejects_unsupported_lifespan_scope(tmp_path: Path) -> None:
+    create_runtime_app = _load_transport_app_factory()
+    app = create_runtime_app(workspace=tmp_path)
+
+    error = _run_non_http_scope(app, "lifespan")
+
+    assert str(error) == "unsupported scope type: 'lifespan'"
 
 
 def test_transport_replays_session_as_json_runtime_response(tmp_path: Path) -> None:
@@ -453,6 +480,38 @@ def test_transport_stream_preserves_failed_chunk_before_termination() -> None:
     assert response.body.endswith(b"\n\n")
 
 
+def test_transport_logs_unexpected_streaming_errors(caplog: pytest.LogCaptureFixture) -> None:
+    create_runtime_app = _load_transport_app_factory()
+
+    class ExplodingRuntime:
+        def run_stream(self, request: RuntimeRequestLike) -> Iterator[StreamChunkLike]:
+            assert request.prompt == "explode"
+            raise RuntimeError("serialization exploded")
+
+        def list_sessions(self) -> tuple[StoredSessionSummaryLike, ...]:
+            raise AssertionError("list_sessions should not be called")
+
+        def resume(self, session_id: str) -> RuntimeResponseLike:
+            raise AssertionError(f"resume should not be called: {session_id}")
+
+    app = create_runtime_app(
+        workspace=Path("/tmp/workspace"),
+        runtime_factory=lambda: ExplodingRuntime(),
+    )
+
+    with caplog.at_level(logging.ERROR):
+        response = _run_app(
+            app,
+            method="POST",
+            path="/api/runtime/run/stream",
+            body=json.dumps({"prompt": "explode"}).encode("utf-8"),
+        )
+
+    assert response.status == 200
+    assert response.body == b""
+    assert "unexpected transport streaming failure" in caplog.text
+
+
 def test_transport_rejects_invalid_run_stream_payload() -> None:
     create_runtime_app = _load_transport_app_factory()
     app = create_runtime_app(workspace=Path("/tmp/workspace"))
@@ -466,6 +525,21 @@ def test_transport_rejects_invalid_run_stream_payload() -> None:
 
     assert response.status == 400
     assert response.json() == {"error": "prompt must be a non-empty string"}
+
+
+def test_transport_rejects_empty_session_id_in_run_stream_payload() -> None:
+    create_runtime_app = _load_transport_app_factory()
+    app = create_runtime_app(workspace=Path("/tmp/workspace"))
+
+    response = _run_app(
+        app,
+        method="POST",
+        path="/api/runtime/run/stream",
+        body=json.dumps({"prompt": "read sample.txt", "session_id": ""}).encode("utf-8"),
+    )
+
+    assert response.status == 400
+    assert response.json() == {"error": "session_id must be a non-empty string when provided"}
 
 
 def test_transport_returns_not_found_for_unknown_session(tmp_path: Path) -> None:

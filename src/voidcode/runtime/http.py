@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Protocol, cast, final
@@ -9,6 +10,8 @@ from .contracts import RuntimeRequest, RuntimeResponse, RuntimeStreamChunk
 from .events import EventEnvelope
 from .service import VoidCodeRuntime
 from .session import SessionRef, SessionState, StoredSessionSummary
+
+logger = logging.getLogger(__name__)
 
 
 class RuntimeTransport(Protocol):
@@ -41,12 +44,7 @@ class RuntimeTransportApp:
         send: Send,
     ) -> None:
         if scope.get("type") != "http":
-            await self._json_response(
-                send,
-                status=404,
-                payload={"error": "not found"},
-            )
-            return
+            raise RuntimeError(f"unsupported scope type: {scope.get('type')!r}")
 
         method = cast(str, scope.get("method", "GET"))
         path = cast(str, scope.get("path", "/"))
@@ -115,9 +113,13 @@ class RuntimeTransportApp:
             }
         )
 
+        emitted_failed_chunk = False
         try:
             for chunk in runtime.run_stream(request):
                 payload = self._serialize_runtime_stream_chunk(chunk)
+                emitted_failed_chunk = emitted_failed_chunk or (
+                    chunk.event is not None and chunk.event.event_type == "runtime.failed"
+                )
                 data = json.dumps(payload, sort_keys=True).encode("utf-8")
                 await send(
                     {
@@ -127,6 +129,8 @@ class RuntimeTransportApp:
                     }
                 )
         except Exception:
+            if not emitted_failed_chunk:
+                logger.exception("unexpected transport streaming failure")
             await send({"type": "http.response.body", "body": b"", "more_body": False})
             return
 
@@ -192,6 +196,8 @@ class RuntimeTransportApp:
         session_id = payload.get("session_id")
         if session_id is not None and not isinstance(session_id, str):
             raise ValueError("session_id must be a string when provided")
+        if session_id == "":
+            raise ValueError("session_id must be a non-empty string when provided")
 
         metadata = payload.get("metadata", {})
         if not isinstance(metadata, dict):
