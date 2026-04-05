@@ -1,12 +1,13 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAppStore } from './store';
-import { Activity, Play, Settings, Code2, LayoutDashboard, CheckCircle2, Circle, Clock, Globe, Hash } from 'lucide-react';
+import { Activity, Play, Settings, Code2, LayoutDashboard, CheckCircle2, Circle, Clock, Globe, Hash, AlertCircle, PauseCircle } from 'lucide-react';
 import { RuntimeDebug } from './components/RuntimeDebug';
+import { deriveTasksFromEvents, deriveActivitiesFromEvents } from './lib/runtime/event-parser';
 
 function App() {
   const {
-    tasks, activities, language, setLanguage,
+    language, setLanguage,
     sessions, currentSessionId, currentSessionEvents,
     loadSessions, sessionsStatus, sessionsError, selectSession, runTask, replayStatus, replayError, runStatus, runError
   } = useAppStore();
@@ -53,6 +54,25 @@ function App() {
 
     void selectSession(currentSessionId);
   }, [currentSessionId, isRunning, selectSession, sessionsStatus]);
+
+  const derivedTasks = useMemo(() => deriveTasksFromEvents(currentSessionEvents), [currentSessionEvents]);
+  const derivedActivities = useMemo(() => deriveActivitiesFromEvents(currentSessionEvents), [currentSessionEvents]);
+
+  const renderStatusIcon = (status: string) => {
+    if (status === 'completed') return <CheckCircle2 className="w-5 h-5 text-emerald-500" />;
+    if (status === 'in_progress') return <Clock className="w-5 h-5 text-indigo-400" />;
+    if (status === 'failed') return <AlertCircle className="w-5 h-5 text-rose-500" />;
+    if (status === 'waiting') return <PauseCircle className="w-5 h-5 text-amber-400" />;
+    return <Circle className="w-5 h-5 text-slate-500" />;
+  };
+
+  const getStatusColorClass = (status: string) => {
+    if (status === 'in_progress') return 'bg-indigo-500/10 text-indigo-400 border-indigo-500/20';
+    if (status === 'completed') return 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20';
+    if (status === 'failed') return 'bg-rose-500/10 text-rose-400 border-rose-500/20';
+    if (status === 'waiting') return 'bg-amber-500/10 text-amber-400 border-amber-500/20';
+    return 'bg-slate-800 text-slate-400 border-slate-700';
+  };
 
   return (
     <div className="flex h-screen bg-[#09090b] text-slate-300 font-sans overflow-hidden selection:bg-indigo-500/30">
@@ -178,37 +198,25 @@ function App() {
               <div className="bg-slate-800/30 border border-slate-700/50 rounded-xl p-6 shadow-sm flex-1 overflow-y-auto min-h-0">
                  <h2 className="text-lg font-medium text-slate-200 mb-4">{t('task.queue')}</h2>
                  <div className="space-y-3">
-                   {tasks.map((task) => (
+                   {derivedTasks.map((task) => (
                      <div key={task.id} className="flex items-center justify-between p-4 bg-slate-900/50 rounded-lg border border-slate-800">
-                       <div className="flex items-center space-x-4">
-                         {task.status === 'completed' ? (
-                           <CheckCircle2 className="w-5 h-5 text-emerald-500" />
-                         ) : task.status === 'in_progress' ? (
-                           <Clock className="w-5 h-5 text-indigo-400" />
-                         ) : (
-                           <Circle className="w-5 h-5 text-slate-500" />
-                         )}
-                         <span className="text-slate-300 font-medium text-sm">{task.title}</span>
+                       <div className="flex items-center space-x-4 flex-1 min-w-0 mr-4">
+                         {renderStatusIcon(task.status)}
+                         <span className="text-slate-300 font-medium text-sm truncate" title={t(task.titleKey, task.titleValues)}>
+                           {t(task.titleKey, task.titleValues)}
+                         </span>
                        </div>
-                       <span className={`text-xs px-2.5 py-1 rounded-md font-medium capitalize border ${
-                         task.status === 'in_progress' ? 'bg-indigo-500/10 text-indigo-400 border-indigo-500/20' :
-                         task.status === 'completed' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' :
-                         'bg-slate-800 text-slate-400 border-slate-700'
-                       }`}>
+                       <span className={`flex-shrink-0 text-xs px-2.5 py-1 rounded-md font-medium capitalize border ${getStatusColorClass(task.status)}`}>
                          {t(`task.status.${task.status}`)}
                        </span>
                      </div>
                    ))}
+                   {derivedTasks.length === 0 && (
+                     <div className="text-center py-8 text-slate-500 text-sm">
+                       {t('activity.empty')}
+                     </div>
+                   )}
                  </div>
-
-                 {currentSessionEvents.length > 0 && (
-                   <div className="mt-8 p-4 bg-slate-900/30 rounded-lg border border-slate-800 border-dashed">
-                      <p className="text-slate-400 text-sm">
-                        <span className="font-semibold text-indigo-400 mr-2">{currentSessionEvents.length}</span>
-                        {t('session.eventsLoadedNote')}
-                      </p>
-                    </div>
-                  )}
               </div>
 
             </div>
@@ -219,22 +227,22 @@ function App() {
                <h3 className="text-sm font-semibold text-slate-300 uppercase tracking-wider">{t('activity.log')}</h3>
              </div>
              <div className="flex-1 overflow-y-auto p-4 space-y-4">
-               {activities.map((activity) => (
+               {derivedActivities.map((activity) => (
                  <div key={activity.id} className="relative pl-4 border-l border-slate-800">
                    <div className="absolute -left-1.5 top-1.5 w-3 h-3 rounded-full bg-slate-800 border-2 border-[#0c0c0e]"></div>
-                    <p className="text-sm text-slate-300 mb-1">{activity.message}</p>
-                    <span className="text-xs text-slate-500">
-                      {t('activity.placeholderNote')}
-                    </span>
+                    <div className="flex justify-between items-start mb-1">
+                      <p className="text-sm text-slate-300 font-medium truncate mr-2" title={activity.message}>{activity.message}</p>
+                      <span className="text-xs px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 capitalize">{t(`activity.source.${activity.source}`)}</span>
+                    </div>
+                    {activity.payloadStr && activity.payloadStr !== '{}' && (
+                      <div className="text-xs text-slate-500 font-mono mt-1 bg-slate-900/50 p-1.5 rounded truncate" title={activity.payloadStr}>
+                        {activity.payloadStr}
+                      </div>
+                    )}
                   </div>
                 ))}
-
-               {currentSessionEvents.length > 0 && (
-                  <div className="mt-4 p-3 bg-slate-900/30 rounded border border-slate-800 border-dashed">
-                    <p className="text-xs text-slate-500 text-center">
-                      {t('activity.eventsDeferredLine1')}<br/>{t('activity.eventsDeferredLine2')}
-                    </p>
-                  </div>
+                {derivedActivities.length === 0 && (
+                  <p className="text-xs text-slate-500 text-center">{t('activity.empty')}</p>
                 )}
              </div>
           </aside>

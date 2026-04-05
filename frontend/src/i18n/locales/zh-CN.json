@@ -12,7 +12,7 @@
   "session.loadingList": "正在加载会话...",
   "session.loadError": "加载会话失败：{{message}}",
   "session.replayError": "加载所选会话失败：{{message}}",
-  "session.eventsLoadedNote": "运行时事件已加载到状态中（完整时间线渲染延后到 #25）",
+  "session.eventsLoadedNote": "运行时事件已从当前会话加载",
   "task.newTask": "新任务",
   "task.submitHeading": "提交任务",
   "task.promptPlaceholder": "输入要运行的任务...",
@@ -37,5 +37,15 @@
   "debug.idle": "空闲",
   "debug.testing": "测试中...",
   "debug.success": "成功",
-  "debug.error": "错误"
+  "debug.error": "错误",
+  "task.status.waiting": "等待中",
+  "task.tool": "工具: {{tool}}",
+  "task.request": "请求: {{prompt}}",
+  "task.response": "响应就绪",
+  "task.unknown": "系统事件: {{type}}",
+  "activity.empty": "尚无事件。",
+  "activity.source.runtime": "运行时",
+  "activity.source.graph": "图",
+  "activity.source.tool": "工具",
+  "task.permission": "权限: {{tool}}"
 }

@@ -12,7 +12,7 @@
   "session.loadingList": "Loading sessions...",
   "session.loadError": "Failed to load sessions: {{message}}",
   "session.replayError": "Failed to load selected session: {{message}}",
-  "session.eventsLoadedNote": "runtime events loaded in state (Full timeline rendering deferred to #25)",
+  "session.eventsLoadedNote": "runtime events loaded from the active session",
   "task.newTask": "New Task",
   "task.submitHeading": "Submit Task",
   "task.promptPlaceholder": "Enter a task to run...",
@@ -37,5 +37,15 @@
   "debug.idle": "Idle",
   "debug.testing": "Testing...",
   "debug.success": "Success",
-  "debug.error": "Error"
+  "debug.error": "Error",
+  "task.status.waiting": "Waiting",
+  "task.tool": "Tool: {{tool}}",
+  "task.request": "Request: {{prompt}}",
+  "task.response": "Response Ready",
+  "task.unknown": "System Event: {{type}}",
+  "activity.empty": "No events yet.",
+  "activity.source.runtime": "Runtime",
+  "activity.source.graph": "Graph",
+  "activity.source.tool": "Tool",
+  "task.permission": "Permission: {{tool}}"
 }
