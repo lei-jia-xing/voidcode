@@ -9,6 +9,7 @@ from uuid import uuid4
 from ..graph.contracts import GraphRunRequest, GraphRunResult
 from ..graph.read_only_slice import DeterministicReadOnlyGraph
 from ..tools.contracts import Tool, ToolCall, ToolDefinition, ToolResult
+from ..tools.grep import GrepTool
 from ..tools.read_file import ReadFileTool
 from ..tools.shell_exec import ShellExecTool
 from ..tools.write_file import WriteFileTool
@@ -49,10 +50,12 @@ class ToolRegistry:
 
     @classmethod
     def with_defaults(cls) -> ToolRegistry:
+        grep_tool = GrepTool()
         read_tool = ReadFileTool()
         shell_exec_tool = ShellExecTool()
         write_tool = WriteFileTool()
         tools: dict[str, Tool] = {
+            grep_tool.definition.name: grep_tool,
             read_tool.definition.name: read_tool,
             shell_exec_tool.definition.name: shell_exec_tool,
             write_tool.definition.name: write_tool,

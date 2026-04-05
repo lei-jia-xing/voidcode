@@ -9,6 +9,7 @@ from ..tools.contracts import ToolCall, ToolDefinition, ToolResult
 from .contracts import GraphRunRequest, GraphRunResult
 
 READ_REQUEST_PATTERN = re.compile(r"^(read|show)\s+(?P<path>.+)$", re.IGNORECASE)
+GREP_REQUEST_PATTERN = re.compile(r"^grep\s+(?P<pattern>.+?)\s+(?P<path>\S+)$", re.IGNORECASE)
 RUN_REQUEST_PATTERN = re.compile(r"^run\s+(?P<command>.+)$", re.IGNORECASE)
 WRITE_REQUEST_PATTERN = re.compile(r"^write\s+(?P<path>\S+)\s+(?P<content>.+)$", re.IGNORECASE)
 
@@ -30,6 +31,23 @@ class DeterministicReadOnlyGraph:
             self._ensure_read_tool_available(request.available_tools)
             return DeterministicReadOnlyPlan(
                 tool_call=ToolCall(tool_name="read_file", arguments={"path": path_text})
+            )
+
+        grep_match = GREP_REQUEST_PATTERN.match(prompt)
+        if grep_match is not None:
+            pattern_text = grep_match.group("pattern").strip()
+            path_text = grep_match.group("path").strip()
+            if not pattern_text:
+                raise ValueError("request pattern must not be empty")
+            if not path_text:
+                raise ValueError("request path must not be empty")
+
+            self._ensure_grep_tool_available(request.available_tools)
+            return DeterministicReadOnlyPlan(
+                tool_call=ToolCall(
+                    tool_name="grep",
+                    arguments={"pattern": pattern_text, "path": path_text},
+                )
             )
 
         run_match = RUN_REQUEST_PATTERN.match(prompt)
@@ -62,7 +80,8 @@ class DeterministicReadOnlyGraph:
 
         msg = (
             "unsupported request: use 'read <relative-path>', 'show <relative-path>', "
-            "'run <command>', or 'write <relative-path> <content>'"
+            "'grep <pattern> <relative-path>', 'run <command>', or "
+            "'write <relative-path> <content>'"
         )
         raise ValueError(msg)
 
@@ -92,6 +111,11 @@ class DeterministicReadOnlyGraph:
         if any(tool.name == "read_file" and tool.read_only for tool in tools):
             return
         raise ValueError("read_file tool is not registered for graph execution")
+
+    def _ensure_grep_tool_available(self, tools: tuple[ToolDefinition, ...]) -> None:
+        if any(tool.name == "grep" and tool.read_only for tool in tools):
+            return
+        raise ValueError("grep tool is not registered for graph execution")
 
     def _ensure_write_tool_available(self, tools: tuple[ToolDefinition, ...]) -> None:
         if any(tool.name == "write_file" and not tool.read_only for tool in tools):
