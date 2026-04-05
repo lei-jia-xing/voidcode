@@ -37,10 +37,20 @@ The MVP contract should be able to represent a runtime configuration object with
 
 Field intent:
 
-- `workspace`: runtime workspace root used for tool execution and persistence
+- `workspace`: bootstrap field used to determine the runtime workspace root before repo-local config discovery, and then reused for tool execution and persistence
 - `model`: provider/model identifier in OpenCode `provider/model` format
 - `approval_mode`: minimum execution policy mode used by runtime-governed tools
 - `hooks`: minimal switch/config object for runtime hook behavior
+
+## Bootstrap rule for workspace
+
+`workspace` is not resolved by the same precedence ladder as normal runtime config fields.
+
+It must be determined first so the runtime can discover any repo-local config that lives under that workspace. In MVP terms:
+
+1. explicit runtime/bootstrap input chooses the workspace root
+2. repo-local config may then be discovered inside that workspace
+3. normal runtime config precedence applies to non-bootstrap fields such as `model`, `approval_mode`, and `hooks`
 
 ## Current code anchors
 
@@ -51,13 +61,15 @@ Field intent:
 
 ## Recommended precedence
 
-For MVP, config should resolve in this order:
+For MVP, non-bootstrap config fields should resolve in this order:
 
 1. explicit session override
 2. explicit client or CLI flag
 3. repo-local config file
 4. environment variables
 5. built-in defaults
+
+For resumed sessions, fresh explicit client or CLI input should be allowed to override persisted session settings where the runtime chooses to support overrideable fields. Persisted session settings are the baseline for resume, not an absolute override over fresh explicit input.
 
 ## Planned session override shape
 
@@ -92,6 +104,7 @@ Current concrete storage/mapping points in the codebase are:
 - `RuntimeRequest.metadata` is the current flexible request-scoped container
 - `SessionState.metadata` stores runtime/session metadata in memory
 - the SQLite session store persists `SessionState.metadata` as part of the stored session payload
+- the SQLite session store also persists `workspace` as a first-class column in `sessions.workspace`, and uses it for session listing and lookup
 
 Today, this means the config contract exists at the documentation level, while the concrete stable public config schema is still to be implemented.
 
