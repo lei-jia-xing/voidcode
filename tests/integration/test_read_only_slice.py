@@ -6,8 +6,12 @@ import importlib
 import os
 import subprocess
 import sys
+import threading
+import time
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Protocol, cast
+from unittest.mock import patch
 
 
 class EventLike(Protocol):
@@ -16,6 +20,7 @@ class EventLike(Protocol):
 
 class StreamChunkLike(Protocol):
     kind: str
+    session: SessionLike
     event: EventLike | None
     output: str | None
 
@@ -50,7 +55,7 @@ class RuntimeRequestFactory(Protocol):
 class RuntimeRunner(Protocol):
     def run(self, request: RuntimeRequestLike) -> RuntimeResponseLike: ...
 
-    def run_stream(self, request: RuntimeRequestLike) -> tuple[StreamChunkLike, ...]: ...
+    def run_stream(self, request: RuntimeRequestLike) -> Iterator[StreamChunkLike]: ...
 
     def list_sessions(self) -> tuple[StoredSessionSummaryLike, ...]: ...
 
@@ -156,10 +161,13 @@ def test_runtime_stream_exposes_ordered_events_and_final_output(tmp_path: Path) 
     runtime = runtime_class(workspace=tmp_path)
     stream = runtime.run_stream(runtime_request(prompt="read sample.txt"))
 
-    event_types = [chunk.event.event_type for chunk in stream if chunk.event is not None]
-    output_chunks = [chunk.output for chunk in stream if chunk.kind == "output"]
+    chunks = list(stream)
+    event_chunks = [chunk for chunk in chunks if chunk.event is not None]
+    output_chunks = [chunk for chunk in chunks if chunk.kind == "output"]
+    pre_finalization_chunks = chunks[:5]
+    final_chunks = chunks[5:]
 
-    assert event_types == [
+    assert [chunk.event.event_type for chunk in event_chunks if chunk.event is not None] == [
         "runtime.request_received",
         "graph.tool_request_created",
         "runtime.tool_lookup_succeeded",
@@ -167,7 +175,83 @@ def test_runtime_stream_exposes_ordered_events_and_final_output(tmp_path: Path) 
         "runtime.tool_completed",
         "graph.response_ready",
     ]
-    assert output_chunks == ["stream proof\n"]
+    assert [chunk.session.status for chunk in pre_finalization_chunks] == [
+        "running",
+        "running",
+        "running",
+        "running",
+        "running",
+    ]
+    assert [chunk.session.status for chunk in final_chunks] == ["completed", "completed"]
+    assert [chunk.output for chunk in output_chunks] == ["stream proof\n"]
+    assert len(output_chunks) == 1
+
+
+def test_runtime_stream_yields_before_tool_completion(tmp_path: Path) -> None:
+    sample_file = tmp_path / "sample.txt"
+    _ = sample_file.write_text("delayed stream\n", encoding="utf-8")
+    runtime_request, runtime_class = _load_runtime_types()
+    from voidcode.tools.contracts import ToolCall, ToolResult
+    from voidcode.tools.read_file import ReadFileTool
+
+    tool_started = threading.Event()
+    allow_tool_completion = threading.Event()
+    fifth_chunk_ready = threading.Event()
+    fifth_chunk: list[StreamChunkLike] = []
+
+    original_invoke = ReadFileTool.invoke
+
+    def _blocking_invoke(self: ReadFileTool, call: ToolCall, *, workspace: Path) -> ToolResult:
+        tool_started.set()
+        _ = allow_tool_completion.wait(timeout=2)
+        return original_invoke(self, call, workspace=workspace)
+
+    with patch.object(ReadFileTool, "invoke", autospec=True, side_effect=_blocking_invoke):
+        runtime = runtime_class(workspace=tmp_path)
+        stream = runtime.run_stream(runtime_request(prompt="read sample.txt"))
+
+        first_four_chunks = [next(stream) for _ in range(4)]
+
+        assert [
+            chunk.event.event_type for chunk in first_four_chunks if chunk.event is not None
+        ] == [
+            "runtime.request_received",
+            "graph.tool_request_created",
+            "runtime.tool_lookup_succeeded",
+            "runtime.permission_resolved",
+        ]
+        assert all(chunk.session.status == "running" for chunk in first_four_chunks)
+
+        def _consume_fifth_chunk() -> None:
+            fifth_chunk.append(next(stream))
+            fifth_chunk_ready.set()
+
+        worker = threading.Thread(target=_consume_fifth_chunk)
+        worker.start()
+
+        assert tool_started.wait(timeout=0.2) is True
+        time.sleep(0.05)
+        assert fifth_chunk_ready.is_set() is False
+
+        started = time.monotonic()
+        allow_tool_completion.set()
+        worker.join(timeout=1)
+        remaining_chunks = list(stream)
+        elapsed = time.monotonic() - started
+
+        assert worker.is_alive() is False
+        assert elapsed < 1
+        assert [chunk.event.event_type for chunk in fifth_chunk if chunk.event is not None] == [
+            "runtime.tool_completed"
+        ]
+        assert all(chunk.session.status == "running" for chunk in fifth_chunk)
+        assert [
+            chunk.event.event_type for chunk in remaining_chunks if chunk.event is not None
+        ] == ["graph.response_ready"]
+        assert [chunk.output for chunk in remaining_chunks if chunk.kind == "output"] == [
+            "delayed stream\n"
+        ]
+        assert all(chunk.session.status == "completed" for chunk in remaining_chunks)
 
 
 def test_cli_lists_and_resumes_persisted_session(tmp_path: Path) -> None:
