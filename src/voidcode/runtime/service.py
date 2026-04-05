@@ -3,11 +3,11 @@ from __future__ import annotations
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import cast, final
+from typing import Protocol, cast, final
 
-from ..graph.contracts import GraphRunRequest
+from ..graph.contracts import GraphRunRequest, GraphRunResult
 from ..graph.read_only_slice import DeterministicReadOnlyGraph
-from ..tools.contracts import ToolCall, ToolDefinition
+from ..tools.contracts import ToolCall, ToolDefinition, ToolResult
 from ..tools.read_file import ReadFileTool
 from .contracts import RuntimeRequest, RuntimeResponse, RuntimeStreamChunk
 from .events import EventEnvelope
@@ -15,10 +15,27 @@ from .permission import (
     PendingApproval,
     PermissionPolicy,
     PermissionResolution,
-    build_pending_approval,
+    resolve_permission,
 )
 from .session import SessionRef, SessionState, StoredSessionSummary
 from .storage import SessionStore, SqliteSessionStore
+
+
+class GraphPlan(Protocol):
+    @property
+    def tool_call(self) -> ToolCall: ...
+
+
+class RuntimeGraph(Protocol):
+    def plan(self, request: GraphRunRequest) -> GraphPlan: ...
+
+    def finalize(
+        self,
+        request: GraphRunRequest,
+        tool_result: ToolResult,
+        *,
+        session: SessionState,
+    ) -> GraphRunResult: ...
 
 
 @dataclass(slots=True)
@@ -48,7 +65,8 @@ class VoidCodeRuntime:
 
     _workspace: Path
     _tool_registry: ToolRegistry
-    _graph: DeterministicReadOnlyGraph
+    _graph: RuntimeGraph
+    _permission_policy: PermissionPolicy
     _session_store: SessionStore
 
     def __init__(
@@ -56,17 +74,17 @@ class VoidCodeRuntime:
         *,
         workspace: Path,
         tool_registry: ToolRegistry | None = None,
+        graph: RuntimeGraph | None = None,
+        permission_policy: PermissionPolicy | None = None,
         session_store: SessionStore | None = None,
     ) -> None:
         self._workspace = workspace.resolve()
         self._tool_registry = tool_registry or ToolRegistry.with_defaults()
-        self._graph = DeterministicReadOnlyGraph()
+        self._graph = graph or DeterministicReadOnlyGraph()
+        self._permission_policy = permission_policy or PermissionPolicy(mode="ask")
         self._session_store = session_store or SqliteSessionStore()
 
     def run(self, request: RuntimeRequest) -> RuntimeResponse:
-        if request.approval_request_id is not None or request.approval_decision is not None:
-            return self._resume_pending_approval(request)
-
         events: list[EventEnvelope] = []
         output: str | None = None
         final_session: SessionState | None = None
@@ -88,9 +106,6 @@ class VoidCodeRuntime:
         return response
 
     def run_stream(self, request: RuntimeRequest) -> Iterator[RuntimeStreamChunk]:
-        if request.approval_request_id is not None or request.approval_decision is not None:
-            raise ValueError("resume approval decisions must use run() or resume()")
-
         session = SessionState(
             session=SessionRef(id=request.session_id or "local-cli-session"),
             status="running",
@@ -254,6 +269,7 @@ class VoidCodeRuntime:
         tool_call: ToolCall,
         sequence: int,
     ) -> _PermissionOutcome:
+        permission = resolve_permission(tool, tool_call, policy=self._permission_policy)
         if tool.read_only:
             return _PermissionOutcome(
                 chunks=(
@@ -272,7 +288,18 @@ class VoidCodeRuntime:
                 last_sequence=sequence,
             )
 
-        pending = build_pending_approval(tool_call, policy=PermissionPolicy(mode="ask"))
+        pending_approval = permission.pending_approval
+        if pending_approval is None:
+            raise ValueError("non-read-only permission decisions require pending approval data")
+        if permission.decision in ("allow", "deny"):
+            return self._approval_resolution_outcome(
+                session=session,
+                pending=pending_approval,
+                decision=permission.decision,
+                sequence=sequence,
+            )
+
+        pending = pending_approval
         waiting_session = SessionState(
             session=session.session,
             status="waiting",
@@ -299,7 +326,7 @@ class VoidCodeRuntime:
                 RuntimeStreamChunk(kind="event", session=waiting_session, event=request_event),
             ),
             last_sequence=sequence,
-            pending_approval=pending,
+            pending_approval=pending_approval,
         )
 
     def _approval_resolution_outcome(
@@ -358,13 +385,12 @@ class VoidCodeRuntime:
             return self._session_store.load_session(
                 workspace=self._workspace, session_id=session_id
             )
-        return self.run(
-            RuntimeRequest(
-                prompt="",
-                session_id=session_id,
-                approval_request_id=approval_request_id,
-                approval_decision=approval_decision,
-            )
+        if approval_request_id is None or approval_decision is None:
+            raise ValueError("approval resume requires request id and decision")
+        return self._resume_pending_approval(
+            session_id=session_id,
+            approval_request_id=approval_request_id,
+            approval_decision=approval_decision,
         )
 
     def _pending_approval_from_response(self, response: RuntimeResponse) -> PendingApproval:
@@ -383,21 +409,20 @@ class VoidCodeRuntime:
             policy_mode="ask",
         )
 
-    def _resume_pending_approval(self, request: RuntimeRequest) -> RuntimeResponse:
-        if request.session_id is None:
-            raise ValueError("approval resume requires a session id")
-        if request.approval_request_id is None or request.approval_decision is None:
-            raise ValueError("approval resume requires request id and decision")
-
-        stored = self._session_store.load_session(
-            workspace=self._workspace, session_id=request.session_id
-        )
+    def _resume_pending_approval(
+        self,
+        *,
+        session_id: str,
+        approval_request_id: str,
+        approval_decision: PermissionResolution,
+    ) -> RuntimeResponse:
+        stored = self._session_store.load_session(workspace=self._workspace, session_id=session_id)
         pending = self._session_store.load_pending_approval(
-            workspace=self._workspace, session_id=request.session_id
+            workspace=self._workspace, session_id=session_id
         )
         if pending is None:
-            raise ValueError(f"no pending approval for session: {request.session_id}")
-        if pending.request_id != request.approval_request_id:
+            raise ValueError(f"no pending approval for session: {session_id}")
+        if pending.request_id != approval_request_id:
             raise ValueError("approval request id does not match pending session approval")
 
         session = SessionState(
@@ -410,7 +435,7 @@ class VoidCodeRuntime:
         permission_outcome = self._approval_resolution_outcome(
             session=session,
             pending=pending,
-            decision=request.approval_decision,
+            decision=approval_decision,
             sequence=sequence,
         )
         new_events = tuple(
@@ -424,20 +449,51 @@ class VoidCodeRuntime:
             )
             self._session_store.clear_pending_approval(
                 workspace=self._workspace,
-                session_id=request.session_id,
+                session_id=session_id,
             )
             self._session_store.save_run(
                 workspace=self._workspace,
                 request=RuntimeRequest(
-                    prompt=self._prompt_from_events(stored.events), session_id=request.session_id
+                    prompt=self._prompt_from_events(stored.events), session_id=session_id
                 ),
                 response=response,
             )
             return response
 
-        tool = self._tool_registry.resolve(pending.tool_name)
-        tool_call = ToolCall(tool_name=pending.tool_name, arguments=pending.arguments)
-        tool_result = tool.invoke(tool_call, workspace=self._workspace)
+        try:
+            tool = self._tool_registry.resolve(pending.tool_name)
+            tool_call = ToolCall(tool_name=pending.tool_name, arguments=pending.arguments)
+            tool_result = tool.invoke(tool_call, workspace=self._workspace)
+        except ValueError as exc:
+            failed_event = self._failed_chunk(
+                session=session,
+                sequence=permission_outcome.last_sequence + 1,
+                error=str(exc),
+            ).event
+            assert failed_event is not None
+            response = RuntimeResponse(
+                session=SessionState(
+                    session=session.session,
+                    status="failed",
+                    turn=session.turn,
+                    metadata=session.metadata,
+                ),
+                events=stored.events + new_events + (failed_event,),
+                output=None,
+            )
+            self._session_store.clear_pending_approval(
+                workspace=self._workspace,
+                session_id=session_id,
+            )
+            self._session_store.save_run(
+                workspace=self._workspace,
+                request=RuntimeRequest(
+                    prompt=self._prompt_from_events(stored.events), session_id=session_id
+                ),
+                response=response,
+            )
+            return response
+
         tool_completed_event = EventEnvelope(
             session_id=session.session.id,
             sequence=permission_outcome.last_sequence + 1,
@@ -468,12 +524,12 @@ class VoidCodeRuntime:
         )
         self._session_store.clear_pending_approval(
             workspace=self._workspace,
-            session_id=request.session_id,
+            session_id=session_id,
         )
         self._session_store.save_run(
             workspace=self._workspace,
             request=RuntimeRequest(
-                prompt=self._prompt_from_events(stored.events), session_id=request.session_id
+                prompt=self._prompt_from_events(stored.events), session_id=session_id
             ),
             response=response,
         )

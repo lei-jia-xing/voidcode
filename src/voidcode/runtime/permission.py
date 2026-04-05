@@ -11,6 +11,16 @@ type PermissionResolution = Literal["allow", "deny"]
 
 
 @dataclass(frozen=True, slots=True)
+class PermissionOutcome:
+    decision: PermissionDecision
+    pending_approval: PendingApproval | None = None
+
+    def __post_init__(self) -> None:
+        if self.decision == "ask" and self.pending_approval is None:
+            raise ValueError("ask decisions require a pending approval")
+
+
+@dataclass(frozen=True, slots=True)
 class PermissionPolicy:
     mode: PermissionDecision = "allow"
 
@@ -31,6 +41,21 @@ def default_policy_for_tool(tool: ToolDefinition) -> PermissionPolicy:
     return PermissionPolicy(mode="ask")
 
 
+def resolve_permission(
+    tool: ToolDefinition,
+    tool_call: ToolCall,
+    *,
+    policy: PermissionPolicy,
+) -> PermissionOutcome:
+    if tool.read_only:
+        return PermissionOutcome(decision="allow")
+
+    pending_approval = build_pending_approval(tool_call, policy=policy)
+    if policy.mode == "ask":
+        return PermissionOutcome(decision="ask", pending_approval=pending_approval)
+    return PermissionOutcome(decision=policy.mode, pending_approval=pending_approval)
+
+
 def build_pending_approval(tool_call: ToolCall, *, policy: PermissionPolicy) -> PendingApproval:
     path = tool_call.arguments.get("path")
     if isinstance(path, str) and path:
@@ -42,6 +67,6 @@ def build_pending_approval(tool_call: ToolCall, *, policy: PermissionPolicy) -> 
         tool_name=tool_call.tool_name,
         arguments=dict(tool_call.arguments),
         target_summary=target_summary,
-        reason="write-capable tool invocation",
+        reason="non-read-only tool invocation",
         policy_mode=policy.mode,
     )

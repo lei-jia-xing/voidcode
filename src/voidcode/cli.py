@@ -161,6 +161,14 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if (
+        getattr(args, "command", None) == "sessions"
+        and getattr(args, "sessions_command", None) == "resume"
+    ):
+        has_request_id = getattr(args, "approval_request_id", None) is not None
+        has_decision = getattr(args, "approval_decision", None) is not None
+        if has_request_id != has_decision:
+            parser.error("--approval-request-id and --approval-decision must be provided together")
     handler = cast(Handler | None, getattr(args, "handler", None))
     if handler is None:
         parser.print_help()

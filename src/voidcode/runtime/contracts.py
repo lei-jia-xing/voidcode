@@ -5,7 +5,6 @@ from dataclasses import dataclass, field
 from typing import Literal, Protocol, runtime_checkable
 
 from .events import EventEnvelope
-from .permission import PermissionResolution
 from .session import SessionState
 
 
@@ -14,8 +13,6 @@ class RuntimeRequest:
     prompt: str
     session_id: str | None = None
     metadata: dict[str, object] = field(default_factory=dict)
-    approval_request_id: str | None = None
-    approval_decision: PermissionResolution | None = None
 
 
 @dataclass(frozen=True, slots=True)
