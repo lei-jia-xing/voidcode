@@ -3,6 +3,7 @@ import { useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAppStore } from './store';
 import { Activity, Play, Settings, Code2, LayoutDashboard, CheckCircle2, Circle, Clock, Globe } from 'lucide-react';
+import { RuntimeDebug } from './components/RuntimeDebug';
 
 function App() {
   const { tasks, activities, language, setLanguage } = useAppStore();
@@ -18,7 +19,7 @@ function App() {
 
   return (
     <div className="flex h-screen bg-[#09090b] text-slate-300 font-sans overflow-hidden selection:bg-indigo-500/30">
-      
+
       {/* Sidebar Navigation */}
       <aside className="w-16 md:w-64 border-r border-slate-800 bg-[#09090b] flex flex-col justify-between">
         <div>
@@ -26,7 +27,7 @@ function App() {
             <Code2 className="w-6 h-6 md:mr-3" />
             <span className="hidden md:block text-lg">{t('app.title')}</span>
           </div>
-          
+
           <nav className="p-3 space-y-2">
             {[
               { icon: LayoutDashboard, label: t('nav.workspace'), active: true },
@@ -39,12 +40,13 @@ function App() {
             ))}
           </nav>
         </div>
-        
+
         <div className="p-3 border-t border-slate-800 space-y-2">
            <button type="button" onClick={toggleLanguage} className="w-full flex items-center justify-center md:justify-start md:px-4 py-3 md:py-2.5 rounded-lg text-slate-400 hover:bg-slate-800/50 hover:text-slate-200 transition-colors">
              <Globe className="w-5 h-5 md:mr-3" />
              <span className="hidden md:block font-medium">{language === 'en' ? t('language.zh') : t('language.en')}</span>
            </button>
+           <RuntimeDebug />
            <button type="button" className="w-full flex items-center justify-center md:justify-start md:px-4 py-3 md:py-2.5 rounded-lg text-slate-400 hover:bg-slate-800/50 hover:text-slate-200 transition-colors">
              <Settings className="w-5 h-5 md:mr-3" />
              <span className="hidden md:block font-medium">{t('nav.settings')}</span>
@@ -54,7 +56,7 @@ function App() {
 
       {/* Main Content Area */}
       <main className="flex-1 flex flex-col min-w-0">
-        
+
         {/* Header */}
         <header className="h-16 flex items-center justify-between px-6 border-b border-slate-800 bg-[#0c0c0e]">
           <h1 className="text-xl font-semibold text-slate-100">{t('session.current')}</h1>
@@ -72,7 +74,7 @@ function App() {
 
         {/* Workspace Layout */}
         <div className="flex-1 flex overflow-hidden bg-[#0a0a0c]">
-          
+
           {/* Editor/Conversation Area */}
           <div className="flex-1 p-6 overflow-y-auto">
             <div className="max-w-4xl mx-auto space-y-6">
@@ -102,7 +104,7 @@ function App() {
                    ))}
                  </div>
               </div>
-              
+
               <div className="bg-slate-800/30 border border-slate-700/50 rounded-xl p-6 shadow-sm min-h-[400px] flex flex-col items-center justify-center text-center">
                 <Code2 className="w-12 h-12 text-slate-600 mb-4" />
                 <h3 className="text-xl font-medium text-slate-300 mb-2">{t('editor.noActiveFile')}</h3>
@@ -130,7 +132,7 @@ function App() {
                ))}
              </div>
           </aside>
-          
+
         </div>
       </main>
     </div>

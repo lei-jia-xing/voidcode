@@ -18,5 +18,11 @@
   "activity.log": "Activity Log",
   "language.switch": "Switch Language",
   "language.en": "English",
-  "language.zh": "中文"
+  "language.zh": "中文",
+  "debug.testRuntime": "Test Runtime",
+  "debug.runtimeStatus": "Runtime Status",
+  "debug.idle": "Idle",
+  "debug.testing": "Testing...",
+  "debug.success": "Success",
+  "debug.error": "Error"
 }

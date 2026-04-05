@@ -18,5 +18,11 @@
   "activity.log": "活动日志",
   "language.switch": "切换语言",
   "language.en": "English",
-  "language.zh": "中文"
+  "language.zh": "中文",
+  "debug.testRuntime": "测试运行时",
+  "debug.runtimeStatus": "运行时状态",
+  "debug.idle": "空闲",
+  "debug.testing": "测试中...",
+  "debug.success": "成功",
+  "debug.error": "错误"
 }
