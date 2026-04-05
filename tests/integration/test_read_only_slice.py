@@ -82,6 +82,7 @@ class RuntimeFactory(Protocol):
         tool_registry: object | None = None,
         graph: object | None = None,
         permission_policy: object | None = None,
+        session_store: object | None = None,
     ) -> RuntimeRunner: ...
 
 
@@ -144,6 +145,34 @@ class ReadFileToolType(Protocol):
 
 class ToolRegistryLike(Protocol):
     tools: dict[str, object]
+
+
+class SessionStoreLike(Protocol):
+    def save_run(
+        self,
+        *,
+        workspace: Path,
+        request: RuntimeRequestLike,
+        response: RuntimeResponseLike,
+        clear_pending_approval: bool = True,
+    ) -> None: ...
+
+    def list_sessions(self, *, workspace: Path) -> tuple[StoredSessionSummaryLike, ...]: ...
+
+    def load_session(self, *, workspace: Path, session_id: str) -> RuntimeResponseLike: ...
+
+    def save_pending_approval(
+        self,
+        *,
+        workspace: Path,
+        request: RuntimeRequestLike,
+        response: RuntimeResponseLike,
+        pending_approval: object,
+    ) -> None: ...
+
+    def load_pending_approval(self, *, workspace: Path, session_id: str) -> object: ...
+
+    def clear_pending_approval(self, *, workspace: Path, session_id: str) -> None: ...
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
@@ -452,6 +481,57 @@ def test_runtime_persists_initial_allow_finalize_failure_for_resume(tmp_path: Pa
     assert resumed.events[-2].event_type == "runtime.tool_completed"
     assert resumed.events[-1].event_type == "runtime.failed"
     assert resumed.events[-1].payload == {"error": "finalize boom"}
+
+
+def test_runtime_persists_initial_plan_failure_for_resume(tmp_path: Path) -> None:
+    runtime_request, _, tool_registry, permission_policy, _ = _permission_runtime(
+        tmp_path, mode="allow"
+    )
+
+    class FailingPlanGraph:
+        def plan(self, _request: object) -> object:
+            raise RuntimeError("plan boom")
+
+        def finalize(self, request: object, tool_result: object, *, session: object) -> object:
+            _ = request
+            _ = tool_result
+            _ = session
+            raise AssertionError("finalize should not run")
+
+    runtime_class = _load_runtime_types()[1]
+    failing_runtime = cast(
+        RuntimeRunner,
+        cast(
+            object,
+            runtime_class(
+                workspace=tmp_path,
+                tool_registry=tool_registry,
+                graph=FailingPlanGraph(),
+                permission_policy=permission_policy,
+            ),
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="plan boom"):
+        _ = failing_runtime.run(runtime_request(prompt="write danger.txt", session_id="s1"))
+
+    replay_runtime = cast(
+        RuntimeRunner,
+        cast(
+            object,
+            runtime_class(
+                workspace=tmp_path,
+                tool_registry=tool_registry,
+                graph=FailingPlanGraph(),
+                permission_policy=permission_policy,
+            ),
+        ),
+    )
+    resumed = replay_runtime.resume("s1")
+
+    assert resumed.session.status == "failed"
+    assert resumed.events[-1].event_type == "runtime.failed"
+    assert resumed.events[-1].payload == {"error": "plan boom"}
 
 
 def test_runtime_denies_non_read_only_tool_when_policy_is_deny(tmp_path: Path) -> None:
@@ -771,6 +851,105 @@ def test_runtime_marks_resumed_finalize_failure_and_clears_pending_request(tmp_p
             approval_request_id=approval_request_id,
             approval_decision="allow",
         )
+
+
+def test_runtime_preserves_pending_approval_when_terminal_save_fails(tmp_path: Path) -> None:
+    runtime_request, runtime, tool_registry, permission_policy, graph = _permission_runtime(
+        tmp_path, mode="ask"
+    )
+
+    waiting = runtime.run(runtime_request(prompt="write danger.txt", session_id="approval-session"))
+    approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
+
+    storage_module = importlib.import_module("voidcode.runtime.storage")
+    sqlite_store_class = cast(Callable[[], SessionStoreLike], storage_module.SqliteSessionStore)
+    base_store = sqlite_store_class()
+
+    class FailingTerminalSaveStore:
+        def save_run(
+            self,
+            *,
+            workspace: Path,
+            request: object,
+            response: object,
+            clear_pending_approval: bool = True,
+        ) -> None:
+            _ = request
+            if clear_pending_approval:
+                raise RuntimeError("save boom")
+            base_store.save_run(
+                workspace=workspace,
+                request=cast(RuntimeRequestLike, request),
+                response=cast(RuntimeResponseLike, response),
+                clear_pending_approval=clear_pending_approval,
+            )
+
+        def list_sessions(self, *, workspace: Path) -> tuple[object, ...]:
+            return base_store.list_sessions(workspace=workspace)
+
+        def load_session(self, *, workspace: Path, session_id: str) -> object:
+            return base_store.load_session(workspace=workspace, session_id=session_id)
+
+        def save_pending_approval(
+            self,
+            *,
+            workspace: Path,
+            request: object,
+            response: object,
+            pending_approval: object,
+        ) -> None:
+            base_store.save_pending_approval(
+                workspace=workspace,
+                request=cast(RuntimeRequestLike, request),
+                response=cast(RuntimeResponseLike, response),
+                pending_approval=pending_approval,
+            )
+
+        def load_pending_approval(self, *, workspace: Path, session_id: str) -> object:
+            return base_store.load_pending_approval(workspace=workspace, session_id=session_id)
+
+        def clear_pending_approval(self, *, workspace: Path, session_id: str) -> None:
+            base_store.clear_pending_approval(workspace=workspace, session_id=session_id)
+
+    resumed_runtime_class = _load_runtime_types()[1]
+    resumed_runtime = cast(
+        RuntimeRunner,
+        cast(
+            object,
+            resumed_runtime_class(
+                workspace=tmp_path,
+                tool_registry=tool_registry,
+                graph=graph,
+                permission_policy=permission_policy,
+                session_store=FailingTerminalSaveStore(),
+            ),
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="save boom"):
+        _ = resumed_runtime.resume(
+            "approval-session",
+            approval_request_id=approval_request_id,
+            approval_decision="allow",
+        )
+
+    replay_runtime = cast(
+        RuntimeRunner,
+        cast(
+            object,
+            _load_runtime_types()[1](
+                workspace=tmp_path,
+                tool_registry=tool_registry,
+                graph=graph,
+                permission_policy=permission_policy,
+            ),
+        ),
+    )
+    replay = replay_runtime.resume("approval-session")
+
+    assert replay.session.status == "waiting"
+    assert replay.events[-1].event_type == "runtime.approval_requested"
+    assert cast(str, replay.events[-1].payload["request_id"]) == approval_request_id
 
 
 def test_cli_run_command_prints_events_and_file_contents(tmp_path: Path) -> None:

@@ -17,7 +17,12 @@ from .session import SessionRef, SessionState, SessionStatus, StoredSessionSumma
 @runtime_checkable
 class SessionStore(Protocol):
     def save_run(
-        self, *, workspace: Path, request: RuntimeRequest, response: RuntimeResponse
+        self,
+        *,
+        workspace: Path,
+        request: RuntimeRequest,
+        response: RuntimeResponse,
+        clear_pending_approval: bool = True,
     ) -> None: ...
 
     def list_sessions(self, *, workspace: Path) -> tuple[StoredSessionSummary, ...]: ...
@@ -123,7 +128,12 @@ class SqliteSessionStore:
         return value
 
     def save_run(
-        self, *, workspace: Path, request: RuntimeRequest, response: RuntimeResponse
+        self,
+        *,
+        workspace: Path,
+        request: RuntimeRequest,
+        response: RuntimeResponse,
+        clear_pending_approval: bool = True,
     ) -> None:
         session_id = response.session.session.id
         with self._connect(workspace) as connection:
@@ -144,7 +154,11 @@ class SqliteSessionStore:
                     request.prompt,
                     response.output,
                     json.dumps(response.session.metadata, sort_keys=True),
-                    None,
+                    None
+                    if clear_pending_approval
+                    else self._read_pending_approval_json(
+                        connection=connection, session_id=session_id
+                    ),
                     created_at,
                     updated_at,
                     response.events[-1].sequence if response.events else 0,
@@ -285,6 +299,20 @@ class SqliteSessionStore:
             )
             connection.commit()
 
+    def _read_pending_approval_json(
+        self, *, connection: sqlite3.Connection, session_id: str
+    ) -> str | None:
+        row = cast(
+            sqlite3.Row | None,
+            connection.execute(
+                "SELECT pending_approval_json FROM sessions WHERE session_id = ?",
+                (session_id,),
+            ).fetchone(),
+        )
+        if row is None:
+            return None
+        return cast(str | None, row["pending_approval_json"])
+
     def load_session(self, *, workspace: Path, session_id: str) -> RuntimeResponse:
         with self._connect(workspace) as connection:
             session_row = cast(
@@ -333,7 +361,10 @@ class SqliteSessionStore:
         )
 
     def _read_user_version(self, *, connection: sqlite3.Connection) -> int:
-        row = connection.execute("PRAGMA user_version").fetchone()
+        row = cast(
+            sqlite3.Row | tuple[object, ...] | None,
+            connection.execute("PRAGMA user_version").fetchone(),
+        )
         if row is None:
             return 0
         return cast(int, row[0])

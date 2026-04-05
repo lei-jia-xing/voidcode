@@ -143,7 +143,7 @@ class VoidCodeRuntime:
         )
         try:
             plan = self._graph.plan(graph_request)
-        except ValueError as exc:
+        except Exception as exc:
             yield self._failed_chunk(session=session, sequence=sequence + 1, error=str(exc))
             raise
 
@@ -465,16 +465,13 @@ class VoidCodeRuntime:
                 events=stored.events + new_events,
                 output=None,
             )
-            self._session_store.clear_pending_approval(
-                workspace=self._workspace,
-                session_id=session_id,
-            )
             self._session_store.save_run(
                 workspace=self._workspace,
                 request=RuntimeRequest(
                     prompt=self._prompt_from_events(stored.events), session_id=session_id
                 ),
                 response=response,
+                clear_pending_approval=True,
             )
             return response
 
@@ -499,16 +496,13 @@ class VoidCodeRuntime:
                 events=stored.events + new_events + (failed_event,),
                 output=None,
             )
-            self._session_store.clear_pending_approval(
-                workspace=self._workspace,
-                session_id=session_id,
-            )
             self._session_store.save_run(
                 workspace=self._workspace,
                 request=RuntimeRequest(
                     prompt=self._prompt_from_events(stored.events), session_id=session_id
                 ),
                 response=response,
+                clear_pending_approval=True,
             )
             return response
 
@@ -555,16 +549,13 @@ class VoidCodeRuntime:
                 events=stored.events + new_events + (tool_completed_event, failed_event),
                 output=None,
             )
-            self._session_store.clear_pending_approval(
-                workspace=self._workspace,
-                session_id=session_id,
-            )
             self._session_store.save_run(
                 workspace=self._workspace,
                 request=RuntimeRequest(
                     prompt=self._prompt_from_events(stored.events), session_id=session_id
                 ),
                 response=response,
+                clear_pending_approval=True,
             )
             return response
         response = RuntimeResponse(
@@ -572,16 +563,13 @@ class VoidCodeRuntime:
             events=stored.events + new_events + (tool_completed_event,) + graph_result.events,
             output=graph_result.output,
         )
-        self._session_store.clear_pending_approval(
-            workspace=self._workspace,
-            session_id=session_id,
-        )
         self._session_store.save_run(
             workspace=self._workspace,
             request=RuntimeRequest(
                 prompt=self._prompt_from_events(stored.events), session_id=session_id
             ),
             response=response,
+            clear_pending_approval=True,
         )
         return response
 
