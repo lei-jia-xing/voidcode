@@ -13,7 +13,7 @@ export class RuntimeClient {
   }
 
   static async getSessionReplay(sessionId: string): Promise<RuntimeResponse> {
-    const res = await fetch(`/api/sessions/${sessionId}`);
+    const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`);
     if (!res.ok) throw new Error(`Failed to replay session: ${res.statusText}`);
     return res.json();
   }
@@ -40,8 +40,8 @@ export class RuntimeClient {
 
       buffer += decoder.decode(value, { stream: true });
 
-      let eolIndex;
-      while ((eolIndex = buffer.indexOf('\n')) >= 0) {
+      let eolIndex = buffer.indexOf('\n');
+      while (eolIndex >= 0) {
         const line = buffer.slice(0, eolIndex);
         buffer = buffer.slice(eolIndex + 1);
         const trimmedLine = line.replace(/\r$/, '');
@@ -61,6 +61,8 @@ export class RuntimeClient {
           const data = trimmedLine.slice(5).trimStart();
           dataBuffer += data;
         }
+
+        eolIndex = buffer.indexOf('\n');
       }
     }
 
