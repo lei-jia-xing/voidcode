@@ -82,14 +82,6 @@ class SqliteSessionStore:
             )
             """
         )
-        columns = {
-            cast(str, row["name"])
-            for row in cast(
-                list[sqlite3.Row], connection.execute("PRAGMA table_info(sessions)").fetchall()
-            )
-        }
-        if "pending_approval_json" not in columns:
-            _ = connection.execute("ALTER TABLE sessions ADD COLUMN pending_approval_json TEXT")
         _ = connection.execute(
             """
             CREATE TABLE IF NOT EXISTS session_events (
@@ -102,7 +94,18 @@ class SqliteSessionStore:
             )
             """
         )
-        _ = connection.execute("PRAGMA user_version = 2")
+        user_version = self._read_user_version(connection=connection)
+        columns = {
+            cast(str, row["name"])
+            for row in cast(
+                list[sqlite3.Row], connection.execute("PRAGMA table_info(sessions)").fetchall()
+            )
+        }
+        if "pending_approval_json" not in columns:
+            _ = connection.execute("ALTER TABLE sessions ADD COLUMN pending_approval_json TEXT")
+            user_version = max(user_version, 1)
+        if user_version < 2:
+            _ = connection.execute("PRAGMA user_version = 2")
         connection.commit()
 
     @staticmethod
@@ -264,7 +267,7 @@ class SqliteSessionStore:
         data = cast(dict[str, object], json.loads(payload))
         raw_policy_mode = data.get("policy_mode", "ask")
         if raw_policy_mode not in ("allow", "deny", "ask"):
-            raise ValueError(f"invalid permission decision: {raw_policy_mode}")
+            raise ValueError(f"invalid permission policy mode: {raw_policy_mode}")
         return PendingApproval(
             request_id=cast(str, data["request_id"]),
             tool_name=cast(str, data["tool_name"]),
@@ -328,6 +331,12 @@ class SqliteSessionStore:
         return RuntimeResponse(
             session=session, events=events, output=cast(str | None, session_row["output"])
         )
+
+    def _read_user_version(self, *, connection: sqlite3.Connection) -> int:
+        row = connection.execute("PRAGMA user_version").fetchone()
+        if row is None:
+            return 0
+        return cast(int, row[0])
 
     def _read_created_at(self, *, connection: sqlite3.Connection, session_id: str) -> int:
         row = cast(
