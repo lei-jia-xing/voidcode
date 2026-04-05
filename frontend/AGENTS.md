@@ -5,7 +5,7 @@
 **Branch:** master
 
 ## OVERVIEW
-Bun/Vite/React frontend shell. Mock-backed only; no live Python runtime integration yet.
+Bun/Vite/React frontend shell. Mostly mock-backed; a thin runtime transport client/debug path now exists, but the main UI is still not runtime-driven.
 
 ## WHERE TO LOOK
 | Task | Location | Notes |
@@ -36,7 +36,7 @@ frontend/
 - Keep state changes explicit in the Zustand store; current app state is local and persisted.
 
 ## ANTI-PATTERNS
-- Do not claim live API or WebSocket behavior exists; any backend-facing surface is still planned/mocked.
+- Do not claim full live API or WebSocket behavior exists; only a minimal runtime transport client/debug path exists today, and the main UI is still mostly mock-backed.
 - Do not introduce backend assumptions into the UI without corresponding backend work.
 - Do not commit generated build artifacts from `dist/`.
 - Do not duplicate repo-wide coding standards here; root docs own commit and PR policy.
@@ -53,4 +53,4 @@ bun run build
 ## NOTES
 - `frontend/README.md` describes an aspirational component/page structure that the current `src/` tree does not fully implement yet.
 - Current UI is mostly centered in `App.tsx`; avoid over-documenting nonexistent substructure.
-- If frontend work starts touching real API integration, update this file because the current mock-backed caveat will become stale.
+- The frontend now has a thin runtime transport client/debug path; update this file again when the main state/timeline UI stops being mock-backed.

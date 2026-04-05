@@ -9,7 +9,7 @@ The repository contains two primary, independent components:
 1.  **Python Backend Slice**: A typed contract layer plus one deterministic local read-only execution path.
 2.  **Bun Frontend Shell**: A React-based web interface for the future agent runtime.
 
-**Current integration status**: 🔴 **None**. The frontend and backend are not yet connected.
+**Current integration status**: 🟡 **Minimal transport only**. The backend now exposes a local HTTP/SSE transport and the frontend includes a thin runtime client/debug path, but the main UI remains mock-driven.
 
 ---
 
@@ -22,12 +22,13 @@ The repository contains two primary, independent components:
 - [x] **Development Tooling**: Ruff (lint/format), basedpyright (types), and pytest (tests) are integrated and functional.
 - [x] **Contract Layer**: Typed session, event, runtime, graph, and tool contracts exist in code.
 - [x] **Deterministic Read-Only Slice**: The CLI can execute a governed local read-only file request through runtime, graph, and tool boundaries and emit observable events.
+- [x] **Minimal HTTP Transport**: A thin backend HTTP layer now exposes `GET /api/sessions`, `GET /api/sessions/{session_id}`, and `POST /api/runtime/run/stream` with SSE chunks serialized directly from the runtime boundary, and it can now be served locally through `voidcode serve`.
 
 ### Planned / In-Progress
 - [ ] **LangGraph Orchestration**: Full graph compilation, richer node routing, and interrupt/resume behavior.
 - [ ] **Runtime Services**: Session lifecycle, richer permission checkpoints, hooks, and persistence.
 - [ ] **Tool Registry**: Dynamic tool discovery and registration beyond the current in-memory read-only default. Today the only real built-in tool path is the read-only file read flow.
-- [ ] **API Layer**: FastAPI/Starlette-based server to expose the runtime to clients.
+- [ ] **Expanded API Layer**: The minimal transport now has a runnable local server entrypoint, but broader server concerns such as richer resume/approval HTTP flows and client integration are still pending.
 
 ---
 
@@ -40,7 +41,7 @@ The repository contains two primary, independent components:
 - [x] **Frontend Tooling**: Vite-based dev server with Bun support, ESLint, and Prettier.
 
 ### Planned / In-Progress
-- [ ] **Live API Integration**: Connection to the Python backend services.
+- [ ] **Live API Integration**: A thin frontend runtime client/debug path now exists for the minimal transport, but the main session/task/activity UI still does not consume runtime-backed state.
 - [ ] **WebSocket Streaming**: Real-time agent event streaming from the backend.
 - [ ] **Session Persistence**: True persistence via the backend database.
 - [ ] **File System Browser**: Integration with the local workspace for code reading.

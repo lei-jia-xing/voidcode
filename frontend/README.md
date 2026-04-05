@@ -59,7 +59,7 @@ frontend/
 
 ## Implementation Status
 
-> **Important:** The current frontend is a **UI shell only**. It uses **mock data** for all features.
+> **Important:** The current frontend is still primarily a **UI shell**. The main task/activity experience remains mock-backed, although the repo now includes a thin runtime transport client/debug path.
 
 - [x] UI Shell & Navigation
 - [x] Mock Session View
@@ -74,7 +74,7 @@ The frontend is designed to communicate with the VoidCode runtime through:
 1. **HTTP API** - For session management and configuration
 2. **WebSocket** - For real-time event streaming (agent thoughts, tool calls, approvals)
 
-**Note:** These interfaces are currently **mocked** in the frontend through local state and translation-aware UI shell data. There is no live API client or Python backend connection yet.
+**Note:** These interfaces are only **partially implemented** today. The repo now includes a thin runtime transport client and local backend server path for transport testing, but the main frontend session/task/activity UI is still driven by mock state.
 
 ## Contributing
 
