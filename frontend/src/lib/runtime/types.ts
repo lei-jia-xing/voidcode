@@ -45,6 +45,6 @@ export type RuntimeStreamChunkKind = "event" | "output";
 export interface RuntimeStreamChunk {
   kind: RuntimeStreamChunkKind;
   session: SessionState;
-  event?: EventEnvelope;
-  output?: string;
+  event: EventEnvelope | null;
+  output: string | null;
 }
