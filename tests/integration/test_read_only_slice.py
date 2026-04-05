@@ -453,6 +453,40 @@ def test_runtime_executes_read_only_slice_and_emits_events(tmp_path: Path) -> No
     assert result.output == "alpha\nbeta\n"
 
 
+def test_runtime_executes_grep_read_only_slice_and_emits_events(tmp_path: Path) -> None:
+    sample_file = tmp_path / "sample.txt"
+    _ = sample_file.write_text("alpha\nbeta alpha\n", encoding="utf-8")
+    runtime_request, runtime_class = _load_runtime_types()
+
+    runtime = runtime_class(workspace=tmp_path)
+    result = runtime.run(runtime_request(prompt="grep alpha sample.txt"))
+
+    assert [event.event_type for event in result.events] == [
+        "runtime.request_received",
+        "graph.tool_request_created",
+        "runtime.tool_lookup_succeeded",
+        "runtime.permission_resolved",
+        "runtime.tool_completed",
+        "graph.response_ready",
+    ]
+    assert result.events[1].payload == {
+        "tool": "grep",
+        "arguments": {"pattern": "alpha", "path": "sample.txt"},
+        "path": "sample.txt",
+    }
+    assert result.events[4].payload == {
+        "path": "sample.txt",
+        "pattern": "alpha",
+        "match_count": 2,
+        "matches": [
+            {"line": 1, "text": "alpha", "columns": [1]},
+            {"line": 2, "text": "beta alpha", "columns": [6]},
+        ],
+    }
+    assert result.session.status == "completed"
+    assert result.output == "Found 2 match(es) for 'alpha' in sample.txt\n1: alpha\n2: beta alpha"
+
+
 def test_runtime_allows_non_read_only_tool_after_explicit_resume_approval(tmp_path: Path) -> None:
     runtime_request, runtime = _approval_runtime(tmp_path, mode="ask")
 
