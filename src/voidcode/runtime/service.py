@@ -3,14 +3,20 @@ from __future__ import annotations
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import final
+from typing import cast, final
 
 from ..graph.contracts import GraphRunRequest
 from ..graph.read_only_slice import DeterministicReadOnlyGraph
-from ..tools.contracts import ToolDefinition
+from ..tools.contracts import ToolCall, ToolDefinition
 from ..tools.read_file import ReadFileTool
 from .contracts import RuntimeRequest, RuntimeResponse, RuntimeStreamChunk
 from .events import EventEnvelope
+from .permission import (
+    PendingApproval,
+    PermissionPolicy,
+    PermissionResolution,
+    build_pending_approval,
+)
 from .session import SessionRef, SessionState, StoredSessionSummary
 from .storage import SessionStore, SqliteSessionStore
 
@@ -58,6 +64,9 @@ class VoidCodeRuntime:
         self._session_store = session_store or SqliteSessionStore()
 
     def run(self, request: RuntimeRequest) -> RuntimeResponse:
+        if request.approval_request_id is not None or request.approval_decision is not None:
+            return self._resume_pending_approval(request)
+
         events: list[EventEnvelope] = []
         output: str | None = None
         final_session: SessionState | None = None
@@ -75,10 +84,13 @@ class VoidCodeRuntime:
             raise ValueError("runtime stream emitted no chunks")
 
         response = RuntimeResponse(session=final_session, events=tuple(events), output=output)
-        self._session_store.save_run(workspace=self._workspace, request=request, response=response)
+        self._persist_response(request=request, response=response)
         return response
 
     def run_stream(self, request: RuntimeRequest) -> Iterator[RuntimeStreamChunk]:
+        if request.approval_request_id is not None or request.approval_decision is not None:
+            raise ValueError("resume approval decisions must use run() or resume()")
+
         session = SessionState(
             session=SessionRef(id=request.session_id or "local-cli-session"),
             status="running",
@@ -147,17 +159,19 @@ class VoidCodeRuntime:
         )
 
         sequence += 1
-        yield RuntimeStreamChunk(
-            kind="event",
+        permission_chunks = self._resolve_permission(
             session=session,
-            event=EventEnvelope(
-                session_id=session.session.id,
-                sequence=sequence,
-                event_type="runtime.permission_resolved",
-                source="runtime",
-                payload={"tool": plan.tool_call.tool_name, "decision": "allow"},
-            ),
+            tool=tool.definition,
+            tool_call=plan.tool_call,
+            sequence=sequence,
         )
+        yield from permission_chunks.chunks
+        if permission_chunks.pending_approval is not None:
+            return
+        if permission_chunks.denied:
+            return
+
+        sequence = permission_chunks.last_sequence
 
         try:
             tool_result = tool.invoke(plan.tool_call, workspace=self._workspace)
@@ -220,8 +234,264 @@ class VoidCodeRuntime:
             ),
         )
 
+    def _persist_response(self, *, request: RuntimeRequest, response: RuntimeResponse) -> None:
+        if response.session.status == "waiting":
+            pending_approval = self._pending_approval_from_response(response)
+            self._session_store.save_pending_approval(
+                workspace=self._workspace,
+                request=request,
+                response=response,
+                pending_approval=pending_approval,
+            )
+            return
+        self._session_store.save_run(workspace=self._workspace, request=request, response=response)
+
+    def _resolve_permission(
+        self,
+        *,
+        session: SessionState,
+        tool: ToolDefinition,
+        tool_call: ToolCall,
+        sequence: int,
+    ) -> _PermissionOutcome:
+        if tool.read_only:
+            return _PermissionOutcome(
+                chunks=(
+                    RuntimeStreamChunk(
+                        kind="event",
+                        session=session,
+                        event=EventEnvelope(
+                            session_id=session.session.id,
+                            sequence=sequence,
+                            event_type="runtime.permission_resolved",
+                            source="runtime",
+                            payload={"tool": tool_call.tool_name, "decision": "allow"},
+                        ),
+                    ),
+                ),
+                last_sequence=sequence,
+            )
+
+        pending = build_pending_approval(tool_call, policy=PermissionPolicy(mode="ask"))
+        waiting_session = SessionState(
+            session=session.session,
+            status="waiting",
+            turn=session.turn,
+            metadata=session.metadata,
+        )
+        request_event = EventEnvelope(
+            session_id=session.session.id,
+            sequence=sequence,
+            event_type="runtime.approval_requested",
+            source="runtime",
+            payload={
+                "request_id": pending.request_id,
+                "tool": pending.tool_name,
+                "decision": "ask",
+                "arguments": pending.arguments,
+                "target_summary": pending.target_summary,
+                "reason": pending.reason,
+                "policy": {"mode": pending.policy_mode},
+            },
+        )
+        return _PermissionOutcome(
+            chunks=(
+                RuntimeStreamChunk(kind="event", session=waiting_session, event=request_event),
+            ),
+            last_sequence=sequence,
+            pending_approval=pending,
+        )
+
+    def _approval_resolution_outcome(
+        self,
+        *,
+        session: SessionState,
+        pending: PendingApproval,
+        decision: PermissionResolution,
+        sequence: int,
+    ) -> _PermissionOutcome:
+        resolution_event = EventEnvelope(
+            session_id=session.session.id,
+            sequence=sequence,
+            event_type="runtime.approval_resolved",
+            source="runtime",
+            payload={"request_id": pending.request_id, "decision": decision},
+        )
+        if decision == "deny":
+            failed_session = SessionState(
+                session=session.session,
+                status="failed",
+                turn=session.turn,
+                metadata=session.metadata,
+            )
+            failed_event = EventEnvelope(
+                session_id=session.session.id,
+                sequence=sequence + 1,
+                event_type="runtime.failed",
+                source="runtime",
+                payload={"error": f"permission denied for tool: {pending.tool_name}"},
+            )
+            return _PermissionOutcome(
+                chunks=(
+                    RuntimeStreamChunk(kind="event", session=session, event=resolution_event),
+                    RuntimeStreamChunk(kind="event", session=failed_session, event=failed_event),
+                ),
+                last_sequence=sequence + 1,
+                denied=True,
+            )
+        return _PermissionOutcome(
+            chunks=(RuntimeStreamChunk(kind="event", session=session, event=resolution_event),),
+            last_sequence=sequence,
+        )
+
     def list_sessions(self) -> tuple[StoredSessionSummary, ...]:
         return self._session_store.list_sessions(workspace=self._workspace)
 
-    def resume(self, session_id: str) -> RuntimeResponse:
-        return self._session_store.load_session(workspace=self._workspace, session_id=session_id)
+    def resume(
+        self,
+        session_id: str,
+        *,
+        approval_request_id: str | None = None,
+        approval_decision: PermissionResolution | None = None,
+    ) -> RuntimeResponse:
+        if approval_request_id is None and approval_decision is None:
+            return self._session_store.load_session(
+                workspace=self._workspace, session_id=session_id
+            )
+        return self.run(
+            RuntimeRequest(
+                prompt="",
+                session_id=session_id,
+                approval_request_id=approval_request_id,
+                approval_decision=approval_decision,
+            )
+        )
+
+    def _pending_approval_from_response(self, response: RuntimeResponse) -> PendingApproval:
+        if not response.events:
+            raise ValueError("waiting runtime response must include an approval event")
+        approval_event = response.events[-1]
+        if approval_event.event_type != "runtime.approval_requested":
+            raise ValueError("waiting runtime response must end with approval request")
+        payload = approval_event.payload
+        return PendingApproval(
+            request_id=str(payload["request_id"]),
+            tool_name=str(payload["tool"]),
+            arguments=cast(dict[str, object], payload.get("arguments", {})),
+            target_summary=str(payload.get("target_summary", "")),
+            reason=str(payload.get("reason", "")),
+            policy_mode="ask",
+        )
+
+    def _resume_pending_approval(self, request: RuntimeRequest) -> RuntimeResponse:
+        if request.session_id is None:
+            raise ValueError("approval resume requires a session id")
+        if request.approval_request_id is None or request.approval_decision is None:
+            raise ValueError("approval resume requires request id and decision")
+
+        stored = self._session_store.load_session(
+            workspace=self._workspace, session_id=request.session_id
+        )
+        pending = self._session_store.load_pending_approval(
+            workspace=self._workspace, session_id=request.session_id
+        )
+        if pending is None:
+            raise ValueError(f"no pending approval for session: {request.session_id}")
+        if pending.request_id != request.approval_request_id:
+            raise ValueError("approval request id does not match pending session approval")
+
+        session = SessionState(
+            session=stored.session.session,
+            status="running",
+            turn=stored.session.turn,
+            metadata=stored.session.metadata,
+        )
+        sequence = stored.events[-1].sequence + 1 if stored.events else 1
+        permission_outcome = self._approval_resolution_outcome(
+            session=session,
+            pending=pending,
+            decision=request.approval_decision,
+            sequence=sequence,
+        )
+        new_events = tuple(
+            chunk.event for chunk in permission_outcome.chunks if chunk.event is not None
+        )
+        if permission_outcome.denied:
+            response = RuntimeResponse(
+                session=permission_outcome.chunks[-1].session,
+                events=stored.events + new_events,
+                output=None,
+            )
+            self._session_store.clear_pending_approval(
+                workspace=self._workspace,
+                session_id=request.session_id,
+            )
+            self._session_store.save_run(
+                workspace=self._workspace,
+                request=RuntimeRequest(
+                    prompt=self._prompt_from_events(stored.events), session_id=request.session_id
+                ),
+                response=response,
+            )
+            return response
+
+        tool = self._tool_registry.resolve(pending.tool_name)
+        tool_call = ToolCall(tool_name=pending.tool_name, arguments=pending.arguments)
+        tool_result = tool.invoke(tool_call, workspace=self._workspace)
+        tool_completed_event = EventEnvelope(
+            session_id=session.session.id,
+            sequence=permission_outcome.last_sequence + 1,
+            event_type="runtime.tool_completed",
+            source="tool",
+            payload=tool_result.data,
+        )
+        completed_session = SessionState(
+            session=session.session,
+            status="completed",
+            turn=session.turn,
+            metadata=session.metadata,
+        )
+        graph_request = GraphRunRequest(
+            session=session,
+            prompt=self._prompt_from_events(stored.events),
+            available_tools=self._tool_registry.definitions(),
+            metadata={
+                **session.metadata,
+                "response_sequence": permission_outcome.last_sequence + 2,
+            },
+        )
+        graph_result = self._graph.finalize(graph_request, tool_result, session=completed_session)
+        response = RuntimeResponse(
+            session=graph_result.session,
+            events=stored.events + new_events + (tool_completed_event,) + graph_result.events,
+            output=graph_result.output,
+        )
+        self._session_store.clear_pending_approval(
+            workspace=self._workspace,
+            session_id=request.session_id,
+        )
+        self._session_store.save_run(
+            workspace=self._workspace,
+            request=RuntimeRequest(
+                prompt=self._prompt_from_events(stored.events), session_id=request.session_id
+            ),
+            response=response,
+        )
+        return response
+
+    @staticmethod
+    def _prompt_from_events(events: tuple[EventEnvelope, ...]) -> str:
+        if not events:
+            return ""
+        prompt = events[0].payload.get("prompt")
+        if isinstance(prompt, str):
+            return prompt
+        return ""
+
+
+@dataclass(frozen=True, slots=True)
+class _PermissionOutcome:
+    chunks: tuple[RuntimeStreamChunk, ...]
+    last_sequence: int
+    pending_approval: PendingApproval | None = None
+    denied: bool = False
