@@ -20,7 +20,7 @@ jobs:
               env:
                   OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
               with:
-                  model: opencode/qwen3.6-plus-free
+                  model: github-copilot/gpt-5.4
                   prompt: |
                       Review this pull request:
                       - Check for code quality issues
