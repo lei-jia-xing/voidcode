@@ -11,6 +11,7 @@ from typing import Protocol, cast, final
 
 from .contracts import RuntimeRequest, RuntimeResponse, RuntimeStreamChunk, validate_session_id
 from .events import EventEnvelope
+from .permission import PermissionResolution
 from .service import VoidCodeRuntime
 from .session import SessionRef, SessionState, StoredSessionSummary
 
@@ -22,7 +23,13 @@ class RuntimeTransport(Protocol):
 
     def list_sessions(self) -> tuple[StoredSessionSummary, ...]: ...
 
-    def resume(self, session_id: str) -> RuntimeResponse: ...
+    def resume(
+        self,
+        session_id: str,
+        *,
+        approval_request_id: str | None = None,
+        approval_decision: PermissionResolution | None = None,
+    ) -> RuntimeResponse: ...
 
 
 class Receive(Protocol):
@@ -80,14 +87,11 @@ class RuntimeTransportApp:
 
         session_prefix = "/api/sessions/"
         if path.startswith(session_prefix):
-            if method != "GET":
-                await self._json_response(
-                    send,
-                    status=405,
-                    payload={"error": "method not allowed"},
-                )
-                return
-            session_id = path.removeprefix(session_prefix)
+            session_path = path.removeprefix(session_prefix)
+            is_approval_route = session_path.endswith("/approval")
+            session_id = (
+                session_path.removesuffix("/approval") if is_approval_route else session_path
+            )
             try:
                 validate_session_id(session_id)
             except ValueError:
@@ -95,6 +99,27 @@ class RuntimeTransportApp:
                     send,
                     status=404,
                     payload={"error": "not found"},
+                )
+                return
+            if is_approval_route:
+                if method != "POST":
+                    await self._json_response(
+                        send,
+                        status=405,
+                        payload={"error": "method not allowed"},
+                    )
+                    return
+                await self._handle_approval_resolution(
+                    session_id=session_id,
+                    receive=receive,
+                    send=send,
+                )
+                return
+            if method != "GET":
+                await self._json_response(
+                    send,
+                    status=405,
+                    payload={"error": "method not allowed"},
                 )
                 return
             await self._handle_resume(session_id=session_id, send=send)
@@ -177,6 +202,36 @@ class RuntimeTransportApp:
             payload=self._serialize_runtime_response(response),
         )
 
+    async def _handle_approval_resolution(
+        self,
+        *,
+        session_id: str,
+        receive: Receive,
+        send: Send,
+    ) -> None:
+        try:
+            body = await self._read_body(receive)
+            approval_request_id, approval_decision = self._parse_approval_resolution_request(body)
+        except ValueError as exc:
+            await self._json_response(send, status=400, payload={"error": str(exc)})
+            return
+
+        runtime = self._runtime_factory()
+        try:
+            response = runtime.resume(
+                session_id,
+                approval_request_id=approval_request_id,
+                approval_decision=approval_decision,
+            )
+        except ValueError as exc:
+            await self._json_response(send, status=404, payload={"error": str(exc)})
+            return
+        await self._json_response(
+            send,
+            status=200,
+            payload=self._serialize_runtime_response(response),
+        )
+
     async def _json_response(self, send: Send, *, status: int, payload: object) -> None:
         body = json.dumps(payload, sort_keys=True).encode("utf-8")
         await send(
@@ -232,6 +287,29 @@ class RuntimeTransportApp:
             metadata=cast(dict[str, object], metadata),
             allocate_session_id=session_id is None,
         )
+
+    def _parse_approval_resolution_request(
+        self,
+        body: bytes,
+    ) -> tuple[str, PermissionResolution]:
+        try:
+            raw_payload = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("request body must be valid JSON") from exc
+
+        if not isinstance(raw_payload, dict):
+            raise ValueError("request body must be a JSON object")
+        payload = cast(dict[str, object], raw_payload)
+
+        request_id = payload.get("request_id")
+        if not isinstance(request_id, str) or not request_id:
+            raise ValueError("request_id must be a non-empty string")
+
+        decision = payload.get("decision")
+        if decision not in ("allow", "deny"):
+            raise ValueError("decision must be 'allow' or 'deny'")
+
+        return request_id, decision
 
     @staticmethod
     def _serialize_runtime_stream_chunk(chunk: RuntimeStreamChunk) -> dict[str, object]:

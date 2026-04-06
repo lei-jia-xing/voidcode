@@ -65,11 +65,25 @@ class RuntimeRunner(Protocol):
 
     def list_sessions(self) -> tuple[StoredSessionSummaryLike, ...]: ...
 
-    def resume(self, session_id: str) -> RuntimeResponseLike: ...
+    def resume(
+        self,
+        session_id: str,
+        *,
+        approval_request_id: str | None = None,
+        approval_decision: str | None = None,
+    ) -> RuntimeResponseLike: ...
 
 
 class RuntimeFactory(Protocol):
-    def __call__(self, *, workspace: Path) -> RuntimeRunner: ...
+    def __call__(
+        self,
+        *,
+        workspace: Path,
+        tool_registry: object | None = None,
+        graph: object | None = None,
+        permission_policy: object | None = None,
+        session_store: object | None = None,
+    ) -> RuntimeRunner: ...
 
 
 class RuntimeRequestFactory(Protocol):
@@ -357,6 +371,181 @@ def test_transport_replays_session_as_json_runtime_response(tmp_path: Path) -> N
         "runtime.tool_completed",
         "graph.response_ready",
     ]
+
+
+def test_transport_resolves_pending_approval_allow_over_http(tmp_path: Path) -> None:
+    runtime_request, runtime_class = _load_runtime_types()
+    create_runtime_app = _load_transport_app_factory()
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    permission_policy = cast(object, permission_module.PermissionPolicy(mode="ask"))
+
+    runtime = runtime_class(workspace=tmp_path, permission_policy=permission_policy)
+    waiting = runtime.run(
+        runtime_request(prompt="write danger.txt approved later", session_id="approval-session")
+    )
+    approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
+
+    app = create_runtime_app(
+        workspace=tmp_path,
+        runtime_factory=lambda: runtime_class(
+            workspace=tmp_path,
+            permission_policy=permission_policy,
+        ),
+    )
+    response = _run_app(
+        app,
+        method="POST",
+        path="/api/sessions/approval-session/approval",
+        body=json.dumps(
+            {
+                "request_id": approval_request_id,
+                "decision": "allow",
+            }
+        ).encode("utf-8"),
+    )
+    payload = cast(dict[str, object], response.json())
+
+    assert response.status == 200
+    assert payload["session"] == {
+        "session": {"id": "approval-session"},
+        "status": "completed",
+        "turn": 1,
+        "metadata": {"workspace": str(tmp_path)},
+    }
+    assert payload["output"] == "approved later"
+    assert [event["event_type"] for event in cast(list[dict[str, object]], payload["events"])] == [
+        "runtime.request_received",
+        "graph.tool_request_created",
+        "runtime.tool_lookup_succeeded",
+        "runtime.approval_requested",
+        "runtime.approval_resolved",
+        "runtime.tool_completed",
+        "graph.response_ready",
+    ]
+    assert (tmp_path / "danger.txt").read_text(encoding="utf-8") == "approved later"
+
+
+def test_transport_resolves_pending_approval_deny_over_http(tmp_path: Path) -> None:
+    runtime_request, runtime_class = _load_runtime_types()
+    create_runtime_app = _load_transport_app_factory()
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    permission_policy = cast(object, permission_module.PermissionPolicy(mode="ask"))
+
+    runtime = runtime_class(workspace=tmp_path, permission_policy=permission_policy)
+    waiting = runtime.run(
+        runtime_request(prompt="write danger.txt denied later", session_id="deny-session")
+    )
+    approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
+
+    app = create_runtime_app(
+        workspace=tmp_path,
+        runtime_factory=lambda: runtime_class(
+            workspace=tmp_path,
+            permission_policy=permission_policy,
+        ),
+    )
+    response = _run_app(
+        app,
+        method="POST",
+        path="/api/sessions/deny-session/approval",
+        body=json.dumps(
+            {
+                "request_id": approval_request_id,
+                "decision": "deny",
+            }
+        ).encode("utf-8"),
+    )
+    payload = cast(dict[str, object], response.json())
+
+    assert response.status == 200
+    assert payload["session"] == {
+        "session": {"id": "deny-session"},
+        "status": "failed",
+        "turn": 1,
+        "metadata": {"workspace": str(tmp_path)},
+    }
+    assert payload["output"] is None
+    assert [event["event_type"] for event in cast(list[dict[str, object]], payload["events"])] == [
+        "runtime.request_received",
+        "graph.tool_request_created",
+        "runtime.tool_lookup_succeeded",
+        "runtime.approval_requested",
+        "runtime.approval_resolved",
+        "runtime.failed",
+    ]
+    assert (tmp_path / "danger.txt").exists() is False
+
+
+@pytest.mark.parametrize(
+    ("body", "expected_error"),
+    [
+        (b"not json", "request body must be valid JSON"),
+        (json.dumps(["allow"]).encode("utf-8"), "request body must be a JSON object"),
+        (
+            json.dumps({"request_id": "req-1", "decision": "maybe"}).encode("utf-8"),
+            "decision must be 'allow' or 'deny'",
+        ),
+        (
+            json.dumps({"decision": "allow"}).encode("utf-8"),
+            "request_id must be a non-empty string",
+        ),
+    ],
+)
+def test_transport_rejects_invalid_approval_resolution_payload(
+    tmp_path: Path,
+    body: bytes,
+    expected_error: str,
+) -> None:
+    create_runtime_app = _load_transport_app_factory()
+    app = create_runtime_app(workspace=tmp_path)
+
+    response = _run_app(
+        app,
+        method="POST",
+        path="/api/sessions/approval-session/approval",
+        body=body,
+    )
+
+    assert response.status == 400
+    assert response.json() == {"error": expected_error}
+
+
+def test_transport_returns_not_found_when_approval_resolution_has_no_pending_request(
+    tmp_path: Path,
+) -> None:
+    sample_file = tmp_path / "sample.txt"
+    _ = sample_file.write_text("http replay\n", encoding="utf-8")
+    runtime_request, runtime_class = _load_runtime_types()
+    create_runtime_app = _load_transport_app_factory()
+
+    runtime = runtime_class(workspace=tmp_path)
+    _ = runtime.run(runtime_request(prompt="read sample.txt", session_id="completed-session"))
+
+    app = create_runtime_app(workspace=tmp_path)
+    response = _run_app(
+        app,
+        method="POST",
+        path="/api/sessions/completed-session/approval",
+        body=json.dumps(
+            {
+                "request_id": "missing-request",
+                "decision": "allow",
+            }
+        ).encode("utf-8"),
+    )
+
+    assert response.status == 404
+    assert response.json() == {"error": "no pending approval for session: completed-session"}
+
+
+def test_transport_rejects_non_post_method_for_approval_resolution_route(tmp_path: Path) -> None:
+    create_runtime_app = _load_transport_app_factory()
+    app = create_runtime_app(workspace=tmp_path)
+
+    response = _run_app(app, method="GET", path="/api/sessions/approval-session/approval")
+
+    assert response.status == 405
+    assert response.json() == {"error": "method not allowed"}
 
 
 def test_transport_streams_runtime_chunks_in_sse_order() -> None:
