@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, cast, final
@@ -9,13 +9,11 @@ from uuid import uuid4
 from ..graph.contracts import GraphRunRequest, GraphRunResult
 from ..graph.read_only_slice import DeterministicReadOnlyGraph
 from ..tools.contracts import Tool, ToolCall, ToolDefinition, ToolResult
-from ..tools.grep import GrepTool
-from ..tools.read_file import ReadFileTool
-from ..tools.shell_exec import ShellExecTool
-from ..tools.write_file import WriteFileTool
+from .acp import DisabledAcpAdapter
 from .config import RuntimeConfig, load_runtime_config
 from .contracts import RuntimeRequest, RuntimeResponse, RuntimeStreamChunk, validate_session_id
-from .events import EventEnvelope
+from .events import RUNTIME_SKILLS_LOADED, EventEnvelope
+from .lsp import DisabledLspManager
 from .permission import (
     PendingApproval,
     PermissionPolicy,
@@ -23,7 +21,9 @@ from .permission import (
     resolve_permission,
 )
 from .session import SessionRef, SessionState, StoredSessionSummary
+from .skills import SkillRegistry
 from .storage import SessionStore, SqliteSessionStore
+from .tool_provider import BuiltinToolProvider
 
 
 class GraphPlan(Protocol):
@@ -50,18 +50,12 @@ class ToolRegistry:
     tools: dict[str, Tool] = field(default_factory=dict)
 
     @classmethod
+    def from_tools(cls, tools: Iterable[Tool]) -> ToolRegistry:
+        return cls(tools={tool.definition.name: tool for tool in tools})
+
+    @classmethod
     def with_defaults(cls) -> ToolRegistry:
-        grep_tool = GrepTool()
-        read_tool = ReadFileTool()
-        shell_exec_tool = ShellExecTool()
-        write_tool = WriteFileTool()
-        tools: dict[str, Tool] = {
-            grep_tool.definition.name: grep_tool,
-            read_tool.definition.name: read_tool,
-            shell_exec_tool.definition.name: shell_exec_tool,
-            write_tool.definition.name: write_tool,
-        }
-        return cls(tools=tools)
+        return cls.from_tools(BuiltinToolProvider().provide_tools())
 
     def definitions(self) -> tuple[ToolDefinition, ...]:
         return tuple(tool.definition for tool in self.tools.values())
@@ -83,6 +77,9 @@ class VoidCodeRuntime:
     _config: RuntimeConfig
     _permission_policy: PermissionPolicy
     _session_store: SessionStore
+    _skill_registry: SkillRegistry
+    _lsp_manager: DisabledLspManager
+    _acp_adapter: DisabledAcpAdapter
 
     def __init__(
         self,
@@ -93,6 +90,9 @@ class VoidCodeRuntime:
         config: RuntimeConfig | None = None,
         permission_policy: PermissionPolicy | None = None,
         session_store: SessionStore | None = None,
+        skill_registry: SkillRegistry | None = None,
+        lsp_manager: DisabledLspManager | None = None,
+        acp_adapter: DisabledAcpAdapter | None = None,
     ) -> None:
         self._workspace = workspace.resolve()
         self._tool_registry = tool_registry or ToolRegistry.with_defaults()
@@ -102,6 +102,20 @@ class VoidCodeRuntime:
             mode=self._config.approval_mode
         )
         self._session_store = session_store or SqliteSessionStore()
+        self._skill_registry = skill_registry or self._build_skill_registry()
+        self._lsp_manager = lsp_manager or DisabledLspManager(self._config.lsp)
+        self._acp_adapter = acp_adapter or DisabledAcpAdapter(self._config.acp)
+
+    def _build_skill_registry(self) -> SkillRegistry:
+        skills_config = self._config.skills
+        if skills_config is None or skills_config.enabled is not True:
+            return SkillRegistry()
+        if skills_config.paths:
+            return SkillRegistry.discover(
+                workspace=self._workspace,
+                search_paths=skills_config.paths,
+            )
+        return SkillRegistry.discover(workspace=self._workspace)
 
     def run(self, request: RuntimeRequest) -> RuntimeResponse:
         request = self._validated_request(request)
@@ -182,6 +196,19 @@ class VoidCodeRuntime:
                 event_type="runtime.request_received",
                 source="runtime",
                 payload={"prompt": request.prompt},
+            ),
+        )
+
+        sequence += 1
+        yield RuntimeStreamChunk(
+            kind="event",
+            session=session,
+            event=EventEnvelope(
+                session_id=session.session.id,
+                sequence=sequence,
+                event_type=RUNTIME_SKILLS_LOADED,
+                source="runtime",
+                payload={"skills": self._loaded_skill_names()},
             ),
         )
 
@@ -286,7 +313,12 @@ class VoidCodeRuntime:
         except Exception as exc:
             yield self._failed_chunk(session=session, sequence=sequence + 1, error=str(exc))
             raise
-        for event in graph_result.events:
+        renumbered_graph_events = self._renumber_events(
+            graph_result.events,
+            session_id=session.session.id,
+            start_sequence=sequence + 1,
+        )
+        for event in renumbered_graph_events:
             yield RuntimeStreamChunk(kind="event", session=graph_result.session, event=event)
 
         if graph_result.output is not None:
@@ -677,6 +709,9 @@ class VoidCodeRuntime:
             )
             for index, event in enumerate(events)
         )
+
+    def _loaded_skill_names(self) -> list[str]:
+        return sorted(self._skill_registry.skills)
 
 
 @dataclass(frozen=True, slots=True)
