@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import os
 import sqlite3
 import subprocess
@@ -451,6 +452,46 @@ def test_runtime_executes_read_only_slice_and_emits_events(tmp_path: Path) -> No
     ]
     assert result.session.status == "completed"
     assert result.output == "alpha\nbeta\n"
+
+
+def test_runtime_uses_repo_local_config_to_allow_write_requests_without_explicit_policy(
+    tmp_path: Path,
+) -> None:
+    runtime_request, runtime_class = _load_runtime_types()
+    (tmp_path / ".voidcode.json").write_text(
+        json.dumps({"approval_mode": "allow"}),
+        encoding="utf-8",
+    )
+
+    runtime = runtime_class(workspace=tmp_path)
+    result = runtime.run(
+        runtime_request(
+            prompt="write configured.txt config file approved", session_id="config-file"
+        )
+    )
+
+    assert result.session.status == "completed"
+    assert result.events[3].event_type == "runtime.approval_resolved"
+    assert result.events[3].payload["decision"] == "allow"
+    assert (tmp_path / "configured.txt").read_text(encoding="utf-8") == "config file approved"
+
+
+def test_runtime_uses_environment_config_to_allow_write_requests_without_code_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_request, runtime_class = _load_runtime_types()
+    monkeypatch.setenv("VOIDCODE_APPROVAL_MODE", "allow")
+
+    runtime = runtime_class(workspace=tmp_path)
+    result = runtime.run(
+        runtime_request(prompt="write env.txt env approved", session_id="env-file")
+    )
+
+    assert result.session.status == "completed"
+    assert result.events[3].event_type == "runtime.approval_resolved"
+    assert result.events[3].payload["decision"] == "allow"
+    assert (tmp_path / "env.txt").read_text(encoding="utf-8") == "env approved"
 
 
 def test_runtime_executes_grep_read_only_slice_and_emits_events(tmp_path: Path) -> None:

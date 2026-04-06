@@ -321,6 +321,31 @@ def test_transport_lists_sessions_as_json(tmp_path: Path) -> None:
     ]
 
 
+def test_create_runtime_app_forwards_config_to_default_runtime_factory(tmp_path: Path) -> None:
+    runtime_module = importlib.import_module("voidcode.runtime.http")
+    config = object()
+    captured: list[tuple[Path, object | None]] = []
+
+    class StubRuntime:
+        def __init__(self, *, workspace: Path, config: object | None = None) -> None:
+            captured.append((workspace, config))
+
+        def run_stream(self, request: RuntimeRequestLike) -> Iterator[StreamChunkLike]:
+            raise AssertionError(f"run_stream should not be called: {request}")
+
+        def list_sessions(self) -> tuple[StoredSessionSummaryLike, ...]:
+            return ()
+
+        def resume(self, session_id: str, **_: object) -> RuntimeResponseLike:
+            raise AssertionError(f"resume should not be called: {session_id}")
+
+    with patch.object(runtime_module, "VoidCodeRuntime", StubRuntime):
+        app = runtime_module.create_runtime_app(workspace=tmp_path, config=config)
+        _ = app._runtime_factory()
+
+    assert captured == [(tmp_path, config)]
+
+
 def test_transport_handles_lifespan_startup_and_shutdown(tmp_path: Path) -> None:
     create_runtime_app = _load_transport_app_factory()
     app = create_runtime_app(workspace=tmp_path)
