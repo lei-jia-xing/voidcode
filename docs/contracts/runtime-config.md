@@ -8,7 +8,17 @@ Define the minimal configuration surface required to make the MVP runtime genuin
 
 ## Status
 
-The current runtime accepts `workspace`, `session_id`, and arbitrary request metadata, but there is no documented MVP config surface yet.
+The current runtime loads repo-local configuration from `.voidcode.json` for these implemented domains:
+
+- `approval_mode`
+- `model`
+- `hooks`
+- `tools`
+- `skills`
+- `lsp`
+- `acp`
+
+Only `approval_mode` currently has multi-source precedence logic. The extension domains in this slice are config-schema support only.
 
 ## MVP configuration domains
 
@@ -18,6 +28,9 @@ The MVP config surface should cover only these areas:
 - model/provider selection
 - approval mode
 - hook enablement/defaults
+- tool discovery/provider defaults
+- skill discovery defaults
+- extension infrastructure toggles for LSP and ACP
 - client-visible session settings needed for resume
 
 ## Planned minimal config shape
@@ -31,6 +44,23 @@ The MVP contract should be able to represent a runtime configuration object with
   "approval_mode": "ask",
   "hooks": {
     "enabled": true
+  },
+  "tools": {
+    "builtin": {
+      "enabled": true
+    },
+    "paths": [".voidcode/tools"]
+  },
+  "skills": {
+    "enabled": true,
+    "paths": [".voidcode/skills"]
+  },
+  "lsp": {
+    "enabled": false,
+    "servers": {}
+  },
+  "acp": {
+    "enabled": false
   }
 }
 ```
@@ -41,6 +71,35 @@ Field intent:
 - `model`: provider/model identifier in OpenCode `provider/model` format
 - `approval_mode`: minimum execution policy mode used by runtime-governed tools
 - `hooks`: minimal switch/config object for runtime hook behavior
+- `tools`: minimal built-in tool enablement plus additional tool search paths
+- `skills`: minimal skill discovery enablement plus additional skill search paths
+- `lsp`: minimal infrastructure config container for future language-server integration
+- `acp`: minimal infrastructure enablement switch for future ACP integration
+
+## Current implemented repo-local shape
+
+The current `.voidcode.json` parser accepts this repo-local shape:
+
+- `approval_mode`: one of `allow`, `deny`, `ask`
+- `model`: string
+- `hooks.enabled`: boolean
+- `tools.builtin.enabled`: boolean
+- `tools.paths`: array of strings
+- `skills.enabled`: boolean
+- `skills.paths`: array of strings
+- `lsp.enabled`: boolean
+- `lsp.servers`: object
+- `acp.enabled`: boolean
+
+All extension-domain fields are optional. When omitted, they resolve to `None` at the domain level, and array fields default to empty tuples inside a provided domain object.
+
+## Infrastructure-only note for LSP and ACP
+
+`lsp` and `acp` are configuration-only domains in the current slice.
+
+- They exist so later runtime startup work can consume stable typed config.
+- They do **not** mean LSP-backed tools or ACP transport are active today.
+- `lsp.servers` is currently a shallow object container only; no server validation or startup behavior is implemented here.
 
 ## Bootstrap rule for workspace
 
@@ -51,6 +110,8 @@ It must be determined first so the runtime can discover any repo-local config th
 1. explicit runtime/bootstrap input chooses the workspace root
 2. repo-local config may then be discovered inside that workspace
 3. normal runtime config precedence applies to non-bootstrap fields such as `model`, `approval_mode`, and `hooks`
+
+For the currently implemented loader, repo-local values for `model`, `hooks`, `tools`, `skills`, `lsp`, and `acp` are loaded directly from `.voidcode.json`, while `approval_mode` keeps its explicit > repo-local > environment > default precedence behavior.
 
 ## Current code anchors
 
@@ -106,7 +167,7 @@ Current concrete storage/mapping points in the codebase are:
 - the SQLite session store persists `SessionState.metadata` as part of the stored session payload
 - the SQLite session store also persists `workspace` as a first-class column in `sessions.workspace`, and uses it for session listing and lookup
 
-Today, this means the config contract exists at the documentation level, while the concrete stable public config schema is still to be implemented.
+Today, the repo-local schema above is implemented, while broader session-override and resume-specific config behavior remains intentionally narrow and only partially implemented.
 
 ## Invariants
 
@@ -117,8 +178,8 @@ Today, this means the config contract exists at the documentation level, while t
 
 ## Current limitations
 
-- no formal repo config file exists yet
-- no documented env var contract exists yet
+- repo-local config is intentionally shallow for extension domains and does not yet wire runtime behavior
+- only `approval_mode` currently has documented environment-variable support (`VOIDCODE_APPROVAL_MODE`)
 - current request metadata is flexible but not a stable public schema
 
 ## Non-goals

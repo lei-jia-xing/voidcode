@@ -20,10 +20,42 @@ class RuntimeHooksConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class RuntimeToolsBuiltinConfig:
+    enabled: bool | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeToolsConfig:
+    builtin: RuntimeToolsBuiltinConfig | None = None
+    paths: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeSkillsConfig:
+    enabled: bool | None = None
+    paths: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeLspConfig:
+    enabled: bool | None = None
+    servers: Mapping[str, object] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeAcpConfig:
+    enabled: bool | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class RuntimeConfig:
     approval_mode: PermissionDecision = "ask"
     model: str | None = None
     hooks: RuntimeHooksConfig | None = None
+    tools: RuntimeToolsConfig | None = None
+    skills: RuntimeSkillsConfig | None = None
+    lsp: RuntimeLspConfig | None = None
+    acp: RuntimeAcpConfig | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +63,10 @@ class RuntimeConfigOverrides:
     approval_mode: PermissionDecision | None = None
     model: str | None = None
     hooks: RuntimeHooksConfig | None = None
+    tools: RuntimeToolsConfig | None = None
+    skills: RuntimeSkillsConfig | None = None
+    lsp: RuntimeLspConfig | None = None
+    acp: RuntimeAcpConfig | None = None
 
 
 def runtime_config_path(workspace: Path) -> Path:
@@ -55,6 +91,10 @@ def load_runtime_config(
         ),
         model=repo_local.model,
         hooks=repo_local.hooks,
+        tools=repo_local.tools,
+        skills=repo_local.skills,
+        lsp=repo_local.lsp,
+        acp=repo_local.acp,
     )
 
 
@@ -80,6 +120,18 @@ def _load_repo_local_config(workspace: Path) -> RuntimeConfigOverrides:
     raw_hooks = payload.get("hooks")
     hooks = _parse_hooks_config(raw_hooks)
 
+    raw_tools = payload.get("tools")
+    tools = _parse_tools_config(raw_tools)
+
+    raw_skills = payload.get("skills")
+    skills = _parse_skills_config(raw_skills)
+
+    raw_lsp = payload.get("lsp")
+    lsp = _parse_lsp_config(raw_lsp)
+
+    raw_acp = payload.get("acp")
+    acp = _parse_acp_config(raw_acp)
+
     raw_approval_mode = payload.get("approval_mode")
     parsed_approval_mode = _parse_approval_mode(
         raw_approval_mode,
@@ -91,6 +143,10 @@ def _load_repo_local_config(workspace: Path) -> RuntimeConfigOverrides:
         approval_mode=parsed_approval_mode,
         model=raw_model,
         hooks=hooks,
+        tools=tools,
+        skills=skills,
+        lsp=lsp,
+        acp=acp,
     )
 
 
@@ -106,6 +162,97 @@ def _parse_hooks_config(raw_hooks: object) -> RuntimeHooksConfig | None:
         raise ValueError("runtime config field 'hooks.enabled' must be a boolean when provided")
 
     return RuntimeHooksConfig(enabled=enabled)
+
+
+def _parse_tools_config(raw_tools: object) -> RuntimeToolsConfig | None:
+    if raw_tools is None:
+        return None
+    if not isinstance(raw_tools, dict):
+        raise ValueError("runtime config field 'tools' must be an object when provided")
+
+    tools_payload = cast(dict[str, object], raw_tools)
+    builtin = _parse_tools_builtin_config(tools_payload.get("builtin"))
+    paths = _parse_string_list(tools_payload.get("paths"), field_path="tools.paths")
+    return RuntimeToolsConfig(builtin=builtin, paths=paths)
+
+
+def _parse_tools_builtin_config(raw_builtin: object) -> RuntimeToolsBuiltinConfig | None:
+    if raw_builtin is None:
+        return None
+    if not isinstance(raw_builtin, dict):
+        raise ValueError("runtime config field 'tools.builtin' must be an object when provided")
+
+    builtin_payload = cast(dict[str, object], raw_builtin)
+    enabled = _parse_optional_bool(
+        builtin_payload.get("enabled"), field_path="tools.builtin.enabled"
+    )
+    return RuntimeToolsBuiltinConfig(enabled=enabled)
+
+
+def _parse_skills_config(raw_skills: object) -> RuntimeSkillsConfig | None:
+    if raw_skills is None:
+        return None
+    if not isinstance(raw_skills, dict):
+        raise ValueError("runtime config field 'skills' must be an object when provided")
+
+    skills_payload = cast(dict[str, object], raw_skills)
+    enabled = _parse_optional_bool(skills_payload.get("enabled"), field_path="skills.enabled")
+    paths = _parse_string_list(skills_payload.get("paths"), field_path="skills.paths")
+    return RuntimeSkillsConfig(enabled=enabled, paths=paths)
+
+
+def _parse_lsp_config(raw_lsp: object) -> RuntimeLspConfig | None:
+    if raw_lsp is None:
+        return None
+    if not isinstance(raw_lsp, dict):
+        raise ValueError("runtime config field 'lsp' must be an object when provided")
+
+    lsp_payload = cast(dict[str, object], raw_lsp)
+    enabled = _parse_optional_bool(lsp_payload.get("enabled"), field_path="lsp.enabled")
+    servers = _parse_object_container(lsp_payload.get("servers"), field_path="lsp.servers")
+    return RuntimeLspConfig(enabled=enabled, servers=servers)
+
+
+def _parse_acp_config(raw_acp: object) -> RuntimeAcpConfig | None:
+    if raw_acp is None:
+        return None
+    if not isinstance(raw_acp, dict):
+        raise ValueError("runtime config field 'acp' must be an object when provided")
+
+    acp_payload = cast(dict[str, object], raw_acp)
+    enabled = _parse_optional_bool(acp_payload.get("enabled"), field_path="acp.enabled")
+    return RuntimeAcpConfig(enabled=enabled)
+
+
+def _parse_optional_bool(raw_value: object, *, field_path: str) -> bool | None:
+    if raw_value is None:
+        return None
+    if not isinstance(raw_value, bool):
+        raise ValueError(f"runtime config field '{field_path}' must be a boolean when provided")
+    return raw_value
+
+
+def _parse_string_list(raw_value: object, *, field_path: str) -> tuple[str, ...]:
+    if raw_value is None:
+        return ()
+    if not isinstance(raw_value, list):
+        raise ValueError(f"runtime config field '{field_path}' must be an array when provided")
+
+    raw_items = cast(list[object], raw_value)
+    parsed_items: list[str] = []
+    for index, item in enumerate(raw_items):
+        if not isinstance(item, str):
+            raise ValueError(f"runtime config field '{field_path}[{index}]' must be a string")
+        parsed_items.append(item)
+    return tuple(parsed_items)
+
+
+def _parse_object_container(raw_value: object, *, field_path: str) -> dict[str, object] | None:
+    if raw_value is None:
+        return None
+    if not isinstance(raw_value, dict):
+        raise ValueError(f"runtime config field '{field_path}' must be an object when provided")
+    return cast(dict[str, object], raw_value)
 
 
 def _resolve_approval_mode(

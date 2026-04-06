@@ -11,7 +11,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 from voidcode.runtime.config import (
     APPROVAL_MODE_ENV_VAR,
     RUNTIME_CONFIG_FILE_NAME,
+    RuntimeAcpConfig,
     RuntimeHooksConfig,
+    RuntimeLspConfig,
+    RuntimeSkillsConfig,
+    RuntimeToolsBuiltinConfig,
+    RuntimeToolsConfig,
     load_runtime_config,
     runtime_config_path,
 )
@@ -44,6 +49,45 @@ def test_runtime_config_prefers_repo_file_over_environment(tmp_path: Path) -> No
     assert config.approval_mode == "allow"
     assert config.model == "opencode/gpt-5.4"
     assert config.hooks == RuntimeHooksConfig(enabled=True)
+
+
+def test_runtime_config_parses_extension_domains(tmp_path: Path) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps(
+            {
+                "tools": {
+                    "builtin": {"enabled": True},
+                    "paths": [".voidcode/tools", "vendor/tools"],
+                },
+                "skills": {
+                    "enabled": True,
+                    "paths": [".voidcode/skills"],
+                },
+                "lsp": {
+                    "enabled": False,
+                    "servers": {"pyright": {"command": ["pyright-langserver", "--stdio"]}},
+                },
+                "acp": {"enabled": False},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.tools == RuntimeToolsConfig(
+        builtin=RuntimeToolsBuiltinConfig(enabled=True),
+        paths=(".voidcode/tools", "vendor/tools"),
+    )
+    assert config.skills == RuntimeSkillsConfig(
+        enabled=True,
+        paths=(".voidcode/skills",),
+    )
+    assert config.lsp == RuntimeLspConfig(
+        enabled=False,
+        servers={"pyright": {"command": ["pyright-langserver", "--stdio"]}},
+    )
+    assert config.acp == RuntimeAcpConfig(enabled=False)
 
 
 def test_runtime_config_prefers_explicit_override_over_repo_file_and_environment(
@@ -82,6 +126,61 @@ def test_runtime_config_rejects_invalid_repo_local_approval_mode(tmp_path: Path)
     )
 
     with pytest.raises(ValueError, match="approval_mode"):
+        _ = load_runtime_config(tmp_path, env={})
+
+
+@pytest.mark.parametrize(
+    ("payload", "match"),
+    [
+        pytest.param({"tools": []}, "runtime config field 'tools'", id="tools-shape"),
+        pytest.param(
+            {"tools": {"builtin": {"enabled": "yes"}}},
+            "runtime config field 'tools.builtin.enabled'",
+            id="tools-builtin-enabled-type",
+        ),
+        pytest.param(
+            {"tools": {"paths": [".voidcode/tools", 3]}},
+            "runtime config field 'tools.paths\\[1\\]'",
+            id="tools-path-item-type",
+        ),
+        pytest.param({"skills": []}, "runtime config field 'skills'", id="skills-shape"),
+        pytest.param(
+            {"skills": {"enabled": "yes"}},
+            "runtime config field 'skills.enabled'",
+            id="skills-enabled-type",
+        ),
+        pytest.param(
+            {"skills": {"paths": [False]}},
+            "runtime config field 'skills.paths\\[0\\]'",
+            id="skills-path-item-type",
+        ),
+        pytest.param({"lsp": []}, "runtime config field 'lsp'", id="lsp-shape"),
+        pytest.param(
+            {"lsp": {"enabled": "no"}},
+            "runtime config field 'lsp.enabled'",
+            id="lsp-enabled-type",
+        ),
+        pytest.param(
+            {"lsp": {"servers": []}},
+            "runtime config field 'lsp.servers'",
+            id="lsp-servers-shape",
+        ),
+        pytest.param({"acp": []}, "runtime config field 'acp'", id="acp-shape"),
+        pytest.param(
+            {"acp": {"enabled": "no"}},
+            "runtime config field 'acp.enabled'",
+            id="acp-enabled-type",
+        ),
+    ],
+)
+def test_runtime_config_rejects_invalid_extension_domain_shapes(
+    tmp_path: Path,
+    payload: dict[str, object],
+    match: str,
+) -> None:
+    runtime_config_path(tmp_path).write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=match):
         _ = load_runtime_config(tmp_path, env={})
 
 
