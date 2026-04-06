@@ -9,7 +9,7 @@ Use GitHub issues and milestones as the executable backlog. This document define
 VoidCode already has a truthful pre-MVP foundation:
 
 - Python 3.14 repo/tooling baseline
-- deterministic CLI → runtime → graph → tool read-only slice
+- deterministic CLI → runtime → graph → stable single-agent loop
 - local session persistence and resume
 - Bun frontend shell with mocked state
 
@@ -71,11 +71,11 @@ Goal: make the remaining work testable before building more product surface.
 
 ### TODO
 
-- [ ] define the runtime event schema used by CLI/TUI/web clients
-- [ ] define the approval interaction schema for `allow`, `deny`, and `ask`
-- [ ] define the client-facing API contract for session list/load/run/stream
-- [ ] define the minimal runtime configuration surface for MVP
-- [ ] document what counts as MVP done vs. post-MVP expansion
+- [x] define the runtime event schema used by CLI/TUI/web clients
+- [x] define the approval interaction schema for `allow`, `deny`, and `ask`
+- [x] define the client-facing API contract for session list/load/run/stream
+- [x] define the minimal runtime configuration surface for MVP
+- [x] document what counts as MVP done vs. post-MVP expansion
 
 ### Acceptance criteria
 
@@ -86,16 +86,16 @@ Goal: make the remaining work testable before building more product surface.
 
 ## Phase 1 — stable headless runtime loop
 
-Goal: move from the current deterministic slice to one governed single-agent execution loop.
+Goal: move from the initial deterministic foundation to a governed single-agent execution loop.
 
 ### TODO
 
-- [ ] expand graph flow beyond the current read-only slice into a real turn loop
-- [ ] add built-in search/file/system tools through the runtime pipeline
-- [ ] implement the permission engine for writes and risky shell actions
+- [x] expand graph flow beyond the current read-only slice into a real turn loop
+- [x] add built-in search/file/system tools through the runtime pipeline
+- [x] implement the permission engine for writes and risky shell actions
 - [ ] implement hook registration and hook execution logging
-- [ ] make runtime event emission complete enough for client rendering
-- [ ] define failure handling and retry behavior for interrupted turns
+- [x] make runtime event emission complete enough for client rendering
+- [x] define failure handling and retry behavior for interrupted turns
 
 ### Acceptance criteria
 

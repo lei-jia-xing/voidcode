@@ -44,39 +44,45 @@ EventEnvelope(
 
 ## Known event types emitted today
 
-From `src/voidcode/runtime/service.py` and the deterministic read-only slice:
+From `src/voidcode/runtime/service.py` and the stable single-agent loop:
 
 - `runtime.request_received`
 - `runtime.skills_loaded`
+- `graph.loop_step`
+- `graph.model_turn`
 - `graph.tool_request_created`
 - `runtime.tool_lookup_succeeded`
+- `runtime.approval_requested`
+- `runtime.approval_resolved`
 - `runtime.permission_resolved`
 - `runtime.tool_completed`
+- `runtime.failed`
+- `graph.response_ready`
 
-Additional graph finalization events may be emitted by the graph layer and are part of the same ordered stream.
-When that happens, the runtime assigns their final `sequence` values after the preceding runtime event rather than preserving any graph-local hardcoded sequence numbers.
+All events emitted during a turn, including those from the graph, are re-sequenced by the runtime into a single monotonically increasing sequence per response or replay.
+This ensures that graph-local sequence values cannot collide with runtime-inserted events across approval-resumes.
 
-## Frozen additive vocabulary for future prototype graph modes
+## Additive vocabulary for future multi-agent modes
 
-These shared event names are frozen now in `src/voidcode/runtime/events.py`, but they are not emitted by the current deterministic fallback runtime yet:
+These shared event names are defined in `src/voidcode/runtime/events.py`, but they are not emitted by the current single-agent loop yet:
 
-- `graph.model_turn`
-- `graph.loop_step`
 - `runtime.memory_refreshed`
 
-Future graph modes may add ordered events between existing phases. The deterministic fallback sequence below remains canonical for current behavior.
+## Current single-agent loop event sequence
 
-## Current integration-test event sequence
-
-The current deterministic read-only integration tests assert this ordered sequence:
+The runtime and integration tests assert this ordered sequence for a turn with a single approved tool:
 
 1. `runtime.request_received`
 2. `runtime.skills_loaded`
-3. `graph.tool_request_created`
-4. `runtime.tool_lookup_succeeded`
-5. `runtime.permission_resolved`
-6. `runtime.tool_completed`
-7. `graph.response_ready`
+3. `graph.loop_step`
+4. `graph.model_turn`
+5. `graph.tool_request_created`
+6. `runtime.tool_lookup_succeeded`
+7. `runtime.approval_requested` (for `ask` policy) OR `runtime.approval_resolved` (for `allow`/`deny` policy) OR `runtime.permission_resolved` (for read-only)
+8. `runtime.approval_resolved` (only if resumed after `ask`)
+9. `runtime.tool_completed`
+10. `graph.loop_step`
+11. `graph.response_ready`
 
 This sequence is the most concrete client-visible MVP event flow implemented today.
 Future graph modes may add ordered events between these phases, but this fallback order remains the canonical deterministic sequence.
