@@ -211,3 +211,22 @@ def test_runtime_stream_chunk_validates_required_fields() -> None:
 
     with pytest.raises(ValueError, match="output chunks require output content"):
         _ = runtime.RuntimeStreamChunk(kind="output", session=session)
+
+
+def test_runtime_contracts_allow_additive_future_event_types() -> None:
+    runtime = _runtime_module()
+    events_module = importlib.import_module("voidcode.runtime.events")
+
+    session = runtime.SessionState(session=runtime.SessionRef(id="session-1"))
+    event = runtime.EventEnvelope(
+        session_id="session-1",
+        sequence=1,
+        event_type=events_module.RUNTIME_MEMORY_REFRESHED,
+        source="runtime",
+        payload={"summary_version": 2},
+    )
+    response = runtime.RuntimeResponse(session=session, events=(event,))
+
+    assert get_type_hints(runtime.EventEnvelope)["event_type"] is str
+    assert response.events[0].event_type == events_module.RUNTIME_MEMORY_REFRESHED
+    assert asdict(response.events[0])["event_type"] == events_module.RUNTIME_MEMORY_REFRESHED

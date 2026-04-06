@@ -390,6 +390,7 @@ def test_transport_replays_session_as_json_runtime_response(tmp_path: Path) -> N
     }
     assert [event["event_type"] for event in cast(list[dict[str, object]], payload["events"])] == [
         "runtime.request_received",
+        "runtime.skills_loaded",
         "graph.tool_request_created",
         "runtime.tool_lookup_succeeded",
         "runtime.permission_resolved",
@@ -440,6 +441,7 @@ def test_transport_resolves_pending_approval_allow_over_http(tmp_path: Path) -> 
     assert payload["output"] == "approved later"
     assert [event["event_type"] for event in cast(list[dict[str, object]], payload["events"])] == [
         "runtime.request_received",
+        "runtime.skills_loaded",
         "graph.tool_request_created",
         "runtime.tool_lookup_succeeded",
         "runtime.approval_requested",
@@ -492,6 +494,7 @@ def test_transport_resolves_pending_approval_deny_over_http(tmp_path: Path) -> N
     assert payload["output"] is None
     assert [event["event_type"] for event in cast(list[dict[str, object]], payload["events"])] == [
         "runtime.request_received",
+        "runtime.skills_loaded",
         "graph.tool_request_created",
         "runtime.tool_lookup_succeeded",
         "runtime.approval_requested",
@@ -658,6 +661,56 @@ def test_transport_streams_runtime_chunks_in_sse_order() -> None:
     assert payloads[-1]["output"] == "transported"
 
 
+def test_transport_serializes_additive_future_event_type_unchanged() -> None:
+    create_runtime_app = _load_transport_app_factory()
+    runtime_stream_chunk, session_ref, session_state, event_envelope = _load_stream_types()
+    events_module = importlib.import_module("voidcode.runtime.events")
+    future_event_type = cast(str, events_module.RUNTIME_MEMORY_REFRESHED)
+    session = session_state(
+        session=session_ref(id="future-event-session"),
+        status="running",
+        turn=1,
+        metadata={"workspace": "/tmp/workspace"},
+    )
+
+    class StubRuntime:
+        def run_stream(self, request: RuntimeRequestLike) -> Iterator[StreamChunkLike]:
+            assert request.prompt == "future event please"
+            yield runtime_stream_chunk(
+                kind="event",
+                session=session,
+                event=event_envelope(
+                    session_id="future-event-session",
+                    sequence=1,
+                    event_type=future_event_type,
+                    source="runtime",
+                    payload={"count": 1},
+                ),
+            )
+
+        def list_sessions(self) -> tuple[StoredSessionSummaryLike, ...]:
+            raise AssertionError("list_sessions should not be called")
+
+        def resume(self, session_id: str) -> RuntimeResponseLike:
+            raise AssertionError(f"resume should not be called: {session_id}")
+
+    app = create_runtime_app(
+        workspace=Path("/tmp/workspace"),
+        runtime_factory=lambda: StubRuntime(),
+    )
+
+    response = _run_app(
+        app,
+        method="POST",
+        path="/api/runtime/run/stream",
+        body=json.dumps({"prompt": "future event please"}).encode("utf-8"),
+    )
+    payloads = _parse_sse_payloads(response)
+
+    assert response.status == 200
+    assert cast(dict[str, object], payloads[0]["event"])["event_type"] == future_event_type
+
+
 def test_transport_persists_streamed_run_for_session_listing_and_replay(tmp_path: Path) -> None:
     sample_file = tmp_path / "sample.txt"
     _ = sample_file.write_text("stream replay\n", encoding="utf-8")
@@ -690,6 +743,7 @@ def test_transport_persists_streamed_run_for_session_listing_and_replay(tmp_path
         "event",
         "event",
         "event",
+        "event",
         "output",
     ]
     assert list_response.status == 200
@@ -714,6 +768,7 @@ def test_transport_persists_streamed_run_for_session_listing_and_replay(tmp_path
         event["event_type"] for event in cast(list[dict[str, object]], replay_payload["events"])
     ] == [
         "runtime.request_received",
+        "runtime.skills_loaded",
         "graph.tool_request_created",
         "runtime.tool_lookup_succeeded",
         "runtime.permission_resolved",
@@ -895,7 +950,7 @@ def test_transport_persists_failed_stream_for_replay(tmp_path: Path) -> None:
     assert stream_response.status == 200
     assert payloads[-1]["event"] == {
         "session_id": "failed-stream-session",
-        "sequence": 5,
+        "sequence": 6,
         "event_type": "runtime.failed",
         "source": "runtime",
         "payload": {"error": "boom from transport stream"},
@@ -921,6 +976,7 @@ def test_transport_persists_failed_stream_for_replay(tmp_path: Path) -> None:
         event["event_type"] for event in cast(list[dict[str, object]], replay_payload["events"])
     ] == [
         "runtime.request_received",
+        "runtime.skills_loaded",
         "graph.tool_request_created",
         "runtime.tool_lookup_succeeded",
         "runtime.permission_resolved",

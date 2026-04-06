@@ -114,6 +114,8 @@ Current integration tests verify that resume returns the stored output and the s
 - clients do not call tools directly
 - clients do not invent private session state that diverges from persisted runtime state
 - resume returns a replayable stored response, not an inferred reconstruction from UI state
+- clients must preserve ordered runtime events as delivered, including additive future event types inserted by later graph modes between existing phases
+- clients must tolerate additional ordered additive events without assuming the deterministic fallback event list is exhaustive
 
 ## Future HTTP/streaming mapping
 
@@ -125,6 +127,7 @@ When the HTTP layer exists, it should preserve these same operation boundaries:
 - subscribe to or receive ordered runtime events
 
 This document intentionally defines the contract independently of FastAPI/Starlette routing details.
+The deterministic fallback event sequence remains canonical today, while future graph modes may add ordered events between existing phases without changing these API boundaries.
 
 ## Non-goals
 

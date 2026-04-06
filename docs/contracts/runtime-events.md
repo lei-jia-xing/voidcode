@@ -9,6 +9,8 @@ Define the MVP event vocabulary emitted by the runtime for client rendering.
 ## Status
 
 This schema documents the current single-agent MVP contract. It is intentionally narrower than any future multi-agent protocol.
+The deterministic fallback sequence remains canonical for the current runtime, while future graph modes may add ordered events between existing phases without changing current fallback behavior.
+For both fresh runs and approval resumes, the runtime renumbers graph finalization events into the active runtime sequence so graph-side fixed sequence values cannot collide with inserted runtime events.
 
 ## Canonical envelope
 
@@ -45,25 +47,39 @@ EventEnvelope(
 From `src/voidcode/runtime/service.py` and the deterministic read-only slice:
 
 - `runtime.request_received`
+- `runtime.skills_loaded`
 - `graph.tool_request_created`
 - `runtime.tool_lookup_succeeded`
 - `runtime.permission_resolved`
 - `runtime.tool_completed`
 
 Additional graph finalization events may be emitted by the graph layer and are part of the same ordered stream.
+When that happens, the runtime assigns their final `sequence` values after the preceding runtime event rather than preserving any graph-local hardcoded sequence numbers.
+
+## Frozen additive vocabulary for future prototype graph modes
+
+These shared event names are frozen now in `src/voidcode/runtime/events.py`, but they are not emitted by the current deterministic fallback runtime yet:
+
+- `graph.model_turn`
+- `graph.loop_step`
+- `runtime.memory_refreshed`
+
+Future graph modes may add ordered events between existing phases. The deterministic fallback sequence below remains canonical for current behavior.
 
 ## Current integration-test event sequence
 
 The current deterministic read-only integration tests assert this ordered sequence:
 
 1. `runtime.request_received`
-2. `graph.tool_request_created`
-3. `runtime.tool_lookup_succeeded`
-4. `runtime.permission_resolved`
-5. `runtime.tool_completed`
-6. `graph.response_ready`
+2. `runtime.skills_loaded`
+3. `graph.tool_request_created`
+4. `runtime.tool_lookup_succeeded`
+5. `runtime.permission_resolved`
+6. `runtime.tool_completed`
+7. `graph.response_ready`
 
 This sequence is the most concrete client-visible MVP event flow implemented today.
+Future graph modes may add ordered events between these phases, but this fallback order remains the canonical deterministic sequence.
 
 ## Current payload expectations
 
@@ -71,6 +87,12 @@ This sequence is the most concrete client-visible MVP event flow implemented tod
 - source: `runtime`
 - current payload:
   - `prompt: str`
+
+### `runtime.skills_loaded`
+- source: `runtime`
+- current payload:
+  - `skills: list[str]` sorted ascending by skill name
+- emitted for every new run, including when no skills are discovered (`{"skills": []}`)
 
 ### `graph.tool_request_created`
 - source: `graph`
@@ -109,5 +131,5 @@ This sequence is the most concrete client-visible MVP event flow implemented tod
 ## Acceptance checks
 
 - a client can replay a persisted session using only the stored event sequence and output
-- event ordering is sufficient to show request → tool request → permission → tool completion → response ready
+- event ordering is sufficient to show request → skills loaded → tool request → permission → tool completion → response ready
 - adding a new event type does not break older clients that use generic fallback rendering
