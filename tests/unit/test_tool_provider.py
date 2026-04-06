@@ -5,11 +5,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import patch
 
+from voidcode.runtime.events import EventEnvelope
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from voidcode.runtime.service import (
     GraphRunRequest,
-    GraphRunResult,
     RuntimeRequest,
     SessionState,
     ToolRegistry,
@@ -20,26 +21,28 @@ from voidcode.tools import GrepTool, ReadFileTool, ShellExecTool, ToolCall, Writ
 
 
 @dataclass(slots=True)
-class _StubPlan:
-    tool_call: ToolCall
+class _StubStep:
+    tool_call: ToolCall | None = None
+    output: str | None = None
+    events: tuple[EventEnvelope, ...] = ()
+    is_finished: bool = False
 
 
 class _StubGraph:
-    def plan(self, request: GraphRunRequest) -> _StubPlan:
-        _ = request
-        return _StubPlan(
-            ToolCall(tool_name="grep", arguments={"pattern": "alpha", "path": "sample.txt"})
-        )
-
-    def finalize(
+    def step(
         self,
         request: GraphRunRequest,
-        tool_result: object,
+        tool_results: tuple[object, ...],
         *,
         session: SessionState,
-    ) -> GraphRunResult:
-        _ = tool_result
-        return GraphRunResult(session=session, output=request.prompt)
+    ) -> _StubStep:
+        if not tool_results:
+            return _StubStep(
+                tool_call=ToolCall(
+                    tool_name="grep", arguments={"pattern": "alpha", "path": "sample.txt"}
+                )
+            )
+        return _StubStep(output=request.prompt, is_finished=True)
 
 
 def test_builtin_tool_provider_returns_expected_builtin_tools() -> None:

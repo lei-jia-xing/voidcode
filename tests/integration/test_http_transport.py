@@ -262,6 +262,10 @@ def _parse_sse_payloads(response: _TransportResponse) -> list[dict[str, object]]
     return payloads
 
 
+def _multi_step_prompt() -> str:
+    return "read source.txt\nwrite copied.txt copied marker\ngrep copied copied.txt"
+
+
 def _run_non_http_scope(app: TransportAppLike, scope_type: str) -> RuntimeError:
     async def _receive() -> dict[str, object]:
         return {"type": f"{scope_type}.startup"}
@@ -391,10 +395,13 @@ def test_transport_replays_session_as_json_runtime_response(tmp_path: Path) -> N
     assert [event["event_type"] for event in cast(list[dict[str, object]], payload["events"])] == [
         "runtime.request_received",
         "runtime.skills_loaded",
+        "graph.loop_step",
+        "graph.model_turn",
         "graph.tool_request_created",
         "runtime.tool_lookup_succeeded",
         "runtime.permission_resolved",
         "runtime.tool_completed",
+        "graph.loop_step",
         "graph.response_ready",
     ]
 
@@ -442,11 +449,14 @@ def test_transport_resolves_pending_approval_allow_over_http(tmp_path: Path) -> 
     assert [event["event_type"] for event in cast(list[dict[str, object]], payload["events"])] == [
         "runtime.request_received",
         "runtime.skills_loaded",
+        "graph.loop_step",
+        "graph.model_turn",
         "graph.tool_request_created",
         "runtime.tool_lookup_succeeded",
         "runtime.approval_requested",
         "runtime.approval_resolved",
         "runtime.tool_completed",
+        "graph.loop_step",
         "graph.response_ready",
     ]
     assert (tmp_path / "danger.txt").read_text(encoding="utf-8") == "approved later"
@@ -495,6 +505,8 @@ def test_transport_resolves_pending_approval_deny_over_http(tmp_path: Path) -> N
     assert [event["event_type"] for event in cast(list[dict[str, object]], payload["events"])] == [
         "runtime.request_received",
         "runtime.skills_loaded",
+        "graph.loop_step",
+        "graph.model_turn",
         "graph.tool_request_created",
         "runtime.tool_lookup_succeeded",
         "runtime.approval_requested",
@@ -502,6 +514,221 @@ def test_transport_resolves_pending_approval_deny_over_http(tmp_path: Path) -> N
         "runtime.failed",
     ]
     assert (tmp_path / "danger.txt").exists() is False
+
+
+def test_transport_resumes_multi_step_loop_and_persists_replay_over_http(tmp_path: Path) -> None:
+    _ = (tmp_path / "source.txt").write_text("alpha\nbeta alpha\n", encoding="utf-8")
+    create_runtime_app = _load_transport_app_factory()
+    app = create_runtime_app(workspace=tmp_path)
+    waiting_response = _run_app(
+        app,
+        method="POST",
+        path="/api/runtime/run/stream",
+        body=json.dumps(
+            {
+                "prompt": _multi_step_prompt(),
+                "session_id": "http-loop-session",
+            }
+        ).encode("utf-8"),
+    )
+    waiting_payloads = _parse_sse_payloads(waiting_response)
+    approval_request_id = cast(
+        str,
+        cast(dict[str, object], cast(dict[str, object], waiting_payloads[-1]["event"])["payload"])[
+            "request_id"
+        ],
+    )
+    approve_response = _run_app(
+        app,
+        method="POST",
+        path="/api/sessions/http-loop-session/approval",
+        body=json.dumps(
+            {
+                "request_id": approval_request_id,
+                "decision": "allow",
+            }
+        ).encode("utf-8"),
+    )
+    approve_payload = cast(dict[str, object], approve_response.json())
+    list_response = _run_app(app, method="GET", path="/api/sessions")
+    replay_response = _run_app(app, method="GET", path="/api/sessions/http-loop-session")
+    replay_payload = cast(dict[str, object], replay_response.json())
+
+    assert waiting_response.status == 200
+    assert [payload["kind"] for payload in waiting_payloads] == ["event"] * 13
+    assert [
+        cast(dict[str, object], payload["event"])["event_type"] for payload in waiting_payloads
+    ] == [
+        "runtime.request_received",
+        "runtime.skills_loaded",
+        "graph.loop_step",
+        "graph.model_turn",
+        "graph.tool_request_created",
+        "runtime.tool_lookup_succeeded",
+        "runtime.permission_resolved",
+        "runtime.tool_completed",
+        "graph.loop_step",
+        "graph.model_turn",
+        "graph.tool_request_created",
+        "runtime.tool_lookup_succeeded",
+        "runtime.approval_requested",
+    ]
+    assert waiting_payloads[-1]["session"] == {
+        "session": {"id": "http-loop-session"},
+        "status": "waiting",
+        "turn": 1,
+        "metadata": {"workspace": str(tmp_path)},
+    }
+
+    assert approve_response.status == 200
+    assert approve_payload["session"] == {
+        "session": {"id": "http-loop-session"},
+        "status": "completed",
+        "turn": 1,
+        "metadata": {"workspace": str(tmp_path)},
+    }
+    assert (
+        approve_payload["output"]
+        == "Found 1 match(es) for 'copied' in copied.txt\n1: copied marker"
+    )
+    assert [
+        event["event_type"] for event in cast(list[dict[str, object]], approve_payload["events"])
+    ] == [
+        "runtime.request_received",
+        "runtime.skills_loaded",
+        "graph.loop_step",
+        "graph.model_turn",
+        "graph.tool_request_created",
+        "runtime.tool_lookup_succeeded",
+        "runtime.permission_resolved",
+        "runtime.tool_completed",
+        "graph.loop_step",
+        "graph.model_turn",
+        "graph.tool_request_created",
+        "runtime.tool_lookup_succeeded",
+        "runtime.approval_requested",
+        "runtime.approval_resolved",
+        "runtime.tool_completed",
+        "graph.loop_step",
+        "graph.model_turn",
+        "graph.tool_request_created",
+        "runtime.tool_lookup_succeeded",
+        "runtime.permission_resolved",
+        "runtime.tool_completed",
+        "graph.loop_step",
+        "graph.response_ready",
+    ]
+    assert [
+        event["sequence"] for event in cast(list[dict[str, object]], approve_payload["events"])
+    ] == list(range(1, 24))
+    assert list_response.status == 200
+    assert list_response.json() == [
+        {
+            "session": {"id": "http-loop-session"},
+            "status": "completed",
+            "turn": 1,
+            "prompt": _multi_step_prompt(),
+            "updated_at": 2,
+        }
+    ]
+    assert replay_response.status == 200
+    assert replay_payload == approve_payload
+    assert (tmp_path / "copied.txt").read_text(encoding="utf-8") == "copied marker"
+
+
+def test_transport_denied_multi_step_loop_preserves_failed_replay_over_http(tmp_path: Path) -> None:
+    _ = (tmp_path / "source.txt").write_text("alpha\nbeta alpha\n", encoding="utf-8")
+    create_runtime_app = _load_transport_app_factory()
+    app = create_runtime_app(workspace=tmp_path)
+    waiting_response = _run_app(
+        app,
+        method="POST",
+        path="/api/runtime/run/stream",
+        body=json.dumps(
+            {
+                "prompt": _multi_step_prompt(),
+                "session_id": "http-deny-loop-session",
+            }
+        ).encode("utf-8"),
+    )
+    waiting_payloads = _parse_sse_payloads(waiting_response)
+    approval_request_id = cast(
+        str,
+        cast(dict[str, object], cast(dict[str, object], waiting_payloads[-1]["event"])["payload"])[
+            "request_id"
+        ],
+    )
+    deny_response = _run_app(
+        app,
+        method="POST",
+        path="/api/sessions/http-deny-loop-session/approval",
+        body=json.dumps(
+            {
+                "request_id": approval_request_id,
+                "decision": "deny",
+            }
+        ).encode("utf-8"),
+    )
+    deny_payload = cast(dict[str, object], deny_response.json())
+    list_response = _run_app(app, method="GET", path="/api/sessions")
+    replay_response = _run_app(app, method="GET", path="/api/sessions/http-deny-loop-session")
+    replay_payload = cast(dict[str, object], replay_response.json())
+
+    assert waiting_response.status == 200
+    assert [payload["kind"] for payload in waiting_payloads] == ["event"] * 13
+    assert cast(dict[str, object], waiting_payloads[-1]["event"])["event_type"] == (
+        "runtime.approval_requested"
+    )
+    assert waiting_payloads[-1]["session"] == {
+        "session": {"id": "http-deny-loop-session"},
+        "status": "waiting",
+        "turn": 1,
+        "metadata": {"workspace": str(tmp_path)},
+    }
+
+    assert deny_response.status == 200
+    assert deny_payload["session"] == {
+        "session": {"id": "http-deny-loop-session"},
+        "status": "failed",
+        "turn": 1,
+        "metadata": {"workspace": str(tmp_path)},
+    }
+    assert deny_payload["output"] is None
+    assert [
+        event["event_type"] for event in cast(list[dict[str, object]], deny_payload["events"])
+    ] == [
+        "runtime.request_received",
+        "runtime.skills_loaded",
+        "graph.loop_step",
+        "graph.model_turn",
+        "graph.tool_request_created",
+        "runtime.tool_lookup_succeeded",
+        "runtime.permission_resolved",
+        "runtime.tool_completed",
+        "graph.loop_step",
+        "graph.model_turn",
+        "graph.tool_request_created",
+        "runtime.tool_lookup_succeeded",
+        "runtime.approval_requested",
+        "runtime.approval_resolved",
+        "runtime.failed",
+    ]
+    assert [
+        event["sequence"] for event in cast(list[dict[str, object]], deny_payload["events"])
+    ] == list(range(1, 16))
+    assert list_response.status == 200
+    assert list_response.json() == [
+        {
+            "session": {"id": "http-deny-loop-session"},
+            "status": "failed",
+            "turn": 1,
+            "prompt": _multi_step_prompt(),
+            "updated_at": 2,
+        }
+    ]
+    assert replay_response.status == 200
+    assert replay_payload == deny_payload
+    assert (tmp_path / "copied.txt").exists() is False
 
 
 @pytest.mark.parametrize(
@@ -744,6 +971,9 @@ def test_transport_persists_streamed_run_for_session_listing_and_replay(tmp_path
         "event",
         "event",
         "event",
+        "event",
+        "event",
+        "event",
         "output",
     ]
     assert list_response.status == 200
@@ -769,10 +999,13 @@ def test_transport_persists_streamed_run_for_session_listing_and_replay(tmp_path
     ] == [
         "runtime.request_received",
         "runtime.skills_loaded",
+        "graph.loop_step",
+        "graph.model_turn",
         "graph.tool_request_created",
         "runtime.tool_lookup_succeeded",
         "runtime.permission_resolved",
         "runtime.tool_completed",
+        "graph.loop_step",
         "graph.response_ready",
     ]
 
@@ -950,7 +1183,7 @@ def test_transport_persists_failed_stream_for_replay(tmp_path: Path) -> None:
     assert stream_response.status == 200
     assert payloads[-1]["event"] == {
         "session_id": "failed-stream-session",
-        "sequence": 6,
+        "sequence": 8,
         "event_type": "runtime.failed",
         "source": "runtime",
         "payload": {"error": "boom from transport stream"},
@@ -977,6 +1210,8 @@ def test_transport_persists_failed_stream_for_replay(tmp_path: Path) -> None:
     ] == [
         "runtime.request_received",
         "runtime.skills_loaded",
+        "graph.loop_step",
+        "graph.model_turn",
         "graph.tool_request_created",
         "runtime.tool_lookup_succeeded",
         "runtime.permission_resolved",

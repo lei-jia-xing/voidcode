@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Protocol, cast, final
 from uuid import uuid4
 
-from ..graph.contracts import GraphRunRequest, GraphRunResult
+from ..graph.contracts import GraphRunRequest
 from ..graph.read_only_slice import DeterministicReadOnlyGraph
 from ..tools.contracts import Tool, ToolCall, ToolDefinition, ToolResult
 from .acp import DisabledAcpAdapter
@@ -26,21 +26,28 @@ from .storage import SessionStore, SqliteSessionStore
 from .tool_provider import BuiltinToolProvider
 
 
-class GraphPlan(Protocol):
+class GraphStep(Protocol):
     @property
-    def tool_call(self) -> ToolCall: ...
+    def tool_call(self) -> ToolCall | None: ...
+
+    @property
+    def events(self) -> tuple[EventEnvelope, ...]: ...
+
+    @property
+    def output(self) -> str | None: ...
+
+    @property
+    def is_finished(self) -> bool: ...
 
 
 class RuntimeGraph(Protocol):
-    def plan(self, request: GraphRunRequest) -> GraphPlan: ...
-
-    def finalize(
+    def step(
         self,
         request: GraphRunRequest,
-        tool_result: ToolResult,
+        tool_results: tuple[ToolResult, ...],
         *,
         session: SessionState,
-    ) -> GraphRunResult: ...
+    ) -> GraphStep: ...
 
 
 @dataclass(slots=True)
@@ -218,115 +225,148 @@ class VoidCodeRuntime:
             available_tools=self._tool_registry.definitions(),
             metadata=request.metadata,
         )
-        try:
-            plan = self._graph.plan(graph_request)
-        except Exception as exc:
-            yield self._failed_chunk(session=session, sequence=sequence + 1, error=str(exc))
-            raise
+        tool_results: list[ToolResult] = []
 
-        sequence += 1
-        yield RuntimeStreamChunk(
-            kind="event",
+        yield from self._execute_graph_loop(
             session=session,
-            event=EventEnvelope(
-                session_id=session.session.id,
-                sequence=sequence,
-                event_type="graph.tool_request_created",
-                source="graph",
-                payload={
-                    "tool": plan.tool_call.tool_name,
-                    "arguments": dict(plan.tool_call.arguments),
-                    **(
-                        {"path": path}
-                        if isinstance((path := plan.tool_call.arguments.get("path")), str)
-                        else {}
-                    ),
-                },
-            ),
-        )
-
-        try:
-            tool = self._tool_registry.resolve(plan.tool_call.tool_name)
-        except Exception as exc:
-            yield self._failed_chunk(session=session, sequence=sequence + 1, error=str(exc))
-            raise
-
-        sequence += 1
-        yield RuntimeStreamChunk(
-            kind="event",
-            session=session,
-            event=EventEnvelope(
-                session_id=session.session.id,
-                sequence=sequence,
-                event_type="runtime.tool_lookup_succeeded",
-                source="runtime",
-                payload={"tool": plan.tool_call.tool_name},
-            ),
-        )
-
-        sequence += 1
-        permission_chunks = self._resolve_permission(
-            session=session,
-            tool=tool.definition,
-            tool_call=plan.tool_call,
             sequence=sequence,
+            graph_request=graph_request,
+            tool_results=tool_results,
         )
-        yield from permission_chunks.chunks
-        if permission_chunks.pending_approval is not None:
-            return
-        if permission_chunks.denied:
-            return
 
-        sequence = permission_chunks.last_sequence
+    def _execute_graph_loop(
+        self,
+        *,
+        session: SessionState,
+        sequence: int,
+        graph_request: GraphRunRequest,
+        tool_results: list[ToolResult],
+    ) -> Iterator[RuntimeStreamChunk]:
+        while True:
+            try:
+                graph_step = self._graph.step(
+                    graph_request,
+                    tool_results=tuple(tool_results),
+                    session=session,
+                )
+            except Exception as exc:
+                yield self._failed_chunk(session=session, sequence=sequence + 1, error=str(exc))
+                raise
 
-        try:
-            tool_result = tool.invoke(plan.tool_call, workspace=self._workspace)
-        except Exception as exc:
-            yield self._failed_chunk(session=session, sequence=sequence + 1, error=str(exc))
-            raise
+            is_final_step = (
+                getattr(graph_step, "is_finished", False)
+                or getattr(graph_step, "output", None) is not None
+            )
+            current_chunk_session = session
+            if is_final_step:
+                current_chunk_session = SessionState(
+                    session=session.session,
+                    status="completed",
+                    turn=session.turn,
+                    metadata=session.metadata,
+                )
 
-        sequence += 1
-        yield RuntimeStreamChunk(
-            kind="event",
-            session=session,
-            event=EventEnvelope(
+            for event in self._renumber_events(
+                getattr(graph_step, "events", ()),
                 session_id=session.session.id,
-                sequence=sequence,
-                event_type="runtime.tool_completed",
-                source="tool",
-                payload=tool_result.data,
-            ),
-        )
+                start_sequence=sequence + 1,
+            ):
+                sequence = event.sequence
+                yield RuntimeStreamChunk(kind="event", session=current_chunk_session, event=event)
 
-        completed_session = SessionState(
-            session=session.session,
-            status="completed",
-            turn=session.turn,
-            metadata=session.metadata,
-        )
-        try:
-            graph_result = self._graph.finalize(
-                graph_request,
-                tool_result,
-                session=completed_session,
-            )
-        except Exception as exc:
-            yield self._failed_chunk(session=session, sequence=sequence + 1, error=str(exc))
-            raise
-        renumbered_graph_events = self._renumber_events(
-            graph_result.events,
-            session_id=session.session.id,
-            start_sequence=sequence + 1,
-        )
-        for event in renumbered_graph_events:
-            yield RuntimeStreamChunk(kind="event", session=graph_result.session, event=event)
+            if is_final_step:
+                if getattr(graph_step, "output", None) is not None:
+                    yield RuntimeStreamChunk(
+                        kind="output",
+                        session=current_chunk_session,
+                        output=graph_step.output,
+                    )
+                break
 
-        if graph_result.output is not None:
+            plan_tool_call = getattr(graph_step, "tool_call", None)
+            if plan_tool_call is None:
+                yield self._failed_chunk(
+                    session=session,
+                    sequence=sequence + 1,
+                    error="graph step did not produce a tool call or output",
+                )
+                raise ValueError("graph step did not produce a tool call or output")
+
+            sequence += 1
             yield RuntimeStreamChunk(
-                kind="output",
-                session=graph_result.session,
-                output=graph_result.output,
+                kind="event",
+                session=session,
+                event=EventEnvelope(
+                    session_id=session.session.id,
+                    sequence=sequence,
+                    event_type="graph.tool_request_created",
+                    source="graph",
+                    payload={
+                        "tool": plan_tool_call.tool_name,
+                        "arguments": dict(plan_tool_call.arguments),
+                        **(
+                            {"path": path}
+                            if isinstance((path := plan_tool_call.arguments.get("path")), str)
+                            else {}
+                        ),
+                    },
+                ),
             )
+
+            try:
+                tool = self._tool_registry.resolve(plan_tool_call.tool_name)
+            except Exception as exc:
+                yield self._failed_chunk(session=session, sequence=sequence + 1, error=str(exc))
+                raise
+
+            sequence += 1
+            yield RuntimeStreamChunk(
+                kind="event",
+                session=session,
+                event=EventEnvelope(
+                    session_id=session.session.id,
+                    sequence=sequence,
+                    event_type="runtime.tool_lookup_succeeded",
+                    source="runtime",
+                    payload={"tool": plan_tool_call.tool_name},
+                ),
+            )
+
+            sequence += 1
+            permission_chunks = self._resolve_permission(
+                session=session,
+                tool=tool.definition,
+                tool_call=plan_tool_call,
+                sequence=sequence,
+            )
+            yield from permission_chunks.chunks
+            if permission_chunks.pending_approval is not None:
+                return
+            if permission_chunks.denied:
+                return
+
+            sequence = permission_chunks.last_sequence
+
+            try:
+                tool_result = tool.invoke(plan_tool_call, workspace=self._workspace)
+            except Exception as exc:
+                yield self._failed_chunk(session=session, sequence=sequence + 1, error=str(exc))
+                raise
+
+            sequence += 1
+            yield RuntimeStreamChunk(
+                kind="event",
+                session=session,
+                event=EventEnvelope(
+                    session_id=session.session.id,
+                    sequence=sequence,
+                    event_type="runtime.tool_completed",
+                    source="tool",
+                    payload=tool_result.data,
+                ),
+            )
+
+            tool_results.append(tool_result)
 
     def _failed_chunk(
         self, *, session: SessionState, sequence: int, error: str
@@ -600,12 +640,22 @@ class VoidCodeRuntime:
             source="tool",
             payload=tool_result.data,
         )
-        completed_session = SessionState(
-            session=session.session,
-            status="completed",
-            turn=session.turn,
-            metadata=session.metadata,
-        )
+
+        tool_results: list[ToolResult] = []
+        for event in stored.events:
+            if event.event_type == "runtime.tool_completed":
+                is_err = "error" in event.payload
+                tool_results.append(
+                    ToolResult(
+                        tool_name=str(event.payload.get("tool", "unknown")),
+                        content=str(event.payload.get("content", "")) if not is_err else None,
+                        status="error" if is_err else "ok",
+                        data=event.payload,
+                        error=str(event.payload["error"]) if is_err else None,
+                    )
+                )
+        tool_results.append(tool_result)
+
         graph_request = GraphRunRequest(
             session=session,
             prompt=self._prompt_from_events(stored.events),
@@ -615,48 +665,41 @@ class VoidCodeRuntime:
                 "response_sequence": permission_outcome.last_sequence + 2,
             },
         )
-        try:
-            graph_result = self._graph.finalize(
-                graph_request, tool_result, session=completed_session
-            )
-        except Exception as exc:
-            failed_event = self._failed_chunk(
-                session=session,
-                sequence=permission_outcome.last_sequence + 2,
-                error=str(exc),
-            ).event
-            assert failed_event is not None
-            response = RuntimeResponse(
-                session=SessionState(
-                    session=session.session,
-                    status="failed",
-                    turn=session.turn,
-                    metadata=session.metadata,
-                ),
-                events=stored.events + new_events + (tool_completed_event, failed_event),
-                output=None,
-            )
-            self._session_store.save_run(
+
+        loop_events: list[EventEnvelope] = []
+        output = None
+        sequence = permission_outcome.last_sequence + 1
+
+        for chunk in self._execute_graph_loop(
+            session=session,
+            sequence=sequence,
+            graph_request=graph_request,
+            tool_results=tool_results,
+        ):
+            if chunk.event is not None:
+                loop_events.append(chunk.event)
+            if chunk.kind == "output":
+                output = chunk.output
+            session = chunk.session
+
+        response = RuntimeResponse(
+            session=session,
+            events=stored.events + new_events + (tool_completed_event,) + tuple(loop_events),
+            output=output,
+        )
+
+        if session.status == "waiting":
+            pending_approval = self._pending_approval_from_response(response)
+            self._session_store.save_pending_approval(
                 workspace=self._workspace,
                 request=RuntimeRequest(
                     prompt=self._prompt_from_events(stored.events), session_id=session_id
                 ),
                 response=response,
-                clear_pending_approval=True,
+                pending_approval=pending_approval,
             )
             return response
-        response = RuntimeResponse(
-            session=graph_result.session,
-            events=stored.events
-            + new_events
-            + (tool_completed_event,)
-            + self._renumber_events(
-                graph_result.events,
-                session_id=session.session.id,
-                start_sequence=tool_completed_event.sequence + 1,
-            ),
-            output=graph_result.output,
-        )
+
         self._session_store.save_run(
             workspace=self._workspace,
             request=RuntimeRequest(

@@ -1,12 +1,21 @@
 from __future__ import annotations
 
+# pyright: reportMissingTypeStubs=false, reportUnknownMemberType=false
 import re
 from dataclasses import dataclass
+from typing import cast
 
-from ..runtime.events import EventEnvelope
+from langgraph.graph import END, START, StateGraph
+
+from ..runtime.events import (
+    GRAPH_LOOP_STEP,
+    GRAPH_MODEL_TURN,
+    GRAPH_RESPONSE_READY,
+    EventEnvelope,
+)
 from ..runtime.session import SessionState
 from ..tools.contracts import ToolCall, ToolDefinition, ToolResult
-from .contracts import GraphRunRequest, GraphRunResult
+from .contracts import GraphLoopState, GraphRunRequest
 
 READ_REQUEST_PATTERN = re.compile(r"^(read|show)\s+(?P<path>.+)$", re.IGNORECASE)
 GREP_REQUEST_PATTERN = re.compile(r"^grep\s+(?P<pattern>.+?)\s+(?P<path>\S+)$", re.IGNORECASE)
@@ -15,25 +24,195 @@ WRITE_REQUEST_PATTERN = re.compile(r"^write\s+(?P<path>\S+)\s+(?P<content>.+)$",
 
 
 @dataclass(frozen=True, slots=True)
-class DeterministicReadOnlyPlan:
-    tool_call: ToolCall
+class DeterministicReadOnlyStep:
+    events: tuple[EventEnvelope, ...] = ()
+    tool_call: ToolCall | None = None
+    output: str | None = None
+    is_finished: bool = False
 
 
 class DeterministicReadOnlyGraph:
-    def plan(self, request: GraphRunRequest) -> DeterministicReadOnlyPlan:
-        prompt = request.prompt.strip()
-        read_match = READ_REQUEST_PATTERN.match(prompt)
+    def __init__(self, *, max_steps: int = 4) -> None:
+        if max_steps < 1:
+            raise ValueError("max_steps must be at least 1")
+        self._max_steps = max_steps
+        workflow = StateGraph(GraphLoopState)
+        workflow.add_node("plan_turn", self._plan_turn_node)
+        workflow.add_node("finalize_turn", self._finalize_turn_node)
+        workflow.add_edge(START, "plan_turn")
+        workflow.add_conditional_edges(
+            "plan_turn",
+            self._route_after_plan,
+            {"tool": END, "finalize": "finalize_turn", "error": END},
+        )
+        workflow.add_edge("finalize_turn", END)
+        self._app = workflow.compile()
+
+    def step(
+        self,
+        request: GraphRunRequest,
+        tool_results: tuple[ToolResult, ...],
+        *,
+        session: SessionState,
+    ) -> DeterministicReadOnlyStep:
+        graph_state = self._invoke(
+            self._initial_state(
+                request=request,
+                tool_results=tool_results,
+                session=session,
+            )
+        )
+        if graph_state["error"] is not None:
+            raise ValueError(graph_state["error"])
+
+        tool_calls = graph_state["tool_calls"]
+        events = self._renumber_graph_events(
+            request=request,
+            session=session,
+            events=tuple(graph_state["events"]),
+        )
+
+        is_finished = False
+        step_tool_call = None
+
+        if graph_state["output"] is not None:
+            is_finished = True
+        elif tool_calls:
+            step_tool_call = tool_calls[-1]
+
+        return DeterministicReadOnlyStep(
+            events=events,
+            tool_call=step_tool_call,
+            output=graph_state["output"],
+            is_finished=is_finished,
+        )
+
+    def _invoke(self, state: GraphLoopState) -> GraphLoopState:
+        result = self._app.invoke(state)
+        return cast(GraphLoopState, result)
+
+    def _initial_state(
+        self,
+        *,
+        request: GraphRunRequest,
+        tool_results: tuple[ToolResult, ...],
+        session: SessionState,
+    ) -> GraphLoopState:
+        state: GraphLoopState = {
+            "prompt": request.prompt,
+            "current_turn": session.turn or 1,
+            "tool_calls": [],
+            "tool_results": list(tool_results),
+            "available_tools": request.available_tools,
+            "events": [],
+            "output": None,
+            "error": None,
+            "approval_request_id": None,
+        }
+        return state
+
+    def _plan_turn_node(self, state: GraphLoopState) -> dict[str, object]:
+        current_turn = state["current_turn"]
+        if current_turn > self._max_steps:
+            return {"error": f"graph exceeded max steps: {self._max_steps}"}
+
+        planning_events = [
+            self._graph_event(
+                GRAPH_LOOP_STEP,
+                {
+                    "step": current_turn,
+                    "phase": "plan",
+                    "max_steps": self._max_steps,
+                },
+            ),
+            self._graph_event(
+                GRAPH_MODEL_TURN,
+                {
+                    "turn": current_turn,
+                    "mode": "deterministic",
+                    "prompt": state["prompt"],
+                },
+            ),
+        ]
+
+        try:
+            tool_call = self._select_tool_call(
+                state["prompt"], state["available_tools"], state["tool_results"]
+            )
+        except ValueError as exc:
+            return {
+                "events": planning_events,
+                "error": str(exc),
+                "current_turn": current_turn + 1,
+            }
+
+        if tool_call is None:
+            return {"current_turn": current_turn + 1}
+
+        return {
+            "events": planning_events,
+            "tool_calls": [tool_call],
+            "current_turn": current_turn + 1,
+        }
+
+    def _route_after_plan(self, state: GraphLoopState) -> str:
+        if state["error"] is not None:
+            return "error"
+        if state["tool_calls"]:
+            return "tool"
+        return "finalize"
+
+    def _finalize_turn_node(self, state: GraphLoopState) -> dict[str, object]:
+        current_turn = state["current_turn"]
+        if current_turn > self._max_steps:
+            return {"error": f"graph exceeded max steps: {self._max_steps}"}
+
+        last_result = state["tool_results"][-1]
+        return {
+            "events": [
+                self._graph_event(
+                    GRAPH_LOOP_STEP,
+                    {
+                        "step": current_turn,
+                        "phase": "finalize",
+                        "max_steps": self._max_steps,
+                    },
+                ),
+                self._graph_event(
+                    GRAPH_RESPONSE_READY,
+                    {"output_preview": last_result.content or ""},
+                ),
+            ],
+            "output": last_result.content,
+            "current_turn": current_turn + 1,
+        }
+
+    def _select_tool_call(
+        self,
+        prompt: str,
+        available_tools: tuple[ToolDefinition, ...],
+        tool_results: list[ToolResult],
+    ) -> ToolCall | None:
+        commands = [line.strip() for line in prompt.splitlines() if line.strip()]
+        if not commands:
+            raise ValueError("request must not be empty")
+
+        step_index = len(tool_results)
+        if step_index >= len(commands):
+            return None
+
+        trimmed_prompt = commands[step_index]
+
+        read_match = READ_REQUEST_PATTERN.match(trimmed_prompt)
         if read_match is not None:
             path_text = read_match.group("path").strip()
             if not path_text:
                 raise ValueError("request path must not be empty")
 
-            self._ensure_read_tool_available(request.available_tools)
-            return DeterministicReadOnlyPlan(
-                tool_call=ToolCall(tool_name="read_file", arguments={"path": path_text})
-            )
+            self._ensure_read_tool_available(available_tools)
+            return ToolCall(tool_name="read_file", arguments={"path": path_text})
 
-        grep_match = GREP_REQUEST_PATTERN.match(prompt)
+        grep_match = GREP_REQUEST_PATTERN.match(trimmed_prompt)
         if grep_match is not None:
             pattern_text = grep_match.group("pattern").strip()
             path_text = grep_match.group("path").strip()
@@ -42,26 +221,22 @@ class DeterministicReadOnlyGraph:
             if not path_text:
                 raise ValueError("request path must not be empty")
 
-            self._ensure_grep_tool_available(request.available_tools)
-            return DeterministicReadOnlyPlan(
-                tool_call=ToolCall(
-                    tool_name="grep",
-                    arguments={"pattern": pattern_text, "path": path_text},
-                )
+            self._ensure_grep_tool_available(available_tools)
+            return ToolCall(
+                tool_name="grep",
+                arguments={"pattern": pattern_text, "path": path_text},
             )
 
-        run_match = RUN_REQUEST_PATTERN.match(prompt)
+        run_match = RUN_REQUEST_PATTERN.match(trimmed_prompt)
         if run_match is not None:
             command_text = run_match.group("command").strip()
             if not command_text:
                 raise ValueError("request command must not be empty")
 
-            self._ensure_shell_exec_tool_available(request.available_tools)
-            return DeterministicReadOnlyPlan(
-                tool_call=ToolCall(tool_name="shell_exec", arguments={"command": command_text})
-            )
+            self._ensure_shell_exec_tool_available(available_tools)
+            return ToolCall(tool_name="shell_exec", arguments={"command": command_text})
 
-        write_match = WRITE_REQUEST_PATTERN.match(prompt)
+        write_match = WRITE_REQUEST_PATTERN.match(trimmed_prompt)
         if write_match is not None:
             path_text = write_match.group("path").strip()
             content_text = write_match.group("content")
@@ -70,12 +245,10 @@ class DeterministicReadOnlyGraph:
             if not content_text:
                 raise ValueError("request content must not be empty")
 
-            self._ensure_write_tool_available(request.available_tools)
-            return DeterministicReadOnlyPlan(
-                tool_call=ToolCall(
-                    tool_name="write_file",
-                    arguments={"path": path_text, "content": content_text},
-                )
+            self._ensure_write_tool_available(available_tools)
+            return ToolCall(
+                tool_name="write_file",
+                arguments={"path": path_text, "content": content_text},
             )
 
         msg = (
@@ -85,26 +258,38 @@ class DeterministicReadOnlyGraph:
         )
         raise ValueError(msg)
 
-    def finalize(
-        self,
-        request: GraphRunRequest,
-        tool_result: ToolResult,
+    @staticmethod
+    def _graph_event(event_type: str, payload: dict[str, object]) -> EventEnvelope:
+        return EventEnvelope(
+            session_id="",
+            sequence=0,
+            event_type=event_type,
+            source="graph",
+            payload=payload,
+        )
+
+    @staticmethod
+    def _renumber_graph_events(
         *,
+        request: GraphRunRequest,
         session: SessionState,
-    ) -> GraphRunResult:
-        return GraphRunResult(
-            session=session,
-            events=(
-                EventEnvelope(
-                    session_id=request.session.session.id,
-                    sequence=6,
-                    event_type="graph.response_ready",
-                    source="graph",
-                    payload={"output_preview": tool_result.content or ""},
-                ),
-            ),
-            tool_results=(tool_result,),
-            output=tool_result.content,
+        events: tuple[EventEnvelope, ...],
+    ) -> tuple[EventEnvelope, ...]:
+        raw_response_sequence = request.metadata.get("response_sequence")
+        start_sequence: int
+        if isinstance(raw_response_sequence, int):
+            start_sequence = raw_response_sequence
+        else:
+            start_sequence = 3
+        return tuple(
+            EventEnvelope(
+                session_id=session.session.id,
+                sequence=start_sequence + index,
+                event_type=event.event_type,
+                source=event.source,
+                payload=event.payload,
+            )
+            for index, event in enumerate(events)
         )
 
     def _ensure_read_tool_available(self, tools: tuple[ToolDefinition, ...]) -> None:

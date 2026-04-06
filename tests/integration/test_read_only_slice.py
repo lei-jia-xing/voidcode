@@ -43,6 +43,10 @@ class SessionRefLike(Protocol):
 
 class StoredSessionSummaryLike(Protocol):
     session: SessionRefLike
+    status: str
+    turn: int
+    prompt: str
+    updated_at: int
 
 
 class RuntimeResponseLike(Protocol):
@@ -90,6 +94,18 @@ class RuntimeFactory(Protocol):
 
 class ToolCallFactory(Protocol):
     def __call__(self, *, tool_name: str, arguments: dict[str, object]) -> object: ...
+
+
+class EventEnvelopeFactory(Protocol):
+    def __call__(
+        self,
+        *,
+        session_id: str,
+        sequence: int,
+        event_type: str,
+        source: str,
+        payload: dict[str, object] | None = None,
+    ) -> object: ...
 
 
 class ReadFileToolType(Protocol):
@@ -140,8 +156,11 @@ def _load_runtime_types() -> tuple[RuntimeRequestFactory, RuntimeFactory]:
 
 
 @dataclass(frozen=True, slots=True)
-class _WritePlan:
+class _GraphStep:
+    events: tuple[object, ...]
     tool_call: object
+    output: str | None = None
+    is_finished: bool = False
 
 
 def _approval_runtime(
@@ -164,6 +183,10 @@ def _approval_runtime(
     return runtime_request, runtime
 
 
+def _multi_step_prompt() -> str:
+    return "read source.txt\nwrite copied.txt copied marker\ngrep copied copied.txt"
+
+
 def test_runtime_allows_non_read_only_tool_when_policy_is_allow(tmp_path: Path) -> None:
     runtime_request, runtime = _approval_runtime(tmp_path, mode="allow")
 
@@ -175,13 +198,16 @@ def test_runtime_allows_non_read_only_tool_when_policy_is_allow(tmp_path: Path) 
     assert [event.event_type for event in allowed.events] == [
         "runtime.request_received",
         "runtime.skills_loaded",
+        "graph.loop_step",
+        "graph.model_turn",
         "graph.tool_request_created",
         "runtime.tool_lookup_succeeded",
         "runtime.approval_resolved",
         "runtime.tool_completed",
+        "graph.loop_step",
         "graph.response_ready",
     ]
-    assert allowed.events[4].payload["decision"] == "allow"
+    assert allowed.events[6].payload["decision"] == "allow"
     assert allowed.output == "approved write"
     assert (tmp_path / "danger.txt").read_text(encoding="utf-8") == "approved write"
 
@@ -193,7 +219,9 @@ def test_runtime_tool_request_created_supports_non_path_tool_arguments(tmp_path:
 
     assert result.events[1].event_type == "runtime.skills_loaded"
     assert result.events[1].payload == {"skills": []}
-    tool_request_event = result.events[2]
+    assert result.events[2].event_type == "graph.loop_step"
+    assert result.events[3].event_type == "graph.model_turn"
+    tool_request_event = result.events[4]
     assert tool_request_event.event_type == "graph.tool_request_created"
     assert tool_request_event.payload == {
         "tool": "shell_exec",
@@ -210,16 +238,19 @@ def test_runtime_allows_shell_exec_tool_when_policy_is_allow(tmp_path: Path) -> 
     assert [event.event_type for event in allowed.events] == [
         "runtime.request_received",
         "runtime.skills_loaded",
+        "graph.loop_step",
+        "graph.model_turn",
         "graph.tool_request_created",
         "runtime.tool_lookup_succeeded",
         "runtime.approval_resolved",
         "runtime.tool_completed",
+        "graph.loop_step",
         "graph.response_ready",
     ]
-    assert allowed.events[4].payload["decision"] == "allow"
+    assert allowed.events[6].payload["decision"] == "allow"
     assert allowed.output == f"{tmp_path.resolve()}\n"
-    assert allowed.events[5].payload["command"] == "pwd"
-    assert allowed.events[5].payload["exit_code"] == 0
+    assert allowed.events[7].payload["command"] == "pwd"
+    assert allowed.events[7].payload["exit_code"] == 0
 
 
 def test_runtime_requests_and_resumes_shell_exec_approval(tmp_path: Path) -> None:
@@ -231,6 +262,8 @@ def test_runtime_requests_and_resumes_shell_exec_approval(tmp_path: Path) -> Non
     assert [event.event_type for event in waiting.events] == [
         "runtime.request_received",
         "runtime.skills_loaded",
+        "graph.loop_step",
+        "graph.model_turn",
         "graph.tool_request_created",
         "runtime.tool_lookup_succeeded",
         "runtime.approval_requested",
@@ -249,16 +282,19 @@ def test_runtime_requests_and_resumes_shell_exec_approval(tmp_path: Path) -> Non
     assert [event.event_type for event in resumed.events] == [
         "runtime.request_received",
         "runtime.skills_loaded",
+        "graph.loop_step",
+        "graph.model_turn",
         "graph.tool_request_created",
         "runtime.tool_lookup_succeeded",
         "runtime.approval_requested",
         "runtime.approval_resolved",
         "runtime.tool_completed",
+        "graph.loop_step",
         "graph.response_ready",
     ]
     assert resumed.output == f"{tmp_path.resolve()}\n"
-    assert resumed.events[6].payload["command"] == "pwd"
-    assert resumed.events[6].payload["exit_code"] == 0
+    assert resumed.events[8].payload["command"] == "pwd"
+    assert resumed.events[8].payload["exit_code"] == 0
 
 
 def test_runtime_denies_shell_exec_tool_when_policy_is_deny(tmp_path: Path) -> None:
@@ -270,12 +306,14 @@ def test_runtime_denies_shell_exec_tool_when_policy_is_deny(tmp_path: Path) -> N
     assert [event.event_type for event in denied.events] == [
         "runtime.request_received",
         "runtime.skills_loaded",
+        "graph.loop_step",
+        "graph.model_turn",
         "graph.tool_request_created",
         "runtime.tool_lookup_succeeded",
         "runtime.approval_resolved",
         "runtime.failed",
     ]
-    assert denied.events[4].payload["decision"] == "deny"
+    assert denied.events[6].payload["decision"] == "deny"
     assert denied.output is None
 
 
@@ -319,20 +357,20 @@ def test_runtime_persists_initial_allow_finalize_failure_for_resume(tmp_path: Pa
     policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="allow")
 
     class FailingFinalizeGraph:
-        def plan(self, _request: object) -> object:
-            return _WritePlan(
-                tool_call=cast(
-                    ToolCallFactory, importlib.import_module("voidcode.tools.contracts").ToolCall
-                )(
-                    tool_name="write_file",
-                    arguments={"path": "danger.txt", "content": "broken finalize"},
+        def step(
+            self, request: object, tool_results: tuple[object, ...], *, session: object
+        ) -> object:
+            if not tool_results:
+                return _GraphStep(
+                    events=(),
+                    tool_call=cast(
+                        ToolCallFactory,
+                        importlib.import_module("voidcode.tools.contracts").ToolCall,
+                    )(
+                        tool_name="write_file",
+                        arguments={"path": "danger.txt", "content": "broken finalize"},
+                    ),
                 )
-            )
-
-        def finalize(self, request: object, tool_result: object, *, session: object) -> object:
-            _ = request
-            _ = tool_result
-            _ = session
             raise RuntimeError("finalize boom")
 
     failing_runtime = cast(
@@ -377,13 +415,11 @@ def test_runtime_persists_initial_plan_failure_for_resume(tmp_path: Path) -> Non
     policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="allow")
 
     class FailingPlanGraph:
-        def plan(self, _request: object) -> object:
-            raise RuntimeError("plan boom")
-
-        def finalize(self, request: object, tool_result: object, *, session: object) -> object:
-            _ = request
-            _ = tool_result
-            _ = session
+        def step(
+            self, request: object, tool_results: tuple[object, ...], *, session: object
+        ) -> object:
+            if not tool_results:
+                raise RuntimeError("plan boom")
             raise AssertionError("finalize should not run")
 
     failing_runtime = cast(
@@ -432,12 +468,14 @@ def test_runtime_denies_non_read_only_tool_when_policy_is_deny(tmp_path: Path) -
     assert [event.event_type for event in denied.events] == [
         "runtime.request_received",
         "runtime.skills_loaded",
+        "graph.loop_step",
+        "graph.model_turn",
         "graph.tool_request_created",
         "runtime.tool_lookup_succeeded",
         "runtime.approval_resolved",
         "runtime.failed",
     ]
-    assert denied.events[4].payload["decision"] == "deny"
+    assert denied.events[6].payload["decision"] == "deny"
     assert denied.output is None
     assert (tmp_path / "danger.txt").exists() is False
 
@@ -453,10 +491,13 @@ def test_runtime_executes_read_only_slice_and_emits_events(tmp_path: Path) -> No
     assert [event.event_type for event in result.events] == [
         "runtime.request_received",
         "runtime.skills_loaded",
+        "graph.loop_step",
+        "graph.model_turn",
         "graph.tool_request_created",
         "runtime.tool_lookup_succeeded",
         "runtime.permission_resolved",
         "runtime.tool_completed",
+        "graph.loop_step",
         "graph.response_ready",
     ]
     assert result.events[1].payload == {"skills": []}
@@ -481,8 +522,8 @@ def test_runtime_uses_repo_local_config_to_allow_write_requests_without_explicit
     )
 
     assert result.session.status == "completed"
-    assert result.events[4].event_type == "runtime.approval_resolved"
-    assert result.events[4].payload["decision"] == "allow"
+    assert result.events[6].event_type == "runtime.approval_resolved"
+    assert result.events[6].payload["decision"] == "allow"
     assert (tmp_path / "configured.txt").read_text(encoding="utf-8") == "config file approved"
 
 
@@ -499,8 +540,8 @@ def test_runtime_uses_environment_config_to_allow_write_requests_without_code_ch
     )
 
     assert result.session.status == "completed"
-    assert result.events[4].event_type == "runtime.approval_resolved"
-    assert result.events[4].payload["decision"] == "allow"
+    assert result.events[6].event_type == "runtime.approval_resolved"
+    assert result.events[6].payload["decision"] == "allow"
     assert (tmp_path / "env.txt").read_text(encoding="utf-8") == "env approved"
 
 
@@ -515,18 +556,21 @@ def test_runtime_executes_grep_read_only_slice_and_emits_events(tmp_path: Path) 
     assert [event.event_type for event in result.events] == [
         "runtime.request_received",
         "runtime.skills_loaded",
+        "graph.loop_step",
+        "graph.model_turn",
         "graph.tool_request_created",
         "runtime.tool_lookup_succeeded",
         "runtime.permission_resolved",
         "runtime.tool_completed",
+        "graph.loop_step",
         "graph.response_ready",
     ]
-    assert result.events[2].payload == {
+    assert result.events[4].payload == {
         "tool": "grep",
         "arguments": {"pattern": "alpha", "path": "sample.txt"},
         "path": "sample.txt",
     }
-    assert result.events[5].payload == {
+    assert result.events[7].payload == {
         "path": "sample.txt",
         "pattern": "alpha",
         "match_count": 2,
@@ -550,6 +594,8 @@ def test_runtime_allows_non_read_only_tool_after_explicit_resume_approval(tmp_pa
     assert [event.event_type for event in waiting.events] == [
         "runtime.request_received",
         "runtime.skills_loaded",
+        "graph.loop_step",
+        "graph.model_turn",
         "graph.tool_request_created",
         "runtime.tool_lookup_succeeded",
         "runtime.approval_requested",
@@ -566,11 +612,14 @@ def test_runtime_allows_non_read_only_tool_after_explicit_resume_approval(tmp_pa
     assert [event.event_type for event in resumed.events] == [
         "runtime.request_received",
         "runtime.skills_loaded",
+        "graph.loop_step",
+        "graph.model_turn",
         "graph.tool_request_created",
         "runtime.tool_lookup_succeeded",
         "runtime.approval_requested",
         "runtime.approval_resolved",
         "runtime.tool_completed",
+        "graph.loop_step",
         "graph.response_ready",
     ]
     assert resumed.output == "approved later"
@@ -592,7 +641,7 @@ def test_runtime_resumed_approval_renumbers_fixed_finalize_sequences(tmp_path: P
     )
 
     assert resumed.session.status == "completed"
-    assert [event.sequence for event in resumed.events] == [1, 2, 3, 4, 5, 6, 7, 8]
+    assert [event.sequence for event in resumed.events] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
     assert resumed.events[-1].event_type == "graph.response_ready"
 
 
@@ -637,6 +686,165 @@ def test_runtime_persists_pending_approval_until_single_resume_resolution(tmp_pa
             approval_request_id=approval_request_id,
             approval_decision="allow",
         )
+
+
+def test_runtime_resumes_multi_step_loop_with_approval_and_stable_replay(tmp_path: Path) -> None:
+    _ = (tmp_path / "source.txt").write_text("alpha\nbeta alpha\n", encoding="utf-8")
+    runtime_request, runtime = _approval_runtime(tmp_path, mode="ask")
+
+    waiting = runtime.run(runtime_request(prompt=_multi_step_prompt(), session_id="loop-session"))
+    approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
+
+    resumed = runtime.resume(
+        "loop-session",
+        approval_request_id=approval_request_id,
+        approval_decision="allow",
+    )
+    replay = runtime.resume("loop-session")
+    sessions = runtime.list_sessions()
+
+    assert waiting.session.status == "waiting"
+    assert waiting.output is None
+    assert [event.event_type for event in waiting.events] == [
+        "runtime.request_received",
+        "runtime.skills_loaded",
+        "graph.loop_step",
+        "graph.model_turn",
+        "graph.tool_request_created",
+        "runtime.tool_lookup_succeeded",
+        "runtime.permission_resolved",
+        "runtime.tool_completed",
+        "graph.loop_step",
+        "graph.model_turn",
+        "graph.tool_request_created",
+        "runtime.tool_lookup_succeeded",
+        "runtime.approval_requested",
+    ]
+    assert [event.sequence for event in waiting.events] == list(range(1, 14))
+    assert waiting.events[10].payload == {
+        "tool": "write_file",
+        "arguments": {"path": "copied.txt", "content": "copied marker"},
+        "path": "copied.txt",
+    }
+
+    assert resumed.session.status == "completed"
+    assert [event.event_type for event in resumed.events] == [
+        "runtime.request_received",
+        "runtime.skills_loaded",
+        "graph.loop_step",
+        "graph.model_turn",
+        "graph.tool_request_created",
+        "runtime.tool_lookup_succeeded",
+        "runtime.permission_resolved",
+        "runtime.tool_completed",
+        "graph.loop_step",
+        "graph.model_turn",
+        "graph.tool_request_created",
+        "runtime.tool_lookup_succeeded",
+        "runtime.approval_requested",
+        "runtime.approval_resolved",
+        "runtime.tool_completed",
+        "graph.loop_step",
+        "graph.model_turn",
+        "graph.tool_request_created",
+        "runtime.tool_lookup_succeeded",
+        "runtime.permission_resolved",
+        "runtime.tool_completed",
+        "graph.loop_step",
+        "graph.response_ready",
+    ]
+    assert [event.sequence for event in resumed.events] == list(range(1, 24))
+    assert resumed.output == "Found 1 match(es) for 'copied' in copied.txt\n1: copied marker"
+    assert replay.output == resumed.output
+    assert [event.sequence for event in replay.events] == list(range(1, 24))
+    assert [(event.sequence, event.event_type, event.payload) for event in replay.events] == [
+        (event.sequence, event.event_type, event.payload) for event in resumed.events
+    ]
+    assert resumed.events[20].payload == {
+        "path": "copied.txt",
+        "pattern": "copied",
+        "match_count": 1,
+        "matches": [{"line": 1, "text": "copied marker", "columns": [1]}],
+    }
+    assert [event.event_type for event in resumed.events].count("runtime.approval_requested") == 1
+    assert [event.event_type for event in resumed.events].count("runtime.approval_resolved") == 1
+    assert [summary.session.id for summary in sessions] == ["loop-session"]
+    assert sessions[0].status == "completed"
+    assert sessions[0].prompt == _multi_step_prompt()
+    assert sessions[0].updated_at == 2
+    assert (tmp_path / "copied.txt").read_text(encoding="utf-8") == "copied marker"
+
+
+def test_runtime_denied_multi_step_loop_stops_before_follow_up_tools(tmp_path: Path) -> None:
+    _ = (tmp_path / "source.txt").write_text("alpha\nbeta alpha\n", encoding="utf-8")
+    runtime_request, runtime = _approval_runtime(tmp_path, mode="ask")
+
+    waiting = runtime.run(
+        runtime_request(prompt=_multi_step_prompt(), session_id="deny-loop-session")
+    )
+    approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
+
+    denied = runtime.resume(
+        "deny-loop-session",
+        approval_request_id=approval_request_id,
+        approval_decision="deny",
+    )
+    replay = runtime.resume("deny-loop-session")
+    sessions = runtime.list_sessions()
+
+    assert waiting.session.status == "waiting"
+    assert waiting.output is None
+    assert [event.event_type for event in waiting.events] == [
+        "runtime.request_received",
+        "runtime.skills_loaded",
+        "graph.loop_step",
+        "graph.model_turn",
+        "graph.tool_request_created",
+        "runtime.tool_lookup_succeeded",
+        "runtime.permission_resolved",
+        "runtime.tool_completed",
+        "graph.loop_step",
+        "graph.model_turn",
+        "graph.tool_request_created",
+        "runtime.tool_lookup_succeeded",
+        "runtime.approval_requested",
+    ]
+
+    assert denied.session.status == "failed"
+    assert [event.event_type for event in denied.events] == [
+        "runtime.request_received",
+        "runtime.skills_loaded",
+        "graph.loop_step",
+        "graph.model_turn",
+        "graph.tool_request_created",
+        "runtime.tool_lookup_succeeded",
+        "runtime.permission_resolved",
+        "runtime.tool_completed",
+        "graph.loop_step",
+        "graph.model_turn",
+        "graph.tool_request_created",
+        "runtime.tool_lookup_succeeded",
+        "runtime.approval_requested",
+        "runtime.approval_resolved",
+        "runtime.failed",
+    ]
+    assert [event.sequence for event in denied.events] == list(range(1, 16))
+    assert denied.events[-1].payload == {"error": "permission denied for tool: write_file"}
+    assert denied.output is None
+    assert replay.output is None
+    assert [(event.sequence, event.event_type, event.payload) for event in replay.events] == [
+        (event.sequence, event.event_type, event.payload) for event in denied.events
+    ]
+    assert [event.event_type for event in denied.events].count("graph.tool_request_created") == 2
+    assert "grep" not in [
+        cast(str, event.payload.get("tool"))
+        for event in denied.events
+        if event.event_type == "graph.tool_request_created"
+    ]
+    assert [summary.session.id for summary in sessions] == ["deny-loop-session"]
+    assert sessions[0].status == "failed"
+    assert sessions[0].updated_at == 2
+    assert (tmp_path / "copied.txt").exists() is False
 
 
 def test_runtime_migrates_legacy_session_schema_for_pending_approval(tmp_path: Path) -> None:
@@ -780,7 +988,7 @@ def test_runtime_marks_resumed_approval_failure_and_clears_pending_request(tmp_p
         )
 
 
-def test_runtime_marks_resumed_finalize_failure_and_clears_pending_request(tmp_path: Path) -> None:
+def test_runtime_preserves_pending_request_when_resumed_finalize_raises(tmp_path: Path) -> None:
     runtime_request, runtime = _approval_runtime(tmp_path, mode="ask")
     permission_module = importlib.import_module("voidcode.runtime.permission")
     policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="ask")
@@ -791,20 +999,20 @@ def test_runtime_marks_resumed_finalize_failure_and_clears_pending_request(tmp_p
     approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
 
     class FailingFinalizeGraph:
-        def plan(self, _request: object) -> object:
-            return _WritePlan(
-                tool_call=cast(
-                    ToolCallFactory, importlib.import_module("voidcode.tools.contracts").ToolCall
-                )(
-                    tool_name="write_file",
-                    arguments={"path": "danger.txt", "content": "finalize failure"},
+        def step(
+            self, request: object, tool_results: tuple[object, ...], *, session: object
+        ) -> object:
+            if not tool_results:
+                return _GraphStep(
+                    events=(),
+                    tool_call=cast(
+                        ToolCallFactory,
+                        importlib.import_module("voidcode.tools.contracts").ToolCall,
+                    )(
+                        tool_name="write_file",
+                        arguments={"path": "danger.txt", "content": "finalize failure"},
+                    ),
                 )
-            )
-
-        def finalize(self, request: object, tool_result: object, *, session: object) -> object:
-            _ = request
-            _ = tool_result
-            _ = session
             raise RuntimeError("finalize boom")
 
     resumed_runtime_class = _load_runtime_types()[1]
@@ -819,16 +1027,12 @@ def test_runtime_marks_resumed_finalize_failure_and_clears_pending_request(tmp_p
             ),
         ),
     )
-    failed = resumed_runtime.resume(
-        "approval-session",
-        approval_request_id=approval_request_id,
-        approval_decision="allow",
-    )
-
-    assert failed.session.status == "failed"
-    assert failed.events[-2].event_type == "runtime.tool_completed"
-    assert failed.events[-1].event_type == "runtime.failed"
-    assert failed.events[-1].payload == {"error": "finalize boom"}
+    with pytest.raises(RuntimeError, match="finalize boom"):
+        _ = resumed_runtime.resume(
+            "approval-session",
+            approval_request_id=approval_request_id,
+            approval_decision="allow",
+        )
 
     replay_runtime = cast(
         RuntimeRunner,
@@ -841,7 +1045,13 @@ def test_runtime_marks_resumed_finalize_failure_and_clears_pending_request(tmp_p
             ),
         ),
     )
-    with pytest.raises(ValueError, match="no pending approval"):
+    replay = replay_runtime.resume("approval-session")
+
+    assert replay.session.status == "waiting"
+    assert replay.events[-1].event_type == "runtime.approval_requested"
+    assert replay.events[-1].payload["request_id"] == approval_request_id
+
+    with pytest.raises(RuntimeError, match="finalize boom"):
         _ = replay_runtime.resume(
             "approval-session",
             approval_request_id=approval_request_id,
@@ -995,10 +1205,13 @@ def test_runtime_persists_and_resumes_session_across_instances(tmp_path: Path) -
     assert [event.event_type for event in resumed.events] == [
         "runtime.request_received",
         "runtime.skills_loaded",
+        "graph.loop_step",
+        "graph.model_turn",
         "graph.tool_request_created",
         "runtime.tool_lookup_succeeded",
         "runtime.permission_resolved",
         "runtime.tool_completed",
+        "graph.loop_step",
         "graph.response_ready",
     ]
 
@@ -1014,16 +1227,19 @@ def test_runtime_stream_exposes_ordered_events_and_final_output(tmp_path: Path) 
     chunks = list(stream)
     event_chunks = [chunk for chunk in chunks if chunk.event is not None]
     output_chunks = [chunk for chunk in chunks if chunk.kind == "output"]
-    pre_finalization_chunks = chunks[:6]
-    final_chunks = chunks[6:]
+    pre_finalization_chunks = chunks[:8]
+    final_chunks = chunks[8:]
 
     assert [chunk.event.event_type for chunk in event_chunks if chunk.event is not None] == [
         "runtime.request_received",
         "runtime.skills_loaded",
+        "graph.loop_step",
+        "graph.model_turn",
         "graph.tool_request_created",
         "runtime.tool_lookup_succeeded",
         "runtime.permission_resolved",
         "runtime.tool_completed",
+        "graph.loop_step",
         "graph.response_ready",
     ]
     assert [chunk.session.status for chunk in pre_finalization_chunks] == [
@@ -1033,8 +1249,14 @@ def test_runtime_stream_exposes_ordered_events_and_final_output(tmp_path: Path) 
         "running",
         "running",
         "running",
+        "running",
+        "running",
     ]
-    assert [chunk.session.status for chunk in final_chunks] == ["completed", "completed"]
+    assert [chunk.session.status for chunk in final_chunks] == [
+        "completed",
+        "completed",
+        "completed",
+    ]
     assert [chunk.output for chunk in output_chunks] == ["stream proof\n"]
     assert len(output_chunks) == 1
 
@@ -1062,13 +1284,15 @@ def test_runtime_stream_yields_before_tool_completion(tmp_path: Path) -> None:
         runtime = runtime_class(workspace=tmp_path)
         stream = runtime.run_stream(runtime_request(prompt="read sample.txt"))
 
-        first_four_chunks = [next(stream) for _ in range(5)]
+        first_four_chunks = [next(stream) for _ in range(7)]
 
         assert [
             chunk.event.event_type for chunk in first_four_chunks if chunk.event is not None
         ] == [
             "runtime.request_received",
             "runtime.skills_loaded",
+            "graph.loop_step",
+            "graph.model_turn",
             "graph.tool_request_created",
             "runtime.tool_lookup_succeeded",
             "runtime.permission_resolved",
@@ -1100,7 +1324,7 @@ def test_runtime_stream_yields_before_tool_completion(tmp_path: Path) -> None:
         assert all(chunk.session.status == "running" for chunk in fifth_chunk)
         assert [
             chunk.event.event_type for chunk in remaining_chunks if chunk.event is not None
-        ] == ["graph.response_ready"]
+        ] == ["graph.loop_step", "graph.response_ready"]
         assert [chunk.output for chunk in remaining_chunks if chunk.kind == "output"] == [
             "delayed stream\n"
         ]
@@ -1122,7 +1346,7 @@ def test_runtime_stream_emits_failed_terminal_chunk_before_tool_error(tmp_path: 
         runtime = runtime_class(workspace=tmp_path)
         stream = runtime.run_stream(runtime_request(prompt="read sample.txt"))
 
-        first_four_chunks = [next(stream) for _ in range(5)]
+        first_four_chunks = [next(stream) for _ in range(7)]
         failed_chunk = next(stream)
 
         with pytest.raises(ValueError, match="boom from tool"):
@@ -1131,6 +1355,8 @@ def test_runtime_stream_emits_failed_terminal_chunk_before_tool_error(tmp_path: 
     assert [chunk.event.event_type for chunk in first_four_chunks if chunk.event is not None] == [
         "runtime.request_received",
         "runtime.skills_loaded",
+        "graph.loop_step",
+        "graph.model_turn",
         "graph.tool_request_created",
         "runtime.tool_lookup_succeeded",
         "runtime.permission_resolved",

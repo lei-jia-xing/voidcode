@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from voidcode.runtime.events import EventEnvelope
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from voidcode.runtime.acp import DisabledAcpAdapter
@@ -15,9 +17,9 @@ from voidcode.runtime.config import (
     RuntimeSkillsConfig,
 )
 from voidcode.runtime.lsp import DisabledLspManager
+from voidcode.runtime.permission import PermissionPolicy
 from voidcode.runtime.service import (
     GraphRunRequest,
-    GraphRunResult,
     RuntimeRequest,
     SessionState,
     VoidCodeRuntime,
@@ -31,24 +33,26 @@ def _private_attr(instance: object, name: str) -> Any:
 
 
 @dataclass(slots=True)
-class _StubPlan:
-    tool_call: ToolCall
+class _StubStep:
+    tool_call: ToolCall | None = None
+    output: str | None = None
+    events: tuple[EventEnvelope, ...] = ()
+    is_finished: bool = False
 
 
 class _StubGraph:
-    def plan(self, request: GraphRunRequest) -> _StubPlan:
-        _ = request
-        return _StubPlan(ToolCall(tool_name="read_file", arguments={"path": "sample.txt"}))
-
-    def finalize(
+    def step(
         self,
         request: GraphRunRequest,
-        tool_result: object,
+        tool_results: tuple[object, ...],
         *,
         session: SessionState,
-    ) -> GraphRunResult:
-        _ = tool_result
-        return GraphRunResult(session=session, output=request.prompt)
+    ) -> _StubStep:
+        if not tool_results:
+            return _StubStep(
+                tool_call=ToolCall(tool_name="read_file", arguments={"path": "sample.txt"})
+            )
+        return _StubStep(output=request.prompt, is_finished=True)
 
 
 def test_runtime_initializes_empty_extension_state_by_default(tmp_path: Path) -> None:
@@ -186,3 +190,60 @@ def test_runtime_default_extension_construction_preserves_public_run_path(
     assert response.events[1].payload == {"skills": ["alpha", "zeta"]}
     assert response.events[3].event_type == "runtime.tool_lookup_succeeded"
     assert response.events[5].event_type == "runtime.tool_completed"
+
+
+class _MultiStepStubGraph:
+    def step(
+        self,
+        request: GraphRunRequest,
+        tool_results: tuple[object, ...],
+        *,
+        session: SessionState,
+    ) -> _StubStep:
+        if not tool_results:
+            return _StubStep(
+                tool_call=ToolCall(
+                    tool_name="write_file", arguments={"path": "alpha.txt", "content": "1"}
+                )
+            )
+        if len(tool_results) == 1:
+            return _StubStep(
+                tool_call=ToolCall(
+                    tool_name="write_file", arguments={"path": "beta.txt", "content": "2"}
+                )
+            )
+        return _StubStep(output="done", is_finished=True)
+
+
+def test_runtime_resumes_with_subsequent_tool_calls_properly(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_MultiStepStubGraph(),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    # Run first, expects pending approval for write_file alpha.txt
+    response = runtime.run(RuntimeRequest(prompt="go", session_id="test-resume"))
+    assert response.session.status == "waiting"
+
+    # Resume the pending approval for alpha.txt.
+    # The graph will then return a second tool call for beta.txt.
+    # It should result in a SECOND pending approval, not an error.
+    approval_request_id = str(response.events[-1].payload.get("request_id", ""))
+
+    second_response = runtime.resume(
+        session_id="test-resume", approval_request_id=approval_request_id, approval_decision="allow"
+    )
+    assert second_response.session.status == "waiting"
+
+    # Resume the second pending approval for beta.txt
+    second_approval_request_id = str(second_response.events[-1].payload.get("request_id", ""))
+
+    final_response = runtime.resume(
+        session_id="test-resume",
+        approval_request_id=second_approval_request_id,
+        approval_decision="allow",
+    )
+
+    assert final_response.session.status == "completed"
+    assert final_response.output == "done"

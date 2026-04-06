@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Protocol, cast
@@ -8,9 +9,10 @@ from typing import Protocol, cast
 from . import __version__
 from .runtime.config import load_runtime_config
 from .runtime.contracts import RuntimeRequest
+from .runtime.events import EventEnvelope
 from .runtime.permission import PermissionDecision, PermissionResolution
 from .runtime.service import VoidCodeRuntime
-from .runtime.session import StoredSessionSummary
+from .runtime.session import SessionState, StoredSessionSummary
 from .server import serve
 
 Handler = Callable[[argparse.Namespace], int]
@@ -31,24 +33,121 @@ def _handle_run_command(args: argparse.Namespace) -> int:
         approval_mode=cast(PermissionDecision | None, getattr(args, "approval_mode", None)),
     )
     runtime = VoidCodeRuntime(workspace=workspace, config=config)
-    result = runtime.run(
-        RuntimeRequest(prompt=request_text, session_id=cast(str | None, args.session_id))
+    request = RuntimeRequest(prompt=request_text, session_id=cast(str | None, args.session_id))
+    interactive = sys.stdin.isatty() and sys.stderr.isatty()
+    output = _run_with_inline_approval(
+        runtime,
+        request,
+        interactive=interactive,
     )
 
-    _print_runtime_response(result)
+    if not interactive:
+        _print_runtime_output(output)
     return 0
 
 
-def _print_runtime_response(result: object) -> None:
+def _run_with_inline_approval(
+    runtime: VoidCodeRuntime,
+    request: RuntimeRequest,
+    *,
+    interactive: bool,
+) -> str | None:
+    output: str | None = None
+    printed_events = 0
+    final_session: SessionState | None = None
+    last_event: EventEnvelope | None = None
+
+    for chunk in runtime.run_stream(request):
+        final_session = chunk.session
+        if chunk.event is not None:
+            print(
+                _format_event(chunk.event.event_type, chunk.event.source, chunk.event.payload),
+                flush=True,
+            )
+            printed_events += 1
+            last_event = chunk.event
+        if chunk.kind == "output":
+            output = chunk.output
+
+    if final_session is None:
+        raise ValueError("runtime stream emitted no chunks")
+
+    while interactive:
+        approval_event = _pending_approval_event(final_session, last_event)
+        if approval_event is None:
+            break
+        result = runtime.resume(
+            final_session.session.id,
+            approval_request_id=_approval_request_id(approval_event),
+            approval_decision=_prompt_for_approval(approval_event),
+        )
+        printed_events = _print_runtime_response(
+            result,
+            event_offset=printed_events,
+            include_result=False,
+        )
+        final_session = result.session
+        output = result.output
+        last_event = result.events[-1] if result.events else None
+
+    if interactive:
+        _print_runtime_output(output)
+
+    return output
+
+
+def _pending_approval_event(
+    session: SessionState,
+    event: EventEnvelope | None,
+) -> EventEnvelope | None:
+    if session.status != "waiting":
+        return None
+    if event is None or event.event_type != "runtime.approval_requested":
+        return None
+    return event
+
+
+def _approval_request_id(event: EventEnvelope) -> str:
+    return str(event.payload["request_id"])
+
+
+def _prompt_for_approval(event: EventEnvelope) -> PermissionResolution:
+    tool = str(event.payload["tool"])
+    target_summary = event.payload.get("target_summary")
+    if isinstance(target_summary, str) and target_summary:
+        prompt = f"Approve {tool} for {target_summary}? [y/N]: "
+    else:
+        prompt = f"Approve {tool}? [y/N]: "
+    sys.stderr.write(prompt)
+    sys.stderr.flush()
+    response = sys.stdin.readline()
+    normalized = response.strip().lower()
+    if normalized in {"y", "yes"}:
+        return "allow"
+    return "deny"
+
+
+def _print_runtime_response(
+    result: object,
+    *,
+    event_offset: int = 0,
+    include_result: bool = True,
+) -> int:
     typed_result = cast("RuntimeResponseLike", result)
 
-    for event in typed_result.events:
-        print(_format_event(event.event_type, event.source, event.payload))
+    for event in typed_result.events[event_offset:]:
+        print(_format_event(event.event_type, event.source, event.payload), flush=True)
 
-    print("RESULT")
-    print(typed_result.output or "", end="")
-    if typed_result.output and not typed_result.output.endswith("\n"):
-        print()
+    if include_result:
+        _print_runtime_output(typed_result.output)
+    return len(typed_result.events)
+
+
+def _print_runtime_output(output: str | None) -> None:
+    print("RESULT", flush=True)
+    print(output or "", end="", flush=True)
+    if output and not output.endswith("\n"):
+        print(flush=True)
 
 
 def _handle_sessions_list_command(args: argparse.Namespace) -> int:
@@ -112,7 +211,7 @@ class RuntimeResponseLike(Protocol):
     events: tuple[EventLikeProtocol, ...]
     output: str | None
 
-    session: object
+    session: SessionState
 
 
 def build_parser() -> argparse.ArgumentParser:
