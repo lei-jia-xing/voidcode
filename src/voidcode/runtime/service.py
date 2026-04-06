@@ -13,6 +13,7 @@ from ..tools.grep import GrepTool
 from ..tools.read_file import ReadFileTool
 from ..tools.shell_exec import ShellExecTool
 from ..tools.write_file import WriteFileTool
+from .config import RuntimeConfig, load_runtime_config
 from .contracts import RuntimeRequest, RuntimeResponse, RuntimeStreamChunk, validate_session_id
 from .events import EventEnvelope
 from .permission import (
@@ -79,6 +80,7 @@ class VoidCodeRuntime:
     _workspace: Path
     _tool_registry: ToolRegistry
     _graph: RuntimeGraph
+    _config: RuntimeConfig
     _permission_policy: PermissionPolicy
     _session_store: SessionStore
 
@@ -88,13 +90,17 @@ class VoidCodeRuntime:
         workspace: Path,
         tool_registry: ToolRegistry | None = None,
         graph: RuntimeGraph | None = None,
+        config: RuntimeConfig | None = None,
         permission_policy: PermissionPolicy | None = None,
         session_store: SessionStore | None = None,
     ) -> None:
         self._workspace = workspace.resolve()
         self._tool_registry = tool_registry or ToolRegistry.with_defaults()
         self._graph = graph or DeterministicReadOnlyGraph()
-        self._permission_policy = permission_policy or PermissionPolicy(mode="ask")
+        self._config = config or load_runtime_config(self._workspace)
+        self._permission_policy = permission_policy or PermissionPolicy(
+            mode=self._config.approval_mode
+        )
         self._session_store = session_store or SqliteSessionStore()
 
     def run(self, request: RuntimeRequest) -> RuntimeResponse:
