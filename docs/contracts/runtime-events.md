@@ -104,7 +104,8 @@ Future graph modes may add ordered events between these phases, but this fallbac
 - source: `graph`
 - current payload:
   - `tool: str`
-  - `path: object`
+  - `arguments: dict[str, object]`
+  - `path: str` (optional; included only if `path` exists in `arguments`)
 
 ### `runtime.tool_lookup_succeeded`
 - source: `runtime`

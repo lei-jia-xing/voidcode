@@ -11,11 +11,10 @@ from ..runtime.events import (
     GRAPH_LOOP_STEP,
     GRAPH_MODEL_TURN,
     GRAPH_RESPONSE_READY,
-    EventEnvelope,
 )
 from ..runtime.session import SessionState
 from ..tools.contracts import ToolCall, ToolDefinition, ToolResult
-from .contracts import GraphLoopState, GraphRunRequest
+from .contracts import GraphEvent, GraphLoopState, GraphRunRequest
 
 READ_REQUEST_PATTERN = re.compile(r"^(read|show)\s+(?P<path>.+)$", re.IGNORECASE)
 GREP_REQUEST_PATTERN = re.compile(r"^grep\s+(?P<pattern>.+?)\s+(?P<path>\S+)$", re.IGNORECASE)
@@ -25,7 +24,7 @@ WRITE_REQUEST_PATTERN = re.compile(r"^write\s+(?P<path>\S+)\s+(?P<content>.+)$",
 
 @dataclass(frozen=True, slots=True)
 class DeterministicReadOnlyStep:
-    events: tuple[EventEnvelope, ...] = ()
+    events: tuple[GraphEvent, ...] = ()
     tool_call: ToolCall | None = None
     output: str | None = None
     is_finished: bool = False
@@ -66,11 +65,7 @@ class DeterministicReadOnlyGraph:
             raise ValueError(graph_state["error"])
 
         tool_calls = graph_state["tool_calls"]
-        events = self._renumber_graph_events(
-            request=request,
-            session=session,
-            events=tuple(graph_state["events"]),
-        )
+        events = tuple(graph_state["events"])
 
         is_finished = False
         step_tool_call = None
@@ -100,7 +95,7 @@ class DeterministicReadOnlyGraph:
     ) -> GraphLoopState:
         state: GraphLoopState = {
             "prompt": request.prompt,
-            "current_turn": session.turn or 1,
+            "current_turn": len(tool_results) + 1,
             "tool_calls": [],
             "tool_results": list(tool_results),
             "available_tools": request.available_tools,
@@ -164,8 +159,6 @@ class DeterministicReadOnlyGraph:
 
     def _finalize_turn_node(self, state: GraphLoopState) -> dict[str, object]:
         current_turn = state["current_turn"]
-        if current_turn > self._max_steps:
-            return {"error": f"graph exceeded max steps: {self._max_steps}"}
 
         last_result = state["tool_results"][-1]
         return {
@@ -183,7 +176,7 @@ class DeterministicReadOnlyGraph:
                     {"output_preview": last_result.content or ""},
                 ),
             ],
-            "output": last_result.content,
+            "output": last_result.content if last_result.content is not None else "",
             "current_turn": current_turn + 1,
         }
 
@@ -259,37 +252,11 @@ class DeterministicReadOnlyGraph:
         raise ValueError(msg)
 
     @staticmethod
-    def _graph_event(event_type: str, payload: dict[str, object]) -> EventEnvelope:
-        return EventEnvelope(
-            session_id="",
-            sequence=0,
+    def _graph_event(event_type: str, payload: dict[str, object]) -> GraphEvent:
+        return GraphEvent(
             event_type=event_type,
             source="graph",
             payload=payload,
-        )
-
-    @staticmethod
-    def _renumber_graph_events(
-        *,
-        request: GraphRunRequest,
-        session: SessionState,
-        events: tuple[EventEnvelope, ...],
-    ) -> tuple[EventEnvelope, ...]:
-        raw_response_sequence = request.metadata.get("response_sequence")
-        start_sequence: int
-        if isinstance(raw_response_sequence, int):
-            start_sequence = raw_response_sequence
-        else:
-            start_sequence = 3
-        return tuple(
-            EventEnvelope(
-                session_id=session.session.id,
-                sequence=start_sequence + index,
-                event_type=event.event_type,
-                source=event.source,
-                payload=event.payload,
-            )
-            for index, event in enumerate(events)
         )
 
     def _ensure_read_tool_available(self, tools: tuple[ToolDefinition, ...]) -> None:

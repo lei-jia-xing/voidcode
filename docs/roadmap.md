@@ -4,7 +4,7 @@ For the execution-focused checklist that turns this roadmap into concrete delive
 
 ## Current status
 
-VoidCode is still in pre-MVP development. The roadmap is organized from foundation work through MVP integration. The repository has completed the initial environment/bootstrap work and now also includes one deterministic read-only CLI → runtime → graph → tool slice. It has also established the initial extension infrastructure for tools, skills, and carrier seams for LSP/ACP, while keeping the broader MVP implementation and IDE integrations out of scope for the current phase.
+VoidCode is still in pre-MVP development. The roadmap is organized from foundation work through MVP integration. The repository has completed the initial environment/bootstrap work and now also includes a stable deterministic single-agent loop implementation. It has also established the initial extension infrastructure for tools, skills, and carrier seams for LSP/ACP, while keeping the broader MVP implementation and IDE integrations out of scope for the current phase.
 
 ## MVP boundary
 
@@ -14,8 +14,8 @@ VoidCode is still in pre-MVP development. The roadmap is organized from foundati
 - the agent can read code, search code, and call tools
 - write operations require approval
 - sessions can be resumed
-- the LangGraph main loop runs end to end
-- basic hooks can fire
+- the deterministic single-agent loop runs end to end
+- hooks and events are emitted for observability
 - event flow is observable
 
 ### Out of scope for MVP
@@ -33,13 +33,13 @@ VoidCode is still in pre-MVP development. The roadmap is organized from foundati
 
 Create the baseline repository and development environment: Python version policy, `uv`, `mise`, repository structure, and CI baseline.
 
-**Current status:** substantially complete. The repo now has working developer setup, CI, contributor docs, and a first deterministic read-only runtime slice. Extension infrastructure has been established through a unified configuration schema, tool provider seams, and initial skill discovery.
+**Current status:** substantially complete. The repo now has working developer setup, CI, contributor docs, and a stable deterministic single-agent loop. Extension infrastructure has been established through a unified configuration schema, tool provider seams, and initial skill discovery.
 
 ### Epic 1: LangGraph Core Loop
 
 Define graph state, nodes, graph compilation, and interrupt/resume so a single agent turn can execute.
 
-**Current status:** complete. The runtime now implements a stable single-agent loop with support for model turns, tool execution, and session resume.
+**Current status:** complete. The runtime now implements a stable deterministic single-agent loop with support for turn execution, tool resolution, and session resume.
 
 ### Epic 2: Runtime Skeleton
 
