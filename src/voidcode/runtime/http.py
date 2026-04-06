@@ -9,6 +9,7 @@ from collections.abc import AsyncIterator, Callable, Iterator
 from pathlib import Path
 from typing import Protocol, cast, final
 
+from .config import RuntimeConfig
 from .contracts import RuntimeRequest, RuntimeResponse, RuntimeStreamChunk, validate_session_id
 from .events import EventEnvelope
 from .permission import PermissionResolution
@@ -397,7 +398,10 @@ class RuntimeTransportApp:
 def create_runtime_app(
     *,
     workspace: Path,
+    config: RuntimeConfig | None = None,
     runtime_factory: Callable[[], RuntimeTransport] | None = None,
 ) -> RuntimeTransportApp:
-    resolved_factory = runtime_factory or (lambda: VoidCodeRuntime(workspace=workspace))
+    resolved_factory = runtime_factory or (
+        lambda: VoidCodeRuntime(workspace=workspace, config=config)
+    )
     return RuntimeTransportApp(runtime_factory=resolved_factory)

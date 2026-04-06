@@ -6,8 +6,9 @@ from pathlib import Path
 from typing import Protocol, cast
 
 from . import __version__
+from .runtime.config import load_runtime_config
 from .runtime.contracts import RuntimeRequest
-from .runtime.permission import PermissionResolution
+from .runtime.permission import PermissionDecision, PermissionResolution
 from .runtime.service import VoidCodeRuntime
 from .runtime.session import StoredSessionSummary
 from .server import serve
@@ -25,7 +26,11 @@ def _format_event(event_type: str, source: str, data: dict[str, object]) -> str:
 def _handle_run_command(args: argparse.Namespace) -> int:
     workspace = cast(Path, args.workspace)
     request_text = cast(str, args.request)
-    runtime = VoidCodeRuntime(workspace=workspace)
+    config = load_runtime_config(
+        workspace,
+        approval_mode=cast(PermissionDecision | None, getattr(args, "approval_mode", None)),
+    )
+    runtime = VoidCodeRuntime(workspace=workspace, config=config)
     result = runtime.run(
         RuntimeRequest(prompt=request_text, session_id=cast(str | None, args.session_id))
     )
@@ -83,10 +88,16 @@ def _handle_sessions_resume_command(args: argparse.Namespace) -> int:
 
 
 def _handle_serve_command(args: argparse.Namespace) -> int:
+    workspace = cast(Path, args.workspace)
+    config = load_runtime_config(
+        workspace,
+        approval_mode=cast(PermissionDecision | None, getattr(args, "approval_mode", None)),
+    )
     serve(
-        workspace=cast(Path, args.workspace),
+        workspace=workspace,
         host=cast(str, args.host),
         port=cast(int, args.port),
+        config=config,
     )
     return 0
 
@@ -134,6 +145,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--session-id",
         help="Optional session identifier used for persisted runs.",
     )
+    _ = run_parser.add_argument(
+        "--approval-mode",
+        choices=("allow", "deny", "ask"),
+        help="Override the runtime approval mode for this invocation.",
+    )
     run_parser.set_defaults(handler=_handle_run_command)
 
     serve_parser = subparsers.add_parser(
@@ -156,6 +172,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=8000,
         help="Port for the local transport server.",
+    )
+    _ = serve_parser.add_argument(
+        "--approval-mode",
+        choices=("allow", "deny", "ask"),
+        help="Override the runtime approval mode for this server process.",
     )
     serve_parser.set_defaults(handler=_handle_serve_command)
 
