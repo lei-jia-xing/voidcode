@@ -23,13 +23,14 @@ uv sync --extra dev
 mise run frontend:install
 ```
 
-确认 CLI 入口点可用：
+确认 CLI 入口点可用，且能处理多步执行与审批：
 
 ```bash
 uv run voidcode --help
-uv run voidcode run "read README.md" --workspace .
+# 执行带内联审批的任务 (非只读工具如 write)
+uv run voidcode run "write hello.txt hello" --workspace . --approval-mode ask
 uv run voidcode sessions list --workspace .
-uv run voidcode sessions resume local-cli-session --workspace .
+uv run voidcode sessions resume <session-id> --workspace .
 ```
 
 ## mise 任务
@@ -59,7 +60,7 @@ uv run voidcode sessions resume local-cli-session --workspace .
 
 ## MVP 演示与验证
 
-关于规范的端到端演示流程和完整的验证阶梯（单元测试、集成测试和冒烟测试），请参阅 [`docs/mvp-demo-guide.md`](./mvp-demo-guide.md)。使用该指南验证核心的“只读”运行时循环和会话持久化在您的机器上是否正常工作。
+关于规范的端到端演示流程和完整的验证阶梯（单元测试、集成测试、TUI 冒烟测试），请参阅 [`docs/mvp-demo-guide.md`](./mvp-demo-guide.md)。使用该指南验证稳定的单智能体循环、内联审批和会话持久化。
 
 `mise.toml` 不直接管理 Python 安装；它加载仓库现有的 `.venv` 并将 Python 依赖/环境管理委托给 `uv`。
 
@@ -69,8 +70,8 @@ uv run voidcode sessions resume local-cli-session --workspace .
 
 ### 当前实现状态
 - **UI 外壳**：功能性的导航和布局组件。
-- **Mock 数据驱动**：所有智能体交互和会话数据目前在前端都是模拟的。
-- **后端集成**：目前**没有**与 Python 后端运行时的实时连接。在此阶段，`src/voidcode` Python 包和 `frontend/` React 应用独立运行。
+- **Mock 数据驱动**：所有智能体交互和会话数据目前在前端主要由模拟数据展示。
+- **后端集成**：虽然后端已具备 SSE/HTTP 传输接口，但前端目前尚未与其集成。在此阶段，`src/voidcode` Python 包和 `frontend/` React 应用完全独立运行。
 
 ### 前端工作流
 

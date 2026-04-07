@@ -30,7 +30,7 @@ VoidCode 旨在提供以以下能力为中心的本地开发智能体体验：
 
 推荐的本地设置使用 uv 管理的 Python 环境和 Bun。支持的 Python 版本为 3.14。
 
-> **注意：** 目前的实现包含了一个真实的确定性 CLI → 运行时 → 只读工具切片，以及一个极简的本地 HTTP/SSE 传输层。前端壳程序已经具备会话列表、会话重放和流式运行的最小运行时传输路径，但更完整的 Web 交互体验仍在持续完善中。
+> **注意：** 目前的实现包含了一个真实的确定性 CLI → 运行时 → 单智能体循环，支持多步执行、会话持久化和恢复，以及 TTY 环境下的内联写入审批。后端提供了一个极简的本地 HTTP/SSE 传输层。前端壳程序目前主要作为 UI 占位符使用，其交互逻辑仍由模拟数据驱动，尚未与真实的后端运行时集成。更完整的 Web 交互体验计划在后续阶段交付。
 
 ```bash
 # 安装工具和 Python 环境
@@ -43,29 +43,23 @@ mise run frontend:install
 # 启动 CLI
 uv run voidcode --help
 
-# 验证确定性的只读切片
+# 运行一个多步执行的确定性任务
 uv run voidcode run "read README.md" --workspace .
+
+# 运行一个需要审批的写入任务（触发内联审批）
+uv run voidcode run "write hello.txt hello world" --workspace . --approval-mode ask
 
 # 列出已持久化的会话
 uv run voidcode sessions list --workspace .
-
-# 恢复已持久化的会话
-uv run voidcode sessions resume local-cli-session --workspace .
-
-# 在 localhost:8000 启动本地后端传输服务
-uv run voidcode serve --workspace . --host 127.0.0.1 --port 8000
-
-# 启动 Web 前端（包含最小运行时传输路径，整体体验仍偏 UI 壳程序）
-mise run frontend:dev
 ```
 
 ## 架构概览
 
 VoidCode 采用分层架构，其中 **LangGraph 负责智能体编排**，而**自定义运行时处理产品级逻辑**。
 
-- 运行时（Runtime）是会话、权限、钩子、存储、流式传输和工具治理的系统边界。
-- LangGraph 是计划中的编排引擎，用于处理图状态、路由、检查点和中断/恢复流程；目前仓库仅包含一个确定性的只读切片。
-- CLI、未来的 Web 前端或未来的 IDE 集成等客户端与运行时通信，而不是直接调用工具。
+- 运行时（Runtime）是会话、权限、工具、存储、流式传输和治理的系统边界。
+- LangGraph 是编排引擎，用于处理图状态、路由、检查点和中断/恢复流程；目前已交付一个稳定的、支持多步执行的确定性单智能体循环。
+- CLI、未来的 Web 前端或未来的 IDE 集成等客户端与运行时通信。CLI 支持在 TTY 环境下进行实时的内联写入审批（inline approval）。
 - 代码库围绕三个核心领域组织：
   - `src/voidcode/runtime/`：运行时服务和执行边界
   - `src/voidcode/graph/`：LangGraph 编排和状态转换
