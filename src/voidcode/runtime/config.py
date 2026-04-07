@@ -11,12 +11,15 @@ from .permission import PermissionDecision
 
 RUNTIME_CONFIG_FILE_NAME = ".voidcode.json"
 APPROVAL_MODE_ENV_VAR = "VOIDCODE_APPROVAL_MODE"
+MODEL_ENV_VAR = "VOIDCODE_MODEL"
 _VALID_APPROVAL_MODES = ("allow", "deny", "ask")
 
 
 @dataclass(frozen=True, slots=True)
 class RuntimeHooksConfig:
     enabled: bool | None = None
+    pre_tool: tuple[tuple[str, ...], ...] = ()
+    post_tool: tuple[tuple[str, ...], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +80,7 @@ def load_runtime_config(
     workspace: Path,
     *,
     approval_mode: PermissionDecision | None = None,
+    model: str | None = None,
     env: Mapping[str, str] | None = None,
 ) -> RuntimeConfig:
     resolved_workspace = workspace.resolve()
@@ -89,7 +93,11 @@ def load_runtime_config(
             repo_local=repo_local.approval_mode,
             environment=environment.get(APPROVAL_MODE_ENV_VAR),
         ),
-        model=repo_local.model,
+        model=_resolve_model(
+            explicit=model,
+            repo_local=repo_local.model,
+            environment=environment.get(MODEL_ENV_VAR),
+        ),
         hooks=repo_local.hooks,
         tools=repo_local.tools,
         skills=repo_local.skills,
@@ -161,7 +169,10 @@ def _parse_hooks_config(raw_hooks: object) -> RuntimeHooksConfig | None:
     if enabled is not None and not isinstance(enabled, bool):
         raise ValueError("runtime config field 'hooks.enabled' must be a boolean when provided")
 
-    return RuntimeHooksConfig(enabled=enabled)
+    pre_tool = _parse_command_list(hooks_payload.get("pre_tool"), field_path="hooks.pre_tool")
+    post_tool = _parse_command_list(hooks_payload.get("post_tool"), field_path="hooks.post_tool")
+
+    return RuntimeHooksConfig(enabled=enabled, pre_tool=pre_tool, post_tool=post_tool)
 
 
 def _parse_tools_config(raw_tools: object) -> RuntimeToolsConfig | None:
@@ -255,6 +266,27 @@ def _parse_object_container(raw_value: object, *, field_path: str) -> dict[str, 
     return cast(dict[str, object], raw_value)
 
 
+def _parse_command_list(raw_value: object, *, field_path: str) -> tuple[tuple[str, ...], ...]:
+    if raw_value is None:
+        return ()
+    if not isinstance(raw_value, list):
+        raise ValueError(f"runtime config field '{field_path}' must be an array when provided")
+
+    raw_commands = cast(list[object], raw_value)
+    parsed_commands: list[tuple[str, ...]] = []
+    for command_index, raw_command in enumerate(raw_commands):
+        if not isinstance(raw_command, list):
+            raise ValueError(
+                f"runtime config field '{field_path}[{command_index}]' must be an array"
+            )
+        parsed_command = _parse_string_list(
+            cast(list[object], raw_command),
+            field_path=f"{field_path}[{command_index}]",
+        )
+        parsed_commands.append(parsed_command)
+    return tuple(parsed_commands)
+
+
 def _resolve_approval_mode(
     *,
     explicit: PermissionDecision | None,
@@ -273,6 +305,20 @@ def _resolve_approval_mode(
     if parsed_environment is not None:
         return parsed_environment
     return "ask"
+
+
+def _resolve_model(
+    *, explicit: str | None, repo_local: str | None, environment: str | None
+) -> str | None:
+    if explicit is not None:
+        return explicit
+    if repo_local is not None:
+        return repo_local
+    if environment is not None:
+        if not environment:
+            raise ValueError(f"environment variable {MODEL_ENV_VAR} must be a non-empty string")
+        return environment
+    return None
 
 
 def _parse_approval_mode(

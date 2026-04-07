@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
+import sqlite3
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from voidcode.runtime.events import EventEnvelope
 
@@ -247,3 +249,153 @@ def test_runtime_resumes_with_subsequent_tool_calls_properly(tmp_path: Path) -> 
 
     assert final_response.session.status == "completed"
     assert final_response.output == "done"
+
+
+def test_runtime_resume_uses_persisted_approval_mode_for_follow_up_gated_tools(
+    tmp_path: Path,
+) -> None:
+    initial_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_MultiStepStubGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    waiting = initial_runtime.run(RuntimeRequest(prompt="go", session_id="persisted-ask-session"))
+
+    assert waiting.session.status == "waiting"
+    first_request_id = str(waiting.events[-1].payload["request_id"])
+
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_MultiStepStubGraph(),
+        config=RuntimeConfig(approval_mode="deny"),
+        permission_policy=PermissionPolicy(mode="deny"),
+    )
+
+    resumed = resumed_runtime.resume(
+        session_id="persisted-ask-session",
+        approval_request_id=first_request_id,
+        approval_decision="allow",
+    )
+
+    assert resumed.session.status == "waiting"
+    assert resumed.events[-1].event_type == "runtime.approval_requested"
+    assert resumed.events[-1].payload["tool"] == "write_file"
+    assert resumed.events[-1].payload["arguments"] == {"path": "beta.txt", "content": "2"}
+    assert resumed.events[-1].payload["policy"] == {"mode": "ask"}
+
+
+def test_runtime_resume_falls_back_to_fresh_policy_for_legacy_sessions_without_runtime_config(
+    tmp_path: Path,
+) -> None:
+    initial_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_MultiStepStubGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    waiting = initial_runtime.run(RuntimeRequest(prompt="go", session_id="legacy-approval-session"))
+
+    assert waiting.session.status == "waiting"
+    first_request_id = str(waiting.events[-1].payload["request_id"])
+
+    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    connection = sqlite3.connect(database_path)
+    try:
+        row = connection.execute(
+            "SELECT metadata_json FROM sessions WHERE session_id = ?",
+            ("legacy-approval-session",),
+        ).fetchone()
+        assert row is not None
+        metadata = json.loads(str(row[0]))
+        assert isinstance(metadata, dict)
+        metadata_dict = cast(dict[str, object], metadata)
+        metadata_dict.pop("runtime_config", None)
+        _ = connection.execute(
+            "UPDATE sessions SET metadata_json = ? WHERE session_id = ?",
+            (json.dumps(metadata_dict, sort_keys=True), "legacy-approval-session"),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_MultiStepStubGraph(),
+        config=RuntimeConfig(approval_mode="deny"),
+        permission_policy=PermissionPolicy(mode="deny"),
+    )
+
+    resumed = resumed_runtime.resume(
+        session_id="legacy-approval-session",
+        approval_request_id=first_request_id,
+        approval_decision="allow",
+    )
+
+    assert resumed.session.status == "failed"
+    assert resumed.events[-2].event_type == "runtime.approval_resolved"
+    assert resumed.events[-2].payload["decision"] == "deny"
+    assert resumed.events[-1].event_type == "runtime.failed"
+    assert resumed.events[-1].payload == {"error": "permission denied for tool: write_file"}
+
+
+def test_runtime_effective_runtime_config_prefers_persisted_session_values(tmp_path: Path) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("config session\n", encoding="utf-8")
+
+    initial_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(approval_mode="allow", model="session/model"),
+    )
+    _ = initial_runtime.run(RuntimeRequest(prompt="read sample.txt", session_id="config-session"))
+
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(approval_mode="deny", model="fresh/model"),
+    )
+    effective = resumed_runtime.effective_runtime_config(session_id="config-session")
+
+    assert effective.approval_mode == "allow"
+    assert effective.model == "session/model"
+
+
+def test_runtime_effective_runtime_config_falls_back_for_legacy_sessions(tmp_path: Path) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("legacy config\n", encoding="utf-8")
+
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(approval_mode="allow", model="session/model"),
+    )
+    _ = runtime.run(RuntimeRequest(prompt="read sample.txt", session_id="legacy-config-session"))
+
+    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    connection = sqlite3.connect(database_path)
+    try:
+        row = connection.execute(
+            "SELECT metadata_json FROM sessions WHERE session_id = ?",
+            ("legacy-config-session",),
+        ).fetchone()
+        assert row is not None
+        metadata = json.loads(str(row[0]))
+        assert isinstance(metadata, dict)
+        metadata_dict = cast(dict[str, object], metadata)
+        metadata_dict.pop("runtime_config", None)
+        _ = connection.execute(
+            "UPDATE sessions SET metadata_json = ? WHERE session_id = ?",
+            (json.dumps(metadata_dict, sort_keys=True), "legacy-config-session"),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(approval_mode="deny", model="fresh/model"),
+    )
+    effective = resumed_runtime.effective_runtime_config(session_id="legacy-config-session")
+
+    assert effective.approval_mode == "deny"
+    assert effective.model == "fresh/model"

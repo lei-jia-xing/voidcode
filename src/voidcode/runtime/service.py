@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import subprocess
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -12,10 +14,16 @@ from ..tools.contracts import Tool, ToolCall, ToolDefinition, ToolResult
 from .acp import DisabledAcpAdapter
 from .config import RuntimeConfig, load_runtime_config
 from .contracts import RuntimeRequest, RuntimeResponse, RuntimeStreamChunk, validate_session_id
-from .events import RUNTIME_SKILLS_LOADED, EventEnvelope
+from .events import (
+    RUNTIME_SKILLS_LOADED,
+    RUNTIME_TOOL_HOOK_POST,
+    RUNTIME_TOOL_HOOK_PRE,
+    EventEnvelope,
+)
 from .lsp import DisabledLspManager
 from .permission import (
     PendingApproval,
+    PermissionDecision,
     PermissionPolicy,
     PermissionResolution,
     resolve_permission,
@@ -88,6 +96,7 @@ class VoidCodeRuntime:
     _skill_registry: SkillRegistry
     _lsp_manager: DisabledLspManager
     _acp_adapter: DisabledAcpAdapter
+    _hook_recursion_env_var = "VOIDCODE_RUNNING_TOOL_HOOK"
 
     def __init__(
         self,
@@ -181,7 +190,11 @@ class VoidCodeRuntime:
             session=SessionRef(id=session_id),
             status="running",
             turn=1,
-            metadata={"workspace": str(self._workspace), **request.metadata},
+            metadata={
+                "workspace": str(self._workspace),
+                "runtime_config": self._runtime_config_metadata(),
+                **request.metadata,
+            },
         )
         sequence = 1
 
@@ -223,6 +236,7 @@ class VoidCodeRuntime:
             sequence=sequence,
             graph_request=graph_request,
             tool_results=tool_results,
+            permission_policy=self._permission_policy,
         )
 
     def _execute_graph_loop(
@@ -233,7 +247,9 @@ class VoidCodeRuntime:
         graph_request: GraphRunRequest,
         tool_results: list[ToolResult],
         approval_resolution: tuple[PendingApproval, PermissionResolution] | None = None,
+        permission_policy: PermissionPolicy | None = None,
     ) -> Iterator[RuntimeStreamChunk]:
+        active_permission_policy = permission_policy or self._permission_policy
         while True:
             try:
                 graph_step = self._graph.step(
@@ -352,6 +368,7 @@ class VoidCodeRuntime:
                     tool=tool.definition,
                     tool_call=plan_tool_call,
                     sequence=sequence,
+                    permission_policy=active_permission_policy,
                 )
             yield from permission_chunks.chunks
             if permission_chunks.pending_approval is not None:
@@ -360,6 +377,22 @@ class VoidCodeRuntime:
                 return
 
             sequence = permission_chunks.last_sequence
+
+            pre_hook_outcome = self._run_tool_hooks(
+                session=session,
+                sequence=sequence,
+                tool_name=plan_tool_call.tool_name,
+                phase="pre",
+            )
+            yield from pre_hook_outcome.chunks
+            sequence = pre_hook_outcome.last_sequence
+            if pre_hook_outcome.failed_error is not None:
+                yield self._failed_chunk(
+                    session=session,
+                    sequence=sequence + 1,
+                    error=pre_hook_outcome.failed_error,
+                )
+                raise RuntimeError(pre_hook_outcome.failed_error)
 
             try:
                 tool_result = tool.invoke(plan_tool_call, workspace=self._workspace)
@@ -380,7 +413,89 @@ class VoidCodeRuntime:
                 ),
             )
 
+            post_hook_outcome = self._run_tool_hooks(
+                session=session,
+                sequence=sequence,
+                tool_name=plan_tool_call.tool_name,
+                phase="post",
+            )
+            yield from post_hook_outcome.chunks
+            sequence = post_hook_outcome.last_sequence
+            if post_hook_outcome.failed_error is not None:
+                yield self._failed_chunk(
+                    session=session,
+                    sequence=sequence + 1,
+                    error=post_hook_outcome.failed_error,
+                )
+                raise RuntimeError(post_hook_outcome.failed_error)
+
             tool_results.append(tool_result)
+
+    def _run_tool_hooks(
+        self,
+        *,
+        session: SessionState,
+        sequence: int,
+        tool_name: str,
+        phase: str,
+    ) -> _HookOutcome:
+        hooks_config = self._config.hooks
+        if hooks_config is None or hooks_config.enabled is not True:
+            return _HookOutcome(chunks=(), last_sequence=sequence)
+        if os.environ.get(self._hook_recursion_env_var) == "1":
+            return _HookOutcome(chunks=(), last_sequence=sequence)
+
+        commands = hooks_config.pre_tool if phase == "pre" else hooks_config.post_tool
+        last_sequence = sequence
+        emitted_chunks: list[RuntimeStreamChunk] = []
+        for command in commands:
+            last_sequence += 1
+            try:
+                subprocess.run(
+                    list(command),
+                    cwd=self._workspace,
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                    env={**os.environ, self._hook_recursion_env_var: "1"},
+                )
+            except (OSError, subprocess.CalledProcessError) as exc:
+                hook_event = EventEnvelope(
+                    session_id=session.session.id,
+                    sequence=last_sequence,
+                    event_type=RUNTIME_TOOL_HOOK_PRE if phase == "pre" else RUNTIME_TOOL_HOOK_POST,
+                    source="runtime",
+                    payload={
+                        "phase": phase,
+                        "tool_name": tool_name,
+                        "session_id": session.session.id,
+                        "status": "error",
+                        "error": f"tool {phase}-hook failed for {tool_name}: {exc}",
+                    },
+                )
+                return _HookOutcome(
+                    chunks=(RuntimeStreamChunk(kind="event", session=session, event=hook_event),),
+                    last_sequence=last_sequence,
+                    failed_error=f"tool {phase}-hook failed for {tool_name}: {exc}",
+                )
+
+            yield_event = EventEnvelope(
+                session_id=session.session.id,
+                sequence=last_sequence,
+                event_type=RUNTIME_TOOL_HOOK_PRE if phase == "pre" else RUNTIME_TOOL_HOOK_POST,
+                source="runtime",
+                payload={
+                    "phase": phase,
+                    "tool_name": tool_name,
+                    "session_id": session.session.id,
+                    "status": "ok",
+                },
+            )
+            emitted_chunks.append(
+                RuntimeStreamChunk(kind="event", session=session, event=yield_event)
+            )
+
+        return _HookOutcome(chunks=tuple(emitted_chunks), last_sequence=last_sequence)
 
     def _failed_chunk(
         self, *, session: SessionState, sequence: int, error: str
@@ -422,8 +537,9 @@ class VoidCodeRuntime:
         tool: ToolDefinition,
         tool_call: ToolCall,
         sequence: int,
+        permission_policy: PermissionPolicy,
     ) -> _PermissionOutcome:
-        permission = resolve_permission(tool, tool_call, policy=self._permission_policy)
+        permission = resolve_permission(tool, tool_call, policy=permission_policy)
         if tool.read_only:
             return _PermissionOutcome(
                 chunks=(
@@ -527,6 +643,16 @@ class VoidCodeRuntime:
 
     def list_sessions(self) -> tuple[StoredSessionSummary, ...]:
         return self._session_store.list_sessions(workspace=self._workspace)
+
+    def effective_runtime_config(self, *, session_id: str | None = None) -> EffectiveRuntimeConfig:
+        if session_id is None:
+            return self._effective_runtime_config_from_metadata(None)
+        validate_session_id(session_id)
+        response = self._session_store.load_session(
+            workspace=self._workspace, session_id=session_id
+        )
+        self._validate_session_workspace(response.session, session_id=session_id)
+        return self._effective_runtime_config_from_metadata(response.session.metadata)
 
     def resume(
         self,
@@ -710,6 +836,7 @@ class VoidCodeRuntime:
                 graph_request=graph_request,
                 tool_results=tool_results,
                 approval_resolution=(pending, approval_decision),
+                permission_policy=self._permission_policy_for_session(session.metadata),
             ):
                 if chunk.event is not None:
                     if chunk.event.sequence > max_stored_sequence:
@@ -840,6 +967,59 @@ class VoidCodeRuntime:
     def _loaded_skill_names(self) -> list[str]:
         return sorted(self._skill_registry.skills)
 
+    def _runtime_config_metadata(self) -> dict[str, object]:
+        runtime_config_metadata: dict[str, object] = {"approval_mode": self._config.approval_mode}
+        if self._config.model is not None:
+            runtime_config_metadata["model"] = self._config.model
+        return runtime_config_metadata
+
+    def _permission_policy_for_session(
+        self, metadata: dict[str, object] | None
+    ) -> PermissionPolicy:
+        approval_mode: PermissionDecision = self._permission_policy.mode
+        if metadata is not None:
+            persisted_runtime_config = metadata.get("runtime_config")
+            if isinstance(persisted_runtime_config, dict):
+                runtime_config = cast(dict[str, object], persisted_runtime_config)
+                persisted_approval_mode = runtime_config.get("approval_mode")
+                if persisted_approval_mode in ("allow", "deny", "ask"):
+                    approval_mode = persisted_approval_mode
+        return PermissionPolicy(mode=approval_mode)
+
+    def _effective_runtime_config_from_metadata(
+        self, metadata: dict[str, object] | None
+    ) -> EffectiveRuntimeConfig:
+        approval_mode: PermissionDecision = self._config.approval_mode
+        model = self._config.model
+        if metadata is None:
+            return EffectiveRuntimeConfig(approval_mode=approval_mode, model=model)
+
+        persisted_runtime_config = metadata.get("runtime_config")
+        if not isinstance(persisted_runtime_config, dict):
+            return EffectiveRuntimeConfig(approval_mode=approval_mode, model=model)
+
+        runtime_config = cast(dict[str, object], persisted_runtime_config)
+        persisted_approval_mode = runtime_config.get("approval_mode")
+        if persisted_approval_mode in ("allow", "deny", "ask"):
+            approval_mode = persisted_approval_mode
+        persisted_model = runtime_config.get("model")
+        if persisted_model is None or isinstance(persisted_model, str):
+            model = persisted_model
+        return EffectiveRuntimeConfig(approval_mode=approval_mode, model=model)
+
+    def _validate_session_workspace(self, session: SessionState, *, session_id: str) -> None:
+        session_workspace = session.metadata.get("workspace")
+        if session_workspace is None:
+            return
+        if session_workspace != str(self._workspace):
+            raise ValueError(f"session {session_id} does not belong to workspace {self._workspace}")
+
+
+@dataclass(frozen=True, slots=True)
+class EffectiveRuntimeConfig:
+    approval_mode: PermissionDecision
+    model: str | None
+
 
 @dataclass(frozen=True, slots=True)
 class _PermissionOutcome:
@@ -847,3 +1027,10 @@ class _PermissionOutcome:
     last_sequence: int
     pending_approval: PendingApproval | None = None
     denied: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class _HookOutcome:
+    chunks: tuple[RuntimeStreamChunk, ...]
+    last_sequence: int
+    failed_error: str | None = None
