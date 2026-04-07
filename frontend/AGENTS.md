@@ -5,7 +5,7 @@
 **Branch:** master
 
 ## OVERVIEW
-Bun/Vite/React frontend shell. Mostly mock-backed; a thin runtime transport client/debug path now exists, but the main UI is still not runtime-driven.
+Bun/Vite/React frontend shell. The app now has a minimal live runtime transport path for session listing, replay, and streamed runs, while broader Web UX polish and deeper runtime-driven flows remain incomplete.
 
 ## WHERE TO LOOK
 | Task | Location | Notes |
@@ -36,7 +36,7 @@ frontend/
 - Keep state changes explicit in the Zustand store; current app state is local and persisted.
 
 ## ANTI-PATTERNS
-- Do not claim full live API or WebSocket behavior exists; only a minimal runtime transport client/debug path exists today, and the main UI is still mostly mock-backed.
+- Do not claim full live API parity or WebSocket behavior exists; the current implementation exposes a minimal runtime-backed path for listing sessions, replaying sessions, and streaming runs, but it is not yet a fully productized runtime-driven web app.
 - Do not introduce backend assumptions into the UI without corresponding backend work.
 - Do not commit generated build artifacts from `dist/`.
 - Do not duplicate repo-wide coding standards here; root docs own commit and PR policy.
@@ -54,4 +54,4 @@ bun run build
 ## NOTES
 - `frontend/README.md` describes an aspirational component/page structure that the current `src/` tree does not fully implement yet.
 - Current UI is mostly centered in `App.tsx`; avoid over-documenting nonexistent substructure.
-- The frontend now has a thin runtime transport client/debug path; update this file again when the main state/timeline UI stops being mock-backed.
+- The frontend now consumes a minimal runtime transport path through `src/lib/runtime/client.ts`, `src/store/index.ts`, and `src/App.tsx`; update this file again when the remaining web flows stop lagging behind the runtime surface.
