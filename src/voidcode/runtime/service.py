@@ -598,9 +598,19 @@ class VoidCodeRuntime:
         approval_request_id: str,
         approval_decision: PermissionResolution,
     ) -> Iterator[RuntimeStreamChunk]:
+        stored_response = self._session_store.load_session(
+            workspace=self._workspace, session_id=session_id
+        )
+        pending = self._session_store.load_pending_approval(
+            workspace=self._workspace, session_id=session_id
+        )
+        if pending is None:
+            raise ValueError(f"no pending approval for session: {session_id}")
+        if pending.request_id != approval_request_id:
+            raise ValueError("approval request id does not match pending session approval")
         yield from self._resume_pending_approval_impl(
-            session_id=session_id,
-            approval_request_id=approval_request_id,
+            stored=stored_response,
+            pending=pending,
             approval_decision=approval_decision,
         )
 
@@ -611,17 +621,26 @@ class VoidCodeRuntime:
         approval_request_id: str,
         approval_decision: PermissionResolution,
     ) -> tuple[tuple[EventEnvelope, ...], RuntimeResponse]:
-        stored_events = self._session_store.load_session(
+        stored_response = self._session_store.load_session(
             workspace=self._workspace,
             session_id=session_id,
-        ).events
+        )
+        pending = self._session_store.load_pending_approval(
+            workspace=self._workspace, session_id=session_id
+        )
+        if pending is None:
+            raise ValueError(f"no pending approval for session: {session_id}")
+        if pending.request_id != approval_request_id:
+            raise ValueError("approval request id does not match pending session approval")
+
+        stored_events = stored_response.events
         streamed_events: list[EventEnvelope] = []
         output: str | None = None
         final_session: SessionState | None = None
 
         for chunk in self._resume_pending_approval_impl(
-            session_id=session_id,
-            approval_request_id=approval_request_id,
+            stored=stored_response,
+            pending=pending,
             approval_decision=approval_decision,
         ):
             final_session = chunk.session
@@ -642,19 +661,10 @@ class VoidCodeRuntime:
     def _resume_pending_approval_impl(
         self,
         *,
-        session_id: str,
-        approval_request_id: str,
+        stored: RuntimeResponse,
+        pending: PendingApproval,
         approval_decision: PermissionResolution,
     ) -> Iterator[RuntimeStreamChunk]:
-        stored = self._session_store.load_session(workspace=self._workspace, session_id=session_id)
-        pending = self._session_store.load_pending_approval(
-            workspace=self._workspace, session_id=session_id
-        )
-        if pending is None:
-            raise ValueError(f"no pending approval for session: {session_id}")
-        if pending.request_id != approval_request_id:
-            raise ValueError("approval request id does not match pending session approval")
-
         session = SessionState(
             session=stored.session.session,
             status="running",
@@ -717,7 +727,8 @@ class VoidCodeRuntime:
                     output=output,
                 )
                 request = RuntimeRequest(
-                    prompt=self._prompt_from_events(stored.events), session_id=session_id
+                    prompt=self._prompt_from_events(stored.events),
+                    session_id=stored.session.session.id,
                 )
                 self._persist_response(request=request, response=response)
                 return
@@ -730,7 +741,7 @@ class VoidCodeRuntime:
         )
 
         request = RuntimeRequest(
-            prompt=self._prompt_from_events(stored.events), session_id=session_id
+            prompt=self._prompt_from_events(stored.events), session_id=stored.session.session.id
         )
         self._persist_response(request=request, response=response)
         return

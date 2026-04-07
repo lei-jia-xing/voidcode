@@ -60,7 +60,7 @@ uv run voidcode sessions resume <session-id> --workspace .
 
 ## MVP 演示与验证
 
-关于规范的端到端演示流程和完整的验证阶梯（单元测试、集成测试、TUI 冒烟测试），请参阅 [`docs/mvp-demo-guide.md`](./mvp-demo-guide.md)。使用该指南验证稳定的单智能体循环、内联审批和会话持久化。
+关于规范的端到端演示流程和完整的验证阶梯（单元测试、集成测试、客户端冒烟测试），请参阅 [`docs/mvp-demo-guide.md`](./mvp-demo-guide.md)。使用该指南验证稳定的单智能体循环、内联审批和会话持久化。
 
 `mise.toml` 不直接管理 Python 安装；它加载仓库现有的 `.venv` 并将 Python 依赖/环境管理委托给 `uv`。
 

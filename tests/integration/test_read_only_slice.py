@@ -218,8 +218,17 @@ def _run_cli_in_tty(
     session_id: str,
     approval_input: str,
 ) -> subprocess.CompletedProcess[str]:
-    if shutil.which("script") is None:
+    script = shutil.which("script")
+    if script is None:
         pytest.skip("requires script for TTY-backed CLI integration")
+    probe = subprocess.run(
+        [script, "-qefc", "printf ''", "/dev/null"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if probe.returncode != 0:
+        pytest.skip("requires script with -qefc support for TTY-backed CLI integration")
 
     command = shlex.join(
         [
