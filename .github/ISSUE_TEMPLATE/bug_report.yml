@@ -1,5 +1,5 @@
-name: Bug report
-description: Report a reproducible problem in VoidCode.
+name: Bug 报告
+description: 报告 VoidCode 中可复现的问题。
 title: "[Bug]: "
 labels:
   - bug
@@ -7,41 +7,41 @@ body:
   - type: textarea
     id: description
     attributes:
-      label: Description
-      description: Describe the bug clearly.
-      placeholder: A clear and concise description of the bug.
+      label: 问题描述
+      description: 请清晰地描述该 Bug。
+      placeholder: 请简明扼要地描述 Bug。
     validations:
       required: true
 
   - type: textarea
     id: reproduction
     attributes:
-      label: Reproduction steps
-      description: Tell us how to reproduce the issue.
+      label: 复现步骤
+      description: 请告诉我们如何复现此问题。
       placeholder: |
-        1. Run ...
-        2. Open ...
-        3. Observe ...
+        1. 运行 ...
+        2. 打开 ...
+        3. 观察到 ...
     validations:
       required: true
 
   - type: textarea
     id: expected
     attributes:
-      label: Expected behavior
-      description: What did you expect to happen?
-      placeholder: Describe the expected result.
+      label: 预期行为
+      description: 你期望发生什么？
+      placeholder: 请描述预期的结果。
     validations:
       required: true
 
   - type: textarea
     id: environment
     attributes:
-      label: Environment
-      description: Provide the environment details.
+      label: 环境信息
+      description: 请提供环境详情。
       placeholder: |
-        Python version: 3.14
-        OS: Ubuntu 24.04
-        VoidCode version or commit: main
+        Python 版本: 3.14
+        操作系统: Ubuntu 24.04
+        VoidCode 版本或提交 hash: main
     validations:
       required: true

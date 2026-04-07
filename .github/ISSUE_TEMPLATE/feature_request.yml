@@ -1,5 +1,5 @@
-name: Feature request
-description: Suggest an improvement for VoidCode.
+name: 功能建议
+description: 为 VoidCode 提出改进建议。
 title: "[Feature]: "
 labels:
   - enhancement
@@ -7,35 +7,35 @@ body:
   - type: textarea
     id: problem
     attributes:
-      label: Problem
-      description: What problem are you trying to solve?
-      placeholder: Describe the pain point or missing capability.
+      label: 问题描述
+      description: 你试图解决什么问题？
+      placeholder: 请描述痛点或缺失的功能。
     validations:
       required: true
 
   - type: textarea
     id: solution
     attributes:
-      label: Proposed solution
-      description: What would you like to happen?
-      placeholder: Describe the solution you want.
+      label: 建议方案
+      description: 你希望实现什么功能？
+      placeholder: 请描述你想要的解决方案。
     validations:
       required: true
 
   - type: textarea
     id: alternatives
     attributes:
-      label: Alternatives considered
-      description: What alternatives have you considered?
-      placeholder: Describe any alternative approaches or workarounds.
+      label: 备选方案
+      description: 你考虑过哪些备选方案？
+      placeholder: 请描述任何替代方法或临时解决方案。
     validations:
       required: false
 
   - type: textarea
     id: additional-context
     attributes:
-      label: Additional context
-      description: Add any extra context, links, or examples.
-      placeholder: Share any supporting details.
+      label: 补充上下文
+      description: 添加任何额外的上下文、链接或示例。
+      placeholder: 分享任何支持性的细节。
     validations:
       required: false
