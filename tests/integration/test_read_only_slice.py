@@ -5,6 +5,8 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import shlex
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -185,6 +187,55 @@ def _approval_runtime(
 
 def _multi_step_prompt() -> str:
     return "read source.txt\nwrite copied.txt copied marker\ngrep copied copied.txt"
+
+
+def _cli_test_env() -> dict[str, str]:
+    env = os.environ.copy()
+    src_path = str(Path(__file__).resolve().parents[2] / "src")
+    existing_pythonpath = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = (
+        src_path if not existing_pythonpath else f"{src_path}{os.pathsep}{existing_pythonpath}"
+    )
+    return env
+
+
+def _normalize_terminal_text(text: str) -> str:
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _run_cli_in_tty(
+    *,
+    workspace: Path,
+    request: str,
+    session_id: str,
+    approval_input: str,
+) -> subprocess.CompletedProcess[str]:
+    if shutil.which("script") is None:
+        pytest.skip("requires script for TTY-backed CLI integration")
+
+    command = shlex.join(
+        [
+            sys.executable,
+            "-m",
+            "voidcode",
+            "run",
+            request,
+            "--workspace",
+            str(workspace),
+            "--session-id",
+            session_id,
+            "--approval-mode",
+            "ask",
+        ]
+    )
+    return subprocess.run(
+        ["script", "-qefc", command, "/dev/null"],
+        input=f"{approval_input}\n",
+        capture_output=True,
+        text=True,
+        check=False,
+        env=_cli_test_env(),
+    )
 
 
 def test_runtime_allows_non_read_only_tool_when_policy_is_allow(tmp_path: Path) -> None:
@@ -1179,6 +1230,99 @@ def test_cli_run_command_prints_events_and_file_contents(tmp_path: Path) -> None
     assert "EVENT runtime.tool_completed" in result.stdout
     assert "RESULT" in result.stdout
     assert "slice proof" in result.stdout
+
+
+def test_cli_run_command_approval_allow_writes_file_under_tty_and_replays_session(
+    tmp_path: Path,
+) -> None:
+    session_id = "tty-approval-allow-session"
+    result = _run_cli_in_tty(
+        workspace=tmp_path,
+        request="write approved.txt approved via tty",
+        session_id=session_id,
+        approval_input="y",
+    )
+
+    transcript = _normalize_terminal_text(result.stdout + result.stderr)
+    written_file = tmp_path / "approved.txt"
+    resume_result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "voidcode",
+            "sessions",
+            "resume",
+            session_id,
+            "--workspace",
+            str(tmp_path),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=_cli_test_env(),
+    )
+
+    assert result.returncode == 0
+    assert "Approve write_file for write_file approved.txt? [y/N]:" in transcript
+    assert "EVENT runtime.approval_requested" in transcript
+    assert "EVENT runtime.approval_resolved" in transcript
+    assert "decision=allow" in transcript
+    assert "EVENT runtime.tool_completed" in transcript
+    assert "RESULT" in transcript
+    assert "approved via tty" in transcript
+    assert written_file.read_text(encoding="utf-8") == "approved via tty"
+
+    assert resume_result.returncode == 0
+    assert "EVENT runtime.approval_requested" in resume_result.stdout
+    assert "EVENT runtime.approval_resolved" in resume_result.stdout
+    assert "approved via tty" in resume_result.stdout
+
+
+def test_cli_run_command_approval_deny_blocks_write_under_tty_and_replays_failure(
+    tmp_path: Path,
+) -> None:
+    session_id = "tty-approval-deny-session"
+    result = _run_cli_in_tty(
+        workspace=tmp_path,
+        request="write denied.txt denied via tty",
+        session_id=session_id,
+        approval_input="n",
+    )
+
+    transcript = _normalize_terminal_text(result.stdout + result.stderr)
+    denied_file = tmp_path / "denied.txt"
+    resume_result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "voidcode",
+            "sessions",
+            "resume",
+            session_id,
+            "--workspace",
+            str(tmp_path),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=_cli_test_env(),
+    )
+
+    assert result.returncode == 0
+    assert "Approve write_file for write_file denied.txt? [y/N]:" in transcript
+    assert "EVENT runtime.approval_requested" in transcript
+    assert "EVENT runtime.approval_resolved" in transcript
+    assert "decision=deny" in transcript
+    assert "EVENT runtime.failed" in transcript
+    assert "permission denied for tool: write_file" in transcript
+    assert "RESULT" in transcript
+    assert denied_file.exists() is False
+
+    assert resume_result.returncode == 0
+    assert "EVENT runtime.approval_requested" in resume_result.stdout
+    assert "EVENT runtime.approval_resolved" in resume_result.stdout
+    assert "EVENT runtime.failed" in resume_result.stdout
+    assert "permission denied for tool: write_file" in resume_result.stdout
 
 
 def test_runtime_persists_and_resumes_session_across_instances(tmp_path: Path) -> None:

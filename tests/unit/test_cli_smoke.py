@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import tempfile
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,14 +18,6 @@ from unittest.mock import MagicMock, patch
 
 @dataclass(frozen=True)
 class _StubEvent:
-    sequence: int
-    event_type: str
-    source: str
-    payload: dict[str, object]
-
-
-@dataclass(frozen=True)
-class _StoredEvent:
     sequence: int
     event_type: str
     source: str
@@ -139,37 +132,6 @@ def _runtime_event(
     )
 
 
-def _stored_runtime_event(
-    sequence: int,
-    event_type: str,
-    *,
-    source: str = "runtime",
-    **payload: object,
-) -> _StoredEvent:
-    return _StoredEvent(
-        sequence=sequence,
-        event_type=event_type,
-        source=source,
-        payload=dict(payload),
-    )
-
-
-def _stored_approval_requested_event(
-    sequence: int,
-    *,
-    request_id: str = "req-1",
-    tool: str = "write_file",
-    target_summary: str = "sample.txt",
-) -> _StoredEvent:
-    return _stored_runtime_event(
-        sequence,
-        "runtime.approval_requested",
-        request_id=request_id,
-        tool=tool,
-        target_summary=target_summary,
-    )
-
-
 def _make_chunk(
     *, session_id: str, status: str, event: _StubEvent | None = None, output: str | None = None
 ) -> _StubChunk:
@@ -181,31 +143,8 @@ def _make_chunk(
     )
 
 
-def _configure_resume_stream_runtime(
-    runtime: Any,
-    *,
-    workspace: Path,
-    stored_sessions: Any,
-    pending_approvals: Any,
-    loop_results: Any,
-) -> None:
-    runtime._workspace = workspace
-    runtime._session_store = MagicMock()
-    runtime._session_store.load_session.side_effect = stored_sessions
-    runtime._session_store.load_pending_approval.side_effect = pending_approvals
-    runtime._tool_registry = MagicMock()
-    runtime._tool_registry.definitions.return_value = ()
-    runtime._execute_graph_loop = MagicMock(side_effect=loop_results)
-    runtime._persist_response = MagicMock()
-
-
-def _stored_session(session_id: str, status: str) -> _StubSession:
-    return _StubSession(
-        session=_StubSessionRef(id=session_id),
-        status=status,
-        turn=1,
-        metadata={},
-    )
+def _configure_resume_stream(runtime: Any, *streams: Iterable[_StubChunk]) -> None:
+    runtime.resume_stream = MagicMock(side_effect=[iter(stream) for stream in streams])
 
 
 def test_python_module_help_works() -> None:
@@ -373,7 +312,6 @@ def test_run_command_loads_config_and_forwards_it_to_runtime() -> None:
 
 def test_run_command_interactively_allows_inline_approval(capsys: Any) -> None:
     cli = importlib.import_module("voidcode.cli")
-    workspace = Path("/tmp/demo-workspace")
     config = SimpleNamespace(approval_mode="ask")
     first_stream = (
         _make_chunk(
@@ -393,69 +331,50 @@ def test_run_command_interactively_allows_inline_approval(capsys: Any) -> None:
         with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
             runtime = runtime_class.return_value
             runtime.run_stream.return_value = iter(first_stream)
-            _configure_resume_stream_runtime(
+            _configure_resume_stream(
                 runtime,
-                workspace=workspace,
-                stored_sessions=[
-                    SimpleNamespace(
-                        session=_stored_session("demo-session", "waiting"),
-                        events=(
-                            _stored_runtime_event(
-                                1,
-                                "runtime.request_received",
-                                prompt="write sample.txt hi",
-                            ),
-                            _stored_approval_requested_event(2),
+                (
+                    _make_chunk(
+                        session_id="demo-session",
+                        status="running",
+                        event=_runtime_event(
+                            "runtime.approval_resolved",
+                            sequence=3,
+                            request_id="req-1",
+                            decision="allow",
                         ),
-                    )
-                ],
-                pending_approvals=[
-                    SimpleNamespace(
-                        request_id="req-1",
-                        tool_name="write_file",
-                        arguments={},
-                    )
-                ],
-                loop_results=[
-                    iter(
-                        (
-                            _make_chunk(
-                                session_id="demo-session",
-                                status="running",
-                                event=_runtime_event(
-                                    "runtime.approval_resolved",
-                                    sequence=3,
-                                    request_id="req-1",
-                                    decision="allow",
-                                ),
-                            ),
-                            _make_chunk(
-                                session_id="demo-session",
-                                status="completed",
-                                event=_runtime_event(
-                                    "runtime.tool_completed",
-                                    sequence=4,
-                                    source="tool",
-                                    tool="write_file",
-                                ),
-                            ),
-                            _make_chunk(
-                                session_id="demo-session",
-                                status="completed",
-                                output="done\n",
-                            ),
-                        )
-                    )
-                ],
+                    ),
+                    _make_chunk(
+                        session_id="demo-session",
+                        status="completed",
+                        event=_runtime_event(
+                            "runtime.tool_completed",
+                            sequence=4,
+                            source="tool",
+                            tool="write_file",
+                        ),
+                    ),
+                    _make_chunk(
+                        session_id="demo-session",
+                        status="completed",
+                        output="done\n",
+                    ),
+                ),
             )
             with patch.object(cli.sys, "stdin", _StubTtyInput("yes\n")):
                 with patch.object(cli.sys, "stderr", stderr):
-                    result = cli.main(["run", "write sample.txt hi", "--workspace", str(workspace)])
+                    result = cli.main(
+                        ["run", "write sample.txt hi", "--workspace", "/tmp/demo-workspace"]
+                    )
 
     captured = capsys.readouterr()
 
     assert result == 0
-    runtime._execute_graph_loop.assert_called_once()
+    runtime.resume_stream.assert_called_once_with(
+        session_id="demo-session",
+        approval_request_id="req-1",
+        approval_decision="allow",
+    )
     assert captured.out.count("EVENT runtime.approval_requested") == 1
     assert (
         "EVENT runtime.approval_resolved source=runtime decision=allow request_id=req-1"
@@ -468,7 +387,6 @@ def test_run_command_interactively_allows_inline_approval(capsys: Any) -> None:
 
 def test_run_command_interactively_streams_initial_events_incrementally() -> None:
     cli = importlib.import_module("voidcode.cli")
-    workspace = Path("/tmp/demo-workspace")
     config = SimpleNamespace(approval_mode="ask")
     stdout = _StubStdout()
     stderr = _StubTtyStderr()
@@ -492,66 +410,41 @@ def test_run_command_interactively_streams_initial_events_incrementally() -> Non
         with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
             runtime = runtime_class.return_value
             runtime.run_stream.return_value = _stream()
-            _configure_resume_stream_runtime(
+            _configure_resume_stream(
                 runtime,
-                workspace=workspace,
-                stored_sessions=[
-                    SimpleNamespace(
-                        session=_stored_session("demo-session", "waiting"),
-                        events=(
-                            _stored_runtime_event(
-                                1,
-                                "runtime.request_received",
-                                prompt="write sample.txt hi",
-                            ),
-                            _stored_approval_requested_event(2),
+                (
+                    _make_chunk(
+                        session_id="demo-session",
+                        status="completed",
+                        event=_runtime_event(
+                            "runtime.approval_resolved",
+                            sequence=3,
+                            request_id="req-1",
+                            decision="allow",
                         ),
-                    )
-                ],
-                pending_approvals=[
-                    SimpleNamespace(
-                        request_id="req-1",
-                        tool_name="write_file",
-                        arguments={},
-                    )
-                ],
-                loop_results=[
-                    iter(
-                        (
-                            _make_chunk(
-                                session_id="demo-session",
-                                status="completed",
-                                event=_runtime_event(
-                                    "runtime.approval_resolved",
-                                    sequence=3,
-                                    request_id="req-1",
-                                    decision="allow",
-                                ),
-                            ),
-                            _make_chunk(
-                                session_id="demo-session",
-                                status="completed",
-                                event=_runtime_event(
-                                    "runtime.tool_completed",
-                                    sequence=4,
-                                    source="tool",
-                                    tool="write_file",
-                                ),
-                            ),
-                            _make_chunk(
-                                session_id="demo-session",
-                                status="completed",
-                                output="done\n",
-                            ),
-                        )
-                    )
-                ],
+                    ),
+                    _make_chunk(
+                        session_id="demo-session",
+                        status="completed",
+                        event=_runtime_event(
+                            "runtime.tool_completed",
+                            sequence=4,
+                            source="tool",
+                            tool="write_file",
+                        ),
+                    ),
+                    _make_chunk(
+                        session_id="demo-session",
+                        status="completed",
+                        output="done\n",
+                    ),
+                ),
             )
             with patch.object(cli.sys, "stdin", _StubTtyInput("yes\n")):
                 with patch.object(cli.sys, "stderr", stderr):
                     with patch.object(cli.sys, "stdout", stdout):
                         result = cli.main(
-                            ["run", "write sample.txt hi", "--workspace", str(workspace)]
+                            ["run", "write sample.txt hi", "--workspace", "/tmp/demo-workspace"]
                         )
 
     assert result == 0
@@ -564,7 +457,6 @@ def test_run_command_interactively_streams_initial_events_incrementally() -> Non
 
 def test_run_command_interactively_streams_resumed_events_incrementally() -> None:
     cli = importlib.import_module("voidcode.cli")
-    workspace = Path("/tmp/demo-workspace")
     config = SimpleNamespace(approval_mode="ask")
     stdout = _StubStdout()
     stderr = _StubTtyStderr()
@@ -611,36 +503,15 @@ def test_run_command_interactively_streams_resumed_events_incrementally() -> Non
                     ),
                 )
             )
-            _configure_resume_stream_runtime(
+            _configure_resume_stream(
                 runtime,
-                workspace=workspace,
-                stored_sessions=[
-                    SimpleNamespace(
-                        session=_stored_session("demo-session", "waiting"),
-                        events=(
-                            _stored_runtime_event(
-                                1,
-                                "runtime.request_received",
-                                prompt="write sample.txt hi",
-                            ),
-                            _stored_approval_requested_event(2),
-                        ),
-                    )
-                ],
-                pending_approvals=[
-                    SimpleNamespace(
-                        request_id="req-1",
-                        tool_name="write_file",
-                        arguments={},
-                    )
-                ],
-                loop_results=[_resumed_stream()],
+                _resumed_stream(),
             )
             with patch.object(cli.sys, "stdin", _StubTtyInput("yes\n")):
                 with patch.object(cli.sys, "stderr", stderr):
                     with patch.object(cli.sys, "stdout", stdout):
                         result = cli.main(
-                            ["run", "write sample.txt hi", "--workspace", str(workspace)]
+                            ["run", "write sample.txt hi", "--workspace", "/tmp/demo-workspace"]
                         )
 
     assert result == 0
@@ -652,11 +523,15 @@ def test_run_command_interactively_streams_resumed_events_incrementally() -> Non
         "RESULT\n"
     )
     assert stderr.writes == ["Approve write_file for sample.txt? [y/N]: "]
+    runtime.resume_stream.assert_called_once_with(
+        session_id="demo-session",
+        approval_request_id="req-1",
+        approval_decision="allow",
+    )
 
 
 def test_run_command_interactively_denies_on_empty_input(capsys: Any) -> None:
     cli = importlib.import_module("voidcode.cli")
-    workspace = Path("/tmp/demo-workspace")
     config = SimpleNamespace(approval_mode="ask")
     first_stream = (
         _make_chunk(
@@ -676,63 +551,44 @@ def test_run_command_interactively_denies_on_empty_input(capsys: Any) -> None:
         with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
             runtime = runtime_class.return_value
             runtime.run_stream.return_value = iter(first_stream)
-            _configure_resume_stream_runtime(
+            _configure_resume_stream(
                 runtime,
-                workspace=workspace,
-                stored_sessions=[
-                    SimpleNamespace(
-                        session=_stored_session("demo-session", "waiting"),
-                        events=(
-                            _stored_runtime_event(
-                                1,
-                                "runtime.request_received",
-                                prompt="write sample.txt hi",
-                            ),
-                            _stored_approval_requested_event(2),
+                (
+                    _make_chunk(
+                        session_id="demo-session",
+                        status="running",
+                        event=_runtime_event(
+                            "runtime.approval_resolved",
+                            sequence=3,
+                            request_id="req-1",
+                            decision="deny",
                         ),
-                    )
-                ],
-                pending_approvals=[
-                    SimpleNamespace(
-                        request_id="req-1",
-                        tool_name="write_file",
-                        arguments={},
-                    )
-                ],
-                loop_results=[
-                    iter(
-                        (
-                            _make_chunk(
-                                session_id="demo-session",
-                                status="running",
-                                event=_runtime_event(
-                                    "runtime.approval_resolved",
-                                    sequence=3,
-                                    request_id="req-1",
-                                    decision="deny",
-                                ),
-                            ),
-                            _make_chunk(
-                                session_id="demo-session",
-                                status="failed",
-                                event=_runtime_event(
-                                    "runtime.failed",
-                                    sequence=4,
-                                    error="permission denied for tool: write_file",
-                                ),
-                            ),
-                        )
-                    )
-                ],
+                    ),
+                    _make_chunk(
+                        session_id="demo-session",
+                        status="failed",
+                        event=_runtime_event(
+                            "runtime.failed",
+                            sequence=4,
+                            error="permission denied for tool: write_file",
+                        ),
+                    ),
+                ),
             )
             with patch.object(cli.sys, "stdin", _StubTtyInput("\n")):
                 with patch.object(cli.sys, "stderr", stderr):
-                    result = cli.main(["run", "write sample.txt hi", "--workspace", str(workspace)])
+                    result = cli.main(
+                        ["run", "write sample.txt hi", "--workspace", "/tmp/demo-workspace"]
+                    )
 
     captured = capsys.readouterr()
 
     assert result == 0
-    runtime._execute_graph_loop.assert_called_once()
+    runtime.resume_stream.assert_called_once_with(
+        session_id="demo-session",
+        approval_request_id="req-1",
+        approval_decision="deny",
+    )
     assert (
         "EVENT runtime.approval_resolved source=runtime decision=deny request_id=req-1"
         in captured.out
@@ -748,7 +604,6 @@ def test_run_command_interactively_denies_on_empty_input(capsys: Any) -> None:
 
 def test_run_command_interactively_handles_repeated_approval_requests(capsys: Any) -> None:
     cli = importlib.import_module("voidcode.cli")
-    workspace = Path("/tmp/demo-workspace")
     config = SimpleNamespace(approval_mode="ask")
     first_stream = (
         _make_chunk(
@@ -768,131 +623,78 @@ def test_run_command_interactively_handles_repeated_approval_requests(capsys: An
         with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
             runtime = runtime_class.return_value
             runtime.run_stream.return_value = iter(first_stream)
-            _configure_resume_stream_runtime(
+            _configure_resume_stream(
                 runtime,
-                workspace=workspace,
-                stored_sessions=[
-                    SimpleNamespace(
-                        session=_stored_session("demo-session", "waiting"),
-                        events=(
-                            _stored_runtime_event(
-                                1,
-                                "runtime.request_received",
-                                prompt="write sample.txt hi",
-                            ),
-                            _stored_approval_requested_event(
-                                2,
-                                request_id="req-1",
-                                target_summary="sample.txt",
-                            ),
+                (
+                    _make_chunk(
+                        session_id="demo-session",
+                        status="running",
+                        event=_runtime_event(
+                            "runtime.approval_resolved",
+                            sequence=3,
+                            request_id="req-1",
+                            decision="allow",
                         ),
                     ),
-                    SimpleNamespace(
-                        session=_stored_session("demo-session", "waiting"),
-                        events=(
-                            _stored_runtime_event(
-                                1,
-                                "runtime.request_received",
-                                prompt="write sample.txt hi",
-                            ),
-                            _stored_approval_requested_event(
-                                2,
-                                request_id="req-1",
-                                target_summary="sample.txt",
-                            ),
-                            _stored_runtime_event(
-                                3,
-                                "runtime.approval_resolved",
-                                request_id="req-1",
-                                decision="allow",
-                            ),
-                            _stored_runtime_event(
-                                4, "runtime.tool_completed", source="tool", tool="write_file"
-                            ),
-                            _stored_approval_requested_event(
-                                5, request_id="req-2", tool="shell_exec", target_summary="build.sh"
-                            ),
+                    _make_chunk(
+                        session_id="demo-session",
+                        status="running",
+                        event=_runtime_event(
+                            "runtime.tool_completed",
+                            sequence=4,
+                            source="tool",
+                            tool="write_file",
                         ),
                     ),
-                ],
-                pending_approvals=[
-                    SimpleNamespace(request_id="req-1", tool_name="write_file", arguments={}),
-                    SimpleNamespace(request_id="req-2", tool_name="shell_exec", arguments={}),
-                ],
-                loop_results=[
-                    iter(
-                        (
-                            _make_chunk(
-                                session_id="demo-session",
-                                status="running",
-                                event=_runtime_event(
-                                    "runtime.approval_resolved",
-                                    sequence=3,
-                                    request_id="req-1",
-                                    decision="allow",
-                                ),
-                            ),
-                            _make_chunk(
-                                session_id="demo-session",
-                                status="running",
-                                event=_runtime_event(
-                                    "runtime.tool_completed",
-                                    sequence=4,
-                                    source="tool",
-                                    tool="write_file",
-                                ),
-                            ),
-                            _make_chunk(
-                                session_id="demo-session",
-                                status="waiting",
-                                event=_approval_requested_event(
-                                    sequence=5,
-                                    request_id="req-2",
-                                    tool="shell_exec",
-                                    target_summary="build.sh",
-                                ),
-                            ),
-                        )
+                    _make_chunk(
+                        session_id="demo-session",
+                        status="waiting",
+                        event=_approval_requested_event(
+                            sequence=5,
+                            request_id="req-2",
+                            tool="shell_exec",
+                            target_summary="build.sh",
+                        ),
                     ),
-                    iter(
-                        (
-                            _make_chunk(
-                                session_id="demo-session",
-                                status="running",
-                                event=_runtime_event(
-                                    "runtime.approval_resolved",
-                                    sequence=6,
-                                    request_id="req-2",
-                                    decision="allow",
-                                ),
-                            ),
-                            _make_chunk(
-                                session_id="demo-session",
-                                status="completed",
-                                event=_runtime_event(
-                                    "runtime.tool_completed",
-                                    sequence=7,
-                                    source="tool",
-                                    tool="shell_exec",
-                                ),
-                            ),
-                            _make_chunk(
-                                session_id="demo-session",
-                                status="completed",
-                                output="done\n",
-                            ),
-                        )
+                ),
+                (
+                    _make_chunk(
+                        session_id="demo-session",
+                        status="running",
+                        event=_runtime_event(
+                            "runtime.approval_resolved",
+                            sequence=6,
+                            request_id="req-2",
+                            decision="allow",
+                        ),
                     ),
-                ],
+                    _make_chunk(
+                        session_id="demo-session",
+                        status="completed",
+                        event=_runtime_event(
+                            "runtime.tool_completed",
+                            sequence=7,
+                            source="tool",
+                            tool="shell_exec",
+                        ),
+                    ),
+                    _make_chunk(
+                        session_id="demo-session",
+                        status="completed",
+                        output="done\n",
+                    ),
+                ),
             )
             with patch.object(cli.sys, "stdin", _StubTtyInput("yes\n", "y\n")):
                 with patch.object(cli.sys, "stderr", stderr):
-                    result = cli.main(["run", "write sample.txt hi", "--workspace", str(workspace)])
+                    result = cli.main(
+                        ["run", "write sample.txt hi", "--workspace", "/tmp/demo-workspace"]
+                    )
 
     captured = capsys.readouterr()
 
     assert result == 0
-    assert runtime._execute_graph_loop.call_count == 2
+    assert runtime.resume_stream.call_count == 2
     assert stderr.writes == [
         "Approve write_file for sample.txt? [y/N]: ",
         "Approve shell_exec for build.sh? [y/N]: ",
@@ -905,6 +707,24 @@ def test_run_command_interactively_handles_repeated_approval_requests(capsys: An
     assert captured.out.index("request_id=req-1") < captured.out.index("request_id=req-2")
     assert captured.out.rstrip().endswith("done")
     assert captured.err == ""
+    assert runtime.resume_stream.call_args_list == [
+        (
+            (),
+            {
+                "session_id": "demo-session",
+                "approval_request_id": "req-1",
+                "approval_decision": "allow",
+            },
+        ),
+        (
+            (),
+            {
+                "session_id": "demo-session",
+                "approval_request_id": "req-2",
+                "approval_decision": "allow",
+            },
+        ),
+    ]
 
 
 def test_run_command_does_not_prompt_or_resume_when_not_interactive(capsys: Any) -> None:
@@ -936,7 +756,7 @@ def test_run_command_does_not_prompt_or_resume_when_not_interactive(capsys: Any)
     captured = capsys.readouterr()
 
     assert result == 0
-    runtime.resume.assert_not_called()
+    runtime.resume_stream.assert_not_called()
     assert "EVENT runtime.approval_requested" in captured.out
     assert captured.out.rstrip().endswith("RESULT")
     assert stderr.writes == []
