@@ -1,159 +1,159 @@
-# TUI MVP Specification
+# TUI MVP 规范
 
-Source issue: #18
+源 issue：#18
 
-This document defines the minimum interaction model and canonical smoke flow for the VoidCode TUI MVP.
+本文档定义了 VoidCode TUI MVP 的最低交互模型和规范冒烟流程。
 
-It is intentionally narrow. The goal is to specify one terminal client that can drive the existing runtime boundary with keyboard-first interaction, runtime-owned approvals, ordered event rendering, and persisted session replay.
+本规范有意保持精简。目标是指定一个终端客户端，通过以键盘为主的交互、由运行时拥有的审批、有序的事件渲染以及持久化的会话重放来驱动现有的运行时边界。
 
-## Relationship to the current CLI
+## 与当前 CLI 的关系
 
-The TUI does **not** replace the existing CLI contract work and does **not** bypass it by calling tools directly.
+TUI **不**取代现有的 CLI 契约工作，也**不**通过直接调用工具来绕过它。
 
-For MVP, the TUI should be treated as a **new runtime client** that sits alongside the current text CLI:
+对于 MVP，TUI 应被视为一个**新的运行时客户端**，与目前的文本 CLI 并列：
 
-- the CLI remains a valid text-first client and verification surface
-- the TUI consumes the same runtime concepts as the CLI
-- both clients rely on the runtime for execution, events, approvals, and persistence
+- CLI 仍然是有效的文本优先客户端和验证界面
+- TUI 消费与 CLI 相同的运行时概念
+- 两个客户端都依赖运行时进行执行、事件、审批和持久化
 
-This keeps the client boundary consistent with `docs/architecture.md` and `docs/contracts/client-api.md`.
+这使客户端边界与 `docs/architecture.md` 和 `docs/contracts/client-api.md` 保持一致。
 
-## Minimum interaction model
+## 最低交互模型
 
-The TUI MVP should support exactly these interaction capabilities.
+TUI MVP 应支持以下交互能力。
 
-### 1. Prompt entry
+### 1. 提示词输入
 
-- one focused prompt input for entering a task request
-- keyboard submission for starting a run
-- a visible busy/idle state so the operator can tell whether the active turn is still running
+- 一个集中的提示词输入框，用于输入任务请求
+- 键盘提交以开始运行
+- 可见的 忙碌/空闲 状态，以便操作员判断当前的轮次是否仍在运行
 
-The MVP does not require advanced prompt editing beyond what is needed to submit one task reliably.
+MVP 不需要除可靠提交一个任务之外的高级提示词编辑功能。
 
-### 2. Activity timeline
+### 2. 活动时间线
 
-- one primary timeline pane that renders ordered runtime events for the active session
-- timeline entries driven by runtime event data rather than inferred from plain text alone
-- live activity visibility while a run is in progress
-- replay of the stored event sequence when a prior session is resumed
+- 一个主要的时间线窗格，用于渲染当前会话的有序运行时事件
+- 时间线条目由运行时事件数据驱动，而非仅从纯文本推断
+- 在运行过程中实时显示活动
+- 恢复之前的会话时，重放存储的事件序列
 
-This timeline should be sufficient to show the current implemented event progression documented in `docs/contracts/runtime-events.md`.
+该时间线应足以显示 `docs/contracts/runtime-events.md` 中记录的当前已实现的事件进展。
 
-### 3. Tool activity grouping
+### 3. 工具活动分组
 
-- tool-related events should appear as grouped activity within the timeline
-- grouped tool blocks may be collapsible, truncated, or otherwise compact, as long as the operator can inspect the result
-- the TUI must not require raw shell output inspection to understand whether a tool request started or completed
+- 工具相关的事件应在时间线中显示为分组活动
+- 分组的工具块可以是可折叠的、截断的或以其他方式保持紧凑，只要操作员可以检查结果
+- TUI 不得要求检查原始 shell 输出即可理解工具请求是否开始或完成
 
-### 4. Approval interaction
+### 4. 审批交互
 
-- if the runtime enters an approval-required state, the TUI should present a focused approval interaction without requiring the operator to drop back to raw shell commands
-- approval decisions are submitted back to the runtime as runtime-owned actions using the contract in `docs/contracts/approval-flow.md`
-- the TUI must be able to distinguish pending approval from resolved approval when replaying stored session state
+- 如果运行时进入需要审批的状态，TUI 应呈现一个集中的审批交互，而无需操作员退回到原始 shell 命令
+- 审批决策使用 `docs/contracts/approval-flow.md` 中的契约提交回运行时作为运行时拥有的操作
+- TUI 在重放存储的会话状态时，必须能够区分 待处理审批 和 已解决审批
 
-The TUI spec does not define a new approval schema. It consumes the existing one.
+TUI 规范不定义新的审批模式。它消费现有的模式。
 
-### 5. Session list and resume
+### 5. 会话列表与恢复
 
-- the operator can list persisted sessions inside the TUI
-- the operator can select a stored session and resume or replay it using runtime-owned session operations
-- the resumed session view must be derived from persisted runtime state, not reconstructed from private TUI memory
+- 操作员可以在 TUI 内部列出持久化的会话
+- 操作员可以使用运行时拥有的会话操作选择存储的会话并恢复或重放它
+- 恢复的会话视图必须派生自持久化的运行时状态，而非从私有的 TUI 内存重建
 
-### 6. Keyboard-first focus model
+### 6. 键盘优先的焦点模型
 
-- all core actions needed for the MVP flow must be possible from the keyboard alone
-- the TUI should make focus movement explicit between at least: prompt input, activity timeline, and session list/resume surface
-- approval interactions should capture focus until resolved or dismissed according to runtime state
+- MVP 流程所需的所有核心操作必须能仅通过键盘完成
+- TUI 应使焦点移动在以下各项之间显式进行：提示词输入、活动时间线和会话 列表/恢复 界面
+- 审批交互应捕获焦点，直到根据运行时状态被解决或关闭
 
-This document does not lock in final keybindings. It only requires a keyboard-first flow.
+本文档不锁定最终的键位绑定。它仅要求以键盘为主的流程。
 
-## Runtime boundary rules
+## 运行时边界规则
 
-The TUI MVP must obey these rules:
+TUI MVP 必须遵守以下规则：
 
-1. **Runtime as system boundary**
-   - the TUI talks to runtime-owned operations for run, list, load, resume, and approval resolution
-   - the TUI does not call tools directly
+1. **运行时作为系统边界**
+   - TUI 与运行时拥有的操作进行通信，包括 运行、列出、加载、恢复 和 审批解析
+   - TUI 不直接调用工具
 
-2. **Event-driven rendering**
-   - timeline state is derived from ordered runtime events and final output
-   - the TUI should not invent private state transitions that cannot be recovered from persisted runtime data
+2. **事件驱动渲染**
+   - 时间线状态派生自有序的运行时事件和最终输出
+   - TUI 不应发明无法从持久化的运行时数据恢复的私有状态转换
 
-3. **Persistence-owned replay**
-   - session history comes from runtime persistence
-   - resuming a session must replay persisted runtime state rather than reconstructing UI history from ad hoc client caches
+3. **持久化拥有的重放**
+   - 会话历史来自运行时持久化
+   - 恢复会话必须重放持久化的运行时状态，而非从即时的客户端缓存重建 UI 历史
 
-4. **Approval ownership stays in runtime**
-   - the TUI captures user intent and sends an approval decision back to the runtime
-   - the runtime remains responsible for validating and applying the decision
+4. **审批所有权保留在运行时**
+   - TUI 捕获用户意图并将审批决策发回运行时
+   - 运行时负责验证并应用该决策
 
-## Live stream and replay expectations
+## 实时流式传输与重放预期
 
-The TUI MVP must support the same observable model in two modes:
+TUI MVP 必须在两种模式下支持相同的观测模型：
 
-- **live activity** during an active run
-- **persisted replay** when resuming a prior session
+- 活动运行期间的**实时活动**
+- 恢复之前会话时的**持久化重放**
 
-The rendered meaning of an event should remain consistent across both modes. A resumed session should not require separate client logic that interprets the same runtime history differently.
+事件渲染的含义应在两种模式下保持一致。恢复的会话不应需要单独的、以不同方式解释同一运行时历史的客户端逻辑。
 
-This follows the expectations in `docs/contracts/stream-transport.md`.
+这遵循了 `docs/contracts/stream-transport.md` 中的预期。
 
-## Canonical smoke flow
+## 规范冒烟流程
 
-This smoke flow is the minimum demonstration that the TUI is usable for MVP work.
+该冒烟流程是证明 TUI 对于 MVP 工作可用的最低演示。
 
-### Flow
+### 流程
 
-1. Launch the TUI for a workspace and show the default prompt-focused screen.
-2. Submit one read-only request from the prompt input.
-3. Observe ordered runtime activity in the timeline while the request is running.
-4. Inspect the grouped tool activity for the request and confirm the final output is visible in the TUI.
-5. Trigger one approval-required request from the same session.
-6. Resolve the approval from inside the TUI.
-7. Observe the resulting runtime state transition in the timeline.
-8. Exit the TUI, reopen it, list the stored session, and replay or resume that session from persisted runtime state.
+1. 为工作区启动 TUI，并显示默认的提示词聚焦屏幕。
+2. 从提示词输入框提交一个只读请求。
+3. 在请求运行期间，在时间线中观察有序的运行时活动。
+4. 检查该请求的分组工具活动，并确认 TUI 中可见最终输出。
+5. 从同一会话触发一个需要审批的请求。
+6. 在 TUI 内部解决该审批。
+7. 在时间线中观察结果产生的运行时状态转换。
+8. 退出 TUI，重新打开它，列出存储的会话，并从持久化的运行时状态重放或恢复该会话。
 
-### Expected observable results
+### 预期可观测结果
 
-- the operator can submit a request without leaving the TUI
-- the operator sees ordered runtime progress instead of a frozen terminal while work is happening
-- approval-required execution pauses visibly and can be resolved inside the TUI
-- the stored session can be found again and replayed using runtime-backed state
-- replayed history preserves the meaning and ordering of the original observable flow
+- 操作员可以在不离开 TUI 的情况下提交请求
+- 操作员在工作进行时看到有序的运行时进度，而不是冻结的终端
+- 需要审批的执行会显式暂停，并可以在 TUI 内部解决
+- 存储的会话可以再次被找到，并使用运行时支持的状态重放
+- 重放的历史保留了原始可观测流的含义和顺序
 
-## Acceptance criteria
+## 验收标准
 
-- a TUI MVP spec exists and is specific enough to slice follow-on implementation issues without ambiguity
-- the TUI is defined as a runtime client, not as a direct tool executor
-- the minimum interaction set is explicit: prompt entry, timeline rendering, grouped tool activity, approval handling, session list, and resume
-- the canonical smoke flow covers one read-only request, one approval-required request, and persisted session replay
-- the TUI behavior is aligned with runtime-owned approvals, runtime event ordering, and runtime persistence contracts
-- the MVP remains keyboard-first and does not depend on mouse interaction or shell fallback for core task completion
+- TUI MVP 规范已存在，且足够具体，可以无歧义地切分后续实现 issue
+- TUI 被定义为一个运行时客户端，而非直接的工具执行器
+- 最低交互集是明确的：提示词输入、时间线渲染、分组工具活动、审批处理、会话列表和恢复
+- 规范冒烟流程覆盖了一个只读请求、一个需要审批的请求以及持久化的会话重放
+- TUI 行为与运行时拥有的审批、运行时事件顺序和运行时持久化契约一致
+- MVP 保持键盘优先，核心任务的完成不依赖鼠标交互或 shell 退回
 
-## Non-goals
+## 非目标
 
-This specification does **not** define:
+本规范**不**定义：
 
-- deep visual polish, theming, or animation work
-- multi-agent terminal UX
-- a new event schema, approval schema, or wire protocol
-- a full in-TUI configuration editor
-- advanced terminal multiplexing beyond what is needed for the MVP flow
+- 深度的视觉磨合、主题或动画工作
+- 多智能体终端 UX
+- 新的事件模式、审批模式或有线协议
+- 完整的 TUI 内部配置编辑器
+- 除 MVP 流程所需之外的高级终端多路复用
 
-## Follow-on implementation slices
+## 后续实现切片
 
-At minimum, implementation work after this spec should be sliceable into separate issues for:
+至少，本规范之后的实现工作应能被切分为以下独立的 issue：
 
-- TUI shell and focus management
-- active timeline rendering from runtime events
-- grouped tool activity rendering
-- approval interaction handling
-- session list and resume flows
-- TUI smoke or end-to-end verification
+- TUI 外壳与焦点管理
+- 基于运行时事件的活动时间线渲染
+- 分组工具活动渲染
+- 审批交互处理
+- 会话列表与恢复流
+- TUI 冒烟或端到端验证
 
-## References
+## 参考资料
 
-- `docs/mvp-todo-plan.md` (Phase 3)
+- `docs/mvp-todo-plan.md` (第 3 阶段)
 - `docs/contracts/runtime-events.md`
 - `docs/contracts/approval-flow.md`
 - `docs/contracts/stream-transport.md`

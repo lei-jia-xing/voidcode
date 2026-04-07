@@ -1,235 +1,235 @@
-# VoidCode MVP TODO Plan
+# VoidCode MVP 待办计划
 
-This document turns the current roadmap into a delivery checklist for the first real product loop.
+本文档将当前的路线图转化为首个真实产品循环的交付清单。
 
-Use GitHub issues and milestones as the executable backlog. This document defines the execution shape and acceptance direction; `docs/contracts/` defines normative client-facing contracts.
+使用 GitHub issues 和 milestones 作为可执行的积压工作 (backlog)。本文档定义了执行形态和验收方向；`docs/contracts/` 定义了规范的面向客户端契约。
 
-## Status
+## 状态
 
-VoidCode already has a truthful pre-MVP foundation:
+VoidCode 已经拥有真实的 pre-MVP 基础：
 
-- Python 3.14 repo/tooling baseline
-- deterministic CLI → runtime → graph → stable single-agent loop
-- local session persistence and resume
-- Bun frontend shell with mocked state
+- Python 3.14 仓库/工具链基准
+- 确定性 CLI → 运行时 (runtime) → 图 (graph) → 稳定的单智能体循环
+- 本地会话持久化与恢复
+- 具有 mock 状态的 Bun 前端外壳
 
-What it still does **not** have is a concrete, taskable MVP execution plan that connects the runtime, a usable terminal client, and a real web client.
+目前仍然**不**具备的是一个具体的、可分配任务的 MVP 执行计划，用于连接运行时、可用的终端客户端以及真实的 Web 客户端。
 
-## End-state vision
+## 终态愿景
 
-The longer-term product target is:
+长期的产品目标是：
 
-1. a highly configurable local-first agent runtime
-2. a frontend that can reflect agent activity and, later, agent-to-agent interaction
-3. a TUI experience with the same core feel as tools like OpenCode: prompt entry, streaming output, visible tool activity, approvals, persistence, and session recovery
+1. 一个高度可配置的本地优先智能体运行时
+2. 一个能够反映智能体活动以及后续智能体间交互的前端
+3. 一个与 OpenCode 等工具具有相同核心体验的 TUI 体验：提示词输入、流式输出、可见的工具活动、审批、持久化以及会话恢复
 
-## MVP boundary
+## MVP 边界
 
-### MVP includes
+### MVP 包含
 
-- one reliable **single-agent** end-to-end runtime loop
-- real tool execution through the runtime boundary
-- approval gates for writes and risky shell actions
-- persisted sessions with resume support
-- observable runtime events that clients can render
-- one usable TUI client backed by real runtime events
-- one usable web client backed by real runtime events
-- a minimal but real configuration surface for runtime behavior
+- 一个可靠的**单智能体**端到端运行时循环
+- 通过运行时边界执行真实的工具
+- 针对写入和危险 shell 操作的审批关卡
+- 具有恢复支持的持久化会话
+- 客户端可以渲染的可观测运行时事件
+- 一个由真实运行时事件驱动的可用 TUI 客户端
+- 一个由真实运行时事件驱动的可用 Web 客户端
+- 一个极简但真实的运行时行为配置界面
 
-### MVP does not include
+### MVP 不包含
 
-- true multi-agent orchestration
-- frontend visualizations focused on interaction between multiple agents
-- cloud collaboration or hosted synchronization
-- IDE plugins
-- plugin marketplace support
-- deep MCP ecosystem work beyond what is needed for the main loop
-- advanced visual workbench UX beyond one practical task flow
+- 真实的多智能体编排
+- 聚焦于多个智能体之间交互的前端可视化
+- 云端协作或托管同步
+- IDE 插件
+- 插件市场支持
+- 除主循环所需之外的高级 MCP 生态工作
+- 除一个实际任务流之外的高级视觉工作台 UX
 
-## Scope tension to resolve explicitly
+## 明确解决范围冲突
 
-The user-facing end goal includes frontend visibility into **agent-to-agent** interaction, but the current repo architecture and roadmap define MVP as a stable **single-agent** loop first.
+面向用户的最终目标包括前端对**智能体与智能体**之间交互的可见性，但当前的仓库架构和路线图将 MVP 定义为首先实现稳定的**单智能体**循环。
 
-This plan keeps that current boundary:
+本计划保留当前的边界：
 
-- MVP: render real event flow for one active agent loop
-- Post-MVP: introduce true multi-agent execution and dedicated multi-agent visualization
+- MVP：为单个活动的智能体循环渲染真实的事件流
+- Post-MVP：引入真实的多智能体执行和专门的多智能体可视化
 
-If the project decides multi-agent collaboration is required for MVP, `docs/roadmap.md` and `docs/architecture.md` should be updated first because that changes the current boundary.
+如果项目决定 MVP 需要多智能体协作，则应首先更新 `docs/roadmap.md` 和 `docs/architecture.md`，因为这改变了当前的边界。
 
-## Delivery principles
+## 交付原则
 
-- tests and contracts come before polish
-- every phase must produce observable runtime behavior
-- CLI/TUI/web clients must consume runtime boundaries, not bypass them
-- configuration must be real enough to prove the runtime is not hard-coded
-- event schemas must be stable enough for both TUI and web rendering
+- 测试和契约优先于磨合
+- 每个阶段必须产生可观测的运行时行为
+- CLI/TUI/Web 客户端必须消费运行时边界，而不是绕过它们
+- 配置必须足够真实，以证明运行时不是硬编码的
+- 事件模式 (event schemas) 必须足够稳定，以供 TUI 和 Web 渲染使用
 
-## Phase 0 — planning and contracts
+## 第 0 阶段 — 规划与契约
 
-Goal: make the remaining work testable before building more product surface.
+目标：在构建更多产品表面之前，使剩余的工作可测试。
 
-### TODO
+### 待办
 
-- [x] define the runtime event schema used by CLI/TUI/web clients
-- [x] define the approval interaction schema for `allow`, `deny`, and `ask`
-- [x] define the client-facing API contract for session list/load/run/stream
-- [x] define the minimal runtime configuration surface for MVP
-- [x] document what counts as MVP done vs. post-MVP expansion
+- [x] 定义 CLI/TUI/Web 客户端使用的运行时事件模式
+- [x] 定义 `allow`、`deny` 和 `ask` 的审批交互模式
+- [x] 定义面向客户端的会话 列表/加载/运行/流式传输 API 契约
+- [x] 定义 MVP 的极简运行时配置界面
+- [x] 记录 MVP 完成与 Post-MVP 扩展的标准
 
-### Acceptance criteria
+### 验收标准
 
-- every planned client can consume the same event vocabulary
-- approval requests and results have explicit payload shapes
-- session lifecycle is documented from create → stream → persist → resume
-- the config surface is small and concrete, not aspirational
+- 每个计划中的客户端都可以消费相同的事件词汇表
+- 审批请求和结果具有显式的负载形态
+- 记录了从 创建 → 流式传输 → 持久化 → 恢复 的会话生命周期
+- 配置界面小而具体，而非空想
 
-## Phase 1 — stable headless runtime loop
+## 第 1 阶段 — 稳定的无头运行时循环
 
-Goal: move from the initial deterministic foundation to a governed single-agent execution loop.
+目标：从初始的确定性基础转向受监管的单智能体执行循环。
 
-### TODO
+### 待办
 
-- [x] expand graph flow beyond the current read-only slice into a real turn loop
-- [x] add built-in search/file/system tools through the runtime pipeline
-- [x] implement the permission engine for writes and risky shell actions
-- [ ] implement hook registration and hook execution logging
-- [x] make runtime event emission complete enough for client rendering
-- [x] define failure handling and retry behavior for interrupted turns
+- [x] 将图流程从目前的只读切片扩展为真实的轮次循环
+- [x] 通过运行时管线添加内置的搜索/文件/系统工具
+- [x] 为写入和危险 shell 操作实现权限引擎
+- [ ] 实现钩子注册和钩子执行日志记录
+- [x] 使运行时事件发射足够完整，以供客户端渲染
+- [x] 为中断的轮次定义错误处理和重试行为
 
-### Acceptance criteria
+### 验收标准
 
-- one development task can execute through runtime → graph → tools → finalize response
-- write/risky actions cannot bypass approval
-- turns, approvals, tool calls, and failures emit stable events
-- runtime persistence survives process restart and session resume
-- integration tests cover the governed loop, not just isolated contracts
+- 一个开发任务可以通过 运行时 → 图 → 工具 → 完成响应 来执行
+- 写入/危险操作无法绕过审批
+- 轮次、审批、工具调用和失败会发出稳定的事件
+- 运行时持久化在进程重启和会话恢复后依然存在
+- 集成测试覆盖受监管的循环，而不只是孤立的契约
 
-## Phase 2 — minimal configurability for MVP
+## 第 2 阶段 — MVP 的极简可配置性
 
-Goal: prove the runtime is configurable without exploding the surface area.
+目标：在不爆炸增加表面积的情况下证明运行时是可配置的。
 
-### TODO
+### 待办
 
-- [ ] add a config model for runtime defaults (workspace, model/provider, approval mode, hooks)
-- [ ] define config precedence (repo file, environment, CLI flags, session overrides)
-- [ ] persist session-level settings needed for resume
-- [ ] expose config inspection in at least one client-facing path
-- [ ] document the MVP config surface clearly
+- [ ] 为运行时默认值（工作区、模型/提供商、审批模式、钩子）添加配置模型
+- [ ] 定义配置优先级（仓库文件、环境、CLI 标志、会话覆盖）
+- [ ] 持久化恢复所需的会话级设置
+- [ ] 在至少一个面向客户端的路径中暴露配置检查
+- [ ] 清晰记录 MVP 配置界面
 
-### Acceptance criteria
+### 验收标准
 
-- a user can change runtime behavior without editing source code
-- resume preserves the settings that matter for continued execution
-- config precedence is deterministic and documented
-- tests cover config loading and override behavior
+- 用户可以在不编辑源代码的情况下更改运行时行为
+- 恢复功能保留了对持续执行重要的设置
+- 配置优先级是确定性且已记录的
+- 测试覆盖配置加载和覆盖行为
 
-## Phase 3 — TUI MVP client
+## 第 3 阶段 — TUI MVP 客户端
 
-Goal: ship a keyboard-first client with the same core interaction shape users expect from terminal-native coding agents.
+目标：交付一个以键盘为主的客户端，具备用户对终端原生编程智能体所期望的核心交互形态。
 
-This phase implements the **TUI MVP Spec** in [`docs/tui-mvp-spec.md`](./tui-mvp-spec.md). Follow-on implementation tasks should be sliced directly from that spec.
+本阶段实现了 [`docs/tui-mvp-spec.md`](./tui-mvp-spec.md) 中的 **TUI MVP 规范**。后续的实现任务应直接从该规范中切分。
 
-### TODO
+### 待办
 
-- [ ] finalize the TUI MVP specification in `docs/tui-mvp-spec.md`
-- [ ] implement the terminal layout with distinct prompt and activity zones
-- [ ] render streaming runtime events into a scrollable, readable timeline
-- [ ] implement collapsible tool call and result blocks in the activity feed
-- [ ] integrate interactive approval prompts for risky tool executions
-- [ ] implement session management (list, load, resume) directly in the TUI
-- [ ] add automated smoke tests for the canonical TUI smoke flow defined in `docs/tui-mvp-spec.md`
+- [ ] 在 `docs/tui-mvp-spec.md` 中定稿 TUI MVP 规范
+- [ ] 实现具有明确提示词区域和活动区域的终端布局
+- [ ] 将流式运行时事件渲染为可滚动、可读的时间线
+- [ ] 在活动提要中实现可折叠的工具调用和结果块
+- [ ] 为高风险工具执行集成交互式审批提示
+- [ ] 直接在 TUI 中实现会话管理（列表、加载、恢复）
+- [ ] 为 `docs/tui-mvp-spec.md` 中定义的规范 TUI 冒烟流程添加自动化冒烟测试
 
-### Acceptance criteria
+### 验收标准
 
-- **Single-task completion**: a user can successfully finish one "read and edit" task using only the TUI
-- **Activity visibility**: streaming events (turns, tool starts, tool outputs) are visible without UI flickering or blocking
-- **Approval flow**: risky actions pause execution and display a clear TUI prompt that accepts immediate user input
-- **Persistence parity**: the TUI correctly lists and resumes sessions created by other clients (CLI) using shared runtime storage
-- **Spec alignment**: the final implementation meets the acceptance criteria defined in `docs/tui-mvp-spec.md`
+- **单任务完成**：用户仅使用 TUI 即可成功完成一个“读取并编辑”任务
+- **活动可见性**：流式事件（轮次、工具开始、工具输出）可见，无 UI 闪烁或阻塞
+- **审批流**：危险操作会暂停执行，并显示一个清晰的、接受即时用户输入的 TUI 提示
+- **持久化对等**：TUI 正确列出并恢复由其他客户端（CLI）使用共享运行时存储创建的会话
+- **规范对齐**：最终实现符合 `docs/tui-mvp-spec.md` 中定义的验收标准
 
-## Phase 4 — web client MVP alignment
+## 第 4 阶段 — Web 客户端 MVP 对齐
 
-Goal: convert the current mock-backed frontend into a real runtime client.
+目标：将目前的 mock 数据驱动的前端转换为真实的运行时客户端。
 
-### TODO
+### 待办
 
-- [ ] add a real backend API layer for the frontend to consume
-- [ ] add streaming transport for runtime events to the frontend
-- [ ] replace mocked task/activity/session data with real session state
-- [ ] render runtime/tool/approval/timeline events in the web UI
-- [ ] expose session list, load, and resume in the frontend
-- [ ] connect the frontend config surface to the real runtime config model
-- [ ] add frontend integration tests around session rendering and streaming
+- [ ] 为前端消费添加真实的后端 API 层
+- [ ] 为前端添加运行时事件的流式传输支持
+- [ ] 用真实的会话状态替换模拟的任务/活动/会话数据
+- [ ] 在 Web UI 中渲染运行时/工具/审批/时间线事件
+- [ ] 在前端暴露会话列表、加载和恢复
+- [ ] 将前端配置界面连接到真实的运行时配置模型
+- [ ] 针对会话渲染和流式传输添加前端集成测试
 
-### Acceptance criteria
+### 验收标准
 
-- frontend state is driven by real runtime/API data, not mocks
-- a user can observe the active agent turn, tool activity, and approvals live
-- the frontend can resume a prior session from persisted runtime state
-- the frontend and TUI are consuming the same underlying runtime concepts
+- 前端状态由真实的运行时/API 数据驱动，而非 mock 数据
+- 用户可以实时观察活动的智能体轮次、工具活动和审批
+- 前端可以从持久化的运行时状态恢复之前的会话
+- 前端和 TUI 消费相同的底层运行时概念
 
-## Phase 5 — integration and demo readiness
+## 第 5 阶段 — 集成与演示就绪
 
-Goal: make the product demonstrable and repeatable for contributors.
+目标：使产品对于贡献者来说是可演示且可重复的。
 
-### TODO
+### 待办
 
-- [ ] define one canonical demo flow covering runtime + TUI + web client
-- [ ] add full-stack test coverage for the primary product loop
-- [ ] document operator workflows for common failures and recovery
-- [ ] add observability hooks/logging needed for debugging live sessions
-- [ ] update README and contributor docs to reflect the real MVP path
+- [ ] 定义一个覆盖 运行时 + TUI + Web 客户端 的规范演示流程
+- [ ] 为主要产品循环添加全栈测试覆盖
+- [ ] 针对常见失败和恢复记录操作员工作流
+- [ ] 添加调试实时会话所需的观测钩子/日志
+- [ ] 更新 README 和贡献者文档以反映真实的 MVP 路径
 
-### Acceptance criteria
+### 验收标准
 
-- one canonical task flow works repeatedly across fresh runs
-- failures are observable enough to debug without guesswork
-- docs match the actual product behavior and setup sequence
-- the repo exposes a clear contributor path for continuing MVP work
+- 一个规范的任务流在多次运行中可重复工作
+- 失败是足够可观测的，无需猜测即可调试
+- 文档与实际的产品行为和设置序列匹配
+- 仓库暴露了继续 MVP 工作的清晰贡献路径
 
-## Post-MVP expansion
+## Post-MVP 扩展
 
-These belong **after** the single-agent MVP is stable:
+这些属于单智能体 MVP 稳定**之后**的工作：
 
-- true multi-agent orchestration and delegation
-- frontend visualization focused on interaction between multiple agents
-- richer approval policies and more granular governance controls
-- more advanced TUI polish and parity work
-- cloud/shared session collaboration
-- IDE integrations and external plugin ecosystem work
+- 真实的多智能体编排与委派
+- 聚焦于多个智能体之间交互的前端可视化
+- 更丰富的审批策略和更细粒度的治理控制
+- 更先进的 TUI 磨合和对等工作
+- 云端/共享会话协作
+- IDE 集成和外部插件生态工作
 
-## Verification policy
+## 验证政策
 
-Each phase should define its verification up front.
+每个阶段应预先定义其验证方式。
 
-### Required layers
+### 必修层
 
-- unit tests for contracts, config, permissions, and event shapes
-- integration tests for runtime loop, persistence, hooks, and approvals
-- client smoke tests for CLI/TUI/web session flows
-- manual QA for streaming, tool visibility, and approval UX
+- 针对契约、配置、权限和事件形态的单元测试
+- 针对运行时循环、持久化、钩子和审批的集成测试
+- 针对 CLI/TUI/Web 会话流的客户端冒烟测试
+- 针对流式传输、工具可见性和审批 UX 的手动 QA
 
-### Preferred language for acceptance criteria
+### 偏好的验收标准语言
 
-- Given a persisted session, when the user resumes it in TUI or web, then the same turn history and result are rendered
-- Given a write-capable tool request, when approval mode is `ask`, then execution pauses until an explicit decision is recorded
-- Given a streamed runtime event sequence, when a client renders it, then tool progress remains visible throughout the turn
+- 给定一个持久化的会话，当用户在 TUI 或 Web 中恢复它时，渲染相同的轮次历史和结果
+- 给定一个具有写入能力的工具请求，当审批模式为 `ask` 时，执行暂停，直到记录了一个显式的决策
+- 给定一个流式运行时事件序列，当客户端渲染它时，工具进度在整个轮次中保持可见
 
-## Suggested execution order
+## 建议执行顺序
 
-1. event/API/config contracts
-2. governed single-agent runtime loop
-3. minimal config surface
-4. TUI MVP client
-5. web client live integration
-6. integration/demo hardening
+1. 事件/API/配置契约
+2. 受监管的单智能体运行时循环
+3. 极简配置界面
+4. TUI MVP 客户端
+5. Web 客户端实时集成
+6. 集成/演示加固
 
-## Immediate next TODOs for the repo
+## 仓库立即要做的待办
 
-- [ ] write an event schema doc for runtime/client streaming
-- [ ] write an API contract doc for frontend/TUI integration
-- [ ] break issue #7 into concrete frontend integration tasks
-- [ ] open a TUI-specific issue/epic with acceptance criteria
-- [ ] add configurability design notes for runtime/session settings
-- [ ] convert the current roadmap epics into linked executable issues
+- [ ] 为运行时/客户端流式传输编写事件模式文档
+- [ ] 为前端/TUI 集成编写 API 契约文档
+- [ ] 将 issue #7 拆分为具体的前端集成任务
+- [ ] 开启一个带有验收标准的 TUI 特定 issue/epic
+- [ ] 为运行时/会话设置添加可配置性设计笔记
+- [ ] 将目前的路线图 epics 转换为链接的可执行 issues
