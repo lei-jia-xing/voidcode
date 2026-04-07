@@ -1,20 +1,20 @@
-# Runtime Event Schema
+# 运行时事件模式（Schema）
 
-Source issue: #13
+来源 Issue：#13
 
-## Purpose
+## 目的
 
-Define the MVP event vocabulary emitted by the runtime for client rendering.
+定义运行时为客户端渲染而发出的 MVP 事件词汇表。
 
-## Status
+## 状态
 
-This schema documents the current single-agent MVP contract. It is intentionally narrower than any future multi-agent protocol.
-The deterministic fallback sequence remains canonical for the current runtime, while future graph modes may add ordered events between existing phases without changing current fallback behavior.
-For both fresh runs and approval resumes, the runtime renumbers graph finalization events into the active runtime sequence so graph-side fixed sequence values cannot collide with inserted runtime events.
+此模式记录了当前的单智能体（single-agent）MVP 契约。它有意地比任何未来的多智能体协议更窄。
+确定性的回退序列（fallback sequence）对于当前运行时仍然是规范的。未来的图模式（graph modes）可能会在现有阶段之间添加有序事件，而不会改变当前的回退行为。
+对于全新运行和审批后的恢复运行，运行时会将图端的终结事件重新编号为活跃的运行时序列，从而避免图端固定的序列值与插入的运行时事件发生冲突。
 
-## Canonical envelope
+## 规范信封
 
-Current in-code shape from `src/voidcode/runtime/events.py`:
+当前 `src/voidcode/runtime/events.py` 中的代码形状：
 
 ```python
 EventEnvelope(
@@ -26,25 +26,25 @@ EventEnvelope(
 )
 ```
 
-## Field rules
+## 字段规则
 
-- `session_id`: required; identifies the owning session
-- `sequence`: required; monotonically increasing within a session response or replay
-- `event_type`: required; string identifier for the event kind
-- `source`: required; one of `runtime`, `graph`, or `tool`
-- `payload`: required as a field, may be an empty object
+- `session_id`：必填；标识所属会话
+- `sequence`：必填；在会话响应或重放中单调递增
+- `event_type`：必填；事件类型的字符串标识符
+- `source`：必填；`runtime`、`graph` 或 `tool` 之一
+- `payload`：必填字段；可以是一个空对象
 
-## MVP invariants
+## MVP 不变量
 
-- events are session-scoped
-- events are ordered by `sequence`
-- clients must preserve event order when rendering a turn or replay
-- clients must tolerate unknown `event_type` values by rendering them generically rather than failing
-- clients must treat `payload` as extensible
+- 事件以会话为作用域
+- 事件按 `sequence` 排序
+- 客户端在渲染轮次或重放时必须保持事件顺序
+- 客户端必须能够容忍未知的 `event_type` 值，采用通用方式渲染而非报错
+- 客户端必须将 `payload` 视为可扩展的
 
-## Known event types emitted today
+## 目前发出的已知事件类型
 
-From `src/voidcode/runtime/service.py` and the stable single-agent loop:
+源自 `src/voidcode/runtime/service.py` 和稳定的单智能体循环：
 
 - `runtime.request_received`
 - `runtime.skills_loaded`
@@ -59,18 +59,18 @@ From `src/voidcode/runtime/service.py` and the stable single-agent loop:
 - `runtime.failed`
 - `graph.response_ready`
 
-All events emitted during a turn, including those from the graph, are re-sequenced by the runtime into a single monotonically increasing sequence per response or replay.
-This ensures that graph-local sequence values cannot collide with runtime-inserted events across approval-resumes.
+在轮次中发出的所有事件（包括来自图端的事件）都会由运行时重新编号，变为每次响应或重放中单一的、单调递增的序列。
+这确保了图端局部（graph-local）的序列值在跨审批恢复运行时，不会与运行时插入的事件发生冲突。
 
-## Additive vocabulary for future multi-agent modes
+## 未来多智能体模式的补充词汇表
 
-These shared event names are defined in `src/voidcode/runtime/events.py`, but they are not emitted by the current single-agent loop yet:
+这些共享事件名称在 `src/voidcode/runtime/events.py` 中定义，但尚未由当前的单智能体循环发出：
 
 - `runtime.memory_refreshed`
 
-## Current single-agent loop event sequence
+## 当前单智能体循环的事件序列
 
-The runtime and integration tests assert this ordered sequence for a turn with a single approved tool:
+运行时和集成测试断言了具有单个已审批工具调用的轮次的有序序列：
 
 1. `runtime.request_received`
 2. `runtime.skills_loaded`
@@ -78,65 +78,65 @@ The runtime and integration tests assert this ordered sequence for a turn with a
 4. `graph.model_turn`
 5. `graph.tool_request_created`
 6. `runtime.tool_lookup_succeeded`
-7. `runtime.approval_requested` (for `ask` policy) OR `runtime.approval_resolved` (for `allow`/`deny` policy) OR `runtime.permission_resolved` (for read-only)
-8. `runtime.approval_resolved` (only if resumed after `ask`)
+7. 对于 `ask` 策略发出 `runtime.approval_requested`；或者对于 `allow`/`deny` 策略发出 `runtime.approval_resolved`；或者对于只读操作发出 `runtime.permission_resolved`
+8. `runtime.approval_resolved`（仅在 `ask` 后恢复运行时）
 9. `runtime.tool_completed`
 10. `graph.loop_step`
 11. `graph.response_ready`
 
-This sequence is the most concrete client-visible MVP event flow implemented today.
-Future graph modes may add ordered events between these phases, but this fallback order remains the canonical deterministic sequence.
+此序列是目前实现的、最具体的、客户端可见的 MVP 事件流。
+未来的图模式可能会在这些阶段之间添加有序事件，但此回退顺序仍为规范的确定性序列。
 
-## Current payload expectations
+## 当前 Payload 预期
 
 ### `runtime.request_received`
 - source: `runtime`
-- current payload:
+- 当前 payload:
   - `prompt: str`
 
 ### `runtime.skills_loaded`
 - source: `runtime`
-- current payload:
-  - `skills: list[str]` sorted ascending by skill name
-- emitted for every new run, including when no skills are discovered (`{"skills": []}`)
+- 当前 payload:
+  - `skills: list[str]` 按技能名称升序排列
+- 每次新运行都会发出，包括未发现技能的情况（`{"skills": []}`）
 
 ### `graph.tool_request_created`
 - source: `graph`
-- current payload:
+- 当前 payload:
   - `tool: str`
   - `arguments: dict[str, object]`
-  - `path: str` (optional; included only if `path` exists in `arguments`)
+  - `path: str`（可选；仅在 `arguments` 中存在 `path` 时包含）
 
 ### `runtime.tool_lookup_succeeded`
 - source: `runtime`
-- current payload:
+- 当前 payload:
   - `tool: str`
 
 ### `runtime.permission_resolved`
 - source: `runtime`
-- current payload:
+- 当前 payload:
   - `tool: str`
   - `decision: str`
 
 ### `runtime.tool_completed`
 - source: `tool`
-- current payload:
-  - tool-defined result data
+- 当前 payload:
+  - 工具定义的结果数据
 
-## Client rendering requirements
+## 客户端渲染要求
 
-- CLI may render events as formatted lines
-- TUI and web clients should render the ordered stream as timeline/activity data
-- clients should not infer approvals, failures, or tool completion from text output alone when event data is available
+- CLI 可以将事件渲染为格式化的行
+- TUI 和 Web 客户端应将有序流渲染为时间线/活动数据
+- 当事件数据可用时，客户端不应仅从文本输出推断审批、失败或工具完成状态
 
-## Non-goals
+## 非目标
 
-- multi-agent event semantics
-- token/cost telemetry schema
-- provider-specific model reasoning events
+- 多智能体事件语义
+- Token/成本遥测模式
+- 特定于供应商的模型推理事件
 
-## Acceptance checks
+## 验收检查点
 
-- a client can replay a persisted session using only the stored event sequence and output
-- event ordering is sufficient to show request → skills loaded → tool request → permission → tool completion → response ready
-- adding a new event type does not break older clients that use generic fallback rendering
+- 客户端可以仅使用存储的事件序列和输出来重放持久化的会话
+- 事件顺序足以展示 请求 → 加载技能 → 工具请求 → 权限 → 工具完成 → 响应就绪
+- 添加新的事件类型不会破坏使用通用回退渲染的旧版客户端

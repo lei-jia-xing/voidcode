@@ -1,74 +1,74 @@
-# Stream Transport Contract
+# 流传输契约
 
-Source issue: #17
+来源 Issue：#17
 
-## Purpose
+## 目的
 
-Define the MVP transport expectations for delivering runtime events and final output to CLI, TUI, and web clients.
+定义向 CLI、TUI 和 Web 客户端交付运行时事件及最终输出的 MVP 传输预期。
 
-## Status
+## 状态
 
-The current code exposes ordered events and output through an in-process runtime response and CLI printing. A generalized streaming transport is still planned.
+当前代码通过进程内运行时响应和 CLI 打印来公开有序事件及输出。广义的流传输层仍在计划中。
 
-The current CLI is a replay/print consumer, not a live streaming transport in the richer TUI/web sense.
+目前的 CLI 是一个重放/打印消费者，而非 TUI/Web 意义上更丰富的实时流传输。
 
-## Transport responsibilities
+## 传输职责
 
-The transport layer must deliver:
+传输层必须交付：
 
-- ordered runtime events
-- final output
-- enough session identity to associate the stream with persistence and resume
+- 有序的运行时事件
+- 最终输出
+- 足以将会话流与持久化和恢复相关联的会话标识
 
-It must not:
+它不得：
 
-- bypass runtime governance
-- invent private client-only state that is not recoverable
+- 绕过运行时治理
+- 创建无法恢复的私有客户端专有状态
 
-## MVP delivery semantics
+## MVP 交付语义
 
-- streams are session-scoped
-- event ordering follows `EventEnvelope.sequence`
-- clients must be able to render partial progress before final output exists
-- persisted replay must preserve the same observable ordering model as live delivery
+- 流以会话为作用域
+- 事件排序遵循 `EventEnvelope.sequence`
+- 客户端必须能够在最终输出产生前渲染阶段性进展
+- 持久化重放必须保留与实时交付相同的可观测排序模型
 
-## Client expectations
+## 客户端预期
 
 ### CLI
-- may consume a completed response and print events in order
+- 消费完整的响应，并按顺序打印事件
 
 ### TUI
-- should consume ordered events as an activity timeline for an active turn
-- should be able to switch from live stream to persisted replay without semantic drift
+- 将有序事件作为当前轮次的活动时间线进行消费
+- 能够在实时流与持久化重放之间切换，而不会产生语义偏差
 
-### Web client
-- should consume the same event semantics as the TUI
-- should render event progression, tool activity, approvals, and final output from runtime-provided data
+### Web 客户端
+- 消费与 TUI 相同的事件语义
+- 根据运行时提供的数据渲染事件进展、工具活动、审批以及最终输出
 
-## Recommended transport abstraction
+## 推荐的传输抽象
 
-The runtime should expose a transport-neutral event stream contract that can later be bound to:
+运行时应公开一个传输中立（transport-neutral）的事件流契约，该契约后续可绑定到：
 
-- in-process iteration for local clients
-- HTTP chunked or SSE-style delivery
-- WebSocket delivery
+- 针对本地客户端的进程内迭代
+- HTTP 分块或 SSE 风格的交付
+- WebSocket 交付
 
-This document defines behavior, not the final wire protocol implementation.
+本文档定义行为，而非最终的有线协议（Wire protocol）实现。
 
-## Invariants
+## 不变量
 
-- live delivery and replay share the same event vocabulary
-- clients can show progress without parsing human-oriented text output
-- final output does not replace the need for ordered event visibility
+- 实时交付与重放共享相同的事件词汇表
+- 客户端无需解析面向人类的文本输出即可显示进展
+- 最终输出不能取代对有序事件可见性的需求
 
-## Non-goals
+## 非目标
 
-- selecting one final wire protocol today
-- post-MVP multi-agent multiplexing semantics
-- token/cost telemetry transport requirements
+- 在今天选定最终的有线协议
+- post-MVP 的多智能体多路复用语义
+- Token/成本遥测传输要求
 
-## Acceptance checks
+## 验收检查点
 
-- the contract is sufficient to implement one live stream consumer and one replay consumer
-- transport choices can change later without changing the event schema itself
-- runtime persistence remains the source of truth for replay behavior
+- 契约足以实现一个实时流消费者和一个重放消费者
+- 后续可以更改传输方案，而无需更改事件模式（Schema）本身
+- 运行时持久化仍是重放行为的权威来源
