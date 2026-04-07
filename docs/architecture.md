@@ -1,101 +1,101 @@
-# VoidCode Architecture Summary
+# VoidCode 架构概览
 
-## Status and intent
+## 状态与初衷
 
-VoidCode is a pre-MVP, local-first coding agent runtime inspired by OpenCode and Claude Code. The immediate goal is not to build a complete platform, but to make one developer task loop reliable from end to end:
+VoidCode 是一个受 OpenCode 和 Claude Code 启发而开发的 pre-MVP 本地优先（local-first）编程智能体运行时。当前的直接目标不是构建一个完整的平台，而是使开发者任务循环的一个环节实现可靠的端到端运行：
 
-1. a user submits a development task
-2. the agent reasons, calls tools, requests approval when needed, and performs changes
-3. the runtime records state and events
-4. the user can observe progress and continue the session through a client such as the CLI
+1. 用户提交开发任务
+2. 智能体进行推理，调用工具，在需要时请求审批，并执行更改
+3. 运行时记录状态和事件
+4. 用户可以通过 CLI 等客户端观察进度并继续会话
 
-For the normative client-facing contract layer, see [`docs/contracts/README.md`](./contracts/README.md).
+关于规范的客户端面向契约层，请参阅 [`docs/contracts/README.md`](./contracts/README.md)。
 
-## System context
+## 系统上下文
 
-The system context can be described as a layered path from users to tools:
+系统上下文可以描述为从用户到工具的分层路径：
 
-- users interact through a CLI client today, with room for a web frontend or future IDE client
-- clients talk to the **VoidCode Runtime**
-- the runtime coordinates sessions, permissions, hooks, tool registration, streaming, and storage
-- the runtime invokes the **LangGraph orchestrator** for graph execution, state transitions, checkpoints, and interrupt/resume behavior
-- LangGraph ultimately drives LLM providers, workspace access, and tool execution through the runtime boundary
+- 用户目前通过 CLI 客户端进行交互，并为 Web 前端或未来的 IDE 客户端预留了空间
+- 客户端与 **VoidCode Runtime** 通信
+- 运行时负责协调会话、权限、钩子（hooks）、工具注册、流式传输和存储
+- 运行时调用 **LangGraph orchestrator** 进行图执行、状态转换、检查点（checkpoints）以及中断/恢复行为
+- LangGraph 最终通过运行时边界驱动 LLM 提供商、工作区访问和工具执行
 
-Two boundaries are especially important:
+有两个边界尤为重要：
 
-- LangGraph does **not** talk directly to UI clients
-- UI clients do **not** call tools directly
+- LangGraph **不**直接与 UI 客户端通信
+- UI 客户端 **不**直接调用工具
 
-Everything flows through the runtime so governance, persistence, and observability stay consistent.
+所有流程都经过运行时，以确保治理、持久性和可观测性保持一致。
 
-## LangGraph and custom runtime boundary
+## LangGraph 与自定义运行时边界
 
-VoidCode uses LangGraph as the orchestration engine, not as the entire product runtime.
+VoidCode 使用 LangGraph 作为编排引擎，而不是整个产品运行时。
 
-### LangGraph is responsible for
+### LangGraph 负责
 
-- the agent loop
-- graph state
-- conditional routing
-- interrupt and resume
-- checkpoints
+- 智能体循环
+- 图状态
+- 条件路由
+- 中断与恢复
+- 检查点
 
-### The custom runtime is responsible for
+### 自定义运行时负责
 
-- tool registry and metadata
-- permission decisions (`allow`, `deny`, `ask`)
-- hook execution
-- session creation, loading, and resume
-- storage abstraction over SQLite
-- streaming transport for CLI or future clients
-- context management and compaction
+- 工具注册表与元数据
+- 权限决策（`allow`、`deny`、`ask`）
+- 钩子执行
+- 会话创建、加载与恢复
+- 基于 SQLite 的存储抽象
+- 面向 CLI 或未来客户端的流式传输
+- 上下文管理与压缩
 
-This split is the core architectural decision for the project: **LangGraph orchestrates, while the runtime provides productized execution boundaries.**
+这种划分是项目的核心架构决策：**LangGraph 负责编排，而运行时提供产品化的执行边界。**
 
-## Key components
+## 关键组件
 
-The codebase is expected to grow around three central areas:
+代码库预计将围绕三个核心领域增长：
 
 ### `runtime/`
 
-Runtime services form the system center. This area will own session management, permission checks, hooks, transport, persistence, and the headless runtime entrypoint.
+运行时服务构成系统中心。该领域将拥有会话管理、权限检查、钩子、传输、持久化以及无头运行时入口点。
 
 ### `graph/`
 
-Graph code models the main agent loop. The planned flow is roughly:
+图代码为主要的智能体循环建模。计划中的流程大致为：
 
 `prepare_context` → `call_model` → `decide_next_step` → `permission_gate` → `execute_tool` → `handle_tool_result` → `finalize_response`
 
-The MVP intentionally keeps the graph small so the main loop becomes stable before the design expands.
+MVP 有意保持图的规模较小，以便在设计扩展之前使主循环保持稳定。
 
 ### `tools/`
 
-The tool layer will expose built-in capabilities such as `read`, `glob`, `grep`, `bash`, `write`, and `edit`, but only through the runtime pipeline:
+工具层将暴露内置功能，如 `read`、`glob`、`grep`、`bash`、`write` 和 `edit`，但仅通过运行时流水线：
 
-graph tool request → runtime metadata lookup → permission check → before-hook → tool execution → after-hook → persistence → result back to graph
+图工具请求 → 运行时元数据查询 → 权限检查 → 前置钩子 → 工具执行 → 后置钩子 → 持久化 → 结果返回至图
 
-The design assumes read operations may run concurrently, while write operations stay controlled and approval-driven.
+设计假设读取操作可以并发运行，而写入操作则保持受控且由审批驱动。
 
-## Design principles
+## 设计原则
 
-The current architecture is guided by a few explicit principles:
+当前的架构由几个明确的原则指导：
 
-- **Clear layering:** keep UI, runtime, orchestration, and infrastructure separate.
-- **Governance before execution:** every tool call passes through registry, permission, and hooks.
-- **Recoverable state:** sessions, messages, approvals, tool executions, and checkpoints should be restorable.
-- **Observable execution:** turns, tools, hooks, approvals, retries, and errors should emit events.
-- **MVP first:** ship a stable single-agent loop before exploring multi-agent or plugin-heavy designs.
+- **清晰的分层：** 保持 UI、运行时、编排和基础设施的分离。
+- **治理优先于执行：** 每次工具调用都要经过注册表、权限和钩子。
+- **可恢复的状态：** 会话、消息、审批、工具执行和检查点应当是可恢复的。
+- **可观测的执行：** 轮次（turns）、工具、钩子、审批、重试和错误应当发出事件。
+- **MVP 优先：** 在探索多智能体或插件密集的设计之前，先交付一个稳定的单智能体循环。
 
-## MVP boundary
+## MVP 边界
 
-The MVP aims to include:
+MVP 旨在包括：
 
-- a single-agent core loop
-- a basic built-in tool set
-- session persistence and resume
-- approval and permission flow
-- foundational hooks
-- at least one usable entrypoint, such as the CLI
-- a working headless runtime baseline
+- 单智能体核心循环
+- 基础内置工具集
+- 会话持久化与恢复
+- 审批与权限流
+- 基础钩子
+- 至少一个可用的入口点，例如 CLI
+- 一个工作的无头运行时基准
 
-The MVP explicitly defers deeper IDE integration, cloud collaboration, plugin marketplaces, and advanced multi-agent coordination.
+MVP 明确推迟了更深层次的 IDE 集成、云端协作、插件市场以及高级多智能体协调。
