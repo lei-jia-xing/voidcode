@@ -8,7 +8,7 @@ Define the MVP contract between clients and the headless runtime for running req
 
 ## Status
 
-The current codebase exposes this contract concretely through the CLI and runtime methods, not through HTTP yet.
+The current codebase exposes this contract concretely through the CLI, runtime methods, and the local HTTP transport.
 
 ## Current runtime request/response shapes
 
@@ -66,6 +66,7 @@ Output:
 Current implementation surface:
 - runtime: `VoidCodeRuntime.run(request)`
 - CLI: `voidcode run <request> [--workspace] [--session-id]`
+- HTTP: `POST /api/runtime/run/stream` (SSE stream of `RuntimeStreamChunk`)
 
 ### List persisted sessions
 
@@ -75,6 +76,7 @@ Output:
 Current implementation surface:
 - runtime: `VoidCodeRuntime.list_sessions()`
 - CLI: `voidcode sessions list [--workspace]`
+- HTTP: `GET /api/sessions`
 
 ### Resume persisted session
 
@@ -87,6 +89,7 @@ Output:
 Current implementation surface:
 - runtime: `VoidCodeRuntime.resume(session_id)`
 - CLI: `voidcode sessions resume <session_id> [--workspace]`
+- HTTP: `GET /api/sessions/{session_id}`
 
 ## Session lifecycle
 
@@ -117,16 +120,16 @@ Current integration tests verify that resume returns the stored output and the s
 - clients must preserve ordered runtime events as delivered, including additive future event types inserted by later graph modes between existing phases
 - clients must tolerate additional ordered additive events without assuming the deterministic fallback event list is exhaustive
 
-## Future HTTP/streaming mapping
+## HTTP/streaming mapping
 
-When the HTTP layer exists, it should preserve these same operation boundaries:
+The current HTTP layer preserves these same operation boundaries:
 
 - run/create session
 - list sessions
 - load/resume session
 - subscribe to or receive ordered runtime events
 
-This document intentionally defines the contract independently of FastAPI/Starlette routing details.
+This document intentionally defines the contract independently of ASGI routing details.
 The deterministic fallback event sequence remains canonical today, while future graph modes may add ordered events between existing phases without changing these API boundaries.
 
 ## Non-goals
@@ -139,4 +142,4 @@ The deterministic fallback event sequence remains canonical today, while future 
 
 - TUI and web clients can be implemented without bypassing runtime methods or concepts
 - persisted sessions can be listed and resumed using a stable session summary and stored response shape
-- future API routes can map directly onto these operations without changing semantics
+- the current HTTP routes map directly onto these operations without changing semantics

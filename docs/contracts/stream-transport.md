@@ -8,9 +8,9 @@ Define the MVP transport expectations for delivering runtime events and final ou
 
 ## Status
 
-The current code exposes ordered events and output through an in-process runtime response and CLI printing. A generalized streaming transport is still planned.
+The current code exposes ordered events and output through both in-process runtime iteration and a local HTTP/SSE transport. Broader transport work such as WebSocket delivery is still planned.
 
-The current CLI is a replay/print consumer, not a live streaming transport in the richer TUI/web sense.
+The current CLI is still a replay/print consumer, while the web shell uses the minimal local HTTP/SSE transport for live session streaming.
 
 ## Transport responsibilities
 
@@ -47,13 +47,16 @@ It must not:
 
 ## Recommended transport abstraction
 
-The runtime should expose a transport-neutral event stream contract that can later be bound to:
+The runtime exposes a transport-neutral event stream contract that is currently bound to:
 
-- in-process iteration for local clients
-- HTTP chunked or SSE-style delivery
+- in-process iteration for local/runtime consumers
+- local HTTP/SSE delivery for the web shell
+
+It can later also be bound to:
+
 - WebSocket delivery
 
-This document defines behavior, not the final wire protocol implementation.
+This document defines behavior, not the final long-term wire protocol choice.
 
 ## Invariants
 
