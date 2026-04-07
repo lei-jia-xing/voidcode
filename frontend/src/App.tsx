@@ -8,7 +8,7 @@ import { deriveTasksFromEvents, deriveActivitiesFromEvents } from './lib/runtime
 function App() {
   const {
     language, setLanguage,
-    sessions, currentSessionId, currentSessionEvents,
+    sessions, currentSessionId, currentSessionEvents, currentSessionOutput,
     loadSessions, sessionsStatus, sessionsError, selectSession, runTask, replayStatus, replayError, runStatus, runError
   } = useAppStore();
   const { t, i18n } = useTranslation();
@@ -195,9 +195,9 @@ function App() {
                 {replayError && <div className="mt-3 text-amber-400 text-sm">{t('session.replayError', { message: replayError })}</div>}
               </div>
 
-              <div className="bg-slate-800/30 border border-slate-700/50 rounded-xl p-6 shadow-sm flex-1 overflow-y-auto min-h-0">
-                 <h2 className="text-lg font-medium text-slate-200 mb-4">{t('task.queue')}</h2>
-                 <div className="space-y-3">
+              <div className="bg-slate-800/30 border border-slate-700/50 rounded-xl p-6 shadow-sm flex-1 flex flex-col min-h-0">
+                 <h2 className="text-lg font-medium text-slate-200 mb-4 flex-shrink-0">{t('task.queue')}</h2>
+                 <div className="space-y-3 overflow-y-auto flex-1 min-h-0 pr-2">
                    {derivedTasks.map((task) => (
                      <div key={task.id} className="flex items-center justify-between p-4 bg-slate-900/50 rounded-lg border border-slate-800">
                        <div className="flex items-center space-x-4 flex-1 min-w-0 mr-4">
@@ -218,6 +218,15 @@ function App() {
                    )}
                  </div>
               </div>
+
+              {currentSessionOutput !== null && (
+                <div className="bg-slate-800/30 border border-slate-700/50 rounded-xl p-6 shadow-sm flex-1 flex flex-col min-h-0">
+                  <h2 className="text-lg font-medium text-slate-200 mb-4 flex-shrink-0">{t('task.output')}</h2>
+                  <div className="bg-slate-900 rounded-lg p-4 font-mono text-sm text-slate-300 overflow-y-auto whitespace-pre-wrap border border-slate-800 flex-1 min-h-0 custom-scrollbar">
+                    {currentSessionOutput}
+                  </div>
+                </div>
+              )}
 
             </div>
           </div>

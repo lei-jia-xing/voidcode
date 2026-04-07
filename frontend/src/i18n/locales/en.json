@@ -18,6 +18,7 @@
   "task.promptPlaceholder": "Enter a task to run...",
   "task.running": "Running...",
   "task.queue": "Task Queue",
+  "task.output": "Final Output",
   "task.status.pending": "Pending",
   "task.status.in_progress": "In Progress",
   "task.status.completed": "Completed",

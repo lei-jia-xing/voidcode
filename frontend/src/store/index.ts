@@ -10,6 +10,7 @@ interface AppState {
   currentSessionId: string | null;
   currentSessionState: SessionState | null;
   currentSessionEvents: EventEnvelope[];
+  currentSessionOutput: string | null;
 
   sessionsStatus: 'idle' | 'loading' | 'success' | 'error';
   sessionsError: string | null;
@@ -34,6 +35,7 @@ export const useAppStore = create<AppState>()(
       currentSessionId: null,
       currentSessionState: null,
       currentSessionEvents: [],
+      currentSessionOutput: null,
 
       sessionsStatus: 'idle',
       sessionsError: null,
@@ -65,6 +67,7 @@ export const useAppStore = create<AppState>()(
             currentSessionId: null,
             currentSessionState: null,
             currentSessionEvents: [],
+            currentSessionOutput: null,
             replayStatus: 'idle',
             replayError: null,
             runStatus: 'idle',
@@ -78,6 +81,7 @@ export const useAppStore = create<AppState>()(
           currentSessionId: sessionId,
           currentSessionState: null,
           currentSessionEvents: [],
+          currentSessionOutput: null,
           replayStatus: 'loading',
           replayError: null,
           replayRequestId: requestId,
@@ -94,6 +98,7 @@ export const useAppStore = create<AppState>()(
           set({
             currentSessionState: replay.session,
             currentSessionEvents: replay.events,
+            currentSessionOutput: replay.output,
             replayStatus: 'success'
           });
         } catch (err) {
@@ -114,7 +119,7 @@ export const useAppStore = create<AppState>()(
         }
 
         const nextReplayRequestId = get().replayRequestId + 1;
-        set({ runStatus: 'running', runError: null });
+        set({ runStatus: 'running', runError: null, currentSessionOutput: null });
         const { currentSessionId } = get();
         set({
           replayStatus: 'idle',
@@ -134,7 +139,8 @@ export const useAppStore = create<AppState>()(
               return {
                 currentSessionState: chunk.session,
                 currentSessionEvents: newEvents,
-                currentSessionId: chunk.session.session.id
+                currentSessionId: chunk.session.session.id,
+                currentSessionOutput: chunk.output !== null ? chunk.output : state.currentSessionOutput
               };
             });
           }

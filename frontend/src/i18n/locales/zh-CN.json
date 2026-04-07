@@ -18,6 +18,7 @@
   "task.promptPlaceholder": "输入要运行的任务...",
   "task.running": "运行中...",
   "task.queue": "任务队列",
+  "task.output": "最终输出",
   "task.status.pending": "待处理",
   "task.status.in_progress": "进行中",
   "task.status.completed": "已完成",
