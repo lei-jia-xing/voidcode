@@ -56,7 +56,7 @@ voidcode/
 ## ANTI-PATTERNS (THIS PROJECT)
 - Do not have UI clients call tools directly.
 - Do not have LangGraph talk directly to UI clients; flow goes CLI/client → runtime → graph/tools.
-- Do not claim the frontend has live backend integration; it is still mock-backed.
+- Do not claim full frontend/backend parity; the web shell only has a minimal live HTTP/SSE integration for session list, replay, and streamed runs.
 - Do not expand pre-MVP scope into multi-agent/cloud/IDE-plugin work unless the task explicitly targets roadmap changes.
 - Do not commit generated frontend artifacts.
 - Do not open public issues for security-sensitive reports.

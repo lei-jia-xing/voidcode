@@ -5,7 +5,7 @@
 **Branch:** master
 
 ## OVERVIEW
-Bun/Vite/React frontend shell. Mostly mock-backed; a thin runtime transport client/debug path now exists, but the main UI is still not runtime-driven.
+Bun/Vite/React frontend shell. The main session/task/activity path now consumes the local runtime transport for session list, replay, and streamed runs; broader client work is still pre-MVP.
 
 ## WHERE TO LOOK
 | Task | Location | Notes |
@@ -36,7 +36,7 @@ frontend/
 - Keep state changes explicit in the Zustand store; current app state is local and persisted.
 
 ## ANTI-PATTERNS
-- Do not claim full live API or WebSocket behavior exists; only a minimal runtime transport client/debug path exists today, and the main UI is still mostly mock-backed.
+- Do not claim full live API or WebSocket behavior exists; the current shell only covers the minimal HTTP/SSE-backed MVP path for session list, replay, and streamed runs.
 - Do not introduce backend assumptions into the UI without corresponding backend work.
 - Do not commit generated build artifacts from `dist/`.
 - Do not duplicate repo-wide coding standards here; root docs own commit and PR policy.
@@ -54,4 +54,4 @@ bun run build
 ## NOTES
 - `frontend/README.md` describes an aspirational component/page structure that the current `src/` tree does not fully implement yet.
 - Current UI is mostly centered in `App.tsx`; avoid over-documenting nonexistent substructure.
-- The frontend now has a thin runtime transport client/debug path; update this file again when the main state/timeline UI stops being mock-backed.
+- The frontend now has a live minimal runtime transport path for the main state/timeline shell; update this file again when broader client capabilities move beyond the current MVP slice.

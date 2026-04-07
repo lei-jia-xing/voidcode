@@ -62,12 +62,12 @@ frontend/
 
 ## Implementation Status
 
-> **Important:** The current frontend is still primarily a **UI shell**. The main task/activity experience remains mock-backed, although the repo now includes a thin runtime transport client/debug path.
+> **Important:** The current frontend is still a pre-MVP **UI shell**, but its main session/task/activity path now consumes the local runtime transport for session listing, replay, and streamed runs.
 
 - [x] UI Shell & Navigation
-- [x] Mock Session View
-- [x] Mock Agent Interaction
-- [ ] Live API Integration (Planned)
+- [x] Runtime-backed session list and replay
+- [x] Runtime-backed streamed task execution
+- [x] Live API Integration for the current single-agent MVP path
 - [ ] WebSocket Event Streaming (Planned)
 
 ## Architecture
@@ -77,7 +77,7 @@ The frontend is designed to communicate with the VoidCode runtime through:
 1. **HTTP API** - For session management and configuration
 2. **WebSocket** - For real-time event streaming (agent thoughts, tool calls, approvals)
 
-**Note:** These interfaces are only **partially implemented** today. The repo now includes a thin runtime transport client and local backend server path for transport testing, but the main frontend session/task/activity UI is still driven by mock state.
+**Note:** These interfaces are still **partial** today. The current integrated path uses the local HTTP/SSE transport for session listing, replay, and streamed runs, while broader client work such as WebSocket transport and richer UX remains future work.
 
 ## Contributing
 
