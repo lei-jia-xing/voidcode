@@ -19,6 +19,7 @@ describe('App', () => {
     sessions: [],
     currentSessionId: null,
     currentSessionEvents: [],
+    currentSessionOutput: null,
     loadSessions: vi.fn(),
     sessionsStatus: 'success',
     sessionsError: null,
@@ -71,5 +72,53 @@ describe('App', () => {
     const emptyStates = screen.queryAllByText('activity.empty');
     expect(emptyStates).toHaveLength(0);
     expect(screen.getByText(/Current Session/i)).toBeInTheDocument();
+  });
+
+  it('renders output panel when currentSessionOutput exists', () => {
+    const testOutput = 'This is the final output from the agent.';
+    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      ...mockStore,
+      currentSessionOutput: testOutput
+    });
+
+    render(<App />);
+
+    expect(screen.getByText('Final Output')).toBeInTheDocument();
+    expect(screen.getByText(testOutput)).toBeInTheDocument();
+  });
+
+  it('hides stale output when a new run clears the current turn output', () => {
+    const { rerender } = render(<App />);
+
+    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      ...mockStore,
+      currentSessionOutput: 'previous output',
+      runStatus: 'success'
+    });
+    rerender(<App />);
+
+    expect(screen.getByText('Final Output')).toBeInTheDocument();
+    expect(screen.getByText('previous output')).toBeInTheDocument();
+
+    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      ...mockStore,
+      currentSessionOutput: null,
+      runStatus: 'running'
+    });
+    rerender(<App />);
+
+    expect(screen.queryByText('Final Output')).not.toBeInTheDocument();
+    expect(screen.queryByText('previous output')).not.toBeInTheDocument();
+  });
+
+  it('renders the output panel for empty string output', () => {
+    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      ...mockStore,
+      currentSessionOutput: ''
+    });
+
+    render(<App />);
+
+    expect(screen.getByText('Final Output')).toBeInTheDocument();
   });
 });
