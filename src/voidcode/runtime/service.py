@@ -542,7 +542,30 @@ class VoidCodeRuntime:
             )
         if approval_request_id is None or approval_decision is None:
             raise ValueError("approval resume requires request id and decision")
-        return self._resume_pending_approval(
+        _, response = self._resume_pending_approval_response(
+            session_id=session_id,
+            approval_request_id=approval_request_id,
+            approval_decision=approval_decision,
+        )
+        return response
+
+    def resume_stream(
+        self,
+        session_id: str,
+        *,
+        approval_request_id: str | None = None,
+        approval_decision: PermissionResolution | None = None,
+    ) -> Iterator[RuntimeStreamChunk]:
+        validate_session_id(session_id)
+        if approval_request_id is None and approval_decision is None:
+            response = self._session_store.load_session(
+                workspace=self._workspace, session_id=session_id
+            )
+            yield from self._replay_response(response)
+            return
+        if approval_request_id is None or approval_decision is None:
+            raise ValueError("approval resume requires request id and decision")
+        yield from self._resume_pending_approval_stream(
             session_id=session_id,
             approval_request_id=approval_request_id,
             approval_decision=approval_decision,
@@ -568,13 +591,72 @@ class VoidCodeRuntime:
             policy_mode=raw_policy_mode,
         )
 
-    def _resume_pending_approval(
+    def _resume_pending_approval_stream(
         self,
         *,
         session_id: str,
         approval_request_id: str,
         approval_decision: PermissionResolution,
-    ) -> RuntimeResponse:
+    ) -> Iterator[RuntimeStreamChunk]:
+        stored_events, response = self._resume_pending_approval_response(
+            session_id=session_id,
+            approval_request_id=approval_request_id,
+            approval_decision=approval_decision,
+        )
+        replayed_sequences = {event.sequence for event in stored_events}
+        for event in response.events:
+            if event.sequence in replayed_sequences:
+                continue
+            yield RuntimeStreamChunk(kind="event", session=response.session, event=event)
+        if response.output is not None:
+            yield RuntimeStreamChunk(
+                kind="output",
+                session=response.session,
+                output=response.output,
+            )
+
+    def _resume_pending_approval_response(
+        self,
+        *,
+        session_id: str,
+        approval_request_id: str,
+        approval_decision: PermissionResolution,
+    ) -> tuple[tuple[EventEnvelope, ...], RuntimeResponse]:
+        stored_events = self._session_store.load_session(
+            workspace=self._workspace,
+            session_id=session_id,
+        ).events
+        streamed_events: list[EventEnvelope] = []
+        output: str | None = None
+        final_session: SessionState | None = None
+
+        for chunk in self._resume_pending_approval_impl(
+            session_id=session_id,
+            approval_request_id=approval_request_id,
+            approval_decision=approval_decision,
+        ):
+            final_session = chunk.session
+            if chunk.event is not None:
+                streamed_events.append(chunk.event)
+            if chunk.kind == "output":
+                output = chunk.output
+
+        if final_session is None:
+            raise ValueError("runtime stream emitted no chunks")
+
+        return stored_events, RuntimeResponse(
+            session=final_session,
+            events=stored_events + tuple(streamed_events),
+            output=output,
+        )
+
+    def _resume_pending_approval_impl(
+        self,
+        *,
+        session_id: str,
+        approval_request_id: str,
+        approval_decision: PermissionResolution,
+    ) -> Iterator[RuntimeStreamChunk]:
         stored = self._session_store.load_session(workspace=self._workspace, session_id=session_id)
         pending = self._session_store.load_pending_approval(
             workspace=self._workspace, session_id=session_id
@@ -621,8 +703,7 @@ class VoidCodeRuntime:
         )
 
         loop_events: list[EventEnvelope] = []
-        output = None
-
+        output: str | None = None
         try:
             for chunk in self._execute_graph_loop(
                 session=session,
@@ -631,27 +712,27 @@ class VoidCodeRuntime:
                 tool_results=tool_results,
                 approval_resolution=(pending, approval_decision),
             ):
-                if chunk.event is not None and chunk.event.sequence > max_stored_sequence:
-                    loop_events.append(chunk.event)
+                if chunk.event is not None:
+                    if chunk.event.sequence > max_stored_sequence:
+                        loop_events.append(chunk.event)
+                        yield chunk
                 if chunk.kind == "output":
                     output = chunk.output
+                    yield chunk
                 session = chunk.session
         except Exception:
-            response = RuntimeResponse(
-                session=SessionState(
-                    session=session.session,
-                    status="failed",
-                    turn=session.turn,
-                    metadata=session.metadata,
-                ),
-                events=stored.events + tuple(loop_events),
-                output=output,
-            )
-            request = RuntimeRequest(
-                prompt=self._prompt_from_events(stored.events), session_id=session_id
-            )
-            self._persist_response(request=request, response=response)
-            return response
+            if session.status == "failed":
+                response = RuntimeResponse(
+                    session=session,
+                    events=stored.events + tuple(loop_events),
+                    output=output,
+                )
+                request = RuntimeRequest(
+                    prompt=self._prompt_from_events(stored.events), session_id=session_id
+                )
+                self._persist_response(request=request, response=response)
+                return
+            raise
 
         response = RuntimeResponse(
             session=session,
@@ -663,7 +744,18 @@ class VoidCodeRuntime:
             prompt=self._prompt_from_events(stored.events), session_id=session_id
         )
         self._persist_response(request=request, response=response)
-        return response
+        return
+
+    @staticmethod
+    def _replay_response(response: RuntimeResponse) -> Iterator[RuntimeStreamChunk]:
+        for event in response.events:
+            yield RuntimeStreamChunk(kind="event", session=response.session, event=event)
+        if response.output is not None:
+            yield RuntimeStreamChunk(
+                kind="output",
+                session=response.session,
+                output=response.output,
+            )
 
     @staticmethod
     def _validated_request(request: RuntimeRequest) -> RuntimeRequest:
