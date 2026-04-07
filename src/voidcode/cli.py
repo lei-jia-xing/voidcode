@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
@@ -201,6 +202,31 @@ def _handle_serve_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def _handle_config_show_command(args: argparse.Namespace) -> int:
+    workspace = cast(Path, args.workspace)
+    if not workspace.exists() or not workspace.is_dir():
+        raise SystemExit(f"error: workspace does not exist: {workspace}")
+
+    session_id = cast(str | None, getattr(args, "session_id", None))
+    runtime = VoidCodeRuntime(workspace=workspace)
+    try:
+        effective_config = runtime.effective_runtime_config(session_id=session_id)
+    except ValueError as exc:
+        raise SystemExit(f"error: {exc}") from None
+
+    print(
+        json.dumps(
+            {
+                "workspace": str(workspace),
+                "session_id": session_id,
+                "approval_mode": effective_config.approval_mode,
+                "model": effective_config.model,
+            }
+        )
+    )
+    return 0
+
+
 class EventLikeProtocol(Protocol):
     event_type: str
     source: str
@@ -281,6 +307,25 @@ def build_parser() -> argparse.ArgumentParser:
 
     sessions_parser = subparsers.add_parser("sessions", help="Inspect persisted local sessions.")
     sessions_subparsers = sessions_parser.add_subparsers(dest="sessions_command")
+
+    config_parser = subparsers.add_parser("config", help="Inspect effective runtime configuration.")
+    config_subparsers = config_parser.add_subparsers(dest="config_command")
+
+    config_show_parser = config_subparsers.add_parser(
+        "show", help="Show effective runtime config for a workspace or session."
+    )
+    _ = config_show_parser.add_argument(
+        "--workspace",
+        type=Path,
+        default=Path.cwd(),
+        help="Workspace root used to resolve runtime config and sessions.",
+    )
+    _ = config_show_parser.add_argument(
+        "--session",
+        dest="session_id",
+        help="Optional persisted session identifier used to show resumed effective config.",
+    )
+    config_show_parser.set_defaults(handler=_handle_config_show_command)
 
     list_parser = sessions_subparsers.add_parser("list", help="List persisted sessions.")
     _ = list_parser.add_argument(

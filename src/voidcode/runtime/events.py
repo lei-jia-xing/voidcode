@@ -11,6 +11,8 @@ type ExistingEventType = Literal[
     "graph.tool_request_created",
     "runtime.tool_lookup_succeeded",
     "runtime.permission_resolved",
+    "runtime.tool_hook_pre",
+    "runtime.tool_hook_post",
     "runtime.tool_completed",
     "graph.response_ready",
     "runtime.approval_requested",
@@ -29,6 +31,8 @@ RUNTIME_SKILLS_LOADED: Final[ExistingEventType] = "runtime.skills_loaded"
 GRAPH_TOOL_REQUEST_CREATED: Final[ExistingEventType] = "graph.tool_request_created"
 RUNTIME_TOOL_LOOKUP_SUCCEEDED: Final[ExistingEventType] = "runtime.tool_lookup_succeeded"
 RUNTIME_PERMISSION_RESOLVED: Final[ExistingEventType] = "runtime.permission_resolved"
+RUNTIME_TOOL_HOOK_PRE: Final[ExistingEventType] = "runtime.tool_hook_pre"
+RUNTIME_TOOL_HOOK_POST: Final[ExistingEventType] = "runtime.tool_hook_post"
 RUNTIME_TOOL_COMPLETED: Final[ExistingEventType] = "runtime.tool_completed"
 GRAPH_RESPONSE_READY: Final[ExistingEventType] = "graph.response_ready"
 RUNTIME_APPROVAL_REQUESTED: Final[ExistingEventType] = "runtime.approval_requested"
@@ -45,6 +49,8 @@ EMITTED_EVENT_TYPES: Final[tuple[ExistingEventType, ...]] = (
     GRAPH_TOOL_REQUEST_CREATED,
     RUNTIME_TOOL_LOOKUP_SUCCEEDED,
     RUNTIME_PERMISSION_RESOLVED,
+    RUNTIME_TOOL_HOOK_PRE,
+    RUNTIME_TOOL_HOOK_POST,
     RUNTIME_TOOL_COMPLETED,
     GRAPH_RESPONSE_READY,
     RUNTIME_APPROVAL_REQUESTED,

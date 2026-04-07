@@ -797,3 +797,236 @@ def test_run_command_uses_repo_local_config_to_allow_write_request() -> None:
     assert "EVENT runtime.approval_resolved" in result.stdout
     assert "decision=allow" in result.stdout
     assert written == "config approved"
+
+
+def test_config_show_outputs_workspace_effective_config() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        (workspace / ".voidcode.json").write_text(
+            json.dumps({"approval_mode": "deny", "model": "repo/model"}),
+            encoding="utf-8",
+        )
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(Path(__file__).resolve().parents[2] / "src")
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "voidcode",
+                "config",
+                "show",
+                "--workspace",
+                str(workspace),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+
+    assert result.returncode == 0
+    assert json.loads(result.stdout) == {
+        "workspace": str(workspace),
+        "session_id": None,
+        "approval_mode": "deny",
+        "model": "repo/model",
+    }
+    assert "Traceback" not in result.stderr
+
+
+def test_config_show_outputs_resumed_session_effective_config() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        (workspace / ".voidcode.json").write_text(
+            json.dumps({"approval_mode": "deny", "model": "repo/model"}),
+            encoding="utf-8",
+        )
+        (workspace / "sample.txt").write_text("session config\n", encoding="utf-8")
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(Path(__file__).resolve().parents[2] / "src")
+
+        setup = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "voidcode",
+                "run",
+                "read sample.txt",
+                "--workspace",
+                str(workspace),
+                "--session-id",
+                "config-session",
+                "--approval-mode",
+                "allow",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "voidcode",
+                "config",
+                "show",
+                "--workspace",
+                str(workspace),
+                "--session",
+                "config-session",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+
+    assert setup.returncode == 0
+    assert result.returncode == 0
+    assert json.loads(result.stdout) == {
+        "workspace": str(workspace),
+        "session_id": "config-session",
+        "approval_mode": "allow",
+        "model": "repo/model",
+    }
+    assert "Traceback" not in result.stderr
+
+
+def test_config_show_delegates_to_runtime_effective_config(capsys: Any) -> None:
+    cli = importlib.import_module("voidcode.cli")
+    runtime_config = SimpleNamespace(approval_mode="allow", model="runtime/model")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+            runtime_class.return_value.effective_runtime_config.return_value = runtime_config
+            result = cli.main(
+                [
+                    "config",
+                    "show",
+                    "--workspace",
+                    str(workspace),
+                    "--session",
+                    "config-session",
+                ]
+            )
+
+    captured = capsys.readouterr()
+
+    assert result == 0
+    runtime_class.assert_called_once_with(workspace=workspace)
+    runtime_class.return_value.effective_runtime_config.assert_called_once_with(
+        session_id="config-session"
+    )
+    assert captured.out == (
+        json.dumps(
+            {
+                "workspace": str(workspace),
+                "session_id": "config-session",
+                "approval_mode": "allow",
+                "model": "runtime/model",
+            }
+        )
+        + "\n"
+    )
+
+
+def test_config_show_invalid_workspace_returns_error() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "voidcode",
+            "config",
+            "show",
+            "--workspace",
+            "/definitely/missing/workspace",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert "error:" in result.stderr
+
+
+def test_config_show_missing_session_returns_error() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(Path(__file__).resolve().parents[2] / "src")
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "voidcode",
+                "config",
+                "show",
+                "--workspace",
+                str(workspace),
+                "--session",
+                "missing-session",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert "error:" in result.stderr
+
+
+def test_config_show_session_workspace_mismatch_returns_error() -> None:
+    with tempfile.TemporaryDirectory() as tmp_a, tempfile.TemporaryDirectory() as tmp_b:
+        workspace_a = Path(tmp_a)
+        workspace_b = Path(tmp_b)
+        (workspace_a / "sample.txt").write_text("session config\n", encoding="utf-8")
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(Path(__file__).resolve().parents[2] / "src")
+
+        setup = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "voidcode",
+                "run",
+                "read sample.txt",
+                "--workspace",
+                str(workspace_a),
+                "--session-id",
+                "config-session",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "voidcode",
+                "config",
+                "show",
+                "--workspace",
+                str(workspace_b),
+                "--session",
+                "config-session",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+
+    assert setup.returncode == 0
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert "error:" in result.stderr

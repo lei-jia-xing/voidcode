@@ -55,6 +55,8 @@ EventEnvelope(
 - `runtime.approval_requested`
 - `runtime.approval_resolved`
 - `runtime.permission_resolved`
+- `runtime.tool_hook_pre`
+- `runtime.tool_hook_post`
 - `runtime.tool_completed`
 - `runtime.failed`
 - `graph.response_ready`
@@ -83,6 +85,14 @@ EventEnvelope(
 9. `runtime.tool_completed`
 10. `graph.loop_step`
 11. `graph.response_ready`
+
+当 hooks MVP 完成后，非只读工具的成功路径会在工具运行周围插入：
+
+- `runtime.tool_hook_pre`
+- `runtime.tool_completed`
+- `runtime.tool_hook_post`
+
+如果 pre-hook 失败，工具调用必须在执行前中止，并通过已有失败路径对外可见。
 
 此序列是目前实现的、最具体的、客户端可见的 MVP 事件流。
 未来的图模式可能会在这些阶段之间添加有序事件，但此回退顺序仍为规范的确定性序列。
@@ -122,6 +132,16 @@ EventEnvelope(
 - source: `tool`
 - 当前 payload:
   - 工具定义的结果数据
+
+### `runtime.tool_hook_pre`
+### `runtime.tool_hook_post`
+- source: `runtime`
+- 锁定 payload 字段：
+  - `phase`
+  - `tool_name`
+  - `session_id`
+  - `status`
+  - `error`（仅失败时出现）
 
 ## 客户端渲染要求
 
