@@ -244,6 +244,16 @@ def test_runtime_config_rejects_invalid_repo_local_approval_mode(tmp_path: Path)
             "runtime config field 'hooks.post_tool\\[1\\]\\[0\\]'",
             id="hooks-post-tool-command-item-shape",
         ),
+        pytest.param(
+            {"hooks": {"pre_tool": [[]]}},
+            "runtime config field 'hooks.pre_tool\\[0\\]'.*at least one string",
+            id="hooks-pre-tool-empty-command",
+        ),
+        pytest.param(
+            {"hooks": {"post_tool": [["echo", "hello"], []]}},
+            "runtime config field 'hooks.post_tool\\[1\\]'.*at least one string",
+            id="hooks-post-tool-empty-command",
+        ),
     ],
 )
 def test_runtime_config_rejects_invalid_extension_domain_shapes(

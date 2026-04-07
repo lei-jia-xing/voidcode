@@ -191,9 +191,9 @@ class VoidCodeRuntime:
             status="running",
             turn=1,
             metadata={
+                **request.metadata,
                 "workspace": str(self._workspace),
                 "runtime_config": self._runtime_config_metadata(),
-                **request.metadata,
             },
         )
         sequence = 1

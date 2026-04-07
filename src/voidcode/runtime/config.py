@@ -279,10 +279,15 @@ def _parse_command_list(raw_value: object, *, field_path: str) -> tuple[tuple[st
             raise ValueError(
                 f"runtime config field '{field_path}[{command_index}]' must be an array"
             )
+        command_field_path = f"{field_path}[{command_index}]"
         parsed_command = _parse_string_list(
             cast(list[object], raw_command),
-            field_path=f"{field_path}[{command_index}]",
+            field_path=command_field_path,
         )
+        if not parsed_command:
+            raise ValueError(
+                f"runtime config field '{command_field_path}' must contain at least one string"
+            )
         parsed_commands.append(parsed_command)
     return tuple(parsed_commands)
 
