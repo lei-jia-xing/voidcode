@@ -30,7 +30,7 @@ The current direction is intentionally narrow: ship a stable single-agent MVP lo
 
 Preferred local setup uses uv-managed Python environments and Bun. Python 3.14 is the supported version.
 
-> **Note:** The current implementation includes a real deterministic CLI → runtime → read-only tool slice plus a minimal local HTTP/SSE transport. The frontend shell still does not consume that backend yet.
+> **Note:** The current implementation includes a real deterministic CLI → runtime → read-only tool slice plus a minimal local HTTP/SSE transport. The frontend shell now consumes that backend for the MVP session list, session replay, and streamed run path.
 
 ```bash
 # Setup tools and Python environment
@@ -55,7 +55,7 @@ uv run voidcode sessions resume local-cli-session --workspace .
 # Start the local backend transport on localhost:8000
 uv run voidcode serve --workspace . --host 127.0.0.1 --port 8000
 
-# Start the web frontend (mock-backed)
+# Start the web frontend
 mise run frontend:dev
 ```
 

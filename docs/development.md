@@ -69,8 +69,8 @@ The frontend is a Bun-powered React application located in `frontend/`.
 
 ### Current Implementation State
 - **UI Shell**: Functional navigation and layout components.
-- **Mock-backed**: All agent interactions and session data are currently mocked in the frontend.
-- **Backend Integration**: **No live connection** to the Python backend runtime yet. The `src/voidcode` Python package and the `frontend/` React app operate independently at this stage.
+- **Runtime-backed MVP path**: The frontend now consumes the local runtime transport for session listing, session replay, and streamed runs.
+- **Backend Integration**: A minimal live HTTP/SSE connection to the Python runtime now exists for the current single-agent web shell; broader client work remains future scope.
 
 ### Frontend workflow
 

@@ -9,7 +9,7 @@ The repository contains two primary, independent components:
 1.  **Python Backend**: A typed contract layer plus a stable single-agent loop implementation.
 2.  **Bun Frontend Shell**: A React-based web interface for the future agent runtime.
 
-**Current integration status**: 🟡 **Minimal transport only**. The backend now exposes a local HTTP/SSE transport and the frontend includes a thin runtime client/debug path, but the main UI remains mock-driven.
+**Current integration status**: 🟡 **Initial web integration landed**. The backend exposes a local HTTP/SSE transport, and the frontend now consumes it for session listing, session replay, and streamed runs in the main shell.
 
 ---
 
@@ -38,7 +38,7 @@ The repository contains two primary, independent components:
 - [ ] **Skill Execution**: Discovery is implemented (emitting `runtime.skills_loaded`), but the runtime does not yet execute skill logic or provide skill-specific tool contexts.
 - [ ] **Real LSP and ACP Integrations**: Configuration seams exist; real process management and transport support are pending.
 - [ ] **TUI Client**: A terminal-native user interface is planned to replace the current basic CLI `run` experience.
-- [ ] **Web Client Integration**: The backend transport is ready; frontend integration is pending.
+- [x] **Web Client Integration (initial slice)**: The frontend now consumes the backend transport for session listing, replay, and streamed runs in the current single-agent shell.
 
 ---
 
@@ -47,18 +47,18 @@ The repository contains two primary, independent components:
 ### Implemented Today
 - [x] **UI Framework**: React 18, Tailwind CSS, and Lucide React shell.
 - [x] **Component Library**: Layout, navigation, and message-thread UI components.
-- [x] **Mock State**: Zustand stores populated with mock session and agent event data.
+- [x] **Runtime-backed MVP state path**: Zustand stores now drive the main session/task/activity UI from runtime-backed session data and streamed events.
 - [x] **Frontend Tooling**: Vite-based dev server with Bun support, ESLint, and Prettier.
 
 ### Planned / In-Progress
-- [ ] **Live API Integration**: A thin frontend runtime client/debug path now exists for the minimal transport, but the main session/task/activity UI still does not consume runtime-backed state.
+- [x] **Live API Integration (minimal transport)**: The main session/task/activity UI now consumes runtime-backed session data and ordered streamed events through the local HTTP/SSE transport.
 - [ ] **WebSocket Streaming**: Real-time agent event streaming from the backend.
 - [ ] **Session Persistence**: True persistence via the backend database.
 - [ ] **File System Browser**: Integration with the local workspace for code reading.
 
 ### Planning status
 - [x] **Foundation / Epic 0**: Developer tooling, repository structure, CI baseline, and contributor-facing docs are substantially in place.
-- [ ] **Executable contract layer for clients**: The contract docs now exist under `docs/contracts/`, but implementation work against them is still pending.
+- [x] **Executable contract layer for the web MVP slice**: The current web shell now exercises the client contracts for session list, replay, and streamed runs against the local transport.
 
 ---
 
