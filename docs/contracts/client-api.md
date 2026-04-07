@@ -1,18 +1,18 @@
-# Client-Facing Runtime API Contract
+# 面向客户端的运行时 API 契约
 
-Source issue: #14
+来源 Issue：#14
 
-## Purpose
+## 目的
 
-Define the MVP contract between clients and the headless runtime for running requests, listing sessions, loading session state, resuming sessions, and subscribing to event streams.
+定义客户端与无头运行时（Headless runtime）之间的 MVP 契约，用于运行请求、列出会话、加载会话状态、恢复会话以及订阅事件流。
 
-## Status
+## 状态
 
-The current codebase exposes this contract concretely through the CLI and runtime methods, not through HTTP yet.
+当前的方案已通过 CLI 和运行时方法实现了此契约，但尚未支持通过 HTTP 访问。
 
-## Current runtime request/response shapes
+## 当前运行时请求/响应形状
 
-From `src/voidcode/runtime/contracts.py`:
+源自 `src/voidcode/runtime/contracts.py`：
 
 ```python
 RuntimeRequest(
@@ -28,9 +28,9 @@ RuntimeResponse(
 )
 ```
 
-## Session shapes
+## 会话形状
 
-From `src/voidcode/runtime/session.py`:
+源自 `src/voidcode/runtime/session.py`：
 
 ```python
 SessionState(
@@ -49,94 +49,94 @@ StoredSessionSummary(
 )
 ```
 
-## MVP client operations
+## MVP 客户端操作
 
-### Run request
+### 运行请求 (Run request)
 
-Input:
+输入：
 - `prompt`
-- optional `session_id`
-- optional client/runtime metadata
+- 可选的 `session_id`
+- 可选的客户端/运行时元数据
 
-Output:
-- final `session`
-- ordered `events`
-- final `output`
+输出：
+- 最终的 `session`
+- 有序的 `events`
+- 最终的 `output`
 
-Current implementation surface:
-- runtime: `VoidCodeRuntime.run(request)`
-- CLI: `voidcode run <request> [--workspace] [--session-id]`
+当前实现层面：
+- 运行时：`VoidCodeRuntime.run(request)`
+- CLI：`voidcode run <request> [--workspace] [--session-id]`
 
-### List persisted sessions
+### 列出持久化会话 (List persisted sessions)
 
-Output:
-- tuple/list of `StoredSessionSummary`
+输出：
+- `StoredSessionSummary` 的元组/列表
 
-Current implementation surface:
-- runtime: `VoidCodeRuntime.list_sessions()`
-- CLI: `voidcode sessions list [--workspace]`
+当前实现层面：
+- 运行时：`VoidCodeRuntime.list_sessions()`
+- CLI：`voidcode sessions list [--workspace]`
 
-### Resume persisted session
+### 恢复持久化会话 (Resume persisted session)
 
-Input:
+输入：
 - `session_id`
 
-Output:
-- stored `RuntimeResponse` for that session replay
+输出：
+- 存储的该会话重放的 `RuntimeResponse`
 
-Current implementation surface:
-- runtime: `VoidCodeRuntime.resume(session_id)`
-- CLI: `voidcode sessions resume <session_id> [--workspace]`
+当前实现层面：
+- 运行时：`VoidCodeRuntime.resume(session_id)`
+- CLI：`voidcode sessions resume <session_id> [--workspace]`
 
-## Session lifecycle
+## 会话生命周期
 
-MVP lifecycle:
+MVP 生命周期：
 
-1. client submits a run request
-2. runtime creates or reuses a session id
-3. runtime emits ordered events during the turn
-4. runtime finalizes a response
-5. runtime persists session summary, events, and output
-6. client may later list or resume the session
+1. 客户端提交一个运行请求
+2. 运行时创建或重用一个会话 ID
+3. 运行时在轮次中发出有序事件
+4. 运行时终结一个响应
+5. 运行时持久化会话摘要、事件和输出
+6. 客户端后续可以列出或恢复会话
 
-## Current persisted session behavior
+## 当前持久化会话行为
 
-The current implementation persists enough data for:
+目前的实现可以持久化足以支持以下操作的数据：
 
-- `sessions list` to return `StoredSessionSummary`
-- `sessions resume <id>` to replay the stored response
+- `sessions list` 返回 `StoredSessionSummary`
+- `sessions resume <id>` 重放存储的响应
 
-Current integration tests verify that resume returns the stored output and the stored event sequence for the session.
+目前的集成测试验证了恢复（resume）会返回存储的输出和会话的存储事件序列。
 
-## API invariants
+## API 不变量
 
-- clients must treat the runtime as the system boundary
-- clients do not call tools directly
-- clients do not invent private session state that diverges from persisted runtime state
-- resume returns a replayable stored response, not an inferred reconstruction from UI state
-- clients must preserve ordered runtime events as delivered, including additive future event types inserted by later graph modes between existing phases
-- clients must tolerate additional ordered additive events without assuming the deterministic fallback event list is exhaustive
+- 客户端必须将运行时视为系统边界
+- 客户端不直接调用工具
+- 客户端不创建与持久化的运行时状态相背离的私有会话状态
+- 恢复（resume）返回可重放的、已存储的响应，而非根据 UI 状态推断出的重建版本
+- 客户端必须按交付时的顺序保存运行时的有序事件，包括由后续图模式在现有阶段之间插入的补充事件类型
+- 客户端必须能够容忍额外的有序补充事件，而不能假设确定性回退序列就是详尽无遗的
 
-## Future HTTP/streaming mapping
+## 未来 HTTP/流式传输映射
 
-When the HTTP layer exists, it should preserve these same operation boundaries:
+当 HTTP 层存在时，它应保留相同的操作边界：
 
-- run/create session
-- list sessions
-- load/resume session
-- subscribe to or receive ordered runtime events
+- 运行/创建会话
+- 列出会话
+- 加载/恢复会话
+- 订阅或接收运行时的有序事件
 
-This document intentionally defines the contract independently of FastAPI/Starlette routing details.
-The deterministic fallback event sequence remains canonical today, while future graph modes may add ordered events between existing phases without changing these API boundaries.
+本文档有意地定义了独立于 FastAPI/Starlette 路由详情的契约。
+确定性的回退事件序列在今天仍是规范，未来的图模式可能会在现有阶段之间添加有序事件，而不会改变这些 API 边界。
 
-## Non-goals
+## 非目标
 
-- full transport implementation
-- post-MVP multi-agent session topology
-- provider-specific request formats
+- 完整的传输层实现
+- post-MVP 的多智能体会话拓扑
+- 特定于供应商的请求格式
 
-## Acceptance checks
+## 验收检查点
 
-- TUI and web clients can be implemented without bypassing runtime methods or concepts
-- persisted sessions can be listed and resumed using a stable session summary and stored response shape
-- future API routes can map directly onto these operations without changing semantics
+- TUI 和 Web 客户端可以在不绕过运行时方法或概念的情况下实现
+- 可以使用稳定的会话摘要和存储响应形状来列出和恢复持久化的会话
+- 未来的 API 路由可以直接映射到这些操作上，而无需更改语义

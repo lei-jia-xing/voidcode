@@ -1,46 +1,46 @@
-# Approval Flow Contract
+# 审批流契约
 
-Source issue: #15
+来源 Issue：#15
 
-## Purpose
+## 目的
 
-Define the MVP governed-execution contract for approval decisions around write-capable or risky actions.
+定义围绕具有写入能力或高风险操作的 MVP 受控执行契约及审批决策。
 
-## Status
+## 状态
 
-The current deterministic runtime emits a permission event with `decision=allow`, but the full governed approval flow is not implemented yet.
+当前的确定性运行时会发出 `decision=allow` 的权限事件，但完整的受控审批流尚未实现。
 
-## Current code anchors
+## 当前代码锚点
 
-- permission responsibility is assigned to the runtime in `docs/architecture.md`
-- current runtime emits `runtime.permission_resolved` in `src/voidcode/runtime/service.py`
-- current payload includes:
+- `docs/architecture.md` 中将权限责任分配给运行时
+- 当前运行时在 `src/voidcode/runtime/service.py` 中发出 `runtime.permission_resolved`
+- 当前 payload 包含：
   - `tool`
   - `decision`
 
-## MVP decision vocabulary
+## MVP 决策词汇表
 
-- `allow`: execution proceeds
-- `deny`: execution does not proceed
-- `ask`: execution pauses until an explicit client or operator decision is recorded
+- `allow`：继续执行
+- `deny`：不继续执行
+- `ask`：暂停执行，直到记录显式的客户端或操作员决策
 
-## Approval request contract
+## 审批请求契约
 
-An approval request must be representable with at least:
+审批请求必须至少能表示以下内容：
 
 - `request_id`
 - `session_id`
 - `sequence`
 - `tool`
-- `reason` or risk context
-- proposed arguments or target summary
-- current policy context
+- `reason` 或风险上下文
+- 建议的参数（arguments）或目标摘要
+- 当前策略上下文
 
-This should be emitted as a runtime event rather than as client-only UI state.
+这应作为一个运行时事件发出，而不是作为客户端专有的 UI 状态。
 
-### Planned approval request shape
+### 计划的审批请求形状
 
-The MVP contract should support an approval-request runtime event with at least:
+MVP 契约应至少支持一个如下形状的 `runtime.approval_requested` 运行时事件：
 
 ```json
 {
@@ -64,36 +64,36 @@ The MVP contract should support an approval-request runtime event with at least:
 }
 ```
 
-Field intent for envelope:
+信封（envelope）字段意图：
 
-- `event_type`: `runtime.approval_requested` for pending approval requests
-- `source`: `runtime` as approvals are runtime-owned
-- `session_id`: owning session
-- `sequence`: ordering marker in the event stream
+- `event_type`：待处理审批请求的 `runtime.approval_requested`
+- `source`：`runtime`，因为审批由运行时拥有
+- `session_id`：所属会话
+- `sequence`：事件流中的排序标记
 
-Field intent for payload:
+Payload 字段意图：
 
-- `request_id`: stable identifier for later resolution and replay
-- `tool`: tool name awaiting approval
-- `decision`: `ask` for pending approval requests
-- `arguments`: proposed tool arguments or a redacted equivalent
-- `target_summary`: human-readable target summary for clients
-- `reason`: why approval is required
-- `policy`: policy context relevant to the decision
+- `request_id`：后续处理和重放的稳定标识符
+- `tool`：等待审批的工具名称
+- `decision`：待处理审批请求的 `ask`
+- `arguments`：建议的工具参数或脱敏后的等价内容
+- `target_summary`：面向客户端的人类可读目标摘要
+- `reason`：为什么需要审批
+- `policy`：与决策相关的策略上下文
 
-## Approval resolution contract
+## 审批处理（Resolution）契约
 
-An approval resolution must be able to record:
+审批处理结果必须能够记录：
 
 - `session_id`
-- the request being resolved
-- `decision`: `allow` / `deny`
-- optional operator note
-- timestamp or ordering marker sufficient for resume/replay
+- 正在处理的请求
+- `decision`：`allow` / `deny`
+- 可选的操作员说明（note）
+- 足以用于恢复/重放的时间戳或排序标记
 
-### Planned approval resolution shape
+### 计划的审批处理形状
 
-The MVP contract should support a resolution runtime event with at least:
+MVP 契约应支持一个至少包含以下内容的处理运行时事件：
 
 ```json
 {
@@ -109,24 +109,24 @@ The MVP contract should support a resolution runtime event with at least:
 }
 ```
 
-Field intent for envelope:
+信封字段意图：
 
-- `event_type`: `runtime.approval_resolved` for resolved approval decisions
-- `source`: `runtime` as resolutions are runtime-owned
-- `session_id`: owning session
-- `sequence`: ordering marker sufficient for replay and resume
+- `event_type`：针对已处理审批决策的 `runtime.approval_resolved`
+- `source`：`runtime`，因为处理由运行时拥有
+- `session_id`：所属会话
+- `sequence`：足以用于重放和恢复的排序标记
 
-Field intent for payload:
+Payload 字段意图：
 
-- `request_id`: correlates the resolution with the original approval request
-- `decision`: final decision, either `allow` or `deny`
-- `note`: optional operator or client note
+- `request_id`：将处理结果与原始审批请求关联
+- `decision`：最终决策，`allow` 或 `deny`
+- `note`：可选的操作员或客户端说明
 
-### Client-to-runtime decision submission
+### 客户端向运行时的决策提交
 
-Clients should return approval decisions to the runtime as a runtime-owned action, not as direct tool execution.
+客户端应将审批决策作为运行时拥有的操作（runtime-owned action）返回给运行时，而不是直接执行工具。
 
-The minimum client submission shape should be:
+最小的客户端提交形状应为：
 
 ```json
 {
@@ -136,60 +136,60 @@ The minimum client submission shape should be:
 }
 ```
 
-The runtime is responsible for validating that:
+运行时负责验证：
 
-- the request still exists
-- the request belongs to the active session
-- the request has not already been resolved
-- execution resumes or terminates according to the recorded decision
+- 请求是否仍然存在
+- 请求是否属于当前活跃会话
+- 请求是否已被处理过
+- 执行是根据记录的决策恢复还是终止
 
-## MVP invariants
+## MVP 不变量
 
-- approval state belongs to the runtime, not the client
-- write/risky tool execution may not bypass the approval contract
-- `ask` requires a resumable paused state
-- clients must be able to render pending approval vs resolved approval distinctly
+- 审批状态属于运行时，而非客户端
+- 写入/风险工具执行不得绕过审批契约
+- `ask` 需要一个可恢复的暂停状态
+- 客户端必须能够区分待处理审批与已处理审批
 
-## Current vs planned behavior
+## 当前 vs 计划行为
 
-Current deterministic behavior:
-- read-only flow emits `runtime.permission_resolved` with `decision=allow`
-- there is no persisted approval request queue yet
-- there is no `ask` or `deny` execution path implemented yet
+当前确定性行为：
+- 只读流发出 `decision=allow` 的 `runtime.permission_resolved`
+- 尚未持久化审批请求队列
+- 尚未实现 `ask` 或 `deny` 的执行路径
 
-Planned MVP behavior:
-- runtime can pause on `ask`
-- clients can resolve approvals against runtime state
-- persisted sessions can replay approval history and resume correctly
+计划的 MVP 行为：
+- 运行时可以在 `ask` 时暂停
+- 客户端可以根据运行时状态处理审批
+- 持久化会话可以重放审批历史并正确恢复
 
-## Persistence and resume expectations
+## 持久化与恢复预期
 
-The persisted session state must be able to preserve:
+持久化的会话状态必须能够保存：
 
-- unresolved approval requests
-- resolved approval history
-- the final decision associated with each `request_id`
-- enough ordering information to replay approval history in sequence
+- 未处理的审批请求
+- 已处理的审批历史
+- 与每个 `request_id` 关联的最终决策
+- 足够的排序信息，以便按顺序重放审批历史
 
-Resume behavior must support both cases:
+恢复行为必须支持两种情况：
 
-- unresolved approval request: session resumes in a waiting state and clients can still act on the pending request
-- resolved approval request: session replay shows the decision as part of the historical event stream
+- 未处理的审批请求：会话在等待状态下恢复，客户端仍可对该挂起请求采取行动
+- 已处理的审批请求：会话重放将决策显示为历史事件流的一部分
 
-## Related clients
+## 相关客户端
 
-- CLI may display approval events in text form
-- TUI should support direct approval interaction
-- web client should render approval state from runtime events and persisted state
+- CLI 可以以文本形式显示审批事件
+- TUI 应支持直接的审批交互
+- Web 客户端应从运行时事件和持久化状态中渲染审批状态
 
-## Non-goals
+## 非目标
 
-- multi-user approval workflows
-- role-based policy systems
-- advanced post-MVP approval policy matrices
+- 多用户审批工作流
+- 基于角色的策略系统
+- post-MVP 的高级审批策略矩阵
 
-## Acceptance checks
+## 验收检查点
 
-- a write-capable request can be represented as pending approval before execution
-- resumed sessions preserve unresolved or resolved approval state accurately
-- clients do not need custom per-client approval logic to interpret the runtime state
+- 具有写入能力的请求在执行前可以表示为待处理审批
+- 恢复的会话能够准确保留未处理或已处理的审批状态
+- 客户端无需自定义逻辑即可解释运行时状态

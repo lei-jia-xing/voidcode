@@ -1,45 +1,45 @@
-# Contract Documents
+# 契约文档
 
-This directory is the source of truth for client-facing runtime contracts.
+本目录是面向客户端的运行时契约（Runtime Contracts）的权威来源。
 
-## Scope
+## 范围
 
-These documents define the MVP contract layer shared by the runtime, CLI, future TUI, and future web client.
+这些文档定义了由运行时、CLI、未来 TUI 以及未来 Web 客户端共享的 MVP 契约层。
 
-They are normative for:
+它们对以下内容具有规范性：
 
-- runtime event vocabulary
-- client-facing session/run/stream API shapes
-- approval request and resolution semantics
-- runtime configuration surface and precedence
-- stream transport behavior expected by clients
+- 运行时事件词汇表（Runtime event vocabulary）
+- 面向客户端的 session/run/stream API 形状
+- 审批请求与处理语义
+- 运行时配置界面及优先级
+- 客户端预期的流传输行为
 
-## Non-goals
+## 非目标
 
-These files do **not** define:
+这些文件**不**定义：
 
-- implementation details for every runtime module
-- post-MVP multi-agent protocols
-- UI layout or visual design decisions
-- GitHub backlog ownership or scheduling
+- 每个运行时模块的具体实现细节
+- post-MVP 的多智能体协议
+- UI 布局或视觉设计决策
+- GitHub 积压工作的归属或调度
 
-## Current contract set
+## 当前契约集
 
-- [`runtime-events.md`](./runtime-events.md) — stable event vocabulary for client rendering
-- [`client-api.md`](./client-api.md) — client-visible session/run/load/resume/stream contract
-- [`approval-flow.md`](./approval-flow.md) — governed execution and approval semantics
-- [`runtime-config.md`](./runtime-config.md) — MVP configuration surface and precedence
-- [`stream-transport.md`](./stream-transport.md) — delivery and replay expectations for runtime streams
+- [`runtime-events.md`](./runtime-events.md) — 用于客户端渲染的稳定事件词汇表
+- [`client-api.md`](./client-api.md) — 客户端可见的 session/run/load/resume/stream 契约
+- [`approval-flow.md`](./approval-flow.md) — 受控执行与审批语义
+- [`runtime-config.md`](./runtime-config.md) — MVP 配置界面及优先级
+- [`stream-transport.md`](./stream-transport.md) — 运行时流的交付与重放预期
 
-## Related issues
+## 相关 Issue
 
-- #13 runtime event schema
-- #14 client-facing API contract
-- #15 approval schema
-- #16 runtime configuration surface
-- #17 stream transport abstraction
+- #13 运行时事件模式（Schema）
+- #14 面向客户端的 API 契约
+- #15 审批模式
+- #16 运行时配置界面
+- #17 流传输抽象
 
-## Related code
+## 相关代码
 
 - `src/voidcode/runtime/contracts.py`
 - `src/voidcode/runtime/events.py`
@@ -49,9 +49,9 @@ These files do **not** define:
 - `src/voidcode/tools/contracts.py`
 - `src/voidcode/cli.py`
 
-## Ownership rules
+## 所有权规则
 
-- Put schema details here, not in `README.md`, `docs/roadmap.md`, or `docs/current-state.md`.
-- `docs/current-state.md` should describe what exists now, then link here for contract definitions.
-- `docs/roadmap.md` should describe phases/epics only, then link here for contract prerequisites.
-- GitHub issues should point to these files instead of restating the full schema in issue bodies.
+- 将模式（Schema）详情放在此处，而不是 `README.md`、`docs/roadmap.md` 或 `docs/current-state.md` 中。
+- `docs/current-state.md` 应描述现状，然后链接到此处查看契约定义。
+- `docs/roadmap.md` 应仅描述阶段/史诗任务，然后链接到此处查看契约前提条件。
+- GitHub Issue 应指向这些文件，而不是在 Issue 正文中重复说明完整的模式。
