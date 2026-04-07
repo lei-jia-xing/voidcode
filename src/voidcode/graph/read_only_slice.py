@@ -177,7 +177,6 @@ class DeterministicReadOnlyGraph:
                 ),
             ],
             "output": last_result.content if last_result.content is not None else "",
-            "current_turn": current_turn + 1,
         }
 
     def _select_tool_call(

@@ -622,7 +622,6 @@ class VoidCodeRuntime:
 
         loop_events: list[EventEnvelope] = []
         output = None
-        has_completed_tool = False
 
         try:
             for chunk in self._execute_graph_loop(
@@ -632,27 +631,27 @@ class VoidCodeRuntime:
                 tool_results=tool_results,
                 approval_resolution=(pending, approval_decision),
             ):
-                if chunk.event is not None:
-                    if chunk.event.event_type == "runtime.tool_completed":
-                        has_completed_tool = True
-                    if chunk.event.sequence > max_stored_sequence:
-                        loop_events.append(chunk.event)
+                if chunk.event is not None and chunk.event.sequence > max_stored_sequence:
+                    loop_events.append(chunk.event)
                 if chunk.kind == "output":
                     output = chunk.output
                 session = chunk.session
         except Exception:
-            if session.status == "failed" and not has_completed_tool:
-                response = RuntimeResponse(
-                    session=session,
-                    events=stored.events + tuple(loop_events),
-                    output=output,
-                )
-                request = RuntimeRequest(
-                    prompt=self._prompt_from_events(stored.events), session_id=session_id
-                )
-                self._persist_response(request=request, response=response)
-                return response
-            raise
+            response = RuntimeResponse(
+                session=SessionState(
+                    session=session.session,
+                    status="failed",
+                    turn=session.turn,
+                    metadata=session.metadata,
+                ),
+                events=stored.events + tuple(loop_events),
+                output=output,
+            )
+            request = RuntimeRequest(
+                prompt=self._prompt_from_events(stored.events), session_id=session_id
+            )
+            self._persist_response(request=request, response=response)
+            return response
 
         response = RuntimeResponse(
             session=session,

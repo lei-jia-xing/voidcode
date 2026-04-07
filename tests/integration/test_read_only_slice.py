@@ -1027,12 +1027,15 @@ def test_runtime_preserves_pending_request_when_resumed_finalize_raises(tmp_path
             ),
         ),
     )
-    with pytest.raises(RuntimeError, match="finalize boom"):
-        _ = resumed_runtime.resume(
-            "approval-session",
-            approval_request_id=approval_request_id,
-            approval_decision="allow",
-        )
+    failed = resumed_runtime.resume(
+        "approval-session",
+        approval_request_id=approval_request_id,
+        approval_decision="allow",
+    )
+
+    assert failed.session.status == "failed"
+    assert failed.events[-1].event_type == "runtime.failed"
+    assert (tmp_path / "danger.txt").read_text(encoding="utf-8") == "finalize failure"
 
     replay_runtime = cast(
         RuntimeRunner,
@@ -1047,16 +1050,8 @@ def test_runtime_preserves_pending_request_when_resumed_finalize_raises(tmp_path
     )
     replay = replay_runtime.resume("approval-session")
 
-    assert replay.session.status == "waiting"
-    assert replay.events[-1].event_type == "runtime.approval_requested"
-    assert replay.events[-1].payload["request_id"] == approval_request_id
-
-    with pytest.raises(RuntimeError, match="finalize boom"):
-        _ = replay_runtime.resume(
-            "approval-session",
-            approval_request_id=approval_request_id,
-            approval_decision="allow",
-        )
+    assert replay.session.status == "failed"
+    assert replay.events[-1].event_type == "runtime.failed"
 
 
 def test_runtime_preserves_pending_approval_when_terminal_save_fails(tmp_path: Path) -> None:
