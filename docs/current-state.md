@@ -1,69 +1,69 @@
-# Current Implementation State
+# 当前实现状态
 
-This document provides a truthful snapshot of the VoidCode repository as of April 2026. VoidCode is currently in the **pre-MVP foundation stage with a stable single-agent loop**.
+本文档提供了 VoidCode 仓库截至 2026 年 4 月的真实快照。VoidCode 目前处于 **pre-MVP 基础阶段，具有稳定的单智能体循环**。
 
-For the concrete delivery checklist that connects the current repo state to the intended MVP, see [`docs/mvp-todo-plan.md`](./mvp-todo-plan.md). For normative client-facing contracts, see [`docs/contracts/README.md`](./contracts/README.md).
+关于将当前仓库状态连接到预期 MVP 的具体交付清单，请参阅 [`docs/mvp-todo-plan.md`](./mvp-todo-plan.md)。关于规范的客户端面向契约，请参阅 [`docs/contracts/README.md`](./contracts/README.md)。
 
-## Overview
-The repository contains two primary, independent components:
-1.  **Python Backend**: A typed contract layer plus a stable single-agent loop implementation.
-2.  **Bun Frontend Shell**: A React-based web interface for the future agent runtime.
+## 概览
+仓库包含两个主要的、独立的组件：
+1.  **Python 后端**：一个类型化契约层以及稳定的单智能体循环实现。
+2.  **Bun 前端外壳**：一个基于 React 的 Web 界面，用于未来的智能体运行时。
 
-**Current integration status**: 🟡 **Minimal transport only**. The backend now exposes a local HTTP/SSE transport and the frontend includes a thin runtime client/debug path, but the main UI remains mock-driven.
-
----
-
-## Backend (Python)
-
-### Implemented Today
-- [x] **Project Structure**: Hatch/UV-ready layout with `src/voidcode/runtime`, `src/voidcode/graph`, and `src/voidcode/tools`.
-- [x] **CLI Entrypoints**: `voidcode --help` and `voidcode run "read <path>" --workspace <dir>` both work.
-- [x] **Dependency Management**: Fully configured `pyproject.toml` and `mise.toml` for local development.
-- [x] **Development Tooling**: Ruff (lint/format), basedpyright (types), and pytest (tests) are integrated and functional.
-- [x] **Contract Layer**: Typed session, event, runtime, graph, and tool contracts exist in code.
-- [x] **Stable Single-Agent Loop**: The CLI can execute a governed local deterministic multi-step request through runtime, graph, and tool boundaries and emit observable events.
-- [x] **Extension Infrastructure Foundations**: The runtime now includes typed configuration and discovery infrastructure for tools, skills, LSP, and ACP.
-- [x] **Built-in Tool Provider**: A dedicated `BuiltinToolProvider` handles registration for `grep`, `read_file`, `shell_exec`, and `write_file` through the runtime boundary.
-- [x] **Skill Discovery Infrastructure**: Minimal discovery exists for `.voidcode/skills/<name>/SKILL.md` files; the runtime emits `runtime.skills_loaded` events for every run.
-- [x] **LSP and ACP Configuration Seams**: Typed configuration carriers and disabled manager/adapter stubs exist for future language-server and transport integration.
-- [x] **Minimal HTTP Transport**: A thin backend HTTP layer now exposes `GET /api/sessions`, `GET /api/sessions/{session_id}`, and `POST /api/runtime/run/stream` with SSE chunks serialized directly from the runtime boundary, and it can now be served locally through `voidcode serve`.
-
-### Planned / In-Progress
-- [x] **LangGraph Orchestration**: Stable single-agent deterministic loop implementation with support for sequential turn execution, tool resolution, and interrupt/resume.
-- [x] **Runtime Services**: Session lifecycle management, sqlite-backed persistence, and approval-resume continuity.
-- [x] **Permission Engine**: Governed execution supporting `allow`, `deny`, and `ask` modes with TTY-only inline approval in the CLI.
-- [x] **Contract-First Events**: Canonical event schema implemented for turns, tools, and approvals, with automated renumbering for consistency across resumes.
-- [x] **HTTP Transport Parity**: The backend HTTP layer now fully exposes session list/resume and run/stream operations on parity with the CLI, including approval-resolution endpoints.
-- [x] **Dynamic Tool Registration**: The runtime now includes typed configuration and discovery infrastructure for tools, supporting the `BuiltinToolProvider`.
-- [ ] **Skill Execution**: Discovery is implemented (emitting `runtime.skills_loaded`), but the runtime does not yet execute skill logic or provide skill-specific tool contexts.
-- [ ] **Real LSP and ACP Integrations**: Configuration seams exist; real process management and transport support are pending.
-- [ ] **TUI Client**: A terminal-native user interface is planned to replace the current basic CLI `run` experience.
-- [ ] **Web Client Integration**: The backend transport is ready; frontend integration is pending.
+**当前集成状态**：🟡 **仅有极简传输**。后端现在暴露了一个本地 HTTP/SSE 传输，前端包含一个精简的运行时客户端/调试路径，但主 UI 仍由 mock 数据驱动。
 
 ---
 
-## Frontend (React + Bun)
+## 后端 (Python)
 
-### Implemented Today
-- [x] **UI Framework**: React 18, Tailwind CSS, and Lucide React shell.
-- [x] **Component Library**: Layout, navigation, and message-thread UI components.
-- [x] **Mock State**: Zustand stores populated with mock session and agent event data.
-- [x] **Frontend Tooling**: Vite-based dev server with Bun support, ESLint, and Prettier.
+### 今日已实现
+- [x] **项目结构**：支持 Hatch/UV 的布局，包含 `src/voidcode/runtime`、`src/voidcode/graph` 和 `src/voidcode/tools`。
+- [x] **CLI 入口点**：`voidcode --help` 和 `voidcode run "read <path>" --workspace <dir>` 均可工作。
+- [x] **依赖管理**：为本地开发完全配置了 `pyproject.toml` 和 `mise.toml`。
+- [x] **开发工具**：集成了 Ruff (lint/format)、basedpyright (types) 和 pytest (tests) 并可正常运行。
+- [x] **契约层**：代码中存在类型化的会话、事件、运行时、图和工具契约。
+- [x] **稳定的单智能体循环**：CLI 可以通过运行时、图和工具边界执行受监管的本地确定性多步请求，并发出可观测事件。
+- [x] **扩展基础设施基础**：运行时现在包括工具、技能、LSP 和 ACP 的类型化配置和发现基础设施。
+- [x] **内置工具提供商**：专门的 `BuiltinToolProvider` 负责通过运行时边界注册 `grep`、`read_file`、`shell_exec` 和 `write_file`。
+- [x] **技能发现基础设施**：对 `.voidcode/skills/<name>/SKILL.md` 文件存在极简发现机制；运行时在每次运行时发出 `runtime.skills_loaded` 事件。
+- [x] **LSP 和 ACP 配置载体**：为未来的语言服务器和传输集成存在类型化配置载体和禁用的管理器/适配器存根。
+- [x] **极简 HTTP 传输**：精简的后端 HTTP 层现在暴露了 `GET /api/sessions`、`GET /api/sessions/{session_id}` 和 `POST /api/runtime/run/stream`，其中 SSE 数据块直接从运行时边界序列化，并且现在可以通过 `voidcode serve` 在本地提供服务。
 
-### Planned / In-Progress
-- [ ] **Live API Integration**: A thin frontend runtime client/debug path now exists for the minimal transport, but the main session/task/activity UI still does not consume runtime-backed state.
-- [ ] **WebSocket Streaming**: Real-time agent event streaming from the backend.
-- [ ] **Session Persistence**: True persistence via the backend database.
-- [ ] **File System Browser**: Integration with the local workspace for code reading.
-
-### Planning status
-- [x] **Foundation / Epic 0**: Developer tooling, repository structure, CI baseline, and contributor-facing docs are substantially in place.
-- [ ] **Executable contract layer for clients**: The contract docs now exist under `docs/contracts/`, but implementation work against them is still pending.
+### 计划中 / 进行中
+- [x] **LangGraph 编排**：稳定的单智能体确定性循环实现，支持顺序轮次执行、工具解析和中断/恢复。
+- [x] **运行时服务**：会话生命周期管理、SQLite 持久化支持以及审批-恢复连续性。
+- [x] **权限引擎**：受监管的执行，支持 `allow`、`deny` 和 `ask` 模式，并在 CLI 中具有仅限 TTY 的内联审批。
+- [x] **契约优先事件**：为轮次、工具和审批实现了规范事件模式，并具备跨会话恢复的一致性自动重新编号功能。
+- [x] **HTTP 传输对等**：后端 HTTP 层现在完全暴露了与 CLI 对等的会话列表/恢复和运行/流式操作，包括审批解析端点。
+- [x] **动态工具注册**：运行时现在包括工具的类型化配置和发现基础设施，支持 `BuiltinToolProvider`。
+- [ ] **技能执行**：发现机制已实现（发出 `runtime.skills_loaded`），但运行时尚未执行技能逻辑或提供特定于技能的工具上下文。
+- [ ] **真实的 LSP 和 ACP 集成**：配置载体已存在；实际的进程管理和传输支持待办。
+- [ ] **TUI 客户端**：计划开发终端原生用户界面，以取代当前基础的 CLI `run` 体验。
+- [ ] **Web 客户端集成**：后端传输已就绪；前端集成待办。
 
 ---
 
-## Repository Metadata & Links
-- **Canonical Repository**: [https://github.com/lei-jia-xing/voidcode](https://github.com/lei-jia-xing/voidcode)
-- **Default Branch**: `master`
-- **Issue Tracker**: Enabled on GitHub.
-- **Project Scope**: Local-first coding agent runtime inspired by OpenCode and Claude Code.
+## 前端 (React + Bun)
+
+### 今日已实现
+- [x] **UI 框架**：React 18、Tailwind CSS 和 Lucide React 外壳。
+- [x] **组件库**：布局、导航和消息线程 UI 组件。
+- [x] **Mock 状态**：Zustand Store 填充了模拟的会话和智能体事件数据。
+- [x] **前端工具**：基于 Vite 的开发服务器，支持 Bun、ESLint 和 Prettier。
+
+### 计划中 / 进行中
+- [ ] **实时 API 集成**：针对极简传输，前端现在存在一个精简的运行时客户端/调试路径，但主要的会话/任务/活动 UI 仍未消费运行时后端的状态。
+- [ ] **WebSocket 流式传输**：来自后端的实时智能体事件流。
+- [ ] **会话持久化**：通过后端数据库实现真实的持久化。
+- [ ] **文件系统浏览器**：与本地工作区集成以进行代码阅读。
+
+### 规划状态
+- [x] **基础 / Epic 0**：开发工具、仓库结构、CI 基准和面向贡献者的文档已基本到位。
+- [ ] **面向客户端的可执行契约层**：契约文档现在存在于 `docs/contracts/` 下，但针对它们的实现工作仍在进行中。
+
+---
+
+## 仓库元数据与链接
+- **规范仓库**：[https://github.com/lei-jia-xing/voidcode](https://github.com/lei-jia-xing/voidcode)
+- **默认分支**：`master`
+- **Issue 追踪**：已在 GitHub 上启用。
+- **项目范围**：受 OpenCode 和 Claude Code 启发而开发的本地优先编程智能体运行时。

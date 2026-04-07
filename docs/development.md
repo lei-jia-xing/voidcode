@@ -1,21 +1,21 @@
-# Development Guide
+# 开发指南
 
-This guide summarizes the local workflow for contributing to VoidCode.
+本指南总结了为 VoidCode 贡献代码的本地工作流。
 
-For repository coding expectations, see [`docs/coding-standards.md`](./coding-standards.md).
+关于仓库的代码规范，请参阅 [`docs/coding-standards.md`](./coding-standards.md)。
 
-## Tooling baseline
+## 工具基准
 
-VoidCode uses:
+VoidCode 使用：
 
-- `mise` for task management and sourcing the existing `.venv`
-- `uv` for dependency and package management (Python)
-- `bun` for frontend development and dependency management
-- Python 3.14 as the supported uv-managed local version
+- `mise` 用于任务管理和加载现有的 `.venv`
+- `uv` 用于依赖和包管理 (Python)
+- `bun` 用于前端开发和依赖管理
+- Python 3.14 作为官方支持的 uv 管理的本地版本
 
-## Initial setup
+## 初始设置
 
-Install toolchain dependencies and project dependencies:
+安装工具链依赖和项目依赖：
 
 ```bash
 mise install
@@ -23,7 +23,7 @@ uv sync --extra dev
 mise run frontend:install
 ```
 
-Confirm the CLI entrypoint is available:
+确认 CLI 入口点可用：
 
 ```bash
 uv run voidcode --help
@@ -32,18 +32,18 @@ uv run voidcode sessions list --workspace .
 uv run voidcode sessions resume local-cli-session --workspace .
 ```
 
-## mise tasks
+## mise 任务
 
-The repository defines these `mise` tasks:
+仓库定义了以下 `mise` 任务：
 
-### Python tasks
+### Python 任务
 
 - `mise run lint` → `uv run ruff check .`
 - `mise run format` → `uv run ruff format .`
 - `mise run typecheck` → `uv run basedpyright --warnings src`
 - `mise run test` → `uv run pytest`
 
-### Frontend tasks
+### 前端 任务
 
 - `mise run frontend:install` → `bun install`
 - `mise run frontend:dev` → `bun run dev`
@@ -52,42 +52,41 @@ The repository defines these `mise` tasks:
 - `mise run frontend:test` → `bun run test:run`
 - `mise run frontend:coverage` → `bun run test:coverage`
 
-### Global tasks
+### 全局 任务
 
-- `mise run check` → runs all Python and frontend checks
+- `mise run check` → 运行所有 Python 和前端检查
 - `mise run pre-commit` → `uv run pre-commit run --all-files`
 
-## MVP Demo and Verification
+## MVP 演示与验证
 
-For the canonical end-to-end demo flow and the full verification ladder (unit, integration, and smoke), see [`docs/mvp-demo-guide.md`](./mvp-demo-guide.md). Use this guide to verify that the core "read-only" runtime loop and session persistence are functional on your machine.
+关于规范的端到端演示流程和完整的验证阶梯（单元测试、集成测试和冒烟测试），请参阅 [`docs/mvp-demo-guide.md`](./mvp-demo-guide.md)。使用该指南验证核心的“只读”运行时循环和会话持久化在您的机器上是否正常工作。
 
-`mise.toml` does not manage Python installation directly; it sources the repository's existing `.venv` and delegates Python dependency/environment management to `uv`.
+`mise.toml` 不直接管理 Python 安装；它加载仓库现有的 `.venv` 并将 Python 依赖/环境管理委托给 `uv`。
 
-## Frontend Development
+## 前端开发
 
-The frontend is a Bun-powered React application located in `frontend/`.
+前端是一个基于 Bun 的 React 应用，位于 `frontend/` 目录中。
 
-### Current Implementation State
-- **UI Shell**: Functional navigation and layout components.
-- **Mock-backed**: All agent interactions and session data are currently mocked in the frontend.
-- **Backend Integration**: **No live connection** to the Python backend runtime yet. The `src/voidcode` Python package and the `frontend/` React app operate independently at this stage.
+### 当前实现状态
+- **UI 外壳**：功能性的导航和布局组件。
+- **Mock 数据驱动**：所有智能体交互和会话数据目前在前端都是模拟的。
+- **后端集成**：目前**没有**与 Python 后端运行时的实时连接。在此阶段，`src/voidcode` Python 包和 `frontend/` React 应用独立运行。
 
-### Frontend workflow
+### 前端工作流
 
-1.  **Install dependencies**: `mise run frontend:install`
-2.  **Start dev server**: `mise run frontend:dev` (runs on [http://localhost:5173](http://localhost:5173))
-3.  **Lint/Typecheck**: `mise run frontend:lint` and `mise run frontend:typecheck`
-4.  **Run component tests**: `mise run frontend:test`
-5.  **Run coverage**: `mise run frontend:coverage` or `mise run check` for all-up validation.
+1.  **安装依赖**：`mise run frontend:install`
+2.  **启动开发服务器**：`mise run frontend:dev` (运行在 [http://localhost:5173](http://localhost:5173))
+3.  **Lint/类型检查**：`mise run frontend:lint` 和 `mise run frontend:typecheck`
+4.  **运行组件测试**：`mise run frontend:test`
+5.  **运行覆盖率测试**：`mise run frontend:coverage` 或使用 `mise run check` 进行全面验证。
 
-## Project layout
+## 项目布局
 
-The current source tree reserves space for three main implementation areas:
+当前源码树为三个主要的实现领域预留了空间：
 
 - `src/voidcode/runtime/`
 - `src/voidcode/graph/`
 - `src/voidcode/tools/`
 - `frontend/` (React + Bun + Vite)
 
-
-Tests live under `tests/`, and the original planning documents remain at the repository root in Chinese.
+测试文件位于 `tests/` 目录下，原始规划文档保留在仓库根目录中（中文）。
