@@ -81,7 +81,7 @@ Manage long-running context and provide trace-friendly visibility into turns, to
 
 Expose the runtime through usable entrypoints with streaming output, approval interaction, and session recovery.
 
-**Current status:** in progress. The CLI supports basic task execution and approval. A TUI MVP is planned. The web client is mock-backed but ready for integration.
+**Current status:** in progress. The CLI supports basic task execution and approval. A TUI MVP is planned. The web client now has an initial live integration for session list, replay, and streamed runs, with broader client work still pending.
 
 
 ### Epic 9: MVP Integration

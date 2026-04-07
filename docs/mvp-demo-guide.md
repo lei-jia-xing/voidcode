@@ -81,6 +81,6 @@ To call the MVP demoable, contributors must provide:
 
 ### Planned (Not Demoable Yet)
 - **TUI Client**: The TUI is currently spec-only (`docs/tui-mvp-spec.md`).
-- **Web UI Integration**: The React shell is mock-backed and does not yet consume the real API.
+- **Web UI Integration**: The React shell now consumes the local HTTP/SSE transport for the current session list, replay, and streamed run path, but richer client capabilities are still pending.
 - **Write Approvals**: The contract for `ask/allow/deny` exists, but there is no real write tool to trigger it in the default CLI loop yet.
 - **LLM Orchestration**: The LangGraph turn-loop is currently a deterministic placeholder.

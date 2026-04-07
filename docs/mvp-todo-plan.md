@@ -11,7 +11,7 @@ VoidCode already has a truthful pre-MVP foundation:
 - Python 3.14 repo/tooling baseline
 - deterministic CLI → runtime → graph → stable single-agent loop
 - local session persistence and resume
-- Bun frontend shell with mocked state
+- Bun frontend shell with an initial runtime-backed HTTP/SSE path for session list, replay, and streamed runs
 
 What it still does **not** have is a concrete, taskable MVP execution plan that connects the runtime, a usable terminal client, and a real web client.
 
@@ -150,22 +150,22 @@ This phase implements the **TUI MVP Spec** in [`docs/tui-mvp-spec.md`](./tui-mvp
 
 ## Phase 4 — web client MVP alignment
 
-Goal: convert the current mock-backed frontend into a real runtime client.
+Goal: complete the remaining work needed to turn the current initial live frontend slice into a fuller runtime client.
 
 ### TODO
 
-- [ ] add a real backend API layer for the frontend to consume
-- [ ] add streaming transport for runtime events to the frontend
-- [ ] replace mocked task/activity/session data with real session state
-- [ ] render runtime/tool/approval/timeline events in the web UI
-- [ ] expose session list, load, and resume in the frontend
+- [x] add a real backend API layer for the frontend to consume
+- [x] add streaming transport for runtime events to the frontend
+- [x] replace the current MVP session/task/activity path with runtime-backed state
+- [x] render runtime/tool/timeline events in the web UI
+- [x] expose session list, load, and resume in the frontend
 - [ ] connect the frontend config surface to the real runtime config model
 - [ ] add frontend integration tests around session rendering and streaming
 
 ### Acceptance criteria
 
-- frontend state is driven by real runtime/API data, not mocks
-- a user can observe the active agent turn, tool activity, and approvals live
+- the current frontend MVP path is driven by real runtime/API data, not placeholder session state
+- a user can observe the active agent turn and tool activity live through ordered runtime events
 - the frontend can resume a prior session from persisted runtime state
 - the frontend and TUI are consuming the same underlying runtime concepts
 
