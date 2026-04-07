@@ -1,24 +1,24 @@
-## Description
+## 描述
 
-Describe the change and why it is needed.
+描述此次变更内容以及必要性。
 
-## Type of change
+## 变更类型
 
-- [ ] Bug fix
-- [ ] New feature
-- [ ] Breaking change
-- [ ] Documentation update
-- [ ] Refactor
-- [ ] Test-only change
-- [ ] CI / tooling change
+- [ ] Bug 修复
+- [ ] 新功能
+- [ ] 破坏性变更
+- [ ] 文档更新
+- [ ] 重构
+- [ ] 仅测试变更
+- [ ] CI / 工具链变更
 
-## Testing
+## 测试
 
-Describe the testing you performed.
+描述你执行的测试工作。
 
-## Checklist
+## 核对清单
 
-- [ ] Tests pass locally
-- [ ] Documentation updated if needed
-- [ ] Relevant linting and type checks pass
-- [ ] No unrelated changes included
+- [ ] 本地测试通过
+- [ ] 如有必要，已更新相关文档
+- [ ] 相关的 lint 检查和类型检查已通过
+- [ ] 未包含无关的变更
