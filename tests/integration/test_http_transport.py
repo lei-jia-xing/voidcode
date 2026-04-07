@@ -262,6 +262,27 @@ def _parse_sse_payloads(response: _TransportResponse) -> list[dict[str, object]]
     return payloads
 
 
+def _assert_runtime_session_metadata(
+    metadata: object,
+    *,
+    workspace: Path | str,
+    approval_mode: str = "ask",
+    model: str | None = None,
+) -> None:
+    assert isinstance(metadata, dict)
+    typed_metadata = cast(dict[str, object], metadata)
+    assert typed_metadata["workspace"] == str(workspace)
+
+    raw_runtime_config = typed_metadata.get("runtime_config")
+    assert isinstance(raw_runtime_config, dict)
+    runtime_config = cast(dict[str, object], raw_runtime_config)
+    assert runtime_config["approval_mode"] == approval_mode
+    if model is None:
+        assert "model" not in runtime_config
+    else:
+        assert runtime_config["model"] == model
+
+
 def _multi_step_prompt() -> str:
     return "read source.txt\nwrite copied.txt copied marker\ngrep copied copied.txt"
 
@@ -439,12 +460,13 @@ def test_transport_resolves_pending_approval_allow_over_http(tmp_path: Path) -> 
     payload = cast(dict[str, object], response.json())
 
     assert response.status == 200
-    assert payload["session"] == {
-        "session": {"id": "approval-session"},
-        "status": "completed",
-        "turn": 1,
-        "metadata": {"workspace": str(tmp_path)},
-    }
+    assert cast(dict[str, object], payload["session"])["session"] == {"id": "approval-session"}
+    assert cast(dict[str, object], payload["session"])["status"] == "completed"
+    assert cast(dict[str, object], payload["session"])["turn"] == 1
+    _assert_runtime_session_metadata(
+        cast(dict[str, object], payload["session"])["metadata"],
+        workspace=tmp_path,
+    )
     assert payload["output"] == "approved later"
     assert [event["event_type"] for event in cast(list[dict[str, object]], payload["events"])] == [
         "runtime.request_received",
@@ -460,6 +482,80 @@ def test_transport_resolves_pending_approval_allow_over_http(tmp_path: Path) -> 
         "graph.response_ready",
     ]
     assert (tmp_path / "danger.txt").read_text(encoding="utf-8") == "approved later"
+
+
+def test_transport_serializes_hook_events_from_runtime_stream(tmp_path: Path) -> None:
+    create_runtime_app = _load_transport_app_factory()
+    runtime_stream_chunk, session_ref, session_state, event_envelope = _load_stream_types()
+    session = session_state(
+        session=session_ref(id="hook-stream-session"),
+        status="running",
+        turn=1,
+        metadata={"workspace": str(tmp_path)},
+    )
+    completed_session = session_state(
+        session=session_ref(id="hook-stream-session"),
+        status="completed",
+        turn=1,
+        metadata={"workspace": str(tmp_path)},
+    )
+
+    class StubRuntime:
+        def run_stream(self, request: RuntimeRequestLike) -> Iterator[StreamChunkLike]:
+            assert request.prompt == "run pwd"
+            yield runtime_stream_chunk(
+                kind="event",
+                session=session,
+                event=event_envelope(
+                    session_id="hook-stream-session",
+                    sequence=1,
+                    event_type="runtime.tool_hook_pre",
+                    source="runtime",
+                    payload={
+                        "phase": "pre",
+                        "tool_name": "shell_exec",
+                        "session_id": "hook-stream-session",
+                        "status": "ok",
+                    },
+                ),
+            )
+            yield runtime_stream_chunk(
+                kind="event",
+                session=completed_session,
+                event=event_envelope(
+                    session_id="hook-stream-session",
+                    sequence=2,
+                    event_type="runtime.tool_hook_post",
+                    source="runtime",
+                    payload={
+                        "phase": "post",
+                        "tool_name": "shell_exec",
+                        "session_id": "hook-stream-session",
+                        "status": "ok",
+                    },
+                ),
+            )
+
+        def list_sessions(self) -> tuple[StoredSessionSummaryLike, ...]:
+            raise AssertionError("list_sessions should not be called")
+
+        def resume(self, session_id: str) -> RuntimeResponseLike:
+            raise AssertionError(f"resume should not be called: {session_id}")
+
+    app = create_runtime_app(workspace=tmp_path, runtime_factory=lambda: StubRuntime())
+    response = _run_app(
+        app,
+        method="POST",
+        path="/api/runtime/run/stream",
+        body=json.dumps({"prompt": "run pwd"}).encode("utf-8"),
+    )
+    payloads = _parse_sse_payloads(response)
+
+    assert response.status == 200
+    assert [cast(dict[str, object], payload["event"])["event_type"] for payload in payloads] == [
+        "runtime.tool_hook_pre",
+        "runtime.tool_hook_post",
+    ]
 
 
 def test_transport_resolves_pending_approval_deny_over_http(tmp_path: Path) -> None:
@@ -495,12 +591,13 @@ def test_transport_resolves_pending_approval_deny_over_http(tmp_path: Path) -> N
     payload = cast(dict[str, object], response.json())
 
     assert response.status == 200
-    assert payload["session"] == {
-        "session": {"id": "deny-session"},
-        "status": "failed",
-        "turn": 1,
-        "metadata": {"workspace": str(tmp_path)},
-    }
+    assert cast(dict[str, object], payload["session"])["session"] == {"id": "deny-session"}
+    assert cast(dict[str, object], payload["session"])["status"] == "failed"
+    assert cast(dict[str, object], payload["session"])["turn"] == 1
+    _assert_runtime_session_metadata(
+        cast(dict[str, object], payload["session"])["metadata"],
+        workspace=tmp_path,
+    )
     assert payload["output"] is None
     assert [event["event_type"] for event in cast(list[dict[str, object]], payload["events"])] == [
         "runtime.request_received",
@@ -573,20 +670,26 @@ def test_transport_resumes_multi_step_loop_and_persists_replay_over_http(tmp_pat
         "runtime.tool_lookup_succeeded",
         "runtime.approval_requested",
     ]
-    assert waiting_payloads[-1]["session"] == {
-        "session": {"id": "http-loop-session"},
-        "status": "waiting",
-        "turn": 1,
-        "metadata": {"workspace": str(tmp_path)},
+    assert cast(dict[str, object], waiting_payloads[-1]["session"])["session"] == {
+        "id": "http-loop-session"
     }
+    assert cast(dict[str, object], waiting_payloads[-1]["session"])["status"] == "waiting"
+    assert cast(dict[str, object], waiting_payloads[-1]["session"])["turn"] == 1
+    _assert_runtime_session_metadata(
+        cast(dict[str, object], waiting_payloads[-1]["session"])["metadata"],
+        workspace=tmp_path,
+    )
 
     assert approve_response.status == 200
-    assert approve_payload["session"] == {
-        "session": {"id": "http-loop-session"},
-        "status": "completed",
-        "turn": 1,
-        "metadata": {"workspace": str(tmp_path)},
+    assert cast(dict[str, object], approve_payload["session"])["session"] == {
+        "id": "http-loop-session"
     }
+    assert cast(dict[str, object], approve_payload["session"])["status"] == "completed"
+    assert cast(dict[str, object], approve_payload["session"])["turn"] == 1
+    _assert_runtime_session_metadata(
+        cast(dict[str, object], approve_payload["session"])["metadata"],
+        workspace=tmp_path,
+    )
     assert (
         approve_payload["output"]
         == "Found 1 match(es) for 'copied' in copied.txt\n1: copied marker"
@@ -679,20 +782,26 @@ def test_transport_denied_multi_step_loop_preserves_failed_replay_over_http(tmp_
     assert cast(dict[str, object], waiting_payloads[-1]["event"])["event_type"] == (
         "runtime.approval_requested"
     )
-    assert waiting_payloads[-1]["session"] == {
-        "session": {"id": "http-deny-loop-session"},
-        "status": "waiting",
-        "turn": 1,
-        "metadata": {"workspace": str(tmp_path)},
+    assert cast(dict[str, object], waiting_payloads[-1]["session"])["session"] == {
+        "id": "http-deny-loop-session"
     }
+    assert cast(dict[str, object], waiting_payloads[-1]["session"])["status"] == "waiting"
+    assert cast(dict[str, object], waiting_payloads[-1]["session"])["turn"] == 1
+    _assert_runtime_session_metadata(
+        cast(dict[str, object], waiting_payloads[-1]["session"])["metadata"],
+        workspace=tmp_path,
+    )
 
     assert deny_response.status == 200
-    assert deny_payload["session"] == {
-        "session": {"id": "http-deny-loop-session"},
-        "status": "failed",
-        "turn": 1,
-        "metadata": {"workspace": str(tmp_path)},
+    assert cast(dict[str, object], deny_payload["session"])["session"] == {
+        "id": "http-deny-loop-session"
     }
+    assert cast(dict[str, object], deny_payload["session"])["status"] == "failed"
+    assert cast(dict[str, object], deny_payload["session"])["turn"] == 1
+    _assert_runtime_session_metadata(
+        cast(dict[str, object], deny_payload["session"])["metadata"],
+        workspace=tmp_path,
+    )
     assert deny_payload["output"] is None
     assert [
         event["event_type"] for event in cast(list[dict[str, object]], deny_payload["events"])
@@ -987,12 +1096,15 @@ def test_transport_persists_streamed_run_for_session_listing_and_replay(tmp_path
         }
     ]
     assert replay_response.status == 200
-    assert replay_payload["session"] == {
-        "session": {"id": "streamed-session"},
-        "status": "completed",
-        "turn": 1,
-        "metadata": {"workspace": str(tmp_path)},
+    assert cast(dict[str, object], replay_payload["session"])["session"] == {
+        "id": "streamed-session"
     }
+    assert cast(dict[str, object], replay_payload["session"])["status"] == "completed"
+    assert cast(dict[str, object], replay_payload["session"])["turn"] == 1
+    _assert_runtime_session_metadata(
+        cast(dict[str, object], replay_payload["session"])["metadata"],
+        workspace=tmp_path,
+    )
     assert replay_payload["output"] == "stream replay\n"
     assert [
         event["event_type"] for event in cast(list[dict[str, object]], replay_payload["events"])
@@ -1065,18 +1177,24 @@ def test_transport_allocates_distinct_anonymous_stream_sessions(tmp_path: Path) 
     assert [item["prompt"] for item in listed_sessions] == ["read sample.txt", "read sample.txt"]
     assert first_replay_response.status == 200
     assert second_replay_response.status == 200
-    assert first_replay_payload["session"] == {
-        "session": {"id": first_session_id},
-        "status": "completed",
-        "turn": 1,
-        "metadata": {"workspace": str(tmp_path)},
+    assert cast(dict[str, object], first_replay_payload["session"])["session"] == {
+        "id": first_session_id
     }
-    assert second_replay_payload["session"] == {
-        "session": {"id": second_session_id},
-        "status": "completed",
-        "turn": 1,
-        "metadata": {"workspace": str(tmp_path)},
+    assert cast(dict[str, object], first_replay_payload["session"])["status"] == "completed"
+    assert cast(dict[str, object], first_replay_payload["session"])["turn"] == 1
+    _assert_runtime_session_metadata(
+        cast(dict[str, object], first_replay_payload["session"])["metadata"],
+        workspace=tmp_path,
+    )
+    assert cast(dict[str, object], second_replay_payload["session"])["session"] == {
+        "id": second_session_id
     }
+    assert cast(dict[str, object], second_replay_payload["session"])["status"] == "completed"
+    assert cast(dict[str, object], second_replay_payload["session"])["turn"] == 1
+    _assert_runtime_session_metadata(
+        cast(dict[str, object], second_replay_payload["session"])["metadata"],
+        workspace=tmp_path,
+    )
     assert first_replay_payload["output"] == "anonymous stream\n"
     assert second_replay_payload["output"] == "anonymous stream\n"
 
@@ -1198,12 +1316,15 @@ def test_transport_persists_failed_stream_for_replay(tmp_path: Path) -> None:
         }
     ]
     assert replay_response.status == 200
-    assert replay_payload["session"] == {
-        "session": {"id": "failed-stream-session"},
-        "status": "failed",
-        "turn": 1,
-        "metadata": {"workspace": str(tmp_path)},
+    assert cast(dict[str, object], replay_payload["session"])["session"] == {
+        "id": "failed-stream-session"
     }
+    assert cast(dict[str, object], replay_payload["session"])["status"] == "failed"
+    assert cast(dict[str, object], replay_payload["session"])["turn"] == 1
+    _assert_runtime_session_metadata(
+        cast(dict[str, object], replay_payload["session"])["metadata"],
+        workspace=tmp_path,
+    )
     assert replay_payload["output"] is None
     assert [
         event["event_type"] for event in cast(list[dict[str, object]], replay_payload["events"])

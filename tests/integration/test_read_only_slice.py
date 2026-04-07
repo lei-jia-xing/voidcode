@@ -37,6 +37,7 @@ class StreamChunkLike(Protocol):
 class SessionLike(Protocol):
     session: object
     status: str
+    metadata: dict[str, object]
 
 
 class SessionRefLike(Protocol):
@@ -97,6 +98,7 @@ class RuntimeFactory(Protocol):
         workspace: Path,
         tool_registry: object | None = None,
         graph: object | None = None,
+        config: object | None = None,
         permission_policy: object | None = None,
         session_store: object | None = None,
     ) -> RuntimeRunner: ...
@@ -383,6 +385,264 @@ def test_runtime_denies_shell_exec_tool_when_policy_is_deny(tmp_path: Path) -> N
     ]
     assert denied.events[6].payload["decision"] == "deny"
     assert denied.output is None
+
+
+def test_runtime_emits_pre_and_post_hook_events_around_successful_tool_run(tmp_path: Path) -> None:
+    runtime_request, runtime_class = _load_runtime_types()
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    config_module = importlib.import_module("voidcode.runtime.config")
+    runtime_config = cast(Callable[..., object], config_module.RuntimeConfig)
+    hooks_config = cast(Callable[..., object], config_module.RuntimeHooksConfig)
+    policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="allow")
+
+    runtime = cast(
+        RuntimeRunner,
+        cast(
+            object,
+            runtime_class(
+                workspace=tmp_path,
+                permission_policy=policy,
+                config=runtime_config(
+                    approval_mode="allow",
+                    hooks=hooks_config(
+                        enabled=True,
+                        pre_tool=((sys.executable, "-c", "print('pre ok')"),),
+                        post_tool=((sys.executable, "-c", "print('post ok')"),),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    result = runtime.run(runtime_request(prompt="run pwd", session_id="hook-success-session"))
+
+    assert [event.event_type for event in result.events] == [
+        "runtime.request_received",
+        "runtime.skills_loaded",
+        "graph.loop_step",
+        "graph.model_turn",
+        "graph.tool_request_created",
+        "runtime.tool_lookup_succeeded",
+        "runtime.approval_resolved",
+        "runtime.tool_hook_pre",
+        "runtime.tool_completed",
+        "runtime.tool_hook_post",
+        "graph.loop_step",
+        "graph.response_ready",
+    ]
+    assert result.events[7].payload == {
+        "phase": "pre",
+        "tool_name": "shell_exec",
+        "session_id": "hook-success-session",
+        "status": "ok",
+    }
+    assert result.events[9].payload == {
+        "phase": "post",
+        "tool_name": "shell_exec",
+        "session_id": "hook-success-session",
+        "status": "ok",
+    }
+
+
+def test_runtime_aborts_tool_run_when_pre_hook_fails(tmp_path: Path) -> None:
+    runtime_request, runtime_class = _load_runtime_types()
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    config_module = importlib.import_module("voidcode.runtime.config")
+    runtime_config = cast(Callable[..., object], config_module.RuntimeConfig)
+    hooks_config = cast(Callable[..., object], config_module.RuntimeHooksConfig)
+    policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="allow")
+
+    shell_exec_module = importlib.import_module("voidcode.tools.shell_exec")
+    shell_exec_tool = cast(ReadFileToolType, shell_exec_module.ShellExecTool)
+
+    with patch.object(shell_exec_tool, "invoke", autospec=True) as invoke_mock:
+        runtime = cast(
+            RuntimeRunner,
+            cast(
+                object,
+                runtime_class(
+                    workspace=tmp_path,
+                    permission_policy=policy,
+                    config=runtime_config(
+                        approval_mode="allow",
+                        hooks=hooks_config(
+                            enabled=True,
+                            pre_tool=((sys.executable, "-c", "import sys; sys.exit(7)"),),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        with pytest.raises(RuntimeError, match="hook"):
+            _ = runtime.run(runtime_request(prompt="run pwd", session_id="hook-pre-fail-session"))
+
+    invoke_mock.assert_not_called()
+
+    replay_runtime = cast(
+        RuntimeRunner,
+        cast(
+            object,
+            runtime_class(
+                workspace=tmp_path,
+                permission_policy=policy,
+                config=runtime_config(
+                    approval_mode="allow",
+                    hooks=hooks_config(
+                        enabled=True,
+                        pre_tool=((sys.executable, "-c", "import sys; sys.exit(7)"),),
+                    ),
+                ),
+            ),
+        ),
+    )
+    replay = replay_runtime.resume("hook-pre-fail-session")
+
+    assert replay.events[-2].event_type == "runtime.tool_hook_pre"
+    assert replay.events[-2].payload["status"] == "error"
+    assert replay.events[-1].event_type == "runtime.failed"
+    assert replay.session.status == "failed"
+
+
+def test_runtime_skips_hooks_for_nested_hook_launched_runtime_invocations(tmp_path: Path) -> None:
+    runtime_request, runtime_class = _load_runtime_types()
+    src_path = str(Path(__file__).resolve().parents[2] / "src")
+    marker_path = tmp_path / "hook-count.txt"
+    nested_output_path = tmp_path / "nested-hook-output.txt"
+    (tmp_path / "nested.txt").write_text("nested hook read\n", encoding="utf-8")
+
+    hook_script = "\n".join(
+        [
+            "import os",
+            "import subprocess",
+            "import sys",
+            "from pathlib import Path",
+            f"workspace = Path({str(tmp_path)!r})",
+            f"marker_path = workspace / {marker_path.name!r}",
+            f"nested_output_path = workspace / {nested_output_path.name!r}",
+            "count = int(marker_path.read_text(encoding='utf-8')) if marker_path.exists() else 0",
+            "marker_path.write_text(str(count + 1), encoding='utf-8')",
+            "if count == 0:",
+            "    env = dict(os.environ)",
+            f"    src_path = {src_path!r}",
+            "    existing_pythonpath = env.get('PYTHONPATH')",
+            "    env['PYTHONPATH'] = (",
+            "        src_path",
+            "        if not existing_pythonpath",
+            "        else f'{src_path}{os.pathsep}{existing_pythonpath}'",
+            "    )",
+            "    result = subprocess.run(",
+            "        [",
+            "            sys.executable,",
+            "            '-m',",
+            "            'voidcode',",
+            "            'run',",
+            "            'read nested.txt',",
+            "            '--workspace',",
+            "            str(workspace),",
+            "            '--session-id',",
+            "            'nested-hook-session',",
+            "        ],",
+            "        cwd=workspace,",
+            "        capture_output=True,",
+            "        text=True,",
+            "        check=True,",
+            "        env=env,",
+            "    )",
+            "    nested_output_path.write_text(result.stdout, encoding='utf-8')",
+        ]
+    )
+    (tmp_path / ".voidcode.json").write_text(
+        json.dumps(
+            {
+                "approval_mode": "allow",
+                "hooks": {
+                    "enabled": True,
+                    "pre_tool": [[sys.executable, "-c", hook_script]],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    runtime = runtime_class(workspace=tmp_path)
+    result = runtime.run(
+        runtime_request(prompt="run pwd", session_id="outer-hook-recursion-session")
+    )
+
+    assert marker_path.read_text(encoding="utf-8") == "1"
+    assert "EVENT runtime.request_received" in nested_output_path.read_text(encoding="utf-8")
+    assert "runtime.tool_hook_pre" not in nested_output_path.read_text(encoding="utf-8")
+    assert "runtime.tool_hook_post" not in nested_output_path.read_text(encoding="utf-8")
+    assert [event.event_type for event in result.events].count("runtime.tool_hook_pre") == 1
+
+
+def test_runtime_skips_post_hook_when_tool_execution_fails(tmp_path: Path) -> None:
+    runtime_request, runtime_class = _load_runtime_types()
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    config_module = importlib.import_module("voidcode.runtime.config")
+    runtime_config = cast(Callable[..., object], config_module.RuntimeConfig)
+    hooks_config = cast(Callable[..., object], config_module.RuntimeHooksConfig)
+    policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="allow")
+
+    write_file_module = importlib.import_module("voidcode.tools.write_file")
+    write_tool = cast(ReadFileToolType, write_file_module.WriteFileTool)
+
+    def _failing_write_invoke(_self: object, _call: object, *, workspace: Path) -> object:
+        _ = workspace
+        raise RuntimeError("tool boom")
+
+    with patch.object(write_tool, "invoke", autospec=True, side_effect=_failing_write_invoke):
+        runtime = cast(
+            RuntimeRunner,
+            cast(
+                object,
+                runtime_class(
+                    workspace=tmp_path,
+                    permission_policy=policy,
+                    config=runtime_config(
+                        approval_mode="allow",
+                        hooks=hooks_config(
+                            enabled=True,
+                            pre_tool=((sys.executable, "-c", "print('pre ok')"),),
+                            post_tool=((sys.executable, "-c", "print('post ok')"),),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        with pytest.raises(RuntimeError, match="tool boom"):
+            _ = runtime.run(
+                runtime_request(prompt="write danger.txt should fail", session_id="hook-tool-fail")
+            )
+
+    replay_runtime = cast(
+        RuntimeRunner,
+        cast(
+            object,
+            runtime_class(
+                workspace=tmp_path,
+                permission_policy=policy,
+                config=runtime_config(
+                    approval_mode="allow",
+                    hooks=hooks_config(
+                        enabled=True,
+                        pre_tool=((sys.executable, "-c", "print('pre ok')"),),
+                        post_tool=((sys.executable, "-c", "print('post ok')"),),
+                    ),
+                ),
+            ),
+        ),
+    )
+    replay = replay_runtime.resume("hook-tool-fail")
+
+    assert [event.event_type for event in replay.events][-3:] == [
+        "runtime.approval_resolved",
+        "runtime.tool_hook_pre",
+        "runtime.failed",
+    ]
+    assert all(event.event_type != "runtime.tool_hook_post" for event in replay.events)
 
 
 def test_runtime_persists_initial_allow_tool_failure_for_resume(tmp_path: Path) -> None:
@@ -973,6 +1233,96 @@ def test_runtime_migrates_legacy_session_schema_for_pending_approval(tmp_path: P
 
     assert "pending_approval_json" in columns
     assert user_version == 2
+
+
+def test_runtime_resume_uses_persisted_runtime_config_over_fresh_resume_overrides(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / ".voidcode.json"
+    config_path.write_text(
+        json.dumps({"approval_mode": "deny", "model": "repo/model"}),
+        encoding="utf-8",
+    )
+    runtime_request, runtime_class = _load_runtime_types()
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    config_module = importlib.import_module("voidcode.runtime.config")
+    load_runtime_config = cast(Callable[..., object], config_module.load_runtime_config)
+    runtime_config = cast(Callable[..., object], config_module.RuntimeConfig)
+
+    initial_runtime = cast(
+        RuntimeRunner,
+        cast(
+            object,
+            runtime_class(
+                workspace=tmp_path,
+                config=load_runtime_config(tmp_path, approval_mode="allow", model="session/model"),
+                permission_policy=cast(Callable[..., object], permission_module.PermissionPolicy)(
+                    mode="allow"
+                ),
+            ),
+        ),
+    )
+    _ = (tmp_path / "sample.txt").write_text("resume config\n", encoding="utf-8")
+
+    _ = initial_runtime.run(
+        runtime_request(prompt="read sample.txt", session_id="resume-config-session")
+    )
+
+    resumed_runtime = cast(
+        RuntimeRunner,
+        cast(
+            object,
+            runtime_class(
+                workspace=tmp_path,
+                config=runtime_config(approval_mode="deny", model="fresh/model"),
+                permission_policy=cast(Callable[..., object], permission_module.PermissionPolicy)(
+                    mode="deny"
+                ),
+            ),
+        ),
+    )
+    replay = resumed_runtime.resume("resume-config-session")
+
+    assert replay.session.metadata["runtime_config"] == {
+        "approval_mode": "allow",
+        "model": "session/model",
+    }
+
+
+def test_runtime_resume_accepts_legacy_sessions_without_runtime_config_metadata(
+    tmp_path: Path,
+) -> None:
+    _ = (tmp_path / "sample.txt").write_text("legacy config\n", encoding="utf-8")
+    runtime_request, runtime = _approval_runtime(tmp_path, mode="allow")
+    response = runtime.run(
+        runtime_request(prompt="read sample.txt", session_id="legacy-runtime-config")
+    )
+
+    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    connection = sqlite3.connect(database_path)
+    try:
+        row = cast(
+            tuple[str],
+            connection.execute(
+                "SELECT metadata_json FROM sessions WHERE session_id = ?",
+                ("legacy-runtime-config",),
+            ).fetchone(),
+        )
+        metadata = cast(dict[str, object], json.loads(row[0]))
+        metadata.pop("runtime_config", None)
+        _ = connection.execute(
+            "UPDATE sessions SET metadata_json = ? WHERE session_id = ?",
+            (json.dumps(metadata, sort_keys=True), "legacy-runtime-config"),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    replay = runtime.resume("legacy-runtime-config")
+
+    assert replay.session.status == response.session.status
+    assert replay.output == response.output
+    assert replay.session.metadata == {"workspace": str(tmp_path)}
 
 
 def test_runtime_denies_non_read_only_tool_on_resume(tmp_path: Path) -> None:
