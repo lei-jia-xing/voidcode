@@ -15,8 +15,8 @@ VoidCode is still in pre-MVP development. The roadmap is organized from foundati
 - write operations require approval
 - sessions can be resumed
 - the deterministic single-agent loop runs end to end
-- hooks and events are emitted for observability
 - event flow is observable
+- real-time runtime events are emitted for client rendering
 
 ### Out of scope for MVP
 
@@ -63,7 +63,7 @@ Implement controlled execution through `allow`, `deny`, and `ask`, with approval
 
 Add event-driven extensibility through hook registration, pre/post-tool hooks, turn hooks, and hook execution logging. This includes the canonical runtime event schema for client observability and turn re-numbering.
 
-**Current status:** substantially complete. The runtime event schema is stable, and events are emitted for all major loop phases. Turn re-numbering is implemented to ensure sequence consistency across session resumes. Hook registration infrastructure exists in the configuration model, but real hook execution is still pending.
+**Current status:** substantially complete. The runtime event schema is stable, and events are emitted for all major loop phases. Turn re-numbering is implemented to ensure sequence consistency across session resumes. Hook registration infrastructure exists in the configuration model, but real-time hook execution is still pending.
 
 ### Epic 6: Storage and Recovery
 
