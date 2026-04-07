@@ -1,10 +1,10 @@
-# Contributing to VoidCode
+# 贡献指南
 
-Thanks for contributing to VoidCode. The project is still pre-MVP, so clear communication, small reviewable changes, and repeatable local verification matter more than raw speed.
+感谢你对 VoidCode 的贡献。本项目目前仍处于 pre-MVP 阶段，因此清晰的沟通、小的可评审变更以及可重复的本地验证比开发速度更重要。
 
-## Development setup
+## 开发环境搭建
 
-Preferred local setup uses a uv-managed Python environment. Python 3.14 is the supported version.
+推荐的本地环境使用 uv 管理的 Python 环境。支持的 Python 版本为 3.14。
 
 ```bash
 mise install
@@ -12,29 +12,29 @@ uv sync --extra dev
 uv run voidcode --help
 ```
 
-Optional but recommended:
+可选但推荐的操作：
 
 ```bash
 uv run pre-commit install
 ```
 
-## Code style and quality gates
+## 代码风格与质量门禁
 
-See [`docs/coding-standards.md`](./docs/coding-standards.md) for the repository coding standards.
+请参阅 [`docs/coding-standards.md`](./docs/coding-standards.md) 了解仓库的代码标准。
 
-VoidCode currently uses:
+VoidCode 目前使用：
 
 ### Python
-- **Ruff** for linting and formatting
-- **basedpyright** for static type checking
-- **pytest** for tests
+- **Ruff** 用于 lint 检查和代码格式化
+- **basedpyright** 用于静态类型检查
+- **pytest** 用于测试
 
-### Frontend (Bun)
-- **ESLint** for linting
-- **Prettier** for formatting
-- **TypeScript** for type checking
+### 前端 (Bun)
+- **ESLint** 用于 lint 检查
+- **Prettier** 用于代码格式化
+- **TypeScript** 用于类型检查
 
-Run the standard checks with `mise`:
+使用 `mise` 运行标准检查：
 
 ```bash
 mise run lint
@@ -45,7 +45,7 @@ mise run check
 mise run pre-commit
 ```
 
-Direct `uv` commands are also available when needed:
+需要时也可以直接使用 `uv` 命令：
 
 ```bash
 uv run ruff check .
@@ -55,26 +55,26 @@ uv run pytest
 uv run pre-commit run --all-files
 ```
 
-## Testing expectations
+## 测试预期
 
-Please include or update tests for behavior changes whenever practical.
+请在可行的情况下，为行为变更添加或更新测试。
 
-- Run `pytest` locally before opening a pull request.
-- Keep type checking and linting clean.
-- If you add or change CLI, runtime, graph, or tool behavior, include coverage for the new behavior when the test surface exists.
+- 在开启 Pull Request 之前，请在本地运行 `pytest`。
+- 保持类型检查和 lint 检查无错误。
+- 如果你添加或更改了 CLI、运行时、图（graph）或工具的行为，请在存在测试覆盖面时为新行为包含测试覆盖。
 
-## Pull request process
+## Pull Request 流程
 
-1. Start from an up-to-date branch.
-2. Keep changes focused and explain the reasoning in the PR description.
-3. Run linting, type checking, tests, and pre-commit locally before requesting review.
-4. Update user-facing documentation when behavior or workflows change.
-5. Wait for review and address feedback with follow-up commits.
+1. 从最新的分支开始开发。
+2. 保持变更聚焦，并在 PR 描述中解释原因。
+3. 在请求评审前，先在本地运行 lint 检查、类型检查、测试和 pre-commit。
+4. 当行为或工作流发生变化时，更新面向用户的文档。
+5. 等待评审，并通过后续提交来解决反馈意见。
 
-## Code of conduct
+## 行为准则
 
-By participating in this project, you agree to follow the guidelines in [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md).
+通过参与本项目，你同意遵守 [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md) 中的准则。
 
-## Security issues
+## 安全问题
 
-Please do not open public issues for security-sensitive reports. Follow the reporting guidance in [`SECURITY.md`](./SECURITY.md).
+请不要为安全性敏感的报告开启公开 Issue。请遵循 [`SECURITY.md`](./SECURITY.md) 中的报告指南。
