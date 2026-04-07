@@ -20,7 +20,7 @@ from .permission import (
     PermissionResolution,
     resolve_permission,
 )
-from .session import SessionRef, SessionState, StoredSessionSummary
+from .session import SessionRef, SessionState, SessionStatus, StoredSessionSummary
 from .skills import SkillRegistry
 from .storage import SessionStore, SqliteSessionStore
 from .tool_provider import BuiltinToolProvider
@@ -598,22 +598,11 @@ class VoidCodeRuntime:
         approval_request_id: str,
         approval_decision: PermissionResolution,
     ) -> Iterator[RuntimeStreamChunk]:
-        stored_events, response = self._resume_pending_approval_response(
+        yield from self._resume_pending_approval_impl(
             session_id=session_id,
             approval_request_id=approval_request_id,
             approval_decision=approval_decision,
         )
-        replayed_sequences = {event.sequence for event in stored_events}
-        for event in response.events:
-            if event.sequence in replayed_sequences:
-                continue
-            yield RuntimeStreamChunk(kind="event", session=response.session, event=event)
-        if response.output is not None:
-            yield RuntimeStreamChunk(
-                kind="output",
-                session=response.session,
-                output=response.output,
-            )
 
     def _resume_pending_approval_response(
         self,
@@ -749,13 +738,50 @@ class VoidCodeRuntime:
     @staticmethod
     def _replay_response(response: RuntimeResponse) -> Iterator[RuntimeStreamChunk]:
         for event in response.events:
-            yield RuntimeStreamChunk(kind="event", session=response.session, event=event)
+            yield RuntimeStreamChunk(
+                kind="event",
+                session=VoidCodeRuntime._replayed_chunk_session(
+                    response_session=response.session,
+                    event=event,
+                ),
+                event=event,
+            )
         if response.output is not None:
             yield RuntimeStreamChunk(
                 kind="output",
-                session=response.session,
+                session=VoidCodeRuntime._session_with_status(
+                    response.session,
+                    "completed"
+                    if response.session.status == "completed"
+                    else response.session.status,
+                ),
                 output=response.output,
             )
+
+    @staticmethod
+    def _session_with_status(session: SessionState, status: SessionStatus) -> SessionState:
+        return SessionState(
+            session=session.session,
+            status=status,
+            turn=session.turn,
+            metadata=session.metadata,
+        )
+
+    @staticmethod
+    def _replayed_chunk_session(
+        *, response_session: SessionState, event: EventEnvelope
+    ) -> SessionState:
+        status: SessionStatus = "running"
+        if event.event_type == "runtime.approval_requested":
+            status = "waiting"
+        elif event.event_type == "runtime.failed":
+            status = "failed"
+        elif response_session.status == "completed" and (
+            event.event_type == "graph.response_ready"
+            or (event.event_type == "graph.loop_step" and event.payload.get("phase") == "finalize")
+        ):
+            status = "completed"
+        return VoidCodeRuntime._session_with_status(response_session, status)
 
     @staticmethod
     def _validated_request(request: RuntimeRequest) -> RuntimeRequest:

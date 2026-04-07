@@ -71,6 +71,14 @@ class RuntimeRunner(Protocol):
 
     def run_stream(self, request: RuntimeRequestLike) -> Iterator[StreamChunkLike]: ...
 
+    def resume_stream(
+        self,
+        session_id: str,
+        *,
+        approval_request_id: str | None = None,
+        approval_decision: str | None = None,
+    ) -> Iterator[StreamChunkLike]: ...
+
     def list_sessions(self) -> tuple[StoredSessionSummaryLike, ...]: ...
 
     def resume(
@@ -1506,6 +1514,174 @@ def test_runtime_stream_emits_failed_terminal_chunk_before_tool_error(tmp_path: 
     assert failed_chunk.event.event_type == "runtime.failed"
     assert failed_chunk.event.payload == {"error": "boom from tool"}
     assert failed_chunk.session.status == "failed"
+
+
+def test_runtime_resume_stream_yields_incrementally_before_resumed_tool_completion(
+    tmp_path: Path,
+) -> None:
+    runtime_request, runtime = _approval_runtime(tmp_path, mode="ask")
+
+    waiting = runtime.run(
+        runtime_request(prompt="write delayed.txt resumed later", session_id="resume-stream")
+    )
+    approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
+
+    write_file_module = importlib.import_module("voidcode.tools.write_file")
+    write_tool = cast(ReadFileToolType, write_file_module.WriteFileTool)
+    original_invoke = write_tool.invoke
+    tool_started = threading.Event()
+    allow_tool_completion = threading.Event()
+    first_chunk_ready = threading.Event()
+    second_chunk_ready = threading.Event()
+    first_chunk: list[StreamChunkLike] = []
+    second_chunk: list[StreamChunkLike] = []
+
+    def _blocking_invoke(self: object, _call: object, *, workspace: Path) -> object:
+        tool_started.set()
+        _ = allow_tool_completion.wait(timeout=2)
+        return original_invoke(self, _call, workspace=workspace)
+
+    with patch.object(write_tool, "invoke", autospec=True, side_effect=_blocking_invoke):
+        resumed_runtime_request, resumed_runtime = _approval_runtime(tmp_path, mode="ask")
+        _ = resumed_runtime_request
+        stream = resumed_runtime.resume_stream(
+            "resume-stream",
+            approval_request_id=approval_request_id,
+            approval_decision="allow",
+        )
+
+        def _consume_first_chunk() -> None:
+            first_chunk.append(next(stream))
+            first_chunk_ready.set()
+
+        first_worker = threading.Thread(target=_consume_first_chunk)
+        first_worker.start()
+        first_worker.join(timeout=1)
+
+        assert first_worker.is_alive() is False
+        assert first_chunk_ready.is_set() is True
+        assert tool_started.is_set() is False
+        assert [chunk.event.event_type for chunk in first_chunk if chunk.event is not None] == [
+            "runtime.approval_resolved"
+        ]
+        assert all(chunk.session.status == "running" for chunk in first_chunk)
+
+        def _consume_second_chunk() -> None:
+            second_chunk.append(next(stream))
+            second_chunk_ready.set()
+
+        second_worker = threading.Thread(target=_consume_second_chunk)
+        second_worker.start()
+
+        assert tool_started.wait(timeout=0.2) is True
+        time.sleep(0.05)
+        assert second_chunk_ready.is_set() is False
+
+        started = time.monotonic()
+        allow_tool_completion.set()
+        second_worker.join(timeout=1)
+        remaining_chunks = list(stream)
+        elapsed = time.monotonic() - started
+
+        assert second_worker.is_alive() is False
+        assert elapsed < 1
+        assert [chunk.event.event_type for chunk in second_chunk if chunk.event is not None] == [
+            "runtime.tool_completed"
+        ]
+        assert all(chunk.session.status == "running" for chunk in second_chunk)
+        assert [
+            chunk.event.event_type for chunk in remaining_chunks if chunk.event is not None
+        ] == ["graph.loop_step", "graph.response_ready"]
+        assert [chunk.output for chunk in remaining_chunks if chunk.kind == "output"] == [
+            "resumed later"
+        ]
+        assert all(chunk.session.status == "completed" for chunk in remaining_chunks)
+
+
+def test_runtime_resume_stream_reconstructs_replayed_chunk_statuses(tmp_path: Path) -> None:
+    sample_file = tmp_path / "sample.txt"
+    _ = sample_file.write_text("replay proof\n", encoding="utf-8")
+    runtime_request, runtime_class = _load_runtime_types()
+
+    completed_runtime = runtime_class(workspace=tmp_path)
+    _ = completed_runtime.run(
+        runtime_request(prompt="read sample.txt", session_id="completed-stream")
+    )
+    completed_chunks = list(completed_runtime.resume_stream("completed-stream"))
+
+    assert [chunk.event.event_type for chunk in completed_chunks if chunk.event is not None] == [
+        "runtime.request_received",
+        "runtime.skills_loaded",
+        "graph.loop_step",
+        "graph.model_turn",
+        "graph.tool_request_created",
+        "runtime.tool_lookup_succeeded",
+        "runtime.permission_resolved",
+        "runtime.tool_completed",
+        "graph.loop_step",
+        "graph.response_ready",
+    ]
+    assert [chunk.session.status for chunk in completed_chunks[:8]] == [
+        "running",
+        "running",
+        "running",
+        "running",
+        "running",
+        "running",
+        "running",
+        "running",
+    ]
+    assert [chunk.session.status for chunk in completed_chunks[8:]] == [
+        "completed",
+        "completed",
+        "completed",
+    ]
+
+    approval_runtime_request, approval_runtime = _approval_runtime(tmp_path, mode="ask")
+    waiting = approval_runtime.run(
+        approval_runtime_request(
+            prompt="write waiting.txt pending replay", session_id="waiting-stream"
+        )
+    )
+    waiting_chunks = list(approval_runtime.resume_stream("waiting-stream"))
+
+    assert [chunk.event.event_type for chunk in waiting_chunks if chunk.event is not None] == [
+        "runtime.request_received",
+        "runtime.skills_loaded",
+        "graph.loop_step",
+        "graph.model_turn",
+        "graph.tool_request_created",
+        "runtime.tool_lookup_succeeded",
+        "runtime.approval_requested",
+    ]
+    assert [chunk.session.status for chunk in waiting_chunks[:-1]] == [
+        "running",
+        "running",
+        "running",
+        "running",
+        "running",
+        "running",
+    ]
+    assert waiting_chunks[-1].session.status == "waiting"
+
+    approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
+    _ = approval_runtime.resume(
+        "waiting-stream",
+        approval_request_id=approval_request_id,
+        approval_decision="deny",
+    )
+    failed_chunks = list(approval_runtime.resume_stream("waiting-stream"))
+
+    assert [chunk.event.event_type for chunk in failed_chunks[-3:] if chunk.event is not None] == [
+        "runtime.approval_requested",
+        "runtime.approval_resolved",
+        "runtime.failed",
+    ]
+    assert [chunk.session.status for chunk in failed_chunks[-3:]] == [
+        "waiting",
+        "running",
+        "failed",
+    ]
 
 
 def test_cli_lists_and_resumes_persisted_session(tmp_path: Path) -> None:
