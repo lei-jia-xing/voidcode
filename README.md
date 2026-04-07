@@ -30,7 +30,7 @@ VoidCode 旨在提供以以下能力为中心的本地开发智能体体验：
 
 推荐的本地设置使用 uv 管理的 Python 环境和 Bun。支持的 Python 版本为 3.14。
 
-> **注意：** 目前的实现包含了一个真实的确定性 CLI → 运行时 → 只读工具切片，以及一个极简的本地 HTTP/SSE 传输层。前端壳程序目前尚未对接该后端。
+> **注意：** 目前的实现包含了一个真实的确定性 CLI → 运行时 → 只读工具切片，以及一个极简的本地 HTTP/SSE 传输层。前端壳程序已经具备会话列表、会话重放和流式运行的最小运行时传输路径，但更完整的 Web 交互体验仍在持续完善中。
 
 ```bash
 # 安装工具和 Python 环境
@@ -55,7 +55,7 @@ uv run voidcode sessions resume local-cli-session --workspace .
 # 在 localhost:8000 启动本地后端传输服务
 uv run voidcode serve --workspace . --host 127.0.0.1 --port 8000
 
-# 启动 Web 前端（Mock 数据驱动）
+# 启动 Web 前端（包含最小运行时传输路径，整体体验仍偏 UI 壳程序）
 mise run frontend:dev
 ```
 
