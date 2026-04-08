@@ -17,7 +17,21 @@ from voidcode.runtime.service import (
     VoidCodeRuntime,
 )
 from voidcode.runtime.tool_provider import BuiltinToolProvider
-from voidcode.tools import GrepTool, ReadFileTool, ShellExecTool, ToolCall, WriteFileTool
+from voidcode.tools import (
+    EditTool,
+    GlobTool,
+    GrepTool,
+    ListTool,
+    ReadFileTool,
+    ShellExecTool,
+    ToolCall,
+    WebFetchTool,
+    WebSearchTool,
+    WriteFileTool,
+)
+from voidcode.tools.code_search import CodeSearchTool
+from voidcode.tools.multi_edit import MultiEditTool
+from voidcode.tools.todo_write import TodoWriteTool
 
 
 @dataclass(slots=True)
@@ -48,22 +62,50 @@ class _StubGraph:
 def test_builtin_tool_provider_returns_expected_builtin_tools() -> None:
     tools = BuiltinToolProvider().provide_tools()
 
-    assert tuple(type(tool) for tool in tools) == (
+    expected_tools = (
+        EditTool,
+        GlobTool,
         GrepTool,
+        ListTool,
         ReadFileTool,
         ShellExecTool,
+        WebFetchTool,
+        WebSearchTool,
         WriteFileTool,
+        # Optional tools may be present
+        CodeSearchTool,
+        MultiEditTool,
+        TodoWriteTool,
     )
+
+    tool_types = tuple(type(tool) for tool in tools)
+    for expected in expected_tools:
+        assert expected in tool_types, f"Missing tool: {expected.__name__}"
 
 
 def test_tool_registry_accepts_tools_from_provider_output() -> None:
     registry = ToolRegistry.from_tools(BuiltinToolProvider().provide_tools())
 
-    assert tuple(registry.tools) == ("grep", "read_file", "shell_exec", "write_file")
-    assert registry.resolve("grep").definition.name == "grep"
-    assert registry.resolve("read_file").definition.name == "read_file"
-    assert registry.resolve("shell_exec").definition.name == "shell_exec"
-    assert registry.resolve("write_file").definition.name == "write_file"
+    core_tools = {
+        "edit",
+        "glob",
+        "grep",
+        "list",
+        "read_file",
+        "shell_exec",
+        "web_fetch",
+        "web_search",
+        "write_file",
+    }
+    for tool_name in core_tools:
+        assert tool_name in registry.tools, f"Missing core tool: {tool_name}"
+        assert registry.resolve(tool_name).definition.name == tool_name
+
+    # Optional tools
+    optional_tools = {"apply_patch", "code_search", "lsp", "multi_edit", "todo_write"}
+    for tool_name in optional_tools:
+        if tool_name in registry.tools:
+            assert registry.resolve(tool_name).definition.name == tool_name
 
 
 def test_tool_registry_with_defaults_delegates_through_builtin_provider() -> None:
@@ -80,11 +122,27 @@ def test_tool_registry_with_defaults_delegates_through_builtin_provider() -> Non
     provide_tools_mock.assert_called_once()
     provider = provide_tools_mock.call_args.args[0]
     assert isinstance(provider, BuiltinToolProvider)
-    assert tuple(registry.tools) == ("grep", "read_file", "shell_exec", "write_file")
-    assert registry.resolve("grep") is provided_tools[0]
-    assert registry.resolve("read_file") is provided_tools[1]
-    assert registry.resolve("shell_exec") is provided_tools[2]
-    assert registry.resolve("write_file") is provided_tools[3]
+
+    core_tools = [
+        "edit",
+        "glob",
+        "grep",
+        "list",
+        "read_file",
+        "shell_exec",
+        "web_fetch",
+        "web_search",
+        "write_file",
+    ]
+    for i, tool_name in enumerate(core_tools):
+        assert tool_name in registry.tools, f"Missing core tool: {tool_name}"
+        assert registry.resolve(tool_name) is provided_tools[i]
+
+    # Verify optional tools if present
+    optional_tools = ["apply_patch", "code_search", "lsp", "multi_edit", "todo_write"]
+    for tool_name in optional_tools:
+        if tool_name in registry.tools:
+            assert registry.resolve(tool_name) is not None
 
 
 def test_runtime_default_registry_behavior_remains_unchanged(tmp_path: Path) -> None:
