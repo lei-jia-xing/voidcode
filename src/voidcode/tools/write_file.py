@@ -39,7 +39,7 @@ class WriteFileTool:
             status="ok",
             content=content_value,
             data={
-                "path": str(candidate.relative_to(workspace_root)),
+                "path": candidate.relative_to(workspace_root).as_posix(),
                 "byte_count": len(content_value.encode("utf-8")),
             },
         )

@@ -71,7 +71,7 @@ class GrepTool:
                     }
                 )
 
-        relative_result_path = str(candidate.relative_to(workspace_root))
+        relative_result_path = candidate.relative_to(workspace_root).as_posix()
         if matches:
             preview_lines = [f"{match['line']}: {match['text']}" for match in matches[:10]]
             summary = (

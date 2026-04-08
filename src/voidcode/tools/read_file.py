@@ -40,7 +40,7 @@ class ReadFileTool:
             status="ok",
             content=content,
             data={
-                "path": str(candidate.relative_to(workspace_root)),
+                "path": candidate.relative_to(workspace_root).as_posix(),
                 "line_count": len(content.splitlines()),
             },
         )
