@@ -21,6 +21,10 @@ from unittest.mock import patch
 import pytest
 
 
+def _cwd_command() -> str:
+    return f'"{sys.executable}" -c "import os; print(os.getcwd())"'
+
+
 class EventLike(Protocol):
     event_type: str
     payload: dict[str, object]
@@ -285,24 +289,27 @@ def test_runtime_allows_non_read_only_tool_when_policy_is_allow(tmp_path: Path) 
 def test_runtime_tool_request_created_supports_non_path_tool_arguments(tmp_path: Path) -> None:
     runtime_request, runtime = _approval_runtime(tmp_path, mode="allow")
 
-    result = runtime.run(runtime_request(prompt="run pwd", session_id="command-session"))
+    command = _cwd_command()
+    result = runtime.run(runtime_request(prompt=f"run {command}", session_id="command-session"))
 
     assert result.events[1].event_type == "runtime.skills_loaded"
     assert result.events[1].payload == {"skills": []}
     assert result.events[2].event_type == "graph.loop_step"
     assert result.events[3].event_type == "graph.model_turn"
     tool_request_event = result.events[4]
+    command = _cwd_command()
     assert tool_request_event.event_type == "graph.tool_request_created"
     assert tool_request_event.payload == {
         "tool": "shell_exec",
-        "arguments": {"command": "pwd"},
+        "arguments": {"command": command},
     }
 
 
 def test_runtime_allows_shell_exec_tool_when_policy_is_allow(tmp_path: Path) -> None:
     runtime_request, runtime = _approval_runtime(tmp_path, mode="allow")
 
-    allowed = runtime.run(runtime_request(prompt="run pwd", session_id="shell-allow-session"))
+    command = _cwd_command()
+    allowed = runtime.run(runtime_request(prompt=f"run {command}", session_id="shell-allow-session"))
 
     assert allowed.session.status == "completed"
     assert [event.event_type for event in allowed.events] == [
@@ -319,14 +326,15 @@ def test_runtime_allows_shell_exec_tool_when_policy_is_allow(tmp_path: Path) -> 
     ]
     assert allowed.events[6].payload["decision"] == "allow"
     assert allowed.output == f"{tmp_path.resolve()}\n"
-    assert allowed.events[7].payload["command"] == "pwd"
+    assert allowed.events[7].payload["command"] == command
     assert allowed.events[7].payload["exit_code"] == 0
 
 
 def test_runtime_requests_and_resumes_shell_exec_approval(tmp_path: Path) -> None:
     runtime_request, runtime = _approval_runtime(tmp_path, mode="ask")
 
-    waiting = runtime.run(runtime_request(prompt="run pwd", session_id="shell-approval-session"))
+    command = _cwd_command()
+    waiting = runtime.run(runtime_request(prompt=f"run {command}", session_id="shell-approval-session"))
 
     assert waiting.session.status == "waiting"
     assert [event.event_type for event in waiting.events] == [
@@ -339,7 +347,7 @@ def test_runtime_requests_and_resumes_shell_exec_approval(tmp_path: Path) -> Non
         "runtime.approval_requested",
     ]
     assert waiting.events[-1].payload["tool"] == "shell_exec"
-    assert waiting.events[-1].payload["arguments"] == {"command": "pwd"}
+    assert waiting.events[-1].payload["arguments"] == {"command": command}
     approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
 
     resumed = runtime.resume(
@@ -363,14 +371,15 @@ def test_runtime_requests_and_resumes_shell_exec_approval(tmp_path: Path) -> Non
         "graph.response_ready",
     ]
     assert resumed.output == f"{tmp_path.resolve()}\n"
-    assert resumed.events[8].payload["command"] == "pwd"
+    assert resumed.events[8].payload["command"] == command
     assert resumed.events[8].payload["exit_code"] == 0
 
 
 def test_runtime_denies_shell_exec_tool_when_policy_is_deny(tmp_path: Path) -> None:
     runtime_request, runtime = _approval_runtime(tmp_path, mode="deny")
 
-    denied = runtime.run(runtime_request(prompt="run pwd", session_id="shell-deny-session"))
+    command = _cwd_command()
+    denied = runtime.run(runtime_request(prompt=f"run {command}", session_id="shell-deny-session"))
 
     assert denied.session.status == "failed"
     assert [event.event_type for event in denied.events] == [
@@ -414,7 +423,8 @@ def test_runtime_emits_pre_and_post_hook_events_around_successful_tool_run(tmp_p
         ),
     )
 
-    result = runtime.run(runtime_request(prompt="run pwd", session_id="hook-success-session"))
+    command = _cwd_command()
+    result = runtime.run(runtime_request(prompt=f"run {command}", session_id="hook-success-session"))
 
     assert [event.event_type for event in result.events] == [
         "runtime.request_received",
@@ -475,7 +485,8 @@ def test_runtime_aborts_tool_run_when_pre_hook_fails(tmp_path: Path) -> None:
         )
 
         with pytest.raises(RuntimeError, match="hook"):
-            _ = runtime.run(runtime_request(prompt="run pwd", session_id="hook-pre-fail-session"))
+            command = _cwd_command()
+            _ = runtime.run(runtime_request(prompt=f"run {command}", session_id="hook-pre-fail-session"))
 
     invoke_mock.assert_not_called()
 
@@ -565,9 +576,10 @@ def test_runtime_skips_hooks_for_nested_hook_launched_runtime_invocations(tmp_pa
         encoding="utf-8",
     )
 
+    command = _cwd_command()
     runtime = runtime_class(workspace=tmp_path)
     result = runtime.run(
-        runtime_request(prompt="run pwd", session_id="outer-hook-recursion-session")
+        runtime_request(prompt=f"run {command}", session_id="outer-hook-recursion-session")
     )
 
     assert marker_path.read_text(encoding="utf-8") == "1"

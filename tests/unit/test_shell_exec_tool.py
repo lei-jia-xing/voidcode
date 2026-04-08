@@ -11,11 +11,16 @@ from voidcode.runtime.service import ToolRegistry
 from voidcode.tools import ShellExecTool, ToolCall
 
 
+def _cwd_command() -> str:
+    return f'"{sys.executable}" -c "import os; print(os.getcwd())"'
+
+
 def test_shell_exec_tool_runs_command_in_workspace(tmp_path: Path) -> None:
     tool = ShellExecTool()
+    command = _cwd_command()
 
     result = tool.invoke(
-        ToolCall(tool_name="shell_exec", arguments={"command": "pwd"}),
+        ToolCall(tool_name="shell_exec", arguments={"command": command}),
         workspace=tmp_path,
     )
 
@@ -23,7 +28,7 @@ def test_shell_exec_tool_runs_command_in_workspace(tmp_path: Path) -> None:
     assert result.status == "ok"
     assert result.content == f"{tmp_path.resolve()}\n"
     assert result.data == {
-        "command": "pwd",
+        "command": command,
         "exit_code": 0,
         "stdout": f"{tmp_path.resolve()}\n",
         "stderr": "",

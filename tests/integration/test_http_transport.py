@@ -14,6 +14,10 @@ from unittest.mock import patch
 import pytest
 
 
+def _cwd_command() -> str:
+    return f'"{sys.executable}" -c "import os; print(os.getcwd())"'
+
+
 class SessionRefLike(Protocol):
     id: str
 
@@ -502,7 +506,8 @@ def test_transport_serializes_hook_events_from_runtime_stream(tmp_path: Path) ->
 
     class StubRuntime:
         def run_stream(self, request: RuntimeRequestLike) -> Iterator[StreamChunkLike]:
-            assert request.prompt == "run pwd"
+            command = _cwd_command()
+            assert request.prompt == f"run {command}"
             yield runtime_stream_chunk(
                 kind="event",
                 session=session,
@@ -543,11 +548,12 @@ def test_transport_serializes_hook_events_from_runtime_stream(tmp_path: Path) ->
             raise AssertionError(f"resume should not be called: {session_id}")
 
     app = create_runtime_app(workspace=tmp_path, runtime_factory=lambda: StubRuntime())
+    command = _cwd_command()
     response = _run_app(
         app,
         method="POST",
         path="/api/runtime/run/stream",
-        body=json.dumps({"prompt": "run pwd"}).encode("utf-8"),
+        body=json.dumps({"prompt": f"run {command}"}).encode("utf-8"),
     )
     payloads = _parse_sse_payloads(response)
 
