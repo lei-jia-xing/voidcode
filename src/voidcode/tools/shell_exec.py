@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import shlex
 import subprocess
 from pathlib import Path
 from typing import ClassVar, final
@@ -27,12 +26,12 @@ class ShellExecTool:
             raise ValueError("shell_exec command must not be empty")
 
         completed = subprocess.run(
-            shlex.split(command_text),
+            command_text,
             cwd=workspace.resolve(),
             capture_output=True,
             text=True,
             check=False,
-            shell=False,
+            shell=True,
         )
 
         output = completed.stdout
