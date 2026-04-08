@@ -19,9 +19,7 @@ class SessionDisplayState:
     session_id: str | None = None
     status: str = "idle"
     timeline_events: tuple[TuiTimelineEvent, ...] = ()
-    timeline_empty_text: str = (
-        "Start a prompt or open a persisted session with --session-id to replay runtime history."
-    )
+    timeline_empty_text: str = "Start the conversation with a prompt to see runtime history here."
     output_text: str = ""
     approval_target: TuiApprovalRequest | None = None
     draft_text: str = ""
