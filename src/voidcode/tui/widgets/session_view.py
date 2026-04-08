@@ -44,7 +44,7 @@ class SessionView(Widget):
     SessionView {
         width: 1fr;
         height: 100%;
-        background: $background;
+        background: transparent;
         padding: 1;
     }
 
@@ -64,7 +64,7 @@ class SessionView(Widget):
         margin-top: 1;
         padding: 1;
         border: solid $warning;
-        background: $panel;
+        background: transparent;
         color: $warning;
     }
     """
@@ -231,8 +231,16 @@ class SessionView(Widget):
             self._display_state.timeline_events,
             empty_message=self._display_state.timeline_empty_text,
         )
-        self.query_one("#session-output", Static).update(self._display_state.output_text)
-        self.query_one("#approval-target", Static).update(self._approval_target_text())
+
+        output_widget = self.query_one("#session-output", Static)
+        output_widget.update(self._display_state.output_text)
+        output_widget.display = bool(self._display_state.output_text.strip())
+
+        approval_widget = self.query_one("#approval-target", Static)
+        approval_text = self._approval_target_text()
+        approval_widget.update(approval_text)
+        approval_widget.display = bool(approval_text.strip())
+
         self._refresh_prompt_bar()
 
     def _refresh_prompt_bar(self) -> None:

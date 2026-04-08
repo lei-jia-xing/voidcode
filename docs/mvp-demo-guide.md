@@ -70,9 +70,11 @@
 - **服务**：确认 `voidcode serve` 处理并发请求。
 
 ### 5. TUI 冒烟层
-- **聊天优先启动**：`uv run voidcode tui --workspace .` 默认直接进入主会话视图，底部 prompt 获得焦点，不展示持久化 sessions 侧边栏。
-- **直接打开持久化会话**：`uv run voidcode tui --workspace . --session-id <session-id>` 应重放该会话的时间线，并在待审批场景下弹出审批模态框。
-- **命令**：`uv run pytest tests/unit/test_tui_boot.py tests/unit/test_tui_runtime_client.py`
+- **启动页体验**：`uv run voidcode tui --workspace .` 默认进入 `StartupScreen`。验证只有 VoidCode 标题和极简 Composer，焦点位于 Composer。
+- **提交与切换**：在启动页提交 prompt，验证界面立即切换到 `ConversationScreen` 并显示流式 Timeline。
+- **直接打开会话**：`uv run voidcode tui --workspace . --session-id <session-id>` 验证直接进入 `ConversationScreen` 并重放历史。
+- **审批模态框**：在 `waiting` 场景下，验证 `ApprovalModal` 自动弹出且聚焦于“Approve”。
+- **命令**：`uv run pytest tests/unit/test_tui_app.py tests/unit/test_tui_session_view.py`
 
 ## 证据标准
 
@@ -89,7 +91,7 @@
 - 完整的 CLI TTY 内联审批（ask/allow/deny）。
 - 本地 SQLite 会话持久化与恢复。
 - 极简 HTTP/SSE 传输。
-- Textual 聊天优先 TUI：单一会话/事件流、底部 prompt、`--session-id` 直开、会话内审批模态框。
+- Textual 重新设计的双视图 TUI：`StartupScreen` 启动页、`ConversationScreen` 会话页、多行 Composer、`--session-id` 直开、会话内审批模态框。
 
 ### 计划中（尚不可演示）
 - **Web UI 集成**：React 外壳目前完全由模拟数据驱动，尚未接入真实的后端运行时。

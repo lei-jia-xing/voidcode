@@ -6,7 +6,7 @@ from typing import cast
 from unittest.mock import MagicMock
 
 import pytest
-from textual.widgets import Input
+from textual.widgets import TextArea
 
 from voidcode.runtime.session import SessionStatus
 from voidcode.tui.app import TuiBootstrap, VoidCodeTuiApp
@@ -17,7 +17,6 @@ from voidcode.tui.models import (
     TuiStreamChunk,
     TuiTimelineEvent,
 )
-from voidcode.tui.widgets.session_view import SessionView
 
 
 @dataclass(slots=True)
@@ -102,11 +101,11 @@ async def test_boot_renders_empty_session_and_focuses_prompt() -> None:
     )
 
     async with app.run_test():
-        session_view = app.query_one(SessionView)
+        session_view = app.get_active_session_view()
 
         assert app.active_session_id is None
         assert session_view.display_state.session_id is None
-        assert isinstance(app.focused, Input)
+        assert isinstance(app.focused, TextArea)
 
 
 @pytest.mark.anyio
@@ -140,14 +139,14 @@ async def test_direct_session_boot_opens_target_session() -> None:
     )
 
     async with app.run_test():
-        session_view = app.query_one(SessionView)
+        session_view = app.get_active_session_view()
 
         assert app.active_session_id == "session-2"
         assert session_view.display_state.session_id == "session-2"
         assert session_view.display_state.status == "completed"
         assert session_view.display_state.output_text == "done\n"
         assert session_view.active_approval_target is None
-        assert isinstance(app.focused, Input)
+        assert isinstance(app.focused, TextArea)
         runtime_client.open_session.assert_called_once_with("session-2")
 
 
@@ -168,7 +167,7 @@ async def test_direct_session_boot_opens_waiting_session_and_focuses_approval_ta
     )
 
     async with app.run_test():
-        session_view = app.query_one(SessionView)
+        session_view = app.get_active_session_view()
 
         assert app.active_session_id == "session-direct"
         assert session_view.active_approval_target is not None

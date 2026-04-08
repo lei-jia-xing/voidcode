@@ -4,11 +4,10 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
-from textual.widgets import Button, Input
+from textual.widgets import Button, TextArea
 
 from voidcode.tui.app import TuiAppRuntimeClient, TuiBootstrap, VoidCodeTuiApp
 from voidcode.tui.models import TuiSessionSnapshot, TuiSessionState, TuiTimelineEvent
-from voidcode.tui.widgets.session_view import SessionView
 
 
 @pytest.fixture
@@ -39,32 +38,38 @@ def _waiting_snapshot(session_id: str = "session-1") -> TuiSessionSnapshot:
 
 @pytest.mark.anyio
 async def test_app_handles_stream_run_error(mock_runtime_client: MagicMock):
+    mock_runtime_client.open_session.return_value = TuiSessionSnapshot(
+        session=TuiSessionState(session_id="session-1", status="idle", turn=1), timeline=()
+    )
     app = VoidCodeTuiApp(
-        TuiBootstrap(workspace=Path("/tmp"), session_id=None),
+        TuiBootstrap(workspace=Path("/tmp"), session_id="session-1"),
         runtime_client=mock_runtime_client,
     )
     async with app.run_test() as pilot:
         app._handle_stream_run_error(ValueError("simulated error"))  # pyright: ignore[reportPrivateUsage]
         await pilot.pause()
 
-        session_view = app.query_one(SessionView)
+        session_view = app.get_active_session_view()
         assert session_view.display_state.status == "idle"
-        assert isinstance(app.focused, Input)
+        assert isinstance(app.focused, TextArea)
 
 
 @pytest.mark.anyio
 async def test_app_handles_stale_approval_error(mock_runtime_client: MagicMock):
+    mock_runtime_client.open_session.return_value = TuiSessionSnapshot(
+        session=TuiSessionState(session_id="session-1", status="idle", turn=1), timeline=()
+    )
     app = VoidCodeTuiApp(
-        TuiBootstrap(workspace=Path("/tmp"), session_id=None),
+        TuiBootstrap(workspace=Path("/tmp"), session_id="session-1"),
         runtime_client=mock_runtime_client,
     )
     async with app.run_test() as pilot:
         app._handle_stale_approval_error(ValueError("stale approval"))  # pyright: ignore[reportPrivateUsage]
         await pilot.pause()
 
-        session_view = app.query_one(SessionView)
+        session_view = app.get_active_session_view()
         assert session_view.display_state.status == "idle"
-        assert isinstance(app.focused, Input)
+        assert isinstance(app.focused, TextArea)
 
 
 @pytest.mark.anyio
@@ -89,3 +94,40 @@ async def test_app_waiting_session_modal_supports_keyboard_focus_navigation(
         assert app.focused.id == "btn-approve"
 
         mock_runtime_client.resolve_approval.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_tui_theme_uses_terminal_background(mock_runtime_client: MagicMock):
+    from voidcode.tui.theme import DEVELOPER_THEME
+
+    app = VoidCodeTuiApp(
+        TuiBootstrap(workspace=Path("/tmp"), session_id=None),
+        runtime_client=mock_runtime_client,
+    )
+    async with app.run_test() as pilot:
+        assert app.screen.styles.background.a == 0
+        assert DEVELOPER_THEME.variables.get("block-background") == "transparent"
+        assert DEVELOPER_THEME.variables.get("panel-background") == "transparent"
+        assert DEVELOPER_THEME.primary == DEVELOPER_THEME.accent
+
+        composer = app.get_active_startup_view().query_one("#prompt-input")
+        assert composer is not None
+        await pilot.pause()
+
+
+@pytest.mark.anyio
+async def test_app_startup_screen_has_minimal_prompt_bar(mock_runtime_client: MagicMock):
+    from voidcode.tui.widgets.prompt_bar import PromptBar
+
+    app = VoidCodeTuiApp(
+        TuiBootstrap(workspace=Path("/tmp"), session_id=None),
+        runtime_client=mock_runtime_client,
+    )
+    async with app.run_test() as pilot:
+        startup_view = app.get_active_startup_view()
+        prompt_bar = startup_view.query_one(PromptBar)
+
+        assert prompt_bar.has_class("minimal")
+        status = prompt_bar.query_one("#prompt-status")
+        assert status.styles.display == "none"
+        await pilot.pause()

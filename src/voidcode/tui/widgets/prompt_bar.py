@@ -1,11 +1,32 @@
 from __future__ import annotations
 
-from textual import on
+from textual import events, on
 from textual.app import ComposeResult
-from textual.containers import Horizontal
 from textual.message import Message
 from textual.widget import Widget
-from textual.widgets import Button, Input, Static
+from textual.widgets import Static, TextArea
+
+
+class Composer(TextArea):
+    """Multiline composer with custom Enter/Shift+Enter bindings."""
+
+    class Submitted(Message):
+        """Posted when Enter is pressed and draft is not empty."""
+
+    async def _on_key(self, event: events.Key) -> None:
+        if event.key == "enter":
+            event.stop()
+            event.prevent_default()
+            if self.text.strip():
+                self.post_message(self.Submitted())
+            return
+        elif event.key in ("shift+enter", "alt+enter", "escape enter", "ctrl+j"):
+            event.stop()
+            event.prevent_default()
+            self.insert("\n")
+            return
+
+        await super()._on_key(event)
 
 
 class PromptBar(Widget):
@@ -22,8 +43,13 @@ class PromptBar(Widget):
         height: auto;
         dock: bottom;
         margin-top: 1;
-        background: $panel;
+        background: transparent;
         padding: 1;
+    }
+
+    PromptBar.minimal {
+        margin-top: 0;
+        padding: 0;
     }
 
     #prompt-status {
@@ -32,45 +58,48 @@ class PromptBar(Widget):
         padding-bottom: 1;
     }
 
-    #prompt-controls {
-        width: 100%;
-        height: 3;
+    PromptBar.minimal #prompt-status {
+        display: none;
     }
 
-    #prompt-controls > Input {
+    Composer {
         width: 1fr;
-        height: 100%;
+        height: auto;
+        min-height: 3;
+        max-height: 10;
         border: solid $primary;
-        margin-right: 1;
     }
 
-    #prompt-controls > Input:focus {
-        border: double $accent;
+    Composer:focus {
+        border: solid $primary;
     }
 
-    #prompt-submit {
-        width: 12;
-        min-width: 12;
+    PromptBar.minimal Composer, PromptBar.minimal Composer:focus {
+        border: none;
     }
     """
 
-    def __init__(self, *, name: str | None = None, id: str | None = None) -> None:
+    def __init__(
+        self, *, name: str | None = None, id: str | None = None, minimal: bool = False
+    ) -> None:
         super().__init__(name=name, id=id)
         self._status_text = "Idle"
         self._submit_disabled = False
+        if minimal:
+            self.add_class("minimal")
 
     def compose(self) -> ComposeResult:
         yield Static(self._status_text, id="prompt-status")
-        with Horizontal(id="prompt-controls"):
-            yield Input(placeholder="Type a command or prompt...", id="prompt-input")
-            yield Button("Submit", id="prompt-submit")
+        yield Composer(id="prompt-input")
 
     def on_mount(self) -> None:
         self.can_focus = False
+        composer = self.query_one("#prompt-input", Composer)
+        composer.show_line_numbers = False
 
     @property
     def draft(self) -> str:
-        return self.query_one("#prompt-input", Input).value
+        return self.query_one("#prompt-input", Composer).text
 
     @property
     def submit_disabled(self) -> bool:
@@ -81,31 +110,25 @@ class PromptBar(Widget):
         return self._status_text
 
     def set_draft(self, value: str) -> None:
-        self.query_one("#prompt-input", Input).value = value
+        self.query_one("#prompt-input", Composer).text = value
 
     def clear_draft(self) -> None:
         self.set_draft("")
 
     def set_submit_disabled(self, disabled: bool) -> None:
         self._submit_disabled = disabled
-        input_widget = self.query_one("#prompt-input", Input)
-        button = self.query_one("#prompt-submit", Button)
+        input_widget = self.query_one("#prompt-input", Composer)
         input_widget.disabled = disabled
-        button.disabled = disabled
 
     def set_status_text(self, text: str) -> None:
         self._status_text = text
         self.query_one("#prompt-status", Static).update(text)
 
-    @on(Input.Submitted, "#prompt-input")
-    def _on_input_submitted(self, event: Input.Submitted) -> None:
+    @on(Composer.Submitted)
+    def _on_composer_submitted(self, event: Composer.Submitted) -> None:
         event.stop()
-        self._post_submit_request(event.value)
-
-    @on(Button.Pressed, "#prompt-submit")
-    def _on_submit_pressed(self, event: Button.Pressed) -> None:
-        event.stop()
-        self._post_submit_request(self.draft)
+        if not self._submit_disabled:
+            self._post_submit_request(self.draft)
 
     def _post_submit_request(self, prompt: str) -> None:
         self.post_message(self.PromptSubmitRequested(prompt=prompt))

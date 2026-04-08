@@ -263,14 +263,14 @@ class Timeline(Widget):
     Timeline {
         width: 100%;
         height: 1fr;
-        padding: 1;
-        background: $boost;
-        border: solid $surface;
+        padding: 0 1;
+        background: transparent;
+        border: round $panel;
         min-height: 8;
     }
 
     Timeline:focus-within {
-        border: double $accent;
+        border: round $primary;
     }
 
     Timeline > VerticalScroll {
@@ -297,9 +297,7 @@ class Timeline(Widget):
         self._current_tool_block: ToolActivityBlock | None = None
         self._current_static: Static | None = None
         self._current_static_text: Text | None = None
-        self._empty_message = (
-            "Welcome to VoidCode Timeline.\n\nUse the prompt below to send commands."
-        )
+        self._empty_message = "No events yet.\n\nType a message to start the conversation."
 
     def compose(self) -> ComposeResult:
         with VerticalScroll():

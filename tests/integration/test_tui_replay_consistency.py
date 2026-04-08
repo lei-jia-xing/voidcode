@@ -8,7 +8,7 @@ from textual.widgets import Static
 
 from voidcode.runtime.service import VoidCodeRuntime
 from voidcode.tui.runtime_client import TuiRuntimeClient
-from voidcode.tui.widgets.session_view import SessionView
+from voidcode.tui.widgets.session_view import ApprovalTargetPlaceholder, SessionView
 from voidcode.tui.widgets.timeline import Timeline
 
 
@@ -58,3 +58,54 @@ async def test_tui_timeline_order_matches_between_live_stream_and_replay_order(
     assert any("Request received" in line for line in live_rendered)
     assert any("Tool requested" in line or "Tool resolved" in line for line in live_rendered)
     assert any("Request received" in line for line in replay_rendered)
+
+
+@pytest.mark.anyio
+async def test_tui_waiting_replay_matches_live_stream_for_approval_state(tmp_path: Path) -> None:
+    client = TuiRuntimeClient(runtime=VoidCodeRuntime(workspace=tmp_path))
+
+    live_chunks = tuple(
+        client.stream_run("write waiting.txt pending replay", session_id="tui-waiting-session")
+    )
+    replay_snapshot = client.open_session("tui-waiting-session")
+
+    live_app = _SessionViewHarness()
+    async with live_app.run_test() as pilot:
+        live_view = live_app.query_one(SessionView)
+        for chunk in live_chunks:
+            live_view.apply_stream_chunk(chunk)
+        await pilot.pause()
+
+        live_status = live_view.display_state.status
+        live_events = live_view.display_state.timeline_events
+        live_placeholder_display = live_view.query_one(ApprovalTargetPlaceholder).display
+        live_placeholder_text = str(live_view.query_one(ApprovalTargetPlaceholder).render())
+        live_rendered = [
+            str(widget.render()) for widget in live_view.query_one(Timeline).query(Static).results()
+        ]
+
+    replay_app = _SessionViewHarness()
+    async with replay_app.run_test() as pilot:
+        replay_view = replay_app.query_one(SessionView)
+        replay_view.show_snapshot(replay_snapshot)
+        await pilot.pause()
+
+        replay_status = replay_view.display_state.status
+        replay_events = replay_view.display_state.timeline_events
+        replay_placeholder_display = replay_view.query_one(ApprovalTargetPlaceholder).display
+        replay_placeholder_text = str(replay_view.query_one(ApprovalTargetPlaceholder).render())
+        replay_rendered = [
+            str(widget.render())
+            for widget in replay_view.query_one(Timeline).query(Static).results()
+        ]
+
+    assert replay_snapshot.session.status == "waiting"
+    assert live_status == replay_status == "waiting"
+    assert [ev.sequence for ev in live_events] == [ev.sequence for ev in replay_events]
+    assert [ev.event_type for ev in live_events] == [ev.event_type for ev in replay_events]
+    assert [ev.payload for ev in live_events] == [ev.payload for ev in replay_events]
+    assert live_placeholder_display is True
+    assert replay_placeholder_display is True
+    assert live_placeholder_text == replay_placeholder_text
+    assert any("Approval requested" in line for line in live_rendered)
+    assert any("Approval requested" in line for line in replay_rendered)

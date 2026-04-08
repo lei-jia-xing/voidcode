@@ -3,14 +3,14 @@ from textual.theme import Theme
 DEVELOPER_THEME = Theme(
     name="developer",
     primary="#4a90e2",
-    secondary="#5cb85c",
+    secondary="#4a90e2",
     warning="#f0ad4e",
     error="#d9534f",
     success="#5cb85c",
-    accent="#9b59b6",
+    accent="#4a90e2",
     dark=True,
     variables={
-        "block-background": "#1e1e1e",
-        "panel-background": "#252526",
+        "block-background": "transparent",
+        "panel-background": "transparent",
     },
 )
