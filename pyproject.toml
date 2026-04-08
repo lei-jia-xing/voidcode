@@ -28,6 +28,7 @@ dependencies = [
   "langchain-core",
   "langgraph",
   "pydantic",
+  "textual",
   "typing-extensions",
   "uvicorn",
 ]
