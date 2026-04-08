@@ -2,8 +2,35 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from ..tools import GrepTool, ReadFileTool, ShellExecTool, WriteFileTool
+from ..tools import (
+    EditTool,
+    GlobTool,
+    GrepTool,
+    ListTool,
+    ReadFileTool,
+    ShellExecTool,
+    WebFetchTool,
+    WebSearchTool,
+    WriteFileTool,
+)
 from ..tools.contracts import Tool
+
+# Import optional tools that may not exist
+try:
+    from ..tools.apply_patch import ApplyPatchTool as _ApplyPatchTool
+    from ..tools.code_search import CodeSearchTool as _CodeSearchTool
+    from ..tools.lsp import LspTool as _LspTool
+    from ..tools.multi_edit import MultiEditTool as _MultiEditTool
+    from ..tools.todo_write import TodoWriteTool as _TodoWriteTool
+
+    _HAS_OPTIONAL_TOOLS = True
+except ImportError:
+    _ApplyPatchTool = None
+    _CodeSearchTool = None
+    _LspTool = None
+    _MultiEditTool = None
+    _TodoWriteTool = None
+    _HAS_OPTIONAL_TOOLS = False
 
 
 class ToolProvider(Protocol):
@@ -12,4 +39,29 @@ class ToolProvider(Protocol):
 
 class BuiltinToolProvider:
     def provide_tools(self) -> tuple[Tool, ...]:
-        return (GrepTool(), ReadFileTool(), ShellExecTool(), WriteFileTool())
+        tools: list[Tool] = [
+            EditTool(),
+            GlobTool(),
+            GrepTool(),
+            ListTool(),
+            ReadFileTool(),
+            ShellExecTool(),
+            WebFetchTool(),
+            WebSearchTool(),
+            WriteFileTool(),
+        ]
+
+        # Add optional tools if available
+        if _HAS_OPTIONAL_TOOLS:
+            if _ApplyPatchTool:
+                tools.append(_ApplyPatchTool())
+            if _CodeSearchTool:
+                tools.append(_CodeSearchTool())
+            if _LspTool:
+                tools.append(_LspTool())
+            if _MultiEditTool:
+                tools.append(_MultiEditTool())
+            if _TodoWriteTool:
+                tools.append(_TodoWriteTool())
+
+        return tuple(tools)
