@@ -5,13 +5,7 @@ from unittest.mock import MagicMock
 import pytest
 from textual.widgets import TextArea
 
-from voidcode.tui.app import (
-    ConversationScreen,
-    StartupScreen,
-    StartupView,
-    TuiBootstrap,
-    VoidCodeTuiApp,
-)
+from voidcode.tui.app import ConversationScreen, StartupScreen, TuiBootstrap, VoidCodeTuiApp
 from voidcode.tui.widgets.prompt_bar import PromptBar
 from voidcode.tui.widgets.session_view import SessionView
 
@@ -72,8 +66,8 @@ async def test_tui_layout_startup_submit_transitions_to_conversation_with_prompt
     )
 
     async with app.run_test(size=(40, 10)) as pilot:
-        startup_view = app.get_active_startup_view()
-        startup_view.post_message(StartupView.PromptSubmitted("read README.md"))
+        await pilot.press(*list("read README.md"))
+        await pilot.press("enter")
         await pilot.pause()
 
         assert isinstance(app.screen, ConversationScreen)

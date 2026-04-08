@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+from textual.color import Color
 from textual.widgets import Button, TextArea
 
 from voidcode.tui.app import TuiAppRuntimeClient, TuiBootstrap, VoidCodeTuiApp
@@ -105,7 +106,7 @@ async def test_tui_theme_uses_terminal_background(mock_runtime_client: MagicMock
         runtime_client=mock_runtime_client,
     )
     async with app.run_test() as pilot:
-        assert app.screen.styles.background.a == 0
+        assert app.screen.styles.background == Color.parse("ansi_default")
         assert DEVELOPER_THEME.variables.get("block-background") == "transparent"
         assert DEVELOPER_THEME.variables.get("panel-background") == "transparent"
         assert DEVELOPER_THEME.primary == DEVELOPER_THEME.accent

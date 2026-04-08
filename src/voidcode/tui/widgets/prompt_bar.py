@@ -74,8 +74,13 @@ class PromptBar(Widget):
         border: solid $primary;
     }
 
-    PromptBar.minimal Composer, PromptBar.minimal Composer:focus {
-        border: none;
+    PromptBar.minimal Composer {
+        border: round #444444;
+        background: transparent;
+    }
+    PromptBar.minimal Composer:focus {
+        border: round $primary;
+        background: transparent;
     }
     """
 

@@ -34,12 +34,15 @@ class StartupView(Widget):
         width: 100%;
         height: 100%;
         align: center middle;
+        background: transparent;
     }
     #startup-container {
         width: 60%;
         min-width: 40;
         max-width: 80;
         height: auto;
+        background: transparent;
+        padding: 1;
     }
     #startup-title {
         content-align: center middle;
@@ -128,7 +131,7 @@ class VoidCodeTuiApp(App[None]):
 
     CSS = """
     Screen {
-        background: transparent;
+        background: ansi_default;
     }
     #main-container {
         width: 100%;
