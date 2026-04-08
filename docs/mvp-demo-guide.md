@@ -1,6 +1,6 @@
 # MVP 演示指南
 
-本文档定义了 VoidCode 的规范 MVP 演示场景和端到端验证清单。它基于目前已实现的稳定确定性单智能体循环、会话持久化和 CLI 内联审批行为。
+本文档定义了 VoidCode 的规范 MVP 演示场景和端到端验证清单。它基于目前已实现的稳定确定性单智能体循环、会话持久化、CLI 内联审批行为，以及已落地的聊天优先（chat-first）Textual TUI。
 
 ## 前置条件
 
@@ -69,11 +69,17 @@
 - **视觉效果**：确认 CLI 中的 `EVENT` 和 `RESULT` 日志清晰可读。
 - **服务**：确认 `voidcode serve` 处理并发请求。
 
+### 5. TUI 冒烟层
+- **聊天优先启动**：`uv run voidcode tui --workspace .` 默认直接进入主会话视图，底部 prompt 获得焦点，不展示持久化 sessions 侧边栏。
+- **直接打开持久化会话**：`uv run voidcode tui --workspace . --session-id <session-id>` 应重放该会话的时间线，并在待审批场景下弹出审批模态框。
+- **命令**：`uv run pytest tests/unit/test_tui_boot.py tests/unit/test_tui_runtime_client.py`
+
 ## 证据标准
 
 要称之为 MVP 可演示，贡献者必须提供：
 - `mise run check` 的输出（全绿）。
 - 在新工作区成功执行**规范演示流程**（步骤 1-4）的日志，特别是包含内联审批交互的部分。
+- 聊天优先 TUI 的最小验证证据：默认启动、`--session-id` 直开、流式 prompt、审批恢复与相关测试输出。
 - 验证 `.voidcode/sessions.sqlite3` 中包含对应的会话和事件行。
 
 ## 边界与已知差距
@@ -83,9 +89,9 @@
 - 完整的 CLI TTY 内联审批（ask/allow/deny）。
 - 本地 SQLite 会话持久化与恢复。
 - 极简 HTTP/SSE 传输。
+- Textual 聊天优先 TUI：单一会话/事件流、底部 prompt、`--session-id` 直开、会话内审批模态框。
 
 ### 计划中（尚不可演示）
-- **TUI 客户端**：TUI 仍处于规范阶段。
 - **Web UI 集成**：React 外壳目前完全由模拟数据驱动，尚未接入真实的后端运行时。
 - **真实 LLM 编排**：目前的图执行是基于确定性解析器的。
 - **钩子主动执行**：事件（Events）已在运行时发出，但挂接在特定事件上的主动逻辑（Hooks）仍待实现。
