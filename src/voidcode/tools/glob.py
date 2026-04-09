@@ -64,8 +64,8 @@ class GlobTool:
         try:
             for match in search_dir.glob(pattern):
                 if match.is_file():
-                    parts = match.parts
-                    if any(ignore in parts for ignore in DEFAULT_IGNORE_PATTERNS):
+                    relative_parts = match.relative_to(workspace_root).parts
+                    if any(ignore in relative_parts for ignore in DEFAULT_IGNORE_PATTERNS):
                         continue
 
                     matched.append(match)

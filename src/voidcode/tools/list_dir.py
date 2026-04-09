@@ -113,7 +113,11 @@ class ListTool:
                 if sum(len(v) for v in files_by_dir.values()) >= LIMIT:
                     break
 
-                if any(ignore in item.parts for ignore in all_ignore):
+                try:
+                    relative_parts = item.relative_to(workspace_root).parts
+                except ValueError:
+                    relative_parts = item.parts
+                if any(ignore in relative_parts for ignore in all_ignore):
                     continue
 
                 item_str = item.as_posix()
