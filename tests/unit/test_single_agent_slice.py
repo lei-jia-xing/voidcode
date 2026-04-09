@@ -49,6 +49,14 @@ def test_provider_single_agent_graph_requests_tool_on_first_turn() -> None:
     assert step.output is None
     assert step.is_finished is False
     assert [event.event_type for event in step.events] == ["graph.loop_step", "graph.model_turn"]
+    assert step.events[0].payload == {"step": 1, "phase": "plan", "max_steps": 4}
+    assert step.events[1].payload == {
+        "turn": 1,
+        "mode": "single_agent",
+        "provider": "opencode",
+        "model": "gpt-5.4",
+        "prompt": "read sample.txt",
+    }
 
 
 def test_provider_single_agent_graph_finalizes_after_tool_result() -> None:
@@ -87,3 +95,13 @@ def test_provider_single_agent_graph_finalizes_after_tool_result() -> None:
         "graph.loop_step",
         "graph.response_ready",
     ]
+    assert step.events[0].payload == {"step": 2, "phase": "plan", "max_steps": 4}
+    assert step.events[1].payload == {
+        "turn": 2,
+        "mode": "single_agent",
+        "provider": "opencode",
+        "model": "gpt-5.4",
+        "prompt": "read sample.txt",
+    }
+    assert step.events[2].payload == {"step": 3, "phase": "finalize", "max_steps": 4}
+    assert step.events[3].payload == {"output_preview": "alpha\n"}

@@ -8,6 +8,8 @@ type EventSource = Literal["runtime", "graph", "tool"]
 type ExistingEventType = Literal[
     "runtime.request_received",
     "runtime.skills_loaded",
+    "graph.loop_step",
+    "graph.model_turn",
     "graph.tool_request_created",
     "runtime.tool_lookup_succeeded",
     "runtime.permission_resolved",
@@ -19,15 +21,13 @@ type ExistingEventType = Literal[
     "runtime.approval_resolved",
     "runtime.failed",
 ]
-type PrototypeAdditiveEventType = Literal[
-    "graph.model_turn",
-    "graph.loop_step",
-    "runtime.memory_refreshed",
-]
+type PrototypeAdditiveEventType = Literal["runtime.memory_refreshed",]
 type KnownEventType = ExistingEventType | PrototypeAdditiveEventType
 
 RUNTIME_REQUEST_RECEIVED: Final[ExistingEventType] = "runtime.request_received"
 RUNTIME_SKILLS_LOADED: Final[ExistingEventType] = "runtime.skills_loaded"
+GRAPH_LOOP_STEP: Final[ExistingEventType] = "graph.loop_step"
+GRAPH_MODEL_TURN: Final[ExistingEventType] = "graph.model_turn"
 GRAPH_TOOL_REQUEST_CREATED: Final[ExistingEventType] = "graph.tool_request_created"
 RUNTIME_TOOL_LOOKUP_SUCCEEDED: Final[ExistingEventType] = "runtime.tool_lookup_succeeded"
 RUNTIME_PERMISSION_RESOLVED: Final[ExistingEventType] = "runtime.permission_resolved"
@@ -39,13 +39,13 @@ RUNTIME_APPROVAL_REQUESTED: Final[ExistingEventType] = "runtime.approval_request
 RUNTIME_APPROVAL_RESOLVED: Final[ExistingEventType] = "runtime.approval_resolved"
 RUNTIME_FAILED: Final[ExistingEventType] = "runtime.failed"
 
-GRAPH_MODEL_TURN: Final[PrototypeAdditiveEventType] = "graph.model_turn"
-GRAPH_LOOP_STEP: Final[PrototypeAdditiveEventType] = "graph.loop_step"
 RUNTIME_MEMORY_REFRESHED: Final[PrototypeAdditiveEventType] = "runtime.memory_refreshed"
 
 EMITTED_EVENT_TYPES: Final[tuple[ExistingEventType, ...]] = (
     RUNTIME_REQUEST_RECEIVED,
     RUNTIME_SKILLS_LOADED,
+    GRAPH_LOOP_STEP,
+    GRAPH_MODEL_TURN,
     GRAPH_TOOL_REQUEST_CREATED,
     RUNTIME_TOOL_LOOKUP_SUCCEEDED,
     RUNTIME_PERMISSION_RESOLVED,
@@ -58,8 +58,6 @@ EMITTED_EVENT_TYPES: Final[tuple[ExistingEventType, ...]] = (
     RUNTIME_FAILED,
 )
 PROTOTYPE_ADDITIVE_EVENT_TYPES: Final[tuple[PrototypeAdditiveEventType, ...]] = (
-    GRAPH_MODEL_TURN,
-    GRAPH_LOOP_STEP,
     RUNTIME_MEMORY_REFRESHED,
 )
 KNOWN_EVENT_TYPES: Final[tuple[KnownEventType, ...]] = (
