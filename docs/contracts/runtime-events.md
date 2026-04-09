@@ -42,9 +42,9 @@ EventEnvelope(
 - 客户端必须能够容忍未知的 `event_type` 值，采用通用方式渲染而非报错
 - 客户端必须将 `payload` 视为可扩展的
 
-## 目前发出的已知事件类型
+## 当前稳定事件词汇表
 
-源自 `src/voidcode/runtime/service.py` 和稳定的单智能体循环：
+以下事件当前属于稳定的单智能体运行时契约，源自 `src/voidcode/runtime/service.py`、`src/voidcode/graph/read_only_slice.py` 与 `src/voidcode/graph/single_agent_slice.py`：
 
 - `runtime.request_received`
 - `runtime.skills_loaded`
@@ -64,11 +64,13 @@ EventEnvelope(
 在轮次中发出的所有事件（包括来自图端的事件）都会由运行时重新编号，变为每次响应或重放中单一的、单调递增的序列。
 这确保了图端局部（graph-local）的序列值在跨审批恢复运行时，不会与运行时插入的事件发生冲突。
 
-## 未来多智能体模式的补充词汇表
+## 未来补充 / prototype-additive 词汇表
 
-这些共享事件名称在 `src/voidcode/runtime/events.py` 中定义，但尚未由当前的单智能体循环发出：
+这些共享事件名称在 `src/voidcode/runtime/events.py` 中定义，但当前不属于稳定的单智能体事件契约：
 
 - `runtime.memory_refreshed`
+
+未来版本可以追加新的事件类型或为现有 payload 增加新字段；客户端必须继续容忍未知事件类型，并将 payload 视为可扩展结构。
 
 ## 当前单智能体循环的事件序列
 
@@ -109,6 +111,23 @@ EventEnvelope(
 - 当前 payload:
   - `skills: list[str]` 按技能名称升序排列
 - 每次新运行都会发出，包括未发现技能的情况（`{"skills": []}`）
+
+### `graph.loop_step`
+- source: `graph`
+- 当前稳定的 payload 字段：
+  - `step: int`
+  - `phase: str`（当前为 `plan` 或 `finalize`）
+  - `max_steps: int`
+
+### `graph.model_turn`
+- source: `graph`
+- 当前稳定的 payload 字段：
+  - `turn: int`
+  - `mode: str`
+  - `prompt: str`
+- 当前可追加的 payload 字段：
+  - `provider: str`
+  - `model: str`
 
 ### `graph.tool_request_created`
 - source: `graph`
