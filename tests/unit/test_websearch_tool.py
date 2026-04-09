@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -31,10 +33,25 @@ def test_websearch_tool_rejects_non_string_query() -> None:
 def test_websearch_tool_respects_num_results_limit() -> None:
     tool = WebSearchTool()
 
-    result = tool.invoke(
-        ToolCall(tool_name="web_search", arguments={"query": "test", "numResults": 5}),
-        workspace=Path("/tmp"),
-    )
+    fake_response = {
+        "results": [{"title": "Example", "url": "https://example.com", "snippet": "snippet"}]
+    }
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self) -> bytes:
+            return json.dumps(fake_response).encode("utf-8")
+
+    with patch("urllib.request.urlopen", return_value=_Resp()):
+        result = tool.invoke(
+            ToolCall(tool_name="web_search", arguments={"query": "test", "numResults": 5}),
+            workspace=Path("/tmp"),
+        )
 
     assert result.data["num_results"] == 5
 
@@ -42,10 +59,25 @@ def test_websearch_tool_respects_num_results_limit() -> None:
 def test_websearch_tool_defaults_to_8_results() -> None:
     tool = WebSearchTool()
 
-    result = tool.invoke(
-        ToolCall(tool_name="web_search", arguments={"query": "test"}),
-        workspace=Path("/tmp"),
-    )
+    fake_response = {
+        "results": [{"title": "Example", "url": "https://example.com", "snippet": "snippet"}]
+    }
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self) -> bytes:
+            return json.dumps(fake_response).encode("utf-8")
+
+    with patch("urllib.request.urlopen", return_value=_Resp()):
+        result = tool.invoke(
+            ToolCall(tool_name="web_search", arguments={"query": "test"}),
+            workspace=Path("/tmp"),
+        )
 
     assert result.data["num_results"] == 8
 
