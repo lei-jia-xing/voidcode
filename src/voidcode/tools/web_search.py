@@ -119,7 +119,10 @@ def _search_fallback(query: str, num_results: int = DEFAULT_NUM_RESULTS) -> str:
 class WebSearchTool:
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="web_search",
-        description="Search the web for information. Returns search results with titles, URLs, and snippets.",
+        description=(
+            "Search the web for information. Returns search results "
+            "with titles, URLs, and snippets."
+        ),
         input_schema={
             "query": {"type": "string", "description": "The search query"},
             "numResults": {
@@ -151,7 +154,7 @@ class WebSearchTool:
             source = "exa"
         else:
             output = _search_fallback(query_value, num_results)
-            source = "duckduckgo"
+        source = "duckduckgo"
 
         return ToolResult(
             tool_name=self.definition.name,

@@ -21,12 +21,12 @@ convention.
 
 from __future__ import annotations
 
+import enum
 import json
 import os
 import socket
 from pathlib import Path
-from typing import ClassVar, Optional, Any
-import enum
+from typing import Any, ClassVar
 
 from .contracts import ToolCall, ToolDefinition, ToolResult
 
@@ -142,7 +142,10 @@ class LspTool:
             return ToolResult(
                 tool_name=self.definition.name,
                 status="error",
-                error="LSP server host/port not configured. Set VOIDCODE_LSP_HOST and VOIDCODE_LSP_PORT.",
+                error=(
+                    "LSP server host/port not configured. Set VOIDCODE_LSP_HOST "
+                    "and VOIDCODE_LSP_PORT."
+                ),
             )
         if not self._server_is_available():
             return ToolResult(
@@ -174,13 +177,12 @@ class LspTool:
                 error="No response from LSP server",
             )
         # If the LSP server returns an error-like payload, surface it
-        if isinstance(response, dict) and ("error" in response or "code" in response):
+        if "error" in response or "code" in response:
+            error_value = response.get("error")
             return ToolResult(
                 tool_name=self.definition.name,
                 status="error",
-                error=str(response.get("error"))
-                if isinstance(response.get("error"), str)
-                else str(response),
+                error=str(error_value) if isinstance(error_value, str) else str(response),
                 data={"lsp_response": response},
             )
 
@@ -206,12 +208,12 @@ class LspTool:
         if not self._host or not self._port:
             return False
         try:
-            with socket.create_connection((self._host, int(self._port)), timeout=0.5) as s:
+            with socket.create_connection((self._host, int(self._port)), timeout=0.5):
                 return True
         except Exception:
             return False
 
-    def _send_request(self, method: str, params: dict) -> Optional[dict[str, Any]]:
+    def _send_request(self, method: str, params: dict[str, object]) -> dict[str, object] | None:
         if not self._host or not self._port:
             return None
         # Prepare a lightweight JSON-RPC 2.0 request

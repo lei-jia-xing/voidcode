@@ -290,7 +290,8 @@ def test_runtime_tool_request_created_supports_non_path_tool_arguments(tmp_path:
     runtime_request, runtime = _approval_runtime(tmp_path, mode="allow")
 
     command = _cwd_command()
-    result = runtime.run(runtime_request(prompt=f"run {command}", session_id="command-session"))
+    prompt = f"run {command}"
+    result = runtime.run(runtime_request(prompt=prompt, session_id="command-session"))
 
     assert result.events[1].event_type == "runtime.skills_loaded"
     assert result.events[1].payload == {"skills": []}
@@ -309,7 +310,8 @@ def test_runtime_allows_shell_exec_tool_when_policy_is_allow(tmp_path: Path) -> 
     runtime_request, runtime = _approval_runtime(tmp_path, mode="allow")
 
     command = _cwd_command()
-    allowed = runtime.run(runtime_request(prompt=f"run {command}", session_id="shell-allow-session"))
+    prompt = f"run {command}"
+    allowed = runtime.run(runtime_request(prompt=prompt, session_id="shell-allow-session"))
 
     assert allowed.session.status == "completed"
     assert [event.event_type for event in allowed.events] == [
@@ -334,7 +336,8 @@ def test_runtime_requests_and_resumes_shell_exec_approval(tmp_path: Path) -> Non
     runtime_request, runtime = _approval_runtime(tmp_path, mode="ask")
 
     command = _cwd_command()
-    waiting = runtime.run(runtime_request(prompt=f"run {command}", session_id="shell-approval-session"))
+    prompt = f"run {command}"
+    waiting = runtime.run(runtime_request(prompt=prompt, session_id="shell-approval-session"))
 
     assert waiting.session.status == "waiting"
     assert [event.event_type for event in waiting.events] == [
@@ -379,7 +382,8 @@ def test_runtime_denies_shell_exec_tool_when_policy_is_deny(tmp_path: Path) -> N
     runtime_request, runtime = _approval_runtime(tmp_path, mode="deny")
 
     command = _cwd_command()
-    denied = runtime.run(runtime_request(prompt=f"run {command}", session_id="shell-deny-session"))
+    prompt = f"run {command}"
+    denied = runtime.run(runtime_request(prompt=prompt, session_id="shell-deny-session"))
 
     assert denied.session.status == "failed"
     assert [event.event_type for event in denied.events] == [
@@ -424,7 +428,8 @@ def test_runtime_emits_pre_and_post_hook_events_around_successful_tool_run(tmp_p
     )
 
     command = _cwd_command()
-    result = runtime.run(runtime_request(prompt=f"run {command}", session_id="hook-success-session"))
+    prompt = f"run {command}"
+    result = runtime.run(runtime_request(prompt=prompt, session_id="hook-success-session"))
 
     assert [event.event_type for event in result.events] == [
         "runtime.request_received",
@@ -486,7 +491,8 @@ def test_runtime_aborts_tool_run_when_pre_hook_fails(tmp_path: Path) -> None:
 
         with pytest.raises(RuntimeError, match="hook"):
             command = _cwd_command()
-            _ = runtime.run(runtime_request(prompt=f"run {command}", session_id="hook-pre-fail-session"))
+            prompt = f"run {command}"
+            _ = runtime.run(runtime_request(prompt=prompt, session_id="hook-pre-fail-session"))
 
     invoke_mock.assert_not_called()
 
@@ -577,10 +583,9 @@ def test_runtime_skips_hooks_for_nested_hook_launched_runtime_invocations(tmp_pa
     )
 
     command = _cwd_command()
+    prompt = f"run {command}"
     runtime = runtime_class(workspace=tmp_path)
-    result = runtime.run(
-        runtime_request(prompt=f"run {command}", session_id="outer-hook-recursion-session")
-    )
+    result = runtime.run(runtime_request(prompt=prompt, session_id="outer-hook-recursion-session"))
 
     assert marker_path.read_text(encoding="utf-8") == "1"
     assert "EVENT runtime.request_received" in nested_output_path.read_text(encoding="utf-8")

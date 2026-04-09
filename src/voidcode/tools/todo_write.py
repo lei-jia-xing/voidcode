@@ -1,6 +1,7 @@
 from __future__ import annotations
+
 from pathlib import Path
-from typing import ClassVar
+from typing import ClassVar, cast
 
 from .contracts import ToolCall, ToolDefinition, ToolResult
 
@@ -16,7 +17,10 @@ class TodoWriteTool:
     )
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
-        todos = call.arguments.get("todos", [])
+        todos_value = call.arguments.get("todos", [])
+        todos: list[object] = []
+        if isinstance(todos_value, list):
+            todos = cast(list[object], todos_value)
         return ToolResult(
             tool_name=self.definition.name,
             status="ok",

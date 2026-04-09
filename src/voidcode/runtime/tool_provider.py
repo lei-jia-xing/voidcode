@@ -16,6 +16,7 @@ from ..tools import (
 from ..tools.contracts import Tool
 
 # Import optional tools that may not exist
+_has_optional_tools = False
 try:
     from ..tools.apply_patch import ApplyPatchTool as _ApplyPatchTool
     from ..tools.code_search import CodeSearchTool as _CodeSearchTool
@@ -23,14 +24,13 @@ try:
     from ..tools.multi_edit import MultiEditTool as _MultiEditTool
     from ..tools.todo_write import TodoWriteTool as _TodoWriteTool
 
-    _HAS_OPTIONAL_TOOLS = True
+    _has_optional_tools = True
 except ImportError:
     _ApplyPatchTool = None
     _CodeSearchTool = None
     _LspTool = None
     _MultiEditTool = None
     _TodoWriteTool = None
-    _HAS_OPTIONAL_TOOLS = False
 
 
 class ToolProvider(Protocol):
@@ -52,7 +52,7 @@ class BuiltinToolProvider:
         ]
 
         # Add optional tools if available
-        if _HAS_OPTIONAL_TOOLS:
+        if _has_optional_tools:
             if _ApplyPatchTool:
                 tools.append(_ApplyPatchTool())
             if _CodeSearchTool:
