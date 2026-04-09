@@ -97,10 +97,10 @@ class VoidCodeRuntime:
     _permission_policy: PermissionPolicy
     _session_store: SessionStore
     _model_provider_registry: ModelProviderRegistry
-    _provider_model: ResolvedProviderModel
     _skill_registry: SkillRegistry
     _lsp_manager: DisabledLspManager
     _acp_adapter: DisabledAcpAdapter
+    _graph_cache: dict[tuple[ExecutionEngineName, str], RuntimeGraph]
     _hook_recursion_env_var = "VOIDCODE_RUNNING_TOOL_HOOK"
 
     def __init__(
@@ -122,12 +122,9 @@ class VoidCodeRuntime:
         self._model_provider_registry = (
             model_provider_registry or ModelProviderRegistry.with_defaults()
         )
-        self._provider_model = resolve_provider_model(
-            self._config.model,
-            registry=self._model_provider_registry,
-        )
         self._tool_registry = tool_registry or ToolRegistry.with_defaults()
         self._graph_override = graph
+        self._graph_cache = {}
         self._graph = graph or self._build_graph_for_engine_from_config(
             EffectiveRuntimeConfig(
                 approval_mode=self._config.approval_mode,
@@ -160,12 +157,22 @@ class VoidCodeRuntime:
         raise ValueError(f"unknown execution engine: {engine_name}")
 
     def _build_graph_for_engine_from_config(self, config: EffectiveRuntimeConfig) -> RuntimeGraph:
+        # Generate cache key from config
+        model_str = config.model if config.model is not None else ""
+        cache_key = (config.execution_engine, model_str)
+
+        # Check cache first
+        if cache_key in self._graph_cache:
+            return self._graph_cache[cache_key]
+
+        # Build new graph and cache it
         provider_model = resolve_provider_model(
             config.model,
             registry=self._model_provider_registry,
         )
-        self._provider_model = provider_model
-        return self._build_graph_for_engine(config.execution_engine, provider_model)
+        graph = self._build_graph_for_engine(config.execution_engine, provider_model)
+        self._graph_cache[cache_key] = graph
+        return graph
 
     def _build_skill_registry(self) -> SkillRegistry:
         skills_config = self._config.skills
@@ -1078,9 +1085,18 @@ class VoidCodeRuntime:
     def _graph_for_session_metadata(self, metadata: dict[str, object] | None) -> RuntimeGraph:
         if self._graph_override is not None:
             return self._graph_override
-        return self._build_graph_for_engine_from_config(
-            self._effective_runtime_config_from_metadata(metadata)
-        )
+
+        effective_config = self._effective_runtime_config_from_metadata(metadata)
+
+        # Reuse self._graph if the session's config matches the runtime's config
+        if (
+            effective_config.execution_engine == self._config.execution_engine
+            and effective_config.model == self._config.model
+        ):
+            return self._graph
+
+        # Otherwise use cached graph or build new one
+        return self._build_graph_for_engine_from_config(effective_config)
 
     def _validate_session_workspace(self, session: SessionState, *, session_id: str) -> None:
         session_workspace = session.metadata.get("workspace")
