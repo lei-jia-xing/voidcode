@@ -48,5 +48,12 @@
   "activity.source.runtime": "运行时",
   "activity.source.graph": "图",
   "activity.source.tool": "工具",
-  "task.permission": "权限: {{tool}}"
+  "task.permission": "权限: {{tool}}",
+  "approval.heading": "需要审批",
+  "approval.message": "请先处理 {{target}} 的待审批请求，然后再继续当前会话。",
+  "approval.allow": "允许",
+  "approval.deny": "拒绝",
+  "approval.submitting": "提交中...",
+  "approval.error": "审批失败：{{message}}",
+  "approval.unknownTarget": "该操作"
 }

@@ -2,7 +2,8 @@ import {
   RuntimeRequest,
   StoredSessionSummary,
   RuntimeResponse,
-  RuntimeStreamChunk
+  RuntimeStreamChunk,
+  ApprovalDecision
 } from './types';
 
 export class RuntimeClient {
@@ -15,6 +16,21 @@ export class RuntimeClient {
   static async getSessionReplay(sessionId: string): Promise<RuntimeResponse> {
     const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`);
     if (!res.ok) throw new Error(`Failed to replay session: ${res.statusText}`);
+    return res.json();
+  }
+
+  static async resolveApproval(
+    sessionId: string,
+    requestId: string,
+    decision: ApprovalDecision
+  ): Promise<RuntimeResponse> {
+    const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/approval`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ request_id: requestId, decision })
+    });
+
+    if (!res.ok) throw new Error(`Failed to resolve approval: ${res.statusText}`);
     return res.json();
   }
 

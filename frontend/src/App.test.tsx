@@ -18,6 +18,7 @@ describe('App', () => {
     setLanguage: vi.fn(),
     sessions: [],
     currentSessionId: null,
+    currentSessionState: null,
     currentSessionEvents: [],
     currentSessionOutput: null,
     loadSessions: vi.fn(),
@@ -25,10 +26,13 @@ describe('App', () => {
     sessionsError: null,
     selectSession: vi.fn(),
     runTask: vi.fn(),
+    resolveApproval: vi.fn(),
     replayStatus: 'idle',
     replayError: null,
     runStatus: 'idle',
     runError: null,
+    approvalStatus: 'idle',
+    approvalError: null,
   };
 
   beforeEach(() => {
@@ -120,5 +124,123 @@ describe('App', () => {
     render(<App />);
 
     expect(screen.getByText('Final Output')).toBeInTheDocument();
+  });
+
+  it('renders approval controls for waiting sessions and triggers allow', () => {
+    const resolveApproval = vi.fn();
+    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      ...mockStore,
+      currentSessionId: 'session-1',
+      currentSessionState: {
+        session: { id: 'session-1' },
+        status: 'waiting',
+        turn: 1,
+        metadata: {}
+      },
+      currentSessionEvents: [
+        {
+          session_id: 'session-1',
+          sequence: 1,
+          event_type: 'runtime.approval_requested',
+          source: 'runtime',
+          payload: {
+            request_id: 'approval-1',
+            tool: 'write_file',
+            target_summary: 'write README.md'
+          }
+        }
+      ],
+      resolveApproval
+    });
+
+    render(<App />);
+
+    expect(screen.getByText('Approval Required')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Allow' }));
+
+    expect(resolveApproval).toHaveBeenCalledWith('allow');
+  });
+
+  it('triggers deny for waiting sessions', () => {
+    const resolveApproval = vi.fn();
+    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      ...mockStore,
+      currentSessionId: 'session-1',
+      currentSessionState: {
+        session: { id: 'session-1' },
+        status: 'waiting',
+        turn: 1,
+        metadata: {}
+      },
+      currentSessionEvents: [
+        {
+          session_id: 'session-1',
+          sequence: 1,
+          event_type: 'runtime.approval_requested',
+          source: 'runtime',
+          payload: {
+            request_id: 'approval-1',
+            tool: 'write_file',
+            target_summary: 'write README.md'
+          }
+        }
+      ],
+      resolveApproval
+    });
+
+    render(<App />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Deny' }));
+
+    expect(resolveApproval).toHaveBeenCalledWith('deny');
+  });
+
+  it('hides approval controls when session is not waiting', () => {
+    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      ...mockStore,
+      currentSessionState: {
+        session: { id: 'session-1' },
+        status: 'completed',
+        turn: 1,
+        metadata: {}
+      }
+    });
+
+    render(<App />);
+
+    expect(screen.queryByText('Approval Required')).not.toBeInTheDocument();
+  });
+
+  it('renders approval error and disables controls while submitting', () => {
+    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      ...mockStore,
+      currentSessionId: 'session-1',
+      currentSessionState: {
+        session: { id: 'session-1' },
+        status: 'waiting',
+        turn: 1,
+        metadata: {}
+      },
+      currentSessionEvents: [
+        {
+          session_id: 'session-1',
+          sequence: 1,
+          event_type: 'runtime.approval_requested',
+          source: 'runtime',
+          payload: {
+            request_id: 'approval-1',
+            tool: 'write_file',
+            target_summary: 'write README.md'
+          }
+        }
+      ],
+      approvalStatus: 'submitting',
+      approvalError: 'boom'
+    });
+
+    render(<App />);
+
+    expect(screen.getByText('Approval failed: boom')).toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: 'Submitting...' })).toHaveLength(2);
   });
 });

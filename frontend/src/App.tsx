@@ -4,12 +4,26 @@ import { useAppStore } from './store';
 import { Activity, Play, Settings, Code2, LayoutDashboard, CheckCircle2, Circle, Clock, Globe, Hash, AlertCircle, PauseCircle } from 'lucide-react';
 import { RuntimeDebug } from './components/RuntimeDebug';
 import { deriveTasksFromEvents, deriveActivitiesFromEvents } from './lib/runtime/event-parser';
+import { EventEnvelope } from './lib/runtime/types';
+
+function getPendingApprovalEvent(events: EventEnvelope[]): EventEnvelope | null {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event.event_type === 'runtime.approval_requested') {
+      return event;
+    }
+  }
+
+  return null;
+}
 
 function App() {
   const {
     language, setLanguage,
     sessions, currentSessionId, currentSessionEvents, currentSessionOutput,
-    loadSessions, sessionsStatus, sessionsError, selectSession, runTask, replayStatus, replayError, runStatus, runError
+    currentSessionState,
+    loadSessions, sessionsStatus, sessionsError, selectSession, runTask, resolveApproval, replayStatus, replayError, runStatus, runError,
+    approvalStatus, approvalError
   } = useAppStore();
   const { t, i18n } = useTranslation();
 
@@ -40,6 +54,14 @@ function App() {
 
   const isRunning = runStatus === 'running';
   const isReplayLoading = replayStatus === 'loading';
+  const isApprovalSubmitting = approvalStatus === 'submitting';
+  const isWaitingApproval = currentSessionState?.status === 'waiting';
+  const pendingApprovalEvent = useMemo(() => getPendingApprovalEvent(currentSessionEvents), [currentSessionEvents]);
+  const pendingApprovalSummary = typeof pendingApprovalEvent?.payload?.target_summary === 'string'
+    ? pendingApprovalEvent.payload.target_summary
+    : typeof pendingApprovalEvent?.payload?.tool === 'string'
+      ? pendingApprovalEvent.payload.tool
+      : null;
 
   useEffect(() => {
     if (hydratedInitialSessionRef.current || sessionsStatus !== 'success') {
@@ -179,12 +201,12 @@ function App() {
                     onKeyDown={(e) => { if (e.key === 'Enter') void handleRunTask() }}
                     placeholder={t('task.promptPlaceholder')}
                     className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-4 py-2 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-colors"
-                    disabled={isRunning || isReplayLoading}
+                    disabled={isRunning || isReplayLoading || isWaitingApproval || isApprovalSubmitting}
                   />
                   <button
                     type="button"
                     onClick={() => void handleRunTask()}
-                    disabled={isRunning || isReplayLoading || !promptInput.trim()}
+                    disabled={isRunning || isReplayLoading || isWaitingApproval || isApprovalSubmitting || !promptInput.trim()}
                     className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white px-6 py-2 rounded-lg text-sm font-medium transition-colors flex items-center shadow-sm shadow-indigo-500/20"
                   >
                     <Play className="w-4 h-4 mr-2" />
@@ -193,6 +215,38 @@ function App() {
                 </div>
                 {runError && <div className="mt-3 text-red-400 text-sm">{t('common.errorWithMessage', { message: runError })}</div>}
                 {replayError && <div className="mt-3 text-amber-400 text-sm">{t('session.replayError', { message: replayError })}</div>}
+                {approvalError && <div className="mt-3 text-amber-400 text-sm">{t('approval.error', { message: approvalError })}</div>}
+
+                {isWaitingApproval && pendingApprovalEvent && (
+                  <div className="mt-4 rounded-lg border border-amber-500/20 bg-amber-500/10 p-4">
+                    <div className="flex items-center justify-between gap-4 flex-wrap">
+                      <div>
+                        <p className="text-sm font-medium text-amber-300">{t('approval.heading')}</p>
+                        <p className="mt-1 text-sm text-slate-300">
+                          {t('approval.message', { target: pendingApprovalSummary ?? t('approval.unknownTarget') })}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => void resolveApproval('deny')}
+                          disabled={isApprovalSubmitting}
+                          className="rounded-lg border border-rose-500/20 bg-rose-500/10 px-4 py-2 text-sm font-medium text-rose-300 transition-colors hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {isApprovalSubmitting ? t('approval.submitting') : t('approval.deny')}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void resolveApproval('allow')}
+                          disabled={isApprovalSubmitting}
+                          className="rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-4 py-2 text-sm font-medium text-emerald-300 transition-colors hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {isApprovalSubmitting ? t('approval.submitting') : t('approval.allow')}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div className="bg-slate-800/30 border border-slate-700/50 rounded-xl p-6 shadow-sm flex-1 flex flex-col min-h-0">

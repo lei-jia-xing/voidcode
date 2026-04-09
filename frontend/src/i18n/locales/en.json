@@ -48,5 +48,12 @@
   "activity.source.runtime": "Runtime",
   "activity.source.graph": "Graph",
   "activity.source.tool": "Tool",
-  "task.permission": "Permission: {{tool}}"
+  "task.permission": "Permission: {{tool}}",
+  "approval.heading": "Approval Required",
+  "approval.message": "Resolve the pending approval for {{target}} before continuing this session.",
+  "approval.allow": "Allow",
+  "approval.deny": "Deny",
+  "approval.submitting": "Submitting...",
+  "approval.error": "Approval failed: {{message}}",
+  "approval.unknownTarget": "this action"
 }

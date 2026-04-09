@@ -1,5 +1,6 @@
 export type SessionStatus = "idle" | "running" | "waiting" | "completed" | "failed";
 export type EventSource = "runtime" | "graph" | "tool";
+export type ApprovalDecision = "allow" | "deny";
 
 export interface SessionRef {
   id: string;
