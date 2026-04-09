@@ -221,6 +221,7 @@ def _handle_config_show_command(args: argparse.Namespace) -> int:
                 "session_id": session_id,
                 "approval_mode": effective_config.approval_mode,
                 "model": effective_config.model,
+                "execution_engine": effective_config.execution_engine,
             }
         )
     )

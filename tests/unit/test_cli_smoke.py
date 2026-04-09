@@ -852,6 +852,7 @@ def test_config_show_outputs_workspace_effective_config() -> None:
         "session_id": None,
         "approval_mode": "deny",
         "model": "repo/model",
+        "execution_engine": "deterministic",
     }
     assert "Traceback" not in result.stderr
 
@@ -911,13 +912,18 @@ def test_config_show_outputs_resumed_session_effective_config() -> None:
         "session_id": "config-session",
         "approval_mode": "allow",
         "model": "repo/model",
+        "execution_engine": "deterministic",
     }
     assert "Traceback" not in result.stderr
 
 
 def test_config_show_delegates_to_runtime_effective_config(capsys: Any) -> None:
     cli = importlib.import_module("voidcode.cli")
-    runtime_config = SimpleNamespace(approval_mode="allow", model="runtime/model")
+    runtime_config = SimpleNamespace(
+        approval_mode="allow",
+        model="runtime/model",
+        execution_engine="deterministic",
+    )
 
     with tempfile.TemporaryDirectory() as tmp:
         workspace = Path(tmp)
@@ -948,6 +954,7 @@ def test_config_show_delegates_to_runtime_effective_config(capsys: Any) -> None:
                 "session_id": "config-session",
                 "approval_mode": "allow",
                 "model": "runtime/model",
+                "execution_engine": "deterministic",
             }
         )
         + "\n"
