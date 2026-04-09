@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -28,6 +29,7 @@ def test_runtime_config_defaults_to_ask_without_file_or_env(tmp_path: Path) -> N
 
     assert config.approval_mode == "ask"
     assert config.model is None
+    assert config.execution_engine == "deterministic"
     assert config.hooks is None
 
 
@@ -90,6 +92,7 @@ def test_runtime_config_parses_extension_domains(tmp_path: Path) -> None:
     runtime_config_path(tmp_path).write_text(
         json.dumps(
             {
+                "execution_engine": "deterministic",
                 "tools": {
                     "builtin": {"enabled": True},
                     "paths": [".voidcode/tools", "vendor/tools"],
@@ -110,6 +113,7 @@ def test_runtime_config_parses_extension_domains(tmp_path: Path) -> None:
 
     config = load_runtime_config(tmp_path, env={})
 
+    assert config.execution_engine == "deterministic"
     assert config.tools == RuntimeToolsConfig(
         builtin=RuntimeToolsBuiltinConfig(enabled=True),
         paths=(".voidcode/tools", "vendor/tools"),
@@ -192,6 +196,16 @@ def test_runtime_config_rejects_invalid_repo_local_approval_mode(tmp_path: Path)
         _ = load_runtime_config(tmp_path, env={})
 
 
+def test_runtime_config_rejects_invalid_repo_local_execution_engine(tmp_path: Path) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps({"execution_engine": "agent"}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="execution_engine"):
+        _ = load_runtime_config(tmp_path, env={})
+
+
 @pytest.mark.parametrize(
     ("payload", "match"),
     [
@@ -245,12 +259,12 @@ def test_runtime_config_rejects_invalid_repo_local_approval_mode(tmp_path: Path)
             id="hooks-post-tool-command-item-shape",
         ),
         pytest.param(
-            {"hooks": {"pre_tool": [[]]}},
+            cast(dict[str, object], {"hooks": {"pre_tool": [[]]}}),
             "runtime config field 'hooks.pre_tool\\[0\\]'.*at least one string",
             id="hooks-pre-tool-empty-command",
         ),
         pytest.param(
-            {"hooks": {"post_tool": [["echo", "hello"], []]}},
+            cast(dict[str, object], {"hooks": {"post_tool": [["echo", "hello"], []]}}),
             "runtime config field 'hooks.post_tool\\[1\\]'.*at least one string",
             id="hooks-post-tool-empty-command",
         ),

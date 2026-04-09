@@ -5,7 +5,7 @@ import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 
 from .permission import PermissionDecision
 
@@ -13,6 +13,10 @@ RUNTIME_CONFIG_FILE_NAME = ".voidcode.json"
 APPROVAL_MODE_ENV_VAR = "VOIDCODE_APPROVAL_MODE"
 MODEL_ENV_VAR = "VOIDCODE_MODEL"
 _VALID_APPROVAL_MODES = ("allow", "deny", "ask")
+
+type ExecutionEngineName = Literal["deterministic"]
+
+_VALID_EXECUTION_ENGINES: tuple[ExecutionEngineName, ...] = ("deterministic",)
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +58,7 @@ class RuntimeAcpConfig:
 class RuntimeConfig:
     approval_mode: PermissionDecision = "ask"
     model: str | None = None
+    execution_engine: ExecutionEngineName = "deterministic"
     hooks: RuntimeHooksConfig | None = None
     tools: RuntimeToolsConfig | None = None
     skills: RuntimeSkillsConfig | None = None
@@ -65,6 +70,7 @@ class RuntimeConfig:
 class RuntimeConfigOverrides:
     approval_mode: PermissionDecision | None = None
     model: str | None = None
+    execution_engine: ExecutionEngineName | None = None
     hooks: RuntimeHooksConfig | None = None
     tools: RuntimeToolsConfig | None = None
     skills: RuntimeSkillsConfig | None = None
@@ -98,6 +104,7 @@ def load_runtime_config(
             repo_local=repo_local.model,
             environment=environment.get(MODEL_ENV_VAR),
         ),
+        execution_engine=_resolve_execution_engine(repo_local=repo_local.execution_engine),
         hooks=repo_local.hooks,
         tools=repo_local.tools,
         skills=repo_local.skills,
@@ -125,6 +132,13 @@ def _load_repo_local_config(workspace: Path) -> RuntimeConfigOverrides:
     if raw_model is not None and not isinstance(raw_model, str):
         raise ValueError("runtime config field 'model' must be a string when provided")
 
+    raw_execution_engine = payload.get("execution_engine")
+    parsed_execution_engine = _parse_execution_engine(
+        raw_execution_engine,
+        source=f"runtime config field 'execution_engine' in {config_path}",
+        allow_none=True,
+    )
+
     raw_hooks = payload.get("hooks")
     hooks = _parse_hooks_config(raw_hooks)
 
@@ -150,6 +164,7 @@ def _load_repo_local_config(workspace: Path) -> RuntimeConfigOverrides:
     return RuntimeConfigOverrides(
         approval_mode=parsed_approval_mode,
         model=raw_model,
+        execution_engine=parsed_execution_engine,
         hooks=hooks,
         tools=tools,
         skills=skills,
@@ -326,6 +341,12 @@ def _resolve_model(
     return None
 
 
+def _resolve_execution_engine(*, repo_local: ExecutionEngineName | None) -> ExecutionEngineName:
+    if repo_local is not None:
+        return repo_local
+    return "deterministic"
+
+
 def _parse_approval_mode(
     raw_value: object,
     *,
@@ -336,5 +357,19 @@ def _parse_approval_mode(
         return None
     if raw_value not in _VALID_APPROVAL_MODES:
         allowed = ", ".join(_VALID_APPROVAL_MODES)
+        raise ValueError(f"{source} must be one of: {allowed}")
+    return raw_value
+
+
+def _parse_execution_engine(
+    raw_value: object,
+    *,
+    source: str,
+    allow_none: bool,
+) -> ExecutionEngineName | None:
+    if raw_value is None and allow_none:
+        return None
+    if raw_value not in _VALID_EXECUTION_ENGINES:
+        allowed = ", ".join(_VALID_EXECUTION_ENGINES)
         raise ValueError(f"{source} must be one of: {allowed}")
     return raw_value
