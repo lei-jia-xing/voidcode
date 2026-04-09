@@ -12,7 +12,7 @@ from ..graph.contracts import GraphEvent, GraphRunRequest
 from ..graph.read_only_slice import DeterministicReadOnlyGraph
 from ..tools.contracts import Tool, ToolCall, ToolDefinition, ToolResult
 from .acp import DisabledAcpAdapter
-from .config import RuntimeConfig, load_runtime_config
+from .config import ExecutionEngineName, RuntimeConfig, load_runtime_config
 from .contracts import RuntimeRequest, RuntimeResponse, RuntimeStreamChunk, validate_session_id
 from .events import (
     RUNTIME_SKILLS_LOADED,
@@ -112,9 +112,9 @@ class VoidCodeRuntime:
         acp_adapter: DisabledAcpAdapter | None = None,
     ) -> None:
         self._workspace = workspace.resolve()
-        self._tool_registry = tool_registry or ToolRegistry.with_defaults()
-        self._graph = graph or DeterministicReadOnlyGraph()
         self._config = config or load_runtime_config(self._workspace)
+        self._tool_registry = tool_registry or ToolRegistry.with_defaults()
+        self._graph = graph or self._build_graph_for_engine(self._config.execution_engine)
         self._permission_policy = permission_policy or PermissionPolicy(
             mode=self._config.approval_mode
         )
@@ -122,6 +122,12 @@ class VoidCodeRuntime:
         self._skill_registry = skill_registry or self._build_skill_registry()
         self._lsp_manager = lsp_manager or DisabledLspManager(self._config.lsp)
         self._acp_adapter = acp_adapter or DisabledAcpAdapter(self._config.acp)
+
+    @staticmethod
+    def _build_graph_for_engine(engine_name: ExecutionEngineName) -> RuntimeGraph:
+        if engine_name == "deterministic":
+            return DeterministicReadOnlyGraph()
+        raise ValueError(f"unknown execution engine: {engine_name}")
 
     def _build_skill_registry(self) -> SkillRegistry:
         skills_config = self._config.skills
@@ -968,7 +974,10 @@ class VoidCodeRuntime:
         return sorted(self._skill_registry.skills)
 
     def _runtime_config_metadata(self) -> dict[str, object]:
-        runtime_config_metadata: dict[str, object] = {"approval_mode": self._config.approval_mode}
+        runtime_config_metadata: dict[str, object] = {
+            "approval_mode": self._config.approval_mode,
+            "execution_engine": self._config.execution_engine,
+        }
         if self._config.model is not None:
             runtime_config_metadata["model"] = self._config.model
         return runtime_config_metadata
@@ -991,12 +1000,21 @@ class VoidCodeRuntime:
     ) -> EffectiveRuntimeConfig:
         approval_mode: PermissionDecision = self._config.approval_mode
         model = self._config.model
+        execution_engine = self._config.execution_engine
         if metadata is None:
-            return EffectiveRuntimeConfig(approval_mode=approval_mode, model=model)
+            return EffectiveRuntimeConfig(
+                approval_mode=approval_mode,
+                model=model,
+                execution_engine=execution_engine,
+            )
 
         persisted_runtime_config = metadata.get("runtime_config")
         if not isinstance(persisted_runtime_config, dict):
-            return EffectiveRuntimeConfig(approval_mode=approval_mode, model=model)
+            return EffectiveRuntimeConfig(
+                approval_mode=approval_mode,
+                model=model,
+                execution_engine=execution_engine,
+            )
 
         runtime_config = cast(dict[str, object], persisted_runtime_config)
         persisted_approval_mode = runtime_config.get("approval_mode")
@@ -1005,7 +1023,14 @@ class VoidCodeRuntime:
         persisted_model = runtime_config.get("model")
         if persisted_model is None or isinstance(persisted_model, str):
             model = persisted_model
-        return EffectiveRuntimeConfig(approval_mode=approval_mode, model=model)
+        persisted_execution_engine = runtime_config.get("execution_engine")
+        if persisted_execution_engine == "deterministic":
+            execution_engine = cast(ExecutionEngineName, persisted_execution_engine)
+        return EffectiveRuntimeConfig(
+            approval_mode=approval_mode,
+            model=model,
+            execution_engine=execution_engine,
+        )
 
     def _validate_session_workspace(self, session: SessionState, *, session_id: str) -> None:
         session_workspace = session.metadata.get("workspace")
@@ -1019,6 +1044,7 @@ class VoidCodeRuntime:
 class EffectiveRuntimeConfig:
     approval_mode: PermissionDecision
     model: str | None
+    execution_engine: ExecutionEngineName
 
 
 @dataclass(frozen=True, slots=True)

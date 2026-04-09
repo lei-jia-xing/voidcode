@@ -359,6 +359,7 @@ def test_runtime_effective_runtime_config_prefers_persisted_session_values(tmp_p
 
     assert effective.approval_mode == "allow"
     assert effective.model == "session/model"
+    assert effective.execution_engine == "deterministic"
 
 
 def test_runtime_effective_runtime_config_falls_back_for_legacy_sessions(tmp_path: Path) -> None:
@@ -399,3 +400,22 @@ def test_runtime_effective_runtime_config_falls_back_for_legacy_sessions(tmp_pat
 
     assert effective.approval_mode == "deny"
     assert effective.model == "fresh/model"
+    assert effective.execution_engine == "deterministic"
+
+
+def test_runtime_prefers_explicit_graph_over_config_selected_execution_engine(
+    tmp_path: Path,
+) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("alpha beta\n", encoding="utf-8")
+
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_StubGraph(),
+        config=RuntimeConfig(execution_engine="deterministic"),
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="hello"))
+
+    assert response.session.status == "completed"
+    assert response.output == "hello"

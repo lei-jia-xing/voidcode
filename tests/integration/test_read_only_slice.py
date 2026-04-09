@@ -1285,6 +1285,7 @@ def test_runtime_resume_uses_persisted_runtime_config_over_fresh_resume_override
 
     assert replay.session.metadata["runtime_config"] == {
         "approval_mode": "allow",
+        "execution_engine": "deterministic",
         "model": "session/model",
     }
 

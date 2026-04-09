@@ -268,6 +268,7 @@ def _assert_runtime_session_metadata(
     workspace: Path | str,
     approval_mode: str = "ask",
     model: str | None = None,
+    execution_engine: str = "deterministic",
 ) -> None:
     assert isinstance(metadata, dict)
     typed_metadata = cast(dict[str, object], metadata)
@@ -277,6 +278,7 @@ def _assert_runtime_session_metadata(
     assert isinstance(raw_runtime_config, dict)
     runtime_config = cast(dict[str, object], raw_runtime_config)
     assert runtime_config["approval_mode"] == approval_mode
+    assert runtime_config["execution_engine"] == execution_engine
     if model is None:
         assert "model" not in runtime_config
     else:
