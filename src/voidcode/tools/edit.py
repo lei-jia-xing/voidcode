@@ -433,7 +433,8 @@ class EditTool:
             raise ValueError(f"edit target is not a file: {path_value}")
 
         try:
-            content_old = candidate.read_text(encoding="utf-8")
+            with candidate.open("r", encoding="utf-8", newline="") as handle:
+                content_old = handle.read()
         except UnicodeDecodeError as exc:
             raise ValueError("edit only supports UTF-8 text files") from exc
 
@@ -478,7 +479,7 @@ class EditTool:
             1 for line in diff.splitlines() if line.startswith("-") and not line.startswith("---")
         )
 
-        candidate.write_text(new_content, encoding="utf-8")
+        candidate.write_bytes(new_content.encode("utf-8"))
 
         output = "Edit applied successfully."
         if match_count > 1:
