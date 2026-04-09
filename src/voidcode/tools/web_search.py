@@ -154,7 +154,7 @@ class WebSearchTool:
             source = "exa"
         else:
             output = _search_fallback(query_value, num_results)
-        source = "duckduckgo"
+            source = "duckduckgo"
 
         return ToolResult(
             tool_name=self.definition.name,

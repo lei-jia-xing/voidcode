@@ -78,23 +78,11 @@ class LspTool:
         character = call.arguments.get("character")
 
         if not isinstance(file_path, str):
-            return ToolResult(
-                tool_name=self.definition.name,
-                status="error",
-                error="lsp requires a string 'filePath' argument",
-            )
+            raise ValueError("lsp requires a string 'filePath' argument")
         if not isinstance(line, int) or not isinstance(character, int):
-            return ToolResult(
-                tool_name=self.definition.name,
-                status="error",
-                error="lsp requires integer 'line' and 'character' arguments (1-based)",
-            )
+            raise ValueError("lsp requires integer 'line' and 'character' arguments (1-based)")
         if op_value is None:
-            return ToolResult(
-                tool_name=self.definition.name,
-                status="error",
-                error="lsp invocation requires 'operation' argument",
-            )
+            raise ValueError("lsp invocation requires 'operation' argument")
 
         # Normalize operation
         try:
@@ -107,52 +95,27 @@ class LspTool:
             if isinstance(op_value, str):
                 try:
                     operation = LspOperation[op_value]
-                except Exception:
-                    return ToolResult(
-                        tool_name=self.definition.name,
-                        status="error",
-                        error=f"Unsupported LSP operation: {op_value}",
-                    )
+                except Exception as exc:
+                    raise ValueError(f"Unsupported LSP operation: {op_value}") from exc
             else:
-                return ToolResult(
-                    tool_name=self.definition.name,
-                    status="error",
-                    error=f"Unsupported LSP operation: {op_value}",
-                )
+                raise ValueError(f"Unsupported LSP operation: {op_value}") from None
 
         # Resolve file path and ensure it's inside workspace (mirror read_file.py)
         relative_path = Path(file_path)
         workspace_root = workspace.resolve()
         candidate = (workspace_root / relative_path).resolve()
         if not candidate.is_relative_to(workspace_root):
-            return ToolResult(
-                tool_name=self.definition.name,
-                status="error",
-                error="lsp target must be inside the current workspace",
-            )
+            raise ValueError("lsp target must be inside the current workspace")
         if not candidate.is_file():
-            return ToolResult(
-                tool_name=self.definition.name,
-                status="error",
-                error=f"lsp target does not exist: {file_path}",
-            )
+            raise ValueError(f"lsp target does not exist: {file_path}")
 
         # Ensure server is available
         if not self._host or not self._port:
-            return ToolResult(
-                tool_name=self.definition.name,
-                status="error",
-                error=(
-                    "LSP server host/port not configured. Set VOIDCODE_LSP_HOST "
-                    "and VOIDCODE_LSP_PORT."
-                ),
+            raise ValueError(
+                "LSP server host/port not configured. Set VOIDCODE_LSP_HOST and VOIDCODE_LSP_PORT."
             )
         if not self._server_is_available():
-            return ToolResult(
-                tool_name=self.definition.name,
-                status="error",
-                error=f"LSP server not available at {self._host}:{self._port}",
-            )
+            raise ValueError(f"LSP server not available at {self._host}:{self._port}")
 
         # Prepare a minimal JSON-RPC payload for the requested operation
         position = {"line": max(0, int(line) - 1), "character": max(0, int(character) - 1)}
@@ -171,20 +134,11 @@ class LspTool:
         # Send the request
         response = self._send_request(operation.value, params)
         if response is None:
-            return ToolResult(
-                tool_name=self.definition.name,
-                status="error",
-                error="No response from LSP server",
-            )
+            raise ValueError("No response from LSP server")
         # If the LSP server returns an error-like payload, surface it
         if "error" in response or "code" in response:
             error_value = response.get("error")
-            return ToolResult(
-                tool_name=self.definition.name,
-                status="error",
-                error=str(error_value) if isinstance(error_value, str) else str(response),
-                data={"lsp_response": response},
-            )
+            raise ValueError(str(error_value) if isinstance(error_value, str) else str(response))
 
         return ToolResult(
             tool_name=self.definition.name,

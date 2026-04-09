@@ -5,8 +5,10 @@ from .glob import GlobTool
 from .grep import GrepTool
 from .list_dir import ListTool
 from .lsp import LspTool
+from .multi_edit import MultiEditTool
 from .read_file import ReadFileTool
 from .shell_exec import ShellExecTool
+from .todo_write import TodoWriteTool
 from .web_fetch import WebFetchTool
 from .web_search import WebSearchTool
 from .write_file import WriteFileTool
@@ -22,7 +24,9 @@ __all__ = [
     "WebSearchTool",
     "WriteFileTool",
     "LspTool",
+    "MultiEditTool",
     "ApplyPatchTool",
+    "TodoWriteTool",
     "ToolCall",
     "ToolDefinition",
     "ToolResult",

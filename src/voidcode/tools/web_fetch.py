@@ -23,8 +23,28 @@ def _extract_text_from_html(html: str) -> str:
     i = 0
     while i < len(html):
         if html[i] == "<":
-            j = html.index(">", i)
-            tag = html[i + 1 : j].split()[0].lower().rstrip("/")
+            if html.startswith("<!--", i):
+                end_comment = html.find("-->", i + 4)
+                if end_comment == -1:
+                    break
+                i = end_comment + 3
+                continue
+
+            j = html.find(">", i)
+            if j == -1:
+                text.append(html[i:])
+                break
+
+            tag_raw = html[i + 1 : j].strip()
+            if not tag_raw:
+                i = j + 1
+                continue
+
+            parts = tag_raw.split()
+            if not parts:
+                i = j + 1
+                continue
+            tag = parts[0].lower().rstrip("/")
 
             if tag.startswith("!"):
                 i = j + 1
@@ -180,25 +200,35 @@ class WebFetchTool:
                 mime = content_type.split(";")[0].strip().lower() if content_type else ""
 
         except urllib.error.HTTPError as exc:
-            return ToolResult(
-                tool_name=self.definition.name,
-                status="error",
-                error=f"HTTP error {exc.code}: {exc.reason}",
-                data={"url": url_value, "status_code": exc.code},
-            )
+            raise ValueError(f"HTTP error {exc.code}: {exc.reason}") from exc
         except urllib.error.URLError as exc:
-            return ToolResult(
-                tool_name=self.definition.name,
-                status="error",
-                error=f"Failed to fetch URL: {exc.reason}",
-                data={"url": url_value},
-            )
+            raise ValueError(f"Failed to fetch URL: {exc.reason}") from exc
 
         # Normal post-fetch processing (outside of except blocks)
         if format_value == "html":
             output = content
-        elif format_value == "text" or "text/html" in mime:
+        elif format_value == "text":
             output = _extract_text_from_html(content)
+        elif format_value == "markdown":
+            if mime and mime.startswith("image/"):
+                b64 = base64.b64encode(data).decode("ascii")
+                data_uri = f"data:{mime};base64,{b64}"
+                return ToolResult(
+                    tool_name=self.definition.name,
+                    status="ok",
+                    content="",
+                    data={
+                        "url": url_value,
+                        "content_type": mime,
+                        "format": format_value,
+                        "byte_count": len(data),
+                        "attachment": {"mime": mime, "data_uri": data_uri},
+                    },
+                )
+            if "text/html" in mime:
+                output = _convert_html_to_markdown(content)
+            else:
+                output = content
         else:
             if mime and mime.startswith("image/"):
                 # Image handling: return as base64 attachment instead of text output

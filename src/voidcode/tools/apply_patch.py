@@ -39,9 +39,7 @@ class ApplyPatchTool:
         )
         if check.returncode != 0:
             error = check.stdout or "Patch check failed"
-            return ToolResult(
-                tool_name=self.definition.name, status="error", error=error, content=None
-            )
+            raise ValueError(error)
 
         # Apply patch
         apply = subprocess.run(
@@ -53,9 +51,7 @@ class ApplyPatchTool:
         )
         if apply.returncode != 0:
             error = apply.stdout or "Patch apply failed"
-            return ToolResult(
-                tool_name=self.definition.name, status="error", error=error, content=None
-            )
+            raise ValueError(error)
 
         diff = subprocess.run(
             ["git", "diff", "--name-status"],

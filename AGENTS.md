@@ -1,7 +1,7 @@
 # PROJECT KNOWLEDGE BASE
 
-**Generated:** 2026-04-04
-**Commit:** d6157c7
+**Generated:** 2026-04-09
+**Commit:** e6c0a98
 **Branch:** master
 
 ## OVERVIEW
@@ -30,7 +30,7 @@ voidcode/
 | Session persistence | `src/voidcode/runtime/storage.py` | SQLite-backed local session store |
 | Runtime contracts | `src/voidcode/runtime/contracts.py` | request/response boundary types |
 | Graph planning/finalization | `src/voidcode/graph/read_only_slice.py` | current deterministic slice |
-| Tool behavior | `src/voidcode/tools/read_file.py` | only real built-in tool today |
+| Tool behavior | `src/voidcode/tools/` | builtin tools include read/write/edit/glob/grep/list/web_fetch/web_search/apply_patch/code_search/multi_edit/todo_write/lsp |
 | Unit tests | `tests/unit/` | contracts, metadata, import, CLI smoke |
 | Integration tests | `tests/integration/test_read_only_slice.py` | full deterministic slice + session persistence |
 | Dev workflow | `mise.toml` | canonical task runner |
@@ -64,7 +64,7 @@ voidcode/
 ## UNIQUE STYLES
 - Backend architecture is intentionally split into `runtime/`, `graph/`, and `tools/` with contract files marking boundaries.
 - Session recovery is local and SQLite-backed under `.voidcode/`.
-- The only real backend slice today is deterministic read-only file access.
+- The backend now exposes a broader tool surface including read/write/edit/search/web and patch workflows under `src/voidcode/tools/`.
 - Frontend source is intentionally small and flatter than the aspirational structure described in `frontend/README.md`.
 
 ## COMMANDS
