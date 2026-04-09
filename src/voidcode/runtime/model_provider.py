@@ -3,10 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
-
-@dataclass(frozen=True, slots=True)
-class ModelProviderCapabilities:
-    model_reference_formats: tuple[str, ...] = ("provider/model",)
+from .single_agent_provider import SingleAgentProvider, StubSingleAgentProvider
 
 
 @runtime_checkable
@@ -14,14 +11,15 @@ class ModelProvider(Protocol):
     @property
     def name(self) -> str: ...
 
-    @property
-    def capabilities(self) -> ModelProviderCapabilities: ...
+    def single_agent_provider(self) -> SingleAgentProvider: ...
 
 
 @dataclass(frozen=True, slots=True)
 class StaticModelProvider:
     name: str
-    capabilities: ModelProviderCapabilities = ModelProviderCapabilities()
+
+    def single_agent_provider(self) -> SingleAgentProvider:
+        return StubSingleAgentProvider(name=self.name)
 
 
 @dataclass(frozen=True, slots=True)

@@ -30,7 +30,6 @@ def test_resolve_provider_model_parses_known_provider_reference() -> None:
     assert resolved.selection.model == "gpt-5.4"
     assert resolved.provider is not None
     assert resolved.provider.name == "opencode"
-    assert resolved.provider.capabilities.model_reference_formats == ("provider/model",)
 
 
 def test_resolve_provider_model_creates_generic_provider_for_unknown_name() -> None:
