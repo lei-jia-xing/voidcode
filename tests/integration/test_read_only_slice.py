@@ -195,6 +195,35 @@ def _approval_runtime(
     return runtime_request, runtime
 
 
+def _single_agent_runtime(
+    tmp_path: Path,
+    *,
+    mode: str = "ask",
+) -> tuple[RuntimeRequestFactory, RuntimeRunner]:
+    runtime_request, runtime_class = _load_runtime_types()
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    config_module = importlib.import_module("voidcode.runtime.config")
+    runtime_config = cast(Callable[..., object], config_module.RuntimeConfig)
+    permission_policy = cast(Callable[..., object], permission_module.PermissionPolicy)
+    policy = permission_policy(mode=mode)
+    runtime = cast(
+        RuntimeRunner,
+        cast(
+            object,
+            runtime_class(
+                workspace=tmp_path,
+                config=runtime_config(
+                    approval_mode=mode,
+                    execution_engine="single_agent",
+                    model="opencode/gpt-5.4",
+                ),
+                permission_policy=policy,
+            ),
+        ),
+    )
+    return runtime_request, runtime
+
+
 def _multi_step_prompt() -> str:
     return "read source.txt\nwrite copied.txt copied marker\ngrep copied copied.txt"
 
@@ -831,6 +860,49 @@ def test_runtime_executes_read_only_slice_and_emits_events(tmp_path: Path) -> No
     assert result.events[1].payload == {"skills": []}
     assert result.session.status == "completed"
     assert result.output == "alpha\nbeta\n"
+
+
+def test_single_agent_runtime_executes_read_path_and_persists_config(tmp_path: Path) -> None:
+    sample_file = tmp_path / "sample.txt"
+    _ = sample_file.write_text("alpha\nbeta\n", encoding="utf-8")
+    runtime_request, runtime = _single_agent_runtime(tmp_path, mode="allow")
+
+    result = runtime.run(runtime_request(prompt="read sample.txt", session_id="single-agent-read"))
+    replay = runtime.resume("single-agent-read")
+
+    assert result.session.status == "completed"
+    assert result.output == "alpha\nbeta\n"
+    assert result.session.metadata["runtime_config"] == {
+        "approval_mode": "allow",
+        "execution_engine": "single_agent",
+        "model": "opencode/gpt-5.4",
+    }
+    assert result.events[3].payload["mode"] == "single_agent"
+    assert replay.output == result.output
+
+
+def test_single_agent_runtime_requests_and_resumes_write_approval(tmp_path: Path) -> None:
+    runtime_request, runtime = _single_agent_runtime(tmp_path, mode="ask")
+
+    waiting = runtime.run(
+        runtime_request(
+            prompt="write danger.txt approved later", session_id="single-agent-approval"
+        )
+    )
+    approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
+
+    resumed = runtime.resume(
+        "single-agent-approval",
+        approval_request_id=approval_request_id,
+        approval_decision="allow",
+    )
+
+    assert waiting.session.status == "waiting"
+    assert waiting.events[3].payload["mode"] == "single_agent"
+    assert waiting.events[-1].event_type == "runtime.approval_requested"
+    assert resumed.session.status == "completed"
+    assert resumed.output == "approved later"
+    assert (tmp_path / "danger.txt").read_text(encoding="utf-8") == "approved later"
 
 
 def test_runtime_uses_repo_local_config_to_allow_write_requests_without_explicit_policy(
