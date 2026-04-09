@@ -21,6 +21,7 @@ from .events import (
     EventEnvelope,
 )
 from .lsp import DisabledLspManager
+from .model_provider import ModelProviderRegistry, ResolvedProviderModel, resolve_provider_model
 from .permission import (
     PendingApproval,
     PermissionDecision,
@@ -93,6 +94,8 @@ class VoidCodeRuntime:
     _config: RuntimeConfig
     _permission_policy: PermissionPolicy
     _session_store: SessionStore
+    _model_provider_registry: ModelProviderRegistry
+    _provider_model: ResolvedProviderModel
     _skill_registry: SkillRegistry
     _lsp_manager: DisabledLspManager
     _acp_adapter: DisabledAcpAdapter
@@ -107,6 +110,7 @@ class VoidCodeRuntime:
         config: RuntimeConfig | None = None,
         permission_policy: PermissionPolicy | None = None,
         session_store: SessionStore | None = None,
+        model_provider_registry: ModelProviderRegistry | None = None,
         skill_registry: SkillRegistry | None = None,
         lsp_manager: DisabledLspManager | None = None,
         acp_adapter: DisabledAcpAdapter | None = None,
@@ -115,6 +119,13 @@ class VoidCodeRuntime:
         self._config = config or load_runtime_config(self._workspace)
         self._tool_registry = tool_registry or ToolRegistry.with_defaults()
         self._graph = graph or self._build_graph_for_engine(self._config.execution_engine)
+        self._model_provider_registry = (
+            model_provider_registry or ModelProviderRegistry.with_defaults()
+        )
+        self._provider_model = resolve_provider_model(
+            self._config.model,
+            registry=self._model_provider_registry,
+        )
         self._permission_policy = permission_policy or PermissionPolicy(
             mode=self._config.approval_mode
         )
