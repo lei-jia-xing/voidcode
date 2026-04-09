@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 from pathlib import Path
 from typing import ClassVar
 
@@ -31,5 +32,7 @@ class CodeSearchTool:
         return ToolResult(
             tool_name=self.definition.name,
             status="ok",
-            content=f"Code search for '{query}' with {tokens_num} tokens - MCP integration available",
+            content=(
+                f"Code search for '{query}' with {tokens_num} tokens - MCP integration available"
+            ),
         )

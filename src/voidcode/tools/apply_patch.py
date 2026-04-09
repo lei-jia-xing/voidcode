@@ -91,10 +91,12 @@ class ApplyPatchTool:
 
         # Validate that all affected paths are inside the workspace
         for c in changes:
-            if "path" in c and isinstance(c["path"], str):
-                _assert_within_workspace(workspace, Path(c["path"]))
-            if "old_path" in c and isinstance(c.get("old_path"), str):
-                _assert_within_workspace(workspace, Path(c["old_path"]))
+            path_value = c.get("path")
+            if isinstance(path_value, str):
+                _assert_within_workspace(workspace, Path(path_value))
+            old_path_value = c.get("old_path")
+            if isinstance(old_path_value, str):
+                _assert_within_workspace(workspace, Path(old_path_value))
 
         try:
             patch_path.unlink(missing_ok=True)

@@ -38,7 +38,10 @@ class GlobTool:
             "pattern": {"type": "string", "description": "The glob pattern to match files against"},
             "path": {
                 "type": "string",
-                "description": "The directory to search in (relative to workspace). Defaults to workspace root.",
+                "description": (
+                    "The directory to search in (relative to workspace). "
+                    "Defaults to workspace root."
+                ),
             },
         },
         read_only=True,
@@ -113,7 +116,8 @@ class GlobTool:
             if truncated:
                 output_lines.append("")
                 output_lines.append(
-                    f"(Results are truncated: showing first {LIMIT} results. Consider using a more specific path or pattern.)"
+                    "(Results are truncated: showing first "
+                    f"{LIMIT} results. Consider using a more specific path or pattern.)"
                 )
             output = "\n".join(output_lines)
 

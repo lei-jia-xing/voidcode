@@ -3,7 +3,7 @@ from __future__ import annotations
 import difflib
 import re
 from pathlib import Path
-from typing import ClassVar, List
+from typing import ClassVar
 
 from .contracts import ToolCall, ToolDefinition, ToolResult
 
@@ -170,7 +170,7 @@ class WhitespaceNormalizedReplacer:
         lines = content.split("\n")
         find_lines = old.split("\n")
 
-        for i, line in enumerate(lines):
+        for _i, line in enumerate(lines):
             if WhitespaceNormalizedReplacer.normalize(line) == normalized_old:
                 results.append(line)
 
@@ -260,9 +260,6 @@ def _replace(
             replacers.append(globals()[name])
 
     # Helper to perform a replacement given a matched substring
-    def _do_replace_once(src: str, match: str) -> str:
-        return src.replace(match, new_string, 1)
-
     # If replace_all is requested we attempt to replace all occurrences found by any replacer
     total_replacements = 0
     current = content
@@ -279,7 +276,7 @@ def _replace(
 
         # If replaceAll, replace all occurrences found by this replacer
         if replace_all:
-            seen = set()
+            seen: set[str] = set()
             for m in matches:
                 if m in seen:
                     continue
@@ -383,7 +380,10 @@ class ContextAwareReplacer:
 class EditTool:
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="edit",
-        description="Edit a file by replacing text. Supports multiple replacement strategies for flexible matching.",
+        description=(
+            "Edit a file by replacing text. Supports multiple replacement strategies "
+            "for flexible matching."
+        ),
         input_schema={
             "path": {
                 "type": "string",

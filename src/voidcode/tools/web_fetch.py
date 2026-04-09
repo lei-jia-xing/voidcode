@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+import base64
 import re
 import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import ClassVar
-import base64
 
 from .contracts import ToolCall, ToolDefinition, ToolResult
 

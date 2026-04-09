@@ -1,6 +1,7 @@
 from __future__ import annotations
+
 from pathlib import Path
-from typing import ClassVar
+from typing import ClassVar, cast
 
 from .contracts import ToolCall, ToolDefinition, ToolResult
 
@@ -21,7 +22,10 @@ class MultiEditTool:
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
         path_value = call.arguments.get("filePath")
-        edits = call.arguments.get("edits", [])
+        edits_value = call.arguments.get("edits", [])
+        edits: list[object] = []
+        if isinstance(edits_value, list):
+            edits = cast(list[object], edits_value)
 
         return ToolResult(
             tool_name=self.definition.name,
