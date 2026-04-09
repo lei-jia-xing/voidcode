@@ -1,10 +1,5 @@
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "src"))
-
 from voidcode.runtime.events import (
     EMITTED_EVENT_TYPES,
     GRAPH_LOOP_STEP,
