@@ -9,7 +9,7 @@ from typing import cast
 
 
 def test_pyproject_matches_expected_metadata() -> None:
-    pyproject_path = Path(__file__).resolve().parents[2] / "pyproject.toml"
+    pyproject_path = Path(__file__).resolve().parents[3] / "pyproject.toml"
 
     assert pyproject_path.exists(), "pyproject.toml must exist"
 
