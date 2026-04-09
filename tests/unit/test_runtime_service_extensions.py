@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
+
 from voidcode.runtime.events import EventEnvelope
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
@@ -59,10 +61,13 @@ class _StubGraph:
 
 def test_runtime_initializes_empty_extension_state_by_default(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(workspace=tmp_path, config=RuntimeConfig())
+    provider_model = _private_attr(runtime, "_provider_model")
     skill_registry = _private_attr(runtime, "_skill_registry")
     lsp_manager = _private_attr(runtime, "_lsp_manager")
     acp_adapter = _private_attr(runtime, "_acp_adapter")
 
+    assert provider_model.selection.raw_model is None
+    assert provider_model.provider is None
     assert skill_registry.skills == {}
     assert lsp_manager.current_state().mode == "disabled"
     assert lsp_manager.configuration.configured_enabled is False
@@ -81,6 +86,7 @@ def test_runtime_initializes_extension_state_from_config_when_enabled(tmp_path: 
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         config=RuntimeConfig(
+            model="opencode/gpt-5.4",
             skills=RuntimeSkillsConfig(enabled=True),
             lsp=RuntimeLspConfig(
                 enabled=True,
@@ -90,6 +96,7 @@ def test_runtime_initializes_extension_state_from_config_when_enabled(tmp_path: 
         ),
     )
 
+    provider_model = _private_attr(runtime, "_provider_model")
     skill_registry = _private_attr(runtime, "_skill_registry")
     lsp_manager = _private_attr(runtime, "_lsp_manager")
     acp_adapter = _private_attr(runtime, "_acp_adapter")
@@ -97,6 +104,11 @@ def test_runtime_initializes_extension_state_from_config_when_enabled(tmp_path: 
     lsp_state = lsp_manager.current_state()
     acp_state = acp_adapter.current_state()
 
+    assert provider_model.selection.raw_model == "opencode/gpt-5.4"
+    assert provider_model.selection.provider == "opencode"
+    assert provider_model.selection.model == "gpt-5.4"
+    assert provider_model.provider is not None
+    assert provider_model.provider.name == "opencode"
     assert skill.description == "Demo skill"
     assert skill.directory == skill_dir.resolve()
     assert lsp_state.mode == "disabled"
@@ -419,3 +431,11 @@ def test_runtime_prefers_explicit_graph_over_config_selected_execution_engine(
 
     assert response.session.status == "completed"
     assert response.output == "hello"
+
+
+def test_runtime_rejects_malformed_model_reference_during_initialization(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="provider/model"):
+        _ = VoidCodeRuntime(
+            workspace=tmp_path,
+            config=RuntimeConfig(model="invalid-model"),
+        )
