@@ -240,6 +240,17 @@ class RuntimeResponseLike(Protocol):
     session: SessionState
 
 
+def _handle_tui_command(args: argparse.Namespace) -> int:
+    workspace = cast(Path, args.workspace)
+    approval_mode = cast(PermissionDecision | None, getattr(args, "approval_mode", None))
+
+    from .tui import VoidCodeTUI
+
+    app = VoidCodeTUI(workspace=workspace, approval_mode=approval_mode)
+    app.run()
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="voidcode",
@@ -251,6 +262,23 @@ def build_parser() -> argparse.ArgumentParser:
         version=f"%(prog)s {__version__}",
     )
     subparsers = parser.add_subparsers(dest="command")
+
+    tui_parser = subparsers.add_parser(
+        "tui",
+        help="Run the VoidCode interactive Textual UI.",
+    )
+    _ = tui_parser.add_argument(
+        "--workspace",
+        type=Path,
+        default=Path.cwd(),
+        help="Workspace root used to resolve relative read paths.",
+    )
+    _ = tui_parser.add_argument(
+        "--approval-mode",
+        choices=("allow", "deny", "ask"),
+        help="Override the runtime approval mode for this invocation.",
+    )
+    tui_parser.set_defaults(handler=_handle_tui_command)
 
     run_parser = subparsers.add_parser(
         "run",

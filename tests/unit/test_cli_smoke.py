@@ -245,6 +245,27 @@ def test_sessions_resume_surfaces_approval_resolution_errors_cleanly() -> None:
     assert "Traceback" not in resume_result.stderr
 
 
+def test_tui_command_forwards_workspace_and_approval_mode() -> None:
+    cli = importlib.import_module("voidcode.cli")
+    tui = importlib.import_module("voidcode.tui")
+    workspace = Path("/tmp/demo-workspace")
+
+    with patch.object(tui, "VoidCodeTUI", autospec=True) as tui_class:
+        result = cli.main(
+            [
+                "tui",
+                "--workspace",
+                str(workspace),
+                "--approval-mode",
+                "ask",
+            ]
+        )
+
+    assert result == 0
+    tui_class.assert_called_once_with(workspace=workspace, approval_mode="ask")
+    tui_class.return_value.run.assert_called_once_with()
+
+
 def test_serve_command_forwards_host_port_and_workspace() -> None:
     cli = importlib.import_module("voidcode.cli")
     workspace = Path("/tmp/demo-workspace")
