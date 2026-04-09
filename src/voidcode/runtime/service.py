@@ -97,6 +97,7 @@ class VoidCodeRuntime:
     _permission_policy: PermissionPolicy
     _session_store: SessionStore
     _model_provider_registry: ModelProviderRegistry
+    _provider_model: ResolvedProviderModel
     _skill_registry: SkillRegistry
     _lsp_manager: DisabledLspManager
     _acp_adapter: DisabledAcpAdapter
@@ -121,6 +122,10 @@ class VoidCodeRuntime:
         self._config = config or load_runtime_config(self._workspace)
         self._model_provider_registry = (
             model_provider_registry or ModelProviderRegistry.with_defaults()
+        )
+        self._provider_model = resolve_provider_model(
+            self._config.model,
+            registry=self._model_provider_registry,
         )
         self._tool_registry = tool_registry or ToolRegistry.with_defaults()
         self._graph_override = graph
@@ -170,6 +175,7 @@ class VoidCodeRuntime:
             config.model,
             registry=self._model_provider_registry,
         )
+        self._provider_model = provider_model
         graph = self._build_graph_for_engine(config.execution_engine, provider_model)
         self._graph_cache[cache_key] = graph
         return graph
