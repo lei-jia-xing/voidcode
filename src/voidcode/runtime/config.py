@@ -14,9 +14,9 @@ APPROVAL_MODE_ENV_VAR = "VOIDCODE_APPROVAL_MODE"
 MODEL_ENV_VAR = "VOIDCODE_MODEL"
 _VALID_APPROVAL_MODES = ("allow", "deny", "ask")
 
-type ExecutionEngineName = Literal["deterministic"]
+type ExecutionEngineName = Literal["deterministic", "single_agent"]
 
-_VALID_EXECUTION_ENGINES: tuple[ExecutionEngineName, ...] = ("deterministic",)
+_VALID_EXECUTION_ENGINES: tuple[ExecutionEngineName, ...] = ("deterministic", "single_agent")
 
 
 @dataclass(frozen=True, slots=True)

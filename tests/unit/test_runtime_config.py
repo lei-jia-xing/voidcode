@@ -129,6 +129,18 @@ def test_runtime_config_parses_extension_domains(tmp_path: Path) -> None:
     assert config.acp == RuntimeAcpConfig(enabled=False)
 
 
+def test_runtime_config_accepts_single_agent_execution_engine(tmp_path: Path) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps({"execution_engine": "single_agent", "model": "opencode/gpt-5.4"}),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.execution_engine == "single_agent"
+    assert config.model == "opencode/gpt-5.4"
+
+
 def test_runtime_config_parses_minimal_hook_commands(tmp_path: Path) -> None:
     runtime_config_path(tmp_path).write_text(
         json.dumps(

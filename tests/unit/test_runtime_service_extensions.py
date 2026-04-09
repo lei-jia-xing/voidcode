@@ -433,6 +433,53 @@ def test_runtime_prefers_explicit_graph_over_config_selected_execution_engine(
     assert response.output == "hello"
 
 
+def test_runtime_initializes_single_agent_graph_from_config(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            execution_engine="single_agent",
+            model="opencode/gpt-5.4",
+        ),
+    )
+
+    graph = _private_attr(runtime, "_graph")
+
+    assert graph.__class__.__name__ == "ProviderSingleAgentGraph"
+
+
+def test_runtime_rejects_single_agent_engine_without_model(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="requires a configured model"):
+        _ = VoidCodeRuntime(
+            workspace=tmp_path,
+            config=RuntimeConfig(execution_engine="single_agent"),
+        )
+
+
+def test_runtime_effective_runtime_config_recovers_single_agent_engine(tmp_path: Path) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("agent config\n", encoding="utf-8")
+
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            approval_mode="allow",
+            execution_engine="single_agent",
+            model="opencode/gpt-5.4",
+        ),
+    )
+    _ = runtime.run(RuntimeRequest(prompt="read sample.txt", session_id="single-agent-config"))
+
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(approval_mode="deny", model="fresh/model"),
+    )
+    effective = resumed_runtime.effective_runtime_config(session_id="single-agent-config")
+
+    assert effective.approval_mode == "allow"
+    assert effective.execution_engine == "single_agent"
+    assert effective.model == "opencode/gpt-5.4"
+
+
 def test_runtime_rejects_malformed_model_reference_during_initialization(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="provider/model"):
         _ = VoidCodeRuntime(
