@@ -171,49 +171,6 @@ def test_console_script_help_works() -> None:
     assert "usage:" in result.stdout.lower()
 
 
-def test_tui_subcommand_help_works() -> None:
-    result = subprocess.run(
-        [sys.executable, "-m", "voidcode", "tui", "--help"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert result.returncode == 0
-    assert "--workspace" in result.stdout
-    assert "--session-id" in result.stdout
-
-
-def test_tui_command_launches_new_chat_session_without_session_id() -> None:
-    cli = importlib.import_module("voidcode.cli")
-    workspace = Path("/tmp/demo-workspace")
-
-    with patch.object(cli, "launch_tui", autospec=True) as launch_mock:
-        result = cli.main(["tui", "--workspace", str(workspace)])
-
-    assert result == 0
-    launch_mock.assert_called_once_with(workspace=workspace, session_id=None)
-
-
-def test_tui_command_opens_direct_session_when_session_id_is_provided() -> None:
-    cli = importlib.import_module("voidcode.cli")
-    workspace = Path("/tmp/demo-workspace")
-
-    with patch.object(cli, "launch_tui", autospec=True) as launch_mock:
-        result = cli.main(
-            [
-                "tui",
-                "--workspace",
-                str(workspace),
-                "--session-id",
-                "demo-session",
-            ]
-        )
-
-    assert result == 0
-    launch_mock.assert_called_once_with(workspace=workspace, session_id="demo-session")
-
-
 def test_sessions_resume_rejects_partial_approval_flags() -> None:
     result = subprocess.run(
         [

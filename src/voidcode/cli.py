@@ -15,7 +15,6 @@ from .runtime.permission import PermissionDecision, PermissionResolution
 from .runtime.service import VoidCodeRuntime
 from .runtime.session import SessionState, StoredSessionSummary
 from .server import serve
-from .tui import launch_tui
 
 Handler = Callable[[argparse.Namespace], int]
 
@@ -203,13 +202,6 @@ def _handle_serve_command(args: argparse.Namespace) -> int:
     return 0
 
 
-def _handle_tui_command(args: argparse.Namespace) -> int:
-    workspace = cast(Path, args.workspace)
-    session_id = cast(str | None, args.session_id)
-    launch_tui(workspace=workspace, session_id=session_id)
-    return 0
-
-
 def _handle_config_show_command(args: argparse.Namespace) -> int:
     workspace = cast(Path, args.workspace)
     if not workspace.exists() or not workspace.is_dir():
@@ -312,25 +304,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override the runtime approval mode for this server process.",
     )
     serve_parser.set_defaults(handler=_handle_serve_command)
-
-    tui_parser = subparsers.add_parser(
-        "tui",
-        help="Launch the Textual runtime client.",
-    )
-    _ = tui_parser.add_argument(
-        "--workspace",
-        type=Path,
-        default=Path.cwd(),
-        help="Workspace root used by the TUI runtime client.",
-    )
-    _ = tui_parser.add_argument(
-        "--session-id",
-        help=(
-            "Optional persisted session identifier to open directly; omit it to start "
-            "a new chat-first TUI session."
-        ),
-    )
-    tui_parser.set_defaults(handler=_handle_tui_command)
 
     sessions_parser = subparsers.add_parser("sessions", help="Inspect persisted local sessions.")
     sessions_subparsers = sessions_parser.add_subparsers(dest="sessions_command")
