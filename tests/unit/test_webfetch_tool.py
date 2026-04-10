@@ -35,7 +35,7 @@ class _StubResponse:
         return False
 
     def read(self, size: int = -1) -> bytes:
-        if size is None or size < 0:
+        if size < 0:
             data = self._content
             self._content = b""
             return data

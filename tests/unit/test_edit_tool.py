@@ -54,7 +54,28 @@ def test_edit_tool_replaces_all_occurrences(tmp_path: Path) -> None:
     )
 
     assert file_path.read_text(encoding="utf-8") == "qux bar qux baz qux"
+    assert result.content is not None
     assert "3 occurrences replaced" in result.content
+
+
+def test_edit_tool_rejects_multiple_exact_matches_without_replace_all(tmp_path: Path) -> None:
+    file_path = tmp_path / "test.txt"
+    file_path.write_text("foo bar foo", encoding="utf-8")
+
+    tool = EditTool()
+
+    with pytest.raises(ValueError, match="Multiple matches found"):
+        tool.invoke(
+            ToolCall(
+                tool_name="edit",
+                arguments={
+                    "path": "test.txt",
+                    "oldString": "foo",
+                    "newString": "qux",
+                },
+            ),
+            workspace=tmp_path,
+        )
 
 
 def test_edit_tool_rejects_non_string_arguments(tmp_path: Path) -> None:

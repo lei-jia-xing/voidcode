@@ -69,9 +69,18 @@ def _trim_diff(diff: str) -> str:
 class SimpleReplacer:
     @staticmethod
     def find(content: str, old: str) -> list[str]:
-        if old in content:
-            return [old]
-        return []
+        results: list[str] = []
+        if not old:
+            return results
+
+        start = 0
+        while True:
+            idx = content.find(old, start)
+            if idx == -1:
+                break
+            results.append(content[idx : idx + len(old)])
+            start = idx + 1
+        return results
 
 
 class LineTrimmedReplacer:
