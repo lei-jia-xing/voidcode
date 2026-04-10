@@ -34,16 +34,19 @@ def _handle_run_command(args: argparse.Namespace) -> int:
         approval_mode=cast(PermissionDecision | None, getattr(args, "approval_mode", None)),
     )
     runtime = VoidCodeRuntime(workspace=workspace, config=config)
-    request = RuntimeRequest(prompt=request_text, session_id=cast(str | None, args.session_id))
-    interactive = sys.stdin.isatty() and sys.stderr.isatty()
-    output = _run_with_inline_approval(
-        runtime,
-        request,
-        interactive=interactive,
-    )
+    try:
+        request = RuntimeRequest(prompt=request_text, session_id=cast(str | None, args.session_id))
+        interactive = sys.stdin.isatty() and sys.stderr.isatty()
+        output = _run_with_inline_approval(
+            runtime,
+            request,
+            interactive=interactive,
+        )
 
-    if not interactive:
-        _print_runtime_output(output)
+        if not interactive:
+            _print_runtime_output(output)
+    finally:
+        _ = runtime.shutdown_lsp()
     return 0
 
 
@@ -154,7 +157,10 @@ def _print_runtime_output(output: str | None) -> None:
 def _handle_sessions_list_command(args: argparse.Namespace) -> int:
     workspace = cast(Path, args.workspace)
     runtime = VoidCodeRuntime(workspace=workspace)
-    sessions = runtime.list_sessions()
+    try:
+        sessions = runtime.list_sessions()
+    finally:
+        _ = runtime.shutdown_lsp()
 
     for session in sessions:
         print(_format_session_summary(session))
@@ -175,13 +181,16 @@ def _handle_sessions_resume_command(args: argparse.Namespace) -> int:
     approval_decision = cast(PermissionResolution | None, getattr(args, "approval_decision", None))
     runtime = VoidCodeRuntime(workspace=workspace)
     try:
-        result = runtime.resume(
-            session_id,
-            approval_request_id=cast(str | None, getattr(args, "approval_request_id", None)),
-            approval_decision=approval_decision,
-        )
-    except ValueError as exc:
-        raise SystemExit(f"error: {exc}") from None
+        try:
+            result = runtime.resume(
+                session_id,
+                approval_request_id=cast(str | None, getattr(args, "approval_request_id", None)),
+                approval_decision=approval_decision,
+            )
+        except ValueError as exc:
+            raise SystemExit(f"error: {exc}") from None
+    finally:
+        _ = runtime.shutdown_lsp()
 
     _print_runtime_response(result)
     return 0
@@ -210,9 +219,12 @@ def _handle_config_show_command(args: argparse.Namespace) -> int:
     session_id = cast(str | None, getattr(args, "session_id", None))
     runtime = VoidCodeRuntime(workspace=workspace)
     try:
-        effective_config = runtime.effective_runtime_config(session_id=session_id)
-    except ValueError as exc:
-        raise SystemExit(f"error: {exc}") from None
+        try:
+            effective_config = runtime.effective_runtime_config(session_id=session_id)
+        except ValueError as exc:
+            raise SystemExit(f"error: {exc}") from None
+    finally:
+        _ = runtime.shutdown_lsp()
 
     print(
         json.dumps(
