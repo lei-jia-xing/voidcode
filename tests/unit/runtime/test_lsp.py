@@ -61,3 +61,12 @@ def test_disabled_lsp_manager_reports_configured_servers_without_runtime_availab
     assert tuple(state.servers) == ("pyright",)
     assert state.servers["pyright"].configured is True
     assert state.servers["pyright"].available is False
+
+
+def test_lsp_operation_strings_match_protocol_method_names() -> None:
+    tool_module = import_module("voidcode.tools.lsp")
+    operation_enum = tool_module.LspOperation
+
+    assert operation_enum.PREPARE_CALL_HIERARCHY.value == "textDocument/prepareCallHierarchy"
+    assert operation_enum.INCOMING_CALLS.value == "callHierarchy/incomingCalls"
+    assert operation_enum.OUTGOING_CALLS.value == "callHierarchy/outgoingCalls"

@@ -7,8 +7,9 @@ import socket
 import urllib.error
 import urllib.parse
 import urllib.request
+from http.client import HTTPMessage
 from pathlib import Path
-from typing import ClassVar
+from typing import IO, ClassVar, cast
 
 from .contracts import ToolCall, ToolDefinition, ToolResult
 
@@ -72,6 +73,27 @@ def _validate_fetch_url(url_value: str) -> None:
 
     if _is_private_or_loopback_host(parsed.hostname):
         raise ValueError("web_fetch target host is blocked for security reasons")
+
+
+class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: object,
+        code: int,
+        msg: str,
+        headers: object,
+        newurl: str,
+    ) -> urllib.request.Request | None:
+        _validate_fetch_url(newurl)
+        return super().redirect_request(
+            req,
+            cast(IO[bytes], fp),
+            code,
+            msg,
+            cast(HTTPMessage, headers),
+            newurl,
+        )
 
 
 def _extract_text_from_html(html: str) -> str:
@@ -208,6 +230,7 @@ class WebFetchTool:
         content: str = ""
         data: bytes = b""
         mime: str = ""
+        opener = urllib.request.build_opener(_SafeRedirectHandler())
 
         try:
             # Build Accept header according to requested format to be friendlier for servers
@@ -240,7 +263,9 @@ class WebFetchTool:
                 },
             )
 
-            with urllib.request.urlopen(req, timeout=timeout) as response:
+            with opener.open(req, timeout=timeout) as response:
+                final_url = response.geturl()
+                _validate_fetch_url(final_url)
                 content_type = response.headers.get("Content-Type", "")
                 content_length = response.headers.get("Content-Length")
 
@@ -253,12 +278,20 @@ class WebFetchTool:
                         limit_mb = MAX_RESPONSE_SIZE // 1024 // 1024
                         raise ValueError(f"Response too large (exceeds {limit_mb}MB limit)")
 
-                data = response.read()
+                chunks: list[bytes] = []
+                total = 0
+                chunk_size = 64 * 1024
+                while True:
+                    chunk = response.read(chunk_size)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > MAX_RESPONSE_SIZE:
+                        limit_mb = MAX_RESPONSE_SIZE // 1024 // 1024
+                        raise ValueError(f"Response too large (exceeds {limit_mb}MB limit)")
+                    chunks.append(chunk)
 
-                if len(data) > MAX_RESPONSE_SIZE:
-                    raise ValueError(
-                        f"Response too large (exceeds {MAX_RESPONSE_SIZE // 1024 // 1024}MB limit)"
-                    )
+                data = b"".join(chunks)
 
                 content = data.decode("utf-8", errors="replace")
                 mime = content_type.split(";")[0].strip().lower() if content_type else ""

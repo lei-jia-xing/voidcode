@@ -76,8 +76,12 @@ def _is_ignored(
             return True
 
         # Support directory-style glob ignores like "build/**"
-        if p.endswith("/**") and rel_posix.startswith(p[:-3].rstrip("/")):
-            return True
+        if p.endswith("/**"):
+            prefix = p[:-3].rstrip("/")
+            if not prefix:
+                continue
+            if rel_posix == prefix or rel_posix.startswith(f"{prefix}/"):
+                return True
     return False
 
 

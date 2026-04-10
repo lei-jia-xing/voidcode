@@ -21,6 +21,7 @@ def test_list_tool_shows_files_and_directories(tmp_path: Path) -> None:
         ToolCall(tool_name="list", arguments={}),
         workspace=tmp_path,
     )
+    assert result.content is not None
 
     assert result.tool_name == "list"
     assert result.status == "ok"
@@ -42,6 +43,7 @@ def test_list_tool_defaults_to_root(tmp_path: Path) -> None:
         ToolCall(tool_name="list", arguments={}),
         workspace=tmp_path,
     )
+    assert result.content is not None
 
     assert "root.txt" in result.content
     assert "subdir/" in result.content
@@ -60,6 +62,7 @@ def test_list_tool_respects_path_argument(tmp_path: Path) -> None:
         ToolCall(tool_name="list", arguments={"path": "subdir"}),
         workspace=tmp_path,
     )
+    assert result.content is not None
 
     assert "nested.txt" in result.content
     assert "root.txt" not in result.content
@@ -110,6 +113,7 @@ def test_list_tool_ignores_common_directories(tmp_path: Path) -> None:
         ToolCall(tool_name="list", arguments={}),
         workspace=tmp_path,
     )
+    assert result.content is not None
 
     assert "code.py" in result.content
     assert "node_modules" not in result.content
@@ -122,3 +126,25 @@ def test_tools_package_and_default_registry_export_list_tool() -> None:
     assert "ListTool" in __import__("voidcode.tools", fromlist=["__all__"]).__all__
     assert registry.resolve("list").definition.name == "list"
     assert registry.resolve("list").definition.read_only is True
+
+
+def test_list_tool_glob_ignore_does_not_match_prefix_siblings(tmp_path: Path) -> None:
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+    (build_dir / "in_build.txt").write_text("x", encoding="utf-8")
+
+    build2_dir = tmp_path / "build2"
+    build2_dir.mkdir()
+    (build2_dir / "in_build2.txt").write_text("x", encoding="utf-8")
+
+    tool = ListTool()
+    result = tool.invoke(
+        ToolCall(tool_name="list", arguments={"ignore": ["build/**"]}),
+        workspace=tmp_path,
+    )
+    assert result.content is not None
+
+    assert "build/" not in result.content
+    assert "in_build.txt" not in result.content
+    assert "build2/" in result.content
+    assert "in_build2.txt" in result.content

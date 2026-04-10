@@ -25,12 +25,12 @@ def test_shell_exec_tool_runs_command_in_workspace(tmp_path: Path) -> None:
     assert result.tool_name == "shell_exec"
     assert result.status == "ok"
     assert result.content == f"{tmp_path.resolve()}\n"
-    assert result.data == {
-        "command": command,
-        "exit_code": 0,
-        "stdout": f"{tmp_path.resolve()}\n",
-        "stderr": "",
-    }
+    assert result.data.get("command") == command
+    assert result.data.get("exit_code") == 0
+    assert result.data.get("stdout") == f"{tmp_path.resolve()}\n"
+    assert result.data.get("stderr") == ""
+    assert result.data.get("timeout") == 30
+    assert result.data.get("truncated") is False
 
 
 def test_shell_exec_tool_rejects_invalid_command_arguments(tmp_path: Path) -> None:
@@ -55,3 +55,34 @@ def test_tools_package_and_default_registry_export_shell_exec_tool() -> None:
     assert "ShellExecTool" in __import__("voidcode.tools", fromlist=["__all__"]).__all__
     assert registry.resolve("shell_exec").definition.name == "shell_exec"
     assert registry.resolve("shell_exec").definition.read_only is False
+
+
+def test_shell_exec_tool_respects_timeout(tmp_path: Path) -> None:
+    tool = ShellExecTool()
+
+    with pytest.raises(ValueError, match="timed out"):
+        tool.invoke(
+            ToolCall(
+                tool_name="shell_exec",
+                arguments={
+                    "command": f'"{sys.executable}" -c "import time; time.sleep(2)"',
+                    "timeout": 1,
+                },
+            ),
+            workspace=tmp_path,
+        )
+
+
+def test_shell_exec_tool_truncates_large_output(tmp_path: Path) -> None:
+    tool = ShellExecTool()
+    command = f'"{sys.executable}" -c "import sys; sys.stdout.write(chr(120)*250000)"'
+
+    result = tool.invoke(
+        ToolCall(tool_name="shell_exec", arguments={"command": command}),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert isinstance(result.content, str)
+    assert len(result.content) == 200000
+    assert result.data.get("truncated") is True

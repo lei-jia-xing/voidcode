@@ -26,7 +26,7 @@ import json
 import os
 import socket
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 from .contracts import ToolCall, ToolDefinition, ToolResult
 
@@ -39,9 +39,9 @@ class LspOperation(enum.Enum):
     DOCUMENT_SYMBOL = "textDocument/documentSymbol"
     WORKSPACE_SYMBOL = "workspace/symbol"
     GO_TO_IMPLEMENTATION = "textDocument/implementation"
-    PREPARE_CALL_HIERARCHY = "textDocument/callHierarchy/prepareCallHierarchy"
-    INCOMING_CALLS = "textDocument/callHierarchy/incomingCalls"
-    OUTGOING_CALLS = "textDocument/callHierarchy/outgoingCalls"
+    PREPARE_CALL_HIERARCHY = "textDocument/prepareCallHierarchy"
+    INCOMING_CALLS = "callHierarchy/incomingCalls"
+    OUTGOING_CALLS = "callHierarchy/outgoingCalls"
 
 
 class LspTool:
@@ -131,7 +131,7 @@ class LspTool:
 
         # Prepare a minimal JSON-RPC payload for the requested operation
         position = {"line": line_value - 1, "character": character_value - 1}
-        textDocument = {"uri": f"file://{str(candidate)}"}
+        textDocument = {"uri": candidate.as_uri()}
         params: dict[str, Any] = {"textDocument": textDocument, "position": position}
         if operation == LspOperation.WORKSPACE_SYMBOL:
             params = {"query": ""}
@@ -147,10 +147,17 @@ class LspTool:
         response = self._send_request(operation.value, params)
         if response is None:
             raise ValueError("No response from LSP server")
-        # If the LSP server returns an error-like payload, surface it
-        if "error" in response or "code" in response:
-            error_value = response.get("error")
-            raise ValueError(str(error_value) if isinstance(error_value, str) else str(response))
+        # If the LSP server returns a JSON-RPC error payload, surface it
+        error_value = response.get("error")
+        if isinstance(error_value, dict):
+            error_dict = cast(dict[str, object], error_value)
+            code = error_dict.get("code")
+            message = error_dict.get("message")
+            if code is not None or message is not None:
+                raise ValueError(f"LSP error: code={code}, message={message}")
+            raise ValueError(f"LSP error: {error_dict}")
+        if error_value is not None:
+            raise ValueError(f"LSP error: {error_value}")
 
         return ToolResult(
             tool_name=self.definition.name,
