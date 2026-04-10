@@ -8,6 +8,7 @@ from voidcode.runtime.skills import (
     DEFAULT_SKILL_SEARCH_PATHS,
     LocalSkillMetadataLoader,
     SkillRegistry,
+    SkillRuntimeContext,
     parse_skill_frontmatter,
 )
 
@@ -69,6 +70,33 @@ def test_skill_registry_discovers_and_resolves_skills(tmp_path: Path) -> None:
 
     assert tuple(registry.skills) == ("summarize",)
     assert registry.resolve("summarize").description == "Summarize selected files."
+
+
+def test_skill_registry_builds_runtime_contexts_from_skill_bodies(tmp_path: Path) -> None:
+    skill_dir = tmp_path / ".voidcode" / "skills" / "summarize"
+    skill_dir.mkdir(parents=True)
+    skill_contents = (
+        "---\n"
+        "name: summarize\n"
+        "description: Summarize selected files.\n"
+        "---\n"
+        "# Summarize\n"
+        "Use concise bullet points.\n"
+    )
+    (skill_dir / "SKILL.md").write_text(
+        skill_contents,
+        encoding="utf-8",
+    )
+
+    registry = SkillRegistry.discover(workspace=tmp_path)
+
+    assert registry.runtime_contexts() == (
+        SkillRuntimeContext(
+            name="summarize",
+            description="Summarize selected files.",
+            content="# Summarize\nUse concise bullet points.",
+        ),
+    )
 
 
 def test_skill_loader_rejects_workspace_escape_search_paths(tmp_path: Path) -> None:

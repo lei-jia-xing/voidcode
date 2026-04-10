@@ -16,6 +16,14 @@ class SkillMetadata:
     description: str
     directory: Path
     entry_path: Path
+    content: str
+
+
+@dataclass(frozen=True, slots=True)
+class SkillRuntimeContext:
+    name: str
+    description: str
+    content: str
 
 
 @dataclass(slots=True)
@@ -41,6 +49,16 @@ class SkillRegistry:
 
     def all(self) -> tuple[SkillMetadata, ...]:
         return tuple(self.skills.values())
+
+    def runtime_contexts(self) -> tuple[SkillRuntimeContext, ...]:
+        return tuple(
+            SkillRuntimeContext(
+                name=skill.name,
+                description=skill.description,
+                content=skill.content,
+            )
+            for skill in self.all()
+        )
 
     def resolve(self, skill_name: str) -> SkillMetadata:
         try:
@@ -75,12 +93,14 @@ class LocalSkillMetadataLoader:
 
     def load(self, entry_path: Path) -> SkillMetadata:
         resolved_entry_path = entry_path.resolve()
-        metadata = parse_skill_frontmatter(resolved_entry_path.read_text(encoding="utf-8"))
+        contents = resolved_entry_path.read_text(encoding="utf-8")
+        metadata = parse_skill_frontmatter(contents)
         return SkillMetadata(
             name=metadata["name"],
             description=metadata["description"],
             directory=resolved_entry_path.parent,
             entry_path=resolved_entry_path,
+            content=_skill_body(contents),
         )
 
 
@@ -114,6 +134,18 @@ def parse_skill_frontmatter(contents: str) -> dict[str, str]:
         missing = ", ".join(sorted(missing_keys))
         raise ValueError(f"skill frontmatter missing required fields: {missing}")
     return parsed
+
+
+def _skill_body(contents: str) -> str:
+    lines = contents.splitlines()
+    if not lines or lines[0].strip() != _FRONTMATTER_DELIMITER:
+        raise ValueError("skill file must begin with a simplified frontmatter block")
+
+    for index, raw_line in enumerate(lines[1:], start=2):
+        if raw_line.strip() == _FRONTMATTER_DELIMITER:
+            return "\n".join(lines[index:]).strip()
+
+    raise ValueError("skill frontmatter must terminate with a closing '---' line")
 
 
 def _resolve_workspace_relative_path(*, workspace: Path, configured_path: str) -> Path:
