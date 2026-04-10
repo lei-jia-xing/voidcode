@@ -14,6 +14,101 @@ def _assert_within_workspace(workspace: Path, rel_path: Path) -> None:
         raise ValueError("patch operation must affect paths inside the workspace")
 
 
+def _strip_diff_prefix(path_text: str) -> str:
+    if path_text.startswith("a/") or path_text.startswith("b/"):
+        return path_text[2:]
+    return path_text
+
+
+def _parse_diff_git_paths(line: str) -> tuple[str, str] | None:
+    quoted_prefix = 'diff --git "a/'
+    if line.startswith(quoted_prefix):
+        quoted_marker = '" "b/'
+        split_index = line.find(quoted_marker, len(quoted_prefix))
+        if split_index == -1 or not line.endswith('"'):
+            return None
+        old_path = line[len(quoted_prefix) : split_index]
+        new_path = line[split_index + len(quoted_marker) : -1]
+        return old_path, new_path
+
+    plain_prefix = "diff --git a/"
+    if not line.startswith(plain_prefix):
+        return None
+
+    split_index = line.rfind(" b/")
+    if split_index == -1 or split_index < len(plain_prefix):
+        return None
+
+    old_path = line[len(plain_prefix) : split_index]
+    new_path = line[split_index + len(" b/") :]
+    return old_path, new_path
+
+
+def _changes_from_patch(patch_text: str) -> list[dict[str, object]]:
+    changes: list[dict[str, object]] = []
+    block_old_path: str | None = None
+    block_new_path: str | None = None
+    patch_old_path: str | None = None
+
+    def flush_block() -> None:
+        if block_old_path is None and block_new_path is None:
+            return
+        if block_old_path is None and block_new_path is not None:
+            changes.append({"path": block_new_path, "status": "A"})
+        elif block_old_path is not None and block_new_path is None:
+            changes.append({"path": block_old_path, "status": "D"})
+        elif block_old_path == block_new_path:
+            changes.append({"path": block_new_path, "status": "M"})
+        else:
+            changes.append({"path": block_new_path, "old_path": block_old_path, "status": "R"})
+
+    for line in patch_text.splitlines():
+        if line.startswith("diff --git "):
+            flush_block()
+            diff_paths = _parse_diff_git_paths(line)
+            if diff_paths is None:
+                block_old_path = None
+                block_new_path = None
+            else:
+                block_old_path, block_new_path = diff_paths
+            patch_old_path = None
+            continue
+
+        if line.startswith("rename from "):
+            block_old_path = line[len("rename from ") :].strip()
+            continue
+
+        if line.startswith("rename to "):
+            block_new_path = line[len("rename to ") :].strip()
+            continue
+
+        if line.startswith("--- "):
+            old_marker = line[4:].strip()
+            patch_old_path = None if old_marker == "/dev/null" else _strip_diff_prefix(old_marker)
+            continue
+
+        if not line.startswith("+++ "):
+            continue
+
+        new_marker = line[4:].strip()
+        patch_new_path = None if new_marker == "/dev/null" else _strip_diff_prefix(new_marker)
+        block_old_path = patch_old_path
+        block_new_path = patch_new_path
+        patch_old_path = None
+
+    flush_block()
+
+    deduped: list[dict[str, object]] = []
+    seen: set[tuple[object, ...]] = set()
+    for change in changes:
+        key = (change.get("status"), change.get("old_path"), change.get("path"))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(change)
+    return deduped
+
+
 class ApplyPatchTool:
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="apply_patch",
@@ -53,28 +148,7 @@ class ApplyPatchTool:
                 error = apply.stdout or "Patch apply failed"
                 raise ValueError(error)
 
-            diff = subprocess.run(
-                ["git", "diff", "--name-status"],
-                cwd=str(workspace),
-                stdout=subprocess.PIPE,
-                text=True,
-            )
-
-            changes: list[dict[str, object]] = []
-            for line in diff.stdout.splitlines():
-                if not line.strip():
-                    continue
-                if line.startswith("R"):
-                    parts = line.split("\t")
-                    if len(parts) >= 3:
-                        old_path, new_path = parts[1], parts[2]
-                        changes.append({"path": new_path, "old_path": old_path, "status": "R"})
-                else:
-                    parts = line.split("\t")
-                    if len(parts) != 2:
-                        continue
-                    status, path = parts[0], parts[1]
-                    changes.append({"path": path, "status": status})
+            changes = _changes_from_patch(patch_text)
 
             summary_lines: list[str] = []
             for c in changes:

@@ -66,8 +66,9 @@ def test_apply_patch_tool_applies_diff_in_real_git_workspace(tmp_path: Path) -> 
 
     assert result.status == "ok"
     assert target.read_text(encoding="utf-8") == "hello new\n"
-    assert result.data.get("count") == 0
-    assert result.content == "patch applied"
+    assert result.data.get("count") == 1
+    assert result.data.get("changes") == [{"path": "hello.txt", "status": "M"}]
+    assert result.content == "M hello.txt"
     assert not (tmp_path / ".voidcode_apply_patch.patch").exists()
 
 
