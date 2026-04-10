@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import base64
+import ipaddress
 import re
+import socket
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import ClassVar
@@ -11,6 +14,64 @@ from .contracts import ToolCall, ToolDefinition, ToolResult
 
 MAX_RESPONSE_SIZE = 5 * 1024 * 1024
 DEFAULT_TIMEOUT = 30
+
+
+def _is_private_or_loopback_host(hostname: str) -> bool:
+    blocked_hostnames = {
+        "localhost",
+        "metadata.google.internal",
+        "metadata",
+    }
+    lower = hostname.lower().strip(".")
+    if lower in blocked_hostnames:
+        return True
+
+    try:
+        ip = ipaddress.ip_address(lower)
+        return bool(
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_reserved
+            or ip.is_multicast
+            or ip.is_unspecified
+        )
+    except ValueError:
+        pass
+
+    try:
+        infos = socket.getaddrinfo(hostname, None)
+    except socket.gaierror:
+        return False
+
+    for info in infos:
+        address = info[4][0]
+        try:
+            ip = ipaddress.ip_address(address)
+        except ValueError:
+            continue
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_reserved
+            or ip.is_multicast
+            or ip.is_unspecified
+        ):
+            return True
+    return False
+
+
+def _validate_fetch_url(url_value: str) -> None:
+    parsed = urllib.parse.urlparse(url_value)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError("web_fetch url must start with http:// or https://")
+
+    if not parsed.hostname:
+        raise ValueError("web_fetch url must include a hostname")
+
+    if _is_private_or_loopback_host(parsed.hostname):
+        raise ValueError("web_fetch target host is blocked for security reasons")
 
 
 def _extract_text_from_html(html: str) -> str:
@@ -132,8 +193,7 @@ class WebFetchTool:
         if not isinstance(url_value, str):
             raise ValueError("web_fetch requires a string url argument")
 
-        if not url_value.startswith("http://") and not url_value.startswith("https://"):
-            raise ValueError("web_fetch url must start with http:// or https://")
+        _validate_fetch_url(url_value)
 
         format_value = call.arguments.get("format", "markdown")
         if not isinstance(format_value, str) or format_value not in ("text", "markdown", "html"):
@@ -184,10 +244,14 @@ class WebFetchTool:
                 content_type = response.headers.get("Content-Type", "")
                 content_length = response.headers.get("Content-Length")
 
-                if content_length and int(content_length) > MAX_RESPONSE_SIZE:
-                    raise ValueError(
-                        f"Response too large (exceeds {MAX_RESPONSE_SIZE // 1024 // 1024}MB limit)"
-                    )
+                if content_length:
+                    try:
+                        parsed_length = int(content_length)
+                    except (TypeError, ValueError):
+                        parsed_length = None
+                    if parsed_length is not None and parsed_length > MAX_RESPONSE_SIZE:
+                        limit_mb = MAX_RESPONSE_SIZE // 1024 // 1024
+                        raise ValueError(f"Response too large (exceeds {limit_mb}MB limit)")
 
                 data = response.read()
 

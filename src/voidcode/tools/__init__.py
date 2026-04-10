@@ -1,4 +1,5 @@
 from .apply_patch import ApplyPatchTool
+from .code_search import CodeSearchTool
 from .contracts import ToolCall, ToolDefinition, ToolResult, ToolResultStatus
 from .edit import EditTool
 from .glob import GlobTool
@@ -26,6 +27,7 @@ __all__ = [
     "LspTool",
     "MultiEditTool",
     "ApplyPatchTool",
+    "CodeSearchTool",
     "TodoWriteTool",
     "ToolCall",
     "ToolDefinition",

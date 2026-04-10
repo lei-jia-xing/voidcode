@@ -103,6 +103,9 @@ class LineTrimmedReplacer:
 
 
 class BlockAnchorReplacer:
+    _MAX_ANCHOR_LENGTH = 200
+    _MAX_LINES_SCAN = 2000
+
     @staticmethod
     def find(content: str, old: str) -> list[str]:
         # Enhanced: use anchors with simple Levenshtein similarity
@@ -118,8 +121,16 @@ class BlockAnchorReplacer:
         first_anchor = search_lines[0].strip()
         last_anchor = search_lines[-1].strip()
 
-        # simple Levenshtein distance implementation
+        # simple Levenshtein distance implementation (bounded)
         def _lev(a: str, b: str) -> int:
+            if abs(len(a) - len(b)) > max(1, max(len(a), len(b)) // 4):
+                return max(len(a), len(b))
+
+            if len(a) > BlockAnchorReplacer._MAX_ANCHOR_LENGTH:
+                a = a[: BlockAnchorReplacer._MAX_ANCHOR_LENGTH]
+            if len(b) > BlockAnchorReplacer._MAX_ANCHOR_LENGTH:
+                b = b[: BlockAnchorReplacer._MAX_ANCHOR_LENGTH]
+
             m, n = len(a), len(b)
             dp = [[0] * (n + 1) for _ in range(m + 1)]
             for x in range(m + 1):
@@ -145,11 +156,13 @@ class BlockAnchorReplacer:
             return d <= max(1, max_len // 4)
 
         # Try to locate blocks bounded by anchors with similarity tolerance
-        for i in range(len(original_lines)):
+        max_scan = min(len(original_lines), BlockAnchorReplacer._MAX_LINES_SCAN)
+        for i in range(max_scan):
             if not similar(original_lines[i].strip(), first_anchor):
                 continue
             # search a corresponding end line with similarity to last_anchor
-            for j in range(i + 2, len(original_lines)):
+            upper = min(len(original_lines), i + BlockAnchorReplacer._MAX_LINES_SCAN)
+            for j in range(i + 2, upper):
                 if similar(original_lines[j].strip(), last_anchor):
                     # extract the block from i to j inclusive
                     block = "\n".join(original_lines[i : j + 1])

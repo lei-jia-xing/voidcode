@@ -35,7 +35,7 @@ class MultiEditTool:
         if not target.exists() or not target.is_file():
             raise ValueError(f"multi_edit target does not exist: {path_value}")
 
-        relative_target = str(target.relative_to(workspace_root))
+        relative_target = target.relative_to(workspace_root).as_posix()
         edits_value = call.arguments.get("edits", [])
         edits: list[object] = []
         if isinstance(edits_value, list):

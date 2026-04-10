@@ -24,6 +24,12 @@ class _StubResponse:
         return self._content
 
 
+class _BadLengthResponse(_StubResponse):
+    def __init__(self, *, content: bytes, content_type: str = "text/html") -> None:
+        super().__init__(content=content, content_type=content_type)
+        self.headers = {"Content-Type": content_type, "Content-Length": "abc"}
+
+
 def test_webfetch_tool_rejects_invalid_url() -> None:
     tool = WebFetchTool()
 
@@ -119,3 +125,31 @@ def test_webfetch_returns_attachment_for_image() -> None:
     data_uri = attachment.get("data_uri")
     assert isinstance(data_uri, str)
     assert data_uri.startswith("data:image/png;base64,")
+
+
+def test_webfetch_rejects_localhost_targets() -> None:
+    tool = WebFetchTool()
+    with pytest.raises(ValueError, match="blocked"):
+        tool.invoke(
+            ToolCall(
+                tool_name="web_fetch",
+                arguments={"url": "http://127.0.0.1:8080", "format": "text"},
+            ),
+            workspace=Path("/tmp"),
+        )
+
+
+def test_webfetch_tolerates_invalid_content_length_header() -> None:
+    tool = WebFetchTool()
+    html = b"<html><body>ok</body></html>"
+    with patch("urllib.request.urlopen", return_value=_BadLengthResponse(content=html)):
+        result = tool.invoke(
+            ToolCall(
+                tool_name="web_fetch",
+                arguments={"url": "https://example.com", "format": "markdown"},
+            ),
+            workspace=Path("/tmp"),
+        )
+
+    assert result.status == "ok"
+    assert isinstance(result.content, str)

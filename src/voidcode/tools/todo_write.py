@@ -68,7 +68,7 @@ class TodoWriteTool:
             status="ok",
             content=f"Updated {len(normalized)} todos",
             data={
-                "path": str(store_path.relative_to(workspace.resolve())),
+                "path": store_path.relative_to(workspace.resolve()).as_posix(),
                 "summary": summary,
             },
         )

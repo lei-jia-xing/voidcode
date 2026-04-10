@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fnmatch
 from pathlib import Path
 from typing import ClassVar, cast
 
@@ -53,6 +54,31 @@ def _render_tree(
         lines.append(f"{child_indent}{file}")
 
     return lines
+
+
+def _is_ignored(
+    *,
+    relative_path: Path,
+    all_ignore_patterns: set[str],
+) -> bool:
+    rel_posix = relative_path.as_posix()
+    relative_parts = relative_path.parts
+    for pattern in all_ignore_patterns:
+        p = pattern.strip()
+        if not p:
+            continue
+
+        # Keep backward-compatible simple name ignores (e.g. "node_modules")
+        if p in relative_parts:
+            return True
+
+        if fnmatch.fnmatch(rel_posix, p):
+            return True
+
+        # Support directory-style glob ignores like "build/**"
+        if p.endswith("/**") and rel_posix.startswith(p[:-3].rstrip("/")):
+            return True
+    return False
 
 
 class ListTool:
@@ -114,10 +140,11 @@ class ListTool:
                     break
 
                 try:
-                    relative_parts = item.relative_to(workspace_root).parts
+                    relative_path = item.relative_to(workspace_root)
                 except ValueError:
-                    relative_parts = item.parts
-                if any(ignore in relative_parts for ignore in all_ignore):
+                    relative_path = item
+
+                if _is_ignored(relative_path=relative_path, all_ignore_patterns=all_ignore):
                     continue
 
                 item_str = item.as_posix()

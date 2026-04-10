@@ -79,8 +79,20 @@ class LspTool:
 
         if not isinstance(file_path, str):
             raise ValueError("lsp requires a string 'filePath' argument")
-        if not isinstance(line, int) or not isinstance(character, int):
-            raise ValueError("lsp requires integer 'line' and 'character' arguments (1-based)")
+        if isinstance(line, (int, float)):
+            line_value = int(line)
+        else:
+            line_value = None
+
+        if isinstance(character, (int, float)):
+            character_value = int(character)
+        else:
+            character_value = None
+
+        if line_value is None or character_value is None:
+            raise ValueError("lsp requires numeric 'line' and 'character' arguments (1-based)")
+        if line_value < 1 or character_value < 1:
+            raise ValueError("lsp line and character must be >= 1")
         if op_value is None:
             raise ValueError("lsp invocation requires 'operation' argument")
 
@@ -118,7 +130,7 @@ class LspTool:
             raise ValueError(f"LSP server not available at {self._host}:{self._port}")
 
         # Prepare a minimal JSON-RPC payload for the requested operation
-        position = {"line": max(0, int(line) - 1), "character": max(0, int(character) - 1)}
+        position = {"line": line_value - 1, "character": character_value - 1}
         textDocument = {"uri": f"file://{str(candidate)}"}
         params: dict[str, Any] = {"textDocument": textDocument, "position": position}
         if operation == LspOperation.WORKSPACE_SYMBOL:

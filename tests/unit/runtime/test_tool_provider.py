@@ -14,20 +14,20 @@ from voidcode.runtime.service import (
 )
 from voidcode.runtime.tool_provider import BuiltinToolProvider
 from voidcode.tools import (
+    CodeSearchTool,
     EditTool,
     GlobTool,
     GrepTool,
     ListTool,
+    MultiEditTool,
     ReadFileTool,
     ShellExecTool,
+    TodoWriteTool,
     ToolCall,
     WebFetchTool,
     WebSearchTool,
     WriteFileTool,
 )
-from voidcode.tools.code_search import CodeSearchTool
-from voidcode.tools.multi_edit import MultiEditTool
-from voidcode.tools.todo_write import TodoWriteTool
 
 
 @dataclass(slots=True)
@@ -154,3 +154,8 @@ def test_runtime_default_registry_behavior_remains_unchanged(tmp_path: Path) -> 
     assert response.events[3].payload == {"tool": "grep"}
     assert response.events[5].event_type == "runtime.tool_completed"
     assert response.events[5].payload["pattern"] == "alpha"
+
+
+def test_tools_package_exports_code_search_tool() -> None:
+    tools_module = __import__("voidcode.tools", fromlist=["__all__"])
+    assert "CodeSearchTool" in tools_module.__all__
