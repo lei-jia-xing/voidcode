@@ -282,8 +282,8 @@ class VoidCodeRuntime:
         )
 
         applied_skill_contexts = self._applied_skill_contexts(session.metadata)
-        if applied_skill_contexts:
-            frozen_applied_skills = self._frozen_applied_skill_payloads(applied_skill_contexts)
+        frozen_applied_skills = self._frozen_applied_skill_payloads(applied_skill_contexts)
+        if self._config.skills is not None and self._config.skills.enabled is True:
             session = SessionState(
                 session=session.session,
                 status=session.status,
@@ -294,6 +294,7 @@ class VoidCodeRuntime:
                     "applied_skill_payloads": [dict(skill) for skill in frozen_applied_skills],
                 },
             )
+        if applied_skill_contexts:
             sequence += 1
             yield RuntimeStreamChunk(
                 kind="event",
@@ -1123,6 +1124,8 @@ class VoidCodeRuntime:
             if isinstance(persisted, list):
                 persisted_values = cast(list[object], persisted)
                 persisted_names = [item for item in persisted_values if isinstance(item, str)]
+                if not persisted_names:
+                    return ()
                 names = set(persisted_names)
                 if names:
                     return tuple(
