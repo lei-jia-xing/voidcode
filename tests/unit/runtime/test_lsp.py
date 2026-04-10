@@ -1,19 +1,37 @@
 from __future__ import annotations
 
 from importlib import import_module
+from pathlib import Path
 from typing import Any
 
-from voidcode.runtime.config import RuntimeLspConfig
+import pytest
+
+from voidcode.runtime.config import RuntimeLspConfig, RuntimeLspServerConfig
 
 
-def _load_lsp_symbols() -> tuple[Any, Any]:
+def _load_lsp_symbols() -> tuple[Any, ...]:
     module: Any = import_module("voidcode.runtime.lsp")
-    return module.DisabledLspManager, module.LspConfigState
+    return (
+        module.DisabledLspManager,
+        module.LspConfigState,
+        module.ManagedLspManager,
+        module.LspRequest,
+        module.build_lsp_manager,
+    )
 
 
 DisabledLspManager: Any
 LspConfigState: Any
-DisabledLspManager, LspConfigState = _load_lsp_symbols()
+ManagedLspManager: Any
+LspRequest: Any
+build_lsp_manager: Any
+(
+    DisabledLspManager,
+    LspConfigState,
+    ManagedLspManager,
+    LspRequest,
+    build_lsp_manager,
+) = _load_lsp_symbols()
 
 
 def test_lsp_config_state_defaults_to_disabled_with_no_servers() -> None:
@@ -22,6 +40,7 @@ def test_lsp_config_state_defaults_to_disabled_with_no_servers() -> None:
     assert state.configured_enabled is False
     assert state.servers == {}
     assert state.resolve("pyright") is None
+    assert state.default_server_name() is None
 
 
 def test_lsp_config_state_wraps_runtime_lsp_config_servers() -> None:
@@ -29,8 +48,8 @@ def test_lsp_config_state_wraps_runtime_lsp_config_servers() -> None:
         RuntimeLspConfig(
             enabled=True,
             servers={
-                "pyright": {"command": ["pyright-langserver", "--stdio"]},
-                "ruff": {"command": ["ruff", "server"]},
+                "pyright": RuntimeLspServerConfig(command=("pyright-langserver", "--stdio")),
+                "ruff": RuntimeLspServerConfig(command=("ruff", "server"), languages=("python",)),
             },
         )
     )
@@ -39,8 +58,8 @@ def test_lsp_config_state_wraps_runtime_lsp_config_servers() -> None:
 
     assert state.configured_enabled is True
     assert tuple(state.servers) == ("pyright", "ruff")
-    assert pyright_server is not None
-    assert pyright_server.definition == {"command": ["pyright-langserver", "--stdio"]}
+    assert pyright_server == RuntimeLspServerConfig(command=("pyright-langserver", "--stdio"))
+    assert state.default_server_name() == "pyright"
     assert state.resolve("missing") is None
 
 
@@ -48,7 +67,7 @@ def test_disabled_lsp_manager_reports_configured_servers_without_runtime_availab
     manager = DisabledLspManager(
         RuntimeLspConfig(
             enabled=True,
-            servers={"pyright": {"command": ["pyright-langserver", "--stdio"]}},
+            servers={"pyright": RuntimeLspServerConfig(command=("pyright-langserver", "--stdio"))},
         )
     )
 
@@ -60,7 +79,63 @@ def test_disabled_lsp_manager_reports_configured_servers_without_runtime_availab
     assert state.configuration is manager.configuration
     assert tuple(state.servers) == ("pyright",)
     assert state.servers["pyright"].configured is True
+    assert state.servers["pyright"].status == "stopped"
     assert state.servers["pyright"].available is False
+
+
+def test_disabled_lsp_manager_rejects_requests() -> None:
+    manager = DisabledLspManager()
+
+    with pytest.raises(ValueError, match="disabled"):
+        _ = manager.request(
+            LspRequest(
+                server_name=None,
+                method="textDocument/definition",
+                params={},
+                workspace=Path("."),
+            )
+        )
+
+
+def test_build_lsp_manager_returns_managed_manager_when_enabled_and_configured() -> None:
+    manager = build_lsp_manager(
+        RuntimeLspConfig(
+            enabled=True,
+            servers={"pyright": RuntimeLspServerConfig(command=("pyright-langserver", "--stdio"))},
+        )
+    )
+
+    state = manager.current_state()
+
+    assert isinstance(manager, ManagedLspManager)
+    assert state.mode == "managed"
+    assert state.servers["pyright"].status == "stopped"
+
+
+def test_managed_lsp_manager_marks_failed_startup_when_command_is_missing(tmp_path: Path) -> None:
+    manager = ManagedLspManager(
+        RuntimeLspConfig(
+            enabled=True,
+            servers={
+                "broken": RuntimeLspServerConfig(command=("definitely-not-a-real-lsp-binary",))
+            },
+        )
+    )
+
+    request = LspRequest(
+        server_name="broken",
+        method="textDocument/definition",
+        params={"textDocument": {"uri": (tmp_path / "sample.py").as_uri()}},
+        workspace=tmp_path,
+    )
+
+    with pytest.raises(ValueError, match="failed to start LSP server broken"):
+        _ = manager.request(request)
+
+    state = manager.current_state()
+    assert state.servers["broken"].status == "failed"
+    assert state.servers["broken"].available is False
+    assert state.servers["broken"].last_error is not None
 
 
 def test_lsp_operation_strings_match_protocol_method_names() -> None:
