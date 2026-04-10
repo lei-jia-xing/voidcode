@@ -1,34 +1,23 @@
-"""LSP Tool: basic client for Language Server Protocol queries.
-
-This tool provides a minimal, read-only interface to an external LSP server
-via a simple JSON-RPC over TCP/localhost. It supports a subset of common LSP
-operations requested by the system:
-- goToDefinition
-- findReferences
-- hover
-- documentSymbol
-- workspaceSymbol
-- goToImplementation
-- prepareCallHierarchy
-- incomingCalls
-- outgoingCalls
-
-Note: This is intentionally lightweight. It performs a best-effort available
-check and will return a helpful error message if no LSP server is configured or
-reachable. The actual JSON-RPC framing follows the LSP Content-Length header
-convention.
-"""
+"""LSP Tool: read-only adapter over the runtime-managed LSP subsystem."""
 
 from __future__ import annotations
 
 import enum
-import json
-import os
-import socket
 from pathlib import Path
-from typing import Any, ClassVar, cast
+from typing import Any, ClassVar, Protocol, cast
 
 from .contracts import ToolCall, ToolDefinition, ToolResult
+
+
+class LspRequester(Protocol):
+    def __call__(
+        self,
+        *,
+        server_name: str | None,
+        method: str,
+        params: dict[str, object],
+        workspace: Path,
+    ) -> Any: ...
 
 
 @enum.unique
@@ -45,14 +34,6 @@ class LspOperation(enum.Enum):
 
 
 class LspTool:
-    """Tool to interact with an external LSP server.
-
-    The tool validates that an LSP server is reachable via environment
-    configuration and then issues a single JSON-RPC request corresponding to the
-    selected operation.
-    """
-
-    # Tool contract definition
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="lsp",
         description="LSP client for basic code intelligence lookups.",
@@ -61,23 +42,23 @@ class LspTool:
             "filePath": {"type": "string"},
             "line": {"type": "integer"},
             "character": {"type": "integer"},
+            "server": {"type": "string"},
         },
         read_only=True,
     )
 
-    def __init__(self) -> None:
-        # Cached server address; resolved on first use
-        self._host, self._port = self._resolve_server_address()
-        self._initialized = False
+    def __init__(self, *, requester: LspRequester) -> None:
+        self._requester = requester
 
-    # Public API expected by the runtime
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
-        # Extract args
         op_value = call.arguments.get("operation")
         file_path = call.arguments.get("filePath")
         line = call.arguments.get("line")
         character = call.arguments.get("character")
+        server = call.arguments.get("server")
 
+        if server is not None and not isinstance(server, str):
+            raise ValueError("lsp requires a string 'server' argument when provided")
         if not isinstance(file_path, str):
             raise ValueError("lsp requires a string 'filePath' argument")
         if isinstance(line, (int, float)):
@@ -97,14 +78,12 @@ class LspTool:
         if op_value is None:
             raise ValueError("lsp invocation requires 'operation' argument")
 
-        # Normalize operation
         try:
             if isinstance(op_value, LspOperation):
                 operation = op_value
             else:
                 operation = LspOperation(op_value)
         except Exception:
-            # Be permissive: allow a string key like "GO_TO_DEFINITION" to map to enum
             if isinstance(op_value, str):
                 try:
                     operation = LspOperation[op_value]
@@ -113,7 +92,6 @@ class LspTool:
             else:
                 raise ValueError(f"Unsupported LSP operation: {op_value}") from None
 
-        # Resolve file path and ensure it's inside workspace (mirror read_file.py)
         relative_path = Path(file_path)
         workspace_root = workspace.resolve()
         candidate = (workspace_root / relative_path).resolve()
@@ -122,181 +100,62 @@ class LspTool:
         if not candidate.is_file():
             raise ValueError(f"lsp target does not exist: {file_path}")
 
-        # Ensure server is available
-        if not self._host or not self._port:
-            raise ValueError(
-                "LSP server host/port not configured. Set VOIDCODE_LSP_HOST and VOIDCODE_LSP_PORT."
-            )
-        if not self._server_is_available():
-            raise ValueError(f"LSP server not available at {self._host}:{self._port}")
-
-        self._ensure_initialized(workspace=workspace_root)
-
-        # Prepare a minimal JSON-RPC payload for the requested operation
         position = {"line": line_value - 1, "character": character_value - 1}
-        textDocument = {"uri": candidate.as_uri()}
-        params: dict[str, Any] = {"textDocument": textDocument, "position": position}
+        text_document = {"uri": candidate.as_uri()}
+        params: dict[str, object] = {"textDocument": text_document, "position": position}
         if operation == LspOperation.WORKSPACE_SYMBOL:
             params = {"query": ""}
-        if operation == LspOperation.PREPARE_CALL_HIERARCHY:
-            params = {"textDocument": textDocument, "position": position}
 
         if operation in (LspOperation.INCOMING_CALLS, LspOperation.OUTGOING_CALLS):
-            prepare_response = self._send_request(
-                LspOperation.PREPARE_CALL_HIERARCHY.value,
-                {"textDocument": textDocument, "position": position},
+            prepare_result = self._requester(
+                server_name=server,
+                method=LspOperation.PREPARE_CALL_HIERARCHY.value,
+                params={"textDocument": text_document, "position": position},
+                workspace=workspace_root,
             )
-            if prepare_response is None:
-                raise ValueError("No response from LSP server for call hierarchy prepare")
+            prepare_response = prepare_result.response
             prepare_error = prepare_response.get("error")
             if prepare_error is not None:
                 raise ValueError(f"LSP prepareCallHierarchy error: {prepare_error}")
 
-            prepare_result = prepare_response.get("result")
+            prepare_payload = prepare_response.get("result")
             item: dict[str, object] | None = None
-            if isinstance(prepare_result, list) and prepare_result:
-                first = cast(object, prepare_result[0])
+            if isinstance(prepare_payload, list) and prepare_payload:
+                first = cast(object, prepare_payload[0])
                 if isinstance(first, dict):
                     item = cast(dict[str, object], first)
-            elif isinstance(prepare_result, dict):
-                item = cast(dict[str, object], prepare_result)
-
+            elif isinstance(prepare_payload, dict):
+                item = cast(dict[str, object], prepare_payload)
             if item is None:
                 raise ValueError("LSP prepareCallHierarchy returned no item")
-
             params = {"item": item}
 
-        # Send the request
-        response = self._send_request(operation.value, params)
-        if response is None:
-            raise ValueError("No response from LSP server")
-        # If the LSP server returns a JSON-RPC error payload, surface it
-        error_value = response.get("error")
-        if isinstance(error_value, dict):
-            error_dict = cast(dict[str, object], error_value)
-            code = error_dict.get("code")
-            message = error_dict.get("message")
-            if code is not None or message is not None:
-                raise ValueError(f"LSP error: code={code}, message={message}")
-            raise ValueError(f"LSP error: {error_dict}")
+            response = self._requester(
+                server_name=server,
+                method=operation.value,
+                params=params,
+                workspace=workspace_root,
+            )
+            return ToolResult(
+                tool_name=self.definition.name,
+                status="ok",
+                data={"lsp_response": response.response},
+            )
+
+        response = self._requester(
+            server_name=server,
+            method=operation.value,
+            params=params,
+            workspace=workspace_root,
+        )
+        error_value = response.response.get("error")
         if error_value is not None:
             raise ValueError(f"LSP error: {error_value}")
-
         return ToolResult(
             tool_name=self.definition.name,
             status="ok",
-            data={"lsp_response": response},
+            data={"lsp_response": response.response},
         )
 
-    # Internal helpers
-    @staticmethod
-    def _resolve_server_address() -> tuple[str, int | None]:
-        host = os.environ.get("VOIDCODE_LSP_HOST", "127.0.0.1")
-        port = os.environ.get("VOIDCODE_LSP_PORT")
-        if port is None:
-            return host, None
-        try:
-            return host, int(port)
-        except ValueError:
-            return host, None
-
-    def _server_is_available(self) -> bool:
-        if not self._host or not self._port:
-            return False
-        try:
-            with socket.create_connection((self._host, int(self._port)), timeout=0.5):
-                return True
-        except Exception:
-            return False
-
-    def _send_request(self, method: str, params: dict[str, object]) -> dict[str, object] | None:
-        if not self._host or not self._port:
-            return None
-        # Prepare a lightweight JSON-RPC 2.0 request
-        payload = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
-        body = payload.encode("utf-8")
-        header = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
-        try:
-            with socket.create_connection((self._host, int(self._port)), timeout=3) as s:
-                s.sendall(header + body)
-                # Read response header
-                resp_header = b""
-                while b"\r\n\r\n" not in resp_header:
-                    chunk = s.recv(1)
-                    if not chunk:
-                        break
-                    resp_header += chunk
-                # Parse Content-Length
-                header_text = resp_header.decode("ascii", errors="ignore")
-                cl = None
-                for line in header_text.split("\r\n"):
-                    if line.lower().startswith("content-length:"):
-                        try:
-                            cl = int(line.split(":", 1)[1].strip())
-                        except Exception:
-                            cl = None
-                        break
-                if cl is None:
-                    return None
-                # Read body
-                body_bytes = b""
-                remaining = cl
-                while remaining > 0:
-                    chunk = s.recv(remaining)
-                    if not chunk:
-                        break
-                    body_bytes += chunk
-                    remaining -= len(chunk)
-                if not body_bytes:
-                    return None
-                return json.loads(body_bytes.decode("utf-8"))
-        except Exception:
-            return None
-
-    def _ensure_initialized(self, *, workspace: Path) -> None:
-        if self._initialized:
-            return
-
-        init_params: dict[str, object] = {
-            "processId": os.getpid(),
-            "clientInfo": {"name": "voidcode", "version": "0.1.0"},
-            "locale": "zh-CN",
-            "rootUri": workspace.as_uri(),
-            "workspaceFolders": [
-                {
-                    "uri": workspace.as_uri(),
-                    "name": workspace.name or str(workspace),
-                }
-            ],
-            "capabilities": {},
-        }
-
-        init_response = self._send_request("initialize", init_params)
-        if init_response is None:
-            raise ValueError("LSP initialize failed: no response")
-
-        init_error = init_response.get("error")
-        if init_error is not None:
-            raise ValueError(f"LSP initialize failed: {init_error}")
-
-        # initialized is a notification (no response expected)
-        self._send_notification("initialized", {})
-        self._initialized = True
-
-    def _send_notification(self, method: str, params: dict[str, object]) -> None:
-        if not self._host or not self._port:
-            return
-
-        payload = json.dumps({"jsonrpc": "2.0", "method": method, "params": params})
-        body = payload.encode("utf-8")
-        header = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
-        try:
-            with socket.create_connection((self._host, int(self._port)), timeout=3) as s:
-                s.sendall(header + body)
-        except OSError:
-            # Notification failure should not crash process unless it blocks requests later.
-            return
-
-    # Expose a convenient alias for the interface elsewhere if needed
     def __repr__(self) -> str:  # pragma: no cover
-        return f"<LspTool host={self._host} port={self._port}>"
+        return "<LspTool runtime-managed>"

@@ -892,6 +892,7 @@ def test_single_agent_runtime_executes_read_path_and_persists_config(tmp_path: P
     assert result.session.metadata["runtime_config"] == {
         "approval_mode": "allow",
         "execution_engine": "single_agent",
+        "lsp": {"configured_enabled": False, "mode": "disabled", "servers": []},
         "model": "opencode/gpt-5.4",
     }
     assert result.events[3].payload["mode"] == "single_agent"
@@ -1375,6 +1376,7 @@ def test_runtime_resume_uses_persisted_runtime_config_over_fresh_resume_override
     assert replay.session.metadata["runtime_config"] == {
         "approval_mode": "allow",
         "execution_engine": "deterministic",
+        "lsp": {"configured_enabled": False, "mode": "disabled", "servers": []},
         "model": "session/model",
     }
 

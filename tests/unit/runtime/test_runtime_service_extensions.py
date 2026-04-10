@@ -13,6 +13,7 @@ from voidcode.runtime.config import (
     RuntimeAcpConfig,
     RuntimeConfig,
     RuntimeLspConfig,
+    RuntimeLspServerConfig,
     RuntimeSkillsConfig,
 )
 from voidcode.runtime.events import EventEnvelope
@@ -130,7 +131,9 @@ def test_runtime_initializes_extension_state_from_config_when_enabled(tmp_path: 
             skills=RuntimeSkillsConfig(enabled=True),
             lsp=RuntimeLspConfig(
                 enabled=True,
-                servers={"pyright": {"command": ["pyright-langserver", "--stdio"]}},
+                servers={
+                    "pyright": RuntimeLspServerConfig(command=("pyright-langserver", "--stdio"))
+                },
             ),
             acp=RuntimeAcpConfig(enabled=True),
         ),
@@ -151,9 +154,10 @@ def test_runtime_initializes_extension_state_from_config_when_enabled(tmp_path: 
     assert provider_model.provider.name == "opencode"
     assert skill.description == "Demo skill"
     assert skill.directory == skill_dir.resolve()
-    assert lsp_state.mode == "disabled"
+    assert lsp_state.mode == "managed"
     assert lsp_state.configuration.configured_enabled is True
     assert tuple(lsp_state.servers) == ("pyright",)
+    assert lsp_state.servers["pyright"].status == "stopped"
     assert lsp_state.servers["pyright"].available is False
     assert acp_state.mode == "disabled"
     assert acp_state.configuration.configured_enabled is True
@@ -191,7 +195,9 @@ def test_runtime_retains_explicit_injected_extension_instances(tmp_path: Path) -
             skills=RuntimeSkillsConfig(enabled=True),
             lsp=RuntimeLspConfig(
                 enabled=True,
-                servers={"pyright": {"command": ["pyright-langserver", "--stdio"]}},
+                servers={
+                    "pyright": RuntimeLspServerConfig(command=("pyright-langserver", "--stdio"))
+                },
             ),
             acp=RuntimeAcpConfig(enabled=True),
         ),

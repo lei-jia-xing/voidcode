@@ -16,13 +16,16 @@ from .acp import DisabledAcpAdapter
 from .config import ExecutionEngineName, RuntimeConfig, load_runtime_config
 from .contracts import RuntimeRequest, RuntimeResponse, RuntimeStreamChunk, validate_session_id
 from .events import (
+    RUNTIME_LSP_SERVER_FAILED,
+    RUNTIME_LSP_SERVER_STARTED,
+    RUNTIME_LSP_SERVER_STOPPED,
     RUNTIME_SKILLS_APPLIED,
     RUNTIME_SKILLS_LOADED,
     RUNTIME_TOOL_HOOK_POST,
     RUNTIME_TOOL_HOOK_PRE,
     EventEnvelope,
 )
-from .lsp import DisabledLspManager
+from .lsp import LspManager, LspManagerState, LspRequest, build_lsp_manager
 from .model_provider import ModelProviderRegistry, ResolvedProviderModel, resolve_provider_model
 from .permission import (
     PendingApproval,
@@ -73,8 +76,8 @@ class ToolRegistry:
         return cls(tools={tool.definition.name: tool for tool in tools})
 
     @classmethod
-    def with_defaults(cls) -> ToolRegistry:
-        return cls.from_tools(BuiltinToolProvider().provide_tools())
+    def with_defaults(cls, *, lsp_tool: Tool | None = None) -> ToolRegistry:
+        return cls.from_tools(BuiltinToolProvider(lsp_tool=lsp_tool).provide_tools())
 
     def definitions(self) -> tuple[ToolDefinition, ...]:
         return tuple(tool.definition for tool in self.tools.values())
@@ -100,7 +103,7 @@ class VoidCodeRuntime:
     _model_provider_registry: ModelProviderRegistry
     _provider_model: ResolvedProviderModel
     _skill_registry: SkillRegistry
-    _lsp_manager: DisabledLspManager
+    _lsp_manager: LspManager
     _acp_adapter: DisabledAcpAdapter
     _graph_cache: dict[tuple[ExecutionEngineName, str], RuntimeGraph]
     _hook_recursion_env_var = "VOIDCODE_RUNNING_TOOL_HOOK"
@@ -116,7 +119,7 @@ class VoidCodeRuntime:
         session_store: SessionStore | None = None,
         model_provider_registry: ModelProviderRegistry | None = None,
         skill_registry: SkillRegistry | None = None,
-        lsp_manager: DisabledLspManager | None = None,
+        lsp_manager: LspManager | None = None,
         acp_adapter: DisabledAcpAdapter | None = None,
     ) -> None:
         self._workspace = workspace.resolve()
@@ -128,7 +131,10 @@ class VoidCodeRuntime:
             self._config.model,
             registry=self._model_provider_registry,
         )
-        self._tool_registry = tool_registry or ToolRegistry.with_defaults()
+        self._lsp_manager = lsp_manager or build_lsp_manager(self._config.lsp)
+        self._tool_registry = tool_registry or ToolRegistry.with_defaults(
+            lsp_tool=self._build_lsp_tool()
+        )
         self._graph_override = graph
         self._graph_cache = {}
         self._graph = graph or self._build_graph_for_engine_from_config(
@@ -143,8 +149,14 @@ class VoidCodeRuntime:
         )
         self._session_store = session_store or SqliteSessionStore()
         self._skill_registry = skill_registry or self._build_skill_registry()
-        self._lsp_manager = lsp_manager or DisabledLspManager(self._config.lsp)
         self._acp_adapter = acp_adapter or DisabledAcpAdapter(self._config.acp)
+
+    def __enter__(self) -> VoidCodeRuntime:
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        _ = exc_type, exc, tb
+        _ = self.shutdown_lsp()
 
     @staticmethod
     def _build_graph_for_engine(
@@ -153,14 +165,12 @@ class VoidCodeRuntime:
     ) -> RuntimeGraph:
         if engine_name == "deterministic":
             return DeterministicReadOnlyGraph()
-        if engine_name == "single_agent":
-            if provider_model.provider is None:
-                raise ValueError("single_agent execution engine requires a configured model")
-            return ProviderSingleAgentGraph(
-                provider=provider_model.provider.single_agent_provider(),
-                provider_model=provider_model,
-            )
-        raise ValueError(f"unknown execution engine: {engine_name}")
+        if provider_model.provider is None:
+            raise ValueError("single_agent execution engine requires a configured model")
+        return ProviderSingleAgentGraph(
+            provider=provider_model.provider.single_agent_provider(),
+            provider_model=provider_model,
+        )
 
     def _build_graph_for_engine_from_config(self, config: EffectiveRuntimeConfig) -> RuntimeGraph:
         # Generate cache key from config
@@ -191,6 +201,40 @@ class VoidCodeRuntime:
                 search_paths=skills_config.paths,
             )
         return SkillRegistry.discover(workspace=self._workspace)
+
+    def _build_lsp_tool(self) -> Tool | None:
+        if self._lsp_manager.current_state().mode != "managed":
+            return None
+        from ..tools.lsp import LspTool
+
+        return LspTool(requester=self.request_lsp)
+
+    def current_lsp_state(self) -> LspManagerState:
+        return self._lsp_manager.current_state()
+
+    def request_lsp(
+        self,
+        *,
+        server_name: str | None,
+        method: str,
+        params: dict[str, object],
+        workspace: Path,
+    ):
+        return self._lsp_manager.request(
+            LspRequest(
+                server_name=server_name,
+                method=method,
+                params=params,
+                workspace=workspace,
+            )
+        )
+
+    def shutdown_lsp(self) -> tuple[EventEnvelope, ...]:
+        return self._envelopes_for_lsp_events(
+            session_id="runtime",
+            start_sequence=1,
+            lsp_events=self._lsp_manager.shutdown(),
+        )
 
     def _run_with_persistence(self, request: RuntimeRequest) -> Iterator[RuntimeStreamChunk]:
         request = self._validated_request(request)
@@ -489,8 +533,23 @@ class VoidCodeRuntime:
             try:
                 tool_result = tool.invoke(plan_tool_call, workspace=self._workspace)
             except Exception as exc:
+                for lsp_event in self._envelopes_for_lsp_events(
+                    session_id=session.session.id,
+                    start_sequence=sequence + 1,
+                    lsp_events=self._lsp_manager.drain_events(),
+                ):
+                    sequence = lsp_event.sequence
+                    yield RuntimeStreamChunk(kind="event", session=session, event=lsp_event)
                 yield self._failed_chunk(session=session, sequence=sequence + 1, error=str(exc))
                 raise
+
+            for lsp_event in self._envelopes_for_lsp_events(
+                session_id=session.session.id,
+                start_sequence=sequence + 1,
+                lsp_events=self._lsp_manager.drain_events(),
+            ):
+                sequence = lsp_event.sequence
+                yield RuntimeStreamChunk(kind="event", session=session, event=lsp_event)
 
             sequence += 1
             yield RuntimeStreamChunk(
@@ -1146,7 +1205,49 @@ class VoidCodeRuntime:
         }
         if self._config.model is not None:
             runtime_config_metadata["model"] = self._config.model
+        lsp_state = self._lsp_manager.current_state()
+        runtime_config_metadata["lsp"] = {
+            "mode": lsp_state.mode,
+            "configured_enabled": lsp_state.configuration.configured_enabled,
+            "servers": list(lsp_state.configuration.servers),
+        }
         return runtime_config_metadata
+
+    @staticmethod
+    def _envelopes_for_lsp_events(
+        *,
+        session_id: str,
+        start_sequence: int,
+        lsp_events: tuple[object, ...],
+    ) -> tuple[EventEnvelope, ...]:
+        known_event_types = {
+            RUNTIME_LSP_SERVER_STARTED,
+            RUNTIME_LSP_SERVER_STOPPED,
+            RUNTIME_LSP_SERVER_FAILED,
+        }
+        envelopes: list[EventEnvelope] = []
+        sequence = start_sequence
+        for raw_event in lsp_events:
+            if isinstance(raw_event, dict):
+                raw_event_dict = cast(dict[str, object], raw_event)
+                event_type = raw_event_dict.get("event_type")
+                payload = raw_event_dict.get("payload")
+            else:
+                event_type = getattr(raw_event, "event_type", None)
+                payload = getattr(raw_event, "payload", None)
+            if event_type not in known_event_types or not isinstance(payload, dict):
+                continue
+            envelopes.append(
+                EventEnvelope(
+                    session_id=session_id,
+                    sequence=sequence,
+                    event_type=cast(str, event_type),
+                    source="runtime",
+                    payload=cast(dict[str, object], payload),
+                )
+            )
+            sequence += 1
+        return tuple(envelopes)
 
     def _permission_policy_for_session(
         self, metadata: dict[str, object] | None

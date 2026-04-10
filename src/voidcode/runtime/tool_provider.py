@@ -40,6 +40,9 @@ class ToolProvider(Protocol):
 
 
 class BuiltinToolProvider:
+    def __init__(self, *, lsp_tool: Tool | None = None) -> None:
+        self._lsp_tool = lsp_tool
+
     def provide_tools(self) -> tuple[Tool, ...]:
         tools: list[Tool] = [
             EditTool(),
@@ -53,8 +56,10 @@ class BuiltinToolProvider:
             WriteFileTool(),
         ]
 
+        if self._lsp_tool is not None:
+            tools.append(self._lsp_tool)
+
         # Add optional tools if available.
-        # NOTE: LSP is intentionally NOT part of builtin tool defaults.
         if _ApplyPatchTool is not None:
             tools.append(_ApplyPatchTool())
         if _CodeSearchTool is not None:

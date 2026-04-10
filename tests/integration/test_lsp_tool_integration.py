@@ -1,160 +1,183 @@
 from __future__ import annotations
 
-import importlib
-import json
-import socket
-import threading
+import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
 import pytest
 
-
-def _read_framed_json(conn: socket.socket) -> dict[str, object] | None:
-    header = b""
-    while b"\r\n\r\n" not in header:
-        chunk = conn.recv(1)
-        if not chunk:
-            return None
-        header += chunk
-
-    header_text = header.decode("ascii", errors="ignore")
-    content_length = None
-    for line in header_text.split("\r\n"):
-        if line.lower().startswith("content-length:"):
-            content_length = int(line.split(":", 1)[1].strip())
-            break
-    if content_length is None:
-        return None
-
-    payload = b""
-    remaining = content_length
-    while remaining > 0:
-        chunk = conn.recv(remaining)
-        if not chunk:
-            return None
-        payload += chunk
-        remaining -= len(chunk)
-
-    return json.loads(payload.decode("utf-8"))
+from voidcode.runtime.config import RuntimeConfig, RuntimeLspConfig, RuntimeLspServerConfig
+from voidcode.runtime.contracts import RuntimeRequest
+from voidcode.runtime.service import GraphRunRequest, SessionState, VoidCodeRuntime
+from voidcode.tools.contracts import ToolCall
+from voidcode.tools.lsp import LspTool
 
 
-def _send_framed_json(conn: socket.socket, message: dict[str, object]) -> None:
-    body = json.dumps(message).encode("utf-8")
-    header = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
-    conn.sendall(header + body)
+def _write_fake_lsp_server(script_path: Path) -> None:
+    script_path.write_text(
+        "import json\n"
+        "import sys\n\n"
+        "def read_message():\n"
+        '    header = b""\n'
+        '    while b"\\r\\n\\r\\n" not in header:\n'
+        "        chunk = sys.stdin.buffer.read(1)\n"
+        "        if not chunk:\n"
+        "            return None\n"
+        "        header += chunk\n"
+        "    content_length = None\n"
+        '    for line in header.decode("ascii", errors="ignore").split("\\r\\n"):\n'
+        '        if line.lower().startswith("content-length:"):\n'
+        '            content_length = int(line.split(":", 1)[1].strip())\n'
+        "            break\n"
+        "    if content_length is None:\n"
+        "        return None\n"
+        "    body = sys.stdin.buffer.read(content_length)\n"
+        "    if not body:\n"
+        "        return None\n"
+        '    return json.loads(body.decode("utf-8"))\n\n'
+        "def send_message(message):\n"
+        '    body = json.dumps(message).encode("utf-8")\n'
+        '    header = f"Content-Length: {len(body)}\\r\\n\\r\\n".encode("ascii")\n'
+        "    sys.stdout.buffer.write(header + body)\n"
+        "    sys.stdout.buffer.flush()\n\n"
+        "while True:\n"
+        "    message = read_message()\n"
+        "    if message is None:\n"
+        "        break\n"
+        '    method = message.get("method")\n'
+        '    request_id = message.get("id")\n'
+        '    if method == "initialize":\n'
+        "        send_message(\n"
+        '            {"jsonrpc": "2.0", "id": request_id, "result": {"capabilities": {}}}\n'
+        "        )\n"
+        "        continue\n"
+        '    if method in {"initialized", "shutdown", "exit"}:\n'
+        '        if method == "shutdown":\n'
+        '            send_message({"jsonrpc": "2.0", "id": request_id, "result": None})\n'
+        '        if method == "exit":\n'
+        "            break\n"
+        "        continue\n"
+        '    if method == "textDocument/prepareCallHierarchy":\n'
+        "        send_message(\n"
+        "            {\n"
+        '                "jsonrpc": "2.0",\n'
+        '                "id": request_id,\n'
+        '                "result": [\n'
+        "                    {\n"
+        '                        "name": "f",\n'
+        '                        "kind": 12,\n'
+        '                        "uri": "file:///tmp/sample.py",\n'
+        '                        "range": {\n'
+        '                            "start": {"line": 0, "character": 0},\n'
+        '                            "end": {"line": 0, "character": 1},\n'
+        "                        },\n"
+        '                        "selectionRange": {\n'
+        '                            "start": {"line": 0, "character": 0},\n'
+        '                            "end": {"line": 0, "character": 1},\n'
+        "                        },\n"
+        "                    }\n"
+        "                ],\n"
+        "            }\n"
+        "        )\n"
+        "        continue\n"
+        "    send_message(\n"
+        '        {"jsonrpc": "2.0", "id": request_id, "result": {"ok": True, "method": method}}\n'
+        "    )\n",
+        encoding="utf-8",
+    )
 
 
-def _run_handshake_server(
-    *,
-    host: str,
-    port: int,
-    stop_event: threading.Event,
-    received_methods: list[str],
-) -> None:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
-        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        server.bind((host, port))
-        server.listen(8)
-        server.settimeout(0.2)
+def _build_runtime_with_lsp(tmp_path: Path, *, command: tuple[str, ...]) -> VoidCodeRuntime:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            lsp=RuntimeLspConfig(
+                enabled=True,
+                servers={"pyright": RuntimeLspServerConfig(command=command)},
+            )
+        ),
+    )
+    return runtime
 
-        initialized = False
-        while not stop_event.is_set():
-            try:
-                conn, _addr = server.accept()
-            except TimeoutError:
-                continue
-            except OSError:
-                break
 
-            with conn:
-                message = _read_framed_json(conn)
-                if message is None:
-                    continue
+@dataclass(slots=True)
+class _StubLspStep:
+    tool_call: ToolCall | None = None
+    output: str | None = None
+    events: tuple[object, ...] = ()
+    is_finished: bool = False
 
-                method = message.get("method")
-                req_id = message.get("id")
-                if isinstance(method, str):
-                    received_methods.append(method)
 
-                if method == "initialize":
-                    initialized = True
-                    _send_framed_json(
-                        conn,
-                        {
-                            "jsonrpc": "2.0",
-                            "id": req_id,
-                            "result": {"capabilities": {}},
-                        },
-                    )
-                    continue
-
-                if method == "initialized":
-                    # notification; no response
-                    continue
-
-                if not initialized:
-                    _send_framed_json(
-                        conn,
-                        {
-                            "jsonrpc": "2.0",
-                            "id": req_id,
-                            "error": {
-                                "code": -32002,
-                                "message": "Server not initialized",
-                            },
-                        },
-                    )
-                    continue
-
-                _send_framed_json(
-                    conn,
-                    {
-                        "jsonrpc": "2.0",
-                        "id": req_id,
-                        "result": {"ok": True, "method": method},
+class _LspGraph:
+    def step(
+        self,
+        request: GraphRunRequest,
+        tool_results: tuple[object, ...],
+        *,
+        session: SessionState,
+    ) -> _StubLspStep:
+        _ = request, session
+        if not tool_results:
+            return _StubLspStep(
+                tool_call=ToolCall(
+                    tool_name="lsp",
+                    arguments={
+                        "operation": "textDocument/definition",
+                        "filePath": "sample.py",
+                        "line": 1,
+                        "character": 1,
                     },
                 )
+            )
+        return _StubLspStep(output="done", is_finished=True)
 
 
-def _pick_tcp_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return int(s.getsockname()[1])
+def test_runtime_managed_lsp_tool_starts_server_and_returns_response(tmp_path: Path) -> None:
+    sample_file = tmp_path / "sample.py"
+    sample_file.write_text("x = 1\n", encoding="utf-8")
+    server_script = tmp_path / "fake_lsp_server.py"
+    _write_fake_lsp_server(server_script)
 
-
-def test_lsp_tool_performs_initialize_handshake_before_request(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    file_path = tmp_path / "sample.py"
-    file_path.write_text("x = 1\n", encoding="utf-8")
-
-    host = "127.0.0.1"
-    port = _pick_tcp_port()
-    stop_event = threading.Event()
-    received_methods: list[str] = []
-    server = threading.Thread(
-        target=_run_handshake_server,
-        kwargs={
-            "host": host,
-            "port": port,
-            "stop_event": stop_event,
-            "received_methods": received_methods,
-        },
-        daemon=True,
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_LspGraph(),
+        config=RuntimeConfig(
+            lsp=RuntimeLspConfig(
+                enabled=True,
+                servers={
+                    "pyright": RuntimeLspServerConfig(
+                        command=(sys.executable, "-u", str(server_script))
+                    )
+                },
+            )
+        ),
     )
-    server.start()
 
-    monkeypatch.setenv("VOIDCODE_LSP_HOST", host)
-    monkeypatch.setenv("VOIDCODE_LSP_PORT", str(port))
+    result = runtime.run(RuntimeRequest(prompt="lsp please"))
 
-    try:
-        lsp_module = importlib.import_module("voidcode.tools.lsp")
-        contracts_module = importlib.import_module("voidcode.tools.contracts")
-        tool = lsp_module.LspTool()
+    tool_completed = next(
+        event for event in result.events if event.event_type == "runtime.tool_completed"
+    )
+    response = cast(dict[str, object], tool_completed.payload["lsp_response"])
+    assert response["result"] == {"ok": True, "method": "textDocument/definition"}
+    assert any(event.event_type == "runtime.lsp_server_started" for event in result.events)
+    assert runtime.current_lsp_state().servers["pyright"].status == "running"
 
-        result = tool.invoke(
-            contracts_module.ToolCall(
+    shutdown_events = runtime.shutdown_lsp()
+    assert [event.event_type for event in shutdown_events] == ["runtime.lsp_server_stopped"]
+
+
+def test_runtime_managed_lsp_tool_rejects_disabled_manager(tmp_path: Path) -> None:
+    sample_file = tmp_path / "sample.py"
+    sample_file.write_text("x = 1\n", encoding="utf-8")
+    runtime = VoidCodeRuntime(workspace=tmp_path, config=RuntimeConfig())
+
+    tool = LspTool(requester=runtime.request_lsp)
+
+    with pytest.raises(ValueError, match="disabled"):
+        _ = tool.invoke(
+            ToolCall(
                 tool_name="lsp",
                 arguments={
                     "operation": "textDocument/definition",
@@ -166,93 +189,22 @@ def test_lsp_tool_performs_initialize_handshake_before_request(
             workspace=tmp_path,
         )
 
-        assert result.status == "ok"
-        response = result.data.get("lsp_response")
-        assert isinstance(response, dict)
-        response_dict = cast(dict[str, object], response)
-        assert response_dict.get("result") == {"ok": True, "method": "textDocument/definition"}
-        assert received_methods[:3] == [
-            "initialize",
-            "initialized",
-            "textDocument/definition",
-        ]
-    finally:
-        stop_event.set()
-        server.join(timeout=1)
 
-
-def test_lsp_call_hierarchy_incoming_uses_prepare_item_payload(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    file_path = tmp_path / "sample.py"
-    file_path.write_text("def f():\n    pass\n", encoding="utf-8")
-
-    host = "127.0.0.1"
-    port = _pick_tcp_port()
-    stop_event = threading.Event()
-    received_methods: list[str] = []
-    server = threading.Thread(
-        target=_run_handshake_server,
-        kwargs={
-            "host": host,
-            "port": port,
-            "stop_event": stop_event,
-            "received_methods": received_methods,
-        },
-        daemon=True,
+def test_runtime_managed_lsp_tool_surfaces_failed_startup_state(tmp_path: Path) -> None:
+    sample_file = tmp_path / "sample.py"
+    sample_file.write_text("x = 1\n", encoding="utf-8")
+    runtime = _build_runtime_with_lsp(
+        tmp_path,
+        command=("definitely-not-a-real-lsp-binary",),
     )
-    server.start()
+    tool = LspTool(requester=runtime.request_lsp)
 
-    monkeypatch.setenv("VOIDCODE_LSP_HOST", host)
-    monkeypatch.setenv("VOIDCODE_LSP_PORT", str(port))
-
-    try:
-        lsp_module = importlib.import_module("voidcode.tools.lsp")
-        contracts_module = importlib.import_module("voidcode.tools.contracts")
-        tool = lsp_module.LspTool()
-
-        # Monkeypatch send_request to assert incomingCalls gets {item: ...}
-        original_send = tool._send_request
-
-        def _wrapped_send(method: str, params: dict[str, object]) -> dict[str, object] | None:
-            if method == "textDocument/prepareCallHierarchy":
-                return {
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "result": [
-                        {
-                            "name": "f",
-                            "kind": 12,
-                            "uri": file_path.resolve().as_uri(),
-                            "range": {
-                                "start": {"line": 0, "character": 0},
-                                "end": {"line": 0, "character": 5},
-                            },
-                            "selectionRange": {
-                                "start": {"line": 0, "character": 0},
-                                "end": {"line": 0, "character": 1},
-                            },
-                        }
-                    ],
-                }
-            if method == "callHierarchy/incomingCalls":
-                assert "item" in params
-                assert "textDocument" not in params
-                assert "position" not in params
-                return {
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "result": [],
-                }
-            return original_send(method, params)
-
-        monkeypatch.setattr(tool, "_send_request", _wrapped_send)
-
-        result = tool.invoke(
-            contracts_module.ToolCall(
+    with pytest.raises(ValueError, match="failed to start LSP server pyright"):
+        _ = tool.invoke(
+            ToolCall(
                 tool_name="lsp",
                 arguments={
-                    "operation": "callHierarchy/incomingCalls",
+                    "operation": "textDocument/definition",
                     "filePath": "sample.py",
                     "line": 1,
                     "character": 1,
@@ -261,7 +213,4 @@ def test_lsp_call_hierarchy_incoming_uses_prepare_item_payload(
             workspace=tmp_path,
         )
 
-        assert result.status == "ok"
-    finally:
-        stop_event.set()
-        server.join(timeout=1)
+    assert runtime.current_lsp_state().servers["pyright"].status == "failed"
