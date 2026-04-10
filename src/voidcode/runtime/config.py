@@ -44,9 +44,15 @@ class RuntimeSkillsConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class RuntimeLspServerConfig:
+    command: tuple[str, ...]
+    languages: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class RuntimeLspConfig:
     enabled: bool | None = None
-    servers: Mapping[str, object] | None = None
+    servers: Mapping[str, RuntimeLspServerConfig] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -235,8 +241,43 @@ def _parse_lsp_config(raw_lsp: object) -> RuntimeLspConfig | None:
 
     lsp_payload = cast(dict[str, object], raw_lsp)
     enabled = _parse_optional_bool(lsp_payload.get("enabled"), field_path="lsp.enabled")
-    servers = _parse_object_container(lsp_payload.get("servers"), field_path="lsp.servers")
+    servers = _parse_lsp_servers_config(lsp_payload.get("servers"), field_path="lsp.servers")
     return RuntimeLspConfig(enabled=enabled, servers=servers)
+
+
+def _parse_lsp_servers_config(
+    raw_value: object, *, field_path: str
+) -> dict[str, RuntimeLspServerConfig] | None:
+    if raw_value is None:
+        return None
+    if not isinstance(raw_value, dict):
+        raise ValueError(f"runtime config field '{field_path}' must be an object when provided")
+
+    raw_servers = cast(dict[str, object], raw_value)
+    parsed_servers: dict[str, RuntimeLspServerConfig] = {}
+    for server_name, raw_server in raw_servers.items():
+        parsed_servers[server_name] = _parse_lsp_server_config(
+            raw_server,
+            field_path=f"{field_path}.{server_name}",
+        )
+    return parsed_servers
+
+
+def _parse_lsp_server_config(raw_value: object, *, field_path: str) -> RuntimeLspServerConfig:
+    if not isinstance(raw_value, dict):
+        raise ValueError(f"runtime config field '{field_path}' must be an object")
+
+    server_payload = cast(dict[str, object], raw_value)
+    command = _parse_string_list(server_payload.get("command"), field_path=f"{field_path}.command")
+    if not command:
+        raise ValueError(
+            f"runtime config field '{field_path}.command' must contain at least one string"
+        )
+    languages = _parse_string_list(
+        server_payload.get("languages"),
+        field_path=f"{field_path}.languages",
+    )
+    return RuntimeLspServerConfig(command=command, languages=languages)
 
 
 def _parse_acp_config(raw_acp: object) -> RuntimeAcpConfig | None:
@@ -271,14 +312,6 @@ def _parse_string_list(raw_value: object, *, field_path: str) -> tuple[str, ...]
             raise ValueError(f"runtime config field '{field_path}[{index}]' must be a string")
         parsed_items.append(item)
     return tuple(parsed_items)
-
-
-def _parse_object_container(raw_value: object, *, field_path: str) -> dict[str, object] | None:
-    if raw_value is None:
-        return None
-    if not isinstance(raw_value, dict):
-        raise ValueError(f"runtime config field '{field_path}' must be an object when provided")
-    return cast(dict[str, object], raw_value)
 
 
 def _parse_command_list(raw_value: object, *, field_path: str) -> tuple[tuple[str, ...], ...]:

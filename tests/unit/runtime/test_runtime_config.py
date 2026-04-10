@@ -13,6 +13,7 @@ from voidcode.runtime.config import (
     RuntimeAcpConfig,
     RuntimeHooksConfig,
     RuntimeLspConfig,
+    RuntimeLspServerConfig,
     RuntimeSkillsConfig,
     RuntimeToolsBuiltinConfig,
     RuntimeToolsConfig,
@@ -121,7 +122,7 @@ def test_runtime_config_parses_extension_domains(tmp_path: Path) -> None:
     )
     assert config.lsp == RuntimeLspConfig(
         enabled=False,
-        servers={"pyright": {"command": ["pyright-langserver", "--stdio"]}},
+        servers={"pyright": RuntimeLspServerConfig(command=("pyright-langserver", "--stdio"))},
     )
     assert config.acp == RuntimeAcpConfig(enabled=False)
 
@@ -250,6 +251,26 @@ def test_runtime_config_rejects_invalid_repo_local_execution_engine(tmp_path: Pa
             {"lsp": {"servers": []}},
             "runtime config field 'lsp.servers'",
             id="lsp-servers-shape",
+        ),
+        pytest.param(
+            {"lsp": {"servers": {"pyright": []}}},
+            "runtime config field 'lsp.servers.pyright'",
+            id="lsp-server-shape",
+        ),
+        pytest.param(
+            {"lsp": {"servers": {"pyright": {"command": []}}}},
+            "runtime config field 'lsp.servers.pyright.command'.*at least one string",
+            id="lsp-server-command-empty",
+        ),
+        pytest.param(
+            {"lsp": {"servers": {"pyright": {"command": [False]}}}},
+            "runtime config field 'lsp.servers.pyright.command\\[0\\]'",
+            id="lsp-server-command-item-type",
+        ),
+        pytest.param(
+            {"lsp": {"servers": {"pyright": {"command": ["pyright"], "languages": [1]}}}},
+            "runtime config field 'lsp.servers.pyright.languages\\[0\\]'",
+            id="lsp-server-language-item-type",
         ),
         pytest.param({"acp": []}, "runtime config field 'acp'", id="acp-shape"),
         pytest.param(

@@ -9,6 +9,9 @@ type ExistingEventType = Literal[
     "runtime.request_received",
     "runtime.skills_loaded",
     "runtime.skills_applied",
+    "runtime.lsp_server_started",
+    "runtime.lsp_server_stopped",
+    "runtime.lsp_server_failed",
     "graph.loop_step",
     "graph.model_turn",
     "graph.tool_request_created",
@@ -28,6 +31,9 @@ type KnownEventType = ExistingEventType | PrototypeAdditiveEventType
 RUNTIME_REQUEST_RECEIVED: Final[ExistingEventType] = "runtime.request_received"
 RUNTIME_SKILLS_LOADED: Final[ExistingEventType] = "runtime.skills_loaded"
 RUNTIME_SKILLS_APPLIED: Final[ExistingEventType] = "runtime.skills_applied"
+RUNTIME_LSP_SERVER_STARTED: Final[ExistingEventType] = "runtime.lsp_server_started"
+RUNTIME_LSP_SERVER_STOPPED: Final[ExistingEventType] = "runtime.lsp_server_stopped"
+RUNTIME_LSP_SERVER_FAILED: Final[ExistingEventType] = "runtime.lsp_server_failed"
 GRAPH_LOOP_STEP: Final[ExistingEventType] = "graph.loop_step"
 GRAPH_MODEL_TURN: Final[ExistingEventType] = "graph.model_turn"
 GRAPH_TOOL_REQUEST_CREATED: Final[ExistingEventType] = "graph.tool_request_created"
@@ -47,6 +53,9 @@ EMITTED_EVENT_TYPES: Final[tuple[ExistingEventType, ...]] = (
     RUNTIME_REQUEST_RECEIVED,
     RUNTIME_SKILLS_LOADED,
     RUNTIME_SKILLS_APPLIED,
+    RUNTIME_LSP_SERVER_STARTED,
+    RUNTIME_LSP_SERVER_STOPPED,
+    RUNTIME_LSP_SERVER_FAILED,
     GRAPH_LOOP_STEP,
     GRAPH_MODEL_TURN,
     GRAPH_TOOL_REQUEST_CREATED,
