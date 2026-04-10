@@ -24,48 +24,48 @@ class VoidCodeTUI(App[int]):
     CSS = """
     Screen {
         layout: vertical;
-        background: transparent;
+        background: ansi_default;
     }
     #main-layout {
         height: 100%;
         width: 100%;
-        background: transparent;
+        background: ansi_default;
     }
     #transcript-column {
         width: 3fr;
         height: 100%;
         border-right: solid $accent;
-        background: transparent;
+        background: ansi_default;
     }
     #sidebar-column {
         width: 1fr;
         height: 100%;
         padding: 1;
-        background: transparent;
+        background: ansi_default;
     }
     #transcript-log {
         height: 1fr;
         border: solid $panel;
-        background: transparent;
+        background: ansi_default;
     }
     #current-response {
         height: 1;
         padding: 0 1;
         color: $text-muted;
-        background: transparent;
+        background: ansi_default;
     }
     #composer-input {
         dock: bottom;
-        background: transparent;
+        background: ansi_default;
     }
     .sidebar-header {
         text-style: bold;
         color: $accent;
         margin-top: 1;
-        background: transparent;
+        background: ansi_default;
     }
     Footer {
-        background: transparent;
+        background: ansi_default;
     }
     FooterKey {
         background: $surface;
@@ -81,7 +81,7 @@ class VoidCodeTUI(App[int]):
         background: $surface;
     }
     Footer:ansi {
-        background: transparent;
+        background: ansi_default;
     }
     Footer:ansi FooterKey {
         background: $surface;
