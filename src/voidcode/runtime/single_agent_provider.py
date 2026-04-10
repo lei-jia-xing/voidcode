@@ -6,6 +6,8 @@ from typing import Protocol, runtime_checkable
 
 from ..tools.contracts import ToolCall, ToolDefinition, ToolResult
 
+type AppliedSkill = dict[str, str]
+
 READ_REQUEST_PATTERN = re.compile(r"^(read|show)\s+(?P<path>.+)$", re.IGNORECASE)
 GREP_REQUEST_PATTERN = re.compile(r"^grep\s+(?P<pattern>.+?)\s+(?P<path>\S+)$", re.IGNORECASE)
 RUN_REQUEST_PATTERN = re.compile(r"^run\s+(?P<command>.+)$", re.IGNORECASE)
@@ -17,6 +19,7 @@ class SingleAgentTurnRequest:
     prompt: str
     available_tools: tuple[ToolDefinition, ...]
     tool_results: tuple[ToolResult, ...]
+    applied_skills: tuple[AppliedSkill, ...]
     raw_model: str | None
     provider_name: str | None
     model_name: str | None

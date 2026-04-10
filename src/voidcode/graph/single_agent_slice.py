@@ -66,6 +66,7 @@ class ProviderSingleAgentGraph:
                 prompt=request.prompt,
                 available_tools=request.available_tools,
                 tool_results=tool_results,
+                applied_skills=request.applied_skills,
                 raw_model=self._provider_model.selection.raw_model,
                 provider_name=self._provider_model.selection.provider,
                 model_name=self._provider_model.selection.model,

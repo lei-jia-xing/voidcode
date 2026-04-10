@@ -4,7 +4,11 @@ from voidcode.graph.contracts import GraphRunRequest
 from voidcode.graph.single_agent_slice import ProviderSingleAgentGraph
 from voidcode.runtime.model_provider import ModelProviderRegistry, resolve_provider_model
 from voidcode.runtime.session import SessionRef, SessionState
-from voidcode.runtime.single_agent_provider import StubSingleAgentProvider
+from voidcode.runtime.single_agent_provider import (
+    SingleAgentTurnRequest,
+    SingleAgentTurnResult,
+    StubSingleAgentProvider,
+)
 from voidcode.tools.contracts import ToolDefinition, ToolResult
 
 
@@ -17,6 +21,17 @@ def _tool_definitions() -> tuple[ToolDefinition, ...]:
 
 def _session() -> SessionState:
     return SessionState(session=SessionRef(id="s1"), status="running", turn=1, metadata={})
+
+
+class _CapturingSingleAgentProvider:
+    name = "opencode"
+
+    def __init__(self) -> None:
+        self.requests: list[SingleAgentTurnRequest] = []
+
+    def propose_turn(self, request: SingleAgentTurnRequest) -> SingleAgentTurnResult:
+        self.requests.append(request)
+        return SingleAgentTurnResult(output="done")
 
 
 def test_provider_single_agent_graph_requests_tool_on_first_turn() -> None:
@@ -100,3 +115,38 @@ def test_provider_single_agent_graph_finalizes_after_tool_result() -> None:
     }
     assert step.events[2].payload == {"step": 3, "phase": "finalize", "max_steps": 4}
     assert step.events[3].payload == {"output_preview": "alpha\n"}
+
+
+def test_provider_single_agent_graph_passes_applied_skill_context_to_provider() -> None:
+    provider_model = resolve_provider_model(
+        "opencode/gpt-5.4",
+        registry=ModelProviderRegistry.with_defaults(),
+    )
+    provider = _CapturingSingleAgentProvider()
+    graph = ProviderSingleAgentGraph(provider=provider, provider_model=provider_model)
+
+    step = graph.step(
+        request=GraphRunRequest(
+            session=_session(),
+            prompt="read sample.txt",
+            available_tools=_tool_definitions(),
+            applied_skills=(
+                {
+                    "name": "summarize",
+                    "description": "Summarize selected files.",
+                    "content": "# Summarize\nUse concise bullet points.",
+                },
+            ),
+        ),
+        tool_results=(),
+        session=_session(),
+    )
+
+    assert step.output == "done"
+    assert provider.requests[0].applied_skills == (
+        {
+            "name": "summarize",
+            "description": "Summarize selected files.",
+            "content": "# Summarize\nUse concise bullet points.",
+        },
+    )

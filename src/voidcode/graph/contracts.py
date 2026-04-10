@@ -8,6 +8,8 @@ from ..runtime.events import EventEnvelope, EventSource
 from ..runtime.session import SessionState
 from ..tools.contracts import ToolCall, ToolDefinition, ToolResult
 
+type AppliedSkill = dict[str, str]
+
 
 def _update_or_replace(current: object, new: object) -> object:
     return new if new is not None else current
@@ -37,6 +39,7 @@ class GraphRunRequest:
     session: SessionState
     prompt: str
     available_tools: tuple[ToolDefinition, ...] = ()
+    applied_skills: tuple[AppliedSkill, ...] = ()
     metadata: dict[str, object] = field(default_factory=dict)
 
 
