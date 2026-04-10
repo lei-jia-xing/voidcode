@@ -57,15 +57,39 @@ class VoidCodeTUI(App[int]):
         color: $accent;
         margin-top: 1;
     }
-    Footer > .footer--key {
+    Footer {
+        background: transparent;
+    }
+    FooterKey {
+        background: $surface;
+        color: $text;
+    }
+    FooterKey .footer-key--key {
         color: $text;
         background: $surface;
         text-style: bold;
     }
-    Footer > .footer--highlight-key {
+    FooterKey .footer-key--description {
+        color: $text-muted;
+        background: $surface;
+    }
+    Footer:ansi {
+        background: transparent;
+    }
+    Footer:ansi FooterKey {
+        background: $surface;
         color: $text;
-        background: $surface-lighten-1;
-        text-style: bold;
+    }
+    Footer:ansi .footer-key--key {
+        color: $text;
+        background: $surface;
+    }
+    Footer:ansi .footer-key--description {
+        color: $text-muted;
+        background: $surface;
+    }
+    Footer:ansi FooterKey.-command-palette {
+        background: $surface;
     }
     """
 
