@@ -136,6 +136,9 @@ class LspTool:
                 params=params,
                 workspace=workspace_root,
             )
+            error_value = response.response.get("error")
+            if error_value is not None:
+                raise ValueError(f"LSP error: {error_value}")
             return ToolResult(
                 tool_name=self.definition.name,
                 status="ok",

@@ -25,7 +25,7 @@ from .events import (
     RUNTIME_TOOL_HOOK_PRE,
     EventEnvelope,
 )
-from .lsp import LspManager, LspManagerState, LspRequest, build_lsp_manager
+from .lsp import LspManager, LspManagerState, LspRequest, LspRequestResult, build_lsp_manager
 from .model_provider import ModelProviderRegistry, ResolvedProviderModel, resolve_provider_model
 from .permission import (
     PendingApproval,
@@ -165,12 +165,14 @@ class VoidCodeRuntime:
     ) -> RuntimeGraph:
         if engine_name == "deterministic":
             return DeterministicReadOnlyGraph()
-        if provider_model.provider is None:
-            raise ValueError("single_agent execution engine requires a configured model")
-        return ProviderSingleAgentGraph(
-            provider=provider_model.provider.single_agent_provider(),
-            provider_model=provider_model,
-        )
+        if engine_name == "single_agent":
+            if provider_model.provider is None:
+                raise ValueError("single_agent execution engine requires a configured model")
+            return ProviderSingleAgentGraph(
+                provider=provider_model.provider.single_agent_provider(),
+                provider_model=provider_model,
+            )
+        raise ValueError(f"unknown execution engine: {engine_name}")
 
     def _build_graph_for_engine_from_config(self, config: EffectiveRuntimeConfig) -> RuntimeGraph:
         # Generate cache key from config
@@ -219,7 +221,7 @@ class VoidCodeRuntime:
         method: str,
         params: dict[str, object],
         workspace: Path,
-    ):
+    ) -> LspRequestResult:
         return self._lsp_manager.request(
             LspRequest(
                 server_name=server_name,

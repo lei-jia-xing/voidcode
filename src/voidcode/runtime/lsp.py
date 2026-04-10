@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import select
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -230,7 +231,7 @@ class ManagedLspManager:
                 cwd=workspace,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
             )
         except (FileNotFoundError, OSError) as exc:
             message = f"failed to start LSP server {server_name}: {exc}"
@@ -424,11 +425,18 @@ class ManagedLspManager:
             raise ValueError("LSP server pipe closed unexpectedly") from exc
 
     @staticmethod
-    def _read_message(process: subprocess.Popen[bytes]) -> dict[str, object] | None:
+    def _read_message(
+        process: subprocess.Popen[bytes], *, timeout: float = 30.0
+    ) -> dict[str, object] | None:
         if process.stdout is None:
             raise ValueError("LSP process stdout is unavailable")
+
+        # Read header with timeout
         header = b""
         while b"\r\n\r\n" not in header:
+            ready, _, _ = select.select([process.stdout], [], [], timeout)
+            if not ready:
+                raise TimeoutError(f"LSP server did not respond within {timeout}s")
             chunk = process.stdout.read(1)
             if not chunk:
                 return None
@@ -443,6 +451,10 @@ class ManagedLspManager:
         if content_length is None:
             return None
 
+        # Read body with timeout
+        ready, _, _ = select.select([process.stdout], [], [], timeout)
+        if not ready:
+            raise TimeoutError(f"LSP server did not send body within {timeout}s")
         body = process.stdout.read(content_length)
         if not body:
             return None
