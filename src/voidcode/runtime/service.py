@@ -12,10 +12,13 @@ from ..graph.contracts import GraphEvent, GraphRunRequest
 from ..graph.read_only_slice import DeterministicReadOnlyGraph
 from ..graph.single_agent_slice import ProviderSingleAgentGraph
 from ..tools.contracts import Tool, ToolCall, ToolDefinition, ToolResult
-from .acp import DisabledAcpAdapter
+from .acp import AcpAdapter, AcpRequestEnvelope, AcpResponseEnvelope, build_acp_adapter
 from .config import ExecutionEngineName, RuntimeConfig, load_runtime_config
 from .contracts import RuntimeRequest, RuntimeResponse, RuntimeStreamChunk, validate_session_id
 from .events import (
+    RUNTIME_ACP_CONNECTED,
+    RUNTIME_ACP_DISCONNECTED,
+    RUNTIME_ACP_FAILED,
     RUNTIME_LSP_SERVER_FAILED,
     RUNTIME_LSP_SERVER_STARTED,
     RUNTIME_LSP_SERVER_STOPPED,
@@ -104,7 +107,7 @@ class VoidCodeRuntime:
     _provider_model: ResolvedProviderModel
     _skill_registry: SkillRegistry
     _lsp_manager: LspManager
-    _acp_adapter: DisabledAcpAdapter
+    _acp_adapter: AcpAdapter
     _graph_cache: dict[tuple[ExecutionEngineName, str], RuntimeGraph]
     _hook_recursion_env_var = "VOIDCODE_RUNNING_TOOL_HOOK"
 
@@ -120,7 +123,7 @@ class VoidCodeRuntime:
         model_provider_registry: ModelProviderRegistry | None = None,
         skill_registry: SkillRegistry | None = None,
         lsp_manager: LspManager | None = None,
-        acp_adapter: DisabledAcpAdapter | None = None,
+        acp_adapter: AcpAdapter | None = None,
     ) -> None:
         self._workspace = workspace.resolve()
         self._config = config or load_runtime_config(self._workspace)
@@ -149,13 +152,14 @@ class VoidCodeRuntime:
         )
         self._session_store = session_store or SqliteSessionStore()
         self._skill_registry = skill_registry or self._build_skill_registry()
-        self._acp_adapter = acp_adapter or DisabledAcpAdapter(self._config.acp)
+        self._acp_adapter = acp_adapter or build_acp_adapter(self._config.acp)
 
     def __enter__(self) -> VoidCodeRuntime:
         return self
 
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
         _ = exc_type, exc, tb
+        _ = self.disconnect_acp()
         _ = self.shutdown_lsp()
 
     @staticmethod
@@ -236,6 +240,35 @@ class VoidCodeRuntime:
             session_id="runtime",
             start_sequence=1,
             lsp_events=self._lsp_manager.shutdown(),
+        )
+
+    def current_acp_state(self):
+        return self._acp_adapter.current_state()
+
+    def connect_acp(self) -> tuple[EventEnvelope, ...]:
+        return self._envelopes_for_acp_events(
+            session_id="runtime",
+            start_sequence=1,
+            acp_events=self._acp_adapter.connect(),
+        )
+
+    def disconnect_acp(self) -> tuple[EventEnvelope, ...]:
+        return self._envelopes_for_acp_events(
+            session_id="runtime",
+            start_sequence=1,
+            acp_events=self._acp_adapter.disconnect(),
+        )
+
+    def request_acp(self, *, request_type: str, payload: dict[str, object]) -> AcpResponseEnvelope:
+        return self._acp_adapter.request(
+            AcpRequestEnvelope(request_type=request_type, payload=payload)
+        )
+
+    def fail_acp(self, message: str) -> tuple[EventEnvelope, ...]:
+        return self._envelopes_for_acp_events(
+            session_id="runtime",
+            start_sequence=1,
+            acp_events=self._acp_adapter.fail(message),
         )
 
     def _run_with_persistence(self, request: RuntimeRequest) -> Iterator[RuntimeStreamChunk]:
@@ -1213,6 +1246,14 @@ class VoidCodeRuntime:
             "configured_enabled": lsp_state.configuration.configured_enabled,
             "servers": list(lsp_state.configuration.servers),
         }
+        acp_state = self._acp_adapter.current_state()
+        runtime_config_metadata["acp"] = {
+            "mode": acp_state.mode,
+            "configured_enabled": acp_state.configuration.configured_enabled,
+            "status": acp_state.status,
+            "available": acp_state.available,
+            "last_error": acp_state.last_error,
+        }
         return runtime_config_metadata
 
     @staticmethod
@@ -1230,6 +1271,42 @@ class VoidCodeRuntime:
         envelopes: list[EventEnvelope] = []
         sequence = start_sequence
         for raw_event in lsp_events:
+            if isinstance(raw_event, dict):
+                raw_event_dict = cast(dict[str, object], raw_event)
+                event_type = raw_event_dict.get("event_type")
+                payload = raw_event_dict.get("payload")
+            else:
+                event_type = getattr(raw_event, "event_type", None)
+                payload = getattr(raw_event, "payload", None)
+            if event_type not in known_event_types or not isinstance(payload, dict):
+                continue
+            envelopes.append(
+                EventEnvelope(
+                    session_id=session_id,
+                    sequence=sequence,
+                    event_type=cast(str, event_type),
+                    source="runtime",
+                    payload=cast(dict[str, object], payload),
+                )
+            )
+            sequence += 1
+        return tuple(envelopes)
+
+    @staticmethod
+    def _envelopes_for_acp_events(
+        *,
+        session_id: str,
+        start_sequence: int,
+        acp_events: tuple[object, ...],
+    ) -> tuple[EventEnvelope, ...]:
+        known_event_types = {
+            RUNTIME_ACP_CONNECTED,
+            RUNTIME_ACP_DISCONNECTED,
+            RUNTIME_ACP_FAILED,
+        }
+        envelopes: list[EventEnvelope] = []
+        sequence = start_sequence
+        for raw_event in acp_events:
             if isinstance(raw_event, dict):
                 raw_event_dict = cast(dict[str, object], raw_event)
                 event_type = raw_event_dict.get("event_type")

@@ -114,6 +114,7 @@ def test_runtime_initializes_empty_extension_state_by_default(tmp_path: Path) ->
     assert lsp_manager.configuration.configured_enabled is False
     assert acp_adapter.current_state().mode == "disabled"
     assert acp_adapter.configuration.configured_enabled is False
+    assert runtime.current_acp_state().status == "disconnected"
 
 
 def test_runtime_initializes_extension_state_from_config_when_enabled(tmp_path: Path) -> None:
@@ -159,9 +160,11 @@ def test_runtime_initializes_extension_state_from_config_when_enabled(tmp_path: 
     assert tuple(lsp_state.servers) == ("pyright",)
     assert lsp_state.servers["pyright"].status == "stopped"
     assert lsp_state.servers["pyright"].available is False
-    assert acp_state.mode == "disabled"
+    assert acp_state.mode == "managed"
     assert acp_state.configuration.configured_enabled is True
     assert acp_state.configured is True
+    assert acp_state.status == "disconnected"
+    assert acp_state.available is False
 
 
 def test_runtime_keeps_skill_registry_empty_when_skills_not_explicitly_enabled(
@@ -214,6 +217,80 @@ def test_runtime_retains_explicit_injected_extension_instances(tmp_path: Path) -
     assert injected_acp_adapter.current_state().configuration.configured_enabled is False
 
 
+def test_runtime_exposes_managed_acp_connect_disconnect_and_request(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(acp=RuntimeAcpConfig(enabled=True)),
+    )
+
+    assert runtime.current_acp_state().mode == "managed"
+    assert runtime.current_acp_state().status == "disconnected"
+
+    connect_events = runtime.connect_acp()
+    assert [event.event_type for event in connect_events] == ["runtime.acp_connected"]
+    assert runtime.current_acp_state().status == "connected"
+    assert runtime.current_acp_state().available is True
+
+    response = runtime.request_acp(request_type="ping", payload={"demo": True})
+    assert response.status == "ok"
+    assert response.payload == {"request_type": "ping", "accepted": True, "demo": True}
+
+    disconnect_events = runtime.disconnect_acp()
+    assert [event.event_type for event in disconnect_events] == ["runtime.acp_disconnected"]
+    assert runtime.current_acp_state().status == "disconnected"
+
+
+def test_runtime_acp_request_before_connect_returns_error_without_failing_adapter(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(acp=RuntimeAcpConfig(enabled=True)),
+    )
+
+    response = runtime.request_acp(request_type="ping", payload={})
+
+    assert response.status == "error"
+    assert response.error == "ACP adapter is not connected"
+    assert runtime.current_acp_state().status == "disconnected"
+    assert runtime.current_acp_state().last_error is None
+
+    connect_events = runtime.connect_acp()
+    assert [event.event_type for event in connect_events] == ["runtime.acp_connected"]
+
+
+def test_runtime_fail_acp_surfaces_failure_events_and_metadata(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(acp=RuntimeAcpConfig(enabled=True)),
+    )
+
+    fail_events = runtime.fail_acp("boom")
+
+    assert [event.event_type for event in fail_events] == ["runtime.acp_failed"]
+    assert runtime.current_acp_state().status == "failed"
+    assert runtime.current_acp_state().last_error == "boom"
+
+
+def test_runtime_connect_acp_rejects_disabled_adapter(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, config=RuntimeConfig())
+
+    with pytest.raises(ValueError, match="disabled"):
+        _ = runtime.connect_acp()
+
+
+def test_runtime_exit_disconnects_managed_acp(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(acp=RuntimeAcpConfig(enabled=True)),
+    )
+    _ = runtime.connect_acp()
+
+    runtime.__exit__(None, None, None)
+
+    assert runtime.current_acp_state().status == "disconnected"
+
+
 def test_runtime_default_extension_construction_preserves_public_run_path(
     tmp_path: Path,
 ) -> None:
@@ -252,6 +329,14 @@ def test_runtime_default_extension_construction_preserves_public_run_path(
     assert response.events[3].event_type == "graph.tool_request_created"
     assert response.events[4].event_type == "runtime.tool_lookup_succeeded"
     assert response.events[6].event_type == "runtime.tool_completed"
+    runtime_config_metadata = cast(dict[str, object], response.session.metadata["runtime_config"])
+    assert runtime_config_metadata["acp"] == {
+        "mode": "managed",
+        "configured_enabled": True,
+        "status": "disconnected",
+        "available": False,
+        "last_error": None,
+    }
 
 
 def test_runtime_emits_skills_applied_and_persists_frozen_skill_payloads(tmp_path: Path) -> None:
