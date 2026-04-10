@@ -48,6 +48,7 @@ EventEnvelope(
 
 - `runtime.request_received`
 - `runtime.skills_loaded`
+- `runtime.skills_applied`
 - `graph.loop_step`
 - `graph.model_turn`
 - `graph.tool_request_created`
@@ -78,15 +79,16 @@ EventEnvelope(
 
 1. `runtime.request_received`
 2. `runtime.skills_loaded`
-3. `graph.loop_step`
-4. `graph.model_turn`
-5. `graph.tool_request_created`
-6. `runtime.tool_lookup_succeeded`
-7. 对于 `ask` 策略发出 `runtime.approval_requested`；或者对于 `allow`/`deny` 策略发出 `runtime.approval_resolved`；或者对于只读操作发出 `runtime.permission_resolved`
-8. `runtime.approval_resolved`（仅在 `ask` 后恢复运行时）
-9. `runtime.tool_completed`
-10. `graph.loop_step`
-11. `graph.response_ready`
+3. `runtime.skills_applied`（仅在本次 run 存在已启用 skill 时出现）
+4. `graph.loop_step`
+5. `graph.model_turn`
+6. `graph.tool_request_created`
+7. `runtime.tool_lookup_succeeded`
+8. 对于 `ask` 策略发出 `runtime.approval_requested`；或者对于 `allow`/`deny` 策略发出 `runtime.approval_resolved`；或者对于只读操作发出 `runtime.permission_resolved`
+9. `runtime.approval_resolved`（仅在 `ask` 后恢复运行时）
+10. `runtime.tool_completed`
+11. `graph.loop_step`
+12. `graph.response_ready`
 
 当前已实现的最小 hooks 路径会在非只读工具的成功执行周围插入：
 
@@ -111,6 +113,13 @@ EventEnvelope(
 - 当前 payload:
   - `skills: list[str]` 按技能名称升序排列
 - 每次新运行都会发出，包括未发现技能的情况（`{"skills": []}`）
+
+### `runtime.skills_applied`
+- source: `runtime`
+- 当前 payload:
+  - `skills: list[str]` 本次 run 真正启用并注入执行语义的 skill 名称
+  - `count: int`
+- 仅在存在已启用 skill 时发出
 
 ### `graph.loop_step`
 - source: `graph`
