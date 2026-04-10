@@ -68,6 +68,7 @@ class LspTool:
     def __init__(self) -> None:
         # Cached server address; resolved on first use
         self._host, self._port = self._resolve_server_address()
+        self._initialized = False
 
     # Public API expected by the runtime
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
@@ -129,19 +130,41 @@ class LspTool:
         if not self._server_is_available():
             raise ValueError(f"LSP server not available at {self._host}:{self._port}")
 
+        self._ensure_initialized(workspace=workspace_root)
+
         # Prepare a minimal JSON-RPC payload for the requested operation
         position = {"line": line_value - 1, "character": character_value - 1}
         textDocument = {"uri": candidate.as_uri()}
         params: dict[str, Any] = {"textDocument": textDocument, "position": position}
         if operation == LspOperation.WORKSPACE_SYMBOL:
             params = {"query": ""}
-        if operation in (
-            LspOperation.PREPARE_CALL_HIERARCHY,
-            LspOperation.INCOMING_CALLS,
-            LspOperation.OUTGOING_CALLS,
-        ):
-            # Minimal default for call hierarchy related requests
+        if operation == LspOperation.PREPARE_CALL_HIERARCHY:
             params = {"textDocument": textDocument, "position": position}
+
+        if operation in (LspOperation.INCOMING_CALLS, LspOperation.OUTGOING_CALLS):
+            prepare_response = self._send_request(
+                LspOperation.PREPARE_CALL_HIERARCHY.value,
+                {"textDocument": textDocument, "position": position},
+            )
+            if prepare_response is None:
+                raise ValueError("No response from LSP server for call hierarchy prepare")
+            prepare_error = prepare_response.get("error")
+            if prepare_error is not None:
+                raise ValueError(f"LSP prepareCallHierarchy error: {prepare_error}")
+
+            prepare_result = prepare_response.get("result")
+            item: dict[str, object] | None = None
+            if isinstance(prepare_result, list) and prepare_result:
+                first = cast(object, prepare_result[0])
+                if isinstance(first, dict):
+                    item = cast(dict[str, object], first)
+            elif isinstance(prepare_result, dict):
+                item = cast(dict[str, object], prepare_result)
+
+            if item is None:
+                raise ValueError("LSP prepareCallHierarchy returned no item")
+
+            params = {"item": item}
 
         # Send the request
         response = self._send_request(operation.value, params)
@@ -229,6 +252,50 @@ class LspTool:
                 return json.loads(body_bytes.decode("utf-8"))
         except Exception:
             return None
+
+    def _ensure_initialized(self, *, workspace: Path) -> None:
+        if self._initialized:
+            return
+
+        init_params: dict[str, object] = {
+            "processId": os.getpid(),
+            "clientInfo": {"name": "voidcode", "version": "0.1.0"},
+            "locale": "zh-CN",
+            "rootUri": workspace.as_uri(),
+            "workspaceFolders": [
+                {
+                    "uri": workspace.as_uri(),
+                    "name": workspace.name or str(workspace),
+                }
+            ],
+            "capabilities": {},
+        }
+
+        init_response = self._send_request("initialize", init_params)
+        if init_response is None:
+            raise ValueError("LSP initialize failed: no response")
+
+        init_error = init_response.get("error")
+        if init_error is not None:
+            raise ValueError(f"LSP initialize failed: {init_error}")
+
+        # initialized is a notification (no response expected)
+        self._send_notification("initialized", {})
+        self._initialized = True
+
+    def _send_notification(self, method: str, params: dict[str, object]) -> None:
+        if not self._host or not self._port:
+            return
+
+        payload = json.dumps({"jsonrpc": "2.0", "method": method, "params": params})
+        body = payload.encode("utf-8")
+        header = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
+        try:
+            with socket.create_connection((self._host, int(self._port)), timeout=3) as s:
+                s.sendall(header + body)
+        except OSError:
+            # Notification failure should not crash process unless it blocks requests later.
+            return
 
     # Expose a convenient alias for the interface elsewhere if needed
     def __repr__(self) -> str:  # pragma: no cover

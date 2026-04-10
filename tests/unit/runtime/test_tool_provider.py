@@ -98,7 +98,7 @@ def test_tool_registry_accepts_tools_from_provider_output() -> None:
         assert registry.resolve(tool_name).definition.name == tool_name
 
     # Optional tools
-    optional_tools = {"apply_patch", "code_search", "lsp", "multi_edit", "todo_write"}
+    optional_tools = {"apply_patch", "code_search", "multi_edit", "todo_write"}
     for tool_name in optional_tools:
         if tool_name in registry.tools:
             assert registry.resolve(tool_name).definition.name == tool_name
@@ -135,7 +135,7 @@ def test_tool_registry_with_defaults_delegates_through_builtin_provider() -> Non
         assert registry.resolve(tool_name) is provided_tools[i]
 
     # Verify optional tools if present
-    optional_tools = ["apply_patch", "code_search", "lsp", "multi_edit", "todo_write"]
+    optional_tools = ["apply_patch", "code_search", "multi_edit", "todo_write"]
     for tool_name in optional_tools:
         if tool_name in registry.tools:
             assert registry.resolve(tool_name) is not None

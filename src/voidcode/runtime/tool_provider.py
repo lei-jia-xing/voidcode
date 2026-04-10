@@ -2,34 +2,36 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from ..tools import (
-    EditTool,
-    GlobTool,
-    GrepTool,
-    ListTool,
-    ReadFileTool,
-    ShellExecTool,
-    WebFetchTool,
-    WebSearchTool,
-    WriteFileTool,
-)
 from ..tools.contracts import Tool
+from ..tools.edit import EditTool
+from ..tools.glob import GlobTool
+from ..tools.grep import GrepTool
+from ..tools.list_dir import ListTool
+from ..tools.read_file import ReadFileTool
+from ..tools.shell_exec import ShellExecTool
+from ..tools.web_fetch import WebFetchTool
+from ..tools.web_search import WebSearchTool
+from ..tools.write_file import WriteFileTool
 
-# Import optional tools that may not exist
-_has_optional_tools = False
+# Import optional tools independently so one failure doesn't hide others.
 try:
     from ..tools.apply_patch import ApplyPatchTool as _ApplyPatchTool
-    from ..tools.code_search import CodeSearchTool as _CodeSearchTool
-    from ..tools.lsp import LspTool as _LspTool
-    from ..tools.multi_edit import MultiEditTool as _MultiEditTool
-    from ..tools.todo_write import TodoWriteTool as _TodoWriteTool
-
-    _has_optional_tools = True
 except ImportError:
     _ApplyPatchTool = None
+
+try:
+    from ..tools.code_search import CodeSearchTool as _CodeSearchTool
+except ImportError:
     _CodeSearchTool = None
-    _LspTool = None
+
+try:
+    from ..tools.multi_edit import MultiEditTool as _MultiEditTool
+except ImportError:
     _MultiEditTool = None
+
+try:
+    from ..tools.todo_write import TodoWriteTool as _TodoWriteTool
+except ImportError:
     _TodoWriteTool = None
 
 
@@ -51,17 +53,15 @@ class BuiltinToolProvider:
             WriteFileTool(),
         ]
 
-        # Add optional tools if available
-        if _has_optional_tools:
-            if _ApplyPatchTool:
-                tools.append(_ApplyPatchTool())
-            if _CodeSearchTool:
-                tools.append(_CodeSearchTool())
-            if _LspTool:
-                tools.append(_LspTool())
-            if _MultiEditTool:
-                tools.append(_MultiEditTool())
-            if _TodoWriteTool:
-                tools.append(_TodoWriteTool())
+        # Add optional tools if available.
+        # NOTE: LSP is intentionally NOT part of builtin tool defaults.
+        if _ApplyPatchTool is not None:
+            tools.append(_ApplyPatchTool())
+        if _CodeSearchTool is not None:
+            tools.append(_CodeSearchTool())
+        if _MultiEditTool is not None:
+            tools.append(_MultiEditTool())
+        if _TodoWriteTool is not None:
+            tools.append(_TodoWriteTool())
 
         return tuple(tools)
