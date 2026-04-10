@@ -7,7 +7,7 @@ from rich.text import Text
 from textual import work
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.widgets import Footer, Header, Input, RichLog, Static
+from textual.widgets import Footer, Input, RichLog, Static
 
 from ..runtime.config import load_runtime_config
 from ..runtime.contracts import RuntimeRequest
@@ -15,14 +15,16 @@ from ..runtime.events import EventEnvelope
 from ..runtime.permission import PermissionDecision
 from ..runtime.service import VoidCodeRuntime
 from .messages import StreamChunkReceived, StreamCompleted, StreamFailed
-from .screens import ApprovalModal
+from .screens import ApprovalModal, CommandPalette, SessionListModal
 
 
 class VoidCodeTUI(App[int]):
-    TITLE = "VoidCode TUI"
+    ansi_color = True
+
     CSS = """
     Screen {
         layout: vertical;
+        background: transparent;
     }
     #main-layout {
         height: 100%;
@@ -68,26 +70,108 @@ class VoidCodeTUI(App[int]):
         self.pending_request_id: str | None = None
         self.current_state = "Idle"
         self._stream_active = False
+        self._session_titles: dict[str, str] = {}
+        self._current_prompt: str | None = None
+
+        leader_key = "alt+x"
+        if config.tui:
+            if config.tui.leader_key:
+                leader_key = config.tui.leader_key
+            if config.tui.keymap:
+                for k, action in config.tui.keymap.items():
+                    self.bind(k, action)
+
+        self.bind(leader_key, "command_palette", description="Command Palette")
 
     def compose(self) -> ComposeResult:
-        yield Header()
         with Horizontal(id="main-layout"):
             with Vertical(id="transcript-column"):
                 yield RichLog(id="transcript-log", markup=False)
-                yield Static("Waiting for input...", id="current-response")
+                yield Static("", id="current-response")
                 yield Input(placeholder="Ask voidcode...", id="composer-input")
             with VerticalScroll(id="sidebar-column"):
                 yield Static("Status", classes="sidebar-header")
                 yield Static("Idle", id="status-panel")
-                yield Static("Tasks", classes="sidebar-header")
-                yield Static("No active tasks.", id="tasks-panel")
-                yield Static("MCP", classes="sidebar-header")
-                yield Static("No tools loaded.", id="mcp-panel")
+                yield Static("Session", classes="sidebar-header")
+                yield Static("None", id="session-panel")
+                yield Static("Workspace", classes="sidebar-header")
+                yield Static("Unknown", id="workspace-panel")
+                yield Static("LSP", classes="sidebar-header")
+                yield Static("Disabled", id="lsp-panel")
+                yield Static("ACP", classes="sidebar-header")
+                yield Static("Disabled", id="acp-panel")
+                yield Static("Tokens", classes="sidebar-header")
+                yield Static("Unavailable", id="tokens-panel")
         yield Footer()
 
     def on_mount(self) -> None:
         self._set_state("Idle")
+        self.query_one("#workspace-panel", Static).update(self.workspace.name)
+
+        lsp_state = self.runtime.current_lsp_state()
+        if lsp_state.mode == "managed":
+            active_servers = [
+                name for name, s in lsp_state.servers.items() if s.status == "running"
+            ]
+            if active_servers:
+                self.query_one("#lsp-panel", Static).update(f"Active: {len(active_servers)}")
+            else:
+                self.query_one("#lsp-panel", Static).update("No active servers")
+        else:
+            self.query_one("#lsp-panel", Static).update("Disabled")
+
+        acp_state = self.runtime.current_acp_state()
+        if acp_state.mode == "managed":
+            self.query_one("#acp-panel", Static).update(acp_state.status.title())
+        else:
+            self.query_one("#acp-panel", Static).update("Disabled")
+
         self.query_one("#composer-input", Input).focus()
+
+    def action_command_palette(self) -> None:
+        self.push_screen(CommandPalette(), self._handle_command)
+
+    def action_session_new(self) -> None:
+        self._handle_command("session: new")
+
+    def action_session_resume(self) -> None:
+        self._handle_command("session: resume")
+
+    def _handle_command(self, command: str | None) -> None:
+        if command == "session: new":
+            self.session_id = None
+            self._current_prompt = None
+            self._set_state("Idle")
+            self.query_one("#session-panel", Static).update("None")
+            self.query_one("#transcript-log", RichLog).clear()
+            self.query_one("#transcript-log", RichLog).write(
+                Text("--- New Session ---", style="bold")
+            )
+            self.query_one("#composer-input", Input).focus()
+        elif command == "session: resume":
+            sessions = self.runtime.list_sessions()
+            self._session_titles = {s.session.id: s.prompt for s in sessions}
+
+            def _handle_session(session_id: str | None) -> None:
+                if session_id:
+                    self.session_id = session_id
+
+                    short_id = session_id.removeprefix("session-")[:8]
+                    title = short_id
+                    if session_id in self._session_titles:
+                        title += f" - {self._session_titles[session_id][:30]}"
+                    self.query_one("#session-panel", Static).update(title)
+
+                    self.query_one("#transcript-log", RichLog).clear()
+                    self.query_one("#transcript-log", RichLog).write(
+                        Text(f"--- Resumed Session {short_id} ---", style="bold")
+                    )
+                    self._set_state("Running")
+                    self._set_stream_active(True)
+                    self._replay_stream(session_id)
+                    self.query_one("#composer-input", Input).focus()
+
+            self.push_screen(SessionListModal(sessions), _handle_session)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         prompt = event.value.strip()
@@ -100,6 +184,7 @@ class VoidCodeTUI(App[int]):
         self._write_user_prompt(prompt)
         self._set_state("Running")
         self._set_stream_active(True)
+        self._current_prompt = prompt
 
         request = RuntimeRequest(prompt=prompt, allocate_session_id=self.session_id is None)
         self._start_stream(request)
@@ -108,6 +193,15 @@ class VoidCodeTUI(App[int]):
         self.query_one("#transcript-log", RichLog).write(Text(f"User: {prompt}"))
 
     def _write_event_line(self, event: EventEnvelope) -> None:
+        if event.event_type not in (
+            "graph.tool_request_created",
+            "runtime.tool_completed",
+            "runtime.approval_requested",
+            "runtime.failed",
+            "runtime.approval_resolved",
+        ):
+            return
+
         self.query_one("#transcript-log", RichLog).write(
             Text(f"EVENT {event.event_type} source={event.source}", style="dim")
         )
@@ -120,21 +214,36 @@ class VoidCodeTUI(App[int]):
         self.query_one("#status-panel", Static).update(state)
         current = self.query_one("#current-response", Static)
         if state == "Idle":
-            current.update("Waiting for input...")
+            current.update("")
         elif state == "Running":
             current.update("Working...")
         elif state == "Waiting approval":
             current.update("Waiting for approval...")
         elif state == "Completed":
-            current.update("Completed. Waiting for input...")
+            current.update("")
         elif state == "Failed":
-            current.update("Stream failed. Waiting for input...")
+            current.update("Stream failed.")
 
     def _set_stream_active(self, active: bool) -> None:
         self._stream_active = active
         self.query_one("#composer-input", Input).disabled = (
             active or self.pending_request_id is not None
         )
+
+    @work(thread=True)
+    def _replay_stream(self, session_id: str) -> None:
+        last_status = "Idle"
+        saw_chunk = False
+        try:
+            for chunk in self.runtime.resume_stream(session_id=session_id):
+                saw_chunk = True
+                last_status = chunk.session.status
+                self.post_message(StreamChunkReceived(chunk))
+            if not saw_chunk:
+                raise ValueError("runtime stream emitted no chunks")
+            self.post_message(StreamCompleted(last_status))
+        except Exception as error:
+            self.post_message(StreamFailed(error))
 
     @work(thread=True)
     def _start_stream(self, request: RuntimeRequest) -> None:
@@ -177,13 +286,24 @@ class VoidCodeTUI(App[int]):
         self.session_id = chunk.session.session.id
 
         if chunk.kind == "event" and chunk.event is not None:
+            if self.session_id:
+                short_id = self.session_id.removeprefix("session-")[:8]
+                title = short_id
+                if self.session_id in self._session_titles:
+                    title += f" - {self._session_titles[self.session_id][:30]}"
+                elif self._current_prompt:
+                    title += f" - {self._current_prompt[:30]}"
+                self.query_one("#session-panel", Static).update(title)
+
             event = chunk.event
             self._write_event_line(event)
+
             if (
                 chunk.session.status == "waiting"
                 and event.event_type == "runtime.approval_requested"
             ):
-                self.pending_request_id = str(event.payload["request_id"])
+                payload = event.payload or {}
+                self.pending_request_id = str(payload.get("request_id", ""))
                 self._set_state("Waiting approval")
                 self._set_stream_active(False)
 
