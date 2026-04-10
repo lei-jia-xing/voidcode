@@ -172,3 +172,113 @@ async def test_tui_failed_stream_stays_failed(app_class: Any) -> None:
 
                 assert app.current_state == "Failed"
                 assert app.query_one("#status-panel").content == "Failed"
+
+
+@pytest.mark.anyio
+async def test_tui_accumulates_tokens_from_model_turn(app_class: Any) -> None:
+    VoidCodeTUI, StreamChunkReceived, _ = app_class
+
+    with patch("voidcode.tui.app.load_runtime_config", autospec=True, return_value=object()):
+        with patch("voidcode.tui.app.VoidCodeRuntime", autospec=True):
+            app = VoidCodeTUI(workspace=Path("."))
+
+            async with app.run_test() as pilot:
+                app.on_stream_chunk_received(
+                    StreamChunkReceived(
+                        _make_chunk(
+                            status="running",
+                            event=_runtime_event(
+                                "graph.model_turn",
+                                input_tokens=500,
+                                output_tokens=300,
+                            ),
+                        )
+                    )
+                )
+                app.on_stream_chunk_received(
+                    StreamChunkReceived(
+                        _make_chunk(
+                            status="running",
+                            event=_runtime_event(
+                                "graph.model_turn",
+                                input_tokens=200,
+                                output_tokens=100,
+                            ),
+                        )
+                    )
+                )
+                await pilot.pause()
+
+                assert app._tokens_in == 700
+                assert app._tokens_out == 400
+
+
+@pytest.mark.anyio
+async def test_tui_status_bar_shows_workspace_and_session(app_class: Any) -> None:
+    VoidCodeTUI, StreamChunkReceived, _ = app_class
+
+    with patch("voidcode.tui.app.load_runtime_config", autospec=True, return_value=object()):
+        with patch("voidcode.tui.app.VoidCodeRuntime", autospec=True) as runtime_class:
+            runtime = runtime_class.return_value
+            runtime.current_lsp_state.side_effect = Exception("no lsp")
+            runtime.current_acp_state.side_effect = Exception("no acp")
+            app = VoidCodeTUI(workspace=Path("/home/user/myproject"))
+
+            async with app.run_test() as pilot:
+                app.on_stream_chunk_received(
+                    StreamChunkReceived(
+                        _make_chunk(
+                            session_id="abcdef1234567890",
+                            status="running",
+                            event=_runtime_event("graph.model_turn"),
+                        )
+                    )
+                )
+                await pilot.pause()
+
+                bar = app.query_one("#runtime-status-bar")
+                bar_text = str(bar.content)
+                assert "myproject" in bar_text
+                assert "abcdef12" in bar_text
+
+
+@pytest.mark.anyio
+async def test_tui_ctrl_p_opens_runtime_detail_screen(app_class: Any) -> None:
+    VoidCodeTUI, _, _ = app_class
+
+    with patch("voidcode.tui.app.load_runtime_config", autospec=True, return_value=object()):
+        with patch("voidcode.tui.app.VoidCodeRuntime", autospec=True) as runtime_class:
+            runtime = runtime_class.return_value
+            runtime.list_sessions.return_value = ()
+            runtime.current_lsp_state.side_effect = Exception("no lsp")
+            runtime.current_acp_state.side_effect = Exception("no acp")
+            app = VoidCodeTUI(workspace=Path("."))
+
+            async with app.run_test() as pilot:
+                await pilot.press("ctrl+p")
+                await pilot.pause()
+
+                from voidcode.tui.screens import RuntimeDetailScreen
+
+                assert isinstance(app.screen, RuntimeDetailScreen)
+
+
+@pytest.mark.anyio
+async def test_tui_ctrl_x_opens_runtime_detail_screen(app_class: Any) -> None:
+    VoidCodeTUI, _, _ = app_class
+
+    with patch("voidcode.tui.app.load_runtime_config", autospec=True, return_value=object()):
+        with patch("voidcode.tui.app.VoidCodeRuntime", autospec=True) as runtime_class:
+            runtime = runtime_class.return_value
+            runtime.list_sessions.return_value = ()
+            runtime.current_lsp_state.side_effect = Exception("no lsp")
+            runtime.current_acp_state.side_effect = Exception("no acp")
+            app = VoidCodeTUI(workspace=Path("."))
+
+            async with app.run_test() as pilot:
+                await pilot.press("ctrl+x")
+                await pilot.pause()
+
+                from voidcode.tui.screens import RuntimeDetailScreen
+
+                assert isinstance(app.screen, RuntimeDetailScreen)
