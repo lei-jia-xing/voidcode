@@ -4,6 +4,7 @@ import json
 import os
 import select
 import subprocess
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Protocol, cast
@@ -431,13 +432,22 @@ class ManagedLspManager:
         if process.stdout is None:
             raise ValueError("LSP process stdout is unavailable")
 
+        fd = process.stdout.fileno()
+        deadline = time.monotonic() + timeout
+
+        def _wait_for_ready(error_message: str) -> None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(error_message)
+            ready, _, _ = select.select([fd], [], [], remaining)
+            if not ready:
+                raise TimeoutError(error_message)
+
         # Read header with timeout
         header = b""
         while b"\r\n\r\n" not in header:
-            ready, _, _ = select.select([process.stdout], [], [], timeout)
-            if not ready:
-                raise TimeoutError(f"LSP server did not respond within {timeout}s")
-            chunk = process.stdout.read(1)
+            _wait_for_ready(f"LSP server did not respond within {timeout}s")
+            chunk = os.read(fd, 1)
             if not chunk:
                 return None
             header += chunk
@@ -452,12 +462,13 @@ class ManagedLspManager:
             return None
 
         # Read body with timeout
-        ready, _, _ = select.select([process.stdout], [], [], timeout)
-        if not ready:
-            raise TimeoutError(f"LSP server did not send body within {timeout}s")
-        body = process.stdout.read(content_length)
-        if not body:
-            return None
+        body = b""
+        while len(body) < content_length:
+            _wait_for_ready(f"LSP server did not send body within {timeout}s")
+            chunk = os.read(fd, content_length - len(body))
+            if not chunk:
+                return None
+            body += chunk
         return cast(dict[str, object], json.loads(body.decode("utf-8")))
 
 
