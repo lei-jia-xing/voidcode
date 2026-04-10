@@ -29,33 +29,40 @@ class VoidCodeTUI(App[int]):
     #main-layout {
         height: 100%;
         width: 100%;
+        background: transparent;
     }
     #transcript-column {
         width: 3fr;
         height: 100%;
         border-right: solid $accent;
+        background: transparent;
     }
     #sidebar-column {
         width: 1fr;
         height: 100%;
         padding: 1;
+        background: transparent;
     }
     #transcript-log {
         height: 1fr;
         border: solid $panel;
+        background: transparent;
     }
     #current-response {
         height: 1;
         padding: 0 1;
         color: $text-muted;
+        background: transparent;
     }
     #composer-input {
         dock: bottom;
+        background: transparent;
     }
     .sidebar-header {
         text-style: bold;
         color: $accent;
         margin-top: 1;
+        background: transparent;
     }
     Footer {
         background: transparent;
