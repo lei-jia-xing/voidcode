@@ -45,10 +45,9 @@ class VoidCodeTUI(App[int]):
         border: solid $panel;
     }
     #current-response {
-        min-height: 3;
-        max-height: 8;
-        border: solid $success;
+        height: 1;
         padding: 0 1;
+        color: $text-muted;
     }
     #composer-input {
         dock: bottom;
@@ -57,6 +56,16 @@ class VoidCodeTUI(App[int]):
         text-style: bold;
         color: $accent;
         margin-top: 1;
+    }
+    Footer > .footer--key {
+        color: $text;
+        background: $surface;
+        text-style: bold;
+    }
+    Footer > .footer--highlight-key {
+        color: $text;
+        background: $surface-lighten-1;
+        text-style: bold;
     }
     """
 
