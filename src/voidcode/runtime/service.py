@@ -16,6 +16,7 @@ from .acp import DisabledAcpAdapter
 from .config import ExecutionEngineName, RuntimeConfig, load_runtime_config
 from .contracts import RuntimeRequest, RuntimeResponse, RuntimeStreamChunk, validate_session_id
 from .events import (
+    RUNTIME_SKILLS_APPLIED,
     RUNTIME_SKILLS_LOADED,
     RUNTIME_TOOL_HOOK_POST,
     RUNTIME_TOOL_HOOK_PRE,
@@ -31,7 +32,7 @@ from .permission import (
     resolve_permission,
 )
 from .session import SessionRef, SessionState, SessionStatus, StoredSessionSummary
-from .skills import SkillRegistry
+from .skills import SkillRegistry, SkillRuntimeContext
 from .storage import SessionStore, SqliteSessionStore
 from .tool_provider import BuiltinToolProvider
 
@@ -280,10 +281,40 @@ class VoidCodeRuntime:
             ),
         )
 
+        applied_skill_contexts = self._applied_skill_contexts(session.metadata)
+        if applied_skill_contexts:
+            frozen_applied_skills = self._frozen_applied_skill_payloads(applied_skill_contexts)
+            session = SessionState(
+                session=session.session,
+                status=session.status,
+                turn=session.turn,
+                metadata={
+                    **session.metadata,
+                    "applied_skills": [skill.name for skill in applied_skill_contexts],
+                    "applied_skill_payloads": [dict(skill) for skill in frozen_applied_skills],
+                },
+            )
+            sequence += 1
+            yield RuntimeStreamChunk(
+                kind="event",
+                session=session,
+                event=EventEnvelope(
+                    session_id=session.session.id,
+                    sequence=sequence,
+                    event_type=RUNTIME_SKILLS_APPLIED,
+                    source="runtime",
+                    payload={
+                        "skills": [skill.name for skill in applied_skill_contexts],
+                        "count": len(applied_skill_contexts),
+                    },
+                ),
+            )
+
         graph_request = GraphRunRequest(
             session=session,
             prompt=request.prompt,
             available_tools=self._tool_registry.definitions(),
+            applied_skills=self._graph_applied_skills(session.metadata),
             metadata=request.metadata,
         )
         tool_results: list[ToolResult] = []
@@ -860,7 +891,11 @@ class VoidCodeRuntime:
 
         sequence_before_turn = 1
         for event in reversed(stored.events):
-            if event.event_type in ("runtime.tool_completed", "runtime.skills_loaded"):
+            if event.event_type in (
+                "runtime.tool_completed",
+                "runtime.skills_applied",
+                "runtime.skills_loaded",
+            ):
                 sequence_before_turn = event.sequence
                 break
 
@@ -884,6 +919,7 @@ class VoidCodeRuntime:
             session=session,
             prompt=self._prompt_from_events(stored.events),
             available_tools=self._tool_registry.definitions(),
+            applied_skills=self._graph_applied_skills(session.metadata),
             metadata=session.metadata,
         )
         graph = self._graph_for_session_metadata(session.metadata)
@@ -1028,6 +1064,77 @@ class VoidCodeRuntime:
 
     def _loaded_skill_names(self) -> list[str]:
         return sorted(self._skill_registry.skills)
+
+    def _applied_skill_contexts(
+        self, metadata: dict[str, object] | None = None
+    ) -> tuple[SkillRuntimeContext, ...]:
+        _ = metadata
+        return self._skill_registry.runtime_contexts()
+
+    @staticmethod
+    def _frozen_applied_skill_payloads(
+        contexts: Iterable[SkillRuntimeContext],
+    ) -> tuple[dict[str, str], ...]:
+        return tuple(
+            {
+                "name": context.name,
+                "description": context.description,
+                "content": context.content,
+            }
+            for context in contexts
+        )
+
+    @staticmethod
+    def _persisted_applied_skill_payloads(
+        metadata: dict[str, object],
+    ) -> tuple[dict[str, str], ...] | None:
+        if "applied_skill_payloads" not in metadata:
+            return None
+        raw_payloads = metadata["applied_skill_payloads"]
+        if not isinstance(raw_payloads, list):
+            raise ValueError("persisted applied skill payloads must be a list")
+        persisted_payloads = cast(list[object], raw_payloads)
+
+        payloads: list[dict[str, str]] = []
+        for raw_payload in persisted_payloads:
+            if not isinstance(raw_payload, dict):
+                raise ValueError("persisted applied skill payloads must contain objects")
+            payload = cast(dict[str, object], raw_payload)
+            name = payload.get("name")
+            description = payload.get("description")
+            content = payload.get("content")
+            if (
+                not isinstance(name, str)
+                or not isinstance(description, str)
+                or not isinstance(content, str)
+            ):
+                raise ValueError("persisted applied skill payloads must include string fields")
+            payloads.append({"name": name, "description": description, "content": content})
+        return tuple(payloads)
+
+    def _graph_applied_skills(
+        self, metadata: dict[str, object] | None = None
+    ) -> tuple[dict[str, str], ...]:
+        if metadata is not None:
+            persisted_payloads = self._persisted_applied_skill_payloads(metadata)
+            if persisted_payloads is not None:
+                return persisted_payloads
+            persisted = metadata.get("applied_skills")
+            if isinstance(persisted, list):
+                persisted_values = cast(list[object], persisted)
+                persisted_names = [item for item in persisted_values if isinstance(item, str)]
+                names = set(persisted_names)
+                if names:
+                    return tuple(
+                        {
+                            "name": skill.name,
+                            "description": skill.description,
+                            "content": skill.content,
+                        }
+                        for skill in self._skill_registry.all()
+                        if skill.name in names
+                    )
+        return self._frozen_applied_skill_payloads(self._applied_skill_contexts(metadata))
 
     def _runtime_config_metadata(self) -> dict[str, object]:
         runtime_config_metadata: dict[str, object] = {

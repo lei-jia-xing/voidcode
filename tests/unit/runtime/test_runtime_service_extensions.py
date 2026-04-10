@@ -55,6 +55,50 @@ class _StubGraph:
         return _StubStep(output=request.prompt, is_finished=True)
 
 
+class _SkillCapturingStubGraph:
+    last_request: GraphRunRequest | None = None
+
+    def step(
+        self,
+        request: GraphRunRequest,
+        tool_results: tuple[object, ...],
+        *,
+        session: SessionState,
+    ) -> _StubStep:
+        _ = tool_results, session
+        type(self).last_request = request
+        return _StubStep(output=request.prompt, is_finished=True)
+
+
+class _ApprovalThenCaptureSkillGraph:
+    last_request: GraphRunRequest | None = None
+
+    def step(
+        self,
+        request: GraphRunRequest,
+        tool_results: tuple[object, ...],
+        *,
+        session: SessionState,
+    ) -> _StubStep:
+        _ = session
+        type(self).last_request = request
+        if not tool_results:
+            return _StubStep(
+                tool_call=ToolCall(
+                    tool_name="write_file", arguments={"path": "alpha.txt", "content": "1"}
+                )
+            )
+        return _StubStep(output="done", is_finished=True)
+
+
+def _write_demo_skill(skill_dir: Path, *, description: str = "Demo skill", content: str) -> None:
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        f"---\nname: demo\ndescription: {description}\n---\n{content}\n",
+        encoding="utf-8",
+    )
+
+
 def test_runtime_initializes_empty_extension_state_by_default(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(workspace=tmp_path, config=RuntimeConfig())
     provider_model = _private_attr(runtime, "_provider_model")
@@ -198,8 +242,49 @@ def test_runtime_default_extension_construction_preserves_public_run_path(
     assert response.output == "hello"
     assert response.events[1].event_type == "runtime.skills_loaded"
     assert response.events[1].payload == {"skills": ["alpha", "zeta"]}
-    assert response.events[3].event_type == "runtime.tool_lookup_succeeded"
-    assert response.events[5].event_type == "runtime.tool_completed"
+    assert response.events[2].event_type == "runtime.skills_applied"
+    assert response.events[3].event_type == "graph.tool_request_created"
+    assert response.events[4].event_type == "runtime.tool_lookup_succeeded"
+    assert response.events[6].event_type == "runtime.tool_completed"
+
+
+def test_runtime_emits_skills_applied_and_persists_frozen_skill_payloads(tmp_path: Path) -> None:
+    skill_dir = tmp_path / ".voidcode" / "skills" / "demo"
+    _write_demo_skill(
+        skill_dir,
+        content="# Demo\nAlways explain your reasoning.",
+    )
+
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SkillCapturingStubGraph(),
+        config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=True)),
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="hello"))
+
+    assert [event.event_type for event in response.events[:3]] == [
+        "runtime.request_received",
+        "runtime.skills_loaded",
+        "runtime.skills_applied",
+    ]
+    assert response.events[2].payload == {"skills": ["demo"], "count": 1}
+    assert response.session.metadata["applied_skills"] == ["demo"]
+    assert response.session.metadata["applied_skill_payloads"] == [
+        {
+            "name": "demo",
+            "description": "Demo skill",
+            "content": "# Demo\nAlways explain your reasoning.",
+        }
+    ]
+    assert _SkillCapturingStubGraph.last_request is not None
+    assert _SkillCapturingStubGraph.last_request.applied_skills == (
+        {
+            "name": "demo",
+            "description": "Demo skill",
+            "content": "# Demo\nAlways explain your reasoning.",
+        },
+    )
 
 
 class _MultiStepStubGraph:
@@ -257,6 +342,162 @@ def test_runtime_resumes_with_subsequent_tool_calls_properly(tmp_path: Path) -> 
 
     assert final_response.session.status == "completed"
     assert final_response.output == "done"
+
+
+def test_runtime_skill_enabled_resume_emits_single_approval_resolution(tmp_path: Path) -> None:
+    skill_dir = tmp_path / ".voidcode" / "skills" / "demo"
+    _write_demo_skill(skill_dir, content="# Demo\nUse the demo skill.")
+
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=True), approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    waiting = runtime.run(RuntimeRequest(prompt="go", session_id="skill-resume-session"))
+
+    assert waiting.session.status == "waiting"
+    assert sum(event.event_type == "runtime.skills_applied" for event in waiting.events) == 1
+
+    approval_request_id = str(waiting.events[-1].payload["request_id"])
+    resumed = runtime.resume(
+        session_id="skill-resume-session",
+        approval_request_id=approval_request_id,
+        approval_decision="allow",
+    )
+
+    assert resumed.session.status == "completed"
+    assert resumed.output == "done"
+    assert sum(event.event_type == "runtime.approval_resolved" for event in resumed.events) == 1
+    assert sum(event.event_type == "runtime.skills_applied" for event in resumed.events) == 1
+    assert [event.sequence for event in resumed.events] == sorted(
+        event.sequence for event in resumed.events
+    )
+
+
+def test_runtime_resume_uses_frozen_applied_skill_payloads_when_live_skill_changes(
+    tmp_path: Path,
+) -> None:
+    skill_dir = tmp_path / ".voidcode" / "skills" / "demo"
+    _write_demo_skill(
+        skill_dir,
+        description="Demo skill",
+        content="# Demo\nOriginal instructions.",
+    )
+
+    initial_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=True), approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    waiting = initial_runtime.run(RuntimeRequest(prompt="go", session_id="frozen-skill-session"))
+
+    assert waiting.session.status == "waiting"
+    approval_request_id = str(waiting.events[-1].payload["request_id"])
+
+    _write_demo_skill(
+        skill_dir,
+        description="Changed skill",
+        content="# Demo\nChanged instructions.",
+    )
+
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=True), approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    resumed = resumed_runtime.resume(
+        session_id="frozen-skill-session",
+        approval_request_id=approval_request_id,
+        approval_decision="allow",
+    )
+
+    assert resumed.session.status == "completed"
+    assert _ApprovalThenCaptureSkillGraph.last_request is not None
+    assert _ApprovalThenCaptureSkillGraph.last_request.applied_skills == (
+        {
+            "name": "demo",
+            "description": "Demo skill",
+            "content": "# Demo\nOriginal instructions.",
+        },
+    )
+
+
+def test_runtime_resume_reconstructs_legacy_applied_skill_names_from_live_registry(
+    tmp_path: Path,
+) -> None:
+    skill_dir = tmp_path / ".voidcode" / "skills" / "demo"
+    _write_demo_skill(
+        skill_dir,
+        description="Demo skill",
+        content="# Demo\nOriginal instructions.",
+    )
+
+    initial_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=True), approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    waiting = initial_runtime.run(RuntimeRequest(prompt="go", session_id="legacy-skill-session"))
+
+    assert waiting.session.status == "waiting"
+    approval_request_id = str(waiting.events[-1].payload["request_id"])
+
+    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    connection = sqlite3.connect(database_path)
+    try:
+        row = connection.execute(
+            "SELECT metadata_json FROM sessions WHERE session_id = ?",
+            ("legacy-skill-session",),
+        ).fetchone()
+        assert row is not None
+        metadata = json.loads(str(row[0]))
+        assert isinstance(metadata, dict)
+        metadata_dict = cast(dict[str, object], metadata)
+        metadata_dict.pop("applied_skill_payloads", None)
+        _ = connection.execute(
+            "UPDATE sessions SET metadata_json = ? WHERE session_id = ?",
+            (json.dumps(metadata_dict, sort_keys=True), "legacy-skill-session"),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    _write_demo_skill(
+        skill_dir,
+        description="Changed skill",
+        content="# Demo\nChanged instructions.",
+    )
+
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=True), approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    resumed = resumed_runtime.resume(
+        session_id="legacy-skill-session",
+        approval_request_id=approval_request_id,
+        approval_decision="allow",
+    )
+
+    assert resumed.session.status == "completed"
+    assert _ApprovalThenCaptureSkillGraph.last_request is not None
+    assert _ApprovalThenCaptureSkillGraph.last_request.applied_skills == (
+        {
+            "name": "demo",
+            "description": "Changed skill",
+            "content": "# Demo\nChanged instructions.",
+        },
+    )
 
 
 def test_runtime_resume_uses_persisted_approval_mode_for_follow_up_gated_tools(
