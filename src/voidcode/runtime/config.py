@@ -13,6 +13,7 @@ RUNTIME_CONFIG_FILE_NAME = ".voidcode.json"
 APPROVAL_MODE_ENV_VAR = "VOIDCODE_APPROVAL_MODE"
 MODEL_ENV_VAR = "VOIDCODE_MODEL"
 _VALID_APPROVAL_MODES = ("allow", "deny", "ask")
+_VALID_TUI_COMMANDS = ("command_palette", "session_new", "session_resume")
 
 type ExecutionEngineName = Literal["deterministic", "single_agent"]
 
@@ -61,6 +62,12 @@ class RuntimeAcpConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class RuntimeTuiConfig:
+    leader_key: str = "alt+x"
+    keymap: Mapping[str, str] | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class RuntimeConfig:
     approval_mode: PermissionDecision = "ask"
     model: str | None = None
@@ -70,6 +77,7 @@ class RuntimeConfig:
     skills: RuntimeSkillsConfig | None = None
     lsp: RuntimeLspConfig | None = None
     acp: RuntimeAcpConfig | None = None
+    tui: RuntimeTuiConfig | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +90,7 @@ class RuntimeConfigOverrides:
     skills: RuntimeSkillsConfig | None = None
     lsp: RuntimeLspConfig | None = None
     acp: RuntimeAcpConfig | None = None
+    tui: RuntimeTuiConfig | None = None
 
 
 def runtime_config_path(workspace: Path) -> Path:
@@ -116,6 +125,7 @@ def load_runtime_config(
         skills=repo_local.skills,
         lsp=repo_local.lsp,
         acp=repo_local.acp,
+        tui=repo_local.tui,
     )
 
 
@@ -160,6 +170,9 @@ def _load_repo_local_config(workspace: Path) -> RuntimeConfigOverrides:
     raw_acp = payload.get("acp")
     acp = _parse_acp_config(raw_acp)
 
+    raw_tui = payload.get("tui")
+    tui = _parse_tui_config(raw_tui)
+
     raw_approval_mode = payload.get("approval_mode")
     parsed_approval_mode = _parse_approval_mode(
         raw_approval_mode,
@@ -176,6 +189,7 @@ def _load_repo_local_config(workspace: Path) -> RuntimeConfigOverrides:
         skills=skills,
         lsp=lsp,
         acp=acp,
+        tui=tui,
     )
 
 
@@ -289,6 +303,39 @@ def _parse_acp_config(raw_acp: object) -> RuntimeAcpConfig | None:
     acp_payload = cast(dict[str, object], raw_acp)
     enabled = _parse_optional_bool(acp_payload.get("enabled"), field_path="acp.enabled")
     return RuntimeAcpConfig(enabled=enabled)
+
+
+def _parse_tui_config(raw_tui: object) -> RuntimeTuiConfig | None:
+    if raw_tui is None:
+        return None
+    if not isinstance(raw_tui, dict):
+        raise ValueError("runtime config field 'tui' must be an object when provided")
+
+    tui_payload = cast(dict[str, object], raw_tui)
+    leader_key = tui_payload.get("leader_key")
+    if leader_key is not None and not isinstance(leader_key, str):
+        raise ValueError("runtime config field 'tui.leader_key' must be a string when provided")
+
+    keymap: Mapping[str, str] | None = None
+    raw_keymap = tui_payload.get("keymap")
+    if raw_keymap is not None:
+        if not isinstance(raw_keymap, dict):
+            raise ValueError("runtime config field 'tui.keymap' must be an object when provided")
+        dict_keymap = cast(dict[str, object], raw_keymap)
+        for value in dict_keymap.values():
+            if not isinstance(value, str):
+                raise ValueError("runtime config field 'tui.keymap' values must be strings")
+            if value not in _VALID_TUI_COMMANDS:
+                allowed = ", ".join(_VALID_TUI_COMMANDS)
+                raise ValueError(
+                    f"runtime config field 'tui.keymap' values must be one of: {allowed}"
+                )
+        keymap = cast(dict[str, str], raw_keymap)
+
+    return RuntimeTuiConfig(
+        leader_key=leader_key if leader_key is not None else "alt+x",
+        keymap=keymap,
+    )
 
 
 def _parse_optional_bool(raw_value: object, *, field_path: str) -> bool | None:
