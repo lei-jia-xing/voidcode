@@ -606,21 +606,30 @@ invalid checkpoint 的默认处理策略应当是：**在可行时回退到 even
 
 ## 建议的后续 issue 方向
 
-本文档完成后，建议将 WIP 拆成以下实现向 issue：
+在 provider-backed single-agent path、checkpoint groundwork 和配置持久化语义已经落地之后，下一批更适合直接启动的 issue 应收敛到以下几类：
 
-1. execution engine abstraction
-2. provider/model runtime abstraction
-3. provider-backed single-agent engine
-4. runtime event protocol expansion
-5. skill execution semantics
-6. managed LSP lifecycle
-7. managed ACP lifecycle
-8. TUI parity against runtime sessions/events
-9. context window management and compaction
-10. provider fallback chain and provider error classification
-11. configurable engine step budgets
-12. retention / compaction / checkpoint invalidation semantics (#82)
-13. archive and replay strategy for cold sessions (#84)
+1. retention / compaction / checkpoint invalidation semantics (`#82`)
+2. corrupt / unreadable checkpoint fallback correctness (`#83`)
+3. runtime-managed provider config hardening
+4. runtime-managed skill execution semantics
+5. read-only managed LSP vertical slice
+6. tool contract hardening with formatter hook presets
+7. archive and replay strategy for cold sessions (`#84`，但仍应晚于前述语义与 contract 收口)
+
+其中需要明确的优先级判断是：
+
+- provider config、skill execution、read-only LSP、tool contract/formatter hooks 可以直接进入下一轮实现
+- ACP 继续作为 control-plane boundary 预留，不在当前批次产品化
+- MCP 继续保持为 runtime-managed external capability 的后续方向，但不作为当前 MVP 主路径的优先实现
+
+formatter hook presets 的建议边界：
+
+- Python → `ruff format`
+- TypeScript / JavaScript / JSON / Markdown / YAML → `prettier`
+- Rust → `rustfmt`
+- Go → `gofmt`
+
+它们应建立在现有 runtime-owned hook surface 之上，而不是把 hook 体系扩展为不受控的任意脚本平台。
 
 ## 总结
 

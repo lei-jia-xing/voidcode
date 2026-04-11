@@ -51,7 +51,7 @@ VoidCode 仍处于 pre-MVP 开发阶段。路线图从基础工作贯穿至 MVP 
 
 将工具和扩展作为运行时的一等公民，包含元数据、注册、内置功能和统一的执行管线。此 Epic 还包括作为运行时管理接口的技能、语言服务器（LSP）和智能体通信协议（ACP）的基础设施。
 
-**当前状态：** 部分完成。内置工具和技能发现已实现。LSP 和 ACP 接口作为配置载体和禁用的存根存在，真实集成已推迟。
+**当前状态：** 部分完成。内置工具和技能发现已实现。LSP 已具备 read-only runtime-managed 基线（manager、tool、事件与测试），但仍缺少独立的 server preset/config 模块；ACP 目前仍主要作为配置载体和 disabled stub 存在。
 
 ### Epic 4: 权限引擎
 
@@ -100,12 +100,25 @@ VoidCode 仍处于 pre-MVP 开发阶段。路线图从基础工作贯穿至 MVP 
 
 ## 当前最直接的后续工作
 
-在最近几轮 runtime 配置、provider fallback 和恢复语义收口之后，当前 backlog 中最直接的 runtime/platform follow-up 是：
+在最近几轮 runtime 配置、provider fallback、恢复语义和 checkpoint groundwork 收口之后，当前 backlog 中最直接的 runtime/platform follow-up 是两层：
 
-- 定义 event retention 的最小不变量
-- 明确 long-session checkpoint / compaction 的持久化语义与 invalidation 规则
-- 保证 transport replay、approval resume 与长期恢复在该策略下继续成立
+### 1. 先完成当前存储/恢复主线的剩余 issue
 
-这项工作当前对应的 open issue 是：[#82 define retention, compaction, and checkpoint invalidation semantics](https://github.com/lei-jia-xing/voidcode/issues/82)。
+- `#82`：定义 retention / compaction / checkpoint invalidation semantics
+- `#83`：收口 corrupt / unreadable checkpoint fallback correctness
+- `#84`：继续保持为后续的 cold-session archive / replay strategy，而不是现在就把 archive 实现塞进当前主线
 
-第一落地切片已经完成：waiting / terminal session 现在都可以持久化内部 resume checkpoint anchor，并保持客户端 replay 行为不变。接下来的狭窄切片应先锁定 retention / compaction / invalidation 的语义边界，而不是提前把 archive 或 replay contract 扩展实现到更复杂的形态。
+### 2. 在不扩大协议面的前提下，启动下一批更大的 runtime capability issue
+
+- runtime-managed provider config hardening
+- runtime-managed skill execution semantics
+- read-only managed LSP vertical slice
+- tool contract hardening with formatter hook presets for common languages
+
+这些 issue 都应继续遵守当前边界：
+
+- 通过 runtime 统一进入执行路径
+- 保持 CLI / HTTP / Web 共享同一套 persistence / replay truth
+- 不把 ACP / MCP 提前拉进当前 MVP 主路径
+
+因此，ACP 与 MCP 当前仍应作为边界预留或 design follow-up，而不是下一轮的实现主项。
