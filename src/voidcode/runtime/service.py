@@ -542,6 +542,15 @@ class VoidCodeRuntime:
                             ),
                         )
                         provider_attempt = next_attempt
+                        session = SessionState(
+                            session=session.session,
+                            status=session.status,
+                            turn=session.turn,
+                            metadata={
+                                **session.metadata,
+                                "provider_attempt": provider_attempt,
+                            },
+                        )
                         graph = self._build_graph_for_engine(
                             self._effective_runtime_config_from_metadata(
                                 session.metadata
@@ -1180,9 +1189,22 @@ class VoidCodeRuntime:
                 tool_results=tuple(tool_results),
                 session_metadata=session.metadata,
             ),
-            metadata={**session.metadata, "provider_attempt": 0},
+            metadata={
+                **session.metadata,
+                "provider_attempt": cast(int, session.metadata.get("provider_attempt", 0)),
+            },
         )
+        provider_attempt = cast(int, graph_request.metadata.get("provider_attempt", 0))
         graph = self._graph_for_session_metadata(session.metadata)
+        if provider_attempt > 0:
+            resume_target = self._provider_chain_for_session_metadata(session.metadata).target_at(
+                provider_attempt
+            )
+            if resume_target is not None:
+                graph = self._build_graph_for_engine(
+                    self._effective_runtime_config_from_metadata(session.metadata).execution_engine,
+                    resume_target,
+                )
 
         loop_events: list[EventEnvelope] = []
         output: str | None = None
@@ -1571,6 +1593,7 @@ class VoidCodeRuntime:
         persisted_model = runtime_config.get("model")
         if persisted_model is None or isinstance(persisted_model, str):
             model = persisted_model
+        provider_fallback = None
         persisted_provider_fallback = runtime_config.get("provider_fallback")
         if isinstance(persisted_provider_fallback, dict):
             payload = cast(dict[str, object], persisted_provider_fallback)

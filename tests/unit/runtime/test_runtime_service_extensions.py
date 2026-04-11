@@ -27,7 +27,11 @@ from voidcode.runtime.service import (
     SessionState,
     VoidCodeRuntime,
 )
-from voidcode.runtime.single_agent_provider import ProviderExecutionError, SingleAgentTurnResult
+from voidcode.runtime.single_agent_provider import (
+    ProviderExecutionError,
+    SingleAgentTurnRequest,
+    SingleAgentTurnResult,
+)
 from voidcode.runtime.skills import SkillRegistry
 from voidcode.tools import ToolCall
 
@@ -129,6 +133,67 @@ class _ScriptedModelProvider:
 
     def single_agent_provider(self) -> _ScriptedSingleAgentProvider:
         return _ScriptedSingleAgentProvider(name=self.name, outcomes=self.outcomes)
+
+
+class _AlwaysFailingModelProvider:
+    _error_kind: Literal["rate_limit", "context_limit", "invalid_model", "transient_failure"]
+
+    def __init__(
+        self,
+        *,
+        name: str,
+        error_kind: Literal["rate_limit", "context_limit", "invalid_model", "transient_failure"],
+    ) -> None:
+        self.name = name
+        self._error_kind = error_kind
+
+    def single_agent_provider(self) -> _AlwaysFailingSingleAgentProvider:
+        return _AlwaysFailingSingleAgentProvider(name=self.name, error_kind=self._error_kind)
+
+
+@dataclass(slots=True)
+class _AlwaysFailingSingleAgentProvider:
+    name: str
+    error_kind: Literal["rate_limit", "context_limit", "invalid_model", "transient_failure"]
+
+    def propose_turn(self, request: object) -> SingleAgentTurnResult:
+        _ = request
+        raise ProviderExecutionError(
+            kind=self.error_kind,
+            provider_name=self.name,
+            model_name="gpt-5.4",
+            message=f"{self.error_kind} failure",
+        )
+
+
+@dataclass(slots=True)
+class _ApprovalResumeFallbackModelProvider:
+    name: str
+    attempts_seen: list[int]
+
+    def single_agent_provider(self) -> _ApprovalResumeFallbackSingleAgentProvider:
+        return _ApprovalResumeFallbackSingleAgentProvider(
+            name=self.name,
+            attempts_seen=self.attempts_seen,
+        )
+
+
+@dataclass(slots=True)
+class _ApprovalResumeFallbackSingleAgentProvider:
+    name: str
+    attempts_seen: list[int]
+
+    def propose_turn(self, request: object) -> SingleAgentTurnResult:
+        turn_request = cast(SingleAgentTurnRequest, request)
+        self.attempts_seen.append(turn_request.attempt)
+        if not turn_request.tool_results:
+            return SingleAgentTurnResult(
+                tool_call=ToolCall(
+                    tool_name="write_file",
+                    arguments={"path": "alpha.txt", "content": "1"},
+                )
+            )
+        return SingleAgentTurnResult(output="done")
 
 
 def _write_demo_skill(skill_dir: Path, *, description: str = "Demo skill", content: str) -> None:
@@ -1031,6 +1096,135 @@ def test_runtime_effective_runtime_config_recovers_provider_fallback_chain(tmp_p
         preferred_model="opencode/gpt-5.4",
         fallback_models=("opencode/gpt-5.3", "custom/demo"),
     )
+
+
+def test_runtime_effective_runtime_config_treats_missing_persisted_provider_fallback_as_none(
+    tmp_path: Path,
+) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("fallback chain\n", encoding="utf-8")
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            approval_mode="allow",
+            execution_engine="single_agent",
+            model="opencode/gpt-5.4",
+            provider_fallback=RuntimeProviderFallbackConfig(
+                preferred_model="opencode/gpt-5.4",
+                fallback_models=("opencode/gpt-5.3", "custom/demo"),
+            ),
+        ),
+    )
+    _ = runtime.run(
+        RuntimeRequest(prompt="read sample.txt", session_id="fallback-config-missing-key")
+    )
+
+    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    connection = sqlite3.connect(database_path)
+    try:
+        row = connection.execute(
+            "SELECT metadata_json FROM sessions WHERE session_id = ?",
+            ("fallback-config-missing-key",),
+        ).fetchone()
+        assert row is not None
+        metadata = json.loads(str(row[0]))
+        assert isinstance(metadata, dict)
+        metadata_dict = cast(dict[str, object], metadata)
+        runtime_config = cast(dict[str, object], metadata_dict["runtime_config"])
+        runtime_config.pop("provider_fallback", None)
+        _ = connection.execute(
+            "UPDATE sessions SET metadata_json = ? WHERE session_id = ?",
+            (
+                json.dumps(metadata_dict, sort_keys=True),
+                "fallback-config-missing-key",
+            ),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            execution_engine="single_agent",
+            model="fresh/model",
+            provider_fallback=RuntimeProviderFallbackConfig(
+                preferred_model="fresh/model",
+                fallback_models=("fresh/fallback",),
+            ),
+        ),
+    )
+    effective = resumed_runtime.effective_runtime_config(session_id="fallback-config-missing-key")
+
+    assert effective.approval_mode == "allow"
+    assert effective.execution_engine == "single_agent"
+    assert effective.model == "opencode/gpt-5.4"
+    assert effective.provider_fallback is None
+
+
+def test_runtime_resume_preserves_provider_attempt_and_target_across_pending_approval(
+    tmp_path: Path,
+) -> None:
+    custom_attempts: list[int] = []
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _AlwaysFailingModelProvider(name="opencode", error_kind="rate_limit"),
+            "custom": _ApprovalResumeFallbackModelProvider(
+                name="custom",
+                attempts_seen=custom_attempts,
+            ),
+        }
+    )
+    config = RuntimeConfig(
+        approval_mode="ask",
+        execution_engine="single_agent",
+        model="opencode/gpt-5.4",
+        provider_fallback=RuntimeProviderFallbackConfig(
+            preferred_model="opencode/gpt-5.4",
+            fallback_models=("custom/demo",),
+        ),
+    )
+    initial_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=config,
+        permission_policy=PermissionPolicy(mode="ask"),
+        model_provider_registry=registry,
+    )
+
+    waiting = initial_runtime.run(
+        RuntimeRequest(prompt="write alpha.txt 1", session_id="resume-provider-attempt")
+    )
+
+    assert waiting.session.status == "waiting"
+    assert custom_attempts == [1]
+    approval_event = waiting.events[-1]
+    assert approval_event.event_type == "runtime.approval_requested"
+    request_id = str(approval_event.payload["request_id"])
+    fallback_events = [
+        event for event in waiting.events if event.event_type == "runtime.provider_fallback"
+    ]
+    assert len(fallback_events) == 1
+
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=config,
+        permission_policy=PermissionPolicy(mode="ask"),
+        model_provider_registry=registry,
+    )
+    resumed = resumed_runtime.resume(
+        session_id="resume-provider-attempt",
+        approval_request_id=request_id,
+        approval_decision="allow",
+    )
+
+    assert resumed.session.status == "completed"
+    assert resumed.output == "done"
+    assert custom_attempts == [1, 1, 1]
+    assert all(attempt == 1 for attempt in custom_attempts)
+    resumed_fallback_events = [
+        event for event in resumed.events if event.event_type == "runtime.provider_fallback"
+    ]
+    assert len(resumed_fallback_events) == 1
 
 
 @pytest.mark.parametrize("error_kind", ["rate_limit", "invalid_model", "transient_failure"])
