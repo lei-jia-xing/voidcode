@@ -75,7 +75,7 @@ VoidCode 仍处于 pre-MVP 开发阶段。路线图从基础工作贯穿至 MVP 
 
 管理长期运行的上下文，并提供对轮次、工具、审批、钩子和错误的追踪友好可见性。
 
-**当前状态：** 部分完成。通过事件流实现的轮次级可观测性已完成；provider fallback、step budget 与恢复关键配置的运行时治理已经落地。当前最直接的后续工作是定义 event retention 与 long-session checkpoint 策略，以保证 replay / resume / 长期恢复在会话规模增长后仍然成立。
+**当前状态：** 部分完成。通过事件流实现的轮次级可观测性已完成；provider fallback、step budget 与恢复关键配置的运行时治理已经落地。`#70` 已经为 waiting / terminal session 落地了内部 resume checkpoint groundwork；当前最直接的后续工作是通过 `#82` 定义 retention / compaction / checkpoint invalidation 语义。`#83` 单独跟踪 corrupt / unreadable checkpoint 的 fallback correctness，而 `#84` 再承接 cold-session archive / replay 策略。
 
 ### Epic 8: TUI / CLI / Web 客户端
 
@@ -102,10 +102,10 @@ VoidCode 仍处于 pre-MVP 开发阶段。路线图从基础工作贯穿至 MVP 
 
 在最近几轮 runtime 配置、provider fallback 和恢复语义收口之后，当前 backlog 中最直接的 runtime/platform follow-up 是：
 
-- 定义 event retention 策略
-- 明确 long-session checkpoint / compaction 的持久化语义
+- 定义 event retention 的最小不变量
+- 明确 long-session checkpoint / compaction 的持久化语义与 invalidation 规则
 - 保证 transport replay、approval resume 与长期恢复在该策略下继续成立
 
-这项工作对应当前 open issue：[#70 定义 event retention 与 long-session checkpoint 策略](https://github.com/lei-jia-xing/voidcode/issues/70)。
+这项工作当前对应的 open issue 是：[#82 define retention, compaction, and checkpoint invalidation semantics](https://github.com/lei-jia-xing/voidcode/issues/82)。
 
-第一落地切片应保持狭窄：先为 waiting / terminal session 持久化内部 resume checkpoint anchor，在不改变客户端 replay 行为的前提下，为后续 retention / compaction / archive 语义建立安全基础。
+第一落地切片已经完成：waiting / terminal session 现在都可以持久化内部 resume checkpoint anchor，并保持客户端 replay 行为不变。接下来的狭窄切片应先锁定 retention / compaction / invalidation 的语义边界，而不是提前把 archive 或 replay contract 扩展实现到更复杂的形态。
