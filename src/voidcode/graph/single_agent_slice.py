@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from ..runtime.context_window import RuntimeContextWindow
 from ..runtime.events import GRAPH_LOOP_STEP, GRAPH_MODEL_TURN, GRAPH_RESPONSE_READY
 from ..runtime.model_provider import ResolvedProviderModel
 from ..runtime.session import SessionState
@@ -66,6 +67,8 @@ class ProviderSingleAgentGraph:
                 prompt=request.prompt,
                 available_tools=request.available_tools,
                 tool_results=tool_results,
+                context_window=request.context_window
+                or RuntimeContextWindow(prompt=request.prompt),
                 applied_skills=request.applied_skills,
                 raw_model=self._provider_model.selection.raw_model,
                 provider_name=self._provider_model.selection.provider,

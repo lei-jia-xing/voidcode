@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from voidcode.runtime.context_window import RuntimeContextWindow
 from voidcode.runtime.model_provider import ModelProviderRegistry, resolve_provider_model
 from voidcode.runtime.single_agent_provider import (
     SingleAgentTurnRequest,
@@ -30,6 +31,7 @@ def test_stub_single_agent_provider_proposes_tool_call_for_first_turn() -> None:
             prompt="read sample.txt",
             available_tools=_tool_definitions(),
             tool_results=(),
+            context_window=RuntimeContextWindow(prompt="read sample.txt"),
             applied_skills=(),
             raw_model=provider_model.selection.raw_model,
             provider_name=provider_model.selection.provider,
@@ -61,6 +63,17 @@ def test_stub_single_agent_provider_finalizes_from_last_tool_result() -> None:
                     data={"path": "sample.txt", "content": "alpha\nbeta\n"},
                 ),
             ),
+            context_window=RuntimeContextWindow(
+                prompt="read sample.txt",
+                tool_results=(
+                    ToolResult(
+                        tool_name="read_file",
+                        content="alpha\nbeta\n",
+                        status="ok",
+                        data={"path": "sample.txt", "content": "alpha\nbeta\n"},
+                    ),
+                ),
+            ),
             applied_skills=(),
             raw_model=provider_model.selection.raw_model,
             provider_name=provider_model.selection.provider,
@@ -84,9 +97,59 @@ def test_stub_single_agent_provider_rejects_unsupported_requests() -> None:
                 prompt="summarize sample.txt",
                 available_tools=_tool_definitions(),
                 tool_results=(),
+                context_window=RuntimeContextWindow(prompt="summarize sample.txt"),
                 applied_skills=(),
                 raw_model=provider_model.selection.raw_model,
                 provider_name=provider_model.selection.provider,
                 model_name=provider_model.selection.model,
             )
         )
+
+
+def test_stub_single_agent_provider_uses_bounded_context_window_results_for_finalize() -> None:
+    provider_model = resolve_provider_model(
+        "opencode/gpt-5.4",
+        registry=ModelProviderRegistry.with_defaults(),
+    )
+
+    result = StubSingleAgentProvider(name="opencode").propose_turn(
+        SingleAgentTurnRequest(
+            prompt="read sample.txt",
+            available_tools=_tool_definitions(),
+            tool_results=(
+                ToolResult(
+                    tool_name="read_file",
+                    content="old\n",
+                    status="ok",
+                    data={"path": "sample.txt", "content": "old\n"},
+                ),
+                ToolResult(
+                    tool_name="read_file",
+                    content="new\n",
+                    status="ok",
+                    data={"path": "sample.txt", "content": "new\n"},
+                ),
+            ),
+            context_window=RuntimeContextWindow(
+                prompt="read sample.txt",
+                tool_results=(
+                    ToolResult(
+                        tool_name="read_file",
+                        content="new\n",
+                        status="ok",
+                        data={"path": "sample.txt", "content": "new\n"},
+                    ),
+                ),
+                compacted=True,
+                compaction_reason="tool_result_window",
+                original_tool_result_count=2,
+                retained_tool_result_count=1,
+            ),
+            applied_skills=(),
+            raw_model=provider_model.selection.raw_model,
+            provider_name=provider_model.selection.provider,
+            model_name=provider_model.selection.model,
+        )
+    )
+
+    assert result.output == "new\n"

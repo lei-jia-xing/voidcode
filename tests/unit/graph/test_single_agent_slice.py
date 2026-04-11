@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from voidcode.graph.contracts import GraphRunRequest
 from voidcode.graph.single_agent_slice import ProviderSingleAgentGraph
+from voidcode.runtime.context_window import RuntimeContextWindow
 from voidcode.runtime.model_provider import ModelProviderRegistry, resolve_provider_model
 from voidcode.runtime.session import SessionRef, SessionState
 from voidcode.runtime.single_agent_provider import (
@@ -49,6 +50,7 @@ def test_provider_single_agent_graph_requests_tool_on_first_turn() -> None:
             session=_session(),
             prompt="read sample.txt",
             available_tools=_tool_definitions(),
+            context_window=RuntimeContextWindow(prompt="read sample.txt"),
         ),
         tool_results=(),
         session=_session(),
@@ -84,6 +86,17 @@ def test_provider_single_agent_graph_finalizes_after_tool_result() -> None:
             session=_session(),
             prompt="read sample.txt",
             available_tools=_tool_definitions(),
+            context_window=RuntimeContextWindow(
+                prompt="read sample.txt",
+                tool_results=(
+                    ToolResult(
+                        tool_name="read_file",
+                        content="alpha\n",
+                        status="ok",
+                        data={"path": "sample.txt", "content": "alpha\n"},
+                    ),
+                ),
+            ),
         ),
         tool_results=(
             ToolResult(
@@ -130,6 +143,7 @@ def test_provider_single_agent_graph_passes_applied_skill_context_to_provider() 
             session=_session(),
             prompt="read sample.txt",
             available_tools=_tool_definitions(),
+            context_window=RuntimeContextWindow(prompt="read sample.txt"),
             applied_skills=(
                 {
                     "name": "summarize",
@@ -150,3 +164,51 @@ def test_provider_single_agent_graph_passes_applied_skill_context_to_provider() 
             "content": "# Summarize\nUse concise bullet points.",
         },
     )
+    assert provider.requests[0].context_window.prompt == "read sample.txt"
+
+
+def test_provider_single_agent_graph_forwards_bounded_context_window_to_provider() -> None:
+    provider_model = resolve_provider_model(
+        "opencode/gpt-5.4",
+        registry=ModelProviderRegistry.with_defaults(),
+    )
+    provider = _CapturingSingleAgentProvider()
+    graph = ProviderSingleAgentGraph(provider=provider, provider_model=provider_model)
+
+    bounded_context = RuntimeContextWindow(
+        prompt="read sample.txt",
+        tool_results=(
+            ToolResult(
+                tool_name="read_file",
+                content="new\n",
+                status="ok",
+                data={"path": "sample.txt", "content": "new\n"},
+            ),
+        ),
+        compacted=True,
+        compaction_reason="tool_result_window",
+        original_tool_result_count=3,
+        retained_tool_result_count=1,
+    )
+
+    _ = graph.step(
+        request=GraphRunRequest(
+            session=_session(),
+            prompt="read sample.txt",
+            available_tools=_tool_definitions(),
+            context_window=bounded_context,
+        ),
+        tool_results=(
+            ToolResult(
+                tool_name="read_file",
+                content="old\n",
+                status="ok",
+                data={"path": "sample.txt", "content": "old\n"},
+            ),
+        ),
+        session=_session(),
+    )
+
+    assert provider.requests[0].context_window is bounded_context
+    assert provider.requests[0].context_window.compacted is True
+    assert provider.requests[0].context_window.retained_tool_result_count == 1
