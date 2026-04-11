@@ -68,6 +68,12 @@ class RuntimeTuiConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class RuntimeProviderFallbackConfig:
+    preferred_model: str
+    fallback_models: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class RuntimeConfig:
     approval_mode: PermissionDecision = "ask"
     model: str | None = None
@@ -78,6 +84,7 @@ class RuntimeConfig:
     lsp: RuntimeLspConfig | None = None
     acp: RuntimeAcpConfig | None = None
     tui: RuntimeTuiConfig | None = None
+    provider_fallback: RuntimeProviderFallbackConfig | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,6 +98,7 @@ class RuntimeConfigOverrides:
     lsp: RuntimeLspConfig | None = None
     acp: RuntimeAcpConfig | None = None
     tui: RuntimeTuiConfig | None = None
+    provider_fallback: RuntimeProviderFallbackConfig | None = None
 
 
 def runtime_config_path(workspace: Path) -> Path:
@@ -126,6 +134,7 @@ def load_runtime_config(
         lsp=repo_local.lsp,
         acp=repo_local.acp,
         tui=repo_local.tui,
+        provider_fallback=repo_local.provider_fallback,
     )
 
 
@@ -173,6 +182,9 @@ def _load_repo_local_config(workspace: Path) -> RuntimeConfigOverrides:
     raw_tui = payload.get("tui")
     tui = _parse_tui_config(raw_tui)
 
+    raw_provider_fallback = payload.get("provider_fallback")
+    provider_fallback = _parse_provider_fallback_config(raw_provider_fallback)
+
     raw_approval_mode = payload.get("approval_mode")
     parsed_approval_mode = _parse_approval_mode(
         raw_approval_mode,
@@ -190,6 +202,7 @@ def _load_repo_local_config(workspace: Path) -> RuntimeConfigOverrides:
         lsp=lsp,
         acp=acp,
         tui=tui,
+        provider_fallback=provider_fallback,
     )
 
 
@@ -335,6 +348,33 @@ def _parse_tui_config(raw_tui: object) -> RuntimeTuiConfig | None:
     return RuntimeTuiConfig(
         leader_key=leader_key if leader_key is not None else "alt+x",
         keymap=keymap,
+    )
+
+
+def _parse_provider_fallback_config(
+    raw_provider_fallback: object,
+) -> RuntimeProviderFallbackConfig | None:
+    if raw_provider_fallback is None:
+        return None
+    if not isinstance(raw_provider_fallback, dict):
+        raise ValueError("runtime config field 'provider_fallback' must be an object when provided")
+
+    payload = cast(dict[str, object], raw_provider_fallback)
+    preferred_model = payload.get("preferred_model")
+    if not isinstance(preferred_model, str):
+        raise ValueError(
+            "runtime config field 'provider_fallback.preferred_model' must be a string"
+        )
+    fallback_models = _parse_string_list(
+        payload.get("fallback_models"),
+        field_path="provider_fallback.fallback_models",
+    )
+    ordered_models = (preferred_model, *fallback_models)
+    if len(set(ordered_models)) != len(ordered_models):
+        raise ValueError("provider fallback chain must not contain duplicate models")
+    return RuntimeProviderFallbackConfig(
+        preferred_model=preferred_model,
+        fallback_models=fallback_models,
     )
 
 

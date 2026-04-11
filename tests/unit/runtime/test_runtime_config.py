@@ -14,6 +14,7 @@ from voidcode.runtime.config import (
     RuntimeHooksConfig,
     RuntimeLspConfig,
     RuntimeLspServerConfig,
+    RuntimeProviderFallbackConfig,
     RuntimeSkillsConfig,
     RuntimeToolsBuiltinConfig,
     RuntimeToolsConfig,
@@ -104,6 +105,10 @@ def test_runtime_config_parses_extension_domains(tmp_path: Path) -> None:
                     "servers": {"pyright": {"command": ["pyright-langserver", "--stdio"]}},
                 },
                 "acp": {"enabled": False},
+                "provider_fallback": {
+                    "preferred_model": "opencode/gpt-5.4",
+                    "fallback_models": ["opencode/gpt-5.3", "custom/demo"],
+                },
             }
         ),
         encoding="utf-8",
@@ -125,6 +130,10 @@ def test_runtime_config_parses_extension_domains(tmp_path: Path) -> None:
         servers={"pyright": RuntimeLspServerConfig(command=("pyright-langserver", "--stdio"))},
     )
     assert config.acp == RuntimeAcpConfig(enabled=False)
+    assert config.provider_fallback == RuntimeProviderFallbackConfig(
+        preferred_model="opencode/gpt-5.4",
+        fallback_models=("opencode/gpt-5.3", "custom/demo"),
+    )
 
 
 def test_runtime_config_accepts_single_agent_execution_engine(tmp_path: Path) -> None:
@@ -271,6 +280,31 @@ def test_runtime_config_rejects_invalid_repo_local_execution_engine(tmp_path: Pa
             {"lsp": {"servers": {"pyright": {"command": ["pyright"], "languages": [1]}}}},
             "runtime config field 'lsp.servers.pyright.languages\\[0\\]'",
             id="lsp-server-language-item-type",
+        ),
+        pytest.param(
+            {"provider_fallback": []},
+            "runtime config field 'provider_fallback'",
+            id="provider-fallback-shape",
+        ),
+        pytest.param(
+            {"provider_fallback": {"preferred_model": 1}},
+            "runtime config field 'provider_fallback.preferred_model'",
+            id="provider-fallback-preferred-type",
+        ),
+        pytest.param(
+            {"provider_fallback": {"preferred_model": "opencode/gpt-5.4", "fallback_models": [1]}},
+            "runtime config field 'provider_fallback.fallback_models\\[0\\]'",
+            id="provider-fallback-list-item-type",
+        ),
+        pytest.param(
+            {
+                "provider_fallback": {
+                    "preferred_model": "opencode/gpt-5.4",
+                    "fallback_models": ["opencode/gpt-5.4"],
+                }
+            },
+            "provider fallback chain must not contain duplicate models",
+            id="provider-fallback-duplicates",
         ),
         pytest.param({"acp": []}, "runtime config field 'acp'", id="acp-shape"),
         pytest.param(
