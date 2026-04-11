@@ -347,9 +347,12 @@ class SqliteSessionStore:
         payload = cast(str | None, row["resume_checkpoint_json"])
         if payload is None:
             return None
-        checkpoint = json.loads(payload)
+        try:
+            checkpoint = json.loads(payload)
+        except json.JSONDecodeError:
+            return None
         if not isinstance(checkpoint, dict):
-            raise ValueError("persisted resume checkpoint must be an object")
+            return None
         return cast(dict[str, object], checkpoint)
 
     def _read_pending_approval_json(
