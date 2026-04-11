@@ -1289,7 +1289,7 @@ class VoidCodeRuntime:
                     output=output,
                 )
                 request = RuntimeRequest(
-                    prompt=self._prompt_from_events(stored.events),
+                    prompt=prompt,
                     session_id=stored.session.session.id,
                 )
                 self._persist_response(request=request, response=response)
@@ -1334,10 +1334,14 @@ class VoidCodeRuntime:
         if not isinstance(raw_tool_results, list):
             return None
         checkpoint_tool_results = cast(list[object], raw_tool_results)
+        try:
+            tool_results = self._tool_results_from_checkpoint(checkpoint_tool_results)
+        except (TypeError, ValueError):
+            return None
         return _ApprovalResumeCheckpointState(
             prompt=prompt,
             session_metadata=cast(dict[str, object], session_metadata),
-            tool_results=self._tool_results_from_checkpoint(checkpoint_tool_results),
+            tool_results=tool_results,
         )
 
     def _load_resume_checkpoint(self, *, session_id: str) -> dict[str, object] | None:
