@@ -8,7 +8,7 @@
 
 ## 状态
 
-当前的确定性运行时会发出 `decision=allow` 的权限事件，但完整的受控审批流尚未实现。
+当前运行时已经实现完整的受控审批流：`allow` / `deny` / `ask` 三种模式都已可用，未决审批会被持久化，并且 approval resume 现在拥有运行时内部的持久化 checkpoint anchor。
 
 ## 当前代码锚点
 
@@ -152,10 +152,11 @@ Payload 字段意图：
 
 ## 当前 vs 计划行为
 
-当前确定性行为：
-- 只读流发出 `decision=allow` 的 `runtime.permission_resolved`
-- 尚未持久化审批请求队列
-- 尚未实现 `ask` 或 `deny` 的执行路径
+当前已实现行为：
+- 只读工具仍通过 `runtime.permission_resolved` 直接继续执行
+- 写入/高风险工具在 `ask` 时会进入可持久化的等待状态
+- `allow` / `deny` / `ask` 的恢复路径都由运行时负责
+- approval resume 可以优先使用运行时内部 checkpoint anchor 恢复，而不是只依赖重新扫描历史事件
 
 计划的 MVP 行为：
 - 运行时可以在 `ask` 时暂停
@@ -175,6 +176,8 @@ Payload 字段意图：
 
 - 未处理的审批请求：会话在等待状态下恢复，客户端仍可对该挂起请求采取行动
 - 已处理的审批请求：会话重放将决策显示为历史事件流的一部分
+
+对于运行时内部实现，未处理审批还可以拥有一个持久化 checkpoint anchor，用于在进程重启后恢复继续执行所需的最小状态。该 checkpoint 不是客户端提交 shape 的一部分，也不会替代客户端可见的事件历史重放。
 
 ## 相关客户端
 

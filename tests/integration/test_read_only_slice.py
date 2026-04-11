@@ -1467,7 +1467,30 @@ def test_runtime_migrates_legacy_session_schema_for_pending_approval(tmp_path: P
         check.close()
 
     assert "pending_approval_json" in columns
-    assert user_version == 2
+    assert "resume_checkpoint_json" in columns
+    assert user_version == 3
+
+
+def test_runtime_replay_is_unchanged_when_resume_checkpoint_exists(tmp_path: Path) -> None:
+    runtime_request, runtime = _approval_runtime(tmp_path, mode="ask")
+
+    waiting = runtime.run(
+        runtime_request(prompt="write danger.txt replay checkpoint", session_id="checkpoint-replay")
+    )
+    approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
+
+    resumed = runtime.resume(
+        "checkpoint-replay",
+        approval_request_id=approval_request_id,
+        approval_decision="allow",
+    )
+    replay = runtime.resume("checkpoint-replay")
+
+    assert resumed.session.status == "completed"
+    assert replay.output == resumed.output
+    assert [(event.sequence, event.event_type, event.payload) for event in replay.events] == [
+        (event.sequence, event.event_type, event.payload) for event in resumed.events
+    ]
 
 
 def test_runtime_resume_uses_persisted_runtime_config_over_fresh_resume_overrides(

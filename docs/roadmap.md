@@ -107,3 +107,5 @@ VoidCode 仍处于 pre-MVP 开发阶段。路线图从基础工作贯穿至 MVP 
 - 保证 transport replay、approval resume 与长期恢复在该策略下继续成立
 
 这项工作对应当前 open issue：[#70 定义 event retention 与 long-session checkpoint 策略](https://github.com/lei-jia-xing/voidcode/issues/70)。
+
+第一落地切片应保持狭窄：先为 waiting / terminal session 持久化内部 resume checkpoint anchor，在不改变客户端 replay 行为的前提下，为后续 retention / compaction / archive 语义建立安全基础。

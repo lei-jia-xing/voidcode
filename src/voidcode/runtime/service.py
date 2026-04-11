@@ -11,7 +11,7 @@ from uuid import uuid4
 from ..graph.contracts import GraphEvent, GraphRunRequest
 from ..graph.read_only_slice import DeterministicReadOnlyGraph
 from ..graph.single_agent_slice import ProviderSingleAgentGraph
-from ..tools.contracts import Tool, ToolCall, ToolDefinition, ToolResult
+from ..tools.contracts import Tool, ToolCall, ToolDefinition, ToolResult, ToolResultStatus
 from .acp import AcpAdapter, AcpRequestEnvelope, AcpResponseEnvelope, build_acp_adapter
 from .config import (
     ExecutionEngineName,
@@ -1117,6 +1117,7 @@ class VoidCodeRuntime:
         pending = self._session_store.load_pending_approval(
             workspace=self._workspace, session_id=session_id
         )
+        checkpoint = self._load_resume_checkpoint(session_id=session_id)
         if pending is None:
             raise ValueError(f"no pending approval for session: {session_id}")
         if pending.request_id != approval_request_id:
@@ -1125,6 +1126,7 @@ class VoidCodeRuntime:
             stored=stored_response,
             pending=pending,
             approval_decision=approval_decision,
+            checkpoint=checkpoint,
         )
 
     def _resume_pending_approval_response(
@@ -1141,6 +1143,7 @@ class VoidCodeRuntime:
         pending = self._session_store.load_pending_approval(
             workspace=self._workspace, session_id=session_id
         )
+        checkpoint = self._load_resume_checkpoint(session_id=session_id)
         if pending is None:
             raise ValueError(f"no pending approval for session: {session_id}")
         if pending.request_id != approval_request_id:
@@ -1155,6 +1158,7 @@ class VoidCodeRuntime:
             stored=stored_response,
             pending=pending,
             approval_decision=approval_decision,
+            checkpoint=checkpoint,
         ):
             final_session = chunk.session
             if chunk.event is not None:
@@ -1177,6 +1181,7 @@ class VoidCodeRuntime:
         stored: RuntimeResponse,
         pending: PendingApproval,
         approval_decision: PermissionResolution,
+        checkpoint: dict[str, object] | None,
     ) -> Iterator[RuntimeStreamChunk]:
         session = SessionState(
             session=stored.session.session,
@@ -1197,27 +1202,43 @@ class VoidCodeRuntime:
 
         max_stored_sequence = stored.events[-1].sequence if stored.events else 0
 
-        tool_results: list[ToolResult] = []
-        for event in stored.events:
-            if event.event_type == "runtime.tool_completed":
-                is_err = "error" in event.payload
-                tool_results.append(
-                    ToolResult(
-                        tool_name=str(event.payload.get("tool", "unknown")),
-                        content=str(event.payload.get("content", "")) if not is_err else None,
-                        status="error" if is_err else "ok",
-                        data=event.payload,
-                        error=str(event.payload["error"]) if is_err else None,
+        checkpoint_state = self._approval_resume_state_from_checkpoint(
+            checkpoint=checkpoint,
+            pending=pending,
+            stored_metadata=stored.session.metadata,
+        )
+        if checkpoint_state is not None:
+            prompt = checkpoint_state.prompt
+            session = SessionState(
+                session=stored.session.session,
+                status="running",
+                turn=stored.session.turn,
+                metadata=checkpoint_state.session_metadata,
+            )
+            tool_results: list[ToolResult] = list(checkpoint_state.tool_results)
+        else:
+            prompt = self._prompt_from_events(stored.events)
+            tool_results = []
+            for event in stored.events:
+                if event.event_type == "runtime.tool_completed":
+                    is_err = "error" in event.payload
+                    tool_results.append(
+                        ToolResult(
+                            tool_name=str(event.payload.get("tool", "unknown")),
+                            content=str(event.payload.get("content", "")) if not is_err else None,
+                            status="error" if is_err else "ok",
+                            data=event.payload,
+                            error=str(event.payload["error"]) if is_err else None,
+                        )
                     )
-                )
 
         graph_request = GraphRunRequest(
             session=session,
-            prompt=self._prompt_from_events(stored.events),
+            prompt=prompt,
             available_tools=self._tool_registry.definitions(),
             applied_skills=self._graph_applied_skills(session.metadata),
             context_window=self._prepare_single_agent_context_window(
-                prompt=self._prompt_from_events(stored.events),
+                prompt=prompt,
                 tool_results=tuple(tool_results),
                 session_metadata=session.metadata,
             ),
@@ -1229,14 +1250,15 @@ class VoidCodeRuntime:
         provider_attempt = cast(int, graph_request.metadata.get("provider_attempt", 0))
         graph = self._graph_for_session_metadata(session.metadata)
         if provider_attempt > 0:
+            effective_config = self._effective_runtime_config_from_metadata(session.metadata)
             resume_target = self._provider_chain_for_session_metadata(session.metadata).target_at(
                 provider_attempt
             )
             if resume_target is not None:
                 graph = self._build_graph_for_engine(
-                    self._effective_runtime_config_from_metadata(session.metadata).execution_engine,
+                    effective_config.execution_engine,
                     resume_target,
-                    self._effective_runtime_config_from_metadata(session.metadata).max_steps,
+                    effective_config.max_steps,
                 )
 
         loop_events: list[EventEnvelope] = []
@@ -1281,10 +1303,89 @@ class VoidCodeRuntime:
         )
 
         request = RuntimeRequest(
-            prompt=self._prompt_from_events(stored.events), session_id=stored.session.session.id
+            prompt=prompt,
+            session_id=stored.session.session.id,
         )
         self._persist_response(request=request, response=response)
         return
+
+    def _approval_resume_state_from_checkpoint(
+        self,
+        *,
+        checkpoint: dict[str, object] | None,
+        pending: PendingApproval,
+        stored_metadata: dict[str, object],
+    ) -> _ApprovalResumeCheckpointState | None:
+        if checkpoint is None:
+            return None
+        if checkpoint.get("kind") != "approval_wait":
+            return None
+        if checkpoint.get("version") != 1:
+            return None
+        if checkpoint.get("pending_approval_request_id") != pending.request_id:
+            return None
+        prompt = checkpoint.get("prompt")
+        session_metadata = checkpoint.get("session_metadata")
+        raw_tool_results = checkpoint.get("tool_results")
+        if not isinstance(prompt, str) or not isinstance(session_metadata, dict):
+            return None
+        if cast(dict[str, object], session_metadata) != stored_metadata:
+            return None
+        if not isinstance(raw_tool_results, list):
+            return None
+        checkpoint_tool_results = cast(list[object], raw_tool_results)
+        return _ApprovalResumeCheckpointState(
+            prompt=prompt,
+            session_metadata=cast(dict[str, object], session_metadata),
+            tool_results=self._tool_results_from_checkpoint(checkpoint_tool_results),
+        )
+
+    def _load_resume_checkpoint(self, *, session_id: str) -> dict[str, object] | None:
+        load_checkpoint = getattr(self._session_store, "load_resume_checkpoint", None)
+        if load_checkpoint is None:
+            return None
+        return cast(
+            dict[str, object] | None,
+            load_checkpoint(workspace=self._workspace, session_id=session_id),
+        )
+
+    @staticmethod
+    def _tool_results_from_checkpoint(raw_tool_results: list[object]) -> tuple[ToolResult, ...]:
+        parsed: list[ToolResult] = []
+        for raw_tool_result in raw_tool_results:
+            if not isinstance(raw_tool_result, dict):
+                raise ValueError("persisted resume checkpoint tool_results must contain objects")
+            payload = cast(dict[str, object], raw_tool_result)
+            tool_name = payload.get("tool_name")
+            status = payload.get("status")
+            data = payload.get("data")
+            content = payload.get("content")
+            error = payload.get("error")
+            if (
+                not isinstance(tool_name, str)
+                or status not in ("ok", "error")
+                or not isinstance(data, dict)
+            ):
+                raise ValueError("persisted resume checkpoint tool_results are malformed")
+            if content is not None and not isinstance(content, str):
+                raise ValueError(
+                    "persisted resume checkpoint tool result content must be a string or null"
+                )
+            if error is not None and not isinstance(error, str):
+                raise ValueError(
+                    "persisted resume checkpoint tool result error must be a string or null"
+                )
+            tool_status: ToolResultStatus = status
+            parsed.append(
+                ToolResult(
+                    tool_name=tool_name,
+                    content=content,
+                    status=tool_status,
+                    data=cast(dict[str, object], data),
+                    error=error,
+                )
+            )
+        return tuple(parsed)
 
     @staticmethod
     def _replay_response(response: RuntimeResponse) -> Iterator[RuntimeStreamChunk]:
@@ -1709,6 +1810,13 @@ class EffectiveRuntimeConfig:
     execution_engine: ExecutionEngineName
     max_steps: int
     provider_fallback: RuntimeProviderFallbackConfig | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _ApprovalResumeCheckpointState:
+    prompt: str
+    session_metadata: dict[str, object]
+    tool_results: tuple[ToolResult, ...]
 
 
 @dataclass(frozen=True, slots=True)
