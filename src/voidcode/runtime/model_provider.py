@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
+from .config import RuntimeProviderFallbackConfig
 from .single_agent_provider import SingleAgentProvider, StubSingleAgentProvider
 
 
@@ -35,6 +36,18 @@ class ResolvedProviderModel:
     provider: ModelProvider | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class ResolvedProviderChain:
+    preferred: ResolvedProviderModel = ResolvedProviderModel()
+    fallbacks: tuple[ResolvedProviderModel, ...] = ()
+    all_targets: tuple[ResolvedProviderModel, ...] = ()
+
+    def target_at(self, index: int) -> ResolvedProviderModel | None:
+        if index < 0 or index >= len(self.all_targets):
+            return None
+        return self.all_targets[index]
+
+
 @dataclass(slots=True)
 class ModelProviderRegistry:
     providers: dict[str, ModelProvider]
@@ -64,6 +77,26 @@ def resolve_provider_model(
             model=model_name,
         ),
         provider=provider,
+    )
+
+
+def resolve_provider_chain(
+    provider_fallback: RuntimeProviderFallbackConfig | None,
+    *,
+    registry: ModelProviderRegistry,
+) -> ResolvedProviderChain:
+    if provider_fallback is None:
+        return ResolvedProviderChain()
+
+    preferred = resolve_provider_model(provider_fallback.preferred_model, registry=registry)
+    fallbacks = tuple(
+        resolve_provider_model(raw_model, registry=registry)
+        for raw_model in provider_fallback.fallback_models
+    )
+    return ResolvedProviderChain(
+        preferred=preferred,
+        fallbacks=fallbacks,
+        all_targets=(preferred, *fallbacks),
     )
 
 
