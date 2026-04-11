@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import Literal, Protocol, runtime_checkable
 
 from ..tools.contracts import ToolCall, ToolDefinition, ToolResult
 from .context_window import RuntimeContextWindow
@@ -25,12 +25,25 @@ class SingleAgentTurnRequest:
     raw_model: str | None
     provider_name: str | None
     model_name: str | None
+    attempt: int = 0
 
 
 @dataclass(frozen=True, slots=True)
 class SingleAgentTurnResult:
     tool_call: ToolCall | None = None
     output: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderExecutionError(ValueError):
+    kind: Literal["rate_limit", "context_limit", "invalid_model", "transient_failure"]
+    provider_name: str
+    model_name: str
+    message: str
+    retryable: bool = False
+
+    def __str__(self) -> str:
+        return self.message
 
 
 @runtime_checkable

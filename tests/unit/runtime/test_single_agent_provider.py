@@ -5,6 +5,7 @@ import pytest
 from voidcode.runtime.context_window import RuntimeContextWindow
 from voidcode.runtime.model_provider import ModelProviderRegistry, resolve_provider_model
 from voidcode.runtime.single_agent_provider import (
+    ProviderExecutionError,
     SingleAgentTurnRequest,
     StubSingleAgentProvider,
 )
@@ -104,6 +105,18 @@ def test_stub_single_agent_provider_rejects_unsupported_requests() -> None:
                 model_name=provider_model.selection.model,
             )
         )
+
+
+def test_provider_execution_error_requires_supported_kind() -> None:
+    error = ProviderExecutionError(
+        kind="rate_limit",
+        provider_name="opencode",
+        model_name="gpt-5.4",
+        message="too many requests",
+    )
+
+    assert error.kind == "rate_limit"
+    assert str(error) == "too many requests"
 
 
 def test_stub_single_agent_provider_uses_bounded_context_window_results_for_finalize() -> None:
