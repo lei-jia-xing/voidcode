@@ -1394,6 +1394,120 @@ def test_runtime_resume_preserves_provider_attempt_and_target_across_pending_app
     assert len(resumed_fallback_events) == 1
 
 
+def test_runtime_persists_resume_checkpoint_for_waiting_session(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    waiting = runtime.run(RuntimeRequest(prompt="go", session_id="checkpoint-waiting-session"))
+
+    assert waiting.session.status == "waiting"
+    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    connection = sqlite3.connect(database_path)
+    try:
+        row = connection.execute(
+            "SELECT resume_checkpoint_json FROM sessions WHERE session_id = ?",
+            ("checkpoint-waiting-session",),
+        ).fetchone()
+        assert row is not None
+        checkpoint = json.loads(str(row[0]))
+    finally:
+        connection.close()
+
+    assert checkpoint["version"] == 1
+    assert checkpoint["kind"] == "approval_wait"
+    assert checkpoint["pending_approval_request_id"] == str(
+        waiting.events[-1].payload["request_id"]
+    )
+    assert checkpoint["prompt"] == "go"
+    assert checkpoint["session_status"] == "waiting"
+    assert checkpoint["session_metadata"] == waiting.session.metadata
+    assert checkpoint["tool_results"] == []
+    assert checkpoint["last_event_sequence"] == waiting.events[-1].sequence
+
+
+def test_runtime_resume_approval_rebuilds_from_persisted_checkpoint_after_restart(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    waiting = runtime.run(RuntimeRequest(prompt="go", session_id="checkpoint-resume-session"))
+    approval_request_id = str(waiting.events[-1].payload["request_id"])
+
+    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    connection = sqlite3.connect(database_path)
+    try:
+        _ = connection.execute(
+            "DELETE FROM session_events WHERE session_id = ?", ("checkpoint-resume-session",)
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    resumed = resumed_runtime.resume(
+        session_id="checkpoint-resume-session",
+        approval_request_id=approval_request_id,
+        approval_decision="allow",
+    )
+
+    assert resumed.session.status == "completed"
+    assert resumed.output == "done"
+
+
+def test_runtime_resume_falls_back_when_persisted_checkpoint_is_missing(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    waiting = runtime.run(RuntimeRequest(prompt="go", session_id="checkpoint-fallback-session"))
+    approval_request_id = str(waiting.events[-1].payload["request_id"])
+
+    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    connection = sqlite3.connect(database_path)
+    try:
+        _ = connection.execute(
+            "UPDATE sessions SET resume_checkpoint_json = NULL WHERE session_id = ?",
+            ("checkpoint-fallback-session",),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    resumed = resumed_runtime.resume(
+        session_id="checkpoint-fallback-session",
+        approval_request_id=approval_request_id,
+        approval_decision="allow",
+    )
+
+    assert resumed.session.status == "completed"
+    assert resumed.output == "done"
+
+
 @pytest.mark.parametrize("error_kind", ["rate_limit", "invalid_model", "transient_failure"])
 def test_runtime_downgrades_to_next_provider_target_on_provider_failures(
     tmp_path: Path,

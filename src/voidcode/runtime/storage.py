@@ -44,6 +44,10 @@ class SessionStore(Protocol):
 
     def clear_pending_approval(self, *, workspace: Path, session_id: str) -> None: ...
 
+    def load_resume_checkpoint(
+        self, *, workspace: Path, session_id: str
+    ) -> dict[str, object] | None: ...
+
 
 @final
 class SqliteSessionStore:
@@ -81,6 +85,7 @@ class SqliteSessionStore:
                 output TEXT,
                 metadata_json TEXT NOT NULL,
                 pending_approval_json TEXT,
+                resume_checkpoint_json TEXT,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
                 last_event_sequence INTEGER NOT NULL
@@ -106,11 +111,19 @@ class SqliteSessionStore:
                 list[sqlite3.Row], connection.execute("PRAGMA table_info(sessions)").fetchall()
             )
         }
+        target_user_version = user_version
         if "pending_approval_json" not in columns:
             _ = connection.execute("ALTER TABLE sessions ADD COLUMN pending_approval_json TEXT")
-            user_version = max(user_version, 1)
+            target_user_version = max(target_user_version, 1)
+        if "resume_checkpoint_json" not in columns:
+            _ = connection.execute("ALTER TABLE sessions ADD COLUMN resume_checkpoint_json TEXT")
+            target_user_version = max(target_user_version, 3)
         if user_version < 2:
-            _ = connection.execute("PRAGMA user_version = 2")
+            target_user_version = max(target_user_version, 2)
+        if user_version < 3:
+            target_user_version = max(target_user_version, 3)
+        if target_user_version != user_version:
+            _ = connection.execute(f"PRAGMA user_version = {target_user_version}")
         connection.commit()
 
     @staticmethod
@@ -143,8 +156,8 @@ class SqliteSessionStore:
                 """
                 INSERT OR REPLACE INTO sessions (
                     session_id, workspace, status, turn, prompt, output,
-                    metadata_json, pending_approval_json, created_at, updated_at, last_event_sequence
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    metadata_json, pending_approval_json, resume_checkpoint_json, created_at, updated_at, last_event_sequence
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,  # noqa: E501
                 (
                     session_id,
@@ -158,6 +171,13 @@ class SqliteSessionStore:
                     if clear_pending_approval
                     else self._read_pending_approval_json(
                         connection=connection, session_id=session_id
+                    ),
+                    json.dumps(
+                        self._terminal_resume_checkpoint(
+                            request=request,
+                            response=response,
+                        ),
+                        sort_keys=True,
                     ),
                     created_at,
                     updated_at,
@@ -224,8 +244,8 @@ class SqliteSessionStore:
                 """
                 INSERT OR REPLACE INTO sessions (
                     session_id, workspace, status, turn, prompt, output,
-                    metadata_json, pending_approval_json, created_at, updated_at, last_event_sequence
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    metadata_json, pending_approval_json, resume_checkpoint_json, created_at, updated_at, last_event_sequence
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,  # noqa: E501
                 (
                     session_id,
@@ -236,6 +256,14 @@ class SqliteSessionStore:
                     response.output,
                     json.dumps(response.session.metadata, sort_keys=True),
                     json.dumps(asdict(pending_approval), sort_keys=True),
+                    json.dumps(
+                        self._approval_wait_resume_checkpoint(
+                            request=request,
+                            response=response,
+                            pending_approval=pending_approval,
+                        ),
+                        sort_keys=True,
+                    ),
                     created_at,
                     updated_at,
                     response.events[-1].sequence if response.events else 0,
@@ -299,6 +327,31 @@ class SqliteSessionStore:
             )
             connection.commit()
 
+    def load_resume_checkpoint(
+        self, *, workspace: Path, session_id: str
+    ) -> dict[str, object] | None:
+        with self._connect(workspace) as connection:
+            row = cast(
+                sqlite3.Row | None,
+                connection.execute(
+                    """
+                    SELECT resume_checkpoint_json
+                    FROM sessions
+                    WHERE workspace = ? AND session_id = ?
+                    """,
+                    (str(workspace), session_id),
+                ).fetchone(),
+            )
+        if row is None:
+            raise ValueError(f"unknown session: {session_id}")
+        payload = cast(str | None, row["resume_checkpoint_json"])
+        if payload is None:
+            return None
+        checkpoint = json.loads(payload)
+        if not isinstance(checkpoint, dict):
+            raise ValueError("persisted resume checkpoint must be an object")
+        return cast(dict[str, object], checkpoint)
+
     def _read_pending_approval_json(
         self, *, connection: sqlite3.Connection, session_id: str
     ) -> str | None:
@@ -312,6 +365,59 @@ class SqliteSessionStore:
         if row is None:
             return None
         return cast(str | None, row["pending_approval_json"])
+
+    @staticmethod
+    def _approval_wait_resume_checkpoint(
+        *,
+        request: RuntimeRequest,
+        response: RuntimeResponse,
+        pending_approval: PendingApproval,
+    ) -> dict[str, object]:
+        return {
+            "version": 1,
+            "kind": "approval_wait",
+            "prompt": request.prompt,
+            "session_status": response.session.status,
+            "session_metadata": response.session.metadata,
+            "tool_results": SqliteSessionStore._tool_results_from_events(response.events),
+            "last_event_sequence": response.events[-1].sequence if response.events else 0,
+            "pending_approval_request_id": pending_approval.request_id,
+            "output": response.output,
+        }
+
+    @staticmethod
+    def _terminal_resume_checkpoint(
+        *, request: RuntimeRequest, response: RuntimeResponse
+    ) -> dict[str, object]:
+        return {
+            "version": 1,
+            "kind": "terminal",
+            "prompt": request.prompt,
+            "session_status": response.session.status,
+            "session_metadata": response.session.metadata,
+            "tool_results": SqliteSessionStore._tool_results_from_events(response.events),
+            "last_event_sequence": response.events[-1].sequence if response.events else 0,
+            "output": response.output,
+        }
+
+    @staticmethod
+    def _tool_results_from_events(events: tuple[EventEnvelope, ...]) -> list[dict[str, object]]:
+        tool_results: list[dict[str, object]] = []
+        for event in events:
+            if event.event_type != "runtime.tool_completed":
+                continue
+            payload = event.payload
+            is_err = "error" in payload
+            tool_results.append(
+                {
+                    "tool_name": str(payload.get("tool", "unknown")),
+                    "content": str(payload.get("content", "")) if not is_err else None,
+                    "status": "error" if is_err else "ok",
+                    "data": payload,
+                    "error": str(payload["error"]) if is_err else None,
+                }
+            )
+        return tool_results
 
     def load_session(self, *, workspace: Path, session_id: str) -> RuntimeResponse:
         with self._connect(workspace) as connection:
