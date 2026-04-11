@@ -67,6 +67,7 @@ def test_provider_single_agent_graph_requests_tool_on_first_turn() -> None:
         "mode": "single_agent",
         "provider": "opencode",
         "model": "gpt-5.4",
+        "attempt": 0,
         "prompt": "read sample.txt",
     }
 
@@ -124,6 +125,7 @@ def test_provider_single_agent_graph_finalizes_after_tool_result() -> None:
         "mode": "single_agent",
         "provider": "opencode",
         "model": "gpt-5.4",
+        "attempt": 0,
         "prompt": "read sample.txt",
     }
     assert step.events[2].payload == {"step": 3, "phase": "finalize", "max_steps": 4}

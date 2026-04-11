@@ -9,6 +9,7 @@ type ExistingEventType = Literal[
     "runtime.request_received",
     "runtime.skills_loaded",
     "runtime.skills_applied",
+    "runtime.provider_fallback",
     "runtime.acp_connected",
     "runtime.acp_disconnected",
     "runtime.acp_failed",
@@ -34,6 +35,7 @@ type KnownEventType = ExistingEventType | PrototypeAdditiveEventType
 RUNTIME_REQUEST_RECEIVED: Final[ExistingEventType] = "runtime.request_received"
 RUNTIME_SKILLS_LOADED: Final[ExistingEventType] = "runtime.skills_loaded"
 RUNTIME_SKILLS_APPLIED: Final[ExistingEventType] = "runtime.skills_applied"
+RUNTIME_PROVIDER_FALLBACK: Final[ExistingEventType] = "runtime.provider_fallback"
 RUNTIME_ACP_CONNECTED: Final[ExistingEventType] = "runtime.acp_connected"
 RUNTIME_ACP_DISCONNECTED: Final[ExistingEventType] = "runtime.acp_disconnected"
 RUNTIME_ACP_FAILED: Final[ExistingEventType] = "runtime.acp_failed"
@@ -59,6 +61,7 @@ EMITTED_EVENT_TYPES: Final[tuple[ExistingEventType, ...]] = (
     RUNTIME_REQUEST_RECEIVED,
     RUNTIME_SKILLS_LOADED,
     RUNTIME_SKILLS_APPLIED,
+    RUNTIME_PROVIDER_FALLBACK,
     RUNTIME_ACP_CONNECTED,
     RUNTIME_ACP_DISCONNECTED,
     RUNTIME_ACP_FAILED,

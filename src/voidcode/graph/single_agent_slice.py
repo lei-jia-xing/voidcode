@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import cast
 
 from ..runtime.context_window import RuntimeContextWindow
 from ..runtime.events import GRAPH_LOOP_STEP, GRAPH_MODEL_TURN, GRAPH_RESPONSE_READY
@@ -57,6 +58,7 @@ class ProviderSingleAgentGraph:
                     "mode": "single_agent",
                     "provider": self._provider.name,
                     "model": self._provider_model.selection.model,
+                    "attempt": request.metadata.get("provider_attempt", 0),
                     "prompt": request.prompt,
                 },
             ),
@@ -73,6 +75,7 @@ class ProviderSingleAgentGraph:
                 raw_model=self._provider_model.selection.raw_model,
                 provider_name=self._provider_model.selection.provider,
                 model_name=self._provider_model.selection.model,
+                attempt=cast(int, request.metadata.get("provider_attempt", 0)),
             )
         )
 

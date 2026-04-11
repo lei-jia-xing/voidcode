@@ -13,7 +13,12 @@ from ..graph.read_only_slice import DeterministicReadOnlyGraph
 from ..graph.single_agent_slice import ProviderSingleAgentGraph
 from ..tools.contracts import Tool, ToolCall, ToolDefinition, ToolResult
 from .acp import AcpAdapter, AcpRequestEnvelope, AcpResponseEnvelope, build_acp_adapter
-from .config import ExecutionEngineName, RuntimeConfig, load_runtime_config
+from .config import (
+    ExecutionEngineName,
+    RuntimeConfig,
+    RuntimeProviderFallbackConfig,
+    load_runtime_config,
+)
 from .context_window import ContextWindowPolicy, RuntimeContextWindow, prepare_single_agent_context
 from .contracts import RuntimeRequest, RuntimeResponse, RuntimeStreamChunk, validate_session_id
 from .events import (
@@ -31,7 +36,13 @@ from .events import (
     EventEnvelope,
 )
 from .lsp import LspManager, LspManagerState, LspRequest, LspRequestResult, build_lsp_manager
-from .model_provider import ModelProviderRegistry, ResolvedProviderModel, resolve_provider_model
+from .model_provider import (
+    ModelProviderRegistry,
+    ResolvedProviderChain,
+    ResolvedProviderModel,
+    resolve_provider_chain,
+    resolve_provider_model,
+)
 from .permission import (
     PendingApproval,
     PermissionDecision,
@@ -41,6 +52,7 @@ from .permission import (
 )
 from .provider_errors import SingleAgentContextLimitError, classify_provider_error
 from .session import SessionRef, SessionState, SessionStatus, StoredSessionSummary
+from .single_agent_provider import ProviderExecutionError
 from .skills import SkillRegistry, SkillRuntimeContext
 from .storage import SessionStore, SqliteSessionStore
 from .tool_provider import BuiltinToolProvider
@@ -108,6 +120,7 @@ class VoidCodeRuntime:
     _session_store: SessionStore
     _model_provider_registry: ModelProviderRegistry
     _provider_model: ResolvedProviderModel
+    _provider_chain: ResolvedProviderChain
     _skill_registry: SkillRegistry
     _lsp_manager: LspManager
     _acp_adapter: AcpAdapter
@@ -138,6 +151,10 @@ class VoidCodeRuntime:
             self._config.model,
             registry=self._model_provider_registry,
         )
+        self._provider_chain = resolve_provider_chain(
+            self._config.provider_fallback,
+            registry=self._model_provider_registry,
+        )
         self._lsp_manager = lsp_manager or build_lsp_manager(self._config.lsp)
         self._tool_registry = tool_registry or ToolRegistry.with_defaults(
             lsp_tool=self._build_lsp_tool()
@@ -149,6 +166,7 @@ class VoidCodeRuntime:
                 approval_mode=self._config.approval_mode,
                 model=self._config.model,
                 execution_engine=self._config.execution_engine,
+                provider_fallback=self._config.provider_fallback,
             )
         )
         self._permission_policy = permission_policy or PermissionPolicy(
@@ -185,17 +203,39 @@ class VoidCodeRuntime:
     def _build_graph_for_engine_from_config(self, config: EffectiveRuntimeConfig) -> RuntimeGraph:
         # Generate cache key from config
         model_str = config.model if config.model is not None else ""
-        cache_key = (config.execution_engine, model_str)
+        provider_fallback_key = (
+            ""
+            if config.provider_fallback is None
+            else "|".join(
+                (
+                    config.provider_fallback.preferred_model,
+                    *config.provider_fallback.fallback_models,
+                )
+            )
+        )
+        cache_key = (config.execution_engine, f"{model_str}::{provider_fallback_key}")
 
         # Check cache first
         if cache_key in self._graph_cache:
             return self._graph_cache[cache_key]
 
         # Build new graph and cache it
-        provider_model = resolve_provider_model(
-            config.model,
-            registry=self._model_provider_registry,
-        )
+        if config.provider_fallback is not None:
+            provider_chain = resolve_provider_chain(
+                config.provider_fallback,
+                registry=self._model_provider_registry,
+            )
+            provider_model = provider_chain.preferred
+            self._provider_chain = provider_chain
+        else:
+            provider_model = resolve_provider_model(
+                config.model,
+                registry=self._model_provider_registry,
+            )
+            self._provider_chain = ResolvedProviderChain(
+                preferred=provider_model,
+                all_targets=((provider_model,) if provider_model.provider is not None else ()),
+            )
         self._provider_model = provider_model
         graph = self._build_graph_for_engine(config.execution_engine, provider_model)
         self._graph_cache[cache_key] = graph
@@ -404,7 +444,7 @@ class VoidCodeRuntime:
                 tool_results=(),
                 session_metadata=session.metadata,
             ),
-            metadata=request.metadata,
+            metadata={**request.metadata, "provider_attempt": 0},
         )
         tool_results: list[ToolResult] = []
         graph = self._graph_for_session_metadata(session.metadata)
@@ -430,6 +470,7 @@ class VoidCodeRuntime:
         permission_policy: PermissionPolicy | None = None,
     ) -> Iterator[RuntimeStreamChunk]:
         active_permission_policy = permission_policy or self._permission_policy
+        provider_attempt = cast(int, graph_request.metadata.get("provider_attempt", 0))
         while True:
             context_window = self._prepare_single_agent_context_window(
                 prompt=graph_request.prompt,
@@ -470,13 +511,73 @@ class VoidCodeRuntime:
                     session=session,
                 )
             except Exception as exc:
+                if isinstance(exc, ProviderExecutionError):
+                    next_attempt = provider_attempt + 1
+                    provider_chain = self._provider_chain_for_session_metadata(session.metadata)
+                    all_targets = provider_chain.all_targets
+                    next_target = (
+                        all_targets[next_attempt] if next_attempt < len(all_targets) else None
+                    )
+                    if (
+                        exc.kind in {"rate_limit", "invalid_model", "transient_failure"}
+                        and next_target is not None
+                    ):
+                        sequence += 1
+                        yield RuntimeStreamChunk(
+                            kind="event",
+                            session=session,
+                            event=EventEnvelope(
+                                session_id=session.session.id,
+                                sequence=sequence,
+                                event_type="runtime.provider_fallback",
+                                source="runtime",
+                                payload={
+                                    "reason": exc.kind,
+                                    "from_provider": exc.provider_name,
+                                    "from_model": exc.model_name,
+                                    "to_provider": next_target.selection.provider,
+                                    "to_model": next_target.selection.model,
+                                    "attempt": next_attempt,
+                                },
+                            ),
+                        )
+                        provider_attempt = next_attempt
+                        graph = self._build_graph_for_engine(
+                            self._effective_runtime_config_from_metadata(
+                                session.metadata
+                            ).execution_engine,
+                            next_target,
+                        )
+                        graph_request = GraphRunRequest(
+                            session=session,
+                            prompt=graph_request.prompt,
+                            available_tools=graph_request.available_tools,
+                            applied_skills=graph_request.applied_skills,
+                            metadata={
+                                **graph_request.metadata,
+                                "provider_attempt": provider_attempt,
+                            },
+                        )
+                        continue
+                if isinstance(exc, ProviderExecutionError):
+                    yield self._failed_chunk(
+                        session=session,
+                        sequence=sequence + 1,
+                        error=str(exc),
+                        payload={
+                            "provider_error_kind": exc.kind,
+                            "provider": exc.provider_name,
+                            "model": exc.model_name,
+                        },
+                    )
+                    return
                 classified_error = classify_provider_error(exc)
                 yield self._failed_chunk(
                     session=session,
                     sequence=sequence + 1,
                     error=str(exc),
-                    kind=(
-                        "provider_context_limit"
+                    payload=(
+                        {"kind": "provider_context_limit"}
                         if isinstance(classified_error, SingleAgentContextLimitError)
                         else None
                     ),
@@ -737,7 +838,12 @@ class VoidCodeRuntime:
         return _HookOutcome(chunks=tuple(emitted_chunks), last_sequence=last_sequence)
 
     def _failed_chunk(
-        self, *, session: SessionState, sequence: int, error: str, kind: str | None = None
+        self,
+        *,
+        session: SessionState,
+        sequence: int,
+        error: str,
+        payload: dict[str, object] | None = None,
     ) -> RuntimeStreamChunk:
         failed_session = SessionState(
             session=session.session,
@@ -745,9 +851,7 @@ class VoidCodeRuntime:
             turn=session.turn,
             metadata=session.metadata,
         )
-        payload: dict[str, object] = {"error": error}
-        if kind is not None:
-            payload["kind"] = kind
+        failure_payload = {"error": error, **(payload or {})}
         return RuntimeStreamChunk(
             kind="event",
             session=failed_session,
@@ -756,7 +860,7 @@ class VoidCodeRuntime:
                 sequence=sequence,
                 event_type="runtime.failed",
                 source="runtime",
-                payload=payload,
+                payload=failure_payload,
             ),
         )
 
@@ -1076,7 +1180,7 @@ class VoidCodeRuntime:
                 tool_results=tuple(tool_results),
                 session_metadata=session.metadata,
             ),
-            metadata=session.metadata,
+            metadata={**session.metadata, "provider_attempt": 0},
         )
         graph = self._graph_for_session_metadata(session.metadata)
 
@@ -1330,6 +1434,11 @@ class VoidCodeRuntime:
         }
         if self._config.model is not None:
             runtime_config_metadata["model"] = self._config.model
+        if self._config.provider_fallback is not None:
+            runtime_config_metadata["provider_fallback"] = {
+                "preferred_model": self._config.provider_fallback.preferred_model,
+                "fallback_models": list(self._config.provider_fallback.fallback_models),
+            }
         lsp_state = self._lsp_manager.current_state()
         runtime_config_metadata["lsp"] = {
             "mode": lsp_state.mode,
@@ -1437,11 +1546,13 @@ class VoidCodeRuntime:
         approval_mode: PermissionDecision = self._config.approval_mode
         model = self._config.model
         execution_engine = self._config.execution_engine
+        provider_fallback = self._config.provider_fallback
         if metadata is None:
             return EffectiveRuntimeConfig(
                 approval_mode=approval_mode,
                 model=model,
                 execution_engine=execution_engine,
+                provider_fallback=provider_fallback,
             )
 
         persisted_runtime_config = metadata.get("runtime_config")
@@ -1450,6 +1561,7 @@ class VoidCodeRuntime:
                 approval_mode=approval_mode,
                 model=model,
                 execution_engine=execution_engine,
+                provider_fallback=provider_fallback,
             )
 
         runtime_config = cast(dict[str, object], persisted_runtime_config)
@@ -1459,6 +1571,21 @@ class VoidCodeRuntime:
         persisted_model = runtime_config.get("model")
         if persisted_model is None or isinstance(persisted_model, str):
             model = persisted_model
+        persisted_provider_fallback = runtime_config.get("provider_fallback")
+        if isinstance(persisted_provider_fallback, dict):
+            payload = cast(dict[str, object], persisted_provider_fallback)
+            preferred_model = payload.get("preferred_model")
+            fallback_models = payload.get("fallback_models")
+            if isinstance(preferred_model, str) and isinstance(fallback_models, list):
+                raw_fallback_models = cast(list[object], fallback_models)
+                parsed_fallback_models = [
+                    item for item in raw_fallback_models if isinstance(item, str)
+                ]
+                if len(parsed_fallback_models) == len(raw_fallback_models):
+                    provider_fallback = RuntimeProviderFallbackConfig(
+                        preferred_model=preferred_model,
+                        fallback_models=tuple(parsed_fallback_models),
+                    )
         persisted_execution_engine = runtime_config.get("execution_engine")
         if persisted_execution_engine in ("deterministic", "single_agent"):
             execution_engine = persisted_execution_engine
@@ -1466,6 +1593,18 @@ class VoidCodeRuntime:
             approval_mode=approval_mode,
             model=model,
             execution_engine=execution_engine,
+            provider_fallback=provider_fallback,
+        )
+
+    def _provider_chain_for_session_metadata(
+        self, metadata: dict[str, object] | None
+    ) -> ResolvedProviderChain:
+        effective_config = self._effective_runtime_config_from_metadata(metadata)
+        if effective_config.provider_fallback is None:
+            return ResolvedProviderChain()
+        return resolve_provider_chain(
+            effective_config.provider_fallback,
+            registry=self._model_provider_registry,
         )
 
     def _graph_for_session_metadata(self, metadata: dict[str, object] | None) -> RuntimeGraph:
@@ -1478,6 +1617,7 @@ class VoidCodeRuntime:
         if (
             effective_config.execution_engine == self._config.execution_engine
             and effective_config.model == self._config.model
+            and effective_config.provider_fallback == self._config.provider_fallback
         ):
             return self._graph
 
@@ -1497,6 +1637,7 @@ class EffectiveRuntimeConfig:
     approval_mode: PermissionDecision
     model: str | None
     execution_engine: ExecutionEngineName
+    provider_fallback: RuntimeProviderFallbackConfig | None = None
 
 
 @dataclass(frozen=True, slots=True)

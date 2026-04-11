@@ -4,7 +4,7 @@ import json
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import pytest
 
@@ -14,10 +14,12 @@ from voidcode.runtime.config import (
     RuntimeConfig,
     RuntimeLspConfig,
     RuntimeLspServerConfig,
+    RuntimeProviderFallbackConfig,
     RuntimeSkillsConfig,
 )
 from voidcode.runtime.events import EventEnvelope
 from voidcode.runtime.lsp import DisabledLspManager
+from voidcode.runtime.model_provider import ModelProviderRegistry
 from voidcode.runtime.permission import PermissionPolicy
 from voidcode.runtime.service import (
     GraphRunRequest,
@@ -25,6 +27,7 @@ from voidcode.runtime.service import (
     SessionState,
     VoidCodeRuntime,
 )
+from voidcode.runtime.single_agent_provider import ProviderExecutionError, SingleAgentTurnResult
 from voidcode.runtime.skills import SkillRegistry
 from voidcode.tools import ToolCall
 
@@ -102,6 +105,30 @@ class _FailingProviderGraph:
     ) -> _StubStep:
         _ = request, tool_results, session
         raise ValueError("provider context window exceeded")
+
+
+class _ScriptedSingleAgentProvider:
+    def __init__(self, *, name: str, outcomes: tuple[object, ...]) -> None:
+        self.name = name
+        self._outcomes = list(outcomes)
+
+    def propose_turn(self, request: object) -> SingleAgentTurnResult:
+        _ = request
+        if not self._outcomes:
+            return SingleAgentTurnResult(output="done")
+        outcome = self._outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return cast(SingleAgentTurnResult, outcome)
+
+
+@dataclass(frozen=True, slots=True)
+class _ScriptedModelProvider:
+    name: str
+    outcomes: tuple[object, ...]
+
+    def single_agent_provider(self) -> _ScriptedSingleAgentProvider:
+        return _ScriptedSingleAgentProvider(name=self.name, outcomes=self.outcomes)
 
 
 def _write_demo_skill(skill_dir: Path, *, description: str = "Demo skill", content: str) -> None:
@@ -978,6 +1005,128 @@ def test_runtime_effective_runtime_config_recovers_single_agent_engine(tmp_path:
     assert effective.approval_mode == "allow"
     assert effective.execution_engine == "single_agent"
     assert effective.model == "opencode/gpt-5.4"
+
+
+def test_runtime_effective_runtime_config_recovers_provider_fallback_chain(tmp_path: Path) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("fallback chain\n", encoding="utf-8")
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            approval_mode="allow",
+            execution_engine="single_agent",
+            model="opencode/gpt-5.4",
+            provider_fallback=RuntimeProviderFallbackConfig(
+                preferred_model="opencode/gpt-5.4",
+                fallback_models=("opencode/gpt-5.3", "custom/demo"),
+            ),
+        ),
+    )
+    _ = runtime.run(RuntimeRequest(prompt="read sample.txt", session_id="fallback-config"))
+
+    resumed_runtime = VoidCodeRuntime(workspace=tmp_path, config=RuntimeConfig())
+    effective = resumed_runtime.effective_runtime_config(session_id="fallback-config")
+
+    assert effective.provider_fallback == RuntimeProviderFallbackConfig(
+        preferred_model="opencode/gpt-5.4",
+        fallback_models=("opencode/gpt-5.3", "custom/demo"),
+    )
+
+
+@pytest.mark.parametrize("error_kind", ["rate_limit", "invalid_model", "transient_failure"])
+def test_runtime_downgrades_to_next_provider_target_on_provider_failures(
+    tmp_path: Path,
+    error_kind: Literal["rate_limit", "invalid_model", "transient_failure"],
+) -> None:
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(
+                    ProviderExecutionError(
+                        kind=error_kind,
+                        provider_name="opencode",
+                        model_name="gpt-5.4",
+                        message=f"{error_kind} failure",
+                    ),
+                ),
+            ),
+            "custom": _ScriptedModelProvider(
+                name="custom",
+                outcomes=(SingleAgentTurnResult(output="fallback complete"),),
+            ),
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            execution_engine="single_agent",
+            model="opencode/gpt-5.4",
+            provider_fallback=RuntimeProviderFallbackConfig(
+                preferred_model="opencode/gpt-5.4",
+                fallback_models=("custom/demo",),
+            ),
+        ),
+        model_provider_registry=registry,
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="read sample.txt"))
+
+    assert response.session.status == "completed"
+    assert response.output == "fallback complete"
+    fallback_events = [
+        event for event in response.events if event.event_type == "runtime.provider_fallback"
+    ]
+    assert len(fallback_events) == 1
+    assert fallback_events[0].payload == {
+        "reason": error_kind,
+        "from_provider": "opencode",
+        "from_model": "gpt-5.4",
+        "to_provider": "custom",
+        "to_model": "demo",
+        "attempt": 1,
+    }
+
+
+def test_runtime_fails_without_downgrade_on_context_limit(tmp_path: Path) -> None:
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(
+                    ProviderExecutionError(
+                        kind="context_limit",
+                        provider_name="opencode",
+                        model_name="gpt-5.4",
+                        message="context exceeded",
+                    ),
+                ),
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            execution_engine="single_agent",
+            model="opencode/gpt-5.4",
+            provider_fallback=RuntimeProviderFallbackConfig(
+                preferred_model="opencode/gpt-5.4",
+                fallback_models=("custom/demo",),
+            ),
+        ),
+        model_provider_registry=registry,
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="read sample.txt"))
+
+    assert response.session.status == "failed"
+    assert response.events[-1].event_type == "runtime.failed"
+    assert response.events[-1].payload == {
+        "error": "context exceeded",
+        "provider_error_kind": "context_limit",
+        "provider": "opencode",
+        "model": "gpt-5.4",
+    }
 
 
 def test_runtime_rejects_malformed_model_reference_during_initialization(tmp_path: Path) -> None:
