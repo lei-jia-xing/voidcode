@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from voidcode.graph.contracts import GraphRunRequest
 from voidcode.graph.single_agent_slice import ProviderSingleAgentGraph
 from voidcode.runtime.context_window import RuntimeContextWindow
@@ -214,3 +216,34 @@ def test_provider_single_agent_graph_forwards_bounded_context_window_to_provider
     assert provider.requests[0].context_window is bounded_context
     assert provider.requests[0].context_window.compacted is True
     assert provider.requests[0].context_window.retained_tool_result_count == 1
+
+
+def test_provider_single_agent_graph_enforces_configured_max_steps() -> None:
+    provider_model = resolve_provider_model(
+        "opencode/gpt-5.4",
+        registry=ModelProviderRegistry.with_defaults(),
+    )
+    graph = ProviderSingleAgentGraph(
+        provider=StubSingleAgentProvider(name="opencode"),
+        provider_model=provider_model,
+        max_steps=1,
+    )
+
+    with pytest.raises(ValueError, match="graph exceeded max steps: 1"):
+        _ = graph.step(
+            request=GraphRunRequest(
+                session=_session(),
+                prompt="read sample.txt",
+                available_tools=_tool_definitions(),
+                context_window=RuntimeContextWindow(prompt="read sample.txt"),
+            ),
+            tool_results=(
+                ToolResult(
+                    tool_name="read_file",
+                    content="alpha\n",
+                    status="ok",
+                    data={"path": "sample.txt", "content": "alpha\n"},
+                ),
+            ),
+            session=_session(),
+        )
