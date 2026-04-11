@@ -92,6 +92,18 @@ class _ApprovalThenCaptureSkillGraph:
         return _StubStep(output="done", is_finished=True)
 
 
+class _FailingProviderGraph:
+    def step(
+        self,
+        request: GraphRunRequest,
+        tool_results: tuple[object, ...],
+        *,
+        session: SessionState,
+    ) -> _StubStep:
+        _ = request, tool_results, session
+        raise ValueError("provider context window exceeded")
+
+
 def _write_demo_skill(skill_dir: Path, *, description: str = "Demo skill", content: str) -> None:
     skill_dir.mkdir(parents=True, exist_ok=True)
     (skill_dir / "SKILL.md").write_text(
@@ -896,6 +908,43 @@ def test_runtime_initializes_single_agent_graph_from_config(tmp_path: Path) -> N
     graph = _private_attr(runtime, "_graph")
 
     assert graph.__class__.__name__ == "ProviderSingleAgentGraph"
+
+
+def test_runtime_classifies_provider_context_limit_failures(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_FailingProviderGraph(),
+        config=RuntimeConfig(execution_engine="single_agent", model="opencode/gpt-5.4"),
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="read sample.txt", session_id="provider-limit"))
+
+    assert response.session.status == "failed"
+    assert response.events[-1].event_type == "runtime.failed"
+    assert response.events[-1].payload == {
+        "error": "provider context window exceeded",
+        "kind": "provider_context_limit",
+    }
+
+
+def test_runtime_single_agent_compaction_emits_memory_refresh_and_persists_metadata(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SkillCapturingStubGraph(),
+        config=RuntimeConfig(execution_engine="single_agent", model="opencode/gpt-5.4"),
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="hello", metadata={}))
+
+    assert response.session.status == "completed"
+    assert response.session.metadata["context_window"] == {
+        "compacted": False,
+        "compaction_reason": None,
+        "original_tool_result_count": 0,
+        "retained_tool_result_count": 0,
+    }
 
 
 def test_runtime_rejects_single_agent_engine_without_model(tmp_path: Path) -> None:
