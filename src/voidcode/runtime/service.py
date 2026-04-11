@@ -166,6 +166,7 @@ class VoidCodeRuntime:
                 approval_mode=self._config.approval_mode,
                 model=self._config.model,
                 execution_engine=self._config.execution_engine,
+                max_steps=self._config.max_steps,
                 provider_fallback=self._config.provider_fallback,
             )
         )
@@ -188,15 +189,17 @@ class VoidCodeRuntime:
     def _build_graph_for_engine(
         engine_name: ExecutionEngineName,
         provider_model: ResolvedProviderModel,
+        max_steps: int,
     ) -> RuntimeGraph:
         if engine_name == "deterministic":
-            return DeterministicReadOnlyGraph()
+            return DeterministicReadOnlyGraph(max_steps=max_steps)
         if engine_name == "single_agent":
             if provider_model.provider is None:
                 raise ValueError("single_agent execution engine requires a configured model")
             return ProviderSingleAgentGraph(
                 provider=provider_model.provider.single_agent_provider(),
                 provider_model=provider_model,
+                max_steps=max_steps,
             )
         raise ValueError(f"unknown execution engine: {engine_name}")
 
@@ -213,7 +216,10 @@ class VoidCodeRuntime:
                 )
             )
         )
-        cache_key = (config.execution_engine, f"{model_str}::{provider_fallback_key}")
+        cache_key = (
+            config.execution_engine,
+            f"{model_str}::{provider_fallback_key}::{config.max_steps}",
+        )
 
         # Check cache first
         if cache_key in self._graph_cache:
@@ -237,9 +243,28 @@ class VoidCodeRuntime:
                 all_targets=((provider_model,) if provider_model.provider is not None else ()),
             )
         self._provider_model = provider_model
-        graph = self._build_graph_for_engine(config.execution_engine, provider_model)
+        graph = self._build_graph_for_engine(
+            config.execution_engine,
+            provider_model,
+            config.max_steps,
+        )
         self._graph_cache[cache_key] = graph
         return graph
+
+    def _runtime_config_for_request(self, request: RuntimeRequest) -> EffectiveRuntimeConfig:
+        resolved = self._effective_runtime_config_from_metadata(None)
+        request_max_steps = request.metadata.get("max_steps")
+        if isinstance(request_max_steps, int) and not isinstance(request_max_steps, bool):
+            if request_max_steps < 1:
+                raise ValueError("request metadata 'max_steps' must be at least 1")
+            return EffectiveRuntimeConfig(
+                approval_mode=resolved.approval_mode,
+                model=resolved.model,
+                execution_engine=resolved.execution_engine,
+                max_steps=request_max_steps,
+                provider_fallback=resolved.provider_fallback,
+            )
+        return resolved
 
     def _build_skill_registry(self) -> SkillRegistry:
         skills_config = self._config.skills
@@ -367,6 +392,7 @@ class VoidCodeRuntime:
 
     def _stream_chunks(self, request: RuntimeRequest) -> Iterator[RuntimeStreamChunk]:
         session_id = self._resolve_session_id(request)
+        effective_config = self._runtime_config_for_request(request)
         session = SessionState(
             session=SessionRef(id=session_id),
             status="running",
@@ -374,7 +400,7 @@ class VoidCodeRuntime:
             metadata={
                 **request.metadata,
                 "workspace": str(self._workspace),
-                "runtime_config": self._runtime_config_metadata(),
+                "runtime_config": self._runtime_config_metadata(effective_config),
             },
         )
         sequence = 1
@@ -556,6 +582,9 @@ class VoidCodeRuntime:
                                 session.metadata
                             ).execution_engine,
                             next_target,
+                            self._effective_runtime_config_from_metadata(
+                                session.metadata
+                            ).max_steps,
                         )
                         graph_request = GraphRunRequest(
                             session=session,
@@ -1204,6 +1233,7 @@ class VoidCodeRuntime:
                 graph = self._build_graph_for_engine(
                     self._effective_runtime_config_from_metadata(session.metadata).execution_engine,
                     resume_target,
+                    self._effective_runtime_config_from_metadata(session.metadata).max_steps,
                 )
 
         loop_events: list[EventEnvelope] = []
@@ -1449,17 +1479,21 @@ class VoidCodeRuntime:
                     )
         return self._frozen_applied_skill_payloads(self._applied_skill_contexts(metadata))
 
-    def _runtime_config_metadata(self) -> dict[str, object]:
+    def _runtime_config_metadata(
+        self, config: EffectiveRuntimeConfig | None = None
+    ) -> dict[str, object]:
+        effective_config = config or self._effective_runtime_config_from_metadata(None)
         runtime_config_metadata: dict[str, object] = {
-            "approval_mode": self._config.approval_mode,
-            "execution_engine": self._config.execution_engine,
+            "approval_mode": effective_config.approval_mode,
+            "execution_engine": effective_config.execution_engine,
+            "max_steps": effective_config.max_steps,
         }
-        if self._config.model is not None:
-            runtime_config_metadata["model"] = self._config.model
-        if self._config.provider_fallback is not None:
+        if effective_config.model is not None:
+            runtime_config_metadata["model"] = effective_config.model
+        if effective_config.provider_fallback is not None:
             runtime_config_metadata["provider_fallback"] = {
-                "preferred_model": self._config.provider_fallback.preferred_model,
-                "fallback_models": list(self._config.provider_fallback.fallback_models),
+                "preferred_model": effective_config.provider_fallback.preferred_model,
+                "fallback_models": list(effective_config.provider_fallback.fallback_models),
             }
         lsp_state = self._lsp_manager.current_state()
         runtime_config_metadata["lsp"] = {
@@ -1568,12 +1602,14 @@ class VoidCodeRuntime:
         approval_mode: PermissionDecision = self._config.approval_mode
         model = self._config.model
         execution_engine = self._config.execution_engine
+        max_steps = self._config.max_steps
         provider_fallback = self._config.provider_fallback
         if metadata is None:
             return EffectiveRuntimeConfig(
                 approval_mode=approval_mode,
                 model=model,
                 execution_engine=execution_engine,
+                max_steps=max_steps,
                 provider_fallback=provider_fallback,
             )
 
@@ -1583,6 +1619,7 @@ class VoidCodeRuntime:
                 approval_mode=approval_mode,
                 model=model,
                 execution_engine=execution_engine,
+                max_steps=max_steps,
                 provider_fallback=provider_fallback,
             )
 
@@ -1593,6 +1630,9 @@ class VoidCodeRuntime:
         persisted_model = runtime_config.get("model")
         if persisted_model is None or isinstance(persisted_model, str):
             model = persisted_model
+        persisted_max_steps = runtime_config.get("max_steps")
+        if isinstance(persisted_max_steps, int) and not isinstance(persisted_max_steps, bool):
+            max_steps = persisted_max_steps
         provider_fallback = None
         persisted_provider_fallback = runtime_config.get("provider_fallback")
         if isinstance(persisted_provider_fallback, dict):
@@ -1616,6 +1656,7 @@ class VoidCodeRuntime:
             approval_mode=approval_mode,
             model=model,
             execution_engine=execution_engine,
+            max_steps=max_steps,
             provider_fallback=provider_fallback,
         )
 
@@ -1640,6 +1681,7 @@ class VoidCodeRuntime:
         if (
             effective_config.execution_engine == self._config.execution_engine
             and effective_config.model == self._config.model
+            and effective_config.max_steps == self._config.max_steps
             and effective_config.provider_fallback == self._config.provider_fallback
         ):
             return self._graph
@@ -1660,6 +1702,7 @@ class EffectiveRuntimeConfig:
     approval_mode: PermissionDecision
     model: str | None
     execution_engine: ExecutionEngineName
+    max_steps: int
     provider_fallback: RuntimeProviderFallbackConfig | None = None
 
 
