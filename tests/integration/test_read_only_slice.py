@@ -267,6 +267,104 @@ def test_single_agent_runtime_surfaces_provider_context_limit_failure_kind(tmp_p
     }
 
 
+@dataclass(frozen=True, slots=True)
+class _ScriptedModelProvider:
+    name: str
+    outcomes: tuple[object, ...]
+
+    def single_agent_provider(self) -> object:
+        outcomes = list(self.outcomes)
+        name = self.name
+
+        class _Provider:
+            def __init__(self) -> None:
+                self.name = name
+
+            def propose_turn(self, request: object) -> object:
+                _ = request
+                if not outcomes:
+                    return importlib.import_module(
+                        "voidcode.runtime.single_agent_provider"
+                    ).SingleAgentTurnResult(output="done")
+                outcome = outcomes.pop(0)
+                if isinstance(outcome, Exception):
+                    raise outcome
+                return outcome
+
+        return _Provider()
+
+
+def test_single_agent_runtime_falls_back_to_next_provider_target(tmp_path: Path) -> None:
+    runtime_request, _ = _load_runtime_types()
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    config_module = importlib.import_module("voidcode.runtime.config")
+    model_provider_module = importlib.import_module("voidcode.runtime.model_provider")
+    single_agent_provider_module = importlib.import_module("voidcode.runtime.single_agent_provider")
+    service_module = importlib.import_module("voidcode.runtime.service")
+
+    runtime = cast(
+        RuntimeRunner,
+        service_module.VoidCodeRuntime(
+            workspace=tmp_path,
+            config=config_module.RuntimeConfig(
+                approval_mode="allow",
+                execution_engine="single_agent",
+                model="opencode/gpt-5.4",
+                provider_fallback=config_module.RuntimeProviderFallbackConfig(
+                    preferred_model="opencode/gpt-5.4",
+                    fallback_models=("custom/demo",),
+                ),
+            ),
+            permission_policy=permission_module.PermissionPolicy(mode="allow"),
+            model_provider_registry=model_provider_module.ModelProviderRegistry(
+                providers={
+                    "opencode": _ScriptedModelProvider(
+                        name="opencode",
+                        outcomes=(
+                            single_agent_provider_module.ProviderExecutionError(
+                                kind="rate_limit",
+                                provider_name="opencode",
+                                model_name="gpt-5.4",
+                                message="too many requests",
+                            ),
+                        ),
+                    ),
+                    "custom": _ScriptedModelProvider(
+                        name="custom",
+                        outcomes=(
+                            single_agent_provider_module.SingleAgentTurnResult(
+                                output="fallback ok"
+                            ),
+                        ),
+                    ),
+                }
+            ),
+        ),
+    )
+
+    response = runtime.run(runtime_request(prompt="read sample.txt", session_id="fallback-run"))
+
+    assert response.session.status == "completed"
+    assert response.output == "fallback ok"
+    assert [event.event_type for event in response.events] == [
+        "runtime.request_received",
+        "runtime.skills_loaded",
+        "runtime.provider_fallback",
+        "graph.loop_step",
+        "graph.model_turn",
+        "graph.loop_step",
+        "graph.response_ready",
+    ]
+    assert response.events[2].payload == {
+        "reason": "rate_limit",
+        "from_provider": "opencode",
+        "from_model": "gpt-5.4",
+        "to_provider": "custom",
+        "to_model": "demo",
+        "attempt": 1,
+    }
+
+
 def _multi_step_prompt() -> str:
     return "read source.txt\nwrite copied.txt copied marker\ngrep copied copied.txt"
 

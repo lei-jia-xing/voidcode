@@ -1348,6 +1348,66 @@ def test_transport_persists_failed_stream_for_replay(tmp_path: Path) -> None:
     ]
 
 
+def test_transport_serializes_structured_provider_failure_payloads() -> None:
+    create_runtime_app = _load_transport_app_factory()
+    runtime_stream_chunk, session_ref, session_state, event_envelope = _load_stream_types()
+    failed_session = session_state(
+        session=session_ref(id="provider-failed-session"),
+        status="failed",
+        turn=1,
+        metadata={"workspace": "/tmp/workspace"},
+    )
+
+    class FailingStubRuntime:
+        def run_stream(self, request: RuntimeRequestLike) -> Iterator[StreamChunkLike]:
+            assert request.prompt == "fail provider"
+            yield runtime_stream_chunk(
+                kind="event",
+                session=failed_session,
+                event=event_envelope(
+                    session_id="provider-failed-session",
+                    sequence=1,
+                    event_type="runtime.failed",
+                    source="runtime",
+                    payload={
+                        "error": "context exceeded",
+                        "provider_error_kind": "context_limit",
+                        "provider": "opencode",
+                        "model": "gpt-5.4",
+                    },
+                ),
+            )
+
+        def list_sessions(self) -> tuple[StoredSessionSummaryLike, ...]:
+            raise AssertionError("list_sessions should not be called")
+
+        def resume(self, session_id: str) -> RuntimeResponseLike:
+            raise AssertionError(f"resume should not be called: {session_id}")
+
+    app = create_runtime_app(
+        workspace=Path("/tmp/workspace"),
+        runtime_factory=lambda: FailingStubRuntime(),
+    )
+
+    response = _run_app(
+        app,
+        method="POST",
+        path="/api/runtime/run/stream",
+        body=json.dumps({"prompt": "fail provider"}).encode("utf-8"),
+    )
+    payloads = _parse_sse_payloads(response)
+    first_payload = cast(dict[str, object], payloads[0])
+    first_event = cast(dict[str, object], first_payload["event"])
+
+    assert response.status == 200
+    assert first_event["payload"] == {
+        "error": "context exceeded",
+        "provider_error_kind": "context_limit",
+        "provider": "opencode",
+        "model": "gpt-5.4",
+    }
+
+
 def test_transport_logs_unexpected_streaming_errors(caplog: pytest.LogCaptureFixture) -> None:
     create_runtime_app = _load_transport_app_factory()
 
