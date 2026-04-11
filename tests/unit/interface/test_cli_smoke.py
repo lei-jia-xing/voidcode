@@ -819,6 +819,7 @@ def test_config_show_outputs_workspace_effective_config() -> None:
         "approval_mode": "deny",
         "model": "repo/model",
         "execution_engine": "deterministic",
+        "max_steps": 4,
     }
     assert "Traceback" not in result.stderr
 
@@ -862,6 +863,7 @@ def test_config_show_outputs_resumed_session_effective_config() -> None:
         "approval_mode": "allow",
         "model": "repo/model",
         "execution_engine": "deterministic",
+        "max_steps": 4,
     }
     assert "Traceback" not in result.stderr
 
@@ -872,6 +874,7 @@ def test_config_show_delegates_to_runtime_effective_config(capsys: Any) -> None:
         approval_mode="allow",
         model="runtime/model",
         execution_engine="deterministic",
+        max_steps=9,
     )
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -904,6 +907,7 @@ def test_config_show_delegates_to_runtime_effective_config(capsys: Any) -> None:
                 "approval_mode": "allow",
                 "model": "runtime/model",
                 "execution_engine": "deterministic",
+                "max_steps": 9,
             }
         )
         + "\n"
