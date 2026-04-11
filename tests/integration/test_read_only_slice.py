@@ -228,6 +228,45 @@ def _single_agent_runtime(
     return runtime_request, runtime
 
 
+def test_single_agent_runtime_surfaces_provider_context_limit_failure_kind(tmp_path: Path) -> None:
+    runtime_request, _ = _single_agent_runtime(tmp_path, mode="allow")
+
+    service_module = importlib.import_module("voidcode.runtime.service")
+
+    class FailingGraph:
+        def step(
+            self,
+            request: object,
+            tool_results: tuple[object, ...],
+            *,
+            session: object,
+        ) -> object:
+            _ = request, tool_results, session
+            raise ValueError("provider context window exceeded")
+
+    failing_runtime = cast(
+        RuntimeRunner,
+        service_module.VoidCodeRuntime(
+            workspace=tmp_path,
+            graph=FailingGraph(),
+            config=importlib.import_module("voidcode.runtime.config").RuntimeConfig(
+                approval_mode="allow",
+                execution_engine="single_agent",
+                model="opencode/gpt-5.4",
+            ),
+        ),
+    )
+
+    failed = failing_runtime.run(runtime_request(prompt="read sample.txt", session_id="ctx-limit"))
+
+    assert failed.session.status == "failed"
+    assert failed.events[-1].event_type == "runtime.failed"
+    assert failed.events[-1].payload == {
+        "error": "provider context window exceeded",
+        "kind": "provider_context_limit",
+    }
+
+
 def _multi_step_prompt() -> str:
     return "read source.txt\nwrite copied.txt copied marker\ngrep copied copied.txt"
 
@@ -1428,7 +1467,15 @@ def test_runtime_resume_accepts_legacy_sessions_without_runtime_config_metadata(
 
     assert replay.session.status == response.session.status
     assert replay.output == response.output
-    assert replay.session.metadata == {"workspace": str(tmp_path)}
+    assert replay.session.metadata == {
+        "workspace": str(tmp_path),
+        "context_window": {
+            "compacted": False,
+            "compaction_reason": None,
+            "original_tool_result_count": 1,
+            "retained_tool_result_count": 1,
+        },
+    }
 
 
 def test_runtime_denies_non_read_only_tool_on_resume(tmp_path: Path) -> None:

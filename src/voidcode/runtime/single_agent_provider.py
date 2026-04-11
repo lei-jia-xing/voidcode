@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 from ..tools.contracts import ToolCall, ToolDefinition, ToolResult
+from .context_window import RuntimeContextWindow
 
 type AppliedSkill = dict[str, str]
 
@@ -19,6 +20,7 @@ class SingleAgentTurnRequest:
     prompt: str
     available_tools: tuple[ToolDefinition, ...]
     tool_results: tuple[ToolResult, ...]
+    context_window: RuntimeContextWindow
     applied_skills: tuple[AppliedSkill, ...]
     raw_model: str | None
     provider_name: str | None
@@ -50,9 +52,9 @@ class StubSingleAgentProvider:
 
         step_index = len(request.tool_results)
         if step_index >= len(commands):
-            if not request.tool_results:
+            if not request.context_window.tool_results:
                 raise ValueError("request must contain at least one actionable command")
-            last_result = request.tool_results[-1]
+            last_result = request.context_window.tool_results[-1]
             return SingleAgentTurnResult(output=last_result.content if last_result.content else "")
 
         trimmed_prompt = commands[step_index]

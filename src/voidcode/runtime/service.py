@@ -14,6 +14,7 @@ from ..graph.single_agent_slice import ProviderSingleAgentGraph
 from ..tools.contracts import Tool, ToolCall, ToolDefinition, ToolResult
 from .acp import AcpAdapter, AcpRequestEnvelope, AcpResponseEnvelope, build_acp_adapter
 from .config import ExecutionEngineName, RuntimeConfig, load_runtime_config
+from .context_window import ContextWindowPolicy, RuntimeContextWindow, prepare_single_agent_context
 from .contracts import RuntimeRequest, RuntimeResponse, RuntimeStreamChunk, validate_session_id
 from .events import (
     RUNTIME_ACP_CONNECTED,
@@ -22,6 +23,7 @@ from .events import (
     RUNTIME_LSP_SERVER_FAILED,
     RUNTIME_LSP_SERVER_STARTED,
     RUNTIME_LSP_SERVER_STOPPED,
+    RUNTIME_MEMORY_REFRESHED,
     RUNTIME_SKILLS_APPLIED,
     RUNTIME_SKILLS_LOADED,
     RUNTIME_TOOL_HOOK_POST,
@@ -37,6 +39,7 @@ from .permission import (
     PermissionResolution,
     resolve_permission,
 )
+from .provider_errors import SingleAgentContextLimitError, classify_provider_error
 from .session import SessionRef, SessionState, SessionStatus, StoredSessionSummary
 from .skills import SkillRegistry, SkillRuntimeContext
 from .storage import SessionStore, SqliteSessionStore
@@ -110,6 +113,7 @@ class VoidCodeRuntime:
     _acp_adapter: AcpAdapter
     _graph_cache: dict[tuple[ExecutionEngineName, str], RuntimeGraph]
     _hook_recursion_env_var = "VOIDCODE_RUNNING_TOOL_HOOK"
+    _default_context_window_policy = ContextWindowPolicy()
 
     def __init__(
         self,
@@ -395,6 +399,11 @@ class VoidCodeRuntime:
             prompt=request.prompt,
             available_tools=self._tool_registry.definitions(),
             applied_skills=self._graph_applied_skills(session.metadata),
+            context_window=self._prepare_single_agent_context_window(
+                prompt=request.prompt,
+                tool_results=(),
+                session_metadata=session.metadata,
+            ),
             metadata=request.metadata,
         )
         tool_results: list[ToolResult] = []
@@ -422,6 +431,38 @@ class VoidCodeRuntime:
     ) -> Iterator[RuntimeStreamChunk]:
         active_permission_policy = permission_policy or self._permission_policy
         while True:
+            context_window = self._prepare_single_agent_context_window(
+                prompt=graph_request.prompt,
+                tool_results=tuple(tool_results),
+                session_metadata=session.metadata,
+            )
+            session = self._session_with_context_window_metadata(session, context_window)
+            graph_request = GraphRunRequest(
+                session=session,
+                prompt=graph_request.prompt,
+                available_tools=graph_request.available_tools,
+                applied_skills=graph_request.applied_skills,
+                context_window=context_window,
+                metadata=graph_request.metadata,
+            )
+            if context_window.compacted:
+                sequence += 1
+                yield RuntimeStreamChunk(
+                    kind="event",
+                    session=session,
+                    event=EventEnvelope(
+                        session_id=session.session.id,
+                        sequence=sequence,
+                        event_type=RUNTIME_MEMORY_REFRESHED,
+                        source="runtime",
+                        payload={
+                            "reason": context_window.compaction_reason,
+                            "original_tool_result_count": context_window.original_tool_result_count,
+                            "retained_tool_result_count": context_window.retained_tool_result_count,
+                            "compacted": True,
+                        },
+                    ),
+                )
             try:
                 graph_step = graph.step(
                     graph_request,
@@ -429,7 +470,19 @@ class VoidCodeRuntime:
                     session=session,
                 )
             except Exception as exc:
-                yield self._failed_chunk(session=session, sequence=sequence + 1, error=str(exc))
+                classified_error = classify_provider_error(exc)
+                yield self._failed_chunk(
+                    session=session,
+                    sequence=sequence + 1,
+                    error=str(exc),
+                    kind=(
+                        "provider_context_limit"
+                        if isinstance(classified_error, SingleAgentContextLimitError)
+                        else None
+                    ),
+                )
+                if isinstance(classified_error, SingleAgentContextLimitError):
+                    return
                 raise
 
             is_final_step = (
@@ -684,7 +737,7 @@ class VoidCodeRuntime:
         return _HookOutcome(chunks=tuple(emitted_chunks), last_sequence=last_sequence)
 
     def _failed_chunk(
-        self, *, session: SessionState, sequence: int, error: str
+        self, *, session: SessionState, sequence: int, error: str, kind: str | None = None
     ) -> RuntimeStreamChunk:
         failed_session = SessionState(
             session=session.session,
@@ -692,6 +745,9 @@ class VoidCodeRuntime:
             turn=session.turn,
             metadata=session.metadata,
         )
+        payload: dict[str, object] = {"error": error}
+        if kind is not None:
+            payload["kind"] = kind
         return RuntimeStreamChunk(
             kind="event",
             session=failed_session,
@@ -700,7 +756,7 @@ class VoidCodeRuntime:
                 sequence=sequence,
                 event_type="runtime.failed",
                 source="runtime",
-                payload={"error": error},
+                payload=payload,
             ),
         )
 
@@ -1015,6 +1071,11 @@ class VoidCodeRuntime:
             prompt=self._prompt_from_events(stored.events),
             available_tools=self._tool_registry.definitions(),
             applied_skills=self._graph_applied_skills(session.metadata),
+            context_window=self._prepare_single_agent_context_window(
+                prompt=self._prompt_from_events(stored.events),
+                tool_results=tuple(tool_results),
+                session_metadata=session.metadata,
+            ),
             metadata=session.metadata,
         )
         graph = self._graph_for_session_metadata(session.metadata)
@@ -1141,6 +1202,35 @@ class VoidCodeRuntime:
         if isinstance(prompt, str):
             return prompt
         return ""
+
+    def _prepare_single_agent_context_window(
+        self,
+        *,
+        prompt: str,
+        tool_results: tuple[ToolResult, ...],
+        session_metadata: dict[str, object],
+        policy: ContextWindowPolicy | None = None,
+    ) -> RuntimeContextWindow:
+        return prepare_single_agent_context(
+            prompt=prompt,
+            tool_results=tool_results,
+            session_metadata=session_metadata,
+            policy=policy or self._default_context_window_policy,
+        )
+
+    @staticmethod
+    def _session_with_context_window_metadata(
+        session: SessionState, context_window: RuntimeContextWindow
+    ) -> SessionState:
+        return SessionState(
+            session=session.session,
+            status=session.status,
+            turn=session.turn,
+            metadata={
+                **session.metadata,
+                "context_window": context_window.metadata_payload(),
+            },
+        )
 
     @staticmethod
     def _renumber_events(
