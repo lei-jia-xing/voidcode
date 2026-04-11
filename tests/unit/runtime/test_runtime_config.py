@@ -29,6 +29,7 @@ def test_runtime_config_defaults_to_ask_without_file_or_env(tmp_path: Path) -> N
     assert config.approval_mode == "ask"
     assert config.model is None
     assert config.execution_engine == "deterministic"
+    assert config.max_steps == 4
     assert config.hooks is None
 
 
@@ -92,6 +93,7 @@ def test_runtime_config_parses_extension_domains(tmp_path: Path) -> None:
         json.dumps(
             {
                 "execution_engine": "deterministic",
+                "max_steps": 6,
                 "tools": {
                     "builtin": {"enabled": True},
                     "paths": [".voidcode/tools", "vendor/tools"],
@@ -117,6 +119,7 @@ def test_runtime_config_parses_extension_domains(tmp_path: Path) -> None:
     config = load_runtime_config(tmp_path, env={})
 
     assert config.execution_engine == "deterministic"
+    assert config.max_steps == 6
     assert config.tools == RuntimeToolsConfig(
         builtin=RuntimeToolsBuiltinConfig(enabled=True),
         paths=(".voidcode/tools", "vendor/tools"),
@@ -146,6 +149,17 @@ def test_runtime_config_accepts_single_agent_execution_engine(tmp_path: Path) ->
 
     assert config.execution_engine == "single_agent"
     assert config.model == "opencode/gpt-5.4"
+
+
+def test_runtime_config_parses_repo_local_max_steps(tmp_path: Path) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps({"max_steps": 7}),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.max_steps == 7
 
 
 def test_runtime_config_parses_minimal_hook_commands(tmp_path: Path) -> None:
@@ -222,6 +236,27 @@ def test_runtime_config_rejects_invalid_repo_local_execution_engine(tmp_path: Pa
     )
 
     with pytest.raises(ValueError, match="execution_engine"):
+        _ = load_runtime_config(tmp_path, env={})
+
+
+@pytest.mark.parametrize(
+    ("payload", "match"),
+    [
+        pytest.param({"max_steps": 0}, "runtime config field 'max_steps'", id="max-steps-zero"),
+        pytest.param(
+            {"max_steps": -1}, "runtime config field 'max_steps'", id="max-steps-negative"
+        ),
+        pytest.param(
+            {"max_steps": "four"}, "runtime config field 'max_steps'", id="max-steps-type"
+        ),
+    ],
+)
+def test_runtime_config_rejects_invalid_max_steps(
+    tmp_path: Path, payload: dict[str, object], match: str
+) -> None:
+    runtime_config_path(tmp_path).write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=match):
         _ = load_runtime_config(tmp_path, env={})
 
 

@@ -78,6 +78,7 @@ class RuntimeConfig:
     approval_mode: PermissionDecision = "ask"
     model: str | None = None
     execution_engine: ExecutionEngineName = "deterministic"
+    max_steps: int = 4
     hooks: RuntimeHooksConfig | None = None
     tools: RuntimeToolsConfig | None = None
     skills: RuntimeSkillsConfig | None = None
@@ -92,6 +93,7 @@ class RuntimeConfigOverrides:
     approval_mode: PermissionDecision | None = None
     model: str | None = None
     execution_engine: ExecutionEngineName | None = None
+    max_steps: int | None = None
     hooks: RuntimeHooksConfig | None = None
     tools: RuntimeToolsConfig | None = None
     skills: RuntimeSkillsConfig | None = None
@@ -128,6 +130,7 @@ def load_runtime_config(
             environment=environment.get(MODEL_ENV_VAR),
         ),
         execution_engine=_resolve_execution_engine(repo_local=repo_local.execution_engine),
+        max_steps=_resolve_max_steps(repo_local=repo_local.max_steps),
         hooks=repo_local.hooks,
         tools=repo_local.tools,
         skills=repo_local.skills,
@@ -164,6 +167,12 @@ def _load_repo_local_config(workspace: Path) -> RuntimeConfigOverrides:
         allow_none=True,
     )
 
+    parsed_max_steps = _parse_max_steps(
+        payload.get("max_steps"),
+        source=f"runtime config field 'max_steps' in {config_path}",
+        allow_none=True,
+    )
+
     raw_hooks = payload.get("hooks")
     hooks = _parse_hooks_config(raw_hooks)
 
@@ -196,6 +205,7 @@ def _load_repo_local_config(workspace: Path) -> RuntimeConfigOverrides:
         approval_mode=parsed_approval_mode,
         model=raw_model,
         execution_engine=parsed_execution_engine,
+        max_steps=parsed_max_steps,
         hooks=hooks,
         tools=tools,
         skills=skills,
@@ -467,6 +477,12 @@ def _resolve_execution_engine(*, repo_local: ExecutionEngineName | None) -> Exec
     return "deterministic"
 
 
+def _resolve_max_steps(*, repo_local: int | None) -> int:
+    if repo_local is not None:
+        return repo_local
+    return 4
+
+
 def _parse_approval_mode(
     raw_value: object,
     *,
@@ -492,4 +508,12 @@ def _parse_execution_engine(
     if raw_value not in _VALID_EXECUTION_ENGINES:
         allowed = ", ".join(_VALID_EXECUTION_ENGINES)
         raise ValueError(f"{source} must be one of: {allowed}")
+    return raw_value
+
+
+def _parse_max_steps(raw_value: object, *, source: str, allow_none: bool) -> int | None:
+    if raw_value is None and allow_none:
+        return None
+    if not isinstance(raw_value, int) or isinstance(raw_value, bool) or raw_value < 1:
+        raise ValueError(f"{source} must be an integer greater than or equal to 1")
     return raw_value
