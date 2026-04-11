@@ -12,6 +12,7 @@
 
 - `approval_mode`
 - `model`
+- `execution_engine`
 - `max_steps`
 - `hooks`
 - `tools`
@@ -22,7 +23,7 @@
 目前 hooks/config 的 MVP 收敛目标已经锁定：
 
 - hooks 仅限运行时拥有（runtime-owned）的 `pre_tool` / `post_tool`
-- 完整优先级仅适用于 `approval_mode` 和 `model`
+- 完整优先级仅适用于 `approval_mode`、`model` 和 `max_steps`
 - 单一可见检查面为 CLI：`voidcode config show --workspace <path> [--session <id>]`
 - 恢复会话的配置覆盖仅存放在 `SessionState.metadata["runtime_config"]`
 

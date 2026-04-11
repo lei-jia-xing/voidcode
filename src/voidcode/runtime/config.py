@@ -480,7 +480,7 @@ def _resolve_execution_engine(*, repo_local: ExecutionEngineName | None) -> Exec
 def _resolve_max_steps(*, repo_local: int | None) -> int:
     if repo_local is not None:
         return repo_local
-    return 4
+    return RuntimeConfig().max_steps
 
 
 def _parse_approval_mode(

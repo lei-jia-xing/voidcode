@@ -968,6 +968,45 @@ def test_runtime_effective_runtime_config_recovers_persisted_max_steps(tmp_path:
     assert effective.max_steps == 7
 
 
+def test_runtime_effective_runtime_config_rejects_invalid_persisted_max_steps(
+    tmp_path: Path,
+) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("config session\n", encoding="utf-8")
+
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(approval_mode="allow", model="session/model", max_steps=7),
+    )
+    _ = runtime.run(RuntimeRequest(prompt="read sample.txt", session_id="invalid-max-steps"))
+
+    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    connection = sqlite3.connect(database_path)
+    try:
+        row = connection.execute(
+            "SELECT metadata_json FROM sessions WHERE session_id = ?",
+            ("invalid-max-steps",),
+        ).fetchone()
+        assert row is not None
+        metadata = json.loads(str(row[0]))
+        assert isinstance(metadata, dict)
+        metadata_dict = cast(dict[str, object], metadata)
+        runtime_config = cast(dict[str, object], metadata_dict["runtime_config"])
+        runtime_config["max_steps"] = 0
+        _ = connection.execute(
+            "UPDATE sessions SET metadata_json = ? WHERE session_id = ?",
+            (json.dumps(metadata_dict, sort_keys=True), "invalid-max-steps"),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    resumed_runtime = VoidCodeRuntime(workspace=tmp_path, config=RuntimeConfig(max_steps=3))
+
+    with pytest.raises(ValueError, match="persisted runtime_config max_steps must be at least 1"):
+        _ = resumed_runtime.effective_runtime_config(session_id="invalid-max-steps")
+
+
 def test_runtime_effective_runtime_config_falls_back_for_legacy_sessions(tmp_path: Path) -> None:
     sample_file = tmp_path / "sample.txt"
     sample_file.write_text("legacy config\n", encoding="utf-8")
@@ -1035,6 +1074,23 @@ def test_runtime_effective_runtime_config_uses_request_metadata_max_steps_for_ne
             "last_error": None,
         },
     }
+
+
+@pytest.mark.parametrize(
+    "invalid_max_steps",
+    [0, -1, "4", 1.5, [], {}],
+)
+def test_runtime_run_rejects_invalid_request_metadata_max_steps(
+    tmp_path: Path, invalid_max_steps: object
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SkillCapturingStubGraph(),
+        config=RuntimeConfig(max_steps=6),
+    )
+
+    with pytest.raises(ValueError, match="request metadata 'max_steps'"):
+        _ = runtime.run(RuntimeRequest(prompt="hello", metadata={"max_steps": invalid_max_steps}))
 
 
 def test_runtime_effective_runtime_config_falls_back_to_fresh_max_steps_for_legacy_sessions(

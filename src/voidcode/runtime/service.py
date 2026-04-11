@@ -254,7 +254,11 @@ class VoidCodeRuntime:
     def _runtime_config_for_request(self, request: RuntimeRequest) -> EffectiveRuntimeConfig:
         resolved = self._effective_runtime_config_from_metadata(None)
         request_max_steps = request.metadata.get("max_steps")
-        if isinstance(request_max_steps, int) and not isinstance(request_max_steps, bool):
+        if request_max_steps is not None:
+            if not isinstance(request_max_steps, int) or isinstance(request_max_steps, bool):
+                raise ValueError(
+                    "request metadata 'max_steps' must be an integer greater than or equal to 1"
+                )
             if request_max_steps < 1:
                 raise ValueError("request metadata 'max_steps' must be at least 1")
             return EffectiveRuntimeConfig(
@@ -577,14 +581,13 @@ class VoidCodeRuntime:
                                 "provider_attempt": provider_attempt,
                             },
                         )
+                        effective_config = self._effective_runtime_config_from_metadata(
+                            session.metadata
+                        )
                         graph = self._build_graph_for_engine(
-                            self._effective_runtime_config_from_metadata(
-                                session.metadata
-                            ).execution_engine,
+                            effective_config.execution_engine,
                             next_target,
-                            self._effective_runtime_config_from_metadata(
-                                session.metadata
-                            ).max_steps,
+                            effective_config.max_steps,
                         )
                         graph_request = GraphRunRequest(
                             session=session,
@@ -1632,6 +1635,8 @@ class VoidCodeRuntime:
             model = persisted_model
         persisted_max_steps = runtime_config.get("max_steps")
         if isinstance(persisted_max_steps, int) and not isinstance(persisted_max_steps, bool):
+            if persisted_max_steps < 1:
+                raise ValueError("persisted runtime_config max_steps must be at least 1")
             max_steps = persisted_max_steps
         provider_fallback = None
         persisted_provider_fallback = runtime_config.get("provider_fallback")
