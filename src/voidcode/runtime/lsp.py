@@ -11,10 +11,6 @@ from typing import Literal, Protocol, cast
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
-if os.name == "nt":
-    import ctypes
-    import msvcrt
-
 from ..lsp import (
     ResolvedLspServerConfig,
     discover_workspace_root,
@@ -461,7 +457,8 @@ class ManagedLspManager:
             raw_container = params.get(container_key)
             if not isinstance(raw_container, dict):
                 continue
-            uri = raw_container.get("uri")
+            container = cast(dict[str, object], raw_container)
+            uri = container.get("uri")
             if isinstance(uri, str):
                 uris.append(uri)
         return tuple(uris)
@@ -567,6 +564,9 @@ class ManagedLspManager:
 
     @staticmethod
     def _wait_for_windows_pipe(*, fd: int, timeout: float) -> bool:
+        import ctypes
+        import msvcrt
+
         handle = msvcrt.get_osfhandle(fd)
         bytes_available = ctypes.c_ulong()
         deadline = time.monotonic() + timeout
