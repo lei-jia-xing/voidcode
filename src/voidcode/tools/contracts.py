@@ -37,7 +37,18 @@ class ToolResult:
 
 
 @runtime_checkable
-class Tool(Protocol):
+class StaticTool(Protocol):
     definition: ClassVar[ToolDefinition]
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult: ...
+
+
+@runtime_checkable
+class DynamicTool(Protocol):
+    @property
+    def definition(self) -> ToolDefinition: ...
+
+    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult: ...
+
+
+type Tool = StaticTool | DynamicTool

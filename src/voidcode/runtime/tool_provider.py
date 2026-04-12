@@ -40,8 +40,9 @@ class ToolProvider(Protocol):
 
 
 class BuiltinToolProvider:
-    def __init__(self, *, lsp_tool: Tool | None = None) -> None:
+    def __init__(self, *, lsp_tool: Tool | None = None, mcp_tools: tuple[Tool, ...] = ()) -> None:
         self._lsp_tool = lsp_tool
+        self._mcp_tools = mcp_tools
 
     def provide_tools(self) -> tuple[Tool, ...]:
         tools: list[Tool] = [
@@ -58,6 +59,8 @@ class BuiltinToolProvider:
 
         if self._lsp_tool is not None:
             tools.append(self._lsp_tool)
+
+        tools.extend(self._mcp_tools)
 
         # Add optional tools if available.
         if _ApplyPatchTool is not None:

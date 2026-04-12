@@ -16,6 +16,8 @@ type ExistingEventType = Literal[
     "runtime.lsp_server_started",
     "runtime.lsp_server_stopped",
     "runtime.lsp_server_failed",
+    "runtime.mcp_server_started",
+    "runtime.mcp_server_stopped",
     "graph.loop_step",
     "graph.model_turn",
     "graph.tool_request_created",
@@ -42,6 +44,8 @@ RUNTIME_ACP_FAILED: Final[ExistingEventType] = "runtime.acp_failed"
 RUNTIME_LSP_SERVER_STARTED: Final[ExistingEventType] = "runtime.lsp_server_started"
 RUNTIME_LSP_SERVER_STOPPED: Final[ExistingEventType] = "runtime.lsp_server_stopped"
 RUNTIME_LSP_SERVER_FAILED: Final[ExistingEventType] = "runtime.lsp_server_failed"
+RUNTIME_MCP_SERVER_STARTED: Final[ExistingEventType] = "runtime.mcp_server_started"
+RUNTIME_MCP_SERVER_STOPPED: Final[ExistingEventType] = "runtime.mcp_server_stopped"
 GRAPH_LOOP_STEP: Final[ExistingEventType] = "graph.loop_step"
 GRAPH_MODEL_TURN: Final[ExistingEventType] = "graph.model_turn"
 GRAPH_TOOL_REQUEST_CREATED: Final[ExistingEventType] = "graph.tool_request_created"
@@ -68,6 +72,8 @@ EMITTED_EVENT_TYPES: Final[tuple[ExistingEventType, ...]] = (
     RUNTIME_LSP_SERVER_STARTED,
     RUNTIME_LSP_SERVER_STOPPED,
     RUNTIME_LSP_SERVER_FAILED,
+    RUNTIME_MCP_SERVER_STARTED,
+    RUNTIME_MCP_SERVER_STOPPED,
     GRAPH_LOOP_STEP,
     GRAPH_MODEL_TURN,
     GRAPH_TOOL_REQUEST_CREATED,

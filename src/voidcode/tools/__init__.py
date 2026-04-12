@@ -6,6 +6,7 @@ from .glob import GlobTool
 from .grep import GrepTool
 from .list_dir import ListTool
 from .lsp import LspTool
+from .mcp import McpTool
 from .multi_edit import MultiEditTool
 from .read_file import ReadFileTool
 from .shell_exec import ShellExecTool
@@ -25,6 +26,7 @@ __all__ = [
     "WebSearchTool",
     "WriteFileTool",
     "LspTool",
+    "McpTool",
     "MultiEditTool",
     "ApplyPatchTool",
     "CodeSearchTool",

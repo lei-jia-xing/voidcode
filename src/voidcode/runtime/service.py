@@ -31,12 +31,15 @@ from .events import (
     RUNTIME_LSP_SERVER_FAILED,
     RUNTIME_LSP_SERVER_STARTED,
     RUNTIME_LSP_SERVER_STOPPED,
+    RUNTIME_MCP_SERVER_STARTED,
+    RUNTIME_MCP_SERVER_STOPPED,
     RUNTIME_MEMORY_REFRESHED,
     RUNTIME_SKILLS_APPLIED,
     RUNTIME_SKILLS_LOADED,
     EventEnvelope,
 )
 from .lsp import LspManager, LspManagerState, LspRequest, LspRequestResult, build_lsp_manager
+from .mcp import McpManager, build_mcp_manager
 from .model_provider import (
     ModelProviderRegistry,
     ResolvedProviderChain,
@@ -104,8 +107,12 @@ class ToolRegistry:
         return cls(tools={tool.definition.name: tool for tool in tools})
 
     @classmethod
-    def with_defaults(cls, *, lsp_tool: Tool | None = None) -> ToolRegistry:
-        return cls.from_tools(BuiltinToolProvider(lsp_tool=lsp_tool).provide_tools())
+    def with_defaults(
+        cls, *, lsp_tool: Tool | None = None, mcp_tools: tuple[Tool, ...] = ()
+    ) -> ToolRegistry:
+        return cls.from_tools(
+            BuiltinToolProvider(lsp_tool=lsp_tool, mcp_tools=mcp_tools).provide_tools()
+        )
 
     def definitions(self) -> tuple[ToolDefinition, ...]:
         return tuple(tool.definition for tool in self.tools.values())
@@ -122,6 +129,7 @@ class VoidCodeRuntime:
     """Headless runtime entrypoint for one local deterministic request."""
 
     _workspace: Path
+    _base_tool_registry: ToolRegistry
     _tool_registry: ToolRegistry
     _graph: RuntimeGraph
     _graph_override: RuntimeGraph | None
@@ -133,6 +141,7 @@ class VoidCodeRuntime:
     _provider_chain: ResolvedProviderChain
     _skill_registry: SkillRegistry
     _lsp_manager: LspManager
+    _mcp_manager: McpManager
     _acp_adapter: AcpAdapter
     _graph_cache: dict[tuple[ExecutionEngineName, str], RuntimeGraph]
     _hook_recursion_env_var = "VOIDCODE_RUNNING_TOOL_HOOK"
@@ -150,6 +159,7 @@ class VoidCodeRuntime:
         model_provider_registry: ModelProviderRegistry | None = None,
         skill_registry: SkillRegistry | None = None,
         lsp_manager: LspManager | None = None,
+        mcp_manager: McpManager | None = None,
         acp_adapter: AcpAdapter | None = None,
     ) -> None:
         self._workspace = workspace.resolve()
@@ -165,9 +175,11 @@ class VoidCodeRuntime:
         self._provider_model = self._resolved_provider_config.active_target
         self._provider_chain = self._resolved_provider_config.target_chain
         self._lsp_manager = lsp_manager or build_lsp_manager(self._config.lsp)
-        self._tool_registry = tool_registry or ToolRegistry.with_defaults(
+        self._mcp_manager = mcp_manager or build_mcp_manager(self._config.mcp)
+        self._base_tool_registry = tool_registry or ToolRegistry.with_defaults(
             lsp_tool=self._build_lsp_tool()
         )
+        self._tool_registry = self._base_tool_registry
         self._graph_override = graph
         self._graph_cache = {}
         self._graph = graph or self._build_graph_for_engine_from_config(
@@ -193,6 +205,7 @@ class VoidCodeRuntime:
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
         _ = exc_type, exc, tb
         _ = self.disconnect_acp()
+        _ = self.shutdown_mcp()
         _ = self.shutdown_lsp()
 
     @staticmethod
@@ -283,6 +296,30 @@ class VoidCodeRuntime:
 
         return LspTool(requester=self.request_lsp)
 
+    def _build_mcp_tools(self) -> tuple[Tool, ...]:
+        if self._mcp_manager.current_state().mode != "managed":
+            return ()
+        from ..tools.mcp import McpTool
+
+        return tuple(
+            McpTool(
+                server_name=tool.server_name,
+                tool_name=tool.tool_name,
+                description=tool.description,
+                input_schema=tool.input_schema,
+                requester=self.request_mcp_tool,
+            )
+            for tool in self._mcp_manager.list_tools(workspace=self._workspace)
+        )
+
+    def _refresh_mcp_tools(self) -> None:
+        if self._mcp_manager.current_state().mode != "managed":
+            return
+        merged_tools = dict(self._base_tool_registry.tools)
+        for tool in self._build_mcp_tools():
+            merged_tools[tool.definition.name] = tool
+        self._tool_registry = ToolRegistry(tools=merged_tools)
+
     def current_lsp_state(self) -> LspManagerState:
         return self._lsp_manager.current_state()
 
@@ -301,6 +338,28 @@ class VoidCodeRuntime:
                 params=params,
                 workspace=workspace,
             )
+        )
+
+    def request_mcp_tool(
+        self,
+        *,
+        server_name: str,
+        tool_name: str,
+        arguments: dict[str, object],
+        workspace: Path,
+    ):
+        return self._mcp_manager.call_tool(
+            server_name=server_name,
+            tool_name=tool_name,
+            arguments=arguments,
+            workspace=workspace,
+        )
+
+    def shutdown_mcp(self) -> tuple[EventEnvelope, ...]:
+        return self._envelopes_for_mcp_events(
+            session_id="runtime",
+            start_sequence=1,
+            mcp_events=self._mcp_manager.shutdown(),
         )
 
     def shutdown_lsp(self) -> tuple[EventEnvelope, ...]:
@@ -392,6 +451,7 @@ class VoidCodeRuntime:
     def _stream_chunks(self, request: RuntimeRequest) -> Iterator[RuntimeStreamChunk]:
         session_id = self._resolve_session_id(request)
         effective_config = self._runtime_config_for_request(request)
+        self._refresh_mcp_tools()
         session = SessionState(
             session=SessionRef(id=session_id),
             status="running",
@@ -788,6 +848,13 @@ class VoidCodeRuntime:
             try:
                 tool_result = tool.invoke(plan_tool_call, workspace=self._workspace)
             except Exception as exc:
+                for mcp_event in self._envelopes_for_mcp_events(
+                    session_id=session.session.id,
+                    start_sequence=sequence + 1,
+                    mcp_events=self._mcp_manager.drain_events(),
+                ):
+                    sequence = mcp_event.sequence
+                    yield RuntimeStreamChunk(kind="event", session=session, event=mcp_event)
                 for lsp_event in self._envelopes_for_lsp_events(
                     session_id=session.session.id,
                     start_sequence=sequence + 1,
@@ -797,6 +864,14 @@ class VoidCodeRuntime:
                     yield RuntimeStreamChunk(kind="event", session=session, event=lsp_event)
                 yield self._failed_chunk(session=session, sequence=sequence + 1, error=str(exc))
                 raise
+
+            for mcp_event in self._envelopes_for_mcp_events(
+                session_id=session.session.id,
+                start_sequence=sequence + 1,
+                mcp_events=self._mcp_manager.drain_events(),
+            ):
+                sequence = mcp_event.sequence
+                yield RuntimeStreamChunk(kind="event", session=session, event=mcp_event)
 
             for lsp_event in self._envelopes_for_lsp_events(
                 session_id=session.session.id,
@@ -1615,6 +1690,12 @@ class VoidCodeRuntime:
             "available": acp_state.available,
             "last_error": acp_state.last_error,
         }
+        mcp_state = self._mcp_manager.current_state()
+        runtime_config_metadata["mcp"] = {
+            "mode": mcp_state.mode,
+            "configured_enabled": mcp_state.configuration.configured_enabled,
+            "servers": list(mcp_state.configuration.servers),
+        }
         return runtime_config_metadata
 
     @staticmethod
@@ -1668,6 +1749,41 @@ class VoidCodeRuntime:
         envelopes: list[EventEnvelope] = []
         sequence = start_sequence
         for raw_event in acp_events:
+            if isinstance(raw_event, dict):
+                raw_event_dict = cast(dict[str, object], raw_event)
+                event_type = raw_event_dict.get("event_type")
+                payload = raw_event_dict.get("payload")
+            else:
+                event_type = getattr(raw_event, "event_type", None)
+                payload = getattr(raw_event, "payload", None)
+            if event_type not in known_event_types or not isinstance(payload, dict):
+                continue
+            envelopes.append(
+                EventEnvelope(
+                    session_id=session_id,
+                    sequence=sequence,
+                    event_type=cast(str, event_type),
+                    source="runtime",
+                    payload=cast(dict[str, object], payload),
+                )
+            )
+            sequence += 1
+        return tuple(envelopes)
+
+    @staticmethod
+    def _envelopes_for_mcp_events(
+        *,
+        session_id: str,
+        start_sequence: int,
+        mcp_events: tuple[object, ...],
+    ) -> tuple[EventEnvelope, ...]:
+        known_event_types = {
+            RUNTIME_MCP_SERVER_STARTED,
+            RUNTIME_MCP_SERVER_STOPPED,
+        }
+        envelopes: list[EventEnvelope] = []
+        sequence = start_sequence
+        for raw_event in mcp_events:
             if isinstance(raw_event, dict):
                 raw_event_dict = cast(dict[str, object], raw_event)
                 event_type = raw_event_dict.get("event_type")

@@ -15,11 +15,17 @@ from voidcode.runtime.config import (
     RuntimeConfig,
     RuntimeLspConfig,
     RuntimeLspServerConfig,
+    RuntimeMcpServerConfig,
     RuntimeProviderFallbackConfig,
     RuntimeSkillsConfig,
 )
-from voidcode.runtime.events import EventEnvelope
+from voidcode.runtime.events import (
+    RUNTIME_MCP_SERVER_STARTED,
+    RUNTIME_MCP_SERVER_STOPPED,
+    EventEnvelope,
+)
 from voidcode.runtime.lsp import DisabledLspManager
+from voidcode.runtime.mcp import McpConfigState, McpManagerState, McpRuntimeEvent
 from voidcode.runtime.model_provider import ModelProviderRegistry
 from voidcode.runtime.permission import PermissionPolicy
 from voidcode.runtime.service import (
@@ -415,6 +421,131 @@ def test_runtime_exit_disconnects_managed_acp(tmp_path: Path) -> None:
     runtime.__exit__(None, None, None)
 
     assert runtime.current_acp_state().status == "disconnected"
+
+
+def test_runtime_exit_shuts_down_managed_mcp(tmp_path: Path) -> None:
+    class _StubMcpManager:
+        def __init__(self) -> None:
+            self.shutdown_calls = 0
+
+        @property
+        def configuration(self) -> McpConfigState:
+            return McpConfigState(configured_enabled=True)
+
+        def current_state(self) -> McpManagerState:
+            return McpManagerState(mode="managed", configuration=self.configuration)
+
+        def list_tools(self, *, workspace: Path):
+            _ = workspace
+            return ()
+
+        def call_tool(
+            self, *, server_name: str, tool_name: str, arguments: dict[str, object], workspace: Path
+        ):
+            _ = server_name, tool_name, arguments, workspace
+            raise AssertionError("not used")
+
+        def shutdown(self) -> tuple[McpRuntimeEvent, ...]:
+            self.shutdown_calls += 1
+            return (
+                McpRuntimeEvent(
+                    event_type=RUNTIME_MCP_SERVER_STOPPED,
+                    payload={"server": "echo", "workspace_root": str(tmp_path)},
+                ),
+            )
+
+        def drain_events(self) -> tuple[McpRuntimeEvent, ...]:
+            return ()
+
+    mcp_manager = _StubMcpManager()
+    runtime = VoidCodeRuntime(workspace=tmp_path, mcp_manager=mcp_manager)
+
+    runtime.__exit__(None, None, None)
+
+    assert mcp_manager.shutdown_calls == 1
+
+
+def test_runtime_surfaces_mcp_lifecycle_events_in_run_responses(tmp_path: Path) -> None:
+    class _StubMcpManager:
+        @property
+        def configuration(self) -> McpConfigState:
+            return McpConfigState(configured_enabled=True)
+
+        def current_state(self) -> McpManagerState:
+            return McpManagerState(mode="managed", configuration=self.configuration)
+
+        def list_tools(self, *, workspace: Path):
+            _ = workspace
+            return ()
+
+        def call_tool(
+            self, *, server_name: str, tool_name: str, arguments: dict[str, object], workspace: Path
+        ):
+            _ = server_name, tool_name, arguments, workspace
+            raise AssertionError("not used")
+
+        def shutdown(self) -> tuple[McpRuntimeEvent, ...]:
+            return ()
+
+        def drain_events(self) -> tuple[McpRuntimeEvent, ...]:
+            return (
+                McpRuntimeEvent(
+                    event_type=RUNTIME_MCP_SERVER_STARTED,
+                    payload={"server": "echo", "workspace_root": str(tmp_path)},
+                ),
+            )
+
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("alpha beta\n", encoding="utf-8")
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_StubGraph(), mcp_manager=_StubMcpManager())
+
+    response = runtime.run(RuntimeRequest(prompt="hello"))
+
+    assert any(event.event_type == RUNTIME_MCP_SERVER_STARTED for event in response.events)
+
+
+def test_runtime_metadata_includes_mcp_state_when_configured(tmp_path: Path) -> None:
+    class _StubMcpManager:
+        @property
+        def configuration(self) -> McpConfigState:
+            return McpConfigState(
+                configured_enabled=True,
+                servers={
+                    "echo": RuntimeMcpServerConfig(
+                        transport="stdio",
+                        command=("python", "server.py"),
+                    )
+                },
+            )
+
+        def current_state(self) -> McpManagerState:
+            return McpManagerState(mode="managed", configuration=self.configuration)
+
+        def list_tools(self, *, workspace: Path):
+            _ = workspace
+            return ()
+
+        def call_tool(
+            self, *, server_name: str, tool_name: str, arguments: dict[str, object], workspace: Path
+        ):
+            _ = server_name, tool_name, arguments, workspace
+            raise AssertionError("not used")
+
+        def shutdown(self) -> tuple[McpRuntimeEvent, ...]:
+            return ()
+
+        def drain_events(self) -> tuple[McpRuntimeEvent, ...]:
+            return ()
+
+    runtime = VoidCodeRuntime(workspace=tmp_path, mcp_manager=_StubMcpManager())
+
+    runtime_config_metadata = runtime._runtime_config_metadata()  # pyright: ignore[reportPrivateUsage]
+
+    assert runtime_config_metadata["mcp"] == {
+        "mode": "managed",
+        "configured_enabled": True,
+        "servers": ["echo"],
+    }
 
 
 def test_runtime_default_extension_construction_preserves_public_run_path(
@@ -1068,6 +1199,7 @@ def test_runtime_effective_runtime_config_recovers_persisted_max_steps(tmp_path:
             "available": False,
             "last_error": None,
         },
+        "mcp": {"mode": "disabled", "configured_enabled": False, "servers": []},
     }
 
     resumed_runtime = VoidCodeRuntime(
@@ -1189,6 +1321,7 @@ def test_runtime_effective_runtime_config_uses_request_metadata_max_steps_for_ne
             "available": False,
             "last_error": None,
         },
+        "mcp": {"mode": "disabled", "configured_enabled": False, "servers": []},
     }
 
 
