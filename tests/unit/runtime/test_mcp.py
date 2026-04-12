@@ -399,3 +399,95 @@ while True:
         assert elapsed < 5
     else:
         raise AssertionError("expected MCP manager to time out waiting for a silent server")
+
+
+def test_mcp_manager_restarts_server_after_timeout(tmp_path: Path) -> None:
+    server_script = tmp_path / "retryable_mcp_server.py"
+    marker_path = tmp_path / "first_run_marker"
+    server_script.write_text(
+        rf'''
+from __future__ import annotations
+
+import json
+import pathlib
+import sys
+import time
+
+marker = pathlib.Path(r"{marker_path}")
+first_run = not marker.exists()
+if first_run:
+    marker.write_text("seen", encoding="utf-8")
+
+
+def send(message: dict[str, object]) -> None:
+    sys.stdout.write(json.dumps(message) + "\n")
+    sys.stdout.flush()
+
+
+for raw_line in sys.stdin:
+    line = raw_line.strip()
+    if not line:
+        continue
+    message = json.loads(line)
+    method = message.get("method")
+    if first_run:
+        time.sleep(10)
+        continue
+    if method == "initialize":
+        send(
+            {{
+                "jsonrpc": "2.0",
+                "id": message["id"],
+                "result": {{
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {{"tools": {{}}}},
+                    "serverInfo": {{"name": "retry-mcp", "version": "0.1.0"}},
+                }},
+            }}
+        )
+        continue
+    if method == "notifications/initialized":
+        continue
+    if method == "tools/list":
+        send(
+            {{
+                "jsonrpc": "2.0",
+                "id": message["id"],
+                "result": {{
+                    "tools": [
+                        {{
+                            "name": "echo",
+                            "description": "Echo the text argument.",
+                            "inputSchema": {{"type": "object"}},
+                        }}
+                    ]
+                }},
+            }}
+        )
+        continue
+''',
+        encoding="utf-8",
+    )
+
+    config = RuntimeMcpConfig(
+        enabled=True,
+        servers={
+            "retry": RuntimeMcpServerConfig(
+                transport="stdio",
+                command=(sys.executable, str(server_script)),
+            )
+        },
+    )
+
+    manager = build_mcp_manager(config)
+
+    try:
+        manager.list_tools(workspace=tmp_path)
+    except ValueError as exc:
+        assert "timed out" in str(exc)
+    else:
+        raise AssertionError("expected first MCP attempt to time out")
+
+    discovered = manager.list_tools(workspace=tmp_path)
+
+    assert [tool.tool_name for tool in discovered] == ["echo"]

@@ -287,6 +287,7 @@ class ManagedMcpManager:
             try:
                 line = response_queue.get(timeout=self._request_timeout_seconds)
             except queue.Empty as exc:
+                self._stop_running_server_by_process(running)
                 raise ValueError(
                     f"MCP server timed out waiting for response to {method} after "
                     f"{self._request_timeout_seconds:.1f}s"
@@ -316,6 +317,32 @@ class ManagedMcpManager:
         running = self._running_servers.pop(server_name, None)
         if running is None:
             return
+        self._terminate_running_server(running)
+        self._record_event(
+            McpRuntimeEvent(
+                event_type="runtime.mcp_server_stopped",
+                payload={"server": server_name, "workspace_root": str(running.workspace_root)},
+            )
+        )
+
+    def _stop_running_server_by_process(self, running: _RunningMcpServer) -> None:
+        server_name = next(
+            (name for name, active in self._running_servers.items() if active is running),
+            None,
+        )
+        if server_name is None:
+            return
+        self._running_servers.pop(server_name, None)
+        self._terminate_running_server(running)
+        self._record_event(
+            McpRuntimeEvent(
+                event_type="runtime.mcp_server_stopped",
+                payload={"server": server_name, "workspace_root": str(running.workspace_root)},
+            )
+        )
+
+    @staticmethod
+    def _terminate_running_server(running: _RunningMcpServer) -> None:
         if running.process.stdin is not None:
             running.process.stdin.close()
         try:
@@ -324,12 +351,6 @@ class ManagedMcpManager:
         except subprocess.TimeoutExpired:
             running.process.kill()
             running.process.wait(timeout=1)
-        self._record_event(
-            McpRuntimeEvent(
-                event_type="runtime.mcp_server_stopped",
-                payload={"server": server_name, "workspace_root": str(running.workspace_root)},
-            )
-        )
 
     def _record_event(self, event: McpRuntimeEvent) -> None:
         self._pending_events.append(event)

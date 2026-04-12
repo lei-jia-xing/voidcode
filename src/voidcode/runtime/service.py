@@ -129,6 +129,7 @@ class VoidCodeRuntime:
     """Headless runtime entrypoint for one local deterministic request."""
 
     _workspace: Path
+    _base_tool_registry: ToolRegistry
     _tool_registry: ToolRegistry
     _graph: RuntimeGraph
     _graph_override: RuntimeGraph | None
@@ -175,9 +176,10 @@ class VoidCodeRuntime:
         self._provider_chain = self._resolved_provider_config.target_chain
         self._lsp_manager = lsp_manager or build_lsp_manager(self._config.lsp)
         self._mcp_manager = mcp_manager or build_mcp_manager(self._config.mcp)
-        self._tool_registry = tool_registry or ToolRegistry.with_defaults(
+        self._base_tool_registry = tool_registry or ToolRegistry.with_defaults(
             lsp_tool=self._build_lsp_tool()
         )
+        self._tool_registry = self._base_tool_registry
         self._graph_override = graph
         self._graph_cache = {}
         self._graph = graph or self._build_graph_for_engine_from_config(
@@ -313,10 +315,10 @@ class VoidCodeRuntime:
     def _refresh_mcp_tools(self) -> None:
         if self._mcp_manager.current_state().mode != "managed":
             return
-        self._tool_registry = ToolRegistry.with_defaults(
-            lsp_tool=self._build_lsp_tool(),
-            mcp_tools=self._build_mcp_tools(),
-        )
+        merged_tools = dict(self._base_tool_registry.tools)
+        for tool in self._build_mcp_tools():
+            merged_tools[tool.definition.name] = tool
+        self._tool_registry = ToolRegistry(tools=merged_tools)
 
     def current_lsp_state(self) -> LspManagerState:
         return self._lsp_manager.current_state()

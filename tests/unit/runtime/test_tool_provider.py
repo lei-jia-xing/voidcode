@@ -36,6 +36,7 @@ from voidcode.tools import (
     WebSearchTool,
     WriteFileTool,
 )
+from voidcode.tools.contracts import ToolDefinition, ToolResult
 
 
 @dataclass(slots=True)
@@ -80,6 +81,44 @@ class _StubMcpGraph:
                 )
             )
         return _StubStep(output=request.prompt, is_finished=True)
+
+
+class _InjectedToolGraph:
+    def __init__(self) -> None:
+        self._step_count = 0
+
+    def step(
+        self,
+        request: GraphRunRequest,
+        tool_results: tuple[object, ...],
+        *,
+        session: SessionState,
+    ) -> _StubStep:
+        _ = request, tool_results, session
+        self._step_count += 1
+        if self._step_count == 1:
+            return _StubStep(
+                tool_call=ToolCall(tool_name="mcp/echo/echo", arguments={"message": "hi"})
+            )
+        if self._step_count == 2:
+            return _StubStep(tool_call=ToolCall(tool_name="injected_tool", arguments={}))
+        return _StubStep(output="done", is_finished=True)
+
+
+class _InjectedTool:
+    definition = ToolDefinition(
+        name="injected_tool",
+        description="Injected test tool",
+        input_schema={"type": "object"},
+    )
+
+    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
+        _ = call, workspace
+        return ToolResult(
+            tool_name="injected_tool",
+            status="ok",
+            content="injected ok",
+        )
 
 
 def test_builtin_tool_provider_returns_expected_builtin_tools() -> None:
@@ -255,6 +294,62 @@ def test_runtime_registry_includes_discovered_mcp_tools(tmp_path: Path) -> None:
         event.event_type == "runtime.tool_completed"
         and event.payload["server"] == "echo"
         and event.payload["tool"] == "echo"
+        for event in response.events
+    )
+
+
+def test_runtime_refresh_preserves_injected_tool_registry_entries(tmp_path: Path) -> None:
+    class _StubMcpManager:
+        @property
+        def configuration(self) -> McpConfigState:
+            return McpConfigState(configured_enabled=True)
+
+        def current_state(self) -> McpManagerState:
+            return McpManagerState(mode="managed", configuration=self.configuration)
+
+        def list_tools(self, *, workspace: Path):
+            _ = workspace
+            return (
+                McpToolDescriptor(
+                    server_name="echo",
+                    tool_name="echo",
+                    description="Echo input",
+                    input_schema={"type": "object"},
+                ),
+            )
+
+        def call_tool(
+            self,
+            *,
+            server_name: str,
+            tool_name: str,
+            arguments: dict[str, object],
+            workspace: Path,
+        ) -> McpToolCallResult:
+            _ = server_name, tool_name, arguments, workspace
+            return McpToolCallResult(content=[{"type": "text", "text": "echo:hi"}])
+
+        def shutdown(self):
+            return ()
+
+        def drain_events(self):
+            return ()
+
+    injected_tool = _InjectedTool()
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_InjectedToolGraph(),
+        tool_registry=ToolRegistry.from_tools((injected_tool,)),
+        mcp_manager=_StubMcpManager(),
+        permission_policy=PermissionPolicy(mode="allow"),
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="go"))
+
+    assert response.output == "done"
+    assert any(
+        event.event_type == "runtime.tool_lookup_succeeded"
+        and event.payload == {"tool": "injected_tool"}
         for event in response.events
     )
 
