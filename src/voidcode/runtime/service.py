@@ -37,6 +37,7 @@ from .events import (
     EventEnvelope,
 )
 from .lsp import LspManager, LspManagerState, LspRequest, LspRequestResult, build_lsp_manager
+from .mcp import McpManager, build_mcp_manager
 from .model_provider import (
     ModelProviderRegistry,
     ResolvedProviderChain,
@@ -104,8 +105,12 @@ class ToolRegistry:
         return cls(tools={tool.definition.name: tool for tool in tools})
 
     @classmethod
-    def with_defaults(cls, *, lsp_tool: Tool | None = None) -> ToolRegistry:
-        return cls.from_tools(BuiltinToolProvider(lsp_tool=lsp_tool).provide_tools())
+    def with_defaults(
+        cls, *, lsp_tool: Tool | None = None, mcp_tools: tuple[Tool, ...] = ()
+    ) -> ToolRegistry:
+        return cls.from_tools(
+            BuiltinToolProvider(lsp_tool=lsp_tool, mcp_tools=mcp_tools).provide_tools()
+        )
 
     def definitions(self) -> tuple[ToolDefinition, ...]:
         return tuple(tool.definition for tool in self.tools.values())
@@ -133,6 +138,7 @@ class VoidCodeRuntime:
     _provider_chain: ResolvedProviderChain
     _skill_registry: SkillRegistry
     _lsp_manager: LspManager
+    _mcp_manager: McpManager
     _acp_adapter: AcpAdapter
     _graph_cache: dict[tuple[ExecutionEngineName, str], RuntimeGraph]
     _hook_recursion_env_var = "VOIDCODE_RUNNING_TOOL_HOOK"
@@ -150,6 +156,7 @@ class VoidCodeRuntime:
         model_provider_registry: ModelProviderRegistry | None = None,
         skill_registry: SkillRegistry | None = None,
         lsp_manager: LspManager | None = None,
+        mcp_manager: McpManager | None = None,
         acp_adapter: AcpAdapter | None = None,
     ) -> None:
         self._workspace = workspace.resolve()
@@ -165,8 +172,10 @@ class VoidCodeRuntime:
         self._provider_model = self._resolved_provider_config.active_target
         self._provider_chain = self._resolved_provider_config.target_chain
         self._lsp_manager = lsp_manager or build_lsp_manager(self._config.lsp)
+        self._mcp_manager = mcp_manager or build_mcp_manager(self._config.mcp)
         self._tool_registry = tool_registry or ToolRegistry.with_defaults(
-            lsp_tool=self._build_lsp_tool()
+            lsp_tool=self._build_lsp_tool(),
+            mcp_tools=self._build_mcp_tools(),
         )
         self._graph_override = graph
         self._graph_cache = {}
@@ -283,6 +292,22 @@ class VoidCodeRuntime:
 
         return LspTool(requester=self.request_lsp)
 
+    def _build_mcp_tools(self) -> tuple[Tool, ...]:
+        if self._mcp_manager.current_state().mode != "managed":
+            return ()
+        from ..tools.mcp import McpTool
+
+        return tuple(
+            McpTool(
+                server_name=tool.server_name,
+                tool_name=tool.tool_name,
+                description=tool.description,
+                input_schema=tool.input_schema,
+                requester=self.request_mcp_tool,
+            )
+            for tool in self._mcp_manager.list_tools(workspace=self._workspace)
+        )
+
     def current_lsp_state(self) -> LspManagerState:
         return self._lsp_manager.current_state()
 
@@ -301,6 +326,21 @@ class VoidCodeRuntime:
                 params=params,
                 workspace=workspace,
             )
+        )
+
+    def request_mcp_tool(
+        self,
+        *,
+        server_name: str,
+        tool_name: str,
+        arguments: dict[str, object],
+        workspace: Path,
+    ):
+        return self._mcp_manager.call_tool(
+            server_name=server_name,
+            tool_name=tool_name,
+            arguments=arguments,
+            workspace=workspace,
         )
 
     def shutdown_lsp(self) -> tuple[EventEnvelope, ...]:
