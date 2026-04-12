@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -1542,6 +1543,7 @@ def test_runtime_effective_runtime_config_rejects_malformed_persisted_provider_f
 
 def test_runtime_resume_preserves_provider_attempt_and_target_across_pending_approval(
     tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     custom_attempts: list[int] = []
     registry = ModelProviderRegistry(
@@ -1569,9 +1571,10 @@ def test_runtime_resume_preserves_provider_attempt_and_target_across_pending_app
         model_provider_registry=registry,
     )
 
-    waiting = initial_runtime.run(
-        RuntimeRequest(prompt="write alpha.txt 1", session_id="resume-provider-attempt")
-    )
+    with caplog.at_level(logging.INFO):
+        waiting = initial_runtime.run(
+            RuntimeRequest(prompt="write alpha.txt 1", session_id="resume-provider-attempt")
+        )
 
     assert waiting.session.status == "waiting"
     assert custom_attempts == [1]
@@ -1582,6 +1585,7 @@ def test_runtime_resume_preserves_provider_attempt_and_target_across_pending_app
         event for event in waiting.events if event.event_type == "runtime.provider_fallback"
     ]
     assert len(fallback_events) == 1
+    assert "provider fallback" in caplog.text
 
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,

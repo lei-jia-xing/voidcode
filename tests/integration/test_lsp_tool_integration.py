@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -193,7 +194,9 @@ def test_runtime_managed_lsp_tool_rejects_disabled_manager(tmp_path: Path) -> No
         )
 
 
-def test_runtime_managed_lsp_tool_surfaces_failed_startup_state(tmp_path: Path) -> None:
+def test_runtime_managed_lsp_tool_surfaces_failed_startup_state(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     sample_file = tmp_path / "sample.py"
     sample_file.write_text("x = 1\n", encoding="utf-8")
     runtime = _build_runtime_with_lsp(
@@ -202,7 +205,10 @@ def test_runtime_managed_lsp_tool_surfaces_failed_startup_state(tmp_path: Path) 
     )
     tool = LspTool(requester=runtime.request_lsp)
 
-    with pytest.raises(ValueError, match="failed to start LSP server pyright"):
+    with (
+        caplog.at_level(logging.ERROR),
+        pytest.raises(ValueError, match="failed to start LSP server pyright"),
+    ):
         _ = tool.invoke(
             ToolCall(
                 tool_name="lsp",
@@ -217,6 +223,7 @@ def test_runtime_managed_lsp_tool_surfaces_failed_startup_state(tmp_path: Path) 
         )
 
     assert runtime.current_lsp_state().servers["pyright"].status == "failed"
+    assert "failed to start LSP server pyright" in caplog.text
 
 
 def test_runtime_managed_lsp_tool_uses_builtin_root_markers_for_workspace_selection(
