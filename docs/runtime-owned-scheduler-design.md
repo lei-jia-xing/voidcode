@@ -1,357 +1,357 @@
-# Runtime-Owned Scheduler Design
+# Runtime-Owned Scheduler 设计
 
-## Status
+## 状态
 
-- Status: proposed
-- Scope: design-only
-- Target repo: `voidcode`
+- 状态：proposed
+- 范围：design-only
+- 目标仓库：`voidcode`
 
-## Context And Motivation
+## 背景与动机
 
-VoidCode already has a clear runtime-centered execution boundary: `VoidCodeRuntime` owns run/stream/resume entrypoints, approval continuity, event emission, provider fallback, and session persistence. SQLite-backed storage already acts as the local truth source for sessions, event replay, pending approvals, and resume checkpoints.
+VoidCode 当前已经具备清晰的、以 runtime 为中心的执行边界：`VoidCodeRuntime` 负责 `run` / `stream` / `resume` 入口、审批连续性、事件发射、provider fallback，以及 session persistence。基于 SQLite 的存储也已经承担了 session、事件重放、pending approval 和 resume checkpoint 的本地真相源职责。
 
-That makes scheduler work a runtime concern, not a client concern.
+这意味着 scheduler 应当是一个 runtime concern，而不是 client concern。
 
-The goal of this document is to define a first-phase scheduler design that feels closer to the product shape people expect from Claude Code style scheduled runs, while still respecting VoidCode's existing architecture:
+本文档的目标，是定义一个第一阶段的 scheduler 设计：它在产品形态上尽量接近大家对 Claude Code 风格 scheduled runs 的直觉预期，但同时仍然严格服从 VoidCode 当前已有的架构边界：
 
-- clients stay thin
-- execution still flows through the runtime boundary
-- session truth remains local and replayable
-- approval and recovery semantics remain runtime-owned
+- client 仍然保持轻量
+- 执行仍然通过 runtime boundary 进入系统
+- session truth 仍然是 local-first 且可 replay 的
+- approval 和 recovery semantics 仍然由 runtime 拥有
 
-This is not a proposal to add a separate cloud scheduler, a new generic background-task framework, or a daemon-first rewrite.
+这不是一个关于独立云调度器、通用 background-task framework，或者 daemon-first 重写的提案。
 
-## Goals
+## 目标
 
-Phase 1 scheduler work should achieve the following:
+Phase 1 的 scheduler 工作应当达成以下目标：
 
-1. Add a runtime-owned scheduling model for local scheduled runs.
-2. Keep schedule dispatch on the existing runtime execution path instead of inventing a parallel execution surface.
-3. Persist schedule definitions and scheduler state locally in the same workspace-owned truth domain as sessions.
-4. Preserve current session, replay, approval, and checkpoint semantics.
-5. Keep the first implementation small enough to land without rewriting `runtime/`, `graph/`, or client contracts.
+1. 为本地 scheduled runs 增加一个 runtime-owned scheduling model。
+2. 让 schedule dispatch 继续走现有 runtime execution path，而不是发明一条平行执行路径。
+3. 在与 session 相同的、workspace-owned 本地真相域中，持久化 schedule definitions 和 scheduler state。
+4. 保持当前的 session、replay、approval 和 checkpoint 语义不被破坏。
+5. 让第一版实现足够小，可以在不重写 `runtime/`、`graph/` 或 client contracts 的前提下落地。
 
-## Non-Goals
+## 非目标
 
-Phase 1 explicitly does **not** aim to provide:
+Phase 1 **不**打算提供以下能力：
 
-- cloud or distributed scheduling
-- a generic job queue or background-task platform
+- 云端或分布式调度
+- 通用 job queue 或 background-task 平台
 - graph-owned scheduling
-- client-owned scheduling in CLI, Web, or TUI
-- direct UI-to-tool execution
-- backlog catch-up and replay of all missed fires after downtime
-- overlapping concurrent runs for the same schedule
-- reuse of a single long-lived session across recurring scheduled runs by default
-- daemon-first or multi-process scheduler coordination as a baseline requirement
+- 由 CLI、Web 或 TUI 拥有的 client-owned scheduling
+- UI 直接执行 tool
+- 进程停机期间所有 missed fires 的 backlog catch-up 与回放
+- 同一个 schedule 的并发重叠运行
+- 默认复用同一个 long-lived session 来承载 recurring scheduled runs
+- 把 daemon-first 或多进程 scheduler coordination 当作基础前提
 
-## Current Runtime Baseline
+## 当前运行时基线
 
-The scheduler design must fit the current codebase, not an aspirational rewrite.
+scheduler 设计必须贴合当前代码库，而不是围绕一个尚不存在的理想化重写方案展开。
 
-### Runtime ownership that already exists
+### 已经存在的 runtime ownership
 
-`src/voidcode/runtime/service.py` already centralizes:
+`src/voidcode/runtime/service.py` 当前已经集中负责：
 
-- `run`, `run_stream`, `resume`, and `resume_stream`
-- permission resolution and approval pauses
+- `run`、`run_stream`、`resume` 和 `resume_stream`
+- permission resolution 与 approval pause
 - hook execution
-- event emission and event renumbering
-- provider fallback and runtime config application
-- session persistence through `SessionStore`
+- event emission 与 event renumbering
+- provider fallback 与 runtime config 应用
+- 通过 `SessionStore` 实现 session persistence
 
-### Storage truth that already exists
+### 已经存在的 storage truth
 
-`src/voidcode/runtime/storage.py` already uses SQLite under `.voidcode/` as the local truth source for:
+`src/voidcode/runtime/storage.py` 当前已经通过 `.voidcode/` 下的 SQLite 作为本地真相源，持久化以下信息：
 
 - session metadata
 - session event history
 - pending approval state
 - resume checkpoints
 
-This matters because the scheduler should not introduce a separate truth source for execution history. It can add schedule-specific state, but actual run truth should remain session-scoped.
+这点非常关键，因为 scheduler 不应为 execution history 再引入第二套真相源。它可以增加 schedule-specific state，但实际 run truth 仍应保持为 session-scoped。
 
-### Client boundary that already exists
+### 已经存在的 client boundary
 
-CLI and HTTP transport currently consume the runtime boundary. They do not own execution semantics. The scheduler should preserve that model by dispatching normal runtime runs rather than bypassing the runtime through transport-specific code paths.
+CLI 和 HTTP transport 当前都只是 runtime boundary 的消费者，而不是 execution semantics 的拥有者。scheduler 应当保持这个模型：通过 dispatch 正常的 runtime runs 进入系统，而不是在 transport-specific 的代码路径里绕开 runtime。
 
-## Scheduler Ownership Boundary
+## Scheduler 的 ownership boundary
 
-The scheduler should be **runtime-owned**.
+scheduler 应当是 **runtime-owned**。
 
-That means:
+这意味着：
 
-- schedule definitions, due-run decisions, and dispatch policy belong to the runtime layer
-- scheduled execution must enter the system as a normal runtime request
-- session persistence, approval handling, replay, and checkpoints stay under runtime ownership
+- schedule definitions、due-run decisions 和 dispatch policy 属于 runtime layer
+- scheduled execution 必须以正常 `RuntimeRequest` 的形式进入系统
+- session persistence、approval handling、replay 和 checkpoints 都继续由 runtime 拥有
 
-That also means the scheduler should **not** be owned by:
+这也意味着 scheduler **不**应当由以下位置拥有：
 
 - `graph/`
 - CLI command handlers
 - HTTP handlers
-- Web or TUI clients
-- an unrelated generic worker subsystem
+- Web 或 TUI clients
+- 一个无关的通用 worker subsystem
 
-### Important nuance
+### 一个重要细节
 
-Runtime-owned does **not** mean every `VoidCodeRuntime` instance should embed a long-lived timer loop.
+runtime-owned **并不**意味着每个 `VoidCodeRuntime` 实例内部都要嵌入一个 long-lived timer loop。
 
-The runtime boundary should own scheduler semantics and persistence, while the local host process that ticks the scheduler can be thin. A future `serve`-adjacent host loop or dedicated local scheduler entrypoint may drive polling, but the authoritative scheduling model still belongs to the runtime layer.
+更合理的做法是：runtime boundary 拥有 scheduler semantics 与 persistence，而真正负责 tick scheduler 的本地 host process 可以保持轻量。未来无论是 `serve` 邻近的 host loop，还是一个专门的本地 scheduler entrypoint，都只是驱动 polling 的外壳；权威的 scheduling model 仍然属于 runtime layer。
 
-## Phase 1 Shape
+## Phase 1 形态
 
-The recommended first slice is **internal-scheduler-first**.
+推荐的第一落地切片是 **internal-scheduler-first**。
 
-That means Phase 1 should include:
+这意味着 Phase 1 应该包括：
 
-- persistent schedule definitions
-- a local poller that detects due schedules
-- runtime dispatch of scheduled runs
-- minimal run indexing from schedule to sessions
-- explicit overlap and missed-fire policy
+- 持久化的 schedule definitions
+- 一个检测 due schedules 的本地 poller
+- 由 runtime dispatch 的 scheduled runs
+- 从 schedule 到 sessions 的最小 run indexing
+- 明确的 overlap 与 missed-fire policy
 
-Phase 1 should avoid:
+Phase 1 应当避免：
 
-- building a generalized async work platform
-- building a permanently detached daemon model first
-- supporting multiple local scheduler hosts against the same workspace as a normal supported mode
+- 先搭一个通用 async work platform
+- 先做 permanently detached 的 daemon model
+- 把多个本地 scheduler host 同时操作同一个 workspace 当作正常支持模式
 
-## Scheduling Lifecycle
+## 调度生命周期
 
-The Phase 1 scheduling lifecycle should be:
+Phase 1 的 scheduling lifecycle 应当是：
 
-1. A schedule definition is stored in workspace-local scheduler state.
-2. A local scheduler host polls for due schedules.
-3. When a schedule becomes due, the scheduler creates a normal `RuntimeRequest` with schedule metadata.
-4. `VoidCodeRuntime` executes the request through the existing run path.
-5. The resulting run is persisted as a normal session with normal events, output, approval state, and checkpoint behavior.
-6. Scheduler state records the outcome at the schedule/run-index level without replacing session truth.
+1. schedule definition 被存入 workspace-local 的 scheduler state。
+2. 本地 scheduler host 轮询是否存在 due schedules。
+3. 当某个 schedule 到期时，scheduler 创建一个带有 schedule metadata 的正常 `RuntimeRequest`。
+4. `VoidCodeRuntime` 通过现有 run path 执行该 request。
+5. 运行结果作为正常 session 持久化，拥有正常的 events、output、approval state 和 checkpoint 行为。
+6. scheduler state 在 schedule/run-index 这一层记录 outcome，但不替代 session truth。
 
-This keeps the scheduler as an initiator of runtime runs rather than a second execution engine.
+这样 scheduler 扮演的是 runtime runs 的 initiator，而不是第二套 execution engine。
 
-## Persistence Model
+## 持久化模型
 
-Phase 1 should use the existing workspace-local SQLite truth domain.
+Phase 1 应当继续使用现有的 workspace-local SQLite 真相域。
 
-The persistence split should be:
+持久化职责应拆分为：
 
-- **sessions remain execution truth**
-- **schedules store future intent and dispatch state**
+- **sessions 继续作为 execution truth**
+- **schedules 负责存储 future intent 与 dispatch state**
 
-Conceptually, schedule-oriented state needs to cover:
+从概念上讲，schedule-oriented state 至少需要覆盖：
 
 - schedule identity
-- user-defined prompt or request payload baseline
-- schedule expression or interval policy
+- 用户定义的 prompt 或 request payload baseline
+- schedule expression 或 interval policy
 - timezone policy
-- enabled/disabled state
+- enabled / disabled state
 - next due time
 - last attempted fire time
 - last successful fire time
-- overlap policy state for single-flight enforcement
-- links from a schedule to emitted session ids or recent run summaries
+- single-flight enforcement 所需的 overlap policy state
+- 从 schedule 指向已发出的 session ids 或 recent run summaries 的关联信息
 
-The scheduler must not treat schedule records as a replacement for session event history. If a scheduled run needs replay, inspection, approval resolution, or debugging, the source of truth remains the session record and its events.
+scheduler 不能把 schedule records 当成 session event history 的替代品。如果某个 scheduled run 需要 replay、inspection、approval resolution 或 debugging，其真相源仍然是该 session record 及其 events。
 
-## Session Semantics For Scheduled Runs
+## Scheduled runs 的 session 语义
 
-Phase 1 should default to **a fresh session for every schedule occurrence**.
+Phase 1 默认应当采用 **每次 schedule occurrence 都创建一个 fresh session** 的模型。
 
-This is the right default because current storage, replay, and approval semantics are session-centric. Reusing one session for recurring runs would immediately complicate:
+这是最合理的默认值，因为当前 storage、replay 和 approval 语义都是 session-centric 的。如果复用同一个 session 去承载 recurring runs，会立刻让以下问题变复杂：
 
-- replay boundaries
+- replay boundary
 - approval continuity
 - event ordering
 - checkpoint meaning
-- failure diagnosis across multiple firings
+- 多次触发之间的 failure diagnosis
 
-### Required default behavior
+### 必须明确的默认行为
 
-- each due schedule occurrence creates a new `session_id`
-- session metadata records schedule provenance, such as `schedule_id`, trigger timestamp, and initiator
-- replay stays session-scoped
-- session resume stays session-scoped
+- 每次 due schedule occurrence 都创建一个新的 `session_id`
+- session metadata 记录 schedule provenance，例如 `schedule_id`、trigger timestamp 和 initiator
+- replay 保持为 session-scoped
+- session resume 保持为 session-scoped
 
-### Explicitly deferred behavior
+### 明确延期的行为
 
-The idea of “recurring work continuing the same long-lived conversational session” is deferred. If that becomes a product requirement later, it should be treated as a higher-complexity design problem rather than silently folded into Phase 1.
+“让 recurring work 持续在同一个 long-lived conversational session 中进行” 这个想法应当被显式延后。如果未来它变成产品需求，就应该把它视为一个更高复杂度的设计问题，而不是悄悄塞进 Phase 1。
 
-## Approval, Resume, And Replay Semantics
+## Approval、resume 与 replay 语义
 
-Scheduled runs should remain normal runtime runs.
+scheduled runs 应当继续被视为正常的 runtime runs。
 
-Therefore:
+因此：
 
-- if a scheduled run reaches an approval boundary, it enters the existing `waiting` session state
-- pending approval is stored through the same runtime persistence path
-- approval resolution happens through existing resume/approval flows
-- replay remains the existing replay of session events
+- 如果某个 scheduled run 走到了 approval boundary，它应进入现有的 `waiting` session state
+- pending approval 应通过现有 runtime persistence path 存储
+- approval resolution 应走现有的 resume / approval flows
+- replay 应继续使用现有的 session event replay
 
-Phase 1 should **not** invent a second approval or background-run model just for scheduled work.
+Phase 1 **不**应当为了 scheduled work 再发明第二套 approval model 或 background-run model。
 
-### Practical implication
+### 实际含义
 
-If a scheduled run is blocked on approval, the scheduler should not automatically "push through" that boundary. The run has already become a normal session and should be resolved using the same runtime-owned approval semantics as any other session.
+如果某个 scheduled run 因 approval 被阻塞，scheduler 不应自动“越过”这个边界。这个 run 此时已经成为一个正常 session，应继续使用与其他 session 一样的 runtime-owned approval semantics 来处理。
 
-## Overlap Policy
+## Overlap 策略
 
-Phase 1 should use **single-flight overlap semantics per schedule**.
+Phase 1 应当采用 **每个 schedule 的 single-flight overlap semantics**。
 
-Recommended rule:
+推荐规则：
 
-- if the prior run for a schedule is still `running` or `waiting`, the next due tick for that same schedule is skipped or coalesced instead of launching a second concurrent run
+- 如果某个 schedule 的上一次 run 仍处于 `running` 或 `waiting`，那么同一个 schedule 的下一次 due tick 应被 skip 或 coalesce，而不是再启动第二个并发 run
 
-This keeps the initial model understandable and protects the current runtime/session path from schedule-level concurrency explosions.
+这样做能让第一版模型足够直观，也能避免 schedule-level concurrency 把当前 runtime/session path 冲乱。
 
-Phase 1 should not support:
+Phase 1 不应支持：
 
-- unbounded backlog queues for one schedule
-- concurrent same-schedule runs by default
-- implicit merging of two due occurrences into one session lineage
+- 单个 schedule 的无界 backlog queue
+- 默认允许同一 schedule 并发运行
+- 把两个 due occurrences 隐式合并进同一个 session lineage
 
-## Missed Fires, Downtime, And Clock Behavior
+## Missed fires、停机与时钟行为
 
-Phase 1 needs explicit policy here, even if it stays intentionally narrow.
+即使 Phase 1 刻意保持保守，这里也必须先定义清楚策略。
 
-### Missed fires while the process is down
+### 进程停机期间的 missed fires
 
-Phase 1 should **not** guarantee catch-up replay of all missed scheduled occurrences after downtime.
+Phase 1 **不**应承诺在停机后回补所有 missed scheduled occurrences。
 
-Recommended default:
+推荐默认行为：
 
-- when the scheduler host restarts, it recalculates the next valid due run from persisted schedule state
-- missed occurrences during downtime are not replayed as a backlog by default
+- 当 scheduler host 重启时，它基于持久化 schedule state 重新计算下一个有效的 due run
+- 停机期间错过的 occurrences 默认不作为 backlog 被重放
 
-This keeps Phase 1 small and avoids smuggling in a queueing system.
+这样可以让 Phase 1 保持小而明确，避免不知不觉变成一个 queueing system。
 
-### Timezone policy
+### Timezone 策略
 
-Schedule definitions should carry an explicit timezone interpretation or clearly documented default timezone behavior. The implementation should not rely on hidden process-local assumptions.
+schedule definitions 应携带明确的 timezone interpretation，或者至少在文档中定义清楚默认 timezone 行为。实现不应依赖隐藏的 process-local 假设。
 
-### Clock jumps
+### 时钟跳变
 
-Clock jumps and local time discontinuities should be treated as a correctness concern for the eventual implementation. Phase 1 should define behavior conservatively and avoid making strong guarantees beyond local best-effort polling.
+本地时钟跳变与时间不连续，应被视为未来实现中的 correctness concern。Phase 1 应先保守定义行为，而不是在 local best-effort polling 之上作出过强保证。
 
-## Retry And Failure Policy
+## Retry 与 failure 策略
 
-Scheduler failure policy should stay narrow in Phase 1.
+Phase 1 的 scheduler failure policy 应保持克制。
 
 ### Dispatch-level failures
 
-If schedule dispatch fails before a session is created, the scheduler should record the failure in schedule-oriented state so the failure is visible and diagnosable.
+如果 schedule dispatch 在 session 创建之前就失败，scheduler 应在 schedule-oriented state 中记录失败信息，使其可见且可诊断。
 
 ### Runtime-level failures
 
-If a session is created and the run later fails, failure belongs to the normal session lifecycle:
+如果 session 已经创建，而 run 随后失败，那么 failure 仍属于正常 session lifecycle：
 
-- the session becomes `failed`
-- failure details live in normal runtime events and session output/history
-- schedule-level state may record a summary pointer, but not replace session truth
+- session 变为 `failed`
+- 失败细节保留在正常 runtime events 以及 session output / history 中
+- schedule-level state 可以记录 summary pointer，但不能替代 session truth
 
-### Retry scope
+### Retry 范围
 
-Phase 1 may support a minimal retry/backoff policy for scheduler dispatch failures, but should avoid complex policy matrices. It does not need full queue semantics, arbitrary retry orchestration, or durable worker leasing.
+Phase 1 可以支持一个最小的 retry / backoff policy 来处理 scheduler dispatch failures，但不应扩展成复杂的策略矩阵。它不需要完整的 queue semantics、任意 retry orchestration，或 durable worker leasing。
 
-## Event And Observability Expectations
+## 事件与可观测性预期
 
-Scheduled runs should preserve the current runtime event model rather than forcing a premature contract rewrite.
+scheduled runs 应尽量复用当前 runtime event model，而不是过早推动一轮新的 contract rewrite。
 
-For Phase 1:
+对于 Phase 1：
 
-- scheduled runs should emit the same core session-scoped runtime events as normal runs
-- session metadata should be sufficient to identify scheduled provenance
-- additive scheduler-specific observability can begin as runtime-internal or design-level guidance before it becomes part of stable client-facing contracts
+- scheduled runs 应发出与正常 runs 相同的 core session-scoped runtime events
+- session metadata 应足以标识 schedule provenance
+- scheduler-specific 的可观测性增强可以先停留在 runtime-internal 或 design-level guidance 层，再决定何时进入稳定的 client-facing contracts
 
-This is important because `docs/contracts/runtime-events.md` currently defines a session-scoped stable event vocabulary. The scheduler design should stay compatible with that model in its first slice.
+这一点很重要，因为 `docs/contracts/runtime-events.md` 当前定义的是一个以 session 为作用域的稳定事件词汇表。scheduler 设计的第一落地切片应与这个模型兼容。
 
-## Client And Transport Relationship
+## Client 与 transport 的关系
 
-Clients remain consumers of runtime truth.
+client 仍然只是 runtime truth 的消费者。
 
-That implies:
+这意味着：
 
-- CLI, Web, and TUI should observe scheduled runs as ordinary sessions
-- clients may later surface schedule metadata and schedule administration features
-- clients should not own timer loops or direct execution behavior
+- CLI、Web 和 TUI 应把 scheduled runs 观察为普通 sessions
+- client 后续可以增加 schedule metadata 展示和 schedule administration features
+- client 不应拥有 timer loops，也不应直接拥有 execution behavior
 
-The HTTP layer and CLI may eventually expose schedule management surfaces, but they should remain transport/control entrypoints, not the scheduler's source of truth.
+HTTP layer 和 CLI 将来可以暴露 schedule management surfaces，但它们仍应只是 transport / control entrypoints，而不是 scheduler 的真相源。
 
-## Interaction With Execution Engines
+## 与 execution engines 的关系
 
-The scheduler should dispatch into the runtime boundary and remain agnostic about the concrete execution engine selected by the resolved runtime config.
+scheduler 应 dispatch 到 runtime boundary 中，并且对最终由 resolved runtime config 选中的具体 execution engine 保持无感。
 
-In other words:
+换句话说：
 
-- the scheduler should not special-case `deterministic` vs `single_agent` in its ownership model
-- engine selection remains runtime config behavior
-- scheduled execution still uses the normal runtime-governed tool, permission, hook, and persistence path
+- scheduler 不应在 ownership model 上对 `deterministic` 和 `single_agent` 做特殊分支
+- engine selection 仍然属于 runtime config 行为
+- scheduled execution 仍然走 runtime 治理下的 tool、permission、hook 与 persistence path
 
-This keeps the scheduler aligned with the existing post-MVP direction where the runtime governs multiple execution engines without letting those engines take over product control-plane responsibilities.
+这样可以保证 scheduler 与现有 post-MVP 方向保持一致：runtime 可以治理多个 execution engines，但这些 engines 不应反过来接管 product control-plane 的职责。
 
-## Configuration And Policy Inputs
+## 配置与策略输入
 
-The scheduler should consume **resolved runtime policy**, not raw client input scattered across transports.
+scheduler 应消费 **resolved runtime policy**，而不是来自各个 transports 的原始 client 输入。
 
-That means the eventual implementation should follow the same ownership rules already used elsewhere in the runtime:
+这意味着未来实现应继续遵守 runtime 当前已经在其他能力上采用的 ownership 规则：
 
 - runtime defaults
 - user config
 - project config
 - environment overrides
-- request or command overrides
+- request 或 command overrides
 
-Schedule definitions may carry schedule-specific execution defaults, but those should still be interpreted through runtime-owned config resolution rather than inventing a parallel config system.
+schedule definitions 可以携带 schedule-specific execution defaults，但这些值仍应通过 runtime-owned config resolution 解释，而不是发明一套平行配置系统。
 
-## Unsupported Phase 1 Multi-Host Behavior
+## Phase 1 不支持的 multi-host 行为
 
-Phase 1 should treat **multiple local scheduler hosts targeting the same workspace database** as unsupported.
+Phase 1 应明确把 **多个本地 scheduler hosts 同时操作同一个 workspace database** 视为 unsupported。
 
-Without a claim/lease model, multiple hosts would risk duplicate firing, overlapping ownership, or inconsistent scheduler state. A future phase can add lightweight coordination if multi-process attachment becomes a real requirement.
+在没有 claim / lease model 的前提下，多 host 会带来 duplicate firing、ownership overlap 或 scheduler state 不一致的问题。未来如果 multi-process attachment 真的成为需求，可以再增加轻量协调机制。
 
-For Phase 1, one local scheduler host per workspace is the safe and honest boundary.
+对于 Phase 1，“每个 workspace 仅一个本地 scheduler host” 是一个诚实且安全的边界。
 
-## Proposed Out-Of-Scope Follow-Ups
+## 明确保持在范围外的后续项
 
-These are reasonable future follow-ups, but should not be folded into this first design slice:
+以下方向是合理的 future follow-ups，但不应折叠进这次第一阶段设计切片中：
 
-- schedule CRUD transport and client UX
-- durable leases or leader election for multi-host coordination
-- catch-up backlog policy after downtime
-- recurring runs that intentionally continue one long-lived session lineage
-- richer scheduler-specific event vocabulary in stable client contracts
-- daemonized always-on local scheduling detached from the caller lifecycle
-- remote or cloud-managed scheduling
+- schedule CRUD transport 与 client UX
+- 用于 multi-host coordination 的 durable lease 或 leader election
+- 停机后的 catch-up backlog policy
+- 有意延续同一 long-lived session lineage 的 recurring runs
+- 进入稳定 client contracts 的 richer scheduler-specific event vocabulary
+- 脱离调用者生命周期、always-on 的 daemonized local scheduling
+- remote 或 cloud-managed scheduling
 
-## Verification Plan For Future Implementation
+## 面向未来实现的验证计划
 
-This PR is design-only, but the design should still define what correctness means.
+这个 PR 是 design-only，但设计文档仍然需要定义什么叫做“正确”。
 
-Future implementation work should verify at least the following:
+后续实现至少应验证以下行为：
 
-1. A due schedule dispatches a normal runtime run and persists a new session.
-2. Scheduled runs emit the normal session-scoped runtime event sequence in order.
-3. A scheduled run that requests approval becomes a normal `waiting` session and can be resumed through the existing approval path.
-4. A failed scheduled run becomes a normal `failed` session without corrupting scheduler state.
-5. Single-flight overlap policy prevents concurrent same-schedule runs.
-6. Restarting the local scheduler host does not replay an unbounded backlog of missed fires by default.
-7. Session replay remains sufficient to inspect scheduled execution without requiring a separate scheduler-specific replay pipeline.
-8. Scheduler behavior remains compatible with current execution engine selection rather than binding scheduling to one engine.
+1. due schedule 会 dispatch 一个正常 runtime run，并持久化一个新的 session。
+2. scheduled runs 会按顺序发出正常的 session-scoped runtime event sequence。
+3. 一个请求 approval 的 scheduled run 会成为正常的 `waiting` session，并能通过现有 approval path 恢复。
+4. 一个失败的 scheduled run 会成为正常的 `failed` session，且不会破坏 scheduler state。
+5. single-flight overlap policy 能阻止同一 schedule 的并发运行。
+6. 本地 scheduler host 重启后，默认不会回放无界 backlog 的 missed fires。
+7. session replay 足以检查 scheduled execution，而不需要额外的 scheduler-specific replay pipeline。
+8. scheduler 行为与当前 execution engine selection 兼容，而不会被绑定到单一 engine 上。
 
-Appropriate verification homes would likely include runtime-focused unit tests plus integration coverage around storage, dispatch, approval continuity, and replay.
+合适的验证落点，大概率仍然是 runtime-focused unit tests，以及围绕 storage、dispatch、approval continuity 和 replay 的 integration coverage。
 
-## Open Questions
+## 开放问题
 
-The following questions are intentionally left open for later implementation work or follow-on design:
+以下问题有意保留给后续实现或 follow-on design：
 
-1. What exact schedule expression format should Phase 1 support first?
-2. Where should the local scheduler host entrypoint live: a dedicated command, a `serve`-adjacent mode, or another runtime-owned host surface?
-3. How much scheduler-specific metadata should become part of stable client contracts in the first implementation slice?
-4. Should dispatch-level scheduler failures surface only through schedule state, or also through additive runtime events?
-5. When multi-host or daemonized operation becomes necessary, should SQLite-based claims be sufficient, or will a stronger coordination model be required?
+1. Phase 1 最先支持的 schedule expression format 应该是什么？
+2. 本地 scheduler host entrypoint 应放在哪里：独立 command、`serve` 邻近模式，还是另一个 runtime-owned host surface？
+3. 在第一版实现中，有多少 scheduler-specific metadata 需要进入稳定的 client contracts？
+4. dispatch-level scheduler failures 只通过 schedule state 暴露就够了，还是也要发出 additive runtime events？
+5. 当 multi-host 或 daemonized operation 真正成为需求时，基于 SQLite 的 claims 是否足够，还是需要更强的 coordination model？
 
-## Summary
+## 总结
 
-The correct first scheduler design for VoidCode is a **runtime-owned, internal-scheduler-first** model that dispatches **normal runtime runs** into **fresh sessions**, while keeping approvals, replay, checkpoints, and execution truth exactly where they already belong: inside the runtime/session boundary.
+对 VoidCode 来说，第一版正确的 scheduler 设计应当是一个 **runtime-owned、internal-scheduler-first** 的模型：它把 **正常的 runtime runs** dispatch 到 **fresh sessions** 中，同时让 approval、replay、checkpoints 以及 execution truth 都继续留在它们当前已经归属的位置——也就是 runtime/session boundary 内部。
 
-That keeps the design close to the current architecture, avoids inventing a second execution model, and creates a credible path toward Claude Code style scheduled runs without breaking the control-plane principles already established in this repository.
+这样做能让设计尽量贴近当前架构，避免再发明第二套执行模型，也能在不破坏仓库中已经建立的 control-plane 原则的前提下，为 Claude Code 风格的 scheduled runs 提供一条可信的演进路径。
