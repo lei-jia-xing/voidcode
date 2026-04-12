@@ -1044,6 +1044,21 @@ def test_runtime_effective_runtime_config_recovers_persisted_max_steps(tmp_path:
         "execution_engine": "deterministic",
         "max_steps": 7,
         "model": "session/model",
+        "provider_fallback": None,
+        "resolved_provider": {
+            "active_target": {
+                "raw_model": "session/model",
+                "provider": "session",
+                "model": "model",
+            },
+            "targets": [
+                {
+                    "raw_model": "session/model",
+                    "provider": "session",
+                    "model": "model",
+                }
+            ],
+        },
         "lsp": {"mode": "disabled", "configured_enabled": False, "servers": []},
         "acp": {
             "mode": "disabled",
@@ -1163,6 +1178,8 @@ def test_runtime_effective_runtime_config_uses_request_metadata_max_steps_for_ne
         "approval_mode": "ask",
         "execution_engine": "deterministic",
         "max_steps": 2,
+        "provider_fallback": None,
+        "resolved_provider": None,
         "lsp": {"mode": "disabled", "configured_enabled": False, "servers": []},
         "acp": {
             "mode": "disabled",
@@ -1424,7 +1441,103 @@ def test_runtime_effective_runtime_config_treats_missing_persisted_provider_fall
     assert effective.approval_mode == "allow"
     assert effective.execution_engine == "single_agent"
     assert effective.model == "opencode/gpt-5.4"
-    assert effective.provider_fallback is None
+    assert effective.provider_fallback == RuntimeProviderFallbackConfig(
+        preferred_model="opencode/gpt-5.4",
+        fallback_models=("opencode/gpt-5.3", "custom/demo"),
+    )
+
+
+def test_runtime_persists_resolved_provider_snapshot_in_runtime_metadata(tmp_path: Path) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("resolved provider config\n", encoding="utf-8")
+
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            approval_mode="allow",
+            execution_engine="single_agent",
+            model="opencode/gpt-5.4",
+            provider_fallback=RuntimeProviderFallbackConfig(
+                preferred_model="opencode/gpt-5.4",
+                fallback_models=("custom/demo",),
+            ),
+        ),
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="read sample.txt", session_id="resolved-provider"))
+
+    runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
+    assert runtime_config["resolved_provider"] == {
+        "active_target": {
+            "raw_model": "opencode/gpt-5.4",
+            "provider": "opencode",
+            "model": "gpt-5.4",
+        },
+        "targets": [
+            {
+                "raw_model": "opencode/gpt-5.4",
+                "provider": "opencode",
+                "model": "gpt-5.4",
+            },
+            {
+                "raw_model": "custom/demo",
+                "provider": "custom",
+                "model": "demo",
+            },
+        ],
+    }
+
+
+def test_runtime_effective_runtime_config_rejects_malformed_persisted_provider_fallback(
+    tmp_path: Path,
+) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("bad fallback\n", encoding="utf-8")
+
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            approval_mode="allow",
+            execution_engine="single_agent",
+            model="opencode/gpt-5.4",
+            provider_fallback=RuntimeProviderFallbackConfig(
+                preferred_model="opencode/gpt-5.4",
+                fallback_models=("custom/demo",),
+            ),
+        ),
+    )
+    _ = runtime.run(
+        RuntimeRequest(prompt="read sample.txt", session_id="malformed-provider-fallback")
+    )
+
+    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    connection = sqlite3.connect(database_path)
+    try:
+        row = connection.execute(
+            "SELECT metadata_json FROM sessions WHERE session_id = ?",
+            ("malformed-provider-fallback",),
+        ).fetchone()
+        assert row is not None
+        metadata = json.loads(str(row[0]))
+        assert isinstance(metadata, dict)
+        metadata_dict = cast(dict[str, object], metadata)
+        runtime_config = cast(dict[str, object], metadata_dict["runtime_config"])
+        runtime_config["provider_fallback"] = {
+            "preferred_model": "opencode/gpt-5.4",
+            "fallback_models": ["custom/demo", 7],
+        }
+        _ = connection.execute(
+            "UPDATE sessions SET metadata_json = ? WHERE session_id = ?",
+            (json.dumps(metadata_dict, sort_keys=True), "malformed-provider-fallback"),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    resumed_runtime = VoidCodeRuntime(workspace=tmp_path, config=RuntimeConfig())
+
+    with pytest.raises(ValueError, match="invalid provider config"):
+        _ = resumed_runtime.effective_runtime_config(session_id="malformed-provider-fallback")
 
 
 def test_runtime_resume_preserves_provider_attempt_and_target_across_pending_approval(

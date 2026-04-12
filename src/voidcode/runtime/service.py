@@ -18,6 +18,8 @@ from .config import (
     RuntimeConfig,
     RuntimeProviderFallbackConfig,
     load_runtime_config,
+    parse_provider_fallback_payload,
+    serialize_provider_fallback_config,
 )
 from .context_window import ContextWindowPolicy, RuntimeContextWindow, prepare_single_agent_context
 from .contracts import RuntimeRequest, RuntimeResponse, RuntimeStreamChunk, validate_session_id
@@ -37,9 +39,11 @@ from .lsp import LspManager, LspManagerState, LspRequest, LspRequestResult, buil
 from .model_provider import (
     ModelProviderRegistry,
     ResolvedProviderChain,
+    ResolvedProviderConfig,
     ResolvedProviderModel,
-    resolve_provider_chain,
-    resolve_provider_model,
+    parse_resolved_provider_snapshot,
+    resolve_provider_config,
+    resolved_provider_snapshot,
 )
 from .permission import (
     PendingApproval,
@@ -48,7 +52,12 @@ from .permission import (
     PermissionResolution,
     resolve_permission,
 )
-from .provider_errors import SingleAgentContextLimitError, classify_provider_error
+from .provider_errors import (
+    SingleAgentContextLimitError,
+    classify_provider_error,
+    format_fallback_exhausted_error,
+    format_invalid_provider_config_error,
+)
 from .session import SessionRef, SessionState, SessionStatus, StoredSessionSummary
 from .single_agent_provider import ProviderExecutionError
 from .skills import SkillRegistry, SkillRuntimeContext
@@ -145,14 +154,13 @@ class VoidCodeRuntime:
         self._model_provider_registry = (
             model_provider_registry or ModelProviderRegistry.with_defaults()
         )
-        self._provider_model = resolve_provider_model(
+        self._resolved_provider_config = resolve_provider_config(
             self._config.model,
-            registry=self._model_provider_registry,
-        )
-        self._provider_chain = resolve_provider_chain(
             self._config.provider_fallback,
             registry=self._model_provider_registry,
         )
+        self._provider_model = self._resolved_provider_config.active_target
+        self._provider_chain = self._resolved_provider_config.target_chain
         self._lsp_manager = lsp_manager or build_lsp_manager(self._config.lsp)
         self._tool_registry = tool_registry or ToolRegistry.with_defaults(
             lsp_tool=self._build_lsp_tool()
@@ -166,6 +174,7 @@ class VoidCodeRuntime:
                 execution_engine=self._config.execution_engine,
                 max_steps=self._config.max_steps,
                 provider_fallback=self._config.provider_fallback,
+                resolved_provider=self._resolved_provider_config,
             )
         )
         self._permission_policy = permission_policy or PermissionPolicy(
@@ -224,23 +233,7 @@ class VoidCodeRuntime:
             return self._graph_cache[cache_key]
 
         # Build new graph and cache it
-        if config.provider_fallback is not None:
-            provider_chain = resolve_provider_chain(
-                config.provider_fallback,
-                registry=self._model_provider_registry,
-            )
-            provider_model = provider_chain.preferred
-            self._provider_chain = provider_chain
-        else:
-            provider_model = resolve_provider_model(
-                config.model,
-                registry=self._model_provider_registry,
-            )
-            self._provider_chain = ResolvedProviderChain(
-                preferred=provider_model,
-                all_targets=((provider_model,) if provider_model.provider is not None else ()),
-            )
-        self._provider_model = provider_model
+        provider_model = config.resolved_provider.active_target
         graph = self._build_graph_for_engine(
             config.execution_engine,
             provider_model,
@@ -265,6 +258,7 @@ class VoidCodeRuntime:
                 execution_engine=resolved.execution_engine,
                 max_steps=request_max_steps,
                 provider_fallback=resolved.provider_fallback,
+                resolved_provider=resolved.resolved_provider,
             )
         return resolved
 
@@ -598,6 +592,23 @@ class VoidCodeRuntime:
                             },
                         )
                         continue
+                    if exc.kind in {"rate_limit", "invalid_model", "transient_failure"}:
+                        yield self._failed_chunk(
+                            session=session,
+                            sequence=sequence + 1,
+                            error=format_fallback_exhausted_error(
+                                provider_name=exc.provider_name,
+                                model_name=exc.model_name,
+                                attempt=next_attempt,
+                            ),
+                            payload={
+                                "provider_error_kind": exc.kind,
+                                "provider": exc.provider_name,
+                                "model": exc.model_name,
+                                "fallback_exhausted": True,
+                            },
+                        )
+                        return
                 if isinstance(exc, ProviderExecutionError):
                     yield self._failed_chunk(
                         session=session,
@@ -1567,14 +1578,13 @@ class VoidCodeRuntime:
             "approval_mode": effective_config.approval_mode,
             "execution_engine": effective_config.execution_engine,
             "max_steps": effective_config.max_steps,
+            "provider_fallback": serialize_provider_fallback_config(
+                effective_config.provider_fallback
+            ),
+            "resolved_provider": resolved_provider_snapshot(effective_config.resolved_provider),
         }
         if effective_config.model is not None:
             runtime_config_metadata["model"] = effective_config.model
-        if effective_config.provider_fallback is not None:
-            runtime_config_metadata["provider_fallback"] = {
-                "preferred_model": effective_config.provider_fallback.preferred_model,
-                "fallback_models": list(effective_config.provider_fallback.fallback_models),
-            }
         lsp_state = self._lsp_manager.current_state()
         runtime_config_metadata["lsp"] = {
             "mode": lsp_state.mode,
@@ -1684,6 +1694,7 @@ class VoidCodeRuntime:
         execution_engine = self._config.execution_engine
         max_steps = self._config.max_steps
         provider_fallback = self._config.provider_fallback
+        resolved_provider = self._resolved_provider_config
         if metadata is None:
             return EffectiveRuntimeConfig(
                 approval_mode=approval_mode,
@@ -1691,6 +1702,7 @@ class VoidCodeRuntime:
                 execution_engine=execution_engine,
                 max_steps=max_steps,
                 provider_fallback=provider_fallback,
+                resolved_provider=resolved_provider,
             )
 
         persisted_runtime_config = metadata.get("runtime_config")
@@ -1701,6 +1713,7 @@ class VoidCodeRuntime:
                 execution_engine=execution_engine,
                 max_steps=max_steps,
                 provider_fallback=provider_fallback,
+                resolved_provider=resolved_provider,
             )
 
         runtime_config = cast(dict[str, object], persisted_runtime_config)
@@ -1716,42 +1729,51 @@ class VoidCodeRuntime:
                 raise ValueError("persisted runtime_config max_steps must be at least 1")
             max_steps = persisted_max_steps
         provider_fallback = None
-        persisted_provider_fallback = runtime_config.get("provider_fallback")
-        if isinstance(persisted_provider_fallback, dict):
-            payload = cast(dict[str, object], persisted_provider_fallback)
-            preferred_model = payload.get("preferred_model")
-            fallback_models = payload.get("fallback_models")
-            if isinstance(preferred_model, str) and isinstance(fallback_models, list):
-                raw_fallback_models = cast(list[object], fallback_models)
-                parsed_fallback_models = [
-                    item for item in raw_fallback_models if isinstance(item, str)
-                ]
-                if len(parsed_fallback_models) == len(raw_fallback_models):
-                    provider_fallback = RuntimeProviderFallbackConfig(
-                        preferred_model=preferred_model,
-                        fallback_models=tuple(parsed_fallback_models),
+        if "provider_fallback" in runtime_config:
+            try:
+                provider_fallback = parse_provider_fallback_payload(
+                    runtime_config.get("provider_fallback"),
+                    source="persisted runtime_config.provider_fallback",
+                )
+            except ValueError as exc:
+                raise ValueError(
+                    format_invalid_provider_config_error(
+                        "persisted runtime_config.provider_fallback",
+                        str(exc),
                     )
+                ) from exc
         persisted_execution_engine = runtime_config.get("execution_engine")
         if persisted_execution_engine in ("deterministic", "single_agent"):
             execution_engine = persisted_execution_engine
+        raw_resolved_provider = runtime_config.get("resolved_provider")
+        if raw_resolved_provider is not None:
+            resolved_provider = parse_resolved_provider_snapshot(
+                raw_resolved_provider,
+                source="persisted runtime_config.resolved_provider",
+                registry=self._model_provider_registry,
+            )
+            model = resolved_provider.model
+            provider_fallback = resolved_provider.provider_fallback
+        else:
+            resolved_provider = resolve_provider_config(
+                model,
+                provider_fallback,
+                registry=self._model_provider_registry,
+            )
         return EffectiveRuntimeConfig(
             approval_mode=approval_mode,
             model=model,
             execution_engine=execution_engine,
             max_steps=max_steps,
             provider_fallback=provider_fallback,
+            resolved_provider=resolved_provider,
         )
 
     def _provider_chain_for_session_metadata(
         self, metadata: dict[str, object] | None
     ) -> ResolvedProviderChain:
         effective_config = self._effective_runtime_config_from_metadata(metadata)
-        if effective_config.provider_fallback is None:
-            return ResolvedProviderChain()
-        return resolve_provider_chain(
-            effective_config.provider_fallback,
-            registry=self._model_provider_registry,
-        )
+        return effective_config.resolved_provider.target_chain
 
     def _graph_for_session_metadata(self, metadata: dict[str, object] | None) -> RuntimeGraph:
         if self._graph_override is not None:
@@ -1786,6 +1808,7 @@ class EffectiveRuntimeConfig:
     execution_engine: ExecutionEngineName
     max_steps: int
     provider_fallback: RuntimeProviderFallbackConfig | None = None
+    resolved_provider: ResolvedProviderConfig = field(default_factory=ResolvedProviderConfig)
 
 
 @dataclass(frozen=True, slots=True)
