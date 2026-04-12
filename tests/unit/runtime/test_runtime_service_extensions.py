@@ -78,6 +78,27 @@ class _SkillCapturingStubGraph:
         return _StubStep(output=request.prompt, is_finished=True)
 
 
+class _SkillAwareStubGraph:
+    last_request: GraphRunRequest | None = None
+
+    def step(
+        self,
+        request: GraphRunRequest,
+        tool_results: tuple[object, ...],
+        *,
+        session: SessionState,
+    ) -> _StubStep:
+        _ = tool_results, session
+        type(self).last_request = request
+        skill_names = [skill["name"] for skill in request.applied_skills]
+        skill_contents = [skill["content"] for skill in request.applied_skills]
+        if skill_names:
+            output = f"{request.prompt}\n[skills={','.join(skill_names)}]\n{skill_contents[0]}"
+        else:
+            output = request.prompt
+        return _StubStep(output=output, is_finished=True)
+
+
 class _ApprovalThenCaptureSkillGraph:
     last_request: GraphRunRequest | None = None
 
@@ -499,6 +520,83 @@ def test_runtime_persists_explicit_empty_applied_skill_snapshot(tmp_path: Path) 
     assert response.session.metadata["applied_skill_payloads"] == []
     assert _SkillCapturingStubGraph.last_request is not None
     assert _SkillCapturingStubGraph.last_request.applied_skills == ()
+
+
+def test_runtime_skill_payloads_affect_execution_output_when_graph_consumes_them(
+    tmp_path: Path,
+) -> None:
+    skill_dir = tmp_path / ".voidcode" / "skills" / "demo"
+    _write_demo_skill(
+        skill_dir,
+        content="# Demo\nUse concise bullet points.",
+    )
+
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SkillAwareStubGraph(),
+        config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=True)),
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="summarize sample.txt"))
+
+    assert response.output == (
+        "summarize sample.txt\n[skills=demo]\n# Demo\nUse concise bullet points."
+    )
+    assert _SkillAwareStubGraph.last_request is not None
+    assert _SkillAwareStubGraph.last_request.applied_skills == (
+        {
+            "name": "demo",
+            "description": "Demo skill",
+            "content": "# Demo\nUse concise bullet points.",
+        },
+    )
+
+
+def test_runtime_resume_reuses_frozen_skill_payloads_for_execution_semantics(
+    tmp_path: Path,
+) -> None:
+    skill_dir = tmp_path / ".voidcode" / "skills" / "demo"
+    _write_demo_skill(
+        skill_dir,
+        content="# Demo\nUse concise bullet points.",
+    )
+
+    initial_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=True), approval_mode="ask"),
+    )
+
+    waiting = initial_runtime.run(RuntimeRequest(prompt="go", session_id="skill-exec-resume"))
+    approval_request_id = str(waiting.events[-1].payload["request_id"])
+
+    _write_demo_skill(
+        skill_dir,
+        description="Changed skill",
+        content="# Changed\nDo something else.",
+    )
+
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SkillAwareStubGraph(),
+        config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=True), approval_mode="ask"),
+    )
+
+    resumed = resumed_runtime.resume(
+        session_id="skill-exec-resume",
+        approval_request_id=approval_request_id,
+        approval_decision="allow",
+    )
+
+    assert resumed.output == "go\n[skills=demo]\n# Demo\nUse concise bullet points."
+    assert _SkillAwareStubGraph.last_request is not None
+    assert _SkillAwareStubGraph.last_request.applied_skills == (
+        {
+            "name": "demo",
+            "description": "Demo skill",
+            "content": "# Demo\nUse concise bullet points.",
+        },
+    )
 
 
 class _MultiStepStubGraph:
