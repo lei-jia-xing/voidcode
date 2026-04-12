@@ -5,7 +5,6 @@
 - Status: proposed
 - Scope: design-only
 - Target repo: `voidcode`
-- Date: 2026-04-12
 
 ## Context And Motivation
 
