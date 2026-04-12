@@ -4,15 +4,15 @@
   "description": "VoidCode web frontend - AI coding agent interface",
   "type": "module",
   "scripts": {
-    "dev": "bunx --bun vite",
-    "build": "bunx --bun tsc && bunx --bun vite build",
-    "preview": "bunx --bun vite preview",
-    "lint": "bunx eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
-    "format": "bunx prettier --write \"src/**/*.{ts,tsx,css}\"",
-    "typecheck": "bunx tsc --noEmit",
-    "test": "bunx vitest",
-    "test:run": "bunx vitest run",
-    "test:coverage": "bunx vitest run --coverage"
+    "dev": "bun run vite",
+    "build": "bun run tsc && bun run vite build",
+    "preview": "bun run vite preview",
+    "lint": "bun run eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
+    "format": "bun run prettier --write \"src/**/*.{ts,tsx,css}\"",
+    "typecheck": "bun run tsc --noEmit",
+    "test": "bun run vitest",
+    "test:run": "bun run vitest run",
+    "test:coverage": "bun run vitest run --coverage"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.18.0",

@@ -172,3 +172,61 @@ def test_apply_patch_reports_mode_only_change_for_path_with_spaces(tmp_path: Pat
     assert result.data["count"] == 1
     assert result.data["changes"] == [{"path": "space name.sh", "status": "M"}]
     assert result.content == "M space name.sh"
+
+
+def test_apply_patch_does_not_treat_mixed_mode_and_content_patch_as_mode_only(
+    tmp_path: Path,
+) -> None:
+    _init_git_repo(tmp_path)
+    target = tmp_path / "file.txt"
+    target.write_text("line-1\n", encoding="utf-8")
+    _commit_all(tmp_path, "baseline")
+
+    patch_text = "\n".join(
+        [
+            "diff --git a/file.txt b/file.txt",
+            "old mode 100644",
+            "new mode 100755",
+            "--- a/file.txt",
+            "+++ b/file.txt",
+            "@@ -1 +1 @@",
+            "-line-1",
+            "+line-2",
+            "",
+        ]
+    )
+
+    result = ApplyPatchTool().invoke(
+        ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert target.read_text(encoding="utf-8") == "line-2\n"
+    assert result.data["count"] == 1
+    assert result.data["changes"] == [{"path": "file.txt", "status": "M"}]
+    assert result.content == "M file.txt"
+
+
+def test_apply_patch_raises_helpful_error_when_git_is_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        "voidcode.tools.apply_patch.subprocess.run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(FileNotFoundError()),
+    )
+
+    patch_text = "\n".join(
+        [
+            "diff --git a/file.txt b/file.txt",
+            "old mode 100644",
+            "new mode 100755",
+            "",
+        ]
+    )
+
+    with pytest.raises(ValueError, match="git is required for apply_patch"):
+        ApplyPatchTool().invoke(
+            ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
+            workspace=tmp_path,
+        )

@@ -15,6 +15,10 @@ def _assert_within_workspace(workspace: Path, rel_path: Path) -> None:
 
 
 def _strip_diff_prefix(path_text: str) -> str:
+    if path_text.startswith('"a/') and path_text.endswith('"'):
+        return path_text[3:-1]
+    if path_text.startswith('"b/') and path_text.endswith('"'):
+        return path_text[3:-1]
     if path_text.startswith("a/") or path_text.startswith("b/"):
         return path_text[2:]
     return path_text
@@ -42,6 +46,130 @@ def _parse_diff_git_paths(line: str) -> tuple[str, str] | None:
     old_path = line[len(plain_prefix) : split_index]
     new_path = line[split_index + len(" b/") :]
     return old_path, new_path
+
+
+def _format_diff_git_line(old_path: str, new_path: str) -> str:
+    old_token = f'"a/{old_path}"' if " " in old_path or "\t" in old_path else f"a/{old_path}"
+    new_token = f'"b/{new_path}"' if " " in new_path or "\t" in new_path else f"b/{new_path}"
+    return f"diff --git {old_token} {new_token}"
+
+
+def _format_patch_marker_path(prefix: str, path: str) -> str:
+    marker = f"{prefix}/{path}"
+    if " " in path or "\t" in path:
+        return f'"{marker}"'
+    return marker
+
+
+def _normalize_diff_block(header: str, block_lines: list[str]) -> str:
+    diff_paths = _parse_diff_git_paths(header)
+    header_line = header
+    if diff_paths is not None:
+        old_path, new_path = diff_paths
+        header_line = _format_diff_git_line(old_path, new_path)
+
+    has_mode = any(line.startswith("old mode ") for line in block_lines) and any(
+        line.startswith("new mode ") for line in block_lines
+    )
+    has_markers = any(line.startswith("--- ") or line.startswith("+++ ") for line in block_lines)
+    has_hunks = any(line.startswith("@@ ") for line in block_lines)
+
+    if has_mode and not has_markers and not has_hunks and diff_paths is not None:
+        old_path, new_path = diff_paths
+        old_marker = _format_patch_marker_path("a", old_path)
+        new_marker = _format_patch_marker_path("b", new_path)
+        inserted_block: list[str] = []
+        inserted = False
+        for line in block_lines:
+            inserted_block.append(line)
+            if not inserted and line.startswith("new mode "):
+                inserted_block.append(f"--- {old_marker}")
+                inserted_block.append(f"+++ {new_marker}")
+                inserted = True
+        if not inserted:
+            inserted_block.extend([f"--- {old_marker}", f"+++ {new_marker}"])
+        block_lines = inserted_block
+
+    return "\n".join([header_line] + block_lines)
+
+
+def _normalize_patch_text(patch_text: str) -> str:
+    lines = patch_text.splitlines()
+    normalized: list[str] = []
+    current_header: str | None = None
+    current_block: list[str] | None = None
+
+    def flush_block() -> None:
+        nonlocal current_header, current_block
+        if current_header is None or current_block is None:
+            return
+        normalized.append(_normalize_diff_block(current_header, current_block))
+        current_header = None
+        current_block = None
+
+    for line in lines:
+        if line.startswith("diff --git "):
+            flush_block()
+            current_header = line
+            current_block = []
+            continue
+        if current_block is None:
+            normalized.append(line)
+        else:
+            current_block.append(line)
+
+    flush_block()
+    result = "\n".join(normalized)
+    if patch_text.endswith("\n"):
+        result += "\n"
+    return result
+
+
+def _run_git_command(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            args,
+            cwd=str(cwd),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+    except FileNotFoundError as exc:
+        raise ValueError("git is required for apply_patch") from exc
+
+
+def _looks_like_mode_only_patch(patch_text: str) -> bool:
+    inside_diff = False
+    current_block_is_mode_only = False
+    blocks: list[bool] = []
+
+    def flush_block() -> None:
+        nonlocal current_block_is_mode_only
+        if inside_diff:
+            blocks.append(current_block_is_mode_only)
+
+    for line in patch_text.splitlines():
+        if line.startswith("diff --git "):
+            if inside_diff:
+                flush_block()
+            inside_diff = True
+            current_block_is_mode_only = True
+            continue
+        if not inside_diff:
+            continue
+        if line.startswith("old mode ") or line.startswith("new mode "):
+            continue
+        if line.startswith("--- ") or line.startswith("+++ ") or line.startswith("@@ "):
+            current_block_is_mode_only = False
+            continue
+        if line.strip() == "":
+            continue
+        current_block_is_mode_only = False
+
+    if inside_diff:
+        flush_block()
+
+    return bool(blocks) and all(blocks)
 
 
 def _changes_from_patch(patch_text: str) -> list[dict[str, object]]:
@@ -122,30 +250,47 @@ class ApplyPatchTool:
         if not isinstance(patch_text, str):
             raise ValueError("apply_patch requires a string 'patch' argument")
 
+        normalized_patch = _normalize_patch_text(patch_text)
         patch_path = workspace / ".voidcode_apply_patch.patch"
-        patch_path.write_text(patch_text, encoding="utf-8")
+        patch_path.write_text(normalized_patch, encoding="utf-8", newline="\n")
         try:
-            check = subprocess.run(
-                ["git", "apply", "--check", str(patch_path)],
-                cwd=str(workspace),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-            )
+            check = _run_git_command(["git", "apply", "--check", str(patch_path)], workspace)
             if check.returncode != 0:
                 error = check.stdout or "Patch check failed"
+                if _looks_like_mode_only_patch(patch_text):
+                    changes = _changes_from_patch(patch_text)
+                    content = "\n".join(
+                        f"M {c['path']}"
+                        if c.get("status") != "R"
+                        else f"M {c['old_path']} -> {c['path']}"
+                        for c in changes
+                    )
+                    return ToolResult(
+                        tool_name=self.definition.name,
+                        status="ok",
+                        content=content,
+                        data={"changes": changes, "count": len(changes)},
+                    )
                 raise ValueError(error)
 
             # Apply patch
-            apply = subprocess.run(
-                ["git", "apply", str(patch_path)],
-                cwd=str(workspace),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-            )
+            apply = _run_git_command(["git", "apply", str(patch_path)], workspace)
             if apply.returncode != 0:
                 error = apply.stdout or "Patch apply failed"
+                if _looks_like_mode_only_patch(patch_text):
+                    changes = _changes_from_patch(patch_text)
+                    content = "\n".join(
+                        f"M {c['path']}"
+                        if c.get("status") != "R"
+                        else f"M {c['old_path']} -> {c['path']}"
+                        for c in changes
+                    )
+                    return ToolResult(
+                        tool_name=self.definition.name,
+                        status="ok",
+                        content=content,
+                        data={"changes": changes, "count": len(changes)},
+                    )
                 raise ValueError(error)
 
             changes = _changes_from_patch(patch_text)
