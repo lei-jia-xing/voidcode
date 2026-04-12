@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
 
+from ..hook.config import RuntimeFormatterPresetConfig, RuntimeHooksConfig
 from .permission import PermissionDecision
 
 RUNTIME_CONFIG_FILE_NAME = ".voidcode.json"
@@ -18,13 +19,6 @@ _VALID_TUI_COMMANDS = ("command_palette", "session_new", "session_resume")
 type ExecutionEngineName = Literal["deterministic", "single_agent"]
 
 _VALID_EXECUTION_ENGINES: tuple[ExecutionEngineName, ...] = ("deterministic", "single_agent")
-
-
-@dataclass(frozen=True, slots=True)
-class RuntimeHooksConfig:
-    enabled: bool | None = None
-    pre_tool: tuple[tuple[str, ...], ...] = ()
-    post_tool: tuple[tuple[str, ...], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -229,8 +223,50 @@ def _parse_hooks_config(raw_hooks: object) -> RuntimeHooksConfig | None:
 
     pre_tool = _parse_command_list(hooks_payload.get("pre_tool"), field_path="hooks.pre_tool")
     post_tool = _parse_command_list(hooks_payload.get("post_tool"), field_path="hooks.post_tool")
+    formatter_presets: dict[str, RuntimeFormatterPresetConfig] = _parse_formatter_presets_config(
+        hooks_payload.get("formatter_presets"),
+        field_path="hooks.formatter_presets",
+    )
 
-    return RuntimeHooksConfig(enabled=enabled, pre_tool=pre_tool, post_tool=post_tool)
+    return RuntimeHooksConfig(
+        enabled=enabled,
+        pre_tool=pre_tool,
+        post_tool=post_tool,
+        formatter_presets=formatter_presets,
+    )
+
+
+def _parse_formatter_presets_config(
+    raw_value: object, *, field_path: str
+) -> dict[str, RuntimeFormatterPresetConfig]:
+    if raw_value is None:
+        return {}
+    if not isinstance(raw_value, dict):
+        raise ValueError(f"runtime config field '{field_path}' must be an object when provided")
+
+    raw_presets = cast(dict[str, object], raw_value)
+    parsed_presets: dict[str, RuntimeFormatterPresetConfig] = {}
+    for preset_name, raw_preset in raw_presets.items():
+        parsed_presets[preset_name] = _parse_formatter_preset_config(
+            raw_preset,
+            field_path=f"{field_path}.{preset_name}",
+        )
+    return parsed_presets
+
+
+def _parse_formatter_preset_config(
+    raw_value: object, *, field_path: str
+) -> RuntimeFormatterPresetConfig:
+    if not isinstance(raw_value, dict):
+        raise ValueError(f"runtime config field '{field_path}' must be an object")
+
+    preset_payload = cast(dict[str, object], raw_value)
+    command = _parse_string_list(preset_payload.get("command"), field_path=f"{field_path}.command")
+    if not command:
+        raise ValueError(
+            f"runtime config field '{field_path}.command' must contain at least one string"
+        )
+    return RuntimeFormatterPresetConfig(command=command)
 
 
 def _parse_tools_config(raw_tools: object) -> RuntimeToolsConfig | None:
