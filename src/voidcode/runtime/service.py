@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
@@ -63,6 +64,8 @@ from .single_agent_provider import ProviderExecutionError
 from .skills import SkillRegistry, SkillRuntimeContext
 from .storage import SessionStore, SqliteSessionStore
 from .tool_provider import BuiltinToolProvider
+
+logger = logging.getLogger(__name__)
 
 
 @runtime_checkable
@@ -544,6 +547,19 @@ class VoidCodeRuntime:
                         exc.kind in {"rate_limit", "invalid_model", "transient_failure"}
                         and next_target is not None
                     ):
+                        logger.info(
+                            (
+                                "provider fallback for session %s: %s/%s -> %s/%s "
+                                "(reason=%s, attempt=%s)"
+                            ),
+                            session.session.id,
+                            exc.provider_name,
+                            exc.model_name,
+                            next_target.selection.provider,
+                            next_target.selection.model,
+                            exc.kind,
+                            next_attempt,
+                        )
                         sequence += 1
                         yield RuntimeStreamChunk(
                             kind="event",

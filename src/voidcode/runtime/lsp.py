@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import select
 import subprocess
@@ -21,6 +22,8 @@ from ..lsp import (
     resolve_lsp_server_configs,
 )
 from .config import RuntimeLspConfig
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -227,6 +230,13 @@ class ManagedLspManager:
             )
         except (FileNotFoundError, OSError) as exc:
             message = f"failed to start LSP server {server_name}: {exc}"
+            logger.error(
+                "failed to start LSP server %s in %s with command %s: %s",
+                server_name,
+                workspace_root,
+                list(server_config.command),
+                exc,
+            )
             self._mark_failed(server_name=server_name, error=message)
             self._record_event(
                 self._failed_event(
@@ -242,6 +252,12 @@ class ManagedLspManager:
             process.kill()
             process.wait(timeout=1)
             message = f"failed to start LSP server {server_name}: missing stdio pipe"
+            logger.error(
+                "failed to start LSP server %s in %s with command %s: missing stdio pipe",
+                server_name,
+                workspace_root,
+                list(server_config.command),
+            )
             self._mark_failed(server_name=server_name, error=message)
             self._record_event(
                 self._failed_event(
