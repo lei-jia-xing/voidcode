@@ -1,25 +1,25 @@
 # `voidcode.provider`
 
-Capability-layer home for provider/model resolution contracts, provider registries, fallback semantics, and reusable provider configuration helpers.
+这里是 provider 能力层的预期目录，用来承载 provider/model 解析契约、provider 注册中心、fallback 语义以及可复用的 provider 配置辅助逻辑。
 
-## Owns
+## 负责什么
 
-- provider and model reference schemas
-- resolved provider config models
-- provider registry and fallback resolution helpers
-- provider-specific config validation that is independent of runtime session state
+- provider 和 model 引用 schema
+- resolved provider config 模型
+- provider registry 与 fallback 解析辅助逻辑
+- 不依赖 runtime session 状态的 provider 配置校验
 
-## Does not own
+## 不负责什么
 
-- graph execution orchestration
-- runtime retry loops and provider attempt state
-- session metadata persistence
-- runtime error/event routing
+- graph 执行编排
+- runtime 重试循环和 provider attempt 状态
+- session metadata 持久化
+- runtime 错误与事件路由
 
-## Runtime boundary
+## 与 runtime 的边界
 
-Runtime continues to own effective provider config resolution in-session, provider attempt tracking, and fallback execution flow. This package is the intended home for the pure provider-control-plane primitives that runtime consumes.
+runtime 继续持有 session 内的生效 provider config 解析、provider attempt 跟踪以及 fallback 执行流程。这个包的目标是承载那些可被 runtime 消费的纯 provider control-plane 原语。
 
-## Current status
+## 当前状态
 
-The active implementation is still split across `src/voidcode/runtime/model_provider.py`, `src/voidcode/runtime/provider_errors.py`, and `src/voidcode/runtime/service.py`.
+现有实现仍然分散在 `src/voidcode/runtime/model_provider.py`、`src/voidcode/runtime/provider_errors.py` 和 `src/voidcode/runtime/service.py` 中。

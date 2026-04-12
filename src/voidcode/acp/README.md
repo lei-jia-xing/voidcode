@@ -1,24 +1,24 @@
 # `voidcode.acp`
 
-Capability-layer home for ACP request/response contracts, config schemas, and reusable adapter-facing models when ACP semantics become stable enough to stand on their own.
+这里是 ACP 能力层的预期目录。当 ACP 的语义足够稳定、能够独立站住时，这里可以承载 ACP 请求/响应契约、配置 schema 和可复用的 adapter-facing 模型。
 
-## Owns
+## 负责什么
 
-- ACP envelope and state model definitions that are not runtime-coupled
-- reusable ACP configuration schema helpers
-- stable protocol contracts for ACP integrations
+- 不与 runtime 强绑定的 ACP envelope 和状态模型定义
+- 可复用的 ACP 配置 schema 辅助逻辑
+- 稳定的 ACP 集成协议契约
 
-## Does not own
+## 不负责什么
 
-- connection lifecycle management
-- runtime-managed availability state
-- session persistence and resume behavior
-- runtime event emission and recovery flow
+- 连接生命周期管理
+- runtime 管理的可用性状态
+- session 持久化与 resume 行为
+- runtime 事件发射与恢复流程
 
-## Runtime boundary
+## 与 runtime 的边界
 
-`src/voidcode/runtime/acp.py` remains the runtime-managed control plane. ACP should only move into this package when its pure contracts and schemas can be separated cleanly from runtime lifecycle ownership.
+`src/voidcode/runtime/acp.py` 仍然是 runtime 管理的控制面。只有当 ACP 的纯契约与 schema 能够干净地从 runtime 生命周期 ownership 中分离出来时，才适合把更多实现迁入这个包。
 
-## Current status
+## 当前状态
 
-This directory is a placeholder for a future capability layer. The current implementation still lives in `src/voidcode/runtime/acp.py`.
+这个目录目前只是未来能力层的占位。现有实现仍然位于 `src/voidcode/runtime/acp.py`。
