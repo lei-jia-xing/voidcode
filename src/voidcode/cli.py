@@ -8,9 +8,10 @@ from pathlib import Path
 from typing import Protocol, cast
 
 from . import __version__
-from .runtime.config import load_runtime_config
+from .runtime.config import load_runtime_config, serialize_provider_fallback_config
 from .runtime.contracts import RuntimeRequest, RuntimeStreamChunk
 from .runtime.events import EventEnvelope
+from .runtime.model_provider import resolved_provider_snapshot
 from .runtime.permission import PermissionDecision, PermissionResolution
 from .runtime.service import VoidCodeRuntime
 from .runtime.session import SessionState, StoredSessionSummary
@@ -235,6 +236,12 @@ def _handle_config_show_command(args: argparse.Namespace) -> int:
                 "model": effective_config.model,
                 "execution_engine": effective_config.execution_engine,
                 "max_steps": effective_config.max_steps,
+                "provider_fallback": serialize_provider_fallback_config(
+                    getattr(effective_config, "provider_fallback", None)
+                ),
+                "resolved_provider": resolved_provider_snapshot(
+                    getattr(effective_config, "resolved_provider", None)
+                ),
             }
         )
     )

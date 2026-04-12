@@ -820,6 +820,21 @@ def test_config_show_outputs_workspace_effective_config() -> None:
         "model": "repo/model",
         "execution_engine": "deterministic",
         "max_steps": 4,
+        "provider_fallback": None,
+        "resolved_provider": {
+            "active_target": {
+                "raw_model": "repo/model",
+                "provider": "repo",
+                "model": "model",
+            },
+            "targets": [
+                {
+                    "raw_model": "repo/model",
+                    "provider": "repo",
+                    "model": "model",
+                }
+            ],
+        },
     }
     assert "Traceback" not in result.stderr
 
@@ -864,6 +879,21 @@ def test_config_show_outputs_resumed_session_effective_config() -> None:
         "model": "repo/model",
         "execution_engine": "deterministic",
         "max_steps": 4,
+        "provider_fallback": None,
+        "resolved_provider": {
+            "active_target": {
+                "raw_model": "repo/model",
+                "provider": "repo",
+                "model": "model",
+            },
+            "targets": [
+                {
+                    "raw_model": "repo/model",
+                    "provider": "repo",
+                    "model": "model",
+                }
+            ],
+        },
     }
     assert "Traceback" not in result.stderr
 
@@ -875,6 +905,21 @@ def test_config_show_delegates_to_runtime_effective_config(capsys: Any) -> None:
         model="runtime/model",
         execution_engine="deterministic",
         max_steps=9,
+        provider_fallback=None,
+        resolved_provider={
+            "active_target": {
+                "raw_model": "runtime/model",
+                "provider": "runtime",
+                "model": "model",
+            },
+            "targets": [
+                {
+                    "raw_model": "runtime/model",
+                    "provider": "runtime",
+                    "model": "model",
+                }
+            ],
+        },
     )
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -908,6 +953,21 @@ def test_config_show_delegates_to_runtime_effective_config(capsys: Any) -> None:
                 "model": "runtime/model",
                 "execution_engine": "deterministic",
                 "max_steps": 9,
+                "provider_fallback": None,
+                "resolved_provider": {
+                    "active_target": {
+                        "raw_model": "runtime/model",
+                        "provider": "runtime",
+                        "model": "model",
+                    },
+                    "targets": [
+                        {
+                            "raw_model": "runtime/model",
+                            "provider": "runtime",
+                            "model": "model",
+                        }
+                    ],
+                },
             }
         )
         + "\n"

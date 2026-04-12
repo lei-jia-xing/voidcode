@@ -1039,6 +1039,21 @@ def test_single_agent_runtime_executes_read_path_and_persists_config(tmp_path: P
         "max_steps": 4,
         "lsp": {"configured_enabled": False, "mode": "disabled", "servers": []},
         "model": "opencode/gpt-5.4",
+        "provider_fallback": None,
+        "resolved_provider": {
+            "active_target": {
+                "raw_model": "opencode/gpt-5.4",
+                "provider": "opencode",
+                "model": "gpt-5.4",
+            },
+            "targets": [
+                {
+                    "raw_model": "opencode/gpt-5.4",
+                    "provider": "opencode",
+                    "model": "gpt-5.4",
+                }
+            ],
+        },
     }
     assert result.events[3].payload["mode"] == "single_agent"
     assert replay.output == result.output
@@ -1554,6 +1569,21 @@ def test_runtime_resume_uses_persisted_runtime_config_over_fresh_resume_override
         "max_steps": 4,
         "lsp": {"configured_enabled": False, "mode": "disabled", "servers": []},
         "model": "session/model",
+        "provider_fallback": None,
+        "resolved_provider": {
+            "active_target": {
+                "raw_model": "session/model",
+                "provider": "session",
+                "model": "model",
+            },
+            "targets": [
+                {
+                    "raw_model": "session/model",
+                    "provider": "session",
+                    "model": "model",
+                }
+            ],
+        },
     }
 
 
