@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -200,10 +201,10 @@ class ManagedMcpManager:
             list(server_config.command),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
             text=True,
             cwd=workspace.resolve(),
-            env={**server_config.env},
+            env={**os.environ, **server_config.env},
             bufsize=1,
         )
         if process.stdin is None or process.stdout is None:
@@ -262,28 +263,35 @@ class ManagedMcpManager:
             raise ValueError("MCP server stdio is unavailable")
 
         self._next_id += 1
-        payload: dict[str, object] = {"jsonrpc": "2.0", "id": self._next_id, "method": method}
+        request_id = self._next_id
+        payload: dict[str, object] = {"jsonrpc": "2.0", "id": request_id, "method": method}
         if params is not None:
             payload["params"] = params
         running.process.stdin.write(json.dumps(payload) + "\n")
         running.process.stdin.flush()
 
-        line = running.process.stdout.readline()
-        if not line:
-            raise ValueError("MCP server closed stdout before responding")
-        response = json.loads(line)
-        if not isinstance(response, dict):
-            raise ValueError("MCP server returned non-object response")
-        response_payload = cast(dict[str, object], response)
-        error_obj = response_payload.get("error")
-        if isinstance(error_obj, dict):
-            error_payload = cast(dict[str, object], error_obj)
-            message = error_payload.get("message")
-            raise ValueError(
-                str(message) if isinstance(message, str) else f"MCP error: {error_obj}"
-            )
-        result = response_payload.get("result")
-        return cast(dict[str, object], result if isinstance(result, dict) else {})
+        while True:
+            line = running.process.stdout.readline()
+            if not line:
+                raise ValueError("MCP server closed stdout before responding")
+            try:
+                response = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"MCP server returned invalid JSON: {exc}") from exc
+            if not isinstance(response, dict):
+                raise ValueError("MCP server returned non-object response")
+            response_payload = cast(dict[str, object], response)
+            if response_payload.get("id") != request_id:
+                continue
+            error_obj = response_payload.get("error")
+            if isinstance(error_obj, dict):
+                error_payload = cast(dict[str, object], error_obj)
+                message = error_payload.get("message")
+                raise ValueError(
+                    str(message) if isinstance(message, str) else f"MCP error: {error_obj}"
+                )
+            result = response_payload.get("result")
+            return cast(dict[str, object], result if isinstance(result, dict) else {})
 
     def _stop_running_server(self, server_name: str) -> None:
         running = self._running_servers.pop(server_name, None)

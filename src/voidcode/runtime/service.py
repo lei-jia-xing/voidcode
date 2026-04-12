@@ -31,6 +31,8 @@ from .events import (
     RUNTIME_LSP_SERVER_FAILED,
     RUNTIME_LSP_SERVER_STARTED,
     RUNTIME_LSP_SERVER_STOPPED,
+    RUNTIME_MCP_SERVER_STARTED,
+    RUNTIME_MCP_SERVER_STOPPED,
     RUNTIME_MEMORY_REFRESHED,
     RUNTIME_SKILLS_APPLIED,
     RUNTIME_SKILLS_LOADED,
@@ -202,6 +204,7 @@ class VoidCodeRuntime:
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
         _ = exc_type, exc, tb
         _ = self.disconnect_acp()
+        _ = self.shutdown_mcp()
         _ = self.shutdown_lsp()
 
     @staticmethod
@@ -341,6 +344,13 @@ class VoidCodeRuntime:
             tool_name=tool_name,
             arguments=arguments,
             workspace=workspace,
+        )
+
+    def shutdown_mcp(self) -> tuple[EventEnvelope, ...]:
+        return self._envelopes_for_mcp_events(
+            session_id="runtime",
+            start_sequence=1,
+            mcp_events=self._mcp_manager.shutdown(),
         )
 
     def shutdown_lsp(self) -> tuple[EventEnvelope, ...]:
@@ -828,6 +838,13 @@ class VoidCodeRuntime:
             try:
                 tool_result = tool.invoke(plan_tool_call, workspace=self._workspace)
             except Exception as exc:
+                for mcp_event in self._envelopes_for_mcp_events(
+                    session_id=session.session.id,
+                    start_sequence=sequence + 1,
+                    mcp_events=self._mcp_manager.drain_events(),
+                ):
+                    sequence = mcp_event.sequence
+                    yield RuntimeStreamChunk(kind="event", session=session, event=mcp_event)
                 for lsp_event in self._envelopes_for_lsp_events(
                     session_id=session.session.id,
                     start_sequence=sequence + 1,
@@ -837,6 +854,14 @@ class VoidCodeRuntime:
                     yield RuntimeStreamChunk(kind="event", session=session, event=lsp_event)
                 yield self._failed_chunk(session=session, sequence=sequence + 1, error=str(exc))
                 raise
+
+            for mcp_event in self._envelopes_for_mcp_events(
+                session_id=session.session.id,
+                start_sequence=sequence + 1,
+                mcp_events=self._mcp_manager.drain_events(),
+            ):
+                sequence = mcp_event.sequence
+                yield RuntimeStreamChunk(kind="event", session=session, event=mcp_event)
 
             for lsp_event in self._envelopes_for_lsp_events(
                 session_id=session.session.id,
@@ -1655,6 +1680,12 @@ class VoidCodeRuntime:
             "available": acp_state.available,
             "last_error": acp_state.last_error,
         }
+        mcp_state = self._mcp_manager.current_state()
+        runtime_config_metadata["mcp"] = {
+            "mode": mcp_state.mode,
+            "configured_enabled": mcp_state.configuration.configured_enabled,
+            "servers": list(mcp_state.configuration.servers),
+        }
         return runtime_config_metadata
 
     @staticmethod
@@ -1708,6 +1739,41 @@ class VoidCodeRuntime:
         envelopes: list[EventEnvelope] = []
         sequence = start_sequence
         for raw_event in acp_events:
+            if isinstance(raw_event, dict):
+                raw_event_dict = cast(dict[str, object], raw_event)
+                event_type = raw_event_dict.get("event_type")
+                payload = raw_event_dict.get("payload")
+            else:
+                event_type = getattr(raw_event, "event_type", None)
+                payload = getattr(raw_event, "payload", None)
+            if event_type not in known_event_types or not isinstance(payload, dict):
+                continue
+            envelopes.append(
+                EventEnvelope(
+                    session_id=session_id,
+                    sequence=sequence,
+                    event_type=cast(str, event_type),
+                    source="runtime",
+                    payload=cast(dict[str, object], payload),
+                )
+            )
+            sequence += 1
+        return tuple(envelopes)
+
+    @staticmethod
+    def _envelopes_for_mcp_events(
+        *,
+        session_id: str,
+        start_sequence: int,
+        mcp_events: tuple[object, ...],
+    ) -> tuple[EventEnvelope, ...]:
+        known_event_types = {
+            RUNTIME_MCP_SERVER_STARTED,
+            RUNTIME_MCP_SERVER_STOPPED,
+        }
+        envelopes: list[EventEnvelope] = []
+        sequence = start_sequence
+        for raw_event in mcp_events:
             if isinstance(raw_event, dict):
                 raw_event_dict = cast(dict[str, object], raw_event)
                 event_type = raw_event_dict.get("event_type")

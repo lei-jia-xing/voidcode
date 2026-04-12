@@ -136,3 +136,229 @@ def test_disabled_mcp_manager_rejects_tool_listing(tmp_path: Path) -> None:
         assert str(exc) == "MCP runtime support is disabled"
     else:
         raise AssertionError("expected MCP manager to reject listing while disabled")
+
+
+def test_mcp_manager_matches_jsonrpc_response_ids_when_notifications_interleave(
+    tmp_path: Path,
+) -> None:
+    server_script = tmp_path / "interleaved_mcp_server.py"
+    server_script.write_text(
+        r"""
+from __future__ import annotations
+
+import json
+import sys
+
+
+def send(message: dict[str, object]) -> None:
+    sys.stdout.write(json.dumps(message) + "\n")
+    sys.stdout.flush()
+
+
+for raw_line in sys.stdin:
+    line = raw_line.strip()
+    if not line:
+        continue
+    message = json.loads(line)
+    method = message.get("method")
+    if method == "initialize":
+        send(
+            {
+                "jsonrpc": "2.0",
+                "method": "notifications/message",
+                "params": {"text": "warming up"},
+            }
+        )
+        send(
+            {
+                "jsonrpc": "2.0",
+                "id": message["id"],
+                "result": {
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {"tools": {}},
+                    "serverInfo": {"name": "echo-mcp", "version": "0.1.0"},
+                },
+            }
+        )
+        continue
+    if method == "notifications/initialized":
+        continue
+    if method == "tools/list":
+        send(
+            {
+                "jsonrpc": "2.0",
+                "method": "notifications/message",
+                "params": {"text": "listing"},
+            }
+        )
+        send(
+            {
+                "jsonrpc": "2.0",
+                "id": message["id"],
+                "result": {
+                    "tools": [
+                        {
+                            "name": "echo",
+                            "description": "Echo the text argument.",
+                            "inputSchema": {"type": "object"},
+                        }
+                    ]
+                },
+            }
+        )
+        continue
+    if method == "tools/call":
+        send(
+            {
+                "jsonrpc": "2.0",
+                "method": "notifications/message",
+                "params": {"text": "calling"},
+            }
+        )
+        send(
+            {
+                "jsonrpc": "2.0",
+                "id": message["id"],
+                "result": {
+                    "content": [{"type": "text", "text": "echo:ok"}],
+                    "isError": False,
+                },
+            }
+        )
+        continue
+""",
+        encoding="utf-8",
+    )
+
+    config = RuntimeMcpConfig(
+        enabled=True,
+        servers={
+            "echo": RuntimeMcpServerConfig(
+                transport="stdio",
+                command=(sys.executable, str(server_script)),
+            )
+        },
+    )
+
+    manager = build_mcp_manager(config)
+
+    discovered = manager.list_tools(workspace=tmp_path)
+
+    assert [tool.tool_name for tool in discovered] == ["echo"]
+
+    result = manager.call_tool(
+        server_name="echo",
+        tool_name="echo",
+        arguments={},
+        workspace=tmp_path,
+    )
+
+    assert result.content == [{"type": "text", "text": "echo:ok"}]
+
+
+def test_mcp_manager_inherits_parent_environment_for_server_process(tmp_path: Path) -> None:
+    server_script = tmp_path / "env_mcp_server.py"
+    server_script.write_text(
+        r"""
+from __future__ import annotations
+
+import json
+import os
+import sys
+
+
+def send(message: dict[str, object]) -> None:
+    sys.stdout.write(json.dumps(message) + "\n")
+    sys.stdout.flush()
+
+
+for raw_line in sys.stdin:
+    line = raw_line.strip()
+    if not line:
+        continue
+    message = json.loads(line)
+    method = message.get("method")
+    if method == "initialize":
+        send(
+            {
+                "jsonrpc": "2.0",
+                "id": message["id"],
+                "result": {
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {"tools": {}},
+                    "serverInfo": {"name": "env-mcp", "version": "0.1.0"},
+                },
+            }
+        )
+        continue
+    if method == "notifications/initialized":
+        continue
+    if method == "tools/list":
+        send(
+            {
+                "jsonrpc": "2.0",
+                "id": message["id"],
+                "result": {
+                    "tools": [
+                        {
+                            "name": "inspect_env",
+                            "description": "Inspect inherited environment.",
+                            "inputSchema": {"type": "object"},
+                        }
+                    ]
+                },
+            }
+        )
+        continue
+    if method == "tools/call":
+        send(
+            {
+                "jsonrpc": "2.0",
+                "id": message["id"],
+                "result": {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": os.environ.get("VOIDCODE_TEST_PARENT_ENV", "missing"),
+                        }
+                    ],
+                    "isError": False,
+                },
+            }
+        )
+        continue
+""",
+        encoding="utf-8",
+    )
+
+    config = RuntimeMcpConfig(
+        enabled=True,
+        servers={
+            "env": RuntimeMcpServerConfig(
+                transport="stdio",
+                command=(sys.executable, str(server_script)),
+            )
+        },
+    )
+
+    manager = build_mcp_manager(config)
+
+    import os
+
+    previous = os.environ.get("VOIDCODE_TEST_PARENT_ENV")
+    os.environ["VOIDCODE_TEST_PARENT_ENV"] = "inherited"
+    try:
+        _ = manager.list_tools(workspace=tmp_path)
+        result = manager.call_tool(
+            server_name="env",
+            tool_name="inspect_env",
+            arguments={},
+            workspace=tmp_path,
+        )
+    finally:
+        if previous is None:
+            del os.environ["VOIDCODE_TEST_PARENT_ENV"]
+        else:
+            os.environ["VOIDCODE_TEST_PARENT_ENV"] = previous
+
+    assert result.content == [{"type": "text", "text": "inherited"}]
