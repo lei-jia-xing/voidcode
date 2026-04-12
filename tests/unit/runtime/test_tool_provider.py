@@ -194,6 +194,9 @@ def test_tool_registry_with_defaults_delegates_through_builtin_provider() -> Non
 
 def test_runtime_registry_includes_discovered_mcp_tools(tmp_path: Path) -> None:
     class _StubMcpManager:
+        def __init__(self) -> None:
+            self.list_tools_calls = 0
+
         @property
         def configuration(self) -> McpConfigState:
             return McpConfigState(configured_enabled=True)
@@ -203,6 +206,7 @@ def test_runtime_registry_includes_discovered_mcp_tools(tmp_path: Path) -> None:
 
         def list_tools(self, *, workspace: Path):
             _ = workspace
+            self.list_tools_calls += 1
             return (
                 McpToolDescriptor(
                     server_name="echo",
@@ -229,15 +233,19 @@ def test_runtime_registry_includes_discovered_mcp_tools(tmp_path: Path) -> None:
         def drain_events(self):
             return ()
 
+    mcp_manager = _StubMcpManager()
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_StubMcpGraph(),
-        mcp_manager=_StubMcpManager(),
+        mcp_manager=mcp_manager,
         permission_policy=PermissionPolicy(mode="allow"),
     )
+    assert mcp_manager.list_tools_calls == 0
+
     response = runtime.run(RuntimeRequest(prompt="done"))
 
     assert response.output == "done"
+    assert mcp_manager.list_tools_calls == 1
     assert any(
         event.event_type == "runtime.tool_lookup_succeeded"
         and event.payload == {"tool": "mcp/echo/echo"}

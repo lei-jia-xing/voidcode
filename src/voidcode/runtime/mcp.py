@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import subprocess
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Protocol, cast
@@ -114,6 +116,8 @@ class _RunningMcpServer:
 
 
 class ManagedMcpManager:
+    _request_timeout_seconds = 2.0
+
     def __init__(self, config: RuntimeMcpConfig) -> None:
         self._configuration = McpConfigState.from_runtime_config(config)
         self._running_servers: dict[str, _RunningMcpServer] = {}
@@ -271,7 +275,22 @@ class ManagedMcpManager:
         running.process.stdin.flush()
 
         while True:
-            line = running.process.stdout.readline()
+            response_queue: queue.Queue[str] = queue.Queue(maxsize=1)
+
+            def _readline(target_queue: queue.Queue[str]) -> None:
+                assert running.process.stdout is not None
+                target_queue.put(running.process.stdout.readline())
+
+            reader = threading.Thread(target=_readline, args=(response_queue,), daemon=True)
+            reader.start()
+
+            try:
+                line = response_queue.get(timeout=self._request_timeout_seconds)
+            except queue.Empty as exc:
+                raise ValueError(
+                    f"MCP server timed out waiting for response to {method} after "
+                    f"{self._request_timeout_seconds:.1f}s"
+                ) from exc
             if not line:
                 raise ValueError("MCP server closed stdout before responding")
             try:

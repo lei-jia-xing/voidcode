@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 
 from voidcode.runtime.config import RuntimeMcpConfig, RuntimeMcpServerConfig
@@ -362,3 +363,39 @@ for raw_line in sys.stdin:
             os.environ["VOIDCODE_TEST_PARENT_ENV"] = previous
 
     assert result.content == [{"type": "text", "text": "inherited"}]
+
+
+def test_mcp_manager_times_out_when_server_never_responds(tmp_path: Path) -> None:
+    server_script = tmp_path / "silent_mcp_server.py"
+    server_script.write_text(
+        r"""
+from __future__ import annotations
+
+import time
+
+while True:
+    time.sleep(10)
+""",
+        encoding="utf-8",
+    )
+
+    config = RuntimeMcpConfig(
+        enabled=True,
+        servers={
+            "silent": RuntimeMcpServerConfig(
+                transport="stdio",
+                command=(sys.executable, str(server_script)),
+            )
+        },
+    )
+
+    manager = build_mcp_manager(config)
+    start = time.monotonic()
+    try:
+        manager.list_tools(workspace=tmp_path)
+    except ValueError as exc:
+        elapsed = time.monotonic() - start
+        assert "timed out" in str(exc)
+        assert elapsed < 5
+    else:
+        raise AssertionError("expected MCP manager to time out waiting for a silent server")
