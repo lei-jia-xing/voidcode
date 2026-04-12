@@ -159,9 +159,12 @@ def test_runtime_managed_lsp_tool_starts_server_and_returns_response(tmp_path: P
     tool_completed = next(
         event for event in result.events if event.event_type == "runtime.tool_completed"
     )
+    started_event = next(
+        event for event in result.events if event.event_type == "runtime.lsp_server_started"
+    )
     response = cast(dict[str, object], tool_completed.payload["lsp_response"])
     assert response["result"] == {"ok": True, "method": "textDocument/definition"}
-    assert any(event.event_type == "runtime.lsp_server_started" for event in result.events)
+    assert started_event.payload["workspace_root"] == str(tmp_path)
     assert runtime.current_lsp_state().servers["pyright"].status == "running"
 
     shutdown_events = runtime.shutdown_lsp()
@@ -214,3 +217,63 @@ def test_runtime_managed_lsp_tool_surfaces_failed_startup_state(tmp_path: Path) 
         )
 
     assert runtime.current_lsp_state().servers["pyright"].status == "failed"
+
+
+def test_runtime_managed_lsp_tool_uses_builtin_root_markers_for_workspace_selection(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "apps" / "demo"
+    sample_file = project_root / "src" / "sample.py"
+    project_root.mkdir(parents=True)
+    sample_file.parent.mkdir(parents=True, exist_ok=True)
+    sample_file.write_text("x = 1\n", encoding="utf-8")
+    (project_root / "pyproject.toml").write_text("[project]\nname='demo'\n", encoding="utf-8")
+    server_script = tmp_path / "fake_lsp_server.py"
+    _write_fake_lsp_server(server_script)
+
+    @dataclass(slots=True)
+    class _NestedLspGraph:
+        def step(
+            self,
+            request: GraphRunRequest,
+            tool_results: tuple[object, ...],
+            *,
+            session: SessionState,
+        ) -> _StubLspStep:
+            _ = request, session
+            if not tool_results:
+                return _StubLspStep(
+                    tool_call=ToolCall(
+                        tool_name="lsp",
+                        arguments={
+                            "operation": "textDocument/definition",
+                            "filePath": "apps/demo/src/sample.py",
+                            "line": 1,
+                            "character": 1,
+                        },
+                    )
+                )
+            return _StubLspStep(output="done", is_finished=True)
+
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_NestedLspGraph(),
+        config=RuntimeConfig(
+            lsp=RuntimeLspConfig(
+                enabled=True,
+                servers={
+                    "pyright": RuntimeLspServerConfig(
+                        command=(sys.executable, "-u", str(server_script))
+                    )
+                },
+            )
+        ),
+    )
+
+    result = runtime.run(RuntimeRequest(prompt="lsp please"))
+
+    started_event = next(
+        event for event in result.events if event.event_type == "runtime.lsp_server_started"
+    )
+
+    assert started_event.payload["workspace_root"] == str(project_root)

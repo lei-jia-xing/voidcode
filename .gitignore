@@ -24,3 +24,4 @@ htmlcov/
 .opencode/
 .sisyphus/
 .test_venv/
+agent/

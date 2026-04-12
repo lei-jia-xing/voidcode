@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Literal, cast
 
 from ..hook.config import RuntimeFormatterPresetConfig, RuntimeHooksConfig
+from ..lsp import LspServerConfigOverride as RuntimeLspServerConfig
+from ..lsp import has_builtin_lsp_server_preset
 from .permission import PermissionDecision
 
 RUNTIME_CONFIG_FILE_NAME = ".voidcode.json"
@@ -36,12 +38,6 @@ class RuntimeToolsConfig:
 class RuntimeSkillsConfig:
     enabled: bool | None = None
     paths: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True, slots=True)
-class RuntimeLspServerConfig:
-    command: tuple[str, ...]
-    languages: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -331,18 +327,32 @@ def _parse_lsp_servers_config(
     for server_name, raw_server in raw_servers.items():
         parsed_servers[server_name] = _parse_lsp_server_config(
             raw_server,
+            server_name=server_name,
             field_path=f"{field_path}.{server_name}",
         )
     return parsed_servers
 
 
-def _parse_lsp_server_config(raw_value: object, *, field_path: str) -> RuntimeLspServerConfig:
+def _parse_lsp_server_config(
+    raw_value: object,
+    *,
+    server_name: str,
+    field_path: str,
+) -> RuntimeLspServerConfig:
     if not isinstance(raw_value, dict):
         raise ValueError(f"runtime config field '{field_path}' must be an object")
 
     server_payload = cast(dict[str, object], raw_value)
+    preset = server_payload.get("preset")
+    if preset is not None:
+        if not isinstance(preset, str) or not preset:
+            raise ValueError(f"runtime config field '{field_path}.preset' must be a string")
+        if not has_builtin_lsp_server_preset(preset):
+            raise ValueError(
+                f"runtime config field '{field_path}.preset' references unknown preset"
+            )
     command = _parse_string_list(server_payload.get("command"), field_path=f"{field_path}.command")
-    if not command:
+    if not command and preset is None and not has_builtin_lsp_server_preset(server_name):
         raise ValueError(
             f"runtime config field '{field_path}.command' must contain at least one string"
         )
@@ -350,7 +360,31 @@ def _parse_lsp_server_config(raw_value: object, *, field_path: str) -> RuntimeLs
         server_payload.get("languages"),
         field_path=f"{field_path}.languages",
     )
-    return RuntimeLspServerConfig(command=command, languages=languages)
+    extensions = _parse_string_list(
+        server_payload.get("extensions"),
+        field_path=f"{field_path}.extensions",
+    )
+    root_markers = _parse_string_list(
+        server_payload.get("root_markers"),
+        field_path=f"{field_path}.root_markers",
+    )
+    settings = _parse_object_container(
+        server_payload.get("settings"),
+        field_path=f"{field_path}.settings",
+    )
+    init_options = _parse_object_container(
+        server_payload.get("init_options"),
+        field_path=f"{field_path}.init_options",
+    )
+    return RuntimeLspServerConfig(
+        preset=preset,
+        command=command,
+        languages=languages,
+        extensions=extensions,
+        root_markers=root_markers,
+        settings=settings or {},
+        init_options=init_options or {},
+    )
 
 
 def _parse_acp_config(raw_acp: object) -> RuntimeAcpConfig | None:
@@ -450,6 +484,14 @@ def _parse_optional_bool(raw_value: object, *, field_path: str) -> bool | None:
     if not isinstance(raw_value, bool):
         raise ValueError(f"runtime config field '{field_path}' must be a boolean when provided")
     return raw_value
+
+
+def _parse_object_container(raw_value: object, *, field_path: str) -> dict[str, object] | None:
+    if raw_value is None:
+        return None
+    if not isinstance(raw_value, dict):
+        raise ValueError(f"runtime config field '{field_path}' must be an object when provided")
+    return cast(dict[str, object], raw_value)
 
 
 def _nested_config_field(source: str, nested: str) -> str:

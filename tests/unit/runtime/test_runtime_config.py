@@ -140,6 +140,57 @@ def test_runtime_config_parses_extension_domains(tmp_path: Path) -> None:
     )
 
 
+def test_runtime_config_accepts_builtin_lsp_preset_without_explicit_command(tmp_path: Path) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps({"lsp": {"enabled": True, "servers": {"pyright": {}}}}),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.lsp == RuntimeLspConfig(
+        enabled=True,
+        servers={"pyright": RuntimeLspServerConfig()},
+    )
+
+
+def test_runtime_config_accepts_explicit_lsp_preset_override(tmp_path: Path) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps(
+            {
+                "lsp": {
+                    "enabled": True,
+                    "servers": {
+                        "python": {
+                            "preset": "pyright",
+                            "extensions": [".pyw"],
+                            "root_markers": ["requirements-dev.txt"],
+                            "settings": {"python": {"analysis": {"typeCheckingMode": "strict"}}},
+                            "init_options": {"diagnostics": {"enable": True}},
+                        }
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.lsp == RuntimeLspConfig(
+        enabled=True,
+        servers={
+            "python": RuntimeLspServerConfig(
+                preset="pyright",
+                extensions=(".pyw",),
+                root_markers=("requirements-dev.txt",),
+                settings={"python": {"analysis": {"typeCheckingMode": "strict"}}},
+                init_options={"diagnostics": {"enable": True}},
+            )
+        },
+    )
+
+
 def test_runtime_config_accepts_single_agent_execution_engine(tmp_path: Path) -> None:
     runtime_config_path(tmp_path).write_text(
         json.dumps({"execution_engine": "single_agent", "model": "opencode/gpt-5.4"}),
@@ -435,8 +486,8 @@ def test_runtime_config_rejects_invalid_max_steps(
             id="lsp-server-shape",
         ),
         pytest.param(
-            {"lsp": {"servers": {"pyright": {"command": []}}}},
-            "runtime config field 'lsp.servers.pyright.command'.*at least one string",
+            {"lsp": {"servers": {"custom": {"command": []}}}},
+            "runtime config field 'lsp.servers.custom.command'.*at least one string",
             id="lsp-server-command-empty",
         ),
         pytest.param(
@@ -448,6 +499,36 @@ def test_runtime_config_rejects_invalid_max_steps(
             {"lsp": {"servers": {"pyright": {"command": ["pyright"], "languages": [1]}}}},
             "runtime config field 'lsp.servers.pyright.languages\\[0\\]'",
             id="lsp-server-language-item-type",
+        ),
+        pytest.param(
+            {"lsp": {"servers": {"python": {"preset": 1}}}},
+            "runtime config field 'lsp.servers.python.preset'",
+            id="lsp-server-preset-type",
+        ),
+        pytest.param(
+            {"lsp": {"servers": {"python": {"preset": "not-real"}}}},
+            "runtime config field 'lsp.servers.python.preset' references unknown preset",
+            id="lsp-server-preset-unknown",
+        ),
+        pytest.param(
+            {"lsp": {"servers": {"pyright": {"extensions": [1]}}}},
+            "runtime config field 'lsp.servers.pyright.extensions\\[0\\]'",
+            id="lsp-server-extension-item-type",
+        ),
+        pytest.param(
+            {"lsp": {"servers": {"pyright": {"root_markers": [1]}}}},
+            "runtime config field 'lsp.servers.pyright.root_markers\\[0\\]'",
+            id="lsp-server-root-marker-item-type",
+        ),
+        pytest.param(
+            {"lsp": {"servers": {"pyright": {"settings": []}}}},
+            "runtime config field 'lsp.servers.pyright.settings'",
+            id="lsp-server-settings-shape",
+        ),
+        pytest.param(
+            {"lsp": {"servers": {"pyright": {"init_options": []}}}},
+            "runtime config field 'lsp.servers.pyright.init_options'",
+            id="lsp-server-init-options-shape",
         ),
         pytest.param(
             {"provider_fallback": []},

@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+from voidcode.lsp import ResolvedLspServerConfig
 from voidcode.runtime.config import RuntimeLspConfig, RuntimeLspServerConfig
 
 
@@ -58,8 +59,16 @@ def test_lsp_config_state_wraps_runtime_lsp_config_servers() -> None:
 
     assert state.configured_enabled is True
     assert tuple(state.servers) == ("pyright", "ruff")
-    assert pyright_server == RuntimeLspServerConfig(command=("pyright-langserver", "--stdio"))
+    assert pyright_server == ResolvedLspServerConfig(
+        id="pyright",
+        preset="pyright",
+        command=("pyright-langserver", "--stdio"),
+        extensions=(".py", ".pyi"),
+        languages=("python",),
+        root_markers=("pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", ".git"),
+    )
     assert state.default_server_name() == "pyright"
+    assert state.default_server_name(Path("main.py")) == "pyright"
     assert state.resolve("missing") is None
 
 
@@ -81,6 +90,22 @@ def test_disabled_lsp_manager_reports_configured_servers_without_runtime_availab
     assert state.servers["pyright"].configured is True
     assert state.servers["pyright"].status == "stopped"
     assert state.servers["pyright"].available is False
+
+
+def test_lsp_config_state_matches_server_by_file_extension() -> None:
+    state = LspConfigState.from_runtime_config(
+        RuntimeLspConfig(
+            enabled=True,
+            servers={
+                "pyright": RuntimeLspServerConfig(command=("pyright-langserver", "--stdio")),
+                "gopls": RuntimeLspServerConfig(command=("gopls",)),
+            },
+        )
+    )
+
+    assert state.matching_servers(Path("main.py")) == ("pyright",)
+    assert state.matching_servers(Path("main.go")) == ("gopls",)
+    assert state.default_server_name(Path("main.go")) == "gopls"
 
 
 def test_disabled_lsp_manager_rejects_requests() -> None:
@@ -110,6 +135,19 @@ def test_build_lsp_manager_returns_managed_manager_when_enabled_and_configured()
     assert isinstance(manager, ManagedLspManager)
     assert state.mode == "managed"
     assert state.servers["pyright"].status == "stopped"
+
+
+def test_build_lsp_manager_accepts_builtin_preset_without_explicit_command() -> None:
+    manager = build_lsp_manager(
+        RuntimeLspConfig(
+            enabled=True,
+            servers={"pyright": RuntimeLspServerConfig()},
+        )
+    )
+
+    assert isinstance(manager, ManagedLspManager)
+    assert manager.configuration.resolve("pyright") is not None
+    assert manager.configuration.resolve("pyright").command == ("pyright-langserver", "--stdio")
 
 
 def test_managed_lsp_manager_marks_failed_startup_when_command_is_missing(tmp_path: Path) -> None:
