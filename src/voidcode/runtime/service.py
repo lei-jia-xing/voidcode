@@ -1,16 +1,16 @@
 from __future__ import annotations
 
 import os
-import subprocess
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol, cast, final, runtime_checkable
+from typing import Any, Literal, Protocol, cast, final, runtime_checkable
 from uuid import uuid4
 
 from ..graph.contracts import GraphEvent, GraphRunRequest
 from ..graph.read_only_slice import DeterministicReadOnlyGraph
 from ..graph.single_agent_slice import ProviderSingleAgentGraph
+from ..hook.executor import HookExecutionOutcome, HookExecutionRequest, run_tool_hooks
 from ..tools.contracts import Tool, ToolCall, ToolDefinition, ToolResult, ToolResultStatus
 from .acp import AcpAdapter, AcpRequestEnvelope, AcpResponseEnvelope, build_acp_adapter
 from .config import (
@@ -31,8 +31,6 @@ from .events import (
     RUNTIME_MEMORY_REFRESHED,
     RUNTIME_SKILLS_APPLIED,
     RUNTIME_SKILLS_LOADED,
-    RUNTIME_TOOL_HOOK_POST,
-    RUNTIME_TOOL_HOOK_PRE,
     EventEnvelope,
 )
 from .lsp import LspManager, LspManagerState, LspRequest, LspRequestResult, build_lsp_manager
@@ -818,65 +816,39 @@ class VoidCodeRuntime:
         session: SessionState,
         sequence: int,
         tool_name: str,
-        phase: str,
+        phase: Literal["pre", "post"],
     ) -> _HookOutcome:
-        hooks_config = self._config.hooks
-        if hooks_config is None or hooks_config.enabled is not True:
-            return _HookOutcome(chunks=(), last_sequence=sequence)
-        if os.environ.get(self._hook_recursion_env_var) == "1":
-            return _HookOutcome(chunks=(), last_sequence=sequence)
-
-        commands = hooks_config.pre_tool if phase == "pre" else hooks_config.post_tool
-        last_sequence = sequence
-        emitted_chunks: list[RuntimeStreamChunk] = []
-        for command in commands:
-            last_sequence += 1
-            try:
-                subprocess.run(
-                    list(command),
-                    cwd=self._workspace,
-                    capture_output=True,
-                    text=True,
-                    check=True,
-                    env={**os.environ, self._hook_recursion_env_var: "1"},
-                )
-            except (OSError, subprocess.CalledProcessError) as exc:
-                hook_event = EventEnvelope(
-                    session_id=session.session.id,
-                    sequence=last_sequence,
-                    event_type=RUNTIME_TOOL_HOOK_PRE if phase == "pre" else RUNTIME_TOOL_HOOK_POST,
-                    source="runtime",
-                    payload={
-                        "phase": phase,
-                        "tool_name": tool_name,
-                        "session_id": session.session.id,
-                        "status": "error",
-                        "error": f"tool {phase}-hook failed for {tool_name}: {exc}",
-                    },
-                )
-                return _HookOutcome(
-                    chunks=(RuntimeStreamChunk(kind="event", session=session, event=hook_event),),
-                    last_sequence=last_sequence,
-                    failed_error=f"tool {phase}-hook failed for {tool_name}: {exc}",
-                )
-
-            yield_event = EventEnvelope(
+        outcome: HookExecutionOutcome = run_tool_hooks(
+            HookExecutionRequest(
+                hooks=self._config.hooks,
+                workspace=self._workspace,
                 session_id=session.session.id,
-                sequence=last_sequence,
-                event_type=RUNTIME_TOOL_HOOK_PRE if phase == "pre" else RUNTIME_TOOL_HOOK_POST,
-                source="runtime",
-                payload={
-                    "phase": phase,
-                    "tool_name": tool_name,
-                    "session_id": session.session.id,
-                    "status": "ok",
-                },
+                tool_name=tool_name,
+                phase=phase,
+                recursion_env_var=self._hook_recursion_env_var,
+                environment=os.environ,
+                sequence_start=sequence,
             )
-            emitted_chunks.append(
-                RuntimeStreamChunk(kind="event", session=session, event=yield_event)
+        )
+        emitted_chunks = tuple(
+            RuntimeStreamChunk(
+                kind="event",
+                session=session,
+                event=EventEnvelope(
+                    session_id=session.session.id,
+                    sequence=event.sequence,
+                    event_type=event.event_type,
+                    source="runtime",
+                    payload=event.payload,
+                ),
             )
-
-        return _HookOutcome(chunks=tuple(emitted_chunks), last_sequence=last_sequence)
+            for event in outcome.events
+        )
+        return _HookOutcome(
+            chunks=emitted_chunks,
+            last_sequence=outcome.last_sequence,
+            failed_error=outcome.failed_error,
+        )
 
     def _failed_chunk(
         self,
