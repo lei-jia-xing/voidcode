@@ -5,7 +5,16 @@ from dataclasses import dataclass, field
 
 
 def _empty_formatter_presets() -> dict[str, RuntimeFormatterPresetConfig]:
-    return {}
+    return {
+        "python": RuntimeFormatterPresetConfig(command=("ruff", "format")),
+        "typescript": RuntimeFormatterPresetConfig(command=("prettier", "--write")),
+        "javascript": RuntimeFormatterPresetConfig(command=("prettier", "--write")),
+        "json": RuntimeFormatterPresetConfig(command=("prettier", "--write")),
+        "markdown": RuntimeFormatterPresetConfig(command=("prettier", "--write")),
+        "yaml": RuntimeFormatterPresetConfig(command=("prettier", "--write")),
+        "rust": RuntimeFormatterPresetConfig(command=("rustfmt",)),
+        "go": RuntimeFormatterPresetConfig(command=("gofmt",)),
+    }
 
 
 @dataclass(frozen=True, slots=True)

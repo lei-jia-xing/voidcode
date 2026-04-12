@@ -239,13 +239,13 @@ def _parse_hooks_config(raw_hooks: object) -> RuntimeHooksConfig | None:
 def _parse_formatter_presets_config(
     raw_value: object, *, field_path: str
 ) -> dict[str, RuntimeFormatterPresetConfig]:
+    parsed_presets = dict(RuntimeHooksConfig().formatter_presets)
     if raw_value is None:
-        return {}
+        return parsed_presets
     if not isinstance(raw_value, dict):
         raise ValueError(f"runtime config field '{field_path}' must be an object when provided")
 
     raw_presets = cast(dict[str, object], raw_value)
-    parsed_presets: dict[str, RuntimeFormatterPresetConfig] = {}
     for preset_name, raw_preset in raw_presets.items():
         parsed_presets[preset_name] = _parse_formatter_preset_config(
             raw_preset,
