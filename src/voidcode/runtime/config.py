@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, cast
 
@@ -51,6 +51,22 @@ class RuntimeAcpConfig:
     enabled: bool | None = None
 
 
+type McpTransport = Literal["stdio"]
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeMcpServerConfig:
+    transport: McpTransport = "stdio"
+    command: tuple[str, ...] = ()
+    env: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeMcpConfig:
+    enabled: bool | None = None
+    servers: Mapping[str, RuntimeMcpServerConfig] | None = None
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeTuiConfig:
     leader_key: str = "alt+x"
@@ -74,6 +90,7 @@ class RuntimeConfig:
     skills: RuntimeSkillsConfig | None = None
     lsp: RuntimeLspConfig | None = None
     acp: RuntimeAcpConfig | None = None
+    mcp: RuntimeMcpConfig | None = None
     tui: RuntimeTuiConfig | None = None
     provider_fallback: RuntimeProviderFallbackConfig | None = None
 
@@ -89,6 +106,7 @@ class RuntimeConfigOverrides:
     skills: RuntimeSkillsConfig | None = None
     lsp: RuntimeLspConfig | None = None
     acp: RuntimeAcpConfig | None = None
+    mcp: RuntimeMcpConfig | None = None
     tui: RuntimeTuiConfig | None = None
     provider_fallback: RuntimeProviderFallbackConfig | None = None
 
@@ -126,6 +144,7 @@ def load_runtime_config(
         skills=repo_local.skills,
         lsp=repo_local.lsp,
         acp=repo_local.acp,
+        mcp=repo_local.mcp,
         tui=repo_local.tui,
         provider_fallback=repo_local.provider_fallback,
     )
@@ -178,6 +197,9 @@ def _load_repo_local_config(workspace: Path) -> RuntimeConfigOverrides:
     raw_acp = payload.get("acp")
     acp = _parse_acp_config(raw_acp)
 
+    raw_mcp = payload.get("mcp")
+    mcp = _parse_mcp_config(raw_mcp)
+
     raw_tui = payload.get("tui")
     tui = _parse_tui_config(raw_tui)
 
@@ -201,6 +223,7 @@ def _load_repo_local_config(workspace: Path) -> RuntimeConfigOverrides:
         skills=skills,
         lsp=lsp,
         acp=acp,
+        mcp=mcp,
         tui=tui,
         provider_fallback=provider_fallback,
     )
@@ -396,6 +419,64 @@ def _parse_acp_config(raw_acp: object) -> RuntimeAcpConfig | None:
     acp_payload = cast(dict[str, object], raw_acp)
     enabled = _parse_optional_bool(acp_payload.get("enabled"), field_path="acp.enabled")
     return RuntimeAcpConfig(enabled=enabled)
+
+
+def _parse_mcp_config(raw_mcp: object) -> RuntimeMcpConfig | None:
+    if raw_mcp is None:
+        return None
+    if not isinstance(raw_mcp, dict):
+        raise ValueError("runtime config field 'mcp' must be an object when provided")
+
+    mcp_payload = cast(dict[str, object], raw_mcp)
+    enabled = _parse_optional_bool(mcp_payload.get("enabled"), field_path="mcp.enabled")
+    servers = _parse_mcp_servers_config(mcp_payload.get("servers"), field_path="mcp.servers")
+    return RuntimeMcpConfig(enabled=enabled, servers=servers)
+
+
+def _parse_mcp_servers_config(
+    raw_value: object, *, field_path: str
+) -> dict[str, RuntimeMcpServerConfig] | None:
+    if raw_value is None:
+        return None
+    if not isinstance(raw_value, dict):
+        raise ValueError(f"runtime config field '{field_path}' must be an object when provided")
+
+    raw_servers = cast(dict[str, object], raw_value)
+    parsed_servers: dict[str, RuntimeMcpServerConfig] = {}
+    for server_name, raw_server in raw_servers.items():
+        parsed_servers[server_name] = _parse_mcp_server_config(
+            raw_server,
+            field_path=f"{field_path}.{server_name}",
+        )
+    return parsed_servers
+
+
+def _parse_mcp_server_config(raw_value: object, *, field_path: str) -> RuntimeMcpServerConfig:
+    if not isinstance(raw_value, dict):
+        raise ValueError(f"runtime config field '{field_path}' must be an object")
+
+    server_payload = cast(dict[str, object], raw_value)
+    transport = server_payload.get("transport", "stdio")
+    if transport != "stdio":
+        raise ValueError(f"runtime config field '{field_path}.transport' must be one of: stdio")
+    command = _parse_string_list(server_payload.get("command"), field_path=f"{field_path}.command")
+    if not command:
+        raise ValueError(
+            f"runtime config field '{field_path}.command' must contain at least one string"
+        )
+
+    raw_env = server_payload.get("env")
+    env: dict[str, str] = {}
+    if raw_env is not None:
+        if not isinstance(raw_env, dict):
+            raise ValueError(f"runtime config field '{field_path}.env' must be an object")
+        env_payload = cast(dict[str, object], raw_env)
+        for key, value in env_payload.items():
+            if not isinstance(value, str):
+                raise ValueError(f"runtime config field '{field_path}.env.{key}' must be a string")
+            env[key] = value
+
+    return RuntimeMcpServerConfig(transport="stdio", command=command, env=env)
 
 
 def _parse_tui_config(raw_tui: object) -> RuntimeTuiConfig | None:
