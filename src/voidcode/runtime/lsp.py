@@ -409,6 +409,7 @@ class ManagedLspManager:
 
         process = running_server.process
         if process.poll() is None:
+            should_terminate = not running_server.initialized
             try:
                 if running_server.initialized:
                     self._send_request(
@@ -418,20 +419,12 @@ class ManagedLspManager:
                         server_name=server_name,
                     )
                     self._send_notification(process, method="exit", params={})
-                else:
-                    process.terminate()
-            except ValueError:
+            except Exception as exc:
+                should_terminate = True
+                logger.warning("failed to shut down LSP server %s cleanly: %s", server_name, exc)
+            if should_terminate and process.poll() is None:
                 process.terminate()
-
-            try:
-                process.wait(timeout=1)
-            except subprocess.TimeoutExpired:
-                process.terminate()
-                try:
-                    process.wait(timeout=1)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait(timeout=1)
+            self._wait_for_process_exit(process)
 
         self._server_states[server_name] = LspServerState(
             name=server_name,
@@ -493,7 +486,24 @@ class ManagedLspManager:
         parsed = urlparse(uri)
         if parsed.scheme != "file":
             return None
-        return Path(url2pathname(parsed.path))
+        raw_path = parsed.path
+        if parsed.netloc and parsed.netloc != "localhost":
+            raw_path = f"//{parsed.netloc}{parsed.path}"
+        return Path(url2pathname(raw_path))
+
+    @staticmethod
+    def _wait_for_process_exit(process: subprocess.Popen[bytes], *, timeout: float = 1.0) -> None:
+        if process.poll() is not None:
+            return
+        try:
+            process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            process.terminate()
+            try:
+                process.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=timeout)
 
     def _send_request(
         self,

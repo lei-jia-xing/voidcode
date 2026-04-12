@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import subprocess
 from importlib import import_module
 from pathlib import Path
 from typing import Any
+from urllib.request import url2pathname
 
 import pytest
 from lsprotocol import converters as lsp_converters
@@ -177,6 +179,73 @@ def test_managed_lsp_manager_marks_failed_startup_when_command_is_missing(tmp_pa
     assert state.servers["broken"].status == "failed"
     assert state.servers["broken"].available is False
     assert state.servers["broken"].last_error is not None
+
+
+def test_stop_running_server_cleans_up_after_shutdown_timeout(tmp_path: Path) -> None:
+    manager = ManagedLspManager(
+        RuntimeLspConfig(
+            enabled=True,
+            servers={"pyright": RuntimeLspServerConfig(command=("pyright-langserver", "--stdio"))},
+        )
+    )
+    module = import_module("voidcode.runtime.lsp")
+    running_server_cls = module._RunningLspServer
+
+    class _FakeProcess:
+        def __init__(self) -> None:
+            self.terminated = False
+            self.killed = False
+
+        def poll(self) -> int | None:
+            if self.terminated or self.killed:
+                return 0
+            return None
+
+        def terminate(self) -> None:
+            self.terminated = True
+
+        def kill(self) -> None:
+            self.killed = True
+            self.terminated = True
+
+        def wait(self, timeout: float = 0.0) -> int:
+            if self.terminated or self.killed:
+                return 0
+            raise subprocess.TimeoutExpired(cmd="fake-lsp", timeout=timeout)
+
+    fake_process = _FakeProcess()
+    server_config = manager.configuration.resolve("pyright")
+    assert server_config is not None
+    manager._running_servers["pyright"] = running_server_cls(
+        config=server_config,
+        process=fake_process,
+        workspace_root=tmp_path,
+        initialized=True,
+    )
+
+    def _raise_timeout(*args: object, **kwargs: object) -> object:
+        raise TimeoutError("shutdown timed out")
+
+    manager._send_request = _raise_timeout
+
+    manager._stop_running_server("pyright", record_event=True)
+
+    assert "pyright" not in manager._running_servers
+    state = manager.current_state().servers["pyright"]
+    assert state.status == "stopped"
+    assert state.available is False
+    assert fake_process.terminated is True
+    stopped_event = manager.drain_events()[0]
+    assert stopped_event.event_type == "runtime.lsp_server_stopped"
+    assert stopped_event.payload["workspace_root"] == str(tmp_path)
+
+
+def test_path_from_file_uri_preserves_unc_host() -> None:
+    expected = Path(url2pathname("//server/share/project/main.py"))
+
+    assert (
+        ManagedLspManager._path_from_file_uri("file://server/share/project/main.py") == expected
+    )
 
 
 def test_lsp_operation_strings_match_protocol_method_names() -> None:
