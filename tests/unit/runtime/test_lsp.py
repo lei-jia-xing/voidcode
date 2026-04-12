@@ -243,9 +243,7 @@ def test_stop_running_server_cleans_up_after_shutdown_timeout(tmp_path: Path) ->
 def test_path_from_file_uri_preserves_unc_host() -> None:
     expected = Path(url2pathname("//server/share/project/main.py"))
 
-    assert (
-        ManagedLspManager._path_from_file_uri("file://server/share/project/main.py") == expected
-    )
+    assert ManagedLspManager._path_from_file_uri("file://server/share/project/main.py") == expected
 
 
 def test_lsp_operation_strings_match_protocol_method_names() -> None:
