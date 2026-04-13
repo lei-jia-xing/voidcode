@@ -19,8 +19,11 @@ from ..provider import config as provider_config
 from .permission import PermissionDecision
 
 RuntimeProviderFallbackConfig = provider_config.ProviderFallbackConfig
+RuntimeProvidersConfig = provider_config.ProviderConfigs
 parse_provider_fallback_payload = provider_config.parse_provider_fallback_payload
+parse_provider_configs_payload = provider_config.parse_provider_configs_payload
 serialize_provider_fallback_config = provider_config.serialize_provider_fallback_config
+serialize_provider_configs = provider_config.serialize_provider_configs
 
 RUNTIME_CONFIG_FILE_NAME = ".voidcode.json"
 APPROVAL_MODE_ENV_VAR = "VOIDCODE_APPROVAL_MODE"
@@ -153,6 +156,7 @@ class RuntimeConfig:
     mcp: RuntimeMcpConfig | None = None
     tui: RuntimeTuiConfig | None = None
     provider_fallback: RuntimeProviderFallbackConfig | None = None
+    providers: RuntimeProvidersConfig | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,6 +173,7 @@ class RuntimeConfigOverrides:
     mcp: RuntimeMcpConfig | None = None
     tui: RuntimeTuiConfig | None = None
     provider_fallback: RuntimeProviderFallbackConfig | None = None
+    providers: RuntimeProvidersConfig | None = None
 
 
 def runtime_config_path(workspace: Path) -> Path:
@@ -185,8 +190,8 @@ def load_runtime_config(
     env: Mapping[str, str] | None = None,
 ) -> RuntimeConfig:
     resolved_workspace = workspace.resolve()
-    repo_local = _load_repo_local_config(resolved_workspace)
-    environment = _load_environment_runtime_config(env)
+    environment = os.environ if env is None else env
+    repo_local = _load_repo_local_config(resolved_workspace, env=environment)
 
     return RuntimeConfig(
         approval_mode=_resolve_approval_mode(
@@ -217,10 +222,15 @@ def load_runtime_config(
         mcp=repo_local.mcp,
         tui=repo_local.tui,
         provider_fallback=repo_local.provider_fallback,
+        providers=repo_local.providers,
     )
 
 
-def _load_repo_local_config(workspace: Path) -> RuntimeConfigOverrides:
+def _load_repo_local_config(
+    workspace: Path,
+    *,
+    env: Mapping[str, str],
+) -> RuntimeConfigOverrides:
     config_path = runtime_config_path(workspace)
     if not config_path.exists():
         return RuntimeConfigOverrides()
@@ -276,6 +286,9 @@ def _load_repo_local_config(workspace: Path) -> RuntimeConfigOverrides:
     raw_provider_fallback = payload.get("provider_fallback")
     provider_fallback = _parse_provider_fallback_config(raw_provider_fallback)
 
+    raw_providers = payload.get("providers")
+    providers = _parse_providers_config(raw_providers, env=env)
+
     raw_approval_mode = payload.get("approval_mode")
     parsed_approval_mode = _parse_approval_mode(
         raw_approval_mode,
@@ -296,6 +309,7 @@ def _load_repo_local_config(workspace: Path) -> RuntimeConfigOverrides:
         mcp=mcp,
         tui=tui,
         provider_fallback=provider_fallback,
+        providers=providers,
     )
 
 
@@ -770,6 +784,18 @@ def _parse_provider_fallback_config(
     return parse_provider_fallback_payload(
         raw_provider_fallback,
         source="runtime config field 'provider_fallback'",
+    )
+
+
+def _parse_providers_config(
+    raw_providers: object,
+    *,
+    env: Mapping[str, str],
+) -> RuntimeProvidersConfig | None:
+    return parse_provider_configs_payload(
+        raw_providers,
+        source="runtime config field 'providers'",
+        env=env,
     )
 
 
