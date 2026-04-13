@@ -16,7 +16,27 @@ def resolved_provider_snapshot(
     if resolved_provider is None:
         return None
     if isinstance(resolved_provider, Mapping):
-        return dict(resolved_provider)
+        raw_active_target = resolved_provider.get("active_target")
+        raw_targets = resolved_provider.get("targets")
+        if not isinstance(raw_active_target, Mapping) or not isinstance(raw_targets, list):
+            return None
+        active_target = _snapshot_target_payload(cast(Mapping[str, object], raw_active_target))
+        if active_target is None:
+            return None
+        normalized_targets: list[dict[str, str]] = []
+        for item in cast(list[object], raw_targets):
+            if not isinstance(item, Mapping):
+                return None
+            target = _snapshot_target_payload(cast(Mapping[str, object], item))
+            if target is None:
+                return None
+            normalized_targets.append(target)
+        if not normalized_targets:
+            return None
+        return {
+            "active_target": active_target,
+            "targets": normalized_targets,
+        }
 
     targets: list[dict[str, str]] = []
     for target in resolved_provider.target_chain.all_targets:
@@ -76,11 +96,16 @@ def parse_resolved_provider_snapshot(
         source=f"{source}.active_target",
         registry=registry,
     )
-    if resolved_active_target.selection.raw_model != first_target.selection.raw_model:
+    resolved_target_raw_models = {
+        target.selection.raw_model
+        for target in resolved_targets
+        if target.selection.raw_model is not None
+    }
+    if resolved_active_target.selection.raw_model not in resolved_target_raw_models:
         raise ValueError(
             format_invalid_provider_config_error(
                 f"{source}.active_target",
-                "must match the first resolved provider target",
+                "must reference one of the resolved provider targets",
             )
         )
 
@@ -134,6 +159,23 @@ def _resolved_provider_target_snapshot(target: ResolvedProviderModel) -> dict[st
         "raw_model": target.selection.raw_model,
         "provider": target.selection.provider,
         "model": target.selection.model,
+    }
+
+
+def _snapshot_target_payload(payload: Mapping[str, object]) -> dict[str, str] | None:
+    raw_model = payload.get("raw_model")
+    provider = payload.get("provider")
+    model = payload.get("model")
+    if (
+        not isinstance(raw_model, str)
+        or not isinstance(provider, str)
+        or not isinstance(model, str)
+    ):
+        return None
+    return {
+        "raw_model": raw_model,
+        "provider": provider,
+        "model": model,
     }
 
 

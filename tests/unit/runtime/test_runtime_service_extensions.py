@@ -1781,6 +1781,127 @@ def test_runtime_resume_preserves_provider_attempt_and_target_across_pending_app
     assert len(resumed_fallback_events) == 1
 
 
+def test_runtime_effective_runtime_config_accepts_non_first_active_target_in_snapshot(
+    tmp_path: Path,
+) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("resolved provider config\n", encoding="utf-8")
+
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            approval_mode="allow",
+            execution_engine="single_agent",
+            model="opencode/gpt-5.4",
+            provider_fallback=RuntimeProviderFallbackConfig(
+                preferred_model="opencode/gpt-5.4",
+                fallback_models=("custom/demo",),
+            ),
+        ),
+    )
+    _ = runtime.run(RuntimeRequest(prompt="read sample.txt", session_id="active-target-fallback"))
+
+    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    connection = sqlite3.connect(database_path)
+    try:
+        row = connection.execute(
+            "SELECT metadata_json FROM sessions WHERE session_id = ?",
+            ("active-target-fallback",),
+        ).fetchone()
+        assert row is not None
+        metadata = json.loads(str(row[0]))
+        assert isinstance(metadata, dict)
+        metadata_dict = cast(dict[str, object], metadata)
+        runtime_config = cast(dict[str, object], metadata_dict["runtime_config"])
+        resolved_provider = cast(dict[str, object], runtime_config["resolved_provider"])
+        targets = cast(list[object], resolved_provider["targets"])
+        resolved_provider["active_target"] = cast(dict[str, object], targets[1])
+        _ = connection.execute(
+            "UPDATE sessions SET metadata_json = ? WHERE session_id = ?",
+            (json.dumps(metadata_dict, sort_keys=True), "active-target-fallback"),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    resumed_runtime = VoidCodeRuntime(workspace=tmp_path, config=RuntimeConfig())
+    effective = resumed_runtime.effective_runtime_config(session_id="active-target-fallback")
+
+    assert effective.model == "opencode/gpt-5.4"
+    assert effective.provider_fallback == RuntimeProviderFallbackConfig(
+        preferred_model="opencode/gpt-5.4",
+        fallback_models=("custom/demo",),
+    )
+
+
+def test_runtime_effective_runtime_config_rejects_malformed_persisted_resolved_provider_snapshot(
+    tmp_path: Path,
+) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("bad resolved provider\n", encoding="utf-8")
+
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            approval_mode="allow",
+            execution_engine="single_agent",
+            model="opencode/gpt-5.4",
+            provider_fallback=RuntimeProviderFallbackConfig(
+                preferred_model="opencode/gpt-5.4",
+                fallback_models=("custom/demo",),
+            ),
+        ),
+    )
+    _ = runtime.run(
+        RuntimeRequest(prompt="read sample.txt", session_id="malformed-resolved-provider")
+    )
+
+    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    connection = sqlite3.connect(database_path)
+    try:
+        row = connection.execute(
+            "SELECT metadata_json FROM sessions WHERE session_id = ?",
+            ("malformed-resolved-provider",),
+        ).fetchone()
+        assert row is not None
+        metadata = json.loads(str(row[0]))
+        assert isinstance(metadata, dict)
+        metadata_dict = cast(dict[str, object], metadata)
+        runtime_config = cast(dict[str, object], metadata_dict["runtime_config"])
+        runtime_config["resolved_provider"] = {
+            "active_target": {
+                "raw_model": "opencode/gpt-5.4",
+                "provider": "opencode",
+                "model": "gpt-5.4",
+            },
+            "targets": [
+                {
+                    "raw_model": "custom/demo",
+                    "provider": "custom",
+                    "model": "demo",
+                }
+            ],
+        }
+        _ = connection.execute(
+            "UPDATE sessions SET metadata_json = ? WHERE session_id = ?",
+            (json.dumps(metadata_dict, sort_keys=True), "malformed-resolved-provider"),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    resumed_runtime = VoidCodeRuntime(workspace=tmp_path, config=RuntimeConfig())
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "persisted runtime_config.resolved_provider.active_target "
+            "must reference one of the resolved provider targets"
+        ),
+    ):
+        _ = resumed_runtime.effective_runtime_config(session_id="malformed-resolved-provider")
+
+
 def test_runtime_persists_resume_checkpoint_for_waiting_session(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
