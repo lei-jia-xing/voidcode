@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from .anthropic import AnthropicModelProvider
 from .auth import (
     ProviderAuthAuthorizeRequest,
     ProviderAuthAuthorizeResult,
@@ -20,6 +21,7 @@ from .config import (
     serialize_provider_configs,
     serialize_provider_fallback_config,
 )
+from .copilot import CopilotModelProvider
 from .errors import (
     SingleAgentContextLimitError,
     SingleAgentProviderError,
@@ -27,12 +29,14 @@ from .errors import (
     format_fallback_exhausted_error,
     format_invalid_provider_config_error,
 )
+from .google import GoogleModelProvider
 from .models import (
     ProviderModelSelection,
     ResolvedProviderChain,
     ResolvedProviderConfig,
     ResolvedProviderModel,
 )
+from .openai import OpenAIModelProvider
 from .protocol import (
     ModelProvider,
     ProviderExecutionError,
@@ -53,8 +57,12 @@ from .snapshot import (
 )
 
 __all__ = [
+    "AnthropicModelProvider",
+    "CopilotModelProvider",
+    "GoogleModelProvider",
     "ModelProvider",
     "ModelProviderRegistry",
+    "OpenAIModelProvider",
     "ProviderAuthAuthorizeRequest",
     "ProviderAuthAuthorizeResult",
     "ProviderAuthCallback",
