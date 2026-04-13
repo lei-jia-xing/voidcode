@@ -30,6 +30,7 @@ dependencies = [
   "langgraph",
   "lsprotocol",
   "pydantic",
+  "pydantic-settings",
   "typing-extensions",
   "textual",
   "httpx",
