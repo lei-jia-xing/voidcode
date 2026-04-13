@@ -5,6 +5,8 @@ import re
 from pathlib import Path
 from typing import ClassVar
 
+from rapidfuzz.distance import Levenshtein
+
 from .contracts import ToolCall, ToolDefinition, ToolResult
 
 
@@ -116,8 +118,21 @@ class BlockAnchorReplacer:
     _MAX_LINES_SCAN = 2000
 
     @staticmethod
+    def _similar(a: str, b: str) -> bool:
+        if abs(len(a) - len(b)) > max(1, max(len(a), len(b)) // 4):
+            return False
+
+        if len(a) > BlockAnchorReplacer._MAX_ANCHOR_LENGTH:
+            a = a[: BlockAnchorReplacer._MAX_ANCHOR_LENGTH]
+        if len(b) > BlockAnchorReplacer._MAX_ANCHOR_LENGTH:
+            b = b[: BlockAnchorReplacer._MAX_ANCHOR_LENGTH]
+
+        max_distance = max(1, max(len(a), len(b)) // 4)
+        distance = Levenshtein.distance(a, b, score_cutoff=max_distance)
+        return distance <= max_distance
+
+    @staticmethod
     def find(content: str, old: str) -> list[str]:
-        # Enhanced: use anchors with simple Levenshtein similarity
         results: list[str] = []
         original_lines = content.split("\n")
         search_lines = old.split("\n")
@@ -130,49 +145,15 @@ class BlockAnchorReplacer:
         first_anchor = search_lines[0].strip()
         last_anchor = search_lines[-1].strip()
 
-        # simple Levenshtein distance implementation (bounded)
-        def _lev(a: str, b: str) -> int:
-            if abs(len(a) - len(b)) > max(1, max(len(a), len(b)) // 4):
-                return max(len(a), len(b))
-
-            if len(a) > BlockAnchorReplacer._MAX_ANCHOR_LENGTH:
-                a = a[: BlockAnchorReplacer._MAX_ANCHOR_LENGTH]
-            if len(b) > BlockAnchorReplacer._MAX_ANCHOR_LENGTH:
-                b = b[: BlockAnchorReplacer._MAX_ANCHOR_LENGTH]
-
-            m, n = len(a), len(b)
-            dp = [[0] * (n + 1) for _ in range(m + 1)]
-            for x in range(m + 1):
-                dp[x][0] = x
-            for y in range(n + 1):
-                dp[0][y] = y
-            for i in range(1, m + 1):
-                for j in range(1, n + 1):
-                    cost = 0 if a[i - 1] == b[j - 1] else 1
-                    dp[i][j] = min(
-                        dp[i - 1][j] + 1,  # delete
-                        dp[i][j - 1] + 1,  # insert
-                        dp[i - 1][j - 1] + cost,  # substitute
-                    )
-            return dp[m][n]
-
-        # Thresholds: allow small differences based on length
-        def similar(x: str, y: str) -> bool:
-            d = _lev(x, y)
-            max_len = max(len(x), len(y))
-            if max_len == 0:
-                return True
-            return d <= max(1, max_len // 4)
-
         # Try to locate blocks bounded by anchors with similarity tolerance
         max_scan = min(len(original_lines), BlockAnchorReplacer._MAX_LINES_SCAN)
         for i in range(max_scan):
-            if not similar(original_lines[i].strip(), first_anchor):
+            if not BlockAnchorReplacer._similar(original_lines[i].strip(), first_anchor):
                 continue
             # search a corresponding end line with similarity to last_anchor
             upper = min(len(original_lines), i + BlockAnchorReplacer._MAX_LINES_SCAN)
             for j in range(i + 2, upper):
-                if similar(original_lines[j].strip(), last_anchor):
+                if BlockAnchorReplacer._similar(original_lines[j].strip(), last_anchor):
                     # extract the block from i to j inclusive
                     block = "\n".join(original_lines[i : j + 1])
                     results.append(block)

@@ -180,6 +180,33 @@ def test_edit_tool_preserves_line_endings(tmp_path: Path) -> None:
     assert content == b"line1\r\nmodified\r\nline3"
 
 
+def test_edit_tool_matches_block_anchors_with_small_typos(tmp_path: Path) -> None:
+    file_path = tmp_path / "test.txt"
+    file_path.write_text(
+        "alpha\nstart block\nkeep middle\nend block\nomega\n",
+        encoding="utf-8",
+    )
+
+    tool = EditTool()
+
+    result = tool.invoke(
+        ToolCall(
+            tool_name="edit",
+            arguments={
+                "path": "test.txt",
+                "oldString": "start blok\nkeep middle\nend block",
+                "newString": "start block\nupdated middle\nend block",
+            },
+        ),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert file_path.read_text(encoding="utf-8") == (
+        "alpha\nstart block\nupdated middle\nend block\nomega\n"
+    )
+
+
 def test_tools_package_and_default_registry_export_edit_tool() -> None:
     registry = ToolRegistry.with_defaults()
 
