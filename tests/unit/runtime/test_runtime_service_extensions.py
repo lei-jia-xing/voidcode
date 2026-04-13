@@ -2461,3 +2461,91 @@ def test_runtime_rejects_malformed_model_reference_during_initialization(tmp_pat
             workspace=tmp_path,
             config=RuntimeConfig(model="invalid-model"),
         )
+
+
+def test_runtime_provider_fallback_exhaustion_after_three_targets_reports_terminal_failure(
+    tmp_path: Path,
+) -> None:
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(
+                    ProviderExecutionError(
+                        kind="transient_failure",
+                        provider_name="opencode",
+                        model_name="gpt-5.4",
+                        message="first target unavailable",
+                    ),
+                ),
+            ),
+            "openai": _ScriptedModelProvider(
+                name="openai",
+                outcomes=(
+                    ProviderExecutionError(
+                        kind="rate_limit",
+                        provider_name="openai",
+                        model_name="gpt-4.1",
+                        message="second target throttled",
+                    ),
+                ),
+            ),
+            "anthropic": _ScriptedModelProvider(
+                name="anthropic",
+                outcomes=(
+                    ProviderExecutionError(
+                        kind="invalid_model",
+                        provider_name="anthropic",
+                        model_name="claude-3-7-sonnet",
+                        message="third target not available",
+                    ),
+                ),
+            ),
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            execution_engine="single_agent",
+            model="opencode/gpt-5.4",
+            provider_fallback=RuntimeProviderFallbackConfig(
+                preferred_model="opencode/gpt-5.4",
+                fallback_models=("openai/gpt-4.1", "anthropic/claude-3-7-sonnet"),
+            ),
+        ),
+        model_provider_registry=registry,
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="read sample.txt"))
+
+    assert response.session.status == "failed"
+    fallback_events = [
+        event for event in response.events if event.event_type == "runtime.provider_fallback"
+    ]
+    assert len(fallback_events) == 2
+    assert fallback_events[0].payload == {
+        "reason": "transient_failure",
+        "from_provider": "opencode",
+        "from_model": "gpt-5.4",
+        "to_provider": "openai",
+        "to_model": "gpt-4.1",
+        "attempt": 1,
+    }
+    assert fallback_events[1].payload == {
+        "reason": "rate_limit",
+        "from_provider": "openai",
+        "from_model": "gpt-4.1",
+        "to_provider": "anthropic",
+        "to_model": "claude-3-7-sonnet",
+        "attempt": 2,
+    }
+    assert response.events[-1].event_type == "runtime.failed"
+    assert response.events[-1].payload == {
+        "error": (
+            "provider fallback exhausted after anthropic/claude-3-7-sonnet failed at attempt 3"
+        ),
+        "provider_error_kind": "invalid_model",
+        "provider": "anthropic",
+        "model": "claude-3-7-sonnet",
+        "fallback_exhausted": True,
+    }
