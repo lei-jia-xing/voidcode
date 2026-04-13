@@ -4,6 +4,9 @@ import subprocess
 from pathlib import Path
 from typing import ClassVar
 
+from unidiff import PatchSet
+from unidiff.errors import UnidiffParseError
+
 from .contracts import ToolCall, ToolDefinition, ToolResult
 
 
@@ -172,7 +175,55 @@ def _looks_like_mode_only_patch(patch_text: str) -> bool:
     return bool(blocks) and all(blocks)
 
 
-def _changes_from_patch(patch_text: str) -> list[dict[str, object]]:
+def _dedupe_changes(changes: list[dict[str, object]]) -> list[dict[str, object]]:
+    deduped: list[dict[str, object]] = []
+    seen: set[tuple[object, ...]] = set()
+    for change in changes:
+        key = (change.get("status"), change.get("old_path"), change.get("path"))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(change)
+    return deduped
+
+
+def _changes_from_unified_diff(patch_text: str) -> list[dict[str, object]]:
+    try:
+        patch_set = PatchSet(patch_text)
+    except (UnidiffParseError, ValueError):
+        return []
+
+    changes: list[dict[str, object]] = []
+    for patched_file in patch_set:
+        old_path = (
+            None
+            if patched_file.source_file == "/dev/null"
+            else _strip_diff_prefix(patched_file.source_file)
+        )
+        new_path = (
+            None
+            if patched_file.target_file == "/dev/null"
+            else _strip_diff_prefix(patched_file.target_file)
+        )
+
+        if old_path is not None and '"' in old_path:
+            old_path = None
+        if new_path is not None and '"' in new_path:
+            new_path = None
+
+        if old_path is None and new_path is not None:
+            changes.append({"path": new_path, "status": "A"})
+        elif old_path is not None and new_path is None:
+            changes.append({"path": old_path, "status": "D"})
+        elif old_path is not None and new_path is not None and old_path != new_path:
+            changes.append({"path": new_path, "old_path": old_path, "status": "R"})
+        elif new_path is not None:
+            changes.append({"path": new_path, "status": "M"})
+
+    return changes
+
+
+def _changes_from_patch_metadata(patch_text: str) -> list[dict[str, object]]:
     changes: list[dict[str, object]] = []
     block_old_path: str | None = None
     block_new_path: str | None = None
@@ -226,15 +277,13 @@ def _changes_from_patch(patch_text: str) -> list[dict[str, object]]:
 
     flush_block()
 
-    deduped: list[dict[str, object]] = []
-    seen: set[tuple[object, ...]] = set()
-    for change in changes:
-        key = (change.get("status"), change.get("old_path"), change.get("path"))
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(change)
-    return deduped
+    return changes
+
+
+def _changes_from_patch(patch_text: str) -> list[dict[str, object]]:
+    changes = _changes_from_unified_diff(_normalize_patch_text(patch_text))
+    changes.extend(_changes_from_patch_metadata(patch_text))
+    return _dedupe_changes(changes)
 
 
 class ApplyPatchTool:

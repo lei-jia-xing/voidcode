@@ -54,6 +54,32 @@ def test_apply_patch_updates_file_with_valid_patch(tmp_path: Path) -> None:
     assert result.content == "M sample.txt"
 
 
+def test_apply_patch_reports_file_addition_from_unified_diff(tmp_path: Path) -> None:
+    _init_git_repo(tmp_path)
+
+    patch_text = "\n".join(
+        [
+            "diff --git a/new.txt b/new.txt",
+            "new file mode 100644",
+            "--- /dev/null",
+            "+++ b/new.txt",
+            "@@ -0,0 +1 @@",
+            "+hello",
+            "",
+        ]
+    )
+
+    result = ApplyPatchTool().invoke(
+        ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert (tmp_path / "new.txt").read_text(encoding="utf-8") == "hello\n"
+    assert result.data["changes"] == [{"path": "new.txt", "status": "A"}]
+    assert result.content == "A new.txt"
+
+
 def test_apply_patch_raises_on_invalid_patch(tmp_path: Path) -> None:
     _init_git_repo(tmp_path)
     (tmp_path / "sample.txt").write_text("line-1\n", encoding="utf-8")
@@ -211,9 +237,13 @@ def test_apply_patch_does_not_treat_mixed_mode_and_content_patch_as_mode_only(
 def test_apply_patch_raises_helpful_error_when_git_is_missing(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    def _raise_file_not_found(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        raise FileNotFoundError()
+
     monkeypatch.setattr(
         "voidcode.tools.apply_patch.subprocess.run",
-        lambda *args, **kwargs: (_ for _ in ()).throw(FileNotFoundError()),
+        _raise_file_not_found,
     )
 
     patch_text = "\n".join(
