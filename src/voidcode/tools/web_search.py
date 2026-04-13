@@ -6,7 +6,9 @@ from pathlib import Path
 from typing import ClassVar
 
 import httpx
+from pydantic import ValidationError
 
+from ._pydantic_args import WebSearchArgs
 from .contracts import ToolCall, ToolDefinition, ToolResult
 
 DEFAULT_NUM_RESULTS = 8
@@ -125,12 +127,13 @@ class WebSearchTool:
     )
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
-        query_value = call.arguments.get("query")
-        if not isinstance(query_value, str):
-            raise ValueError("web_search requires a string query argument")
-
-        if not query_value.strip():
-            raise ValueError("web_search query must not be empty")
+        try:
+            args = WebSearchArgs.model_validate({"query": call.arguments.get("query")})
+        except ValidationError as exc:
+            first_error = exc.errors()[0]
+            if first_error.get("type") == "value_error":
+                raise ValueError("web_search query must not be empty") from exc
+            raise ValueError("web_search requires a string query argument") from exc
 
         num_results = call.arguments.get("numResults", DEFAULT_NUM_RESULTS)
         if isinstance(num_results, (int, float)) and num_results > 0:
@@ -138,13 +141,13 @@ class WebSearchTool:
         else:
             num_results = DEFAULT_NUM_RESULTS
 
-        exa_results = _search_exa(query_value, num_results)
+        exa_results = _search_exa(args.query, num_results)
 
         if exa_results:
             output = exa_results
             source = "exa"
         else:
-            output = _search_fallback(query_value, num_results)
+            output = _search_fallback(args.query, num_results)
             source = "duckduckgo"
 
         return ToolResult(
@@ -152,7 +155,7 @@ class WebSearchTool:
             status="ok",
             content=output,
             data={
-                "query": query_value,
+                "query": args.query,
                 "num_results": num_results,
                 "source": source,
             },

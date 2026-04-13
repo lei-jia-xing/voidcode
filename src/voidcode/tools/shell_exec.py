@@ -5,6 +5,9 @@ import subprocess
 from pathlib import Path
 from typing import ClassVar, final
 
+from pydantic import ValidationError
+
+from ._pydantic_args import ShellExecArgs
 from .contracts import ToolCall, ToolDefinition, ToolResult
 
 DEFAULT_TIMEOUT_SECONDS = 30
@@ -34,13 +37,15 @@ class ShellExecTool:
     )
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
-        command_value = call.arguments.get("command")
-        if not isinstance(command_value, str):
-            raise ValueError("shell_exec requires a string command argument")
+        try:
+            args = ShellExecArgs.model_validate({"command": call.arguments.get("command")})
+        except ValidationError as exc:
+            first_error = exc.errors()[0]
+            if first_error.get("type") == "value_error":
+                raise ValueError("shell_exec command must not be empty") from exc
+            raise ValueError("shell_exec requires a string command argument") from exc
 
-        command_text = command_value.strip()
-        if not command_text:
-            raise ValueError("shell_exec command must not be empty")
+        command_text = args.command.strip()
 
         command_parts = shlex.split(command_text, posix=True)
         if not command_parts:
