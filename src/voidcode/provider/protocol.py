@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import re
+import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Literal, Protocol, runtime_checkable
 
 from ..tools.contracts import ToolCall, ToolDefinition, ToolResult
 
 type AppliedSkill = dict[str, str]
+type ProviderStreamEventKind = Literal["delta", "content", "error", "done"]
+type ProviderStreamChannel = Literal["text", "tool", "reasoning", "error"]
+type ProviderDoneReason = Literal["completed", "cancelled", "error"]
 
 READ_REQUEST_PATTERN = re.compile(r"^(read|show)\s+(?P<path>.+)$", re.IGNORECASE)
 GREP_REQUEST_PATTERN = re.compile(r"^grep\s+(?P<pattern>.+?)\s+(?P<path>\S+)$", re.IGNORECASE)
@@ -40,6 +45,7 @@ class SingleAgentTurnRequest:
     provider_name: str | None
     model_name: str | None
     attempt: int = 0
+    abort_signal: SingleAgentAbortSignal | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,9 +54,108 @@ class SingleAgentTurnResult:
     output: str | None = None
 
 
+@runtime_checkable
+class SingleAgentAbortSignal(Protocol):
+    @property
+    def cancelled(self) -> bool: ...
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderStreamEvent:
+    kind: ProviderStreamEventKind
+    channel: ProviderStreamChannel = "text"
+    text: str | None = None
+    error: str | None = None
+    error_kind: (
+        Literal[
+            "rate_limit",
+            "context_limit",
+            "invalid_model",
+            "transient_failure",
+            "cancelled",
+        ]
+        | None
+    ) = None
+    done_reason: ProviderDoneReason | None = None
+
+
+def normalize_provider_stream_event(event: ProviderStreamEvent) -> ProviderStreamEvent:
+    if event.kind in {"delta", "content"} and event.text is None:
+        raise ValueError(f"provider stream event '{event.kind}' requires text")
+    if event.kind == "error" and event.error is None:
+        raise ValueError("provider stream event 'error' requires error")
+    if event.kind == "done" and event.done_reason is None:
+        return ProviderStreamEvent(
+            kind="done",
+            channel=event.channel,
+            done_reason="completed",
+        )
+    return event
+
+
+def wrap_provider_stream(
+    events: Iterator[ProviderStreamEvent],
+    *,
+    provider_name: str,
+    model_name: str,
+    abort_signal: SingleAgentAbortSignal | None,
+    chunk_timeout_seconds: float,
+) -> Iterator[ProviderStreamEvent]:
+    if chunk_timeout_seconds <= 0:
+        raise ValueError("provider stream chunk timeout must be greater than 0")
+
+    if abort_signal is not None and abort_signal.cancelled:
+        yield ProviderStreamEvent(
+            kind="error",
+            channel="error",
+            error="provider stream cancelled",
+            error_kind="cancelled",
+        )
+        yield ProviderStreamEvent(kind="done", done_reason="cancelled")
+        return
+
+    previous_chunk_at = time.monotonic()
+    done_seen = False
+    for event in events:
+        now = time.monotonic()
+        if now - previous_chunk_at > chunk_timeout_seconds:
+            raise ProviderExecutionError(
+                kind="transient_failure",
+                provider_name=provider_name,
+                model_name=model_name,
+                message="provider stream chunk timeout exceeded",
+            )
+        previous_chunk_at = now
+
+        if abort_signal is not None and abort_signal.cancelled:
+            yield ProviderStreamEvent(
+                kind="error",
+                channel="error",
+                error="provider stream cancelled",
+                error_kind="cancelled",
+            )
+            yield ProviderStreamEvent(kind="done", done_reason="cancelled")
+            return
+
+        normalized = normalize_provider_stream_event(event)
+        yield normalized
+        if normalized.kind == "done":
+            done_seen = True
+            break
+
+    if not done_seen:
+        yield ProviderStreamEvent(kind="done", done_reason="completed")
+
+
 @dataclass(frozen=True, slots=True)
 class ProviderExecutionError(ValueError):
-    kind: Literal["rate_limit", "context_limit", "invalid_model", "transient_failure"]
+    kind: Literal[
+        "rate_limit",
+        "context_limit",
+        "invalid_model",
+        "transient_failure",
+        "cancelled",
+    ]
     provider_name: str
     model_name: str
     message: str
@@ -66,6 +171,14 @@ class SingleAgentProvider(Protocol):
     def name(self) -> str: ...
 
     def propose_turn(self, request: SingleAgentTurnRequest) -> SingleAgentTurnResult: ...
+
+
+@runtime_checkable
+class StreamableSingleAgentProvider(Protocol):
+    @property
+    def name(self) -> str: ...
+
+    def stream_turn(self, request: SingleAgentTurnRequest) -> Iterator[ProviderStreamEvent]: ...
 
 
 @runtime_checkable

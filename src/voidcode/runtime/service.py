@@ -538,7 +538,11 @@ class VoidCodeRuntime:
                 tool_results=(),
                 session_metadata=session.metadata,
             ),
-            metadata={**request.metadata, "provider_attempt": 0},
+            metadata={
+                **request.metadata,
+                "provider_attempt": 0,
+                "provider_stream": bool(request.metadata.get("provider_stream", True)),
+            },
         )
         tool_results: list[ToolResult] = []
         graph = self._graph_for_session_metadata(session.metadata)
@@ -606,6 +610,19 @@ class VoidCodeRuntime:
                 )
             except Exception as exc:
                 if isinstance(exc, ProviderExecutionError):
+                    if exc.kind == "cancelled":
+                        yield self._failed_chunk(
+                            session=session,
+                            sequence=sequence + 1,
+                            error=str(exc),
+                            payload={
+                                "provider_error_kind": exc.kind,
+                                "provider": exc.provider_name,
+                                "model": exc.model_name,
+                                "cancelled": True,
+                            },
+                        )
+                        return
                     next_attempt = provider_attempt + 1
                     provider_chain = self._provider_chain_for_session_metadata(session.metadata)
                     all_targets = provider_chain.all_targets

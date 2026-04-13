@@ -36,6 +36,7 @@ from voidcode.runtime.service import (
 )
 from voidcode.runtime.single_agent_provider import (
     ProviderExecutionError,
+    ProviderStreamEvent,
     SingleAgentTurnRequest,
     SingleAgentTurnResult,
 )
@@ -152,6 +153,42 @@ class _ScriptedSingleAgentProvider:
         if isinstance(outcome, Exception):
             raise outcome
         return cast(SingleAgentTurnResult, outcome)
+
+    def stream_turn(self, request: object):
+        turn_request = cast(SingleAgentTurnRequest, request)
+        if turn_request.abort_signal is not None and turn_request.abort_signal.cancelled:
+            return iter(
+                (
+                    ProviderStreamEvent(
+                        kind="error",
+                        channel="error",
+                        error="cancelled by runtime",
+                        error_kind="cancelled",
+                    ),
+                    ProviderStreamEvent(kind="done", done_reason="cancelled"),
+                )
+            )
+        if not self._outcomes:
+            return iter(
+                (
+                    ProviderStreamEvent(kind="delta", channel="text", text="done"),
+                    ProviderStreamEvent(kind="done", done_reason="completed"),
+                )
+            )
+        outcome = self._outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        if isinstance(outcome, tuple):
+            return iter(cast(tuple[ProviderStreamEvent, ...], outcome))
+        turn_result = cast(SingleAgentTurnResult, outcome)
+        if turn_result.output is not None:
+            return iter(
+                (
+                    ProviderStreamEvent(kind="delta", channel="text", text=turn_result.output),
+                    ProviderStreamEvent(kind="done", done_reason="completed"),
+                )
+            )
+        return iter((ProviderStreamEvent(kind="done", done_reason="completed"),))
 
 
 @dataclass(frozen=True, slots=True)
@@ -1992,6 +2029,121 @@ def test_runtime_downgrades_to_next_provider_target_on_provider_failures(
         "to_provider": "custom",
         "to_model": "demo",
         "attempt": 1,
+    }
+
+
+def test_runtime_single_agent_streaming_emits_ordered_provider_stream_events(
+    tmp_path: Path,
+) -> None:
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(
+                    (
+                        ProviderStreamEvent(kind="delta", channel="text", text="hello "),
+                        ProviderStreamEvent(kind="delta", channel="text", text="world"),
+                        ProviderStreamEvent(kind="done", done_reason="completed"),
+                    ),
+                ),
+            ),
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(execution_engine="single_agent", model="opencode/gpt-5.4"),
+        model_provider_registry=registry,
+    )
+
+    response = runtime.run_stream(RuntimeRequest(prompt="read sample.txt"))
+    chunks = list(response)
+    events = [chunk.event for chunk in chunks if chunk.event is not None]
+    assert events
+    assert [event.sequence for event in events] == sorted(event.sequence for event in events)
+    stream_events = [event for event in events if event.event_type == "graph.provider_stream"]
+    assert [event.payload["kind"] for event in stream_events] == ["delta", "delta", "done"]
+    output_chunks = [chunk.output for chunk in chunks if chunk.kind == "output"]
+    assert output_chunks == ["hello world"]
+
+
+def test_runtime_single_agent_stream_error_maps_to_fallback_when_retryable(
+    tmp_path: Path,
+) -> None:
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(
+                    (
+                        ProviderStreamEvent(
+                            kind="error",
+                            channel="error",
+                            error="stream disconnect",
+                            error_kind="transient_failure",
+                        ),
+                        ProviderStreamEvent(kind="done", done_reason="error"),
+                    ),
+                ),
+            ),
+            "custom": _ScriptedModelProvider(
+                name="custom",
+                outcomes=(SingleAgentTurnResult(output="fallback complete"),),
+            ),
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            execution_engine="single_agent",
+            model="opencode/gpt-5.4",
+            provider_fallback=RuntimeProviderFallbackConfig(
+                preferred_model="opencode/gpt-5.4",
+                fallback_models=("custom/demo",),
+            ),
+        ),
+        model_provider_registry=registry,
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="read sample.txt"))
+
+    assert response.session.status == "completed"
+    assert response.output == "fallback complete"
+    fallback_events = [
+        event for event in response.events if event.event_type == "runtime.provider_fallback"
+    ]
+    assert len(fallback_events) == 1
+    assert fallback_events[0].payload["reason"] == "transient_failure"
+
+
+def test_runtime_single_agent_stream_cancelled_maps_to_failed_without_fallback(
+    tmp_path: Path,
+) -> None:
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(SingleAgentTurnResult(output="ignored"),),
+            ),
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(execution_engine="single_agent", model="opencode/gpt-5.4"),
+        model_provider_registry=registry,
+    )
+
+    response = runtime.run(
+        RuntimeRequest(prompt="read sample.txt", metadata={"abort_requested": True})
+    )
+
+    assert response.session.status == "failed"
+    assert response.events[-1].event_type == "runtime.failed"
+    assert response.events[-1].payload == {
+        "error": "cancelled by runtime",
+        "provider_error_kind": "cancelled",
+        "provider": "opencode",
+        "model": "gpt-5.4",
+        "cancelled": True,
     }
 
 
