@@ -3,6 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import ClassVar, final
 
+from pydantic import ValidationError
+
+from ._pydantic_args import WriteFileArgs
 from .contracts import ToolCall, ToolDefinition, ToolResult
 
 
@@ -16,15 +19,21 @@ class WriteFileTool:
     )
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
-        path_value = call.arguments.get("path")
-        if not isinstance(path_value, str):
-            raise ValueError("write_file requires a string path argument")
+        try:
+            args = WriteFileArgs.model_validate(
+                {
+                    "path": call.arguments.get("path"),
+                    "content": call.arguments.get("content"),
+                }
+            )
+        except ValidationError as exc:
+            first_error = exc.errors()[0]
+            field_name = first_error.get("loc", (None,))[0]
+            if field_name == "content":
+                raise ValueError("write_file requires a string content argument") from exc
+            raise ValueError("write_file requires a string path argument") from exc
 
-        content_value = call.arguments.get("content")
-        if not isinstance(content_value, str):
-            raise ValueError("write_file requires a string content argument")
-
-        relative_path = Path(path_value)
+        relative_path = Path(args.path)
         workspace_root = workspace.resolve()
         candidate = (workspace_root / relative_path).resolve()
 
@@ -32,14 +41,14 @@ class WriteFileTool:
             raise ValueError("write_file only allows paths inside the workspace")
 
         candidate.parent.mkdir(parents=True, exist_ok=True)
-        candidate.write_text(content_value, encoding="utf-8")
+        candidate.write_text(args.content, encoding="utf-8")
 
         return ToolResult(
             tool_name=self.definition.name,
             status="ok",
-            content=content_value,
+            content=args.content,
             data={
                 "path": candidate.relative_to(workspace_root).as_posix(),
-                "byte_count": len(content_value.encode("utf-8")),
+                "byte_count": len(args.content.encode("utf-8")),
             },
         )

@@ -3,6 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import ClassVar, final
 
+from pydantic import ValidationError
+
+from ._pydantic_args import GrepArgs
 from .contracts import ToolCall, ToolDefinition, ToolResult
 
 
@@ -18,18 +21,23 @@ class GrepTool:
     )
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
-        pattern_value = call.arguments.get("pattern")
-        if not isinstance(pattern_value, str):
-            raise ValueError("grep requires a string pattern argument")
+        try:
+            args = GrepArgs.model_validate(
+                {
+                    "pattern": call.arguments.get("pattern"),
+                    "path": call.arguments.get("path"),
+                }
+            )
+        except ValidationError as exc:
+            first_error = exc.errors()[0]
+            field_name = first_error.get("loc", (None,))[0]
+            if field_name == "path":
+                raise ValueError("grep requires a string path argument") from exc
+            if first_error.get("type") == "value_error":
+                raise ValueError("grep pattern must not be empty") from exc
+            raise ValueError("grep requires a string pattern argument") from exc
 
-        path_value = call.arguments.get("path")
-        if not isinstance(path_value, str):
-            raise ValueError("grep requires a string path argument")
-
-        if pattern_value == "":
-            raise ValueError("grep pattern must not be empty")
-
-        relative_path = Path(path_value)
+        relative_path = Path(args.path)
         workspace_root = workspace.resolve()
         candidate = (workspace_root / relative_path).resolve()
 
@@ -37,7 +45,7 @@ class GrepTool:
             raise ValueError("grep only allows paths inside the workspace")
 
         if not candidate.is_file():
-            raise ValueError(f"grep target does not exist: {path_value}")
+            raise ValueError(f"grep target does not exist: {args.path}")
 
         try:
             content = candidate.read_text(encoding="utf-8")
@@ -55,12 +63,12 @@ class GrepTool:
             start_index = 0
 
             while True:
-                found_index = line_text.find(pattern_value, start_index)
+                found_index = line_text.find(args.pattern, start_index)
                 if found_index < 0:
                     break
                 columns.append(found_index + 1)
                 total_occurrences += 1
-                start_index = found_index + len(pattern_value)
+                start_index = found_index + len(args.pattern)
 
             if columns:
                 matches.append(
@@ -75,11 +83,11 @@ class GrepTool:
         if matches:
             preview_lines = [f"{match['line']}: {match['text']}" for match in matches[:10]]
             summary = (
-                f"Found {total_occurrences} match(es) for {pattern_value!r} in "
+                f"Found {total_occurrences} match(es) for {args.pattern!r} in "
                 f"{relative_result_path}\n" + "\n".join(preview_lines)
             )
         else:
-            summary = f"Found 0 match(es) for {pattern_value!r} in {relative_result_path}"
+            summary = f"Found 0 match(es) for {args.pattern!r} in {relative_result_path}"
 
         return ToolResult(
             tool_name=self.definition.name,
@@ -87,7 +95,7 @@ class GrepTool:
             content=summary,
             data={
                 "path": relative_result_path,
-                "pattern": pattern_value,
+                "pattern": args.pattern,
                 "match_count": total_occurrences,
                 "matches": matches,
             },

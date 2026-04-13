@@ -5,6 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import ClassVar, final
 
+from pydantic import ValidationError
+
+from ._pydantic_args import ReadFileArgs
 from .contracts import ToolCall, ToolDefinition, ToolResult
 
 
@@ -20,11 +23,12 @@ class ReadFileTool:
     )
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
-        path_value = call.arguments.get("path")
-        if not isinstance(path_value, str):
-            raise ValueError("read_file requires a string path argument")
+        try:
+            args = ReadFileArgs.model_validate({"path": call.arguments.get("path")})
+        except ValidationError as exc:
+            raise ValueError("read_file requires a string path argument") from exc
 
-        relative_path = Path(path_value)
+        relative_path = Path(args.path)
         workspace_root = workspace.resolve()
         candidate = (workspace_root / relative_path).resolve()
 
@@ -32,7 +36,7 @@ class ReadFileTool:
             raise ValueError("read_file only allows paths inside the workspace")
 
         if not candidate.is_file():
-            raise ValueError(f"read_file target does not exist: {path_value}")
+            raise ValueError(f"read_file target does not exist: {args.path}")
 
         content = candidate.read_text(encoding="utf-8")
         return ToolResult(
