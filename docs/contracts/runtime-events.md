@@ -137,6 +137,17 @@ EventEnvelope(
 - 当前可追加的 payload 字段：
   - `provider: str`
   - `model: str`
+  - `streaming: bool` (如果为 true，后续可能跟随 `graph.provider_stream` 事件)
+
+### `graph.provider_stream`
+- source: `graph`
+- 当前 payload:
+  - `kind: str` (事件类型: `delta`, `content`, `error`, `done`)
+  - `channel: str` (数据通道: `text`, `tool`, `reasoning`, `error`)
+  - `text: str` (可选; 流片段文本)
+  - `error: str` (可选; 错误描述)
+  - `error_kind: str` (可选; 错误分类)
+  - `done_reason: str` (可选; 完成原因)
 
 ### `graph.tool_request_created`
 - source: `graph`
