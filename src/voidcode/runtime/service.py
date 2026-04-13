@@ -12,6 +12,7 @@ from ..graph.contracts import GraphEvent, GraphRunRequest
 from ..graph.read_only_slice import DeterministicReadOnlyGraph
 from ..graph.single_agent_slice import ProviderSingleAgentGraph
 from ..hook.executor import HookExecutionOutcome, HookExecutionRequest, run_tool_hooks
+from ..provider.auth import ProviderAuthResolver
 from ..provider.errors import (
     SingleAgentContextLimitError,
     classify_provider_error,
@@ -141,6 +142,7 @@ class VoidCodeRuntime:
     _model_provider_registry: ModelProviderRegistry
     _provider_model: ResolvedProviderModel
     _provider_chain: ResolvedProviderChain
+    _provider_auth_resolver: ProviderAuthResolver
     _skill_registry: SkillRegistry
     _lsp_manager: LspManager
     _mcp_manager: McpManager
@@ -176,6 +178,7 @@ class VoidCodeRuntime:
         )
         self._provider_model = self._resolved_provider_config.active_target
         self._provider_chain = self._resolved_provider_config.target_chain
+        self._provider_auth_resolver = ProviderAuthResolver(providers=self._config.providers)
         self._lsp_manager = lsp_manager or build_lsp_manager(self._config.lsp)
         self._mcp_manager = mcp_manager or build_mcp_manager(self._config.mcp)
         self._base_tool_registry = tool_registry or ToolRegistry.with_defaults(
@@ -324,6 +327,10 @@ class VoidCodeRuntime:
 
     def current_lsp_state(self) -> LspManagerState:
         return self._lsp_manager.current_state()
+
+    @property
+    def provider_auth_resolver(self) -> ProviderAuthResolver:
+        return self._provider_auth_resolver
 
     def request_lsp(
         self,

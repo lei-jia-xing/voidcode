@@ -241,6 +241,7 @@ def test_runtime_initializes_empty_extension_state_by_default(tmp_path: Path) ->
 
     assert provider_model.selection.raw_model is None
     assert provider_model.provider is None
+    assert runtime.provider_auth_resolver.methods("openai").default_method == "api_key"
     assert skill_registry.skills == {}
     assert lsp_manager.current_state().mode == "disabled"
     assert lsp_manager.configuration.configured_enabled is False
@@ -285,6 +286,7 @@ def test_runtime_initializes_extension_state_from_config_when_enabled(tmp_path: 
     assert provider_model.selection.model == "gpt-5.4"
     assert provider_model.provider is not None
     assert provider_model.provider.name == "opencode"
+    assert runtime.provider_auth_resolver.methods("copilot").default_method == "token"
     assert skill.description == "Demo skill"
     assert skill.directory == skill_dir.resolve()
     assert lsp_state.mode == "managed"

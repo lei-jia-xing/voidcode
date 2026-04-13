@@ -1,8 +1,23 @@
 from __future__ import annotations
 
+from .auth import (
+    ProviderAuthAuthorizeRequest,
+    ProviderAuthAuthorizeResult,
+    ProviderAuthCallback,
+    ProviderAuthCallbackRequest,
+    ProviderAuthMaterial,
+    ProviderAuthMethod,
+    ProviderAuthMethodsResponse,
+    ProviderAuthResolutionError,
+    ProviderAuthResolver,
+    provider_auth_error_to_execution_kind,
+)
 from .config import (
+    ProviderConfigs,
     ProviderFallbackConfig,
+    parse_provider_configs_payload,
     parse_provider_fallback_payload,
+    serialize_provider_configs,
     serialize_provider_fallback_config,
 )
 from .errors import (
@@ -40,6 +55,16 @@ from .snapshot import (
 __all__ = [
     "ModelProvider",
     "ModelProviderRegistry",
+    "ProviderAuthAuthorizeRequest",
+    "ProviderAuthAuthorizeResult",
+    "ProviderAuthCallback",
+    "ProviderAuthCallbackRequest",
+    "ProviderAuthMaterial",
+    "ProviderAuthMethod",
+    "ProviderAuthMethodsResponse",
+    "ProviderAuthResolutionError",
+    "ProviderAuthResolver",
+    "ProviderConfigs",
     "ProviderExecutionError",
     "ProviderFallbackConfig",
     "ProviderModelSelection",
@@ -57,10 +82,13 @@ __all__ = [
     "format_fallback_exhausted_error",
     "format_invalid_provider_config_error",
     "parse_resolved_provider_snapshot",
+    "parse_provider_configs_payload",
     "parse_provider_fallback_payload",
+    "provider_auth_error_to_execution_kind",
     "resolve_provider_chain",
     "resolve_provider_config",
     "resolve_provider_model",
     "resolved_provider_snapshot",
+    "serialize_provider_configs",
     "serialize_provider_fallback_config",
 ]
