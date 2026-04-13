@@ -6,8 +6,11 @@ from typing import cast
 
 import pytest
 
+from voidcode.runtime import config as runtime_config
 from voidcode.runtime.config import (
     APPROVAL_MODE_ENV_VAR,
+    EXECUTION_ENGINE_ENV_VAR,
+    MAX_STEPS_ENV_VAR,
     MODEL_ENV_VAR,
     RUNTIME_CONFIG_FILE_NAME,
     RuntimeAcpConfig,
@@ -19,9 +22,15 @@ from voidcode.runtime.config import (
     RuntimeSkillsConfig,
     RuntimeToolsBuiltinConfig,
     RuntimeToolsConfig,
+    RuntimeTuiConfig,
     load_runtime_config,
     runtime_config_path,
 )
+
+_parse_tui_config = runtime_config.__dict__["_parse_tui_config"]
+_parse_tools_config = runtime_config.__dict__["_parse_tools_config"]
+_parse_skills_config = runtime_config.__dict__["_parse_skills_config"]
+_parse_acp_config = runtime_config.__dict__["_parse_acp_config"]
 
 
 def test_runtime_config_defaults_to_ask_without_file_or_env(tmp_path: Path) -> None:
@@ -44,6 +53,20 @@ def test_runtime_config_uses_model_environment_when_repo_file_missing(tmp_path: 
     config = load_runtime_config(tmp_path, env={MODEL_ENV_VAR: "opencode/gpt-5.4"})
 
     assert config.model == "opencode/gpt-5.4"
+
+
+def test_runtime_config_uses_execution_engine_environment_when_repo_file_missing(
+    tmp_path: Path,
+) -> None:
+    config = load_runtime_config(tmp_path, env={EXECUTION_ENGINE_ENV_VAR: "single_agent"})
+
+    assert config.execution_engine == "single_agent"
+
+
+def test_runtime_config_uses_max_steps_environment_when_repo_file_missing(tmp_path: Path) -> None:
+    config = load_runtime_config(tmp_path, env={MAX_STEPS_ENV_VAR: "7"})
+
+    assert config.max_steps == 7
 
 
 def test_runtime_config_prefers_repo_file_over_environment(tmp_path: Path) -> None:
@@ -87,6 +110,62 @@ def test_runtime_config_prefers_repo_file_model_over_environment(tmp_path: Path)
     config = load_runtime_config(tmp_path, env={MODEL_ENV_VAR: "env/model"})
 
     assert config.model == "repo/model"
+
+
+def test_runtime_config_prefers_repo_file_execution_engine_over_environment(tmp_path: Path) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps({"execution_engine": "deterministic"}),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(tmp_path, env={EXECUTION_ENGINE_ENV_VAR: "single_agent"})
+
+    assert config.execution_engine == "deterministic"
+
+
+def test_runtime_config_prefers_repo_file_max_steps_over_environment(tmp_path: Path) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps({"max_steps": 4}),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(tmp_path, env={MAX_STEPS_ENV_VAR: "7"})
+
+    assert config.max_steps == 4
+
+
+def test_runtime_config_prefers_explicit_execution_engine_over_repo_file_and_environment(
+    tmp_path: Path,
+) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps({"execution_engine": "deterministic"}),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(
+        tmp_path,
+        execution_engine="single_agent",
+        env={EXECUTION_ENGINE_ENV_VAR: "deterministic"},
+    )
+
+    assert config.execution_engine == "single_agent"
+
+
+def test_runtime_config_prefers_explicit_max_steps_over_repo_file_and_environment(
+    tmp_path: Path,
+) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps({"max_steps": 4}),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(
+        tmp_path,
+        max_steps=9,
+        env={MAX_STEPS_ENV_VAR: "7"},
+    )
+
+    assert config.max_steps == 9
 
 
 def test_runtime_config_parses_extension_domains(tmp_path: Path) -> None:
@@ -386,9 +465,35 @@ def test_runtime_config_prefers_explicit_override_over_repo_file_and_environment
     assert config.approval_mode == "allow"
 
 
+def test_runtime_config_explicit_approval_mode_does_not_affect_environment_execution_engine(
+    tmp_path: Path,
+) -> None:
+    config = load_runtime_config(
+        tmp_path,
+        approval_mode="allow",
+        env={EXECUTION_ENGINE_ENV_VAR: "single_agent"},
+    )
+
+    assert config.approval_mode == "allow"
+    assert config.execution_engine == "single_agent"
+
+
 def test_runtime_config_rejects_invalid_environment_approval_mode(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match=APPROVAL_MODE_ENV_VAR):
         _ = load_runtime_config(tmp_path, env={APPROVAL_MODE_ENV_VAR: "maybe"})
+
+
+def test_runtime_config_rejects_invalid_environment_execution_engine(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match=EXECUTION_ENGINE_ENV_VAR):
+        _ = load_runtime_config(tmp_path, env={EXECUTION_ENGINE_ENV_VAR: "agent"})
+
+
+@pytest.mark.parametrize("raw_value", ["0", "-1", "four"])
+def test_runtime_config_rejects_invalid_environment_max_steps(
+    tmp_path: Path, raw_value: str
+) -> None:
+    with pytest.raises(ValueError, match=MAX_STEPS_ENV_VAR):
+        _ = load_runtime_config(tmp_path, env={MAX_STEPS_ENV_VAR: raw_value})
 
 
 def test_runtime_config_rejects_empty_model_environment(tmp_path: Path) -> None:
@@ -612,6 +717,80 @@ def test_runtime_config_rejects_invalid_extension_domain_shapes(
 
     with pytest.raises(ValueError, match=match):
         _ = load_runtime_config(tmp_path, env={})
+
+
+def test_parse_tui_config_returns_defaults_when_fields_missing() -> None:
+    assert _parse_tui_config({}) == RuntimeTuiConfig(leader_key="alt+x", keymap=None)
+
+
+def test_parse_tui_config_preserves_valid_leader_key_and_keymap() -> None:
+    assert _parse_tui_config(
+        {
+            "leader_key": "ctrl+space",
+            "keymap": {
+                "n": "session_new",
+                "r": "session_resume",
+                "p": "command_palette",
+            },
+        }
+    ) == RuntimeTuiConfig(
+        leader_key="ctrl+space",
+        keymap={
+            "n": "session_new",
+            "r": "session_resume",
+            "p": "command_palette",
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    ("raw_value", "match"),
+    [
+        pytest.param([], "runtime config field 'tui'", id="shape"),
+        pytest.param(
+            {"leader_key": 3},
+            "runtime config field 'tui.leader_key'",
+            id="leader-key-type",
+        ),
+        pytest.param(
+            {"keymap": []},
+            "runtime config field 'tui.keymap'",
+            id="keymap-shape",
+        ),
+        pytest.param(
+            {"keymap": {"n": False}},
+            "runtime config field 'tui.keymap' values must be strings",
+            id="keymap-value-type",
+        ),
+        pytest.param(
+            {"keymap": {1: "session_new"}},
+            "runtime config field 'tui.keymap' keys must be strings",
+            id="keymap-key-type",
+        ),
+        pytest.param(
+            {"keymap": {"n": "quit"}},
+            "runtime config field 'tui.keymap' values must be one of: "
+            "command_palette, session_new, session_resume",
+            id="keymap-value-enum",
+        ),
+    ],
+)
+def test_parse_tui_config_rejects_invalid_shapes_and_values(raw_value: object, match: str) -> None:
+    with pytest.raises(ValueError, match=match):
+        _ = _parse_tui_config(raw_value)
+
+
+def test_parse_simple_extension_configs_preserve_public_dataclasses() -> None:
+    assert _parse_tools_config({"builtin": {"enabled": True}, "paths": [".voidcode/tools"]}) == (
+        RuntimeToolsConfig(
+            builtin=RuntimeToolsBuiltinConfig(enabled=True),
+            paths=(".voidcode/tools",),
+        )
+    )
+    assert _parse_skills_config({"enabled": False, "paths": [".voidcode/skills"]}) == (
+        RuntimeSkillsConfig(enabled=False, paths=(".voidcode/skills",))
+    )
+    assert _parse_acp_config({"enabled": True}) == RuntimeAcpConfig(enabled=True)
 
 
 def test_runtime_config_uses_repo_local_filename_inside_workspace(tmp_path: Path) -> None:
