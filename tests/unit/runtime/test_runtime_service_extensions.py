@@ -9,6 +9,7 @@ from typing import Any, Literal, cast
 
 import pytest
 
+from voidcode.provider.registry import ModelProviderRegistry
 from voidcode.runtime.acp import DisabledAcpAdapter
 from voidcode.runtime.config import (
     RuntimeAcpConfig,
@@ -26,7 +27,6 @@ from voidcode.runtime.events import (
 )
 from voidcode.runtime.lsp import DisabledLspManager
 from voidcode.runtime.mcp import McpConfigState, McpManagerState, McpRuntimeEvent
-from voidcode.runtime.model_provider import ModelProviderRegistry
 from voidcode.runtime.permission import PermissionPolicy
 from voidcode.runtime.service import (
     GraphRunRequest,

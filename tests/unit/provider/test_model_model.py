@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import pytest
 
-from voidcode.runtime.config import RuntimeProviderFallbackConfig
-from voidcode.runtime.model_provider import (
-    ModelProviderRegistry,
-    ResolvedProviderConfig,
+from voidcode.provider.models import ResolvedProviderConfig
+from voidcode.provider.registry import ModelProviderRegistry
+from voidcode.provider.resolution import (
     resolve_provider_chain,
     resolve_provider_config,
     resolve_provider_model,
 )
+from voidcode.runtime.config import RuntimeProviderFallbackConfig
 
 
 def test_resolve_provider_model_accepts_none() -> None:

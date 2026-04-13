@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import pytest
 
+from voidcode.provider.registry import ModelProviderRegistry
+from voidcode.provider.resolution import resolve_provider_model
 from voidcode.runtime.context_window import RuntimeContextWindow
-from voidcode.runtime.model_provider import ModelProviderRegistry, resolve_provider_model
 from voidcode.runtime.single_agent_provider import (
     ProviderExecutionError,
     SingleAgentTurnRequest,

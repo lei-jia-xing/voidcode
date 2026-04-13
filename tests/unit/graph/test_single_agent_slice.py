@@ -4,8 +4,9 @@ import pytest
 
 from voidcode.graph.contracts import GraphRunRequest
 from voidcode.graph.single_agent_slice import ProviderSingleAgentGraph
+from voidcode.provider.registry import ModelProviderRegistry
+from voidcode.provider.resolution import resolve_provider_model
 from voidcode.runtime.context_window import RuntimeContextWindow
-from voidcode.runtime.model_provider import ModelProviderRegistry, resolve_provider_model
 from voidcode.runtime.session import SessionRef, SessionState
 from voidcode.runtime.single_agent_provider import (
     SingleAgentTurnRequest,

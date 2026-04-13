@@ -10,7 +10,12 @@ from typing import Literal, cast
 from ..hook.config import RuntimeFormatterPresetConfig, RuntimeHooksConfig
 from ..lsp import LspServerConfigOverride as RuntimeLspServerConfig
 from ..lsp import has_builtin_lsp_server_preset
+from ..provider import config as provider_config
 from .permission import PermissionDecision
+
+RuntimeProviderFallbackConfig = provider_config.ProviderFallbackConfig
+parse_provider_fallback_payload = provider_config.parse_provider_fallback_payload
+serialize_provider_fallback_config = provider_config.serialize_provider_fallback_config
 
 RUNTIME_CONFIG_FILE_NAME = ".voidcode.json"
 APPROVAL_MODE_ENV_VAR = "VOIDCODE_APPROVAL_MODE"
@@ -71,12 +76,6 @@ class RuntimeMcpConfig:
 class RuntimeTuiConfig:
     leader_key: str = "alt+x"
     keymap: Mapping[str, str] | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class RuntimeProviderFallbackConfig:
-    preferred_model: str
-    fallback_models: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -521,44 +520,6 @@ def _parse_provider_fallback_config(
     )
 
 
-def parse_provider_fallback_payload(
-    raw_provider_fallback: object,
-    *,
-    source: str,
-) -> RuntimeProviderFallbackConfig | None:
-    if raw_provider_fallback is None:
-        return None
-    if not isinstance(raw_provider_fallback, dict):
-        raise ValueError(f"{source} must be an object when provided")
-
-    payload = cast(dict[str, object], raw_provider_fallback)
-    preferred_model = payload.get("preferred_model")
-    if not isinstance(preferred_model, str):
-        raise ValueError(f"{_nested_config_field(source, 'preferred_model')} must be a string")
-    fallback_models = _parse_string_list(
-        payload.get("fallback_models"),
-        field_path=_nested_config_field(source, "fallback_models"),
-    )
-    ordered_models = (preferred_model, *fallback_models)
-    if len(set(ordered_models)) != len(ordered_models):
-        raise ValueError("provider fallback chain must not contain duplicate models")
-    return RuntimeProviderFallbackConfig(
-        preferred_model=preferred_model,
-        fallback_models=fallback_models,
-    )
-
-
-def serialize_provider_fallback_config(
-    provider_fallback: RuntimeProviderFallbackConfig | None,
-) -> dict[str, object] | None:
-    if provider_fallback is None:
-        return None
-    return {
-        "preferred_model": provider_fallback.preferred_model,
-        "fallback_models": list(provider_fallback.fallback_models),
-    }
-
-
 def _parse_optional_bool(raw_value: object, *, field_path: str) -> bool | None:
     if raw_value is None:
         return None
@@ -573,14 +534,6 @@ def _parse_object_container(raw_value: object, *, field_path: str) -> dict[str, 
     if not isinstance(raw_value, dict):
         raise ValueError(f"runtime config field '{field_path}' must be an object when provided")
     return cast(dict[str, object], raw_value)
-
-
-def _nested_config_field(source: str, nested: str) -> str:
-    runtime_field_prefix = "runtime config field '"
-    if source.startswith(runtime_field_prefix) and source.endswith("'"):
-        base_field = source[len(runtime_field_prefix) : -1]
-        return f"runtime config field '{base_field}.{nested}'"
-    return f"{source}.{nested}"
 
 
 def _format_runtime_config_field_error(field_path: str) -> str:

@@ -298,7 +298,7 @@ def test_single_agent_runtime_falls_back_to_next_provider_target(tmp_path: Path)
     runtime_request, _ = _load_runtime_types()
     permission_module = importlib.import_module("voidcode.runtime.permission")
     config_module = importlib.import_module("voidcode.runtime.config")
-    model_provider_module = importlib.import_module("voidcode.runtime.model_provider")
+    model_provider_module = importlib.import_module("voidcode.provider.registry")
     single_agent_provider_module = importlib.import_module("voidcode.runtime.single_agent_provider")
     service_module = importlib.import_module("voidcode.runtime.service")
 

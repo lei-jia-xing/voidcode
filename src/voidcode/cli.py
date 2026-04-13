@@ -8,10 +8,10 @@ from pathlib import Path
 from typing import Protocol, cast
 
 from . import __version__
+from .provider.snapshot import resolved_provider_snapshot
 from .runtime.config import load_runtime_config, serialize_provider_fallback_config
 from .runtime.contracts import RuntimeRequest, RuntimeStreamChunk
 from .runtime.events import EventEnvelope
-from .runtime.model_provider import resolved_provider_snapshot
 from .runtime.permission import PermissionDecision, PermissionResolution
 from .runtime.service import VoidCodeRuntime
 from .runtime.session import SessionState, StoredSessionSummary

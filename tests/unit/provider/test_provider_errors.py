@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from voidcode.runtime.provider_errors import (
+from voidcode.provider.errors import (
     SingleAgentContextLimitError,
     classify_provider_error,
     format_fallback_exhausted_error,

@@ -1,151 +1,13 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
-from typing import Protocol, cast, runtime_checkable
+from typing import cast
 
-from .config import RuntimeProviderFallbackConfig
-from .provider_errors import format_invalid_provider_config_error
-from .single_agent_provider import SingleAgentProvider, StubSingleAgentProvider
-
-
-@runtime_checkable
-class ModelProvider(Protocol):
-    @property
-    def name(self) -> str: ...
-
-    def single_agent_provider(self) -> SingleAgentProvider: ...
-
-
-@dataclass(frozen=True, slots=True)
-class StaticModelProvider:
-    name: str
-
-    def single_agent_provider(self) -> SingleAgentProvider:
-        return StubSingleAgentProvider(name=self.name)
-
-
-@dataclass(frozen=True, slots=True)
-class ProviderModelSelection:
-    raw_model: str | None = None
-    provider: str | None = None
-    model: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class ResolvedProviderModel:
-    selection: ProviderModelSelection = ProviderModelSelection()
-    provider: ModelProvider | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class ResolvedProviderChain:
-    preferred: ResolvedProviderModel = ResolvedProviderModel()
-    fallbacks: tuple[ResolvedProviderModel, ...] = ()
-    all_targets: tuple[ResolvedProviderModel, ...] = ()
-
-    def target_at(self, index: int) -> ResolvedProviderModel | None:
-        if index < 0 or index >= len(self.all_targets):
-            return None
-        return self.all_targets[index]
-
-
-@dataclass(frozen=True, slots=True)
-class ResolvedProviderConfig:
-    model: str | None = None
-    provider_fallback: RuntimeProviderFallbackConfig | None = None
-    active_target: ResolvedProviderModel = ResolvedProviderModel()
-    target_chain: ResolvedProviderChain = ResolvedProviderChain()
-
-
-@dataclass(slots=True)
-class ModelProviderRegistry:
-    providers: dict[str, ModelProvider]
-
-    @classmethod
-    def with_defaults(cls) -> ModelProviderRegistry:
-        return cls(providers={"opencode": StaticModelProvider(name="opencode")})
-
-    def resolve(self, provider_name: str) -> ModelProvider:
-        return self.providers.get(provider_name, StaticModelProvider(name=provider_name))
-
-
-def resolve_provider_model(
-    raw_model: str | None,
-    *,
-    registry: ModelProviderRegistry,
-) -> ResolvedProviderModel:
-    if raw_model is None:
-        return ResolvedProviderModel()
-
-    provider_name, model_name = _parse_model_reference(raw_model)
-    provider = registry.resolve(provider_name)
-    return ResolvedProviderModel(
-        selection=ProviderModelSelection(
-            raw_model=raw_model,
-            provider=provider_name,
-            model=model_name,
-        ),
-        provider=provider,
-    )
-
-
-def resolve_provider_chain(
-    provider_fallback: RuntimeProviderFallbackConfig | None,
-    *,
-    registry: ModelProviderRegistry,
-) -> ResolvedProviderChain:
-    if provider_fallback is None:
-        return ResolvedProviderChain()
-
-    preferred = resolve_provider_model(provider_fallback.preferred_model, registry=registry)
-    fallbacks = tuple(
-        resolve_provider_model(raw_model, registry=registry)
-        for raw_model in provider_fallback.fallback_models
-    )
-    return ResolvedProviderChain(
-        preferred=preferred,
-        fallbacks=fallbacks,
-        all_targets=(preferred, *fallbacks),
-    )
-
-
-def resolve_provider_config(
-    model: str | None,
-    provider_fallback: RuntimeProviderFallbackConfig | None,
-    *,
-    registry: ModelProviderRegistry,
-) -> ResolvedProviderConfig:
-    if provider_fallback is not None:
-        if model is not None and model != provider_fallback.preferred_model:
-            raise ValueError(
-                format_invalid_provider_config_error(
-                    "provider_fallback.preferred_model",
-                    "must match model when both are configured",
-                )
-            )
-        target_chain = resolve_provider_chain(provider_fallback, registry=registry)
-        return ResolvedProviderConfig(
-            model=provider_fallback.preferred_model,
-            provider_fallback=provider_fallback,
-            active_target=target_chain.preferred,
-            target_chain=target_chain,
-        )
-
-    if model is None:
-        return ResolvedProviderConfig()
-
-    active_target = resolve_provider_model(model, registry=registry)
-    target_chain = ResolvedProviderChain(
-        preferred=active_target,
-        all_targets=(active_target,),
-    )
-    return ResolvedProviderConfig(
-        model=model,
-        provider_fallback=None,
-        active_target=active_target,
-        target_chain=target_chain,
-    )
+from .config import ProviderFallbackConfig
+from .errors import format_invalid_provider_config_error
+from .models import ResolvedProviderChain, ResolvedProviderConfig, ResolvedProviderModel
+from .registry import ModelProviderRegistry
+from .resolution import resolve_provider_model
 
 
 def resolved_provider_snapshot(
@@ -222,7 +84,7 @@ def parse_resolved_provider_snapshot(
             )
         )
 
-    provider_fallback: RuntimeProviderFallbackConfig | None = None
+    provider_fallback: ProviderFallbackConfig | None = None
     if len(resolved_targets) > 1:
         first_raw_model = first_target.selection.raw_model
         if first_raw_model is None:
@@ -232,7 +94,7 @@ def parse_resolved_provider_snapshot(
                     "must include a raw_model",
                 )
             )
-        provider_fallback = RuntimeProviderFallbackConfig(
+        provider_fallback = ProviderFallbackConfig(
             preferred_model=first_raw_model,
             fallback_models=tuple(
                 _require_raw_model(target=target, source=f"{source}.targets[{index}]")
@@ -259,13 +121,6 @@ def parse_resolved_provider_snapshot(
             all_targets=resolved_targets,
         ),
     )
-
-
-def _parse_model_reference(raw_model: str) -> tuple[str, str]:
-    provider_name, separator, model_name = raw_model.partition("/")
-    if separator != "/" or "/" in model_name or not provider_name or not model_name:
-        raise ValueError("model must use provider/model format")
-    return provider_name, model_name
 
 
 def _resolved_provider_target_snapshot(target: ResolvedProviderModel) -> dict[str, str] | None:

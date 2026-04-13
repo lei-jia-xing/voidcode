@@ -3,11 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import cast
 
+from ..provider.models import ResolvedProviderModel
+from ..provider.protocol import SingleAgentProvider, SingleAgentTurnRequest
 from ..runtime.context_window import RuntimeContextWindow
 from ..runtime.events import GRAPH_LOOP_STEP, GRAPH_MODEL_TURN, GRAPH_RESPONSE_READY
-from ..runtime.model_provider import ResolvedProviderModel
 from ..runtime.session import SessionState
-from ..runtime.single_agent_provider import SingleAgentProvider, SingleAgentTurnRequest
 from ..tools.contracts import ToolCall, ToolResult
 from .contracts import GraphEvent, GraphRunRequest
 
