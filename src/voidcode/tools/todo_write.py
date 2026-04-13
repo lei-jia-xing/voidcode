@@ -2,9 +2,62 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, ClassVar, cast
+from typing import ClassVar, Literal, cast
+
+from pydantic import BaseModel, ValidationError, field_validator
 
 from .contracts import ToolCall, ToolDefinition, ToolResult
+
+
+class _TodoItemModel(BaseModel):
+    content: str
+    status: Literal["pending", "in_progress", "completed", "cancelled"]
+    priority: Literal["high", "medium", "low"]
+
+    @field_validator("content", mode="after")
+    @classmethod
+    def _validate_content(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("content must be non-empty string")
+        return stripped
+
+
+def _parse_todo_item(item: object, *, idx: int) -> dict[str, str]:
+    try:
+        parsed = _TodoItemModel.model_validate(item)
+    except ValidationError as exc:
+        first_error = exc.errors()[0]
+        location = first_error.get("loc", ())
+        field_name = location[0] if location else None
+
+        if field_name is None:
+            raise ValueError(f"todo_write item #{idx} must be an object") from exc
+
+        item_payload: dict[str, object]
+        if isinstance(item, dict):
+            item_payload = cast(dict[str, object], item)
+        else:
+            item_payload = {}
+
+        if field_name == "content":
+            raise ValueError(f"todo_write item #{idx} content must be non-empty string") from exc
+        if field_name == "status":
+            raise ValueError(
+                f"todo_write item #{idx} invalid status: {item_payload.get('status')}"
+            ) from exc
+        if field_name == "priority":
+            raise ValueError(
+                f"todo_write item #{idx} invalid priority: {item_payload.get('priority')}"
+            ) from exc
+
+        raise ValueError(f"todo_write item #{idx} must be an object") from exc
+
+    return {
+        "content": parsed.content,
+        "status": parsed.status,
+        "priority": parsed.priority,
+    }
 
 
 class TodoWriteTool:
@@ -19,33 +72,13 @@ class TodoWriteTool:
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
         todos_value = call.arguments.get("todos", [])
-        todos: list[object] = []
-        if isinstance(todos_value, list):
-            todos = cast(list[object], todos_value)
-        else:
+        if not isinstance(todos_value, list):
             raise ValueError("todo_write requires todos array")
-
-        allowed_status = {"pending", "in_progress", "completed", "cancelled"}
-        allowed_priority = {"high", "medium", "low"}
+        todos = cast(list[object], todos_value)
 
         normalized: list[dict[str, str]] = []
         for idx, item in enumerate(todos, start=1):
-            if not isinstance(item, dict):
-                raise ValueError(f"todo_write item #{idx} must be an object")
-            item_dict = cast(dict[str, Any], item)
-
-            content = item_dict.get("content")
-            status = item_dict.get("status")
-            priority = item_dict.get("priority")
-
-            if not isinstance(content, str) or not content.strip():
-                raise ValueError(f"todo_write item #{idx} content must be non-empty string")
-            if not isinstance(status, str) or status not in allowed_status:
-                raise ValueError(f"todo_write item #{idx} invalid status: {status}")
-            if not isinstance(priority, str) or priority not in allowed_priority:
-                raise ValueError(f"todo_write item #{idx} invalid priority: {priority}")
-
-            normalized.append({"content": content.strip(), "status": status, "priority": priority})
+            normalized.append(_parse_todo_item(item, idx=idx))
 
         store_dir = workspace / ".voidcode"
         store_dir.mkdir(parents=True, exist_ok=True)

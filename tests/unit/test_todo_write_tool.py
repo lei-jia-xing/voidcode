@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -29,7 +30,10 @@ def test_todo_write_persists_todos_json(tmp_path: Path) -> None:
     assert payload[0]["content"] == "task-a"
     assert payload[1]["status"] == "completed"
     assert result.status == "ok"
-    assert result.data["summary"]["total"] == 2
+    summary_raw = result.data["summary"]
+    assert isinstance(summary_raw, dict)
+    summary = cast(dict[str, object], summary_raw)
+    assert summary["total"] == 2
 
 
 def test_todo_write_rejects_invalid_status(tmp_path: Path) -> None:
