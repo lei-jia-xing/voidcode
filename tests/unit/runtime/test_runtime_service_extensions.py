@@ -2115,6 +2115,152 @@ def test_runtime_single_agent_stream_error_maps_to_fallback_when_retryable(
     assert fallback_events[0].payload["reason"] == "transient_failure"
 
 
+def test_runtime_single_agent_stream_json_error_payload_maps_to_context_limit_without_fallback(
+    tmp_path: Path,
+) -> None:
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(
+                    (
+                        ProviderStreamEvent(
+                            kind="error",
+                            channel="error",
+                            error=(
+                                '{"type":"error","status_code":400,'
+                                '"error":{"code":"context_length_exceeded",'
+                                '"message":"Input exceeds context window of this model"}}'
+                            ),
+                        ),
+                        ProviderStreamEvent(kind="done", done_reason="error"),
+                    ),
+                ),
+            ),
+            "custom": _ScriptedModelProvider(
+                name="custom",
+                outcomes=(SingleAgentTurnResult(output="fallback complete"),),
+            ),
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            execution_engine="single_agent",
+            model="opencode/gpt-5.4",
+            provider_fallback=RuntimeProviderFallbackConfig(
+                preferred_model="opencode/gpt-5.4",
+                fallback_models=("custom/demo",),
+            ),
+        ),
+        model_provider_registry=registry,
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="read sample.txt"))
+
+    assert response.session.status == "failed"
+    assert response.events[-1].event_type == "runtime.failed"
+    assert response.events[-1].payload["provider_error_kind"] == "context_limit"
+    assert response.events[-1].payload["provider"] == "opencode"
+    assert response.events[-1].payload["model"] == "gpt-5.4"
+    assert response.events[-1].payload["provider_error_details"] == {
+        "type": "error",
+        "status_code": 400,
+        "error": {
+            "code": "context_length_exceeded",
+            "message": "Input exceeds context window of this model",
+        },
+        "source": "stream",
+        "error_code": "context_length_exceeded",
+    }
+    fallback_events = [
+        event for event in response.events if event.event_type == "runtime.provider_fallback"
+    ]
+    assert fallback_events == []
+
+
+def test_runtime_fallback_event_preserves_provider_error_details(tmp_path: Path) -> None:
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(
+                    ProviderExecutionError(
+                        kind="rate_limit",
+                        provider_name="opencode",
+                        model_name="gpt-5.4",
+                        message="too many requests",
+                        details={"status_code": 429, "source": "api", "error_code": "rate_limit"},
+                    ),
+                ),
+            ),
+            "custom": _ScriptedModelProvider(
+                name="custom",
+                outcomes=(SingleAgentTurnResult(output="fallback complete"),),
+            ),
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            execution_engine="single_agent",
+            model="opencode/gpt-5.4",
+            provider_fallback=RuntimeProviderFallbackConfig(
+                preferred_model="opencode/gpt-5.4",
+                fallback_models=("custom/demo",),
+            ),
+        ),
+        model_provider_registry=registry,
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="read sample.txt"))
+
+    fallback_events = [
+        event for event in response.events if event.event_type == "runtime.provider_fallback"
+    ]
+    assert len(fallback_events) == 1
+    assert fallback_events[0].payload["provider_error_details"] == {
+        "status_code": 429,
+        "source": "api",
+        "error_code": "rate_limit",
+    }
+
+
+def test_runtime_failed_event_preserves_provider_error_details(tmp_path: Path) -> None:
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(
+                    ProviderExecutionError(
+                        kind="context_limit",
+                        provider_name="opencode",
+                        model_name="gpt-5.4",
+                        message="context exceeded",
+                        details={"status_code": 413, "source": "api", "error_code": None},
+                    ),
+                ),
+            ),
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(execution_engine="single_agent", model="opencode/gpt-5.4"),
+        model_provider_registry=registry,
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="read sample.txt"))
+
+    assert response.session.status == "failed"
+    assert response.events[-1].event_type == "runtime.failed"
+    assert response.events[-1].payload["provider_error_kind"] == "context_limit"
+    assert response.events[-1].payload["provider_error_details"] == {
+        "status_code": 413,
+        "source": "api",
+        "error_code": None,
+    }
+
+
 def test_runtime_single_agent_stream_cancelled_maps_to_failed_without_fallback(
     tmp_path: Path,
 ) -> None:

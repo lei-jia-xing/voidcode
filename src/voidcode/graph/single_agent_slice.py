@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import cast
 
+from ..provider.errors import parse_provider_stream_error
 from ..provider.models import ResolvedProviderModel
 from ..provider.protocol import (
     ProviderExecutionError,
@@ -144,23 +146,44 @@ class ProviderSingleAgentGraph:
                 if stream_event.text is not None and stream_event.kind == "delta":
                     output_parts.append(stream_event.text)
             if stream_event.kind == "error":
-                error_kind = (
-                    stream_event.error_kind
-                    if stream_event.error_kind
-                    in {
-                        "rate_limit",
-                        "context_limit",
-                        "invalid_model",
-                        "transient_failure",
-                        "cancelled",
-                    }
-                    else "transient_failure"
-                )
+                if stream_event.error_kind == "cancelled":
+                    raise ProviderExecutionError(
+                        kind="cancelled",
+                        provider_name=self._provider.name,
+                        model_name=turn_request.model_name or "unknown",
+                        message=stream_event.error or "provider stream cancelled",
+                    )
+
+                error_payload: dict[str, object]
+                if stream_event.error is not None:
+                    try:
+                        raw_payload = json.loads(stream_event.error)
+                    except json.JSONDecodeError:
+                        error_payload = {"message": stream_event.error}
+                    else:
+                        error_payload = (
+                            cast(dict[str, object], raw_payload)
+                            if isinstance(raw_payload, dict)
+                            else {"message": stream_event.error}
+                        )
+                else:
+                    error_payload = {"message": "provider stream error"}
+
+                parsed = parse_provider_stream_error(error_payload)
+                parsed_kind = parsed.kind
+                if stream_event.error_kind in {
+                    "rate_limit",
+                    "context_limit",
+                    "invalid_model",
+                    "transient_failure",
+                }:
+                    parsed_kind = stream_event.error_kind
                 raise ProviderExecutionError(
-                    kind=error_kind,
+                    kind=parsed_kind,
                     provider_name=self._provider.name,
                     model_name=turn_request.model_name or "unknown",
-                    message=stream_event.error or "provider stream error",
+                    message=parsed.message,
+                    details=parsed.details,
                 )
             if stream_event.kind == "done":
                 if stream_event.done_reason == "cancelled":

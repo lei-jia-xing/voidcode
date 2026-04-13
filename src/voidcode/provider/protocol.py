@@ -160,6 +160,7 @@ class ProviderExecutionError(ValueError):
     model_name: str
     message: str
     retryable: bool = False
+    details: dict[str, object] | None = None
 
     def __str__(self) -> str:
         return self.message

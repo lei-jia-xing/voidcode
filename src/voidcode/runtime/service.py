@@ -662,6 +662,11 @@ class VoidCodeRuntime:
                                     "to_provider": next_target.selection.provider,
                                     "to_model": next_target.selection.model,
                                     "attempt": next_attempt,
+                                    **(
+                                        {"provider_error_details": exc.details}
+                                        if exc.details is not None
+                                        else {}
+                                    ),
                                 },
                             ),
                         )
@@ -708,6 +713,11 @@ class VoidCodeRuntime:
                                 "provider": exc.provider_name,
                                 "model": exc.model_name,
                                 "fallback_exhausted": True,
+                                **(
+                                    {"provider_error_details": exc.details}
+                                    if exc.details is not None
+                                    else {}
+                                ),
                             },
                         )
                         return
@@ -720,6 +730,11 @@ class VoidCodeRuntime:
                             "provider_error_kind": exc.kind,
                             "provider": exc.provider_name,
                             "model": exc.model_name,
+                            **(
+                                {"provider_error_details": exc.details}
+                                if exc.details is not None
+                                else {}
+                            ),
                         },
                     )
                     return
