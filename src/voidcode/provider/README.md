@@ -22,4 +22,14 @@ runtime 继续持有 session 内的生效 provider config 解析、provider atte
 
 ## 当前状态
 
-现有实现仍然分散在 `src/voidcode/runtime/model_provider.py`、`src/voidcode/runtime/provider_errors.py` 和 `src/voidcode/runtime/service.py` 中。
+provider 纯能力原语已按职责拆分到：
+
+- `src/voidcode/provider/protocol.py`
+- `src/voidcode/provider/config.py`
+- `src/voidcode/provider/models.py`
+- `src/voidcode/provider/registry.py`
+- `src/voidcode/provider/resolution.py`
+- `src/voidcode/provider/snapshot.py`
+- `src/voidcode/provider/errors.py`
+
+`runtime/service.py` 负责消费这些原语并持有运行期状态（如 session metadata、provider attempt 与 fallback 执行流程）。
