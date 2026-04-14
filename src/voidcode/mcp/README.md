@@ -26,4 +26,7 @@
 
 ## 当前状态
 
-这个目录目前是文档与边界占位，还没有真实实现。MCP 现阶段仍属于 design-first、implementation-later 的能力面。
+MCP runtime 集成已在 `voidcode.runtime.mcp` 中实现（含 `McpManager` Protocol、`DisabledMcpManager`、events、tool discovery 和 tool call）。本目录为未来纯 schema/preset 能力层预留，当 runtime 边界稳定后可提取至此。
+
+- `voidcode.runtime.mcp`：runtime-managed lifecycle、events、tool bridge
+- `voidcode.mcp`（本目录）：预留纯 contract/schema/preset 层
