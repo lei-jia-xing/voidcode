@@ -6,15 +6,16 @@ from typing import cast
 
 import pytest
 
-from voidcode.runtime import config as runtime_config
 from voidcode.provider.config import (
     AnthropicProviderConfig,
     CopilotProviderAuthConfig,
     CopilotProviderConfig,
     GoogleProviderAuthConfig,
     GoogleProviderConfig,
+    LiteLLMProviderConfig,
     OpenAIProviderConfig,
 )
+from voidcode.runtime import config as runtime_config
 from voidcode.runtime.config import (
     APPROVAL_MODE_ENV_VAR,
     EXECUTION_ENGINE_ENV_VAR,
@@ -233,6 +234,14 @@ def test_runtime_config_parses_extension_domains(tmp_path: Path) -> None:
                         "base_url": "https://api.githubcopilot.test",
                         "timeout_seconds": 15,
                     },
+                    "litellm": {
+                        "api_key": "litellm-inline-key",
+                        "base_url": "http://127.0.0.1:4000",
+                        "auth_scheme": "token",
+                        "auth_header": "X-LiteLLM-Key",
+                        "timeout_seconds": 10,
+                        "model_map": {"gpt-4o": "openrouter/openai/gpt-4o"},
+                    },
                 },
             }
         ),
@@ -287,6 +296,14 @@ def test_runtime_config_parses_extension_domains(tmp_path: Path) -> None:
             base_url="https://api.githubcopilot.test",
             timeout_seconds=15.0,
         ),
+        litellm=LiteLLMProviderConfig(
+            api_key="litellm-inline-key",
+            base_url="http://127.0.0.1:4000",
+            auth_scheme="token",
+            auth_header="X-LiteLLM-Key",
+            timeout_seconds=10.0,
+            model_map={"gpt-4o": "openrouter/openai/gpt-4o"},
+        ),
     )
 
 
@@ -299,6 +316,7 @@ def test_runtime_config_providers_use_environment_secrets_when_omitted(tmp_path:
                     "anthropic": {},
                     "google": {"auth": {"method": "api_key"}},
                     "copilot": {"auth": {"method": "token", "token_env_var": "COPILOT_TOKEN"}},
+                    "litellm": {},
                 }
             }
         ),
@@ -311,6 +329,8 @@ def test_runtime_config_providers_use_environment_secrets_when_omitted(tmp_path:
             "OPENAI_API_KEY": "openai-env-key",
             "ANTHROPIC_API_KEY": "anthropic-env-key",
             "GOOGLE_API_KEY": "google-env-key",
+            "LITELLM_API_KEY": "litellm-env-key",
+            "LITELLM_BASE_URL": "http://localhost:4000",
         },
     )
 
@@ -322,6 +342,11 @@ def test_runtime_config_providers_use_environment_secrets_when_omitted(tmp_path:
         ),
         copilot=CopilotProviderConfig(
             auth=CopilotProviderAuthConfig(method="token", token_env_var="COPILOT_TOKEN")
+        ),
+        litellm=LiteLLMProviderConfig(
+            api_key="litellm-env-key",
+            base_url="http://localhost:4000",
+            auth_scheme="bearer",
         ),
     )
 
@@ -339,6 +364,7 @@ def test_runtime_config_providers_prefer_repo_config_over_environment(tmp_path: 
                     "copilot": {
                         "auth": {"method": "token", "token": "copilot-repo-token"},
                     },
+                    "litellm": {"api_key": "litellm-repo-key"},
                 }
             }
         ),
@@ -352,6 +378,7 @@ def test_runtime_config_providers_prefer_repo_config_over_environment(tmp_path: 
             "ANTHROPIC_API_KEY": "anthropic-env-key",
             "GOOGLE_API_KEY": "google-env-key",
             "GITHUB_COPILOT_TOKEN": "copilot-env-token",
+            "LITELLM_API_KEY": "litellm-env-key",
         },
     )
 
@@ -363,6 +390,10 @@ def test_runtime_config_providers_prefer_repo_config_over_environment(tmp_path: 
         ),
         copilot=CopilotProviderConfig(
             auth=CopilotProviderAuthConfig(method="token", token="copilot-repo-token")
+        ),
+        litellm=LiteLLMProviderConfig(
+            api_key="litellm-repo-key",
+            auth_scheme="bearer",
         ),
     )
 
@@ -892,6 +923,16 @@ def test_runtime_config_rejects_invalid_max_steps(
             },
             "runtime config field 'providers.copilot.auth.refresh_leeway_seconds'",
             id="providers-copilot-refresh-leeway-invalid",
+        ),
+        pytest.param(
+            {"providers": {"litellm": {"auth_scheme": "oauth"}}},
+            "runtime config field 'providers.litellm.auth_scheme'",
+            id="providers-litellm-auth-scheme-invalid",
+        ),
+        pytest.param(
+            {"providers": {"litellm": {"model_map": {"gpt-4o": 4}}}},
+            "runtime config field 'providers.litellm.model_map.gpt-4o'",
+            id="providers-litellm-model-map-value-invalid",
         ),
         pytest.param({"acp": []}, "runtime config field 'acp'", id="acp-shape"),
         pytest.param(

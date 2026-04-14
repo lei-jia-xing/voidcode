@@ -8,10 +8,11 @@ from uuid import uuid4
 from .config import (
     CopilotProviderConfig,
     GoogleProviderConfig,
+    LiteLLMProviderConfig,
     ProviderConfigs,
 )
 
-type ProviderAuthProvider = Literal["openai", "anthropic", "google", "copilot"]
+type ProviderAuthProvider = Literal["openai", "anthropic", "google", "copilot", "litellm"]
 type ProviderErrorKind = Literal[
     "rate_limit", "context_limit", "invalid_model", "transient_failure"
 ]
@@ -103,6 +104,10 @@ _COPILOT_METHODS: tuple[ProviderAuthMethod, ...] = (
     ProviderAuthMethod(id="token", label="Token"),
     ProviderAuthMethod(id="oauth", label="OAuth", requires_callback=True),
 )
+_LITELLM_METHODS: tuple[ProviderAuthMethod, ...] = (
+    ProviderAuthMethod(id="api_key", label="API Key"),
+    ProviderAuthMethod(id="none", label="No Auth"),
+)
 
 
 class ProviderAuthResolver:
@@ -147,6 +152,18 @@ class ProviderAuthResolver:
                 methods=_COPILOT_METHODS,
                 default_method=configured or "token",
             )
+        if provider == "litellm":
+            configured = self._providers.litellm
+            default_method = "none"
+            if configured is not None and configured.auth_scheme == "none":
+                default_method = "none"
+            elif configured is not None and configured.api_key is not None:
+                default_method = "api_key"
+            return ProviderAuthMethodsResponse(
+                provider=provider,
+                methods=_LITELLM_METHODS,
+                default_method=default_method,
+            )
         raise self._error(
             provider=provider,
             code="unsupported_provider",
@@ -163,11 +180,75 @@ class ProviderAuthResolver:
             return self._authorize_google(request)
         if request.provider == "copilot":
             return self._authorize_copilot(request)
+        if request.provider == "litellm":
+            return self._authorize_litellm(request)
         raise self._error(
             provider=request.provider,
             code="unsupported_provider",
             kind="invalid_model",
             message=f"provider auth provider '{request.provider}' is not supported",
+        )
+
+    def _authorize_litellm(
+        self, request: ProviderAuthAuthorizeRequest
+    ) -> ProviderAuthAuthorizeResult:
+        provider_config: LiteLLMProviderConfig | None = self._providers.litellm
+        payload = {} if request.payload is None else dict(request.payload)
+        method = request.method
+        if method is None:
+            if provider_config is not None and provider_config.auth_scheme == "none":
+                method = "none"
+            elif provider_config is not None and provider_config.api_key is not None:
+                method = "api_key"
+            else:
+                method = "none"
+        if method not in {"api_key", "none"}:
+            raise self._error(
+                provider="litellm",
+                code="unsupported_method",
+                kind="invalid_model",
+                message=(
+                    f"provider auth method '{method}' for provider 'litellm' "
+                    "must be one of: api_key, none"
+                ),
+            )
+
+        if method == "none":
+            return ProviderAuthAuthorizeResult(
+                provider="litellm",
+                method=method,
+                status="authorized",
+                material=ProviderAuthMaterial(
+                    provider="litellm",
+                    method=method,
+                    headers={},
+                    metadata={},
+                ),
+            )
+
+        token = self._optional_payload_str(
+            payload,
+            key="api_key",
+            field_path="provider auth authorize payload.api_key",
+            provider="litellm",
+        )
+        if token is None and provider_config is not None:
+            token = provider_config.api_key
+        if token is None:
+            raise self._error(
+                provider="litellm",
+                code="missing_credentials",
+                kind="invalid_model",
+                message=(
+                    "provider auth field 'litellm.api_key' must be provided "
+                    "for litellm api_key auth"
+                ),
+            )
+        return ProviderAuthAuthorizeResult(
+            provider="litellm",
+            method=method,
+            status="authorized",
+            material=self._bearer_material("litellm", method, token),
         )
 
     def callback(self, request: ProviderAuthCallbackRequest) -> ProviderAuthMaterial:

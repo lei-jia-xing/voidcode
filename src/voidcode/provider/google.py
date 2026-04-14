@@ -1,51 +1,27 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
 from dataclasses import dataclass
 
-from .protocol import (
-    ProviderStreamEvent,
-    SingleAgentProvider,
-    SingleAgentTurnRequest,
-    StubSingleAgentProvider,
-    wrap_provider_stream,
-)
+from .config import GoogleProviderConfig, LiteLLMProviderConfig
+from .litellm_backend import LiteLLMBackendSingleAgentProvider
+from .protocol import SingleAgentProvider
 
 
 @dataclass(frozen=True, slots=True)
 class GoogleModelProvider:
     name: str = "google"
+    config: GoogleProviderConfig | None = None
 
     def single_agent_provider(self) -> SingleAgentProvider:
-        return _GoogleStubSingleAgentProvider(name=self.name)
-
-
-@dataclass(frozen=True, slots=True)
-class _GoogleStubSingleAgentProvider(StubSingleAgentProvider):
-    def stream_turn(self, request: SingleAgentTurnRequest) -> Iterator[ProviderStreamEvent]:
-        result = self.propose_turn(request)
-        events: list[ProviderStreamEvent] = []
-        if result.output is not None:
-            events.extend(
-                (
-                    ProviderStreamEvent(kind="delta", channel="text", text=result.output),
-                    ProviderStreamEvent(kind="content", channel="text", text=result.output),
-                )
-            )
-        if result.tool_call is not None:
-            events.append(
-                ProviderStreamEvent(
-                    kind="content",
-                    channel="tool",
-                    text=f"tool:{result.tool_call.tool_name}",
-                )
-            )
-        events.append(ProviderStreamEvent(kind="done", done_reason="completed"))
-        model_name = request.model_name or "unknown"
-        return wrap_provider_stream(
-            iter(events),
-            provider_name=self.name,
-            model_name=model_name,
-            abort_signal=request.abort_signal,
-            chunk_timeout_seconds=3.0,
+        api_key = None
+        if self.config is not None and self.config.auth is not None:
+            if self.config.auth.method == "api_key":
+                api_key = self.config.auth.api_key
+            if self.config.auth.method == "oauth":
+                api_key = self.config.auth.access_token
+        adapted_config = LiteLLMProviderConfig(
+            api_key=api_key,
+            base_url=None if self.config is None else self.config.base_url,
+            timeout_seconds=None if self.config is None else self.config.timeout_seconds,
         )
+        return LiteLLMBackendSingleAgentProvider(name=self.name, config=adapted_config)

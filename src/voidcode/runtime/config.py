@@ -190,29 +190,30 @@ def load_runtime_config(
     env: Mapping[str, str] | None = None,
 ) -> RuntimeConfig:
     resolved_workspace = workspace.resolve()
-    environment = os.environ if env is None else env
+    environment: Mapping[str, str] = os.environ if env is None else env
+    env_overrides = _load_environment_runtime_config(environment)
     repo_local = _load_repo_local_config(resolved_workspace, env=environment)
 
     return RuntimeConfig(
         approval_mode=_resolve_approval_mode(
             explicit=approval_mode,
             repo_local=repo_local.approval_mode,
-            environment=environment.approval_mode,
+            environment=env_overrides.approval_mode,
         ),
         model=_resolve_model(
             explicit=model,
             repo_local=repo_local.model,
-            environment=environment.model,
+            environment=env_overrides.model,
         ),
         execution_engine=_resolve_execution_engine(
             explicit=execution_engine,
             repo_local=repo_local.execution_engine,
-            environment=environment.execution_engine,
+            environment=env_overrides.execution_engine,
         ),
         max_steps=_resolve_max_steps(
             explicit=max_steps,
             repo_local=repo_local.max_steps,
-            environment=environment.max_steps,
+            environment=env_overrides.max_steps,
         ),
         hooks=repo_local.hooks,
         tools=repo_local.tools,

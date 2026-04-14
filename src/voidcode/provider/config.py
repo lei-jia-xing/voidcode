@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal, cast
 
 
@@ -63,17 +63,33 @@ class CopilotProviderConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class LiteLLMProviderConfig:
+    api_key: str | None = None
+    api_key_env_var: str | None = None
+    base_url: str | None = None
+    auth_header: str | None = None
+    auth_scheme: Literal["bearer", "token", "none"] = "bearer"
+    timeout_seconds: float | None = None
+    model_map: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
 class ProviderConfigs:
     openai: OpenAIProviderConfig | None = None
     anthropic: AnthropicProviderConfig | None = None
     google: GoogleProviderConfig | None = None
     copilot: CopilotProviderConfig | None = None
+    litellm: LiteLLMProviderConfig | None = None
 
 
 _OPENAI_API_KEY_ENV_VAR = "OPENAI_API_KEY"
 _ANTHROPIC_API_KEY_ENV_VAR = "ANTHROPIC_API_KEY"
 _GOOGLE_API_KEY_ENV_VAR = "GOOGLE_API_KEY"
 _COPILOT_TOKEN_ENV_VAR = "GITHUB_COPILOT_TOKEN"
+_LITELLM_API_KEY_ENV_VAR = "LITELLM_API_KEY"
+_LITELLM_PROXY_API_KEY_ENV_VAR = "LITELLM_PROXY_API_KEY"
+_LITELLM_BASE_URL_ENV_VAR = "LITELLM_BASE_URL"
+_LITELLM_PROXY_URL_ENV_VAR = "LITELLM_PROXY_URL"
 
 _VALID_GOOGLE_AUTH_METHODS: tuple[GoogleAuthMethod, ...] = (
     "api_key",
@@ -81,6 +97,11 @@ _VALID_GOOGLE_AUTH_METHODS: tuple[GoogleAuthMethod, ...] = (
     "service_account",
 )
 _VALID_COPILOT_AUTH_METHODS: tuple[CopilotAuthMethod, ...] = ("token", "oauth")
+_VALID_LITELLM_AUTH_SCHEMES: tuple[Literal["bearer", "token", "none"], ...] = (
+    "bearer",
+    "token",
+    "none",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,7 +125,7 @@ def parse_provider_configs_payload(
     _reject_unknown_keys(
         payload=payload,
         source=source,
-        allowed_keys=("openai", "anthropic", "google", "copilot"),
+        allowed_keys=("openai", "anthropic", "google", "copilot", "litellm"),
     )
 
     environment: Mapping[str, str] = {} if env is None else env
@@ -128,6 +149,11 @@ def parse_provider_configs_payload(
         copilot=_parse_copilot_provider_config(
             payload.get("copilot"),
             field_path=_nested_config_field(source, "copilot"),
+            env=environment,
+        ),
+        litellm=_parse_litellm_provider_config(
+            payload.get("litellm"),
+            field_path=_nested_config_field(source, "litellm"),
             env=environment,
         ),
     )
@@ -159,6 +185,11 @@ def serialize_provider_configs(
     if providers.copilot is not None:
         serialized["copilot"] = _serialize_copilot_provider_config(
             providers.copilot,
+            include_secrets=include_secrets,
+        )
+    if providers.litellm is not None:
+        serialized["litellm"] = _serialize_litellm_provider_config(
+            providers.litellm,
             include_secrets=include_secrets,
         )
     return serialized
@@ -526,6 +557,73 @@ def _parse_copilot_auth_config(
     )
 
 
+def _parse_litellm_provider_config(
+    raw_value: object,
+    *,
+    field_path: str,
+    env: Mapping[str, str],
+) -> LiteLLMProviderConfig | None:
+    if raw_value is None:
+        return None
+    if not isinstance(raw_value, dict):
+        raise ValueError(f"{field_path} must be an object when provided")
+    payload = cast(dict[str, object], raw_value)
+
+    api_key = _parse_optional_str(
+        payload.get("api_key"),
+        field_path=_nested_config_field(field_path, "api_key"),
+    )
+    api_key_env_var = _parse_optional_str(
+        payload.get("api_key_env_var"),
+        field_path=_nested_config_field(field_path, "api_key_env_var"),
+    )
+    if api_key is None:
+        if api_key_env_var is not None:
+            api_key = env.get(api_key_env_var)
+        else:
+            api_key = env.get(_LITELLM_API_KEY_ENV_VAR) or env.get(_LITELLM_PROXY_API_KEY_ENV_VAR)
+
+    base_url = _parse_optional_str(
+        payload.get("base_url"),
+        field_path=_nested_config_field(field_path, "base_url"),
+    )
+    if base_url is None:
+        base_url = env.get(_LITELLM_BASE_URL_ENV_VAR) or env.get(_LITELLM_PROXY_URL_ENV_VAR)
+
+    auth_header = _parse_optional_str(
+        payload.get("auth_header"),
+        field_path=_nested_config_field(field_path, "auth_header"),
+    )
+
+    raw_auth_scheme = payload.get("auth_scheme")
+    auth_scheme: Literal["bearer", "token", "none"] = "bearer"
+    if raw_auth_scheme is not None:
+        if raw_auth_scheme not in _VALID_LITELLM_AUTH_SCHEMES:
+            allowed = ", ".join(_VALID_LITELLM_AUTH_SCHEMES)
+            raise ValueError(
+                f"{_nested_config_field(field_path, 'auth_scheme')} must be one of: {allowed}"
+            )
+        auth_scheme = raw_auth_scheme
+
+    timeout_seconds = _parse_optional_timeout_seconds(
+        payload.get("timeout_seconds"),
+        field_path=_nested_config_field(field_path, "timeout_seconds"),
+    )
+    model_map = _parse_string_mapping(
+        payload.get("model_map"),
+        field_path=_nested_config_field(field_path, "model_map"),
+    )
+    return LiteLLMProviderConfig(
+        api_key=api_key,
+        api_key_env_var=api_key_env_var,
+        base_url=base_url,
+        auth_header=auth_header,
+        auth_scheme=auth_scheme,
+        timeout_seconds=timeout_seconds,
+        model_map=model_map,
+    )
+
+
 def _serialize_openai_provider_config(
     provider: OpenAIProviderConfig,
     *,
@@ -633,6 +731,47 @@ def _serialize_copilot_auth_config(
     if auth.refresh_leeway_seconds is not None:
         payload["refresh_leeway_seconds"] = auth.refresh_leeway_seconds
     return payload
+
+
+def _serialize_litellm_provider_config(
+    provider: LiteLLMProviderConfig,
+    *,
+    include_secrets: bool,
+) -> dict[str, object]:
+    payload: dict[str, object] = {}
+    if include_secrets and provider.api_key is not None:
+        payload["api_key"] = provider.api_key
+    if provider.api_key_env_var is not None:
+        payload["api_key_env_var"] = provider.api_key_env_var
+    if provider.base_url is not None:
+        payload["base_url"] = provider.base_url
+    if provider.auth_header is not None:
+        payload["auth_header"] = provider.auth_header
+    payload["auth_scheme"] = provider.auth_scheme
+    if provider.timeout_seconds is not None:
+        payload["timeout_seconds"] = provider.timeout_seconds
+    if provider.model_map:
+        payload["model_map"] = dict(provider.model_map)
+    return payload
+
+
+def _parse_string_mapping(raw_value: object, *, field_path: str) -> dict[str, str]:
+    if raw_value is None:
+        return {}
+    if not isinstance(raw_value, dict):
+        raise ValueError(f"{field_path} must be an object when provided")
+    mapping: dict[str, str] = {}
+    for raw_key, raw_item in cast(dict[object, object], raw_value).items():
+        if not isinstance(raw_key, str):
+            raise ValueError(f"{field_path} keys must be strings")
+        if not isinstance(raw_item, str):
+            raise ValueError(f"{_nested_config_field(field_path, raw_key)} must be a string")
+        if not raw_key:
+            raise ValueError(f"{field_path} keys must not be empty")
+        if not raw_item:
+            raise ValueError(f"{_nested_config_field(field_path, raw_key)} must not be empty")
+        mapping[raw_key] = raw_item
+    return mapping
 
 
 def _parse_optional_str(raw_value: object, *, field_path: str) -> str | None:

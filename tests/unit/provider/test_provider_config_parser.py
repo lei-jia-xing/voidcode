@@ -8,6 +8,7 @@ from voidcode.provider.config import (
     CopilotProviderConfig,
     GoogleProviderAuthConfig,
     GoogleProviderConfig,
+    LiteLLMProviderConfig,
     OpenAIProviderConfig,
     ProviderConfigs,
     ProviderFallbackConfig,
@@ -30,12 +31,19 @@ def test_parse_provider_configs_payload_parses_provider_blocks_directly() -> Non
                     "refresh_leeway_seconds": 30,
                 }
             },
+            "litellm": {
+                "base_url": "http://localhost:4000",
+                "auth_scheme": "token",
+                "api_key_env_var": "LITELLM_KEY",
+                "model_map": {"gpt-4o": "openrouter/openai/gpt-4o"},
+            },
         },
         source="runtime config field 'providers'",
         env={
             "OPENAI_API_KEY": "openai-env-key",
             "ANTHROPIC_API_KEY": "anthropic-env-key",
             "GOOGLE_API_KEY": "google-env-key",
+            "LITELLM_KEY": "litellm-env-key",
         },
     )
 
@@ -55,6 +63,13 @@ def test_parse_provider_configs_payload_parses_provider_blocks_directly() -> Non
                 refresh_token="refresh-token",
                 refresh_leeway_seconds=30,
             )
+        ),
+        litellm=LiteLLMProviderConfig(
+            api_key="litellm-env-key",
+            api_key_env_var="LITELLM_KEY",
+            base_url="http://localhost:4000",
+            auth_scheme="token",
+            model_map={"gpt-4o": "openrouter/openai/gpt-4o"},
         ),
     )
 

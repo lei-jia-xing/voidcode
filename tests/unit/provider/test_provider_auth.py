@@ -14,6 +14,7 @@ from voidcode.provider.config import (
     CopilotProviderConfig,
     GoogleProviderAuthConfig,
     GoogleProviderConfig,
+    LiteLLMProviderConfig,
     OpenAIProviderConfig,
     ProviderConfigs,
 )
@@ -34,6 +35,8 @@ def test_provider_auth_methods_discovery_defaults_for_all_target_providers() -> 
     ]
     assert resolver.methods("copilot").default_method == "token"
     assert [method.id for method in resolver.methods("copilot").methods] == ["token", "oauth"]
+    assert resolver.methods("litellm").default_method == "none"
+    assert [method.id for method in resolver.methods("litellm").methods] == ["api_key", "none"]
 
 
 def test_provider_auth_methods_discovery_uses_configured_defaults() -> None:
@@ -197,3 +200,52 @@ def test_provider_auth_callback_not_supported_for_non_callback_method() -> None:
         )
 
     assert exc_info.value.code == "callback_not_supported"
+
+
+def test_provider_auth_authorize_litellm_with_api_key_returns_bearer_material() -> None:
+    resolver = ProviderAuthResolver(
+        providers=ProviderConfigs(litellm=LiteLLMProviderConfig(api_key="litellm-secret"))
+    )
+
+    result = resolver.authorize(ProviderAuthAuthorizeRequest(provider="litellm", method="api_key"))
+
+    assert result.status == "authorized"
+    assert result.material is not None
+    assert result.material.headers == {"Authorization": "Bearer litellm-secret"}
+
+
+def test_provider_auth_authorize_litellm_without_api_key_allows_none_mode() -> None:
+    resolver = ProviderAuthResolver(providers=ProviderConfigs(litellm=LiteLLMProviderConfig()))
+
+    result = resolver.authorize(ProviderAuthAuthorizeRequest(provider="litellm"))
+
+    assert result.status == "authorized"
+    assert result.method == "none"
+    assert result.material is not None
+    assert result.material.headers == {}
+
+
+def test_provider_auth_methods_litellm_prefers_none_when_auth_scheme_is_none() -> None:
+    resolver = ProviderAuthResolver(
+        providers=ProviderConfigs(
+            litellm=LiteLLMProviderConfig(api_key="litellm-secret", auth_scheme="none")
+        )
+    )
+
+    methods = resolver.methods("litellm")
+
+    assert methods.default_method == "none"
+
+
+def test_provider_auth_authorize_litellm_defaults_to_none_when_auth_scheme_is_none() -> None:
+    resolver = ProviderAuthResolver(
+        providers=ProviderConfigs(
+            litellm=LiteLLMProviderConfig(api_key="litellm-secret", auth_scheme="none")
+        )
+    )
+
+    result = resolver.authorize(ProviderAuthAuthorizeRequest(provider="litellm"))
+
+    assert result.method == "none"
+    assert result.material is not None
+    assert result.material.headers == {}

@@ -14,6 +14,7 @@ from .auth import (
     provider_auth_error_to_execution_kind,
 )
 from .config import (
+    LiteLLMProviderConfig,
     ProviderConfigs,
     ProviderFallbackConfig,
     parse_provider_configs_payload,
@@ -30,6 +31,7 @@ from .errors import (
     format_invalid_provider_config_error,
 )
 from .google import GoogleModelProvider
+from .litellm import LiteLLMModelProvider
 from .models import (
     ProviderModelSelection,
     ResolvedProviderChain,
@@ -60,6 +62,7 @@ __all__ = [
     "AnthropicModelProvider",
     "CopilotModelProvider",
     "GoogleModelProvider",
+    "LiteLLMModelProvider",
     "ModelProvider",
     "ModelProviderRegistry",
     "OpenAIModelProvider",
@@ -84,6 +87,7 @@ __all__ = [
     "SingleAgentTurnResult",
     "SingleAgentContextLimitError",
     "SingleAgentProviderError",
+    "LiteLLMProviderConfig",
     "StaticModelProvider",
     "StubSingleAgentProvider",
     "classify_provider_error",

@@ -177,7 +177,8 @@ class VoidCodeRuntime:
         self._workspace = workspace.resolve()
         self._config = config or load_runtime_config(self._workspace)
         self._model_provider_registry = (
-            model_provider_registry or ModelProviderRegistry.with_defaults()
+            model_provider_registry
+            or ModelProviderRegistry.with_defaults(provider_configs=self._config.providers)
         )
         self._resolved_provider_config = resolve_provider_config(
             self._config.model,

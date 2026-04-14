@@ -3,6 +3,7 @@ from __future__ import annotations
 from voidcode.provider.anthropic import AnthropicModelProvider
 from voidcode.provider.copilot import CopilotModelProvider
 from voidcode.provider.google import GoogleModelProvider
+from voidcode.provider.litellm import LiteLLMModelProvider
 from voidcode.provider.openai import OpenAIModelProvider
 from voidcode.provider.registry import ModelProviderRegistry, StaticModelProvider
 
@@ -14,6 +15,7 @@ def test_model_provider_registry_with_defaults_registers_concrete_provider_adapt
     assert isinstance(registry.resolve("anthropic"), AnthropicModelProvider)
     assert isinstance(registry.resolve("google"), GoogleModelProvider)
     assert isinstance(registry.resolve("copilot"), CopilotModelProvider)
+    assert isinstance(registry.resolve("litellm"), LiteLLMModelProvider)
 
 
 def test_model_provider_registry_with_defaults_preserves_static_fallback_for_unknown_provider() -> (

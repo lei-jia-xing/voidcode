@@ -1,19 +1,23 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any, cast
 
 import pytest
 
 from voidcode.provider.anthropic import AnthropicModelProvider
+from voidcode.provider.config import LiteLLMProviderConfig
 from voidcode.provider.copilot import CopilotModelProvider
 from voidcode.provider.errors import (
     provider_execution_error_from_api_payload,
     provider_execution_error_from_stream_payload,
 )
 from voidcode.provider.google import GoogleModelProvider
+from voidcode.provider.litellm import LiteLLMModelProvider
 from voidcode.provider.openai import OpenAIModelProvider
 from voidcode.provider.protocol import (
     ModelProvider,
+    ProviderExecutionError,
     ProviderStreamEvent,
     SingleAgentTurnRequest,
     StreamableSingleAgentProvider,
@@ -47,6 +51,94 @@ def _build_turn_request(*, model_name: str) -> SingleAgentTurnRequest:
     )
 
 
+class _StubStreamChunk:
+    def __init__(self, text: str | None, finish_reason: str | None = None) -> None:
+        self._text = text
+        self._finish_reason = finish_reason
+
+    def model_dump(self) -> dict[str, object]:
+        choice: dict[str, object] = {
+            "delta": {"content": self._text},
+            "finish_reason": self._finish_reason,
+        }
+        return {"choices": [choice]}
+
+
+class _StubCompletionResponse:
+    def __init__(
+        self,
+        *,
+        content: str | None = "hello world",
+        tool_calls: list[dict[str, object]] | None = None,
+    ) -> None:
+        self._content = content
+        self._tool_calls = tool_calls
+
+    def model_dump(self) -> dict[str, object]:
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": self._content,
+                        "tool_calls": self._tool_calls,
+                    }
+                }
+            ]
+        }
+
+
+class _StubAPIError(Exception):
+    def __init__(
+        self, message: str, status_code: int | None = None, code: str | None = None
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.code = code
+
+
+def _patch_litellm_completion(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    mode: str,
+    completion_content: str = "hello world",
+    stream_chunks: tuple[tuple[str | None, str | None], ...] = (),
+    api_error: _StubAPIError | None = None,
+    tool_calls: list[dict[str, object]] | None = None,
+) -> None:
+    import voidcode.provider.litellm_backend as backend_module
+
+    class _PatchedAPIError(_StubAPIError):
+        pass
+
+    def _completion(*args: Any, **kwargs: Any):
+        _ = args
+        _LAST_REQUEST_PAYLOAD["kwargs"] = dict(kwargs)
+        if api_error is not None:
+            raise _PatchedAPIError(
+                str(api_error), status_code=api_error.status_code, code=api_error.code
+            )
+        if mode == "stream":
+            chunks: list[_StubStreamChunk] = [
+                _StubStreamChunk(text=text, finish_reason=finish) for text, finish in stream_chunks
+            ]
+            return iter(chunks)
+        return _StubCompletionResponse(content=completion_content, tool_calls=tool_calls)
+
+    monkeypatch.setattr(backend_module, "APIError", _PatchedAPIError)
+    if backend_module.litellm_module is None:
+
+        class _FakeLiteLLM:
+            def completion(self, *args: Any, **kwargs: Any):
+                return _completion(*args, **kwargs)
+
+        monkeypatch.setattr(backend_module, "litellm_module", _FakeLiteLLM())
+    else:
+        monkeypatch.setattr(backend_module.litellm_module, "completion", _completion)
+
+
+_LAST_REQUEST_PAYLOAD: dict[str, object] = {}
+
+
 @pytest.mark.parametrize(
     ("provider_name", "provider"),
     [
@@ -57,18 +149,167 @@ def _build_turn_request(*, model_name: str) -> SingleAgentTurnRequest:
     ],
 )
 def test_provider_adapter_stream_turn_emits_happy_path_chunks(
+    monkeypatch: pytest.MonkeyPatch,
     provider_name: str,
     provider: ModelProvider,
 ) -> None:
     single_agent = provider.single_agent_provider()
     assert isinstance(single_agent, StreamableSingleAgentProvider)
 
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="stream",
+        stream_chunks=(
+            ("hello ", None),
+            ("world", None),
+            (None, "stop"),
+        ),
+    )
+
     events = list(single_agent.stream_turn(_build_turn_request(model_name=provider_name)))
 
-    assert [event.kind for event in events] == ["delta", "content", "done"]
-    assert events[0] == ProviderStreamEvent(kind="delta", channel="text", text="hello world")
-    assert events[1] == ProviderStreamEvent(kind="content", channel="text", text="hello world")
+    assert [event.kind for event in events] == ["delta", "delta", "done"]
+    assert events[0] == ProviderStreamEvent(kind="delta", channel="text", text="hello ")
+    assert events[1] == ProviderStreamEvent(kind="delta", channel="text", text="world")
     assert events[2] == ProviderStreamEvent(kind="done", done_reason="completed")
+
+
+@pytest.mark.parametrize(
+    ("provider_name", "provider"),
+    [
+        ("openai", OpenAIModelProvider()),
+        ("anthropic", AnthropicModelProvider()),
+        ("google", GoogleModelProvider()),
+        ("copilot", CopilotModelProvider()),
+    ],
+)
+def test_provider_adapter_stream_turn_maps_http_error_to_provider_execution_error(
+    monkeypatch: pytest.MonkeyPatch,
+    provider_name: str,
+    provider: ModelProvider,
+) -> None:
+    single_agent = provider.single_agent_provider()
+    assert isinstance(single_agent, StreamableSingleAgentProvider)
+
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="stream",
+        api_error=_StubAPIError("Too many requests", status_code=429, code="rate_limit"),
+    )
+
+    with pytest.raises(ProviderExecutionError, match="Too many requests") as exc_info:
+        _ = list(single_agent.stream_turn(_build_turn_request(model_name=provider_name)))
+
+    assert exc_info.value.kind == "rate_limit"
+
+
+@pytest.mark.parametrize(
+    ("provider_name", "provider"),
+    [
+        ("openai", OpenAIModelProvider()),
+        ("anthropic", AnthropicModelProvider()),
+        ("google", GoogleModelProvider()),
+        ("copilot", CopilotModelProvider()),
+    ],
+)
+def test_provider_adapter_propose_turn_returns_text_output(
+    monkeypatch: pytest.MonkeyPatch,
+    provider_name: str,
+    provider: ModelProvider,
+) -> None:
+    single_agent = provider.single_agent_provider()
+
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        completion_content="hello world",
+    )
+
+    result = single_agent.propose_turn(_build_turn_request(model_name=provider_name))
+
+    assert result.output == "hello world"
+
+
+def test_provider_adapter_propose_turn_uses_model_map_for_litellm_alias(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = LiteLLMModelProvider(
+        config=LiteLLMProviderConfig(
+            model_map={"demo": "openrouter/openai/gpt-4o"},
+            base_url="http://localhost:4000",
+        ),
+    )
+    single_agent = provider.single_agent_provider()
+
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        completion_content="hello world",
+    )
+
+    _ = single_agent.propose_turn(_build_turn_request(model_name="demo"))
+
+    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+    assert isinstance(payload_obj, dict)
+    payload = cast(dict[str, object], payload_obj)
+    assert payload["model"] == "openrouter/openai/gpt-4o"
+
+
+def test_provider_adapter_propose_turn_returns_tool_call_when_model_requests_tool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = OpenAIModelProvider()
+    single_agent = provider.single_agent_provider()
+
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        tool_calls=[
+            {
+                "function": {
+                    "name": "read_file",
+                    "arguments": '{"path":"sample.txt"}',
+                }
+            }
+        ],
+    )
+
+    result = single_agent.propose_turn(_build_turn_request(model_name="openai"))
+
+    assert result.tool_call is not None
+    assert result.tool_call.tool_name == "read_file"
+    assert result.tool_call.arguments == {"path": "sample.txt"}
+
+
+@pytest.mark.parametrize(
+    ("provider_name", "provider"),
+    [
+        ("openai", OpenAIModelProvider()),
+        ("anthropic", AnthropicModelProvider()),
+        ("google", GoogleModelProvider()),
+        ("copilot", CopilotModelProvider()),
+    ],
+)
+def test_provider_adapters_call_litellm_directly_without_internal_bridge(
+    monkeypatch: pytest.MonkeyPatch,
+    provider_name: str,
+    provider: ModelProvider,
+) -> None:
+    single_agent = provider.single_agent_provider()
+
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        completion_content="ok",
+    )
+
+    result = single_agent.propose_turn(_build_turn_request(model_name=provider_name))
+
+    assert result.output == "ok"
+    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+    assert isinstance(payload_obj, dict)
+    payload = cast(dict[str, object], payload_obj)
+    assert payload["model"] == f"{provider_name}/demo"
 
 
 @pytest.mark.parametrize("provider_name", ["openai", "anthropic", "google", "copilot"])
