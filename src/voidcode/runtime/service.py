@@ -1695,10 +1695,8 @@ class VoidCodeRuntime:
         mcp_state = self._mcp_manager.current_state()
         runtime_config_metadata["mcp"] = {
             "mode": mcp_state.mode,
-            "configured_enabled": mcp_state.configuration.configured_enabled
-            if mcp_state.configuration
-            else False,
-            "servers": list(mcp_state.configuration.servers) if mcp_state.configuration else [],
+            "configured_enabled": mcp_state.configuration.configured_enabled,
+            "servers": list(mcp_state.configuration.servers),
         }
         return runtime_config_metadata
 

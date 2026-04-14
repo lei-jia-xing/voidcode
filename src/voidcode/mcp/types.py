@@ -37,13 +37,22 @@ class McpConfigState:
     configured_enabled: bool = False
     servers: dict[str, Any] = field(default_factory=dict)
 
+    @classmethod
+    def from_runtime_config(cls, config: Any | None) -> McpConfigState:
+        if config is None:
+            return cls()
+        return cls(
+            configured_enabled=bool(getattr(config, "enabled", None)),
+            servers=dict(getattr(config, "servers", None) or {}),
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class McpManagerState:
     """Static MCP manager state - does not depend on runtime lifecycle."""
 
     mode: str = "disabled"
-    configuration: McpConfigState | None = None
+    configuration: McpConfigState = field(default_factory=McpConfigState)
 
 
 # Protocol definitions for runtime implementation
@@ -75,6 +84,6 @@ class McpManager(Protocol):
 
 # Constants
 
-MCP_PROTOCOL_VERSION = "2025-11-25"
+MCP_PROTOCOL_VERSION = "2026-04-15"
 MCP_CLIENT_NAME = "voidcode-runtime"
 MCP_CLIENT_VERSION = "0.1.0"
