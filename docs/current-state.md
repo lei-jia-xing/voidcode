@@ -25,7 +25,7 @@
 - [x] **扩展基础设施基础**：运行时现在包括工具、技能、LSP 和 ACP 的类型化配置和发现基础设施，并为 hooks/config MVP 提供了清晰的配置边界。
 - [x] **内置工具提供商**：专门的 `BuiltinToolProvider` 负责通过运行时边界注册 `grep`、`read_file`、`shell_exec` 和 `write_file`。
 - [x] **技能发现基础设施**：对 `.voidcode/skills/<name>/SKILL.md` 文件存在极简发现机制；运行时在每次运行时发出 `runtime.skills_loaded` 事件。
-- [x] **LSP 和 ACP 扩展基础设施**：LSP 已具备运行时管理的基础能力（配置、manager、事件与只读 tool 基线），ACP 仍主要停留在类型化配置与适配器存根阶段。
+- [x] **LSP 和 ACP/MCP 扩展基础设施**：LSP 已具备运行时管理的基础能力（配置、manager、事件与只读 tool 基线）。MCP 已完成 runtime-managed lifecycle、tool discovery 和 tool call 基础集成（`DisabledMcpManager` + Protocol 边界），当前处于边界稳定化阶段而非功能扩张阶段。ACP 仍主要停留在类型化配置与适配器存根阶段。
 - [x] **极简 HTTP 传输**：精简的后端 HTTP 层现在暴露了 `GET /api/sessions`、`GET /api/sessions/{session_id}` 和 `POST /api/runtime/run/stream`，其中 SSE 数据块直接从运行时边界序列化，并且现在可以通过 `voidcode serve` 在本地提供服务。
 - [x] **运行时配置分层**：运行时现在显式支持 `execution_engine`、`provider_fallback` 与 `max_steps`，并将恢复关键配置持久化到 `SessionState.metadata["runtime_config"]`，以保证 `config show`、resume 和 provider fallback 语义一致。
 
