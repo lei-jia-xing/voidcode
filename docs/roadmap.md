@@ -4,7 +4,7 @@
 
 ## 当前状态
 
-VoidCode 仍处于 pre-MVP 开发阶段。路线图从基础工作贯穿至 MVP 集成。仓库已经完成了初始环境/引导工作，现在还包括了一个稳定的确定性单智能体循环实现。同时，为工具、技能以及 LSP/ACP 的载体预留了初始扩展基础设施，而更广泛的 MVP 实现和 IDE 集成在当前阶段尚不在范围内。
+VoidCode 仍处于 pre-MVP 开发阶段。路线图从基础工作贯穿至 MVP 集成。仓库已经完成了初始环境/引导工作，现在还包括了一个稳定的 deterministic execution engine。同时，为工具、技能以及 LSP/ACP 的载体预留了初始扩展基础设施，而更广泛的 MVP 实现和 IDE 集成在当前阶段尚不在范围内。post-MVP 的明确方向之一是 multi-agent 支持，但这不会改变 runtime 作为系统控制面的边界。
 
 ## MVP 边界
 
@@ -14,13 +14,13 @@ VoidCode 仍处于 pre-MVP 开发阶段。路线图从基础工作贯穿至 MVP 
 - 智能体可以阅读代码、搜索代码并调用工具
 - 写入操作需要审批
 - 会话可以恢复
-- 确定性单智能体循环端到端运行
+- 确定性 execution engine 端到端运行
 - 事件流可观测
 - 为客户端渲染发出实时运行时事件
 
 ### MVP 不包含
 
-- 多智能体团队系统
+- 多角色 / multi-agent 执行拓扑（post-MVP 明确方向）
 - 云端协作
 - IDE 插件
 - 插件市场支持
@@ -33,13 +33,13 @@ VoidCode 仍处于 pre-MVP 开发阶段。路线图从基础工作贯穿至 MVP 
 
 创建基准仓库和开发环境：Python 版本策略、`uv`、`mise`、仓库结构和 CI 基准。
 
-**当前状态：** 基本完成。仓库现在拥有可用的开发者设置、CI、贡献者文档以及稳定的确定性单智能体循环。扩展基础设施已通过统一的配置模式、工具提供商接口和初始技能发现机制建立。
+**当前状态：** 基本完成。仓库现在拥有可用的开发者设置、CI、贡献者文档以及稳定的 deterministic execution engine。扩展基础设施已通过统一的配置模式、工具提供商接口和初始技能发现机制建立。
 
 ### Epic 1: LangGraph 核心循环
 
-定义图状态、节点、图编译以及中断/恢复，以便执行单个智能体轮次。
+定义图状态、节点、图编译以及中断/恢复，以便支撑 execution engine 的步骤推进。
 
-**当前状态：** 完成。运行时现在实现了一个稳定的确定性单智能体循环，支持轮次执行、工具解析和会话恢复。
+**当前状态：** 完成。运行时现在实现了一个稳定的 deterministic execution engine，支持轮次执行、工具解析和会话恢复。
 
 ### Epic 2: 运行时骨架
 
@@ -51,7 +51,9 @@ VoidCode 仍处于 pre-MVP 开发阶段。路线图从基础工作贯穿至 MVP 
 
 将工具和扩展作为运行时的一等公民，包含元数据、注册、内置功能和统一的执行管线。此 Epic 还包括作为运行时管理接口的技能、语言服务器（LSP）和智能体通信协议（ACP）的基础设施。
 
-**当前状态：** 部分完成。内置工具和技能发现已实现。LSP 已具备 read-only runtime-managed 基线（manager、tool、事件与测试），并且仓库已经补齐了 `lsp/`、`skills/`、`provider/`、`acp/`、`mcp/` 等能力层边界目录文档；但 LSP 仍缺少独立的 server preset/config 模块，ACP 也仍主要停留在受限的配置/适配器基础与 disabled-stub 阶段。
+**当前状态：** 部分完成。内置工具和技能发现已实现。LSP 已具备 read-only runtime-managed 基线（manager、tool、事件与测试），并且仓库已经补齐了 `lsp/`、`skills/`、`provider/`、`acp/`、`mcp/` 等能力层边界目录文档。MCP 已具备 runtime-managed lifecycle、tool discovery、tool call 集成 groundwork，但当前仍是 config-gated / opt-in 能力（#107 目标：稳定化当前边界，而非新增功能）。LSP 仍缺少独立的 server preset/config 模块，ACP 也仍主要停留在受限的配置/适配器基础与 disabled-stub 阶段。
+
+**技术细节：** `ProviderSingleAgentGraph` 代表当前已实现的 provider-backed execution path，直接调用 `SingleAgentProvider.propose_turn()`，不依赖 LangGraph；当前默认 execution engine 仍是 deterministic，因此仅 `DeterministicReadOnlyGraph` 使用 LangGraph `StateGraph` 这一事实不应被表述为“LangGraph 已退出主路径”。
 
 ### Epic 4: 权限引擎
 
@@ -96,7 +98,7 @@ VoidCode 仍处于 pre-MVP 开发阶段。路线图从基础工作贯穿至 MVP 
 
 ## MVP 完成信号
 
-当 VoidCode 能够可靠地演示一个受监管的单智能体开发任务流，并具备持久化、审批、可观测性，以及至少一个经过真实验证的客户端入口点时，即认为达到了 MVP 边界。
+当 VoidCode 能够可靠地演示一个受监管的开发任务执行流，并具备持久化、审批、可观测性，以及至少一个经过真实验证的客户端入口点时，即认为达到了 MVP 边界。
 
 ## 当前最直接的后续工作
 
@@ -120,4 +122,23 @@ VoidCode 仍处于 pre-MVP 开发阶段。路线图从基础工作贯穿至 MVP 
 - 保持 CLI / HTTP / Web 共享同一套 persistence / replay truth
 - 不把 ACP / MCP 提前拉进当前 MVP 主路径
 
-因此，ACP 与 MCP 当前仍应作为边界预留或 design follow-up，而不是下一轮的实现主项。
+因此，ACP 与 MCP 当前仍应继续保持 boundary-first 的推进方式，而不是提前膨胀为当前 MVP 主路径。
+
+## Post-MVP 明确方向：预定义 agent 与 multi-agent
+
+multi-agent 支持已经是明确的 post-MVP 方向。当前推荐的进入方式不是让 runtime 失去控制面地位，而是在既有边界之上引入 `src/voidcode/agent/`，用于承载预定义 agent 的声明式配置，例如：
+
+- prompt / profile
+- hook 绑定
+- skill 绑定
+- MCP server/profile 绑定
+- tool allowlist / default tool set
+- provider / model preference
+
+在这一方向下：
+
+- `runtime/` 继续拥有 session、approval、permission、persistence、event、transport 与 capability lifecycle truth
+- `graph/` 继续拥有 loop / step orchestration
+- `agent/` 负责预定义 agent profile 与组合层
+
+这使得当前 MVP 主执行路径与未来 multi-agent 扩展可以沿着同一条 runtime-centric 架构演进，而不把治理语义下沉到 graph、prompt 或客户端侧。

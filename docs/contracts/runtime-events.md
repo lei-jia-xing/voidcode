@@ -8,7 +8,7 @@
 
 ## 状态
 
-此模式记录了当前的单智能体（single-agent）MVP 契约。它有意地比任何未来的多智能体协议更窄。
+此模式记录了当前 MVP 的运行时事件契约。它有意地比任何未来的多角色 / multi-agent 协议更窄。
 确定性的回退序列（fallback sequence）对于当前运行时仍然是规范的。未来的图模式（graph modes）可能会在现有阶段之间添加有序事件，而不会改变当前的回退行为。
 对于全新运行和审批后的恢复运行，运行时会将图端的终结事件重新编号为活跃的运行时序列，从而避免图端固定的序列值与插入的运行时事件发生冲突。
 
@@ -44,7 +44,7 @@ EventEnvelope(
 
 ## 当前稳定事件词汇表
 
-以下事件当前属于稳定的单智能体运行时契约，源自 `src/voidcode/runtime/service.py`、`src/voidcode/graph/read_only_slice.py` 与 `src/voidcode/graph/single_agent_slice.py`：
+以下事件当前属于稳定的运行时事件契约，源自 `src/voidcode/runtime/service.py`、`src/voidcode/graph/read_only_slice.py` 与 `src/voidcode/graph/single_agent_slice.py`。它们覆盖当前 deterministic 与 provider-backed 两条 execution engine 路径：
 
 - `runtime.request_received`
 - `runtime.skills_loaded`
@@ -67,13 +67,13 @@ EventEnvelope(
 
 ## 未来补充 / prototype-additive 词汇表
 
-这些共享事件名称在 `src/voidcode/runtime/events.py` 中定义，但当前不属于稳定的单智能体事件契约：
+这些共享事件名称在 `src/voidcode/runtime/events.py` 中定义，但当前不属于稳定的 MVP 事件契约：
 
 - `runtime.memory_refreshed`
 
 未来版本可以追加新的事件类型或为现有 payload 增加新字段；客户端必须继续容忍未知事件类型，并将 payload 视为可扩展结构。
 
-## 当前单智能体循环的事件序列
+## 当前 execution engine 循环的事件序列
 
 运行时和集成测试断言了具有单个已审批工具调用的轮次的有序序列：
 
