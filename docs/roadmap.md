@@ -51,7 +51,9 @@ VoidCode 仍处于 pre-MVP 开发阶段。路线图从基础工作贯穿至 MVP 
 
 将工具和扩展作为运行时的一等公民，包含元数据、注册、内置功能和统一的执行管线。此 Epic 还包括作为运行时管理接口的技能、语言服务器（LSP）和智能体通信协议（ACP）的基础设施。
 
-**当前状态：** 部分完成。内置工具和技能发现已实现。LSP 已具备 read-only runtime-managed 基线（manager、tool、事件与测试），并且仓库已经补齐了 `lsp/`、`skills/`、`provider/`、`acp/`、`mcp/` 等能力层边界目录文档；但 LSP 仍缺少独立的 server preset/config 模块，ACP 也仍主要停留在受限的配置/适配器基础与 disabled-stub 阶段。
+**当前状态：** 部分完成。内置工具和技能发现已实现。LSP 已具备 read-only runtime-managed 基线（manager、tool、事件与测试），并且仓库已经补齐了 `lsp/`、`skills/`、`provider/`、`acp/`、`mcp/` 等能力层边界目录文档。MCP 已完成 runtime-managed lifecycle、tool discovery、tool call 集成（#107 目标：稳定化当前边界，而非新增功能）。LSP 仍缺少独立的 server preset/config 模块，ACP 也仍主要停留在受限的配置/适配器基础与 disabled-stub 阶段。
+
+**技术细节：** `ProviderSingleAgentGraph`（provider-backed 单智能体主路径）直接调用 `SingleAgentProvider.propose_turn()`，不依赖 LangGraph；仅 `DeterministicReadOnlyGraph`（确定性只读测试路径）使用 LangGraph 的 `StateGraph`。
 
 ### Epic 4: 权限引擎
 
