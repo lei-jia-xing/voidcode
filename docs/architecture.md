@@ -32,16 +32,15 @@ VoidCode 是一个受 OpenCode 和 Claude Code 启发而开发的 pre-MVP 本地
 
 VoidCode 使用 LangGraph 作为编排引擎，而不是整个产品运行时。
 
-### LangGraph 负责
+### LangGraph 负责（仅 deterministic/read-only slice）
 
-- 智能体循环
-- 图状态
-- 条件路由
-- 中断与恢复
-- 检查点
+- `DeterministicReadOnlyGraph` 中的步骤编排
+- 该 slice 的图状态与检查点
+- 该 slice 的中断与恢复
 
-### 自定义运行时负责
+### 自定义运行时负责（全部执行路径）
 
+- 运行时入口（run/stream/resume）
 - 工具注册表与元数据
 - 权限决策（`allow`、`deny`、`ask`）
 - 钩子执行
@@ -50,7 +49,13 @@ VoidCode 使用 LangGraph 作为编排引擎，而不是整个产品运行时。
 - 面向 CLI 或未来客户端的流式传输
 - 上下文管理与压缩
 
-这种划分是项目的核心架构决策：**LangGraph 负责编排，而运行时提供产品化的执行边界。**
+### `ProviderSingleAgentGraph` 负责（provider-backed 主路径）
+
+- 直接调用 `SingleAgentProvider.propose_turn()`
+- 不依赖 LangGraph，由 runtime 直接驱动
+- 当前主要的单智能体执行引擎
+
+**核心架构决策：** 运行时统一持有执行治理；LangGraph 仅用于 deterministic/read-only 测试路径的编排，而非 provider-backed 主循环。
 
 ## 关键组件
 
