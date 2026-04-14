@@ -5,7 +5,7 @@ from .edit import EditTool
 from .glob import GlobTool
 from .grep import GrepTool
 from .list_dir import ListTool
-from .lsp import LspTool
+from .lsp import LspTool, FormatTool
 from .mcp import McpTool
 from .multi_edit import MultiEditTool
 from .read_file import ReadFileTool
@@ -17,6 +17,7 @@ from .write_file import WriteFileTool
 
 __all__ = [
     "EditTool",
+    "FormatTool",
     "GlobTool",
     "GrepTool",
     "ListTool",

@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import enum
+import subprocess
 from pathlib import Path
 from typing import Any, ClassVar, Protocol, cast
 
 from lsprotocol import converters as lsp_converters
 from lsprotocol import types as lsp_types
 
-from .contracts import ToolCall, ToolDefinition, ToolResult
+from .contracts import Tool, ToolCall, ToolDefinition, ToolResult, ToolResultStatus
 
 
 class LspRequester(Protocol):
@@ -176,5 +177,88 @@ class LspTool:
             data={"lsp_response": response.response},
         )
 
-    def __repr__(self) -> str:  # pragma: no cover
+    def __repr__(self) -> str:
         return "<LspTool runtime-managed>"
+
+
+# ------------------------------------------------------------------------------
+# FormatTool 内嵌在这里
+# ------------------------------------------------------------------------------
+FORMAT_DEFINITION = ToolDefinition(
+    name="format_file",
+    description="Auto-format a file using built-in presets: ruff, prettier, rustfmt, gofmt, etc.",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "Path to the file to format"
+            }
+        },
+        "required": ["path"],
+    },
+    read_only=False,
+)
+
+
+class FormatTool(Tool):
+    def __init__(self, hooks_config, workspace: Path):
+        self._hooks = hooks_config
+        self._workspace = workspace.resolve()
+
+    @property
+    def definition(self) -> ToolDefinition:
+        return FORMAT_DEFINITION
+
+    def invoke(self, call: ToolCall, workspace: Path) -> ToolResult:
+        file_path = Path(call.arguments["path"]).resolve()
+        resolved = self._hooks.resolve_formatter(file_path)
+
+        if not resolved:
+            return ToolResult(
+                tool_name=FORMAT_DEFINITION.name,
+                status=ToolResultStatus.ERROR,
+                error=f"No formatter available for {file_path}",
+                data={"path": str(file_path)},
+            )
+
+        lang, preset = resolved
+        cmd = list(preset.command) + [str(file_path)]
+
+        try:
+            proc = subprocess.run(
+                cmd,
+                cwd=self._workspace,
+                capture_output=True,
+                text=True,
+            )
+        except FileNotFoundError:
+            return ToolResult(
+                tool_name=FORMAT_DEFINITION.name,
+                status=ToolResultStatus.ERROR,
+                error=f"Formatter tool '{cmd[0]}' is not installed. Please install it first.",
+                data={"command": cmd, "language": lang},
+            )
+
+        if proc.returncode != 0:
+            return ToolResult(
+                tool_name=FORMAT_DEFINITION.name,
+                status=ToolResultStatus.ERROR,
+                error=f"Format failed: {proc.stderr[:300].strip()}",
+                data={
+                    "command": cmd,
+                    "stdout": proc.stdout,
+                    "stderr": proc.stderr,
+                },
+            )
+
+        return ToolResult(
+            tool_name=FORMAT_DEFINITION.name,
+            status=ToolResultStatus.OK,
+            content=f"Successfully formatted {file_path.name} ({lang})",
+            data={
+                "path": str(file_path),
+                "language": lang,
+                "command": cmd,
+            },
+        )

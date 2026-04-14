@@ -179,7 +179,8 @@ class VoidCodeRuntime:
         self._lsp_manager = lsp_manager or build_lsp_manager(self._config.lsp)
         self._mcp_manager = mcp_manager or build_mcp_manager(self._config.mcp)
         self._base_tool_registry = tool_registry or ToolRegistry.with_defaults(
-            lsp_tool=self._build_lsp_tool()
+            lsp_tool=self._build_lsp_tool(),
+            format_tool=self._build_format_tool(),
         )
         self._tool_registry = self._base_tool_registry
         self._graph_override = graph
@@ -298,6 +299,10 @@ class VoidCodeRuntime:
 
         return LspTool(requester=self.request_lsp)
 
+    def _build_format_tool(self) -> FormatTool:
+        from .tools.lsp import FormatTool
+        return FormatTool(self._config.hooks, self._workspace)
+    
     def _build_mcp_tools(self) -> tuple[Tool, ...]:
         if self._mcp_manager.current_state().mode != "managed":
             return ()
@@ -1933,7 +1938,6 @@ class VoidCodeRuntime:
             return
         if session_workspace != str(self._workspace):
             raise ValueError(f"session {session_id} does not belong to workspace {self._workspace}")
-
 
 @dataclass(frozen=True, slots=True)
 class EffectiveRuntimeConfig:
