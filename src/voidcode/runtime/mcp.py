@@ -19,102 +19,22 @@ import subprocess
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol, cast
+from typing import Any, cast
 
-# Import static types from mcp module
 from ..mcp import (
     MCP_CLIENT_NAME,
     MCP_CLIENT_VERSION,
     MCP_PROTOCOL_VERSION,
+    McpConfigState,
     McpDiagnosticSeverity,
+    McpManager,
+    McpManagerState,
+    McpRuntimeEvent,
+    McpToolCallResult,
+    McpToolDescriptor,
     create_diagnostic,
 )
-from ..mcp import (
-    McpConfigState as _McpConfigState,
-)
-from ..mcp import (
-    McpRuntimeEvent as _McpRuntimeEvent,
-)
-from ..mcp import (
-    McpToolCallResult as _McpToolCallResult,
-)
-from ..mcp import (
-    McpToolDescriptor as _McpToolDescriptor,
-)
-
-# Import runtime config types
 from .config import RuntimeMcpConfig
-
-# =============================================================================
-# Runtime-specific type extensions
-# =============================================================================
-
-
-class McpConfigState(_McpConfigState):
-    """Runtime-specific McpConfigState with conversion from RuntimeMcpConfig."""
-
-    @classmethod
-    def from_runtime_config(cls, config: RuntimeMcpConfig | None) -> McpConfigState:
-        if config is None:
-            return cls()
-        return cls(
-            configured_enabled=bool(config.enabled),
-            servers=dict(config.servers or {}),
-        )
-
-
-class McpToolDescriptor(_McpToolDescriptor):
-    """Runtime-specific McpToolDescriptor with exact typing."""
-
-    server_name: str
-    tool_name: str
-    description: str
-    input_schema: dict[str, Any]
-
-
-class McpToolCallResult(_McpToolCallResult):
-    """Runtime-specific McpToolCallResult with exact typing."""
-
-    content: list[dict[str, Any]]
-    is_error: bool
-
-
-class McpRuntimeEvent(_McpRuntimeEvent):
-    """Runtime-specific McpRuntimeEvent with exact typing."""
-
-    event_type: str
-    payload: dict[str, Any]
-
-
-@dataclass(frozen=True, slots=True)
-class McpManagerState:
-    mode: str = "disabled"
-    configuration: McpConfigState | None = None
-
-
-class McpManager(Protocol):
-    """Protocol for MCP manager - implemented by runtime."""
-
-    @property
-    def configuration(self) -> McpConfigState: ...
-
-    def current_state(self) -> McpManagerState: ...
-
-    def list_tools(self, *, workspace: Path) -> tuple[McpToolDescriptor, ...]: ...
-
-    def call_tool(
-        self,
-        *,
-        server_name: str,
-        tool_name: str,
-        arguments: dict[str, object],
-        workspace: Path,
-    ) -> McpToolCallResult: ...
-
-    def shutdown(self) -> tuple[McpRuntimeEvent, ...]: ...
-
-    def drain_events(self) -> tuple[McpRuntimeEvent, ...]: ...
-
 
 # =============================================================================
 # Disabled MCP Manager

@@ -4,6 +4,7 @@ import sys
 import time
 from pathlib import Path
 
+from voidcode.mcp import McpManagerState as CanonicalMcpManagerState
 from voidcode.runtime.config import RuntimeMcpConfig, RuntimeMcpServerConfig
 from voidcode.runtime.mcp import McpConfigState, McpManagerState, build_mcp_manager
 
@@ -77,6 +78,10 @@ for raw_line in sys.stdin:
         )
         continue
 """
+
+
+def test_runtime_mcp_reexports_canonical_manager_state_type() -> None:
+    assert McpManagerState is CanonicalMcpManagerState
 
 
 def test_mcp_manager_discovers_stdio_tools_and_invokes_calls(tmp_path: Path) -> None:
