@@ -1,32 +1,67 @@
 # `voidcode.mcp`
 
-这里是 MCP 能力层的预期目录。
+这里是 VoidCode 的 MCP 能力层，包含稳定的协议模型、配置 schema 和可观测性接口。
+
+> **状态**: 根据 Issue #107，MCP 现在已经从 design-first 转为 production-ready。
+> 静态类型和配置模型已提取到此目录，runtime 实现保留在 `src/voidcode/runtime/mcp.py`。
 
 ## 定位
 
-`voidcode.mcp` 的目标是承载 MCP 相关的协议模型、配置 schema、server 定义与 capability-layer primitives，为后续 runtime-managed MCP integration 预留清晰边界。
+`voidcode.mcp` 承载 MCP 相关的协议模型、配置 schema、server 定义与 capability-layer primitives。
 
 ## 负责什么
 
-- MCP 相关 schema 与配置模型
-- MCP server / connection definition 的纯数据结构
-- 不依赖 runtime session 状态的协议契约
-- 可被 runtime 消费的 preset / registry / resolution primitives
+- ✅ MCP 相关 schema 与配置模型 (`config.py`)
+- ✅ MCP server / connection definition 的纯数据结构 (`types.py`)
+- ✅ 不依赖 runtime session 状态的协议契约 (`contract.py`)
+- ✅ 可观测性与诊断接口 (`observability.py`)
 
 ## 不负责什么
 
-- 真实连接生命周期管理
-- runtime 事件发射
-- session 持久化与恢复语义
-- 客户端直连 MCP 的执行路径
-
-## 边界关系
-
-如果未来引入 MCP，`voidcode.runtime` 仍应持有 lifecycle、event、session truth 和 capability governance；`voidcode.mcp` 负责提供纯 contract / schema / preset 层。
+- ❌ 真实连接生命周期管理 (保留在 `runtime/mcp.py`)
+- ❌ runtime 事件发射 (保留在 `runtime/mcp.py`)
+- ❌ session 持久化与恢复语义
+- ❌ 客户端直连 MCP 的执行路径
 
 ## 当前状态
 
-MCP runtime 集成已在 `voidcode.runtime.mcp` 中实现（含 `McpManager` Protocol、`DisabledMcpManager`、events、tool discovery 和 tool call）。当前这部分能力仍是 config-gated / opt-in 的 runtime integration，而不是默认开启的 MVP 主路径。本目录为未来纯 schema/preset 能力层预留，当 runtime 边界稳定后可提取至此。
+### 已冻结的 Contract
 
-- `voidcode.runtime.mcp`：runtime-managed lifecycle、events、tool bridge
-- `voidcode.mcp`（本目录）：预留纯 contract/schema/preset 层
+参见 `contract.py` 中的 `SUPPORTED_CAPABILITIES`:
+
+- **Transport**: stdio-only
+- **Discovery**: deferred (懒加载)
+- **Operations**: tools/list, tools/call
+- **Lifecycle**: runtime-owned
+- **Security**: trusted-local-only
+
+### 不支持的功能
+
+参见 `contract.py` 中的 `NOT_SUPPORTED`:
+
+- 完整 bidirectional MCP
+- MCP resources / prompts / sampling
+- Remote / non-stdio transports
+- Untrusted MCP servers
+
+### 文件结构
+
+```
+src/voidcode/mcp/
+├── __init__.py         # 公共导出
+├── config.py           # 静态配置模型
+├── types.py            # 静态类型定义
+├── contract.py         # 冻结的边界定义
+├── observability.py    # 诊断与观测性接口
+└── README.md           # 本文件
+```
+
+## 边界关系
+
+- `voidcode.runtime` 持有 lifecycle、event、session truth 和 capability governance
+- `voidcode.mcp` 负责提供纯 contract / schema / preset 层
+- `voidcode.tools/mcp.py` 桥接 MCP tool 到 runtime 的工具系统
+
+## 相关 Issue
+
+- [#107](https://github.com/lei-jia-xing/voidcode/issues/107): stabilize MCP runtime boundary and extract config/schema/types
