@@ -23,7 +23,7 @@
 1. `VoidCodeRuntime` 仍是系统控制面，负责 session、approval、permission、persistence、event、transport、tool execution 与 capability lifecycle。
 2. `graph/` 仍是 orchestration / execution layer，而不是产品级治理边界。
 3. LangGraph 当前只用于 deterministic/read-only slice。
-4. provider-backed 单智能体路径当前由 runtime 直接驱动，并不依赖 LangGraph。
+4. provider-backed execution path 当前由 runtime 直接驱动，并不依赖 LangGraph。
 5. multi-agent 当前尚未实现。
 
 因此，`voidcode.agent` 的设计目标不是引入第二套 runtime，而是补上“agent 定义层”。
@@ -64,7 +64,7 @@
 
 当前并不需要把 LangGraph 作为 `voidcode.agent` 的前置条件，原因有三点：
 
-1. provider-backed 单智能体路径已经证明：runtime 可以在不依赖 LangGraph 的前提下驱动真实执行路径。
+1. provider-backed execution path 已经证明：runtime 可以在不依赖 LangGraph 的前提下驱动真实执行路径。
 2. 当前最需要收口的仍然是 capability substrate：skill execution、hook model、MCP config/profile、provider resolution/fallback，而不是 graph-first 的 multi-agent orchestration。
 3. 如果在这些能力层尚未稳定时就把 multi-agent 主骨架建立在 LangGraph 之上，容易把还不稳定的执行语义过早固化进 workflow 结构中。
 
@@ -96,7 +96,7 @@
 
 ### Phase 2：由 runtime 解析 agent preset
 
-让 runtime 在单智能体路径中能够解析和应用 agent preset，同时继续保持 runtime 对 approval、permission、event、persistence 的控制。
+让 runtime 在现有 execution path 中能够解析和应用 agent preset，同时继续保持 runtime 对 approval、permission、event、persistence 的控制。
 
 ### Phase 3：再评估 multi-agent orchestration
 
