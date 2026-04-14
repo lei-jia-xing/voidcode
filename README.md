@@ -24,7 +24,7 @@ VoidCode 旨在提供以以下能力为中心的本地开发智能体体验：
 - 会话持久化与恢复
 - 与 CLI 或未来 UI 客户端分离的无头运行时
 
-当前的研发重点保持聚焦：在扩展到更大的平台之前，先交付一个稳定、可演示的单智能体 MVP 循环。
+当前的研发重点保持聚焦：在扩展到更大的平台之前，先交付一个稳定、可演示的单智能体 MVP 循环。multi-agent 支持已被确定为 post-MVP 方向，但不会改变 runtime 作为系统控制面的定位。
 
 ## 快速上手
 
@@ -55,17 +55,20 @@ uv run voidcode sessions list --workspace .
 
 ## 架构概览
 
-VoidCode 采用分层架构，其中 **LangGraph 负责智能体编排**，而**自定义运行时处理产品级逻辑**。
+VoidCode 采用 runtime-centric 分层架构：**runtime 是系统控制面**，**graph 是执行/编排层**，而 LangGraph 当前只覆盖其中一条确定性切片。
 
 - 运行时（Runtime）是会话、权限、工具、存储、流式传输和治理的系统边界。
-- LangGraph 是编排引擎，用于处理图状态、路由、检查点和中断/恢复流程；目前已交付一个稳定的、支持多步执行的确定性单智能体循环。
+- graph 负责执行循环与状态推进；当前 `DeterministicReadOnlyGraph` 使用 LangGraph，而 provider-backed 单智能体路径由 runtime 直接驱动，不依赖 LangGraph。
 - CLI、未来的 Web 前端或未来的 IDE 集成等客户端与运行时通信。CLI 支持在 TTY 环境下进行实时的内联写入审批（inline approval）。
+- 未来的 multi-agent 方向将继续保持 runtime-owned 治理，并计划引入 `src/voidcode/agent/` 作为预定义 agent 定义边界。
 - 代码库当前围绕运行时控制面、编排层、工具层以及若干能力/客户端子模块组织：
   - `src/voidcode/runtime/`：运行时服务和执行边界
-  - `src/voidcode/graph/`：LangGraph 编排和状态转换
+  - `src/voidcode/graph/`：执行/编排层（当前既包含 LangGraph-backed slice，也包含非 LangGraph path）
   - `src/voidcode/tools/`：内置工具和工具元数据
   - `src/voidcode/hook/`：hook 配置与执行器
   - `src/voidcode/lsp/`、`skills/`、`provider/`、`acp/`、`mcp/`：能力层边界目录
+
+未来计划引入 `src/voidcode/agent/`，作为预定义 agent 定义边界，用于声明 prompt / hook / skill / MCP / tool / provider 配置。
   - `src/voidcode/tui/`：终端客户端层
 
 从架构方案中延续的关键设计原则：

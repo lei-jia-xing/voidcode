@@ -25,7 +25,7 @@
 - [x] **扩展基础设施基础**：运行时现在包括工具、技能、LSP 和 ACP 的类型化配置和发现基础设施，并为 hooks/config MVP 提供了清晰的配置边界。
 - [x] **内置工具提供商**：专门的 `BuiltinToolProvider` 负责通过运行时边界注册 `grep`、`read_file`、`shell_exec` 和 `write_file`。
 - [x] **技能发现基础设施**：对 `.voidcode/skills/<name>/SKILL.md` 文件存在极简发现机制；运行时在每次运行时发出 `runtime.skills_loaded` 事件。
-- [x] **LSP 和 ACP/MCP 扩展基础设施**：LSP 已具备运行时管理的基础能力（配置、manager、事件与只读 tool 基线）。MCP 已完成 runtime-managed lifecycle、tool discovery 和 tool call 基础集成（`DisabledMcpManager` + Protocol 边界），当前处于边界稳定化阶段而非功能扩张阶段。ACP 仍主要停留在类型化配置与适配器存根阶段。
+- [x] **LSP 和 ACP/MCP 扩展基础设施**：LSP 已具备运行时管理的基础能力（配置、manager、事件与只读 tool 基线）。MCP 已具备 runtime-managed lifecycle、tool discovery 和 tool call 基础集成，但当前仍是 config-gated / opt-in 能力，默认不会进入 MVP 主执行路径；现阶段重点仍是边界稳定化而非功能扩张。ACP 仍主要停留在类型化配置与适配器存根阶段。
 - [x] **极简 HTTP 传输**：精简的后端 HTTP 层现在暴露了 `GET /api/sessions`、`GET /api/sessions/{session_id}` 和 `POST /api/runtime/run/stream`，其中 SSE 数据块直接从运行时边界序列化，并且现在可以通过 `voidcode serve` 在本地提供服务。
 - [x] **运行时配置分层**：运行时现在显式支持 `execution_engine`、`provider_fallback` 与 `max_steps`，并将恢复关键配置持久化到 `SessionState.metadata["runtime_config"]`，以保证 `config show`、resume 和 provider fallback 语义一致。
 
@@ -38,6 +38,7 @@
 - [x] **极简 hooks/config MVP 闭环**：运行时已实现最小 pre/post tool hooks、`approval_mode` / `model` / `max_steps` 的恢复关键优先级基础、provider fallback 与 step budget 的持久化恢复语义，以及 CLI `config show` 检查路径。
 - [x] **动态工具注册**：运行时现在包括工具的类型化配置和发现基础设施，支持 `BuiltinToolProvider`。
 - [x] **Provider-backed 单智能体路径**：运行时已经具备 provider fallback、context window 管理、approval resume 连续性与可配置 step budget 的运行时治理基础。
+- [ ] **预定义 agent / multi-agent 边界**：未来将引入专门的 `src/voidcode/agent/` 边界来承载预定义 agent 的 prompt / hook / skill / MCP / tool / provider 配置；当前仓库尚未实现 multi-agent 执行语义。
 - [ ] **技能执行**：skill discovery 与 `runtime.skills_loaded` 事件已经完成，但运行时仍未执行技能逻辑，也尚未提供特定于技能的工具上下文。
 - [ ] **LSP preset/config 模块与 ACP 真实集成**：LSP 的只读 runtime-managed 基线已经存在，且 `src/voidcode/lsp/`、`src/voidcode/acp/` 等能力层边界目录已补齐文档，但仍缺少独立的 server preset/config 模块（extension/language 映射、root markers、默认 command、preset override merge）；ACP 也仍待真实传输与生命周期集成。
 - [ ] **长会话保留策略**：`#70` 已完成 waiting / terminal session 的内部 resume checkpoint groundwork，`#82` 也已经完成 retention / compaction / checkpoint invalidation 语义定义；当前 runtime 主线的直接后续工作转为 `#83`（corrupt / unreadable checkpoint fallback correctness）和 `#84`（cold-session archive / replay strategy）。
