@@ -35,10 +35,13 @@ from .acp import AcpAdapter, AcpRequestEnvelope, AcpResponseEnvelope, build_acp_
 from .config import (
     ExecutionEngineName,
     RuntimeConfig,
+    RuntimePlanConfig,
     RuntimeProviderFallbackConfig,
     load_runtime_config,
     parse_provider_fallback_payload,
+    parse_runtime_plan_payload,
     serialize_provider_fallback_config,
+    serialize_runtime_plan_config,
 )
 from .context_window import ContextWindowPolicy, RuntimeContextWindow, prepare_single_agent_context
 from .contracts import RuntimeRequest, RuntimeResponse, RuntimeStreamChunk, validate_session_id
@@ -65,6 +68,7 @@ from .permission import (
     PermissionResolution,
     resolve_permission,
 )
+from .plan import PlanContributor, apply_plan_patch, build_plan_contributor
 from .session import SessionRef, SessionState, SessionStatus, StoredSessionSummary
 from .single_agent_provider import ProviderExecutionError
 from .skills import SkillRegistry, SkillRuntimeContext
@@ -156,6 +160,7 @@ class VoidCodeRuntime:
     _mcp_manager: McpManager
     _acp_adapter: AcpAdapter
     _graph_cache: dict[tuple[ExecutionEngineName, str], RuntimeGraph]
+    _plan_contributor: PlanContributor
     _hook_recursion_env_var = "VOIDCODE_RUNNING_TOOL_HOOK"
     _default_context_window_policy = ContextWindowPolicy()
 
@@ -203,6 +208,7 @@ class VoidCodeRuntime:
                 execution_engine=self._config.execution_engine,
                 max_steps=self._config.max_steps,
                 provider_fallback=self._config.provider_fallback,
+                plan=self._config.plan,
                 resolved_provider=self._resolved_provider_config,
             )
         )
@@ -212,6 +218,7 @@ class VoidCodeRuntime:
         self._session_store = session_store or SqliteSessionStore()
         self._skill_registry = skill_registry or self._build_skill_registry()
         self._acp_adapter = acp_adapter or build_acp_adapter(self._config.acp)
+        self._plan_contributor = build_plan_contributor(self._workspace, self._config.plan)
 
     def __enter__(self) -> VoidCodeRuntime:
         return self
@@ -288,6 +295,7 @@ class VoidCodeRuntime:
                 execution_engine=resolved.execution_engine,
                 max_steps=request_max_steps,
                 provider_fallback=resolved.provider_fallback,
+                plan=resolved.plan,
                 resolved_provider=resolved.resolved_provider,
             )
         return resolved
@@ -537,21 +545,27 @@ class VoidCodeRuntime:
                 ),
             )
 
+        planned_prompt, planned_metadata = apply_plan_patch(
+            contributor=self._plan_contributor,
+            prompt=request.prompt,
+            metadata=request.metadata,
+        )
+
         graph_request = GraphRunRequest(
             session=session,
-            prompt=request.prompt,
+            prompt=planned_prompt,
             available_tools=self._tool_registry.definitions(),
             applied_skills=self._graph_applied_skills(session.metadata),
             context_window=self._prepare_single_agent_context_window(
-                prompt=request.prompt,
+                prompt=planned_prompt,
                 tool_results=(),
                 session_metadata=session.metadata,
             ),
             metadata={
-                **request.metadata,
+                **planned_metadata,
                 "provider_attempt": 0,
                 "provider_stream": _coerce_bool_like(
-                    request.metadata.get("provider_stream", True),
+                    planned_metadata.get("provider_stream", True),
                     True,
                 ),
             },
@@ -1168,6 +1182,32 @@ class VoidCodeRuntime:
         self._validate_session_workspace(response.session, session_id=session_id)
         return self._effective_runtime_config_from_metadata(response.session.metadata)
 
+    def refresh_provider_models(self, provider_name: str) -> tuple[str, ...]:
+        if not provider_name or "/" in provider_name:
+            raise ValueError("provider_name must be a non-empty provider id without '/'")
+        _ = self._model_provider_registry.resolve(provider_name)
+        return self._model_provider_registry.refresh_available_models(provider_name)
+
+    def provider_models(self, provider_name: str) -> tuple[str, ...]:
+        if not provider_name or "/" in provider_name:
+            raise ValueError("provider_name must be a non-empty provider id without '/'")
+        return self._model_provider_registry.available_models(provider_name)
+
+    def provider_model_catalog(self, provider_name: str) -> dict[str, object] | None:
+        if not provider_name or "/" in provider_name:
+            raise ValueError("provider_name must be a non-empty provider id without '/'")
+        catalog = self._model_provider_registry.provider_catalog(provider_name)
+        if catalog is None:
+            return None
+        return {
+            "provider": catalog.provider,
+            "models": list(catalog.models),
+            "refreshed": catalog.refreshed,
+            "source": catalog.source,
+            "last_refresh_status": catalog.last_refresh_status,
+            "last_error": catalog.last_error,
+        }
+
     def resume(
         self,
         session_id: str,
@@ -1726,6 +1766,7 @@ class VoidCodeRuntime:
                 effective_config.provider_fallback
             ),
             "resolved_provider": resolved_provider_snapshot(effective_config.resolved_provider),
+            "plan": serialize_runtime_plan_config(effective_config.plan),
         }
         if effective_config.model is not None:
             runtime_config_metadata["model"] = effective_config.model
@@ -1881,6 +1922,7 @@ class VoidCodeRuntime:
         execution_engine = self._config.execution_engine
         max_steps = self._config.max_steps
         provider_fallback = self._config.provider_fallback
+        plan = self._config.plan
         resolved_provider = self._resolved_provider_config
         if metadata is None:
             return EffectiveRuntimeConfig(
@@ -1889,6 +1931,7 @@ class VoidCodeRuntime:
                 execution_engine=execution_engine,
                 max_steps=max_steps,
                 provider_fallback=provider_fallback,
+                plan=plan,
                 resolved_provider=resolved_provider,
             )
 
@@ -1900,6 +1943,7 @@ class VoidCodeRuntime:
                 execution_engine=execution_engine,
                 max_steps=max_steps,
                 provider_fallback=provider_fallback,
+                plan=plan,
                 resolved_provider=resolved_provider,
             )
 
@@ -1929,6 +1973,19 @@ class VoidCodeRuntime:
                         str(exc),
                     )
                 ) from exc
+        if "plan" in runtime_config:
+            try:
+                plan = parse_runtime_plan_payload(
+                    runtime_config.get("plan"),
+                    source="persisted runtime_config.plan",
+                )
+            except ValueError as exc:
+                raise ValueError(
+                    format_invalid_provider_config_error(
+                        "persisted runtime_config.plan",
+                        str(exc),
+                    )
+                ) from exc
         persisted_execution_engine = runtime_config.get("execution_engine")
         if persisted_execution_engine in ("deterministic", "single_agent"):
             execution_engine = persisted_execution_engine
@@ -1953,6 +2010,7 @@ class VoidCodeRuntime:
             execution_engine=execution_engine,
             max_steps=max_steps,
             provider_fallback=provider_fallback,
+            plan=plan,
             resolved_provider=resolved_provider,
         )
 
@@ -1995,6 +2053,7 @@ class EffectiveRuntimeConfig:
     execution_engine: ExecutionEngineName
     max_steps: int
     provider_fallback: RuntimeProviderFallbackConfig | None = None
+    plan: RuntimePlanConfig | None = None
     resolved_provider: ResolvedProviderConfig = field(default_factory=ResolvedProviderConfig)
 
 

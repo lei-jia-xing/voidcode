@@ -80,6 +80,7 @@ class ProviderConfigs:
     google: GoogleProviderConfig | None = None
     copilot: CopilotProviderConfig | None = None
     litellm: LiteLLMProviderConfig | None = None
+    custom: dict[str, LiteLLMProviderConfig] = field(default_factory=dict)
 
 
 _OPENAI_API_KEY_ENV_VAR = "OPENAI_API_KEY"
@@ -101,6 +102,9 @@ _VALID_LITELLM_AUTH_SCHEMES: tuple[Literal["bearer", "token", "none"], ...] = (
     "bearer",
     "token",
     "none",
+)
+_BUILTIN_PROVIDER_NAMES: frozenset[str] = frozenset(
+    {"openai", "anthropic", "google", "copilot", "litellm", "opencode"}
 )
 
 
@@ -125,7 +129,7 @@ def parse_provider_configs_payload(
     _reject_unknown_keys(
         payload=payload,
         source=source,
-        allowed_keys=("openai", "anthropic", "google", "copilot", "litellm"),
+        allowed_keys=("openai", "anthropic", "google", "copilot", "litellm", "custom"),
     )
 
     environment: Mapping[str, str] = {} if env is None else env
@@ -154,6 +158,11 @@ def parse_provider_configs_payload(
         litellm=_parse_litellm_provider_config(
             payload.get("litellm"),
             field_path=_nested_config_field(source, "litellm"),
+            env=environment,
+        ),
+        custom=_parse_custom_litellm_provider_configs(
+            payload.get("custom"),
+            field_path=_nested_config_field(source, "custom"),
             env=environment,
         ),
     )
@@ -192,6 +201,14 @@ def serialize_provider_configs(
             providers.litellm,
             include_secrets=include_secrets,
         )
+    if providers.custom:
+        custom_payload: dict[str, object] = {}
+        for provider_name, custom_config in providers.custom.items():
+            custom_payload[provider_name] = _serialize_litellm_provider_config(
+                custom_config,
+                include_secrets=include_secrets,
+            )
+        serialized["custom"] = custom_payload
     return serialized
 
 
@@ -753,6 +770,45 @@ def _serialize_litellm_provider_config(
     if provider.model_map:
         payload["model_map"] = dict(provider.model_map)
     return payload
+
+
+def _parse_custom_litellm_provider_configs(
+    raw_value: object,
+    *,
+    field_path: str,
+    env: Mapping[str, str],
+) -> dict[str, LiteLLMProviderConfig]:
+    if raw_value is None:
+        return {}
+    if not isinstance(raw_value, dict):
+        raise ValueError(f"{field_path} must be an object when provided")
+
+    payload = cast(dict[object, object], raw_value)
+    parsed: dict[str, LiteLLMProviderConfig] = {}
+    for raw_provider_name, provider_payload in payload.items():
+        if not isinstance(raw_provider_name, str) or not raw_provider_name:
+            raise ValueError(f"{field_path} keys must be non-empty strings")
+        if "/" in raw_provider_name:
+            raise ValueError(
+                f"{_nested_config_field(field_path, raw_provider_name)} must not contain '/'"
+            )
+        normalized_provider_name = raw_provider_name.strip().lower()
+        if normalized_provider_name in _BUILTIN_PROVIDER_NAMES:
+            raise ValueError(
+                f"{_nested_config_field(field_path, raw_provider_name)} "
+                "must not collide with built-in provider names "
+                f"(conflicts with '{normalized_provider_name}')"
+            )
+
+        parsed_config = _parse_litellm_provider_config(
+            provider_payload,
+            field_path=_nested_config_field(field_path, raw_provider_name),
+            env=env,
+        )
+        if parsed_config is None:
+            continue
+        parsed[raw_provider_name] = parsed_config
+    return parsed
 
 
 def _parse_string_mapping(raw_value: object, *, field_path: str) -> dict[str, str]:

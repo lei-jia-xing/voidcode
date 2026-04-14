@@ -27,6 +27,7 @@ from voidcode.runtime.config import (
     RuntimeHooksConfig,
     RuntimeLspConfig,
     RuntimeLspServerConfig,
+    RuntimePlanConfig,
     RuntimeProviderFallbackConfig,
     RuntimeProvidersConfig,
     RuntimeSkillsConfig,
@@ -242,6 +243,19 @@ def test_runtime_config_parses_extension_domains(tmp_path: Path) -> None:
                         "timeout_seconds": 10,
                         "model_map": {"gpt-4o": "openrouter/openai/gpt-4o"},
                     },
+                    "custom": {
+                        "llama-local": {
+                            "base_url": "http://localhost:11434/v1",
+                            "auth_scheme": "none",
+                            "model_map": {"coder": "ollama/qwen2.5-coder:latest"},
+                        }
+                    },
+                },
+                "plan": {
+                    "provider": "custom",
+                    "module": "./.voidcode/plan_extension.py",
+                    "factory": "build",
+                    "options": {"mode": "strict"},
                 },
             }
         ),
@@ -304,6 +318,19 @@ def test_runtime_config_parses_extension_domains(tmp_path: Path) -> None:
             timeout_seconds=10.0,
             model_map={"gpt-4o": "openrouter/openai/gpt-4o"},
         ),
+        custom={
+            "llama-local": LiteLLMProviderConfig(
+                base_url="http://localhost:11434/v1",
+                auth_scheme="none",
+                model_map={"coder": "ollama/qwen2.5-coder:latest"},
+            )
+        },
+    )
+    assert config.plan == RuntimePlanConfig(
+        provider="custom",
+        module="./.voidcode/plan_extension.py",
+        factory="build",
+        options={"mode": "strict"},
     )
 
 
@@ -933,6 +960,31 @@ def test_runtime_config_rejects_invalid_max_steps(
             {"providers": {"litellm": {"model_map": {"gpt-4o": 4}}}},
             "runtime config field 'providers.litellm.model_map.gpt-4o'",
             id="providers-litellm-model-map-value-invalid",
+        ),
+        pytest.param(
+            {"plan": []},
+            "runtime config field 'plan'",
+            id="plan-shape",
+        ),
+        pytest.param(
+            {"plan": {"provider": ""}},
+            "runtime config field 'plan.provider'",
+            id="plan-provider-empty",
+        ),
+        pytest.param(
+            {"plan": {"module": ""}},
+            "runtime config field 'plan.module'",
+            id="plan-module-empty",
+        ),
+        pytest.param(
+            {"plan": {"factory": ""}},
+            "runtime config field 'plan.factory'",
+            id="plan-factory-empty",
+        ),
+        pytest.param(
+            {"plan": {"options": []}},
+            "runtime config field 'plan.options'",
+            id="plan-options-shape",
         ),
         pytest.param({"acp": []}, "runtime config field 'acp'", id="acp-shape"),
         pytest.param(

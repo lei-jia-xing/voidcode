@@ -143,6 +143,14 @@ class RuntimeTuiConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class RuntimePlanConfig:
+    provider: str | None = None
+    module: str | None = None
+    factory: str | None = None
+    options: Mapping[str, object] | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class RuntimeConfig:
     approval_mode: PermissionDecision = "ask"
     model: str | None = None
@@ -157,6 +165,7 @@ class RuntimeConfig:
     tui: RuntimeTuiConfig | None = None
     provider_fallback: RuntimeProviderFallbackConfig | None = None
     providers: RuntimeProvidersConfig | None = None
+    plan: RuntimePlanConfig | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,6 +183,7 @@ class RuntimeConfigOverrides:
     tui: RuntimeTuiConfig | None = None
     provider_fallback: RuntimeProviderFallbackConfig | None = None
     providers: RuntimeProvidersConfig | None = None
+    plan: RuntimePlanConfig | None = None
 
 
 def runtime_config_path(workspace: Path) -> Path:
@@ -224,6 +234,7 @@ def load_runtime_config(
         tui=repo_local.tui,
         provider_fallback=repo_local.provider_fallback,
         providers=repo_local.providers,
+        plan=repo_local.plan,
     )
 
 
@@ -290,6 +301,9 @@ def _load_repo_local_config(
     raw_providers = payload.get("providers")
     providers = _parse_providers_config(raw_providers, env=env)
 
+    raw_plan = payload.get("plan")
+    plan = _parse_plan_config(raw_plan)
+
     raw_approval_mode = payload.get("approval_mode")
     parsed_approval_mode = _parse_approval_mode(
         raw_approval_mode,
@@ -311,6 +325,7 @@ def _load_repo_local_config(
         tui=tui,
         provider_fallback=provider_fallback,
         providers=providers,
+        plan=plan,
     )
 
 
@@ -759,6 +774,62 @@ def _parse_tui_config(raw_tui: object) -> RuntimeTuiConfig | None:
         field_path="tui",
         model_type=_RuntimeTuiValidationModel,
     )
+
+
+def _parse_plan_config(raw_plan: object) -> RuntimePlanConfig | None:
+    if raw_plan is None:
+        return None
+    if not isinstance(raw_plan, dict):
+        raise ValueError("runtime config field 'plan' must be an object when provided")
+
+    payload = cast(dict[str, object], raw_plan)
+    provider = payload.get("provider")
+    if provider is not None and (not isinstance(provider, str) or not provider.strip()):
+        raise ValueError("runtime config field 'plan.provider' must be a non-empty string")
+
+    module = payload.get("module")
+    if module is not None and (not isinstance(module, str) or not module.strip()):
+        raise ValueError("runtime config field 'plan.module' must be a non-empty string")
+
+    factory = payload.get("factory")
+    if factory is not None and (not isinstance(factory, str) or not factory.strip()):
+        raise ValueError("runtime config field 'plan.factory' must be a non-empty string")
+
+    options = payload.get("options")
+    parsed_options: Mapping[str, object] | None = None
+    if options is not None:
+        if not isinstance(options, dict):
+            raise ValueError("runtime config field 'plan.options' must be an object when provided")
+        parsed_options = cast(dict[str, object], options)
+
+    return RuntimePlanConfig(
+        provider=provider,
+        module=module,
+        factory=factory,
+        options=parsed_options,
+    )
+
+
+def parse_runtime_plan_payload(raw_plan: object, *, source: str) -> RuntimePlanConfig | None:
+    try:
+        return _parse_plan_config(raw_plan)
+    except ValueError as exc:
+        raise ValueError(f"{source}: {exc}") from exc
+
+
+def serialize_runtime_plan_config(plan: RuntimePlanConfig | None) -> dict[str, object] | None:
+    if plan is None:
+        return None
+    payload: dict[str, object] = {}
+    if plan.provider is not None:
+        payload["provider"] = plan.provider
+    if plan.module is not None:
+        payload["module"] = plan.module
+    if plan.factory is not None:
+        payload["factory"] = plan.factory
+    if plan.options is not None:
+        payload["options"] = dict(plan.options)
+    return payload
 
 
 def _parse_runtime_config_section[TConfig, TModel: BaseModel](

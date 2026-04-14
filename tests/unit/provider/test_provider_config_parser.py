@@ -37,6 +37,13 @@ def test_parse_provider_configs_payload_parses_provider_blocks_directly() -> Non
                 "api_key_env_var": "LITELLM_KEY",
                 "model_map": {"gpt-4o": "openrouter/openai/gpt-4o"},
             },
+            "custom": {
+                "llama-local": {
+                    "base_url": "http://localhost:11434/v1",
+                    "auth_scheme": "none",
+                    "model_map": {"coder": "ollama/qwen2.5-coder:latest"},
+                }
+            },
         },
         source="runtime config field 'providers'",
         env={
@@ -71,6 +78,13 @@ def test_parse_provider_configs_payload_parses_provider_blocks_directly() -> Non
             auth_scheme="token",
             model_map={"gpt-4o": "openrouter/openai/gpt-4o"},
         ),
+        custom={
+            "llama-local": LiteLLMProviderConfig(
+                base_url="http://localhost:11434/v1",
+                auth_scheme="none",
+                model_map={"coder": "ollama/qwen2.5-coder:latest"},
+            )
+        },
     )
 
 
@@ -80,6 +94,70 @@ def test_parse_provider_configs_payload_rejects_unknown_provider_block() -> None
     ):
         _ = parse_provider_configs_payload(
             {"unknown": {}},
+            source="runtime config field 'providers'",
+        )
+
+
+def test_parse_provider_configs_payload_rejects_invalid_custom_provider_name() -> None:
+    with pytest.raises(
+        ValueError,
+        match="runtime config field 'providers.custom.invalid/name'",
+    ):
+        _ = parse_provider_configs_payload(
+            {
+                "custom": {
+                    "invalid/name": {
+                        "base_url": "http://localhost:4000",
+                    }
+                }
+            },
+            source="runtime config field 'providers'",
+        )
+
+
+@pytest.mark.parametrize(
+    "builtin_name", ["openai", "anthropic", "google", "copilot", "litellm", "opencode"]
+)
+def test_parse_provider_configs_payload_rejects_custom_provider_name_colliding_with_builtin(
+    builtin_name: str,
+) -> None:
+    with pytest.raises(
+        ValueError,
+        match=(
+            rf"runtime config field 'providers.custom\.{builtin_name}' "
+            rf"must not collide with built-in provider names \(conflicts with '{builtin_name}'\)"
+        ),
+    ):
+        _ = parse_provider_configs_payload(
+            {
+                "custom": {
+                    builtin_name: {
+                        "base_url": "http://localhost:4000",
+                    }
+                }
+            },
+            source="runtime config field 'providers'",
+        )
+
+
+def test_parse_provider_configs_payload_rejects_case_or_whitespace_variant_of_builtin_name() -> (
+    None
+):
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"runtime config field 'providers.custom\. OpenAI ' "
+            r"must not collide with built-in provider names \(conflicts with 'openai'\)"
+        ),
+    ):
+        _ = parse_provider_configs_payload(
+            {
+                "custom": {
+                    " OpenAI ": {
+                        "base_url": "http://localhost:4000",
+                    }
+                }
+            },
             source="runtime config field 'providers'",
         )
 

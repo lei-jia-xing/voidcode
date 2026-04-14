@@ -9,6 +9,7 @@ from typing import Any, Literal, cast
 
 import pytest
 
+from voidcode.provider.config import LiteLLMProviderConfig
 from voidcode.provider.registry import ModelProviderRegistry
 from voidcode.runtime.acp import DisabledAcpAdapter
 from voidcode.runtime.config import (
@@ -17,7 +18,9 @@ from voidcode.runtime.config import (
     RuntimeLspConfig,
     RuntimeLspServerConfig,
     RuntimeMcpServerConfig,
+    RuntimePlanConfig,
     RuntimeProviderFallbackConfig,
+    RuntimeProvidersConfig,
     RuntimeSkillsConfig,
 )
 from voidcode.runtime.events import (
@@ -1216,6 +1219,7 @@ def test_runtime_effective_runtime_config_recovers_persisted_max_steps(tmp_path:
         "max_steps": 7,
         "model": "session/model",
         "provider_fallback": None,
+        "plan": None,
         "resolved_provider": {
             "active_target": {
                 "raw_model": "session/model",
@@ -1351,6 +1355,7 @@ def test_runtime_effective_runtime_config_uses_request_metadata_max_steps_for_ne
         "execution_engine": "deterministic",
         "max_steps": 2,
         "provider_fallback": None,
+        "plan": None,
         "resolved_provider": None,
         "lsp": {"mode": "disabled", "configured_enabled": False, "servers": []},
         "acp": {
@@ -1362,6 +1367,92 @@ def test_runtime_effective_runtime_config_uses_request_metadata_max_steps_for_ne
         },
         "mcp": {"mode": "disabled", "configured_enabled": False, "servers": []},
     }
+
+
+def test_runtime_custom_plan_contributor_can_patch_prompt_and_metadata(tmp_path: Path) -> None:
+    extension_file = tmp_path / "plan_extension.py"
+    extension_file.write_text(
+        "\n".join(
+            (
+                "from voidcode.runtime.plan import PlanPatch",
+                "",
+                "def build(options):",
+                "    prefix = str(options.get('prefix', ''))",
+                "",
+                "    class Contributor:",
+                "        def apply(self, context):",
+                "            return PlanPatch(",
+                "                prompt=f'{prefix}{context.prompt}',",
+                "                metadata_updates={'plan_applied': True},",
+                "            )",
+                "",
+                "    return Contributor()",
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SkillCapturingStubGraph(),
+        config=RuntimeConfig(
+            plan=RuntimePlanConfig(
+                provider="custom",
+                module=str(extension_file),
+                factory="build",
+                options={"prefix": "[planned] "},
+            )
+        ),
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="hello"))
+
+    assert response.output == "[planned] hello"
+    assert _SkillCapturingStubGraph.last_request is not None
+    assert _SkillCapturingStubGraph.last_request.prompt == "[planned] hello"
+    assert _SkillCapturingStubGraph.last_request.metadata["plan_applied"] is True
+
+
+def test_runtime_effective_config_restores_persisted_plan_metadata(tmp_path: Path) -> None:
+    extension_file = tmp_path / "plan_extension.py"
+    extension_file.write_text(
+        "\n".join(
+            (
+                "from voidcode.runtime.plan import PlanPatch",
+                "",
+                "def build(options):",
+                "    contributor_type = type(",
+                "        'Contributor',",
+                "        (),",
+                "        {'apply': lambda self, context: PlanPatch()},",
+                "    )",
+                "    return contributor_type()",
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    plan_config = RuntimePlanConfig(
+        provider="custom",
+        module=str(extension_file),
+        factory="build",
+        options={"mode": "strict"},
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SkillCapturingStubGraph(),
+        config=RuntimeConfig(plan=plan_config),
+    )
+    _ = runtime.run(RuntimeRequest(prompt="hello", session_id="plan-session"))
+
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SkillCapturingStubGraph(),
+        config=RuntimeConfig(),
+    )
+    effective = resumed_runtime.effective_runtime_config(session_id="plan-session")
+
+    assert effective.plan == plan_config
 
 
 @pytest.mark.parametrize(
@@ -2453,6 +2544,29 @@ def test_runtime_fails_without_downgrade_on_context_limit(tmp_path: Path) -> Non
         "provider": "opencode",
         "model": "gpt-5.4",
     }
+
+
+def test_runtime_refresh_provider_models_returns_catalog_with_model_map_fallback(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            providers=RuntimeProvidersConfig(
+                litellm=LiteLLMProviderConfig(
+                    base_url="http://127.0.0.1:65534",
+                    auth_scheme="none",
+                    model_map={"alias": "openrouter/openai/gpt-4o"},
+                )
+            )
+        ),
+    )
+
+    models = runtime.refresh_provider_models("litellm")
+
+    assert models[0] == "alias"
+    assert "openrouter/openai/gpt-4o" in models
+    assert runtime.provider_models("litellm") == models
 
 
 def test_runtime_rejects_malformed_model_reference_during_initialization(tmp_path: Path) -> None:

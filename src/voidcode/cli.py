@@ -248,6 +248,47 @@ def _handle_config_show_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def _handle_provider_models_command(args: argparse.Namespace) -> int:
+    workspace = cast(Path, args.workspace)
+    provider = cast(str, args.provider)
+    refresh = cast(bool, args.refresh)
+    runtime = VoidCodeRuntime(workspace=workspace)
+    try:
+        try:
+            models = (
+                runtime.refresh_provider_models(provider)
+                if refresh
+                else runtime.provider_models(provider)
+            )
+        except ValueError as exc:
+            raise SystemExit(f"error: {exc}") from None
+    finally:
+        _ = runtime.shutdown_lsp()
+
+    catalog = runtime.provider_model_catalog(provider)
+    payload: dict[str, object] = {
+        "workspace": str(workspace),
+        "provider": provider,
+        "refreshed": refresh,
+        "models": list(models),
+    }
+    if catalog is not None:
+        payload["source"] = catalog.get("source")
+        payload["last_refresh_status"] = catalog.get("last_refresh_status")
+        payload["last_error"] = catalog.get("last_error")
+        if refresh and catalog.get("source") == "fallback":
+            refresh_error = catalog.get("last_error")
+            print(
+                "WARN provider.models.refresh "
+                f"provider={provider} source=fallback reason={refresh_error}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+    print(json.dumps(payload))
+    return 0
+
+
 class EventLikeProtocol(Protocol):
     event_type: str
     source: str
@@ -360,6 +401,9 @@ def build_parser() -> argparse.ArgumentParser:
     config_parser = subparsers.add_parser("config", help="Inspect effective runtime configuration.")
     config_subparsers = config_parser.add_subparsers(dest="config_command")
 
+    provider_parser = subparsers.add_parser("provider", help="Inspect provider metadata.")
+    provider_subparsers = provider_parser.add_subparsers(dest="provider_command")
+
     config_show_parser = config_subparsers.add_parser(
         "show", help="Show effective runtime config for a workspace or session."
     )
@@ -375,6 +419,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional persisted session identifier used to show resumed effective config.",
     )
     config_show_parser.set_defaults(handler=_handle_config_show_command)
+
+    provider_models_parser = provider_subparsers.add_parser(
+        "models", help="Show or refresh available models for one provider."
+    )
+    _ = provider_models_parser.add_argument(
+        "provider", help="Provider name, e.g. openai or litellm."
+    )
+    _ = provider_models_parser.add_argument(
+        "--workspace",
+        type=Path,
+        default=Path.cwd(),
+        help="Workspace root used to resolve runtime config.",
+    )
+    _ = provider_models_parser.add_argument(
+        "--refresh",
+        action="store_true",
+        help="Refresh model list from provider endpoint before printing.",
+    )
+    provider_models_parser.set_defaults(handler=_handle_provider_models_command)
 
     list_parser = sessions_subparsers.add_parser("list", help="List persisted sessions.")
     _ = list_parser.add_argument(

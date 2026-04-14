@@ -39,6 +39,25 @@ def test_provider_auth_methods_discovery_defaults_for_all_target_providers() -> 
     assert [method.id for method in resolver.methods("litellm").methods] == ["api_key", "none"]
 
 
+def test_provider_auth_methods_discovery_supports_custom_provider_from_config() -> None:
+    resolver = ProviderAuthResolver(
+        providers=ProviderConfigs(
+            custom={
+                "llama-local": LiteLLMProviderConfig(
+                    api_key="custom-secret",
+                    auth_scheme="bearer",
+                )
+            }
+        )
+    )
+
+    methods = resolver.methods("llama-local")
+
+    assert methods.provider == "llama-local"
+    assert methods.default_method == "api_key"
+    assert [method.id for method in methods.methods] == ["api_key", "none"]
+
+
 def test_provider_auth_methods_discovery_uses_configured_defaults() -> None:
     resolver = ProviderAuthResolver(
         providers=ProviderConfigs(
@@ -214,6 +233,51 @@ def test_provider_auth_authorize_litellm_with_api_key_returns_bearer_material() 
     assert result.material.headers == {"Authorization": "Bearer litellm-secret"}
 
 
+def test_provider_auth_methods_rejects_unconfigured_custom_provider_name() -> None:
+    resolver = ProviderAuthResolver(providers=ProviderConfigs())
+
+    with pytest.raises(
+        ProviderAuthResolutionError,
+        match="provider auth provider 'llama-local' is not supported",
+    ) as exc_info:
+        _ = resolver.methods("llama-local")
+
+    assert exc_info.value.code == "unsupported_provider"
+
+
+def test_provider_auth_authorize_rejects_unconfigured_custom_provider_name() -> None:
+    resolver = ProviderAuthResolver(providers=ProviderConfigs())
+
+    with pytest.raises(
+        ProviderAuthResolutionError,
+        match="provider auth provider 'llama-local' is not supported",
+    ) as exc_info:
+        _ = resolver.authorize(ProviderAuthAuthorizeRequest(provider="llama-local"))
+
+    assert exc_info.value.code == "unsupported_provider"
+
+
+def test_provider_auth_callback_rejects_custom_provider_before_state_validation() -> None:
+    resolver = ProviderAuthResolver(
+        providers=ProviderConfigs(custom={"llama-local": LiteLLMProviderConfig(api_key="secret")})
+    )
+
+    with pytest.raises(
+        ProviderAuthResolutionError,
+        match="callback is not supported for provider 'llama-local' method 'oauth'",
+    ) as exc_info:
+        _ = resolver.callback(
+            ProviderAuthCallbackRequest(
+                provider="llama-local",
+                method="oauth",
+                state="voidcode:llama-local:oauth:callback:fake",
+                payload={"access_token": "x"},
+            )
+        )
+
+    assert exc_info.value.code == "callback_not_supported"
+
+
 def test_provider_auth_authorize_litellm_without_api_key_allows_none_mode() -> None:
     resolver = ProviderAuthResolver(providers=ProviderConfigs(litellm=LiteLLMProviderConfig()))
 
@@ -223,6 +287,71 @@ def test_provider_auth_authorize_litellm_without_api_key_allows_none_mode() -> N
     assert result.method == "none"
     assert result.material is not None
     assert result.material.headers == {}
+
+
+def test_provider_auth_authorize_custom_provider_with_api_key_returns_bearer_material() -> None:
+    resolver = ProviderAuthResolver(
+        providers=ProviderConfigs(
+            custom={"llama-local": LiteLLMProviderConfig(api_key="custom-secret")}
+        )
+    )
+
+    result = resolver.authorize(ProviderAuthAuthorizeRequest(provider="llama-local"))
+
+    assert result.status == "authorized"
+    assert result.provider == "llama-local"
+    assert result.material is not None
+    assert result.material.headers == {"Authorization": "Bearer custom-secret"}
+
+
+def test_provider_auth_authorize_custom_provider_none_mode_returns_empty_headers() -> None:
+    resolver = ProviderAuthResolver(
+        providers=ProviderConfigs(custom={"llama-local": LiteLLMProviderConfig(auth_scheme="none")})
+    )
+
+    result = resolver.authorize(ProviderAuthAuthorizeRequest(provider="llama-local"))
+
+    assert result.status == "authorized"
+    assert result.method == "none"
+    assert result.material is not None
+    assert result.material.headers == {}
+
+
+def test_provider_auth_authorize_custom_provider_respects_explicit_method_override() -> None:
+    resolver = ProviderAuthResolver(
+        providers=ProviderConfigs(
+            custom={"llama-local": LiteLLMProviderConfig(api_key="custom-secret")}
+        )
+    )
+
+    result = resolver.authorize(ProviderAuthAuthorizeRequest(provider="llama-local", method="none"))
+
+    assert result.status == "authorized"
+    assert result.method == "none"
+    assert result.material is not None
+    assert result.material.headers == {}
+
+
+def test_provider_auth_custom_provider_matches_litellm_behavior_for_methods_and_authorize() -> None:
+    providers = ProviderConfigs(
+        litellm=LiteLLMProviderConfig(api_key="same-secret"),
+        custom={"llama-local": LiteLLMProviderConfig(api_key="same-secret")},
+    )
+    resolver = ProviderAuthResolver(providers=providers)
+
+    litellm_methods = resolver.methods("litellm")
+    custom_methods = resolver.methods("llama-local")
+    assert [method.id for method in custom_methods.methods] == [
+        method.id for method in litellm_methods.methods
+    ]
+    assert custom_methods.default_method == litellm_methods.default_method
+
+    litellm_auth = resolver.authorize(ProviderAuthAuthorizeRequest(provider="litellm"))
+    custom_auth = resolver.authorize(ProviderAuthAuthorizeRequest(provider="llama-local"))
+    assert litellm_auth.status == custom_auth.status == "authorized"
+    assert litellm_auth.material is not None
+    assert custom_auth.material is not None
+    assert litellm_auth.material.headers == custom_auth.material.headers
 
 
 def test_provider_auth_methods_litellm_prefers_none_when_auth_scheme_is_none() -> None:

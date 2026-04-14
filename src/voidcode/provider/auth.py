@@ -12,7 +12,7 @@ from .config import (
     ProviderConfigs,
 )
 
-type ProviderAuthProvider = Literal["openai", "anthropic", "google", "copilot", "litellm"]
+type ProviderAuthProvider = str
 type ProviderErrorKind = Literal[
     "rate_limit", "context_limit", "invalid_model", "transient_failure"
 ]
@@ -119,7 +119,10 @@ class ProviderAuthResolver:
     ) -> None:
         self._providers = providers or ProviderConfigs()
         self._env: Mapping[str, str] = {} if env is None else env
-        self._pending_callback_states: dict[str, tuple[ProviderAuthProvider, str]] = {}
+        self._pending_callback_states: dict[str, tuple[str, str]] = {}
+
+    def _custom_provider_config(self, provider: str) -> LiteLLMProviderConfig | None:
+        return self._providers.custom.get(provider)
 
     def methods(self, provider: ProviderAuthProvider) -> ProviderAuthMethodsResponse:
         if provider == "openai":
@@ -164,6 +167,18 @@ class ProviderAuthResolver:
                 methods=_LITELLM_METHODS,
                 default_method=default_method,
             )
+        custom_config = self._custom_provider_config(provider)
+        if custom_config is not None:
+            default_method = "none"
+            if custom_config.auth_scheme == "none":
+                default_method = "none"
+            elif custom_config.api_key is not None:
+                default_method = "api_key"
+            return ProviderAuthMethodsResponse(
+                provider=provider,
+                methods=_LITELLM_METHODS,
+                default_method=default_method,
+            )
         raise self._error(
             provider=provider,
             code="unsupported_provider",
@@ -181,7 +196,18 @@ class ProviderAuthResolver:
         if request.provider == "copilot":
             return self._authorize_copilot(request)
         if request.provider == "litellm":
-            return self._authorize_litellm(request)
+            return self._authorize_litellm_compatible(
+                request=request,
+                provider_name="litellm",
+                provider_config=self._providers.litellm,
+            )
+        custom_config = self._custom_provider_config(request.provider)
+        if custom_config is not None:
+            return self._authorize_litellm_compatible(
+                request=request,
+                provider_name=request.provider,
+                provider_config=custom_config,
+            )
         raise self._error(
             provider=request.provider,
             code="unsupported_provider",
@@ -189,10 +215,13 @@ class ProviderAuthResolver:
             message=f"provider auth provider '{request.provider}' is not supported",
         )
 
-    def _authorize_litellm(
-        self, request: ProviderAuthAuthorizeRequest
+    def _authorize_litellm_compatible(
+        self,
+        *,
+        request: ProviderAuthAuthorizeRequest,
+        provider_name: str,
+        provider_config: LiteLLMProviderConfig | None,
     ) -> ProviderAuthAuthorizeResult:
-        provider_config: LiteLLMProviderConfig | None = self._providers.litellm
         payload = {} if request.payload is None else dict(request.payload)
         method = request.method
         if method is None:
@@ -204,22 +233,22 @@ class ProviderAuthResolver:
                 method = "none"
         if method not in {"api_key", "none"}:
             raise self._error(
-                provider="litellm",
+                provider=provider_name,
                 code="unsupported_method",
                 kind="invalid_model",
                 message=(
-                    f"provider auth method '{method}' for provider 'litellm' "
+                    f"provider auth method '{method}' for provider '{provider_name}' "
                     "must be one of: api_key, none"
                 ),
             )
 
         if method == "none":
             return ProviderAuthAuthorizeResult(
-                provider="litellm",
+                provider=provider_name,
                 method=method,
                 status="authorized",
                 material=ProviderAuthMaterial(
-                    provider="litellm",
+                    provider=provider_name,
                     method=method,
                     headers={},
                     metadata={},
@@ -230,25 +259,25 @@ class ProviderAuthResolver:
             payload,
             key="api_key",
             field_path="provider auth authorize payload.api_key",
-            provider="litellm",
+            provider=provider_name,
         )
         if token is None and provider_config is not None:
             token = provider_config.api_key
         if token is None:
             raise self._error(
-                provider="litellm",
+                provider=provider_name,
                 code="missing_credentials",
                 kind="invalid_model",
                 message=(
-                    "provider auth field 'litellm.api_key' must be provided "
-                    "for litellm api_key auth"
+                    f"provider auth field '{provider_name}.api_key' must be provided "
+                    f"for {provider_name} api_key auth"
                 ),
             )
         return ProviderAuthAuthorizeResult(
-            provider="litellm",
+            provider=provider_name,
             method=method,
             status="authorized",
-            material=self._bearer_material("litellm", method, token),
+            material=self._bearer_material(provider_name, method, token),
         )
 
     def callback(self, request: ProviderAuthCallbackRequest) -> ProviderAuthMaterial:
@@ -607,7 +636,7 @@ class ProviderAuthResolver:
         *,
         key: str,
         field_path: str,
-        provider: ProviderAuthProvider,
+        provider: str,
     ) -> str | None:
         raw = payload.get(key)
         if raw is None:
@@ -627,7 +656,7 @@ class ProviderAuthResolver:
         *,
         key: str,
         field_path: str,
-        provider: ProviderAuthProvider,
+        provider: str,
     ) -> str:
         value = self._optional_payload_str(
             payload,
@@ -644,21 +673,17 @@ class ProviderAuthResolver:
             )
         return value
 
-    def _new_callback_state(self, provider: ProviderAuthProvider, method: str) -> str:
+    def _new_callback_state(self, provider: str, method: str) -> str:
         state = f"voidcode:{provider}:{method}:callback:{uuid4().hex}"
         self._pending_callback_states[state] = (provider, method)
         return state
 
-    def _validate_callback_state(
-        self, state: str, provider: ProviderAuthProvider, method: str
-    ) -> bool:
+    def _validate_callback_state(self, state: str, provider: str, method: str) -> bool:
         expected = self._pending_callback_states.get(state)
         return expected == (provider, method)
 
     @staticmethod
-    def _bearer_material(
-        provider: ProviderAuthProvider, method: str, token: str
-    ) -> ProviderAuthMaterial:
+    def _bearer_material(provider: str, method: str, token: str) -> ProviderAuthMaterial:
         return ProviderAuthMaterial(
             provider=provider,
             method=method,

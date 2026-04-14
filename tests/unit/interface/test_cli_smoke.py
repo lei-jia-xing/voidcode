@@ -1037,3 +1037,36 @@ def test_config_show_session_workspace_mismatch_returns_error() -> None:
     assert result.returncode != 0
     assert result.stdout == ""
     assert "error:" in result.stderr
+
+
+def test_provider_models_command_outputs_refreshed_provider_model_list() -> None:
+    cli = importlib.import_module("voidcode.cli")
+    models = ("alias", "provider/model")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+            runtime_class.return_value.refresh_provider_models.return_value = models
+            runtime_class.return_value.provider_model_catalog.return_value = {
+                "provider": "litellm",
+                "models": list(models),
+                "refreshed": True,
+                "source": "remote",
+                "last_refresh_status": "ok",
+                "last_error": None,
+            }
+            result = cli.main(
+                [
+                    "provider",
+                    "models",
+                    "litellm",
+                    "--workspace",
+                    str(workspace),
+                    "--refresh",
+                ]
+            )
+
+    assert result == 0
+    runtime_class.assert_called_once_with(workspace=workspace)
+    runtime_class.return_value.refresh_provider_models.assert_called_once_with("litellm")
+    runtime_class.return_value.provider_model_catalog.assert_called_once_with("litellm")

@@ -32,6 +32,7 @@ from .errors import (
 )
 from .google import GoogleModelProvider
 from .litellm import LiteLLMModelProvider
+from .model_catalog import ProviderModelCatalog, discover_available_models
 from .models import (
     ProviderModelSelection,
     ResolvedProviderChain,
@@ -64,6 +65,7 @@ __all__ = [
     "GoogleModelProvider",
     "LiteLLMModelProvider",
     "ModelProvider",
+    "ProviderModelCatalog",
     "ModelProviderRegistry",
     "OpenAIModelProvider",
     "ProviderAuthAuthorizeRequest",
@@ -101,6 +103,7 @@ __all__ = [
     "resolve_provider_config",
     "resolve_provider_model",
     "resolved_provider_snapshot",
+    "discover_available_models",
     "serialize_provider_configs",
     "serialize_provider_fallback_config",
 ]
