@@ -89,7 +89,13 @@ class ProviderSingleAgentGraph:
             ),
         )
 
-        self._abort_signal.set_cancelled(bool(request.metadata.get("abort_requested", False)))
+        abort_requested = request.metadata.get("abort_requested", False)
+        if isinstance(abort_requested, bool):
+            self._abort_signal.set_cancelled(abort_requested)
+        else:
+            self._abort_signal.set_cancelled(
+                str(abort_requested).strip().lower() not in {"false", "0", "no", "off", ""}
+            )
         turn_request = SingleAgentTurnRequest(
             prompt=request.prompt,
             available_tools=request.available_tools,
@@ -103,7 +109,17 @@ class ProviderSingleAgentGraph:
             abort_signal=cast(SingleAgentAbortSignal, self._abort_signal),
         )
 
-        streaming_enabled = bool(request.metadata.get("provider_stream", False))
+        provider_stream = request.metadata.get("provider_stream", True)
+        if isinstance(provider_stream, bool):
+            streaming_enabled = provider_stream
+        else:
+            streaming_enabled = str(provider_stream).strip().lower() not in {
+                "false",
+                "0",
+                "no",
+                "off",
+                "",
+            }
         if streaming_enabled and isinstance(self._provider, StreamableSingleAgentProvider):
             return self._step_streaming(
                 planning_events=planning_events,
@@ -143,7 +159,7 @@ class ProviderSingleAgentGraph:
         for stream_event in stream_provider.stream_turn(turn_request):
             stream_events.append(self._stream_event_to_graph_event(stream_event))
             if stream_event.kind in {"delta", "content"} and stream_event.channel == "text":
-                if stream_event.text is not None and stream_event.kind == "delta":
+                if stream_event.text is not None:
                     output_parts.append(stream_event.text)
             if stream_event.kind == "error":
                 if stream_event.error_kind == "cancelled":
@@ -192,6 +208,13 @@ class ProviderSingleAgentGraph:
                         provider_name=self._provider.name,
                         model_name=turn_request.model_name or "unknown",
                         message="provider stream cancelled",
+                    )
+                if stream_event.done_reason == "error":
+                    raise ProviderExecutionError(
+                        kind="transient_failure",
+                        provider_name=self._provider.name,
+                        model_name=turn_request.model_name or "unknown",
+                        message="provider stream ended with error",
                     )
                 if output_parts:
                     output = "".join(output_parts)

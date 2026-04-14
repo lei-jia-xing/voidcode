@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
+from uuid import uuid4
 
 from .config import (
     CopilotProviderConfig,
@@ -113,6 +114,7 @@ class ProviderAuthResolver:
     ) -> None:
         self._providers = providers or ProviderConfigs()
         self._env: Mapping[str, str] = {} if env is None else env
+        self._pending_callback_states: dict[str, tuple[ProviderAuthProvider, str]] = {}
 
     def methods(self, provider: ProviderAuthProvider) -> ProviderAuthMethodsResponse:
         if provider == "openai":
@@ -169,8 +171,21 @@ class ProviderAuthResolver:
         )
 
     def callback(self, request: ProviderAuthCallbackRequest) -> ProviderAuthMaterial:
-        expected_state = self._callback_state(request.provider, request.method)
-        if request.state != expected_state:
+        callback_supported = (request.provider == "google" and request.method == "oauth") or (
+            request.provider == "copilot" and request.method == "oauth"
+        )
+        if not callback_supported:
+            raise self._error(
+                provider=request.provider,
+                code="callback_not_supported",
+                kind="invalid_model",
+                message=(
+                    f"provider auth callback is not supported for provider '{request.provider}' "
+                    f"method '{request.method}'"
+                ),
+            )
+
+        if not self._validate_callback_state(request.state, request.provider, request.method):
             raise self._error(
                 provider=request.provider,
                 code="invalid_state",
@@ -180,6 +195,7 @@ class ProviderAuthResolver:
                     f"and method '{request.method}' is invalid"
                 ),
             )
+        self._pending_callback_states.pop(request.state, None)
 
         payload = {} if request.payload is None else dict(request.payload)
         if request.provider == "google" and request.method == "oauth":
@@ -356,7 +372,7 @@ class ProviderAuthResolver:
             method=method,
             status="needs_callback",
             callback=ProviderAuthCallback(
-                state=self._callback_state("google", "oauth"),
+                state=self._new_callback_state("google", "oauth"),
                 instructions="exchange Google OAuth code for access_token and call callback",
             ),
         )
@@ -420,7 +436,7 @@ class ProviderAuthResolver:
                 method=method,
                 status="needs_callback",
                 callback=ProviderAuthCallback(
-                    state=self._callback_state("copilot", "oauth"),
+                    state=self._new_callback_state("copilot", "oauth"),
                     instructions="exchange Copilot OAuth code for token and call callback",
                 ),
             )
@@ -547,9 +563,16 @@ class ProviderAuthResolver:
             )
         return value
 
-    @staticmethod
-    def _callback_state(provider: str, method: str) -> str:
-        return f"voidcode:{provider}:{method}:callback"
+    def _new_callback_state(self, provider: ProviderAuthProvider, method: str) -> str:
+        state = f"voidcode:{provider}:{method}:callback:{uuid4().hex}"
+        self._pending_callback_states[state] = (provider, method)
+        return state
+
+    def _validate_callback_state(
+        self, state: str, provider: ProviderAuthProvider, method: str
+    ) -> bool:
+        expected = self._pending_callback_states.get(state)
+        return expected == (provider, method)
 
     @staticmethod
     def _bearer_material(

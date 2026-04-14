@@ -74,6 +74,14 @@ from .tool_provider import BuiltinToolProvider
 logger = logging.getLogger(__name__)
 
 
+def _coerce_bool_like(value: object | None, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    return str(value).strip().lower() not in {"false", "0", "no", "off", ""}
+
+
 @runtime_checkable
 class GraphStep(Protocol):
     @property
@@ -541,7 +549,10 @@ class VoidCodeRuntime:
             metadata={
                 **request.metadata,
                 "provider_attempt": 0,
-                "provider_stream": bool(request.metadata.get("provider_stream", True)),
+                "provider_stream": _coerce_bool_like(
+                    request.metadata.get("provider_stream", True),
+                    True,
+                ),
             },
         )
         tool_results: list[ToolResult] = []

@@ -71,7 +71,7 @@ def test_provider_auth_authorize_google_oauth_needs_callback_when_access_token_m
 
     assert result.status == "needs_callback"
     assert result.callback is not None
-    assert result.callback.state == "voidcode:google:oauth:callback"
+    assert result.callback.state.startswith("voidcode:google:oauth:callback:")
     assert result.material is None
 
 
@@ -142,13 +142,21 @@ def test_provider_auth_authorize_missing_credentials_raises_deterministic_error(
 
 
 def test_provider_auth_callback_google_oauth_builds_auth_material() -> None:
-    resolver = ProviderAuthResolver(providers=ProviderConfigs())
+    resolver = ProviderAuthResolver(
+        providers=ProviderConfigs(
+            google=GoogleProviderConfig(auth=GoogleProviderAuthConfig(method="oauth"))
+        )
+    )
+
+    authorize_result = resolver.authorize(ProviderAuthAuthorizeRequest(provider="google"))
+    assert authorize_result.status == "needs_callback"
+    assert authorize_result.callback is not None
 
     material = resolver.callback(
         ProviderAuthCallbackRequest(
             provider="google",
             method="oauth",
-            state="voidcode:google:oauth:callback",
+            state=authorize_result.callback.state,
             payload={"access_token": "google-oauth-token"},
         )
     )
