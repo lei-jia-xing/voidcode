@@ -1,12 +1,12 @@
 # 当前实现状态
 
-本文档提供了 VoidCode 仓库截至 2026 年 4 月的真实快照。VoidCode 当前已经具备清晰的 **MVP 主路径基线**：稳定的单智能体循环、受监管的工具执行、会话恢复，以及由 CLI 与 Web 共享的真实运行时路径都已经落地；TUI 仍停留在初始实现阶段。
+本文档提供了 VoidCode 仓库截至 2026 年 4 月的真实快照。VoidCode 当前已经具备清晰的 **MVP 主路径基线**：稳定的 execution engine 基线、受监管的工具执行、会话恢复，以及由 CLI 与 Web 共享的真实运行时路径都已经落地；TUI 仍停留在初始实现阶段。
 
 关于将当前仓库状态连接到预期 MVP 的具体交付清单，请参阅 [`docs/mvp-todo-plan.md`](./mvp-todo-plan.md)。关于规范的客户端面向契约，请参阅 [`docs/contracts/README.md`](./contracts/README.md)。
 
 ## 概览
 仓库包含两个主要的、独立的组件：
-1.  **Python 后端**：一个带有类型化契约层的无头运行时，以及稳定的单智能体循环实现。
+1.  **Python 后端**：一个带有类型化契约层的无头运行时，以及稳定的 execution engine 实现。
 2.  **客户端层**：包含 CLI、初始 TUI，以及一个基于 React + Bun 的 Web 前端。
 
 **当前集成状态**：🟡 **CLI 与 Web 主路径已经打通**。CLI 和 Web 都已经连接到共享运行时边界，并且核心链路 `运行 -> 审批 -> 持久化 -> 重放/恢复` 已有自动化验证与手工证据；TUI 目前仍是较早期的客户端壳层。
@@ -21,7 +21,7 @@
 - [x] **依赖管理**：为本地开发完全配置了 `pyproject.toml` 和 `mise.toml`。
 - [x] **开发工具**：集成了 Ruff (lint/format)、basedpyright (types) 和 pytest (tests) 并可正常运行。
 - [x] **契约层**：代码中存在类型化的会话、事件、运行时、图和工具契约。
-- [x] **稳定的单智能体循环**：CLI 可以通过运行时、图和工具边界执行受监管的本地确定性多步请求，并发出可观测事件。
+- [x] **稳定的 deterministic execution engine**：CLI 可以通过运行时、图和工具边界执行受监管的本地确定性多步请求，并发出可观测事件。
 - [x] **扩展基础设施基础**：运行时现在包括工具、技能、LSP 和 ACP 的类型化配置和发现基础设施，并为 hooks/config MVP 提供了清晰的配置边界。
 - [x] **内置工具提供商**：专门的 `BuiltinToolProvider` 负责通过运行时边界注册 `grep`、`read_file`、`shell_exec` 和 `write_file`。
 - [x] **技能发现基础设施**：对 `.voidcode/skills/<name>/SKILL.md` 文件存在极简发现机制；运行时在每次运行时发出 `runtime.skills_loaded` 事件。
@@ -30,14 +30,14 @@
 - [x] **运行时配置分层**：运行时现在显式支持 `execution_engine`、`provider_fallback` 与 `max_steps`，并将恢复关键配置持久化到 `SessionState.metadata["runtime_config"]`，以保证 `config show`、resume 和 provider fallback 语义一致。
 
 ### 计划中 / 进行中
-- [x] **LangGraph 编排**：稳定的单智能体确定性循环实现，支持顺序轮次执行、工具解析和中断/恢复。
+- [x] **LangGraph 编排**：当前 deterministic execution engine 已稳定，支持顺序轮次执行、工具解析和中断/恢复。
 - [x] **运行时服务**：会话生命周期管理、SQLite 持久化支持以及审批-恢复连续性。
 - [x] **权限引擎**：受监管的执行，支持 `allow`、`deny` 和 `ask` 模式，并在 CLI 中具有仅限 TTY 的内联审批。
 - [x] **契约优先事件**：为轮次、工具和审批实现了规范事件模式，并具备跨会话恢复的一致性自动重新编号功能。
 - [x] **HTTP 传输对等**：后端 HTTP 层现在完全暴露了与 CLI 对等的会话列表/恢复和运行/流式操作，包括审批解析端点。
 - [x] **极简 hooks/config MVP 闭环**：运行时已实现最小 pre/post tool hooks、`approval_mode` / `model` / `max_steps` 的恢复关键优先级基础、provider fallback 与 step budget 的持久化恢复语义，以及 CLI `config show` 检查路径。
 - [x] **动态工具注册**：运行时现在包括工具的类型化配置和发现基础设施，支持 `BuiltinToolProvider`。
-- [x] **Provider-backed 单智能体路径**：运行时已经具备 provider fallback、context window 管理、approval resume 连续性与可配置 step budget 的运行时治理基础。
+- [x] **Provider-backed execution engine 路径**：运行时已经具备 provider fallback、context window 管理、approval resume 连续性与可配置 step budget 的运行时治理基础。
 - [ ] **预定义 agent / multi-agent 边界**：未来将引入专门的 `src/voidcode/agent/` 边界来承载预定义 agent 的 prompt / hook / skill / MCP / tool / provider 配置；当前仓库尚未实现 multi-agent 执行语义。
 - [ ] **技能执行**：skill discovery 与 `runtime.skills_loaded` 事件已经完成，但运行时仍未执行技能逻辑，也尚未提供特定于技能的工具上下文。
 - [ ] **LSP preset/config 模块与 ACP 真实集成**：LSP 的只读 runtime-managed 基线已经存在，且 `src/voidcode/lsp/`、`src/voidcode/acp/` 等能力层边界目录已补齐文档，但仍缺少独立的 server preset/config 模块（extension/language 映射、root markers、默认 command、preset override merge）；ACP 也仍待真实传输与生命周期集成。
