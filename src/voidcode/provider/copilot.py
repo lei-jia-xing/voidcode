@@ -16,6 +16,10 @@ class CopilotModelProvider:
         token = None
         if self.config is not None and self.config.auth is not None:
             token = self.config.auth.token
+            if token is None and self.config.auth.token_env_var is not None:
+                import os
+
+                token = os.environ.get(self.config.auth.token_env_var)
         adapted_config = LiteLLMProviderConfig(
             api_key=token,
             base_url=None if self.config is None else self.config.base_url,

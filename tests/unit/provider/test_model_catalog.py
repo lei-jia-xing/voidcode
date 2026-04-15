@@ -91,6 +91,47 @@ def test_discover_available_models_for_google_uses_google_base_url() -> None:
     assert captured[0].api_key == "AIza-test"
 
 
+def test_discover_available_models_for_google_with_oauth_header_does_not_append_key_query_param(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class _Response:
+        def __enter__(self) -> _Response:
+            return self
+
+        def __exit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            tb: TracebackType | None,
+        ) -> bool:
+            return False
+
+        def read(self) -> bytes:
+            return json.dumps({"models": [{"name": "models/gemini-2.0-flash"}]}).encode("utf-8")
+
+    def _fake_urlopen(request: Request, timeout: float) -> _Response:
+        captured["url"] = request.full_url
+        captured["timeout"] = timeout
+        return _Response()
+
+    monkeypatch.setattr(model_catalog, "urlopen", _fake_urlopen)
+
+    result = discover_available_models(
+        "google",
+        LiteLLMProviderConfig(
+            base_url="https://generativelanguage.googleapis.com",
+            api_key="oauth-token",
+            auth_header="Authorization",
+            auth_scheme="bearer",
+        ),
+    )
+
+    assert result.models == ("gemini-2.0-flash",)
+    assert captured["url"] == "https://generativelanguage.googleapis.com/v1beta/models"
+
+
 def test_discover_available_models_marks_fallback_on_fetch_failure() -> None:
     config = LiteLLMProviderConfig(model_map={"alias": "provider/model"})
 

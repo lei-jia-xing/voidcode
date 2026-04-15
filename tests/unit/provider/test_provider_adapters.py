@@ -168,6 +168,12 @@ def test_provider_adapter_stream_turn_emits_happy_path_chunks(
 
     events = list(single_agent.stream_turn(_build_turn_request(model_name=provider_name)))
 
+    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+    assert isinstance(payload_obj, dict)
+    payload = cast(dict[str, object], payload_obj)
+    assert payload.get("tools")
+    assert payload.get("tool_choice") == "auto"
+
     assert [event.kind for event in events] == ["delta", "delta", "done"]
     assert events[0] == ProviderStreamEvent(kind="delta", channel="text", text="hello ")
     assert events[1] == ProviderStreamEvent(kind="delta", channel="text", text="world")
@@ -310,6 +316,34 @@ def test_provider_adapters_call_litellm_directly_without_internal_bridge(
     assert isinstance(payload_obj, dict)
     payload = cast(dict[str, object], payload_obj)
     assert payload["model"] == f"{provider_name}/demo"
+
+
+def test_copilot_provider_reads_token_from_configured_env_var(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from voidcode.provider.config import CopilotProviderAuthConfig, CopilotProviderConfig
+
+    monkeypatch.setenv("COPILOT_TOKEN", "env-copilot-token")
+    provider = CopilotModelProvider(
+        config=CopilotProviderConfig(
+            auth=CopilotProviderAuthConfig(method="token", token_env_var="COPILOT_TOKEN")
+        )
+    )
+    single_agent = provider.single_agent_provider()
+
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        completion_content="ok",
+    )
+
+    result = single_agent.propose_turn(_build_turn_request(model_name="copilot"))
+
+    assert result.output == "ok"
+    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+    assert isinstance(payload_obj, dict)
+    payload = cast(dict[str, object], payload_obj)
+    assert payload.get("api_key") == "env-copilot-token"
 
 
 @pytest.mark.parametrize("provider_name", ["openai", "anthropic", "google", "copilot"])

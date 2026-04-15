@@ -788,6 +788,11 @@ def _parse_custom_litellm_provider_configs(
     for raw_provider_name, provider_payload in payload.items():
         if not isinstance(raw_provider_name, str) or not raw_provider_name:
             raise ValueError(f"{field_path} keys must be non-empty strings")
+        if raw_provider_name != raw_provider_name.strip():
+            raise ValueError(
+                f"{_nested_config_field(field_path, raw_provider_name)} "
+                "must not have leading or trailing whitespace"
+            )
         if "/" in raw_provider_name:
             raise ValueError(
                 f"{_nested_config_field(field_path, raw_provider_name)} must not contain '/'"

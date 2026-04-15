@@ -147,7 +147,7 @@ def test_parse_provider_configs_payload_rejects_case_or_whitespace_variant_of_bu
         ValueError,
         match=(
             r"runtime config field 'providers.custom\. OpenAI ' "
-            r"must not collide with built-in provider names \(conflicts with 'openai'\)"
+            r"must not have leading or trailing whitespace"
         ),
     ):
         _ = parse_provider_configs_payload(
@@ -155,6 +155,26 @@ def test_parse_provider_configs_payload_rejects_case_or_whitespace_variant_of_bu
                 "custom": {
                     " OpenAI ": {
                         "base_url": "http://localhost:4000",
+                    }
+                }
+            },
+            source="runtime config field 'providers'",
+        )
+
+
+def test_custom_provider_name_with_surrounding_whitespace_rejected() -> None:
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"runtime config field 'providers.custom\. llama-local ' "
+            r"must not have leading or trailing whitespace"
+        ),
+    ):
+        _ = parse_provider_configs_payload(
+            {
+                "custom": {
+                    " llama-local ": {
+                        "base_url": "http://localhost:11434/v1",
                     }
                 }
             },

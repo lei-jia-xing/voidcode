@@ -222,7 +222,10 @@ def _fetch_google_models(request: DiscoveryRequest) -> tuple[str, ...]:
     else:
         models_url = f"{base_url}/v1beta/models"
 
-    if request.api_key is not None:
+    uses_authorization_header = any(
+        header_name.lower() == "authorization" for header_name in request.headers
+    )
+    if request.api_key is not None and not uses_authorization_header:
         models_url = f"{models_url}?key={quote(request.api_key, safe='')}"
 
     http_request = Request(url=models_url, headers=request.headers, method="GET")

@@ -222,6 +222,9 @@ class LiteLLMBackendSingleAgentProvider:
             "num_retries": 0,
             **self._auth_kwargs(),
         }
+        if request.available_tools:
+            payload["tools"] = [self._to_tool_schema(tool) for tool in request.available_tools]
+            payload["tool_choice"] = "auto"
 
         try:
             stream = cast(
