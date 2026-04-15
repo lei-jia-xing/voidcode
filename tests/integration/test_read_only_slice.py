@@ -179,6 +179,51 @@ class _GraphStep:
     is_finished: bool = False
 
 
+class _AstGrepPreviewGraph:
+    def step(self, request: object, tool_results: tuple[object, ...], *, session: object) -> object:
+        _ = request, session
+        if not tool_results:
+            return _GraphStep(
+                events=(),
+                tool_call=cast(
+                    ToolCallFactory,
+                    importlib.import_module("voidcode.tools.contracts").ToolCall,
+                )(
+                    tool_name="ast_grep_preview",
+                    arguments={
+                        "pattern": "print($X)",
+                        "rewrite": "logger.info($X)",
+                        "path": "sample.py",
+                        "lang": "python",
+                    },
+                ),
+            )
+        return _GraphStep(events=(), tool_call=None, output="previewed", is_finished=True)
+
+
+class _AstGrepReplaceGraph:
+    def step(self, request: object, tool_results: tuple[object, ...], *, session: object) -> object:
+        _ = request, session
+        if not tool_results:
+            return _GraphStep(
+                events=(),
+                tool_call=cast(
+                    ToolCallFactory,
+                    importlib.import_module("voidcode.tools.contracts").ToolCall,
+                )(
+                    tool_name="ast_grep_replace",
+                    arguments={
+                        "pattern": "print($X)",
+                        "rewrite": "logger.info($X)",
+                        "path": "sample.py",
+                        "lang": "python",
+                        "apply": True,
+                    },
+                ),
+            )
+        return _GraphStep(events=(), tool_call=None, output="applied", is_finished=True)
+
+
 def _approval_runtime(
     tmp_path: Path, *, mode: str = "ask"
 ) -> tuple[RuntimeRequestFactory, RuntimeRunner]:
@@ -989,6 +1034,78 @@ def test_runtime_denies_non_read_only_tool_when_policy_is_deny(tmp_path: Path) -
     assert denied.events[6].payload["decision"] == "deny"
     assert denied.output is None
     assert (tmp_path / "danger.txt").exists() is False
+
+
+def test_runtime_allows_ast_grep_preview_when_policy_is_deny(tmp_path: Path) -> None:
+    runtime_request, runtime_class = _load_runtime_types()
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="deny")
+    sample_file = tmp_path / "sample.py"
+    _ = sample_file.write_text("print('hello')\n", encoding="utf-8")
+
+    runtime = cast(
+        RuntimeRunner,
+        cast(
+            object,
+            runtime_class(
+                workspace=tmp_path,
+                graph=_AstGrepPreviewGraph(),
+                permission_policy=policy,
+            ),
+        ),
+    )
+    completed = subprocess.CompletedProcess(
+        args=[],
+        returncode=0,
+        stdout=(
+            '{"text":"print(\'hello\')","file":"sample.py","replacement":"logger.info(\'hello\')"}\n'
+        ),
+        stderr="",
+    )
+
+    with patch("subprocess.run", return_value=completed):
+        result = runtime.run(runtime_request(prompt="preview", session_id="ast-grep-preview-deny"))
+
+    assert result.session.status == "completed"
+    event_types = [event.event_type for event in result.events]
+    assert "runtime.permission_resolved" in event_types
+    assert "runtime.approval_requested" not in event_types
+    assert result.output == "previewed"
+
+
+def test_runtime_requests_approval_for_ast_grep_replace_when_policy_is_ask(tmp_path: Path) -> None:
+    runtime_request, runtime_class = _load_runtime_types()
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="ask")
+    sample_file = tmp_path / "sample.py"
+    _ = sample_file.write_text("print('hello')\n", encoding="utf-8")
+
+    runtime = cast(
+        RuntimeRunner,
+        cast(
+            object,
+            runtime_class(
+                workspace=tmp_path,
+                graph=_AstGrepReplaceGraph(),
+                permission_policy=policy,
+            ),
+        ),
+    )
+
+    waiting = runtime.run(runtime_request(prompt="replace", session_id="ast-grep-replace-ask"))
+
+    assert waiting.session.status == "waiting"
+    event_types = [event.event_type for event in waiting.events]
+    assert event_types[-1] == "runtime.approval_requested"
+    assert "runtime.tool_lookup_succeeded" in event_types
+    assert waiting.events[-1].payload["tool"] == "ast_grep_replace"
+    assert waiting.events[-1].payload["arguments"] == {
+        "pattern": "print($X)",
+        "rewrite": "logger.info($X)",
+        "path": "sample.py",
+        "lang": "python",
+        "apply": True,
+    }
 
 
 def test_runtime_executes_read_only_slice_and_emits_events(tmp_path: Path) -> None:

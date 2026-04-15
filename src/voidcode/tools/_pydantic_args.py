@@ -114,13 +114,6 @@ class AstGrepReplaceArgs(BaseModel):
             raise ValueError("pattern must not be empty")
         return value
 
-    @field_validator("rewrite", mode="after")
-    @classmethod
-    def _validate_rewrite(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("rewrite must not be empty")
-        return value
-
     @field_validator("path", mode="after")
     @classmethod
     def _validate_path(cls, value: str) -> str:
