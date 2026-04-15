@@ -42,13 +42,21 @@ class _CapturingSingleAgentProvider:
 
 class _StreamOutputSingleAgentProvider:
     name = "opencode"
+    stream_calls: int
+    propose_calls: int
+
+    def __init__(self) -> None:
+        self.stream_calls = 0
+        self.propose_calls = 0
 
     def propose_turn(self, request: SingleAgentTurnRequest) -> SingleAgentTurnResult:
         _ = request
+        self.propose_calls += 1
         return SingleAgentTurnResult(output="stream-final")
 
     def stream_turn(self, request: SingleAgentTurnRequest):
         _ = request
+        self.stream_calls += 1
         return iter(
             (
                 ProviderStreamEvent(kind="delta", channel="text", text="stream-"),
@@ -78,6 +86,24 @@ class _StreamErrorSingleAgentProvider:
                 ProviderStreamEvent(kind="done", done_reason="error"),
             )
         )
+
+
+class _StreamNoTextDoneSingleAgentProvider:
+    name = "opencode"
+
+    def __init__(self) -> None:
+        self.stream_calls = 0
+        self.propose_calls = 0
+
+    def propose_turn(self, request: SingleAgentTurnRequest) -> SingleAgentTurnResult:
+        _ = request
+        self.propose_calls += 1
+        return SingleAgentTurnResult(output="should-not-be-used")
+
+    def stream_turn(self, request: SingleAgentTurnRequest):
+        _ = request
+        self.stream_calls += 1
+        return iter((ProviderStreamEvent(kind="done", done_reason="completed"),))
 
 
 def test_provider_single_agent_graph_requests_tool_on_first_turn() -> None:
@@ -323,6 +349,34 @@ def test_provider_single_agent_graph_streams_ordered_events_and_deterministic_ou
     model_turn_events = [event for event in step.events if event.event_type == "graph.model_turn"]
     assert model_turn_events
     assert model_turn_events[0].payload["streaming"] is True
+
+
+def test_provider_single_agent_graph_stream_done_without_text_does_not_fallback_propose_turn() -> (
+    None
+):
+    provider_model = resolve_provider_model(
+        "opencode/gpt-5.4",
+        registry=ModelProviderRegistry.with_defaults(),
+    )
+    provider = _StreamNoTextDoneSingleAgentProvider()
+    graph = ProviderSingleAgentGraph(provider=provider, provider_model=provider_model)
+
+    step = graph.step(
+        request=GraphRunRequest(
+            session=_session(),
+            prompt="read sample.txt",
+            available_tools=_tool_definitions(),
+            context_window=RuntimeContextWindow(prompt="read sample.txt"),
+            metadata={"provider_stream": True},
+        ),
+        tool_results=(),
+        session=_session(),
+    )
+
+    assert step.is_finished is True
+    assert step.output == ""
+    assert provider.stream_calls == 1
+    assert provider.propose_calls == 0
 
 
 def test_provider_single_agent_graph_stream_error_maps_to_provider_execution_error() -> None:

@@ -34,6 +34,7 @@ from .protocol import (
 class LiteLLMBackendSingleAgentProvider:
     name: str
     config: LiteLLMProviderConfig | None
+    completion_kwargs: dict[str, object] | None = None
 
     @staticmethod
     def _to_tool_schema(tool: ToolDefinition) -> dict[str, object]:
@@ -149,6 +150,8 @@ class LiteLLMBackendSingleAgentProvider:
             "num_retries": 0,
             **self._auth_kwargs(),
         }
+        if self.completion_kwargs:
+            payload.update(self.completion_kwargs)
         if request.available_tools:
             payload["tools"] = [self._to_tool_schema(tool) for tool in request.available_tools]
             payload["tool_choice"] = "auto"
@@ -222,6 +225,8 @@ class LiteLLMBackendSingleAgentProvider:
             "num_retries": 0,
             **self._auth_kwargs(),
         }
+        if self.completion_kwargs:
+            payload.update(self.completion_kwargs)
         if request.available_tools:
             payload["tools"] = [self._to_tool_schema(tool) for tool in request.available_tools]
             payload["tool_choice"] = "auto"

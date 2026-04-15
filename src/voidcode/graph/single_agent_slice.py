@@ -218,50 +218,26 @@ class ProviderSingleAgentGraph:
                         model_name=turn_request.model_name or "unknown",
                         message="provider stream ended with error",
                     )
-                if output_parts:
-                    output = "".join(output_parts)
-                    finalize_events = (
-                        planning_events
-                        + tuple(stream_events)
-                        + (
-                            self._graph_event(
-                                GRAPH_LOOP_STEP,
-                                {
-                                    "step": current_turn + 1,
-                                    "phase": "finalize",
-                                    "max_steps": self._max_steps,
-                                },
-                            ),
-                            self._graph_event(GRAPH_RESPONSE_READY, {"output_preview": output}),
-                        )
+                output = "".join(output_parts)
+                finalize_events = (
+                    planning_events
+                    + tuple(stream_events)
+                    + (
+                        self._graph_event(
+                            GRAPH_LOOP_STEP,
+                            {
+                                "step": current_turn + 1,
+                                "phase": "finalize",
+                                "max_steps": self._max_steps,
+                            },
+                        ),
+                        self._graph_event(GRAPH_RESPONSE_READY, {"output_preview": output}),
                     )
-                    return SingleAgentStep(events=finalize_events, output=output, is_finished=True)
-                break
-
-        turn_result = self._provider.propose_turn(turn_request)
-        if turn_result.output is not None:
-            finalize_events = (
-                planning_events
-                + tuple(stream_events)
-                + (
-                    self._graph_event(
-                        GRAPH_LOOP_STEP,
-                        {
-                            "step": current_turn + 1,
-                            "phase": "finalize",
-                            "max_steps": self._max_steps,
-                        },
-                    ),
-                    self._graph_event(GRAPH_RESPONSE_READY, {"output_preview": turn_result.output}),
                 )
-            )
-            return SingleAgentStep(
-                events=finalize_events, output=turn_result.output, is_finished=True
-            )
+                return SingleAgentStep(events=finalize_events, output=output, is_finished=True)
 
         return SingleAgentStep(
-            events=planning_events + tuple(stream_events),
-            tool_call=turn_result.tool_call,
+            events=planning_events + tuple(stream_events), output="", is_finished=True
         )
 
     @staticmethod

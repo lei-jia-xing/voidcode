@@ -6,7 +6,11 @@ from typing import Any, cast
 import pytest
 
 from voidcode.provider.anthropic import AnthropicModelProvider
-from voidcode.provider.config import LiteLLMProviderConfig
+from voidcode.provider.config import (
+    GoogleProviderAuthConfig,
+    GoogleProviderConfig,
+    LiteLLMProviderConfig,
+)
 from voidcode.provider.copilot import CopilotModelProvider
 from voidcode.provider.errors import (
     provider_execution_error_from_api_payload,
@@ -344,6 +348,34 @@ def test_copilot_provider_reads_token_from_configured_env_var(
     assert isinstance(payload_obj, dict)
     payload = cast(dict[str, object], payload_obj)
     assert payload.get("api_key") == "env-copilot-token"
+
+
+def test_google_provider_service_account_forwards_vertex_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = GoogleModelProvider(
+        config=GoogleProviderConfig(
+            auth=GoogleProviderAuthConfig(
+                method="service_account",
+                service_account_json_path="C:/keys/google-sa.json",
+            )
+        )
+    )
+    single_agent = provider.single_agent_provider()
+
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        completion_content="ok",
+    )
+
+    result = single_agent.propose_turn(_build_turn_request(model_name="google"))
+
+    assert result.output == "ok"
+    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+    assert isinstance(payload_obj, dict)
+    payload = cast(dict[str, object], payload_obj)
+    assert payload.get("vertex_credentials") == "C:/keys/google-sa.json"
 
 
 @pytest.mark.parametrize("provider_name", ["openai", "anthropic", "google", "copilot"])
