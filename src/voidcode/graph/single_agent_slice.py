@@ -71,6 +71,18 @@ class ProviderSingleAgentGraph:
         if current_turn > self._max_steps:
             raise ValueError(f"graph exceeded max steps: {self._max_steps}")
 
+        provider_stream = request.metadata.get("provider_stream", False)
+        if isinstance(provider_stream, bool):
+            streaming_enabled = provider_stream
+        else:
+            streaming_enabled = str(provider_stream).strip().lower() not in {
+                "false",
+                "0",
+                "no",
+                "off",
+                "",
+            }
+
         planning_events = (
             self._graph_event(
                 GRAPH_LOOP_STEP,
@@ -84,6 +96,7 @@ class ProviderSingleAgentGraph:
                     "provider": self._provider.name,
                     "model": self._provider_model.selection.model,
                     "attempt": request.metadata.get("provider_attempt", 0),
+                    "streaming": streaming_enabled,
                     "prompt": request.prompt,
                 },
             ),
@@ -109,17 +122,6 @@ class ProviderSingleAgentGraph:
             abort_signal=cast(SingleAgentAbortSignal, self._abort_signal),
         )
 
-        provider_stream = request.metadata.get("provider_stream", True)
-        if isinstance(provider_stream, bool):
-            streaming_enabled = provider_stream
-        else:
-            streaming_enabled = str(provider_stream).strip().lower() not in {
-                "false",
-                "0",
-                "no",
-                "off",
-                "",
-            }
         if streaming_enabled and isinstance(self._provider, StreamableSingleAgentProvider):
             return self._step_streaming(
                 planning_events=planning_events,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,7 +10,12 @@ from typing import Any, Literal, cast
 
 import pytest
 
-from voidcode.provider.config import LiteLLMProviderConfig
+from voidcode.provider.auth import ProviderAuthAuthorizeRequest
+from voidcode.provider.config import (
+    CopilotProviderAuthConfig,
+    CopilotProviderConfig,
+    LiteLLMProviderConfig,
+)
 from voidcode.provider.registry import ModelProviderRegistry
 from voidcode.runtime.acp import DisabledAcpAdapter
 from voidcode.runtime.config import (
@@ -273,21 +279,46 @@ def _write_demo_skill(skill_dir: Path, *, description: str = "Demo skill", conte
 
 
 def test_runtime_initializes_empty_extension_state_by_default(tmp_path: Path) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, config=RuntimeConfig())
-    provider_model = _private_attr(runtime, "_provider_model")
-    skill_registry = _private_attr(runtime, "_skill_registry")
-    lsp_manager = _private_attr(runtime, "_lsp_manager")
-    acp_adapter = _private_attr(runtime, "_acp_adapter")
+    previous_copilot_token = os.environ.get("GITHUB_COPILOT_TOKEN")
+    os.environ["GITHUB_COPILOT_TOKEN"] = "runtime-copilot-token"
+    try:
+        runtime = VoidCodeRuntime(
+            workspace=tmp_path,
+            config=RuntimeConfig(
+                providers=RuntimeProvidersConfig(
+                    copilot=CopilotProviderConfig(
+                        auth=CopilotProviderAuthConfig(
+                            method="token",
+                            token_env_var="GITHUB_COPILOT_TOKEN",
+                        )
+                    )
+                )
+            ),
+        )
+        provider_model = _private_attr(runtime, "_provider_model")
+        skill_registry = _private_attr(runtime, "_skill_registry")
+        lsp_manager = _private_attr(runtime, "_lsp_manager")
+        acp_adapter = _private_attr(runtime, "_acp_adapter")
 
-    assert provider_model.selection.raw_model is None
-    assert provider_model.provider is None
-    assert runtime.provider_auth_resolver.methods("openai").default_method == "api_key"
-    assert skill_registry.skills == {}
-    assert lsp_manager.current_state().mode == "disabled"
-    assert lsp_manager.configuration.configured_enabled is False
-    assert acp_adapter.current_state().mode == "disabled"
-    assert acp_adapter.configuration.configured_enabled is False
-    assert runtime.current_acp_state().status == "disconnected"
+        assert provider_model.selection.raw_model is None
+        assert provider_model.provider is None
+        assert runtime.provider_auth_resolver.methods("openai").default_method == "api_key"
+        assert skill_registry.skills == {}
+        assert lsp_manager.current_state().mode == "disabled"
+        assert lsp_manager.configuration.configured_enabled is False
+        assert acp_adapter.current_state().mode == "disabled"
+        assert acp_adapter.configuration.configured_enabled is False
+        assert runtime.current_acp_state().status == "disconnected"
+        copilot_auth = runtime.provider_auth_resolver.authorize(
+            ProviderAuthAuthorizeRequest(provider="copilot")
+        )
+        assert copilot_auth.material is not None
+        assert copilot_auth.material.headers == {"Authorization": "Bearer runtime-copilot-token"}
+    finally:
+        if previous_copilot_token is None:
+            os.environ.pop("GITHUB_COPILOT_TOKEN", None)
+        else:
+            os.environ["GITHUB_COPILOT_TOKEN"] = previous_copilot_token
 
 
 def test_runtime_initializes_extension_state_from_config_when_enabled(tmp_path: Path) -> None:
@@ -2278,6 +2309,32 @@ def test_runtime_single_agent_streaming_emits_ordered_provider_stream_events(
     assert output_chunks == ["hello world"]
 
 
+def test_runtime_run_stream_enables_provider_stream_when_not_explicitly_set(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SkillCapturingStubGraph(),
+        config=RuntimeConfig(),
+    )
+
+    _ = list(runtime.run_stream(RuntimeRequest(prompt="hello")))
+
+    assert _SkillCapturingStubGraph.last_request is not None
+    assert _SkillCapturingStubGraph.last_request.metadata["provider_stream"] is True
+
+
+def test_runtime_run_disables_provider_stream_by_default(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SkillCapturingStubGraph(),
+        config=RuntimeConfig(),
+    )
+
+    _ = runtime.run(RuntimeRequest(prompt="hello"))
+
+    assert _SkillCapturingStubGraph.last_request is not None
+    assert _SkillCapturingStubGraph.last_request.metadata["provider_stream"] is False
+
+
 def test_runtime_single_agent_stream_error_maps_to_fallback_when_retryable(
     tmp_path: Path,
 ) -> None:
@@ -2316,7 +2373,9 @@ def test_runtime_single_agent_stream_error_maps_to_fallback_when_retryable(
         model_provider_registry=registry,
     )
 
-    response = runtime.run(RuntimeRequest(prompt="read sample.txt"))
+    response = runtime.run(
+        RuntimeRequest(prompt="read sample.txt", metadata={"provider_stream": True})
+    )
 
     assert response.session.status == "completed"
     assert response.output == "fallback complete"
@@ -2368,7 +2427,9 @@ def test_runtime_single_agent_stream_json_error_payload_maps_to_context_limit_wi
         model_provider_registry=registry,
     )
 
-    response = runtime.run(RuntimeRequest(prompt="read sample.txt"))
+    response = runtime.run(
+        RuntimeRequest(prompt="read sample.txt", metadata={"provider_stream": True})
+    )
 
     assert response.session.status == "failed"
     assert response.events[-1].event_type == "runtime.failed"
@@ -2491,7 +2552,10 @@ def test_runtime_single_agent_stream_cancelled_maps_to_failed_without_fallback(
     )
 
     response = runtime.run(
-        RuntimeRequest(prompt="read sample.txt", metadata={"abort_requested": True})
+        RuntimeRequest(
+            prompt="read sample.txt",
+            metadata={"abort_requested": True, "provider_stream": True},
+        )
     )
 
     assert response.session.status == "failed"

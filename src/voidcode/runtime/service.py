@@ -192,7 +192,10 @@ class VoidCodeRuntime:
         )
         self._provider_model = self._resolved_provider_config.active_target
         self._provider_chain = self._resolved_provider_config.target_chain
-        self._provider_auth_resolver = ProviderAuthResolver(providers=self._config.providers)
+        self._provider_auth_resolver = ProviderAuthResolver(
+            providers=self._config.providers,
+            env=os.environ,
+        )
         self._lsp_manager = lsp_manager or build_lsp_manager(self._config.lsp)
         self._mcp_manager = mcp_manager or build_mcp_manager(self._config.mcp)
         self._base_tool_registry = tool_registry or ToolRegistry.with_defaults(
@@ -472,7 +475,16 @@ class VoidCodeRuntime:
         return RuntimeResponse(session=final_session, events=tuple(events), output=output)
 
     def run_stream(self, request: RuntimeRequest) -> Iterator[RuntimeStreamChunk]:
-        return self._run_with_persistence(request)
+        if "provider_stream" in request.metadata:
+            return self._run_with_persistence(request)
+
+        request_with_stream = RuntimeRequest(
+            prompt=request.prompt,
+            session_id=request.session_id,
+            metadata={**request.metadata, "provider_stream": True},
+            allocate_session_id=request.allocate_session_id,
+        )
+        return self._run_with_persistence(request_with_stream)
 
     def _stream_chunks(self, request: RuntimeRequest) -> Iterator[RuntimeStreamChunk]:
         session_id = self._resolve_session_id(request)
@@ -565,8 +577,8 @@ class VoidCodeRuntime:
                 **planned_metadata,
                 "provider_attempt": 0,
                 "provider_stream": _coerce_bool_like(
-                    planned_metadata.get("provider_stream", True),
-                    True,
+                    planned_metadata.get("provider_stream", False),
+                    False,
                 ),
             },
         )
