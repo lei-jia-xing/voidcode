@@ -129,3 +129,45 @@ def test_format_tool_reports_attempted_commands_when_formatter_is_missing(tmp_pa
         ["missing-formatter-binary", str(target)],
         ["also-missing", str(target)],
     ]
+
+
+def test_format_tool_supports_custom_user_defined_formatter_presets(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "example.php"
+    target.write_text("<?php echo 'hi';\n", encoding="utf-8")
+    formatter_script = workspace / "php_formatter.py"
+    formatter_script.write_text(
+        textwrap.dedent(
+            """
+            import pathlib
+            import sys
+
+            pathlib.Path(sys.argv[-1]).write_text("<?php echo 'formatted';\\n", encoding="utf-8")
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    tool = FormatTool(
+        RuntimeHooksConfig(
+            formatter_presets={
+                "php": RuntimeFormatterPresetConfig(
+                    command=(sys.executable, str(formatter_script)),
+                    extensions=(".php",),
+                    root_markers=("composer.json",),
+                )
+            }
+        ),
+        workspace,
+    )
+
+    result = tool.invoke(
+        ToolCall(tool_name="format_file", arguments={"path": "example.php"}),
+        workspace=workspace,
+    )
+
+    assert result.status == "ok"
+    assert result.data["language"] == "php"
+    assert result.data["command"] == [sys.executable, str(formatter_script), str(target)]
+    assert target.read_text(encoding="utf-8") == "<?php echo 'formatted';\n"

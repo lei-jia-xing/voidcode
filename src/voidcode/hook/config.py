@@ -45,6 +45,14 @@ def _shfmt_preset(*extensions: str) -> RuntimeFormatterPresetConfig:
     )
 
 
+def _dockerfmt_preset(*extensions: str) -> RuntimeFormatterPresetConfig:
+    return RuntimeFormatterPresetConfig(
+        command=("dockerfmt", "--write"),
+        extensions=extensions,
+        root_markers=(".dockerfmt.toml", ".dockerfmt.hcl", "Dockerfile"),
+    )
+
+
 def _clang_format_preset(*extensions: str) -> RuntimeFormatterPresetConfig:
     return RuntimeFormatterPresetConfig(
         command=("clang-format", "-i"),
@@ -94,7 +102,7 @@ def _empty_formatter_presets() -> dict[str, RuntimeFormatterPresetConfig]:
             root_markers=("taplo.toml", ".taplo.toml", "pyproject.toml", "Cargo.toml"),
         ),
         "shell": _shfmt_preset(".sh", ".bash", ".zsh"),
-        "dockerfile": _shfmt_preset("Dockerfile"),
+        "dockerfile": _dockerfmt_preset("Dockerfile"),
         "nix": RuntimeFormatterPresetConfig(
             command=("nixfmt",),
             extensions=(".nix",),
@@ -107,7 +115,7 @@ def _empty_formatter_presets() -> dict[str, RuntimeFormatterPresetConfig]:
             root_markers=("Cargo.toml", "rustfmt.toml", ".rustfmt.toml"),
         ),
         "go": RuntimeFormatterPresetConfig(
-            command=("gofmt",),
+            command=("gofmt", "-w"),
             extensions=(".go",),
             root_markers=("go.mod",),
         ),

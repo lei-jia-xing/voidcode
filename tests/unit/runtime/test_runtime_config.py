@@ -72,6 +72,15 @@ def _shfmt_preset(*extensions: str) -> RuntimeFormatterPresetConfig:
     )
 
 
+def _dockerfmt_preset(*extensions: str) -> RuntimeFormatterPresetConfig:
+    return RuntimeFormatterPresetConfig(
+        command=("dockerfmt", "--write"),
+        extensions=extensions,
+        root_markers=(".dockerfmt.toml", ".dockerfmt.hcl", "Dockerfile"),
+        cwd_policy="nearest_root",
+    )
+
+
 def _clang_format_preset(*extensions: str) -> RuntimeFormatterPresetConfig:
     return RuntimeFormatterPresetConfig(
         command=("clang-format", "-i"),
@@ -124,7 +133,7 @@ DEFAULT_FORMATTER_PRESETS = {
         cwd_policy="nearest_root",
     ),
     "shell": _shfmt_preset(".sh", ".bash", ".zsh"),
-    "dockerfile": _shfmt_preset("Dockerfile"),
+    "dockerfile": _dockerfmt_preset("Dockerfile"),
     "nix": RuntimeFormatterPresetConfig(
         command=("nixfmt",),
         extensions=(".nix",),
@@ -139,7 +148,7 @@ DEFAULT_FORMATTER_PRESETS = {
         cwd_policy="nearest_root",
     ),
     "go": RuntimeFormatterPresetConfig(
-        command=("gofmt",),
+        command=("gofmt", "-w"),
         extensions=(".go",),
         root_markers=("go.mod",),
         cwd_policy="nearest_root",
