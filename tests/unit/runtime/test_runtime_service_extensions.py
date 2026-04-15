@@ -49,7 +49,7 @@ from voidcode.runtime.single_agent_provider import (
     SingleAgentTurnRequest,
     SingleAgentTurnResult,
 )
-from voidcode.runtime.skills import SkillRegistry
+from voidcode.skills import SkillRegistry
 from voidcode.tools import ToolCall
 
 

@@ -72,7 +72,7 @@ def test_skill_registry_discovers_and_resolves_skills(tmp_path: Path) -> None:
     assert registry.resolve("summarize").description == "Summarize selected files."
 
 
-def test_skill_registry_builds_runtime_contexts_from_skill_bodies(tmp_path: Path) -> None:
+def test_runtime_build_runtime_contexts_from_skill_bodies(tmp_path: Path) -> None:
     skill_dir = tmp_path / ".voidcode" / "skills" / "summarize"
     skill_dir.mkdir(parents=True)
     skill_contents = (

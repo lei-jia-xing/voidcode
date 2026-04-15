@@ -30,6 +30,7 @@ from ..provider.snapshot import (
     parse_resolved_provider_snapshot,
     resolved_provider_snapshot,
 )
+from ..skills import SkillRegistry
 from ..tools.contracts import Tool, ToolCall, ToolDefinition, ToolResult, ToolResultStatus
 from .acp import AcpAdapter, AcpRequestEnvelope, AcpResponseEnvelope, build_acp_adapter
 from .config import (
@@ -71,7 +72,7 @@ from .permission import (
 from .plan import PlanContributor, apply_plan_patch, build_plan_contributor
 from .session import SessionRef, SessionState, SessionStatus, StoredSessionSummary
 from .single_agent_provider import ProviderExecutionError
-from .skills import SkillRegistry, SkillRuntimeContext
+from .skills import SkillRuntimeContext, build_runtime_contexts
 from .storage import SessionStore, SqliteSessionStore
 from .tool_provider import BuiltinToolProvider
 
@@ -1697,7 +1698,7 @@ class VoidCodeRuntime:
         self, metadata: dict[str, object] | None = None
     ) -> tuple[SkillRuntimeContext, ...]:
         _ = metadata
-        return self._skill_registry.runtime_contexts()
+        return build_runtime_contexts(self._skill_registry)
 
     @staticmethod
     def _frozen_applied_skill_payloads(
