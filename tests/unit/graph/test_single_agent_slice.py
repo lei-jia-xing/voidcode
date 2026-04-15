@@ -106,6 +106,27 @@ class _StreamNoTextDoneSingleAgentProvider:
         return iter((ProviderStreamEvent(kind="done", done_reason="completed"),))
 
 
+class _StreamToolSingleAgentProvider:
+    name = "opencode"
+
+    def propose_turn(self, request: SingleAgentTurnRequest) -> SingleAgentTurnResult:
+        _ = request
+        return SingleAgentTurnResult(output="should-not-be-used")
+
+    def stream_turn(self, request: SingleAgentTurnRequest):
+        _ = request
+        return iter(
+            (
+                ProviderStreamEvent(
+                    kind="content",
+                    channel="tool",
+                    text='{"tool_name":"read_file","arguments":{"path":"sample.txt"}}',
+                ),
+                ProviderStreamEvent(kind="done", done_reason="completed"),
+            )
+        )
+
+
 def test_provider_single_agent_graph_requests_tool_on_first_turn() -> None:
     provider_model = resolve_provider_model(
         "opencode/gpt-5.4",
@@ -377,6 +398,35 @@ def test_provider_single_agent_graph_stream_done_without_text_does_not_fallback_
     assert step.output == ""
     assert provider.stream_calls == 1
     assert provider.propose_calls == 0
+
+
+def test_provider_single_agent_graph_returns_streamed_tool_call() -> None:
+    provider_model = resolve_provider_model(
+        "opencode/gpt-5.4",
+        registry=ModelProviderRegistry.with_defaults(),
+    )
+    graph = ProviderSingleAgentGraph(
+        provider=_StreamToolSingleAgentProvider(),
+        provider_model=provider_model,
+    )
+
+    step = graph.step(
+        request=GraphRunRequest(
+            session=_session(),
+            prompt="read sample.txt",
+            available_tools=_tool_definitions(),
+            context_window=RuntimeContextWindow(prompt="read sample.txt"),
+            metadata={"provider_stream": True},
+        ),
+        tool_results=(),
+        session=_session(),
+    )
+
+    assert step.is_finished is False
+    assert step.output is None
+    assert step.tool_call is not None
+    assert step.tool_call.tool_name == "read_file"
+    assert step.tool_call.arguments == {"path": "sample.txt"}
 
 
 def test_provider_single_agent_graph_stream_error_maps_to_provider_execution_error() -> None:

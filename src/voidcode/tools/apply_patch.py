@@ -52,8 +52,9 @@ def _parse_diff_git_paths(line: str) -> tuple[str, str] | None:
 
 
 def _format_diff_git_line(old_path: str, new_path: str) -> str:
-    old_token = f'"a/{old_path}"' if " " in old_path or "\t" in old_path else f"a/{old_path}"
-    new_token = f'"b/{new_path}"' if " " in new_path or "\t" in new_path else f"b/{new_path}"
+    quote_paths = any(ch in path for ch in (" ", "\t") for path in (old_path, new_path))
+    old_token = f'"a/{old_path}"' if quote_paths else f"a/{old_path}"
+    new_token = f'"b/{new_path}"' if quote_paths else f"b/{new_path}"
     return f"diff --git {old_token} {new_token}"
 
 

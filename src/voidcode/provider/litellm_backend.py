@@ -98,6 +98,34 @@ class LiteLLMBackendSingleAgentProvider:
         return {"api_key": self.config.api_key}
 
     @staticmethod
+    def _extract_first_tool_call(message: dict[str, object]) -> ToolCall | None:
+        raw_tool_calls = message.get("tool_calls")
+        if not isinstance(raw_tool_calls, list) or not raw_tool_calls:
+            return None
+        tool_calls = cast(list[object], raw_tool_calls)
+        first_tool_call_obj = tool_calls[0]
+        if not isinstance(first_tool_call_obj, dict):
+            return None
+        function_obj = cast(dict[str, object], first_tool_call_obj).get("function")
+        if not isinstance(function_obj, dict):
+            return None
+        function = cast(dict[str, object], function_obj)
+        tool_name_obj = function.get("name")
+        if not isinstance(tool_name_obj, str) or not tool_name_obj:
+            return None
+        parsed_arguments: dict[str, object] = {}
+        arguments_obj = function.get("arguments")
+        if isinstance(arguments_obj, str) and arguments_obj.strip():
+            try:
+                decoded = json.loads(arguments_obj)
+            except json.JSONDecodeError:
+                parsed_arguments = {}
+            else:
+                if isinstance(decoded, dict):
+                    parsed_arguments = cast(dict[str, object], decoded)
+        return ToolCall(tool_name=tool_name_obj, arguments=parsed_arguments)
+
+    @staticmethod
     def _map_exception(
         exc: Exception, *, provider_name: str, model_name: str
     ) -> ProviderExecutionError:
@@ -171,32 +199,9 @@ class LiteLLMBackendSingleAgentProvider:
                 return SingleAgentTurnResult(output="")
             message = cast(dict[str, object], message_obj)
 
-            raw_tool_calls = message.get("tool_calls")
-            if isinstance(raw_tool_calls, list) and raw_tool_calls:
-                tool_calls = cast(list[object], raw_tool_calls)
-                first_tool_call_obj = tool_calls[0]
-                if isinstance(first_tool_call_obj, dict):
-                    function_obj = cast(dict[str, object], first_tool_call_obj).get("function")
-                    if isinstance(function_obj, dict):
-                        function = cast(dict[str, object], function_obj)
-                        tool_name_obj = function.get("name")
-                        if isinstance(tool_name_obj, str) and tool_name_obj:
-                            parsed_arguments: dict[str, object] = {}
-                            arguments_obj = function.get("arguments")
-                            if isinstance(arguments_obj, str) and arguments_obj.strip():
-                                try:
-                                    decoded = json.loads(arguments_obj)
-                                except json.JSONDecodeError:
-                                    parsed_arguments = {}
-                                else:
-                                    if isinstance(decoded, dict):
-                                        parsed_arguments = cast(dict[str, object], decoded)
-                            return SingleAgentTurnResult(
-                                tool_call=ToolCall(
-                                    tool_name=tool_name_obj,
-                                    arguments=parsed_arguments,
-                                )
-                            )
+            tool_call = self._extract_first_tool_call(message)
+            if tool_call is not None:
+                return SingleAgentTurnResult(tool_call=tool_call)
 
             content_obj = message.get("content")
             if isinstance(content_obj, str):
@@ -235,6 +240,8 @@ class LiteLLMBackendSingleAgentProvider:
             stream = cast(
                 Iterator[Any], self._call_litellm_completion(cast(dict[str, Any], payload))
             )
+            streamed_tool_name: str | None = None
+            streamed_tool_arguments = ""
             for chunk in stream:
                 if request.abort_signal is not None and request.abort_signal.cancelled:
                     yield ProviderStreamEvent(
@@ -260,6 +267,47 @@ class LiteLLMBackendSingleAgentProvider:
                     text_obj = delta.get("content")
                     if isinstance(text_obj, str) and text_obj:
                         yield ProviderStreamEvent(kind="delta", channel="text", text=text_obj)
+                    raw_tool_calls = delta.get("tool_calls")
+                    if isinstance(raw_tool_calls, list):
+                        tool_calls = cast(list[object], raw_tool_calls)
+                        for tool_call_obj in tool_calls:
+                            if not isinstance(tool_call_obj, dict):
+                                continue
+                            tool_call = cast(dict[str, object], tool_call_obj)
+                            function_obj = tool_call.get("function")
+                            if not isinstance(function_obj, dict):
+                                continue
+                            function = cast(dict[str, object], function_obj)
+                            name_obj = function.get("name")
+                            if isinstance(name_obj, str) and name_obj:
+                                streamed_tool_name = name_obj
+                            arguments_obj = function.get("arguments")
+                            if isinstance(arguments_obj, str) and arguments_obj:
+                                streamed_tool_arguments += arguments_obj
+                        if streamed_tool_name is not None:
+                            tool_payload = self._extract_first_tool_call(
+                                {
+                                    "tool_calls": [
+                                        {
+                                            "function": {
+                                                "name": streamed_tool_name,
+                                                "arguments": streamed_tool_arguments,
+                                            }
+                                        }
+                                    ]
+                                }
+                            )
+                            if tool_payload is not None:
+                                yield ProviderStreamEvent(
+                                    kind="content",
+                                    channel="tool",
+                                    text=json.dumps(
+                                        {
+                                            "tool_name": tool_payload.tool_name,
+                                            "arguments": tool_payload.arguments,
+                                        }
+                                    ),
+                                )
                 finish_reason = first_choice.get("finish_reason")
                 if isinstance(finish_reason, str) and finish_reason:
                     yield ProviderStreamEvent(kind="done", done_reason="completed")

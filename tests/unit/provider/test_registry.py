@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 from voidcode.provider.anthropic import AnthropicModelProvider
-from voidcode.provider.config import LiteLLMProviderConfig, ProviderConfigs
+from voidcode.provider.config import (
+    GoogleProviderAuthConfig,
+    GoogleProviderConfig,
+    LiteLLMProviderConfig,
+    ProviderConfigs,
+)
 from voidcode.provider.copilot import CopilotModelProvider
 from voidcode.provider.google import GoogleModelProvider
 from voidcode.provider.litellm import LiteLLMModelProvider
@@ -111,3 +116,21 @@ def test_registry_refresh_custom_provider_uses_custom_config() -> None:
     catalog = registry.provider_catalog("llama-local")
     assert catalog is not None
     assert catalog.provider == "llama-local"
+
+
+def test_registry_google_provider_config_uses_google_api_key_header_for_api_key_auth() -> None:
+    registry = ModelProviderRegistry.with_defaults(
+        provider_configs=ProviderConfigs(
+            google=GoogleProviderConfig(
+                auth=GoogleProviderAuthConfig(method="api_key", api_key="AIza-test")
+            )
+        )
+    )
+
+    config = registry.provider_config("google")
+
+    assert config == LiteLLMProviderConfig(
+        api_key="AIza-test",
+        auth_header="x-goog-api-key",
+        auth_scheme="token",
+    )

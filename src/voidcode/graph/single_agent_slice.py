@@ -157,12 +157,32 @@ class ProviderSingleAgentGraph:
         stream_provider = cast(StreamableSingleAgentProvider, self._provider)
         stream_events: list[GraphEvent] = []
         output_parts: list[str] = []
+        streamed_tool_call: ToolCall | None = None
 
         for stream_event in stream_provider.stream_turn(turn_request):
             stream_events.append(self._stream_event_to_graph_event(stream_event))
             if stream_event.kind in {"delta", "content"} and stream_event.channel == "text":
                 if stream_event.text is not None:
                     output_parts.append(stream_event.text)
+            if (
+                stream_event.kind in {"delta", "content"}
+                and stream_event.channel == "tool"
+                and stream_event.text is not None
+            ):
+                try:
+                    raw_tool_payload = json.loads(stream_event.text)
+                except json.JSONDecodeError:
+                    streamed_tool_call = None
+                else:
+                    if isinstance(raw_tool_payload, dict):
+                        tool_payload = cast(dict[str, object], raw_tool_payload)
+                        tool_name_obj = tool_payload.get("tool_name")
+                        arguments_obj = tool_payload.get("arguments")
+                        if isinstance(tool_name_obj, str) and isinstance(arguments_obj, dict):
+                            streamed_tool_call = ToolCall(
+                                tool_name=tool_name_obj,
+                                arguments=cast(dict[str, object], arguments_obj),
+                            )
             if stream_event.kind == "error":
                 if stream_event.error_kind == "cancelled":
                     raise ProviderExecutionError(
@@ -217,6 +237,11 @@ class ProviderSingleAgentGraph:
                         provider_name=self._provider.name,
                         model_name=turn_request.model_name or "unknown",
                         message="provider stream ended with error",
+                    )
+                if streamed_tool_call is not None:
+                    return SingleAgentStep(
+                        events=planning_events + tuple(stream_events),
+                        tool_call=streamed_tool_call,
                     )
                 output = "".join(output_parts)
                 finalize_events = (

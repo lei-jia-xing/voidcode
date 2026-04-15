@@ -82,14 +82,20 @@ class ModelProviderRegistry:
             provider = self.providers.get("google")
             if isinstance(provider, GoogleModelProvider):
                 api_key = None
+                auth_header = None
+                auth_scheme = "bearer"
                 if provider.config is not None and provider.config.auth is not None:
                     if provider.config.auth.method == "api_key":
                         api_key = provider.config.auth.api_key
+                        auth_header = "x-goog-api-key"
+                        auth_scheme = "token"
                     elif provider.config.auth.method == "oauth":
                         api_key = provider.config.auth.access_token
                 return LiteLLMProviderConfig(
                     api_key=api_key,
                     base_url=None if provider.config is None else provider.config.base_url,
+                    auth_header=auth_header,
+                    auth_scheme=auth_scheme,
                     timeout_seconds=None
                     if provider.config is None
                     else provider.config.timeout_seconds,

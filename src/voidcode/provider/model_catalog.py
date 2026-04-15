@@ -130,6 +130,14 @@ def _build_discovery_request(
     provider = provider_name.strip().lower()
     timeout_seconds = _timeout_for_discovery(config)
     headers = _headers_for_discovery(config)
+    if (
+        provider == "google"
+        and config is not None
+        and config.api_key is not None
+        and config.auth_scheme == "bearer"
+        and config.auth_header is None
+    ):
+        headers = {"x-goog-api-key": config.api_key}
     if provider == "anthropic":
         api_key = None if config is None else config.api_key
         anthropic_headers: dict[str, str] = {"anthropic-version": "2023-06-01"}
@@ -222,10 +230,17 @@ def _fetch_google_models(request: DiscoveryRequest) -> tuple[str, ...]:
     else:
         models_url = f"{base_url}/v1beta/models"
 
+    uses_google_api_key_header = any(
+        header_name.lower() == "x-goog-api-key" for header_name in request.headers
+    )
     uses_authorization_header = any(
         header_name.lower() == "authorization" for header_name in request.headers
     )
-    if request.api_key is not None and not uses_authorization_header:
+    if (
+        request.api_key is not None
+        and not uses_authorization_header
+        and not uses_google_api_key_header
+    ):
         models_url = f"{models_url}?key={quote(request.api_key, safe='')}"
 
     http_request = Request(url=models_url, headers=request.headers, method="GET")

@@ -89,6 +89,53 @@ def test_discover_available_models_for_google_uses_google_base_url() -> None:
     assert captured[0].provider == "google"
     assert captured[0].base_url == "https://generativelanguage.googleapis.com"
     assert captured[0].api_key == "AIza-test"
+    assert captured[0].headers == {"x-goog-api-key": "AIza-test"}
+
+
+def test_discover_available_models_for_google_with_api_key_header_does_not_append_key_query_param(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class _Response:
+        def __enter__(self) -> _Response:
+            return self
+
+        def __exit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            tb: TracebackType | None,
+        ) -> bool:
+            return False
+
+        def read(self) -> bytes:
+            return json.dumps({"models": [{"name": "models/gemini-2.0-flash"}]}).encode("utf-8")
+
+    def _fake_urlopen(request: Request, timeout: float) -> _Response:
+        captured["url"] = request.full_url
+        captured["timeout"] = timeout
+        captured["headers"] = {
+            str(key).lower(): str(value) for key, value in dict(request.header_items()).items()
+        }
+        return _Response()
+
+    monkeypatch.setattr(model_catalog, "urlopen", _fake_urlopen)
+
+    result = discover_available_models(
+        "google",
+        LiteLLMProviderConfig(
+            base_url="https://generativelanguage.googleapis.com",
+            api_key="AIza-test",
+            auth_header="x-goog-api-key",
+            auth_scheme="token",
+        ),
+    )
+
+    assert result.models == ("gemini-2.0-flash",)
+    assert captured["url"] == "https://generativelanguage.googleapis.com/v1beta/models"
+    headers = cast(dict[str, str], captured["headers"])
+    assert headers["x-goog-api-key"] == "AIza-test"
 
 
 def test_discover_available_models_for_google_with_oauth_header_does_not_append_key_query_param(
