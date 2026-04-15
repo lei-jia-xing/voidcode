@@ -170,7 +170,7 @@ def test_registry_registers_minimax_provider() -> None:
     config = registry.provider_config("minimax")
     assert config is not None
     assert config.api_key == "minimax-key"
-    assert config.base_url == "https://api.minimax.io/v1"
+    assert config.base_url == "https://api.minimax.io"
     assert "MiniMax-M2.7" in config.model_map.values()
 
 
@@ -186,7 +186,7 @@ def test_registry_registers_kimi_provider() -> None:
     config = registry.provider_config("kimi")
     assert config is not None
     assert config.api_key == "kimi-key"
-    assert config.base_url == "https://api.moonshot.ai/v1"
+    assert config.base_url == "https://api.moonshot.ai"
     assert "kimi-k2.5" in config.model_map.values()
 
 
@@ -204,7 +204,7 @@ def test_registry_registers_opencode_go_provider() -> None:
     config = registry.provider_config("opencode-go")
     assert config is not None
     assert config.api_key == "opencode-go-key"
-    assert config.base_url == "https://opencode.ai/zen/go/v1"
+    assert config.base_url == "https://opencode.ai/zen/go"
     assert "kimi-k2.5" in config.model_map.values()
 
 
@@ -220,7 +220,7 @@ def test_registry_registers_qwen_provider() -> None:
     config = registry.provider_config("qwen")
     assert config is not None
     assert config.api_key == "qwen-key"
-    assert config.base_url == "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    assert config.base_url == "https://dashscope.aliyuncs.com/compatible-mode"
     assert "qwen-plus" in config.model_map.values()
 
 
@@ -262,23 +262,23 @@ def test_registry_simplified_provider_uses_default_base_url_when_not_set() -> No
 
     minimax_config = registry.provider_config("minimax")
     assert minimax_config is not None
-    assert minimax_config.base_url == "https://api.minimax.io/v1"
+    assert minimax_config.base_url == "https://api.minimax.io"
     assert minimax_config.model_map.get("minimax-m2.7") == "MiniMax-M2.7"
 
     kimi_config = registry.provider_config("kimi")
     assert kimi_config is not None
-    assert kimi_config.base_url == "https://api.moonshot.ai/v1"
+    assert kimi_config.base_url == "https://api.moonshot.ai"
     assert kimi_config.model_map.get("kimi-k2.5") == "kimi-k2.5"
 
     opencode_go_config = registry.provider_config("opencode-go")
     assert opencode_go_config is not None
-    assert opencode_go_config.base_url == "https://opencode.ai/zen/go/v1"
+    assert opencode_go_config.base_url == "https://opencode.ai/zen/go"
     assert opencode_go_config.model_map.get("kimi-k2.5") == "kimi-k2.5"
     assert opencode_go_config.model_map.get("glm-5") == "glm-5"
 
     qwen_config = registry.provider_config("qwen")
     assert qwen_config is not None
-    assert qwen_config.base_url == "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    assert qwen_config.base_url == "https://dashscope.aliyuncs.com/compatible-mode"
     assert qwen_config.model_map.get("qwen-plus") == "qwen-plus"
 
 

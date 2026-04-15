@@ -108,9 +108,9 @@ def _base_url_for_discovery(
     if provider_name == "kimi":
         return "https://api.moonshot.ai"
     if provider_name == "opencode-go":
-        return "https://opencode.ai/zen/go/v1"
+        return None
     if provider_name == "qwen":
-        return "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        return "https://dashscope.aliyuncs.com/compatible-mode"
     return None
 
 

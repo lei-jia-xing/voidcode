@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .config import LiteLLMProviderConfig, SimplifiedProviderConfig
+from .config import SimplifiedProviderConfig, simplified_config_to_litellm
 from .litellm_backend import LiteLLMBackendSingleAgentProvider
 from .protocol import SingleAgentProvider
 
@@ -37,10 +37,5 @@ class OpenCodeGoModelProvider:
     config: SimplifiedProviderConfig | None = None
 
     def single_agent_provider(self) -> SingleAgentProvider:
-        adapted_config = LiteLLMProviderConfig(
-            api_key=None if self.config is None else self.config.api_key,
-            base_url=None if self.config is None else self.config.base_url,
-            timeout_seconds=None if self.config is None else self.config.timeout_seconds,
-            model_map={} if self.config is None else self.config.model_map,
-        )
+        adapted_config = simplified_config_to_litellm(self.name, self.config)
         return LiteLLMBackendSingleAgentProvider(name=self.name, config=adapted_config)
