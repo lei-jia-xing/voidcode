@@ -304,7 +304,9 @@ async def test_tui_command_palette_resume_session(app_class: Any) -> None:
                 await pilot.press("alt+x")
                 await pilot.pause()
 
-                await pilot.press("down", "enter")  # Selects 'session: resume'
+                await pilot.press(
+                    "r", "e", "s", "u", "m", "e", "enter"
+                )  # Selects 'session: resume'
                 await pilot.pause()
 
                 from voidcode.tui.screens import SessionListModal
@@ -336,34 +338,44 @@ async def test_tui_command_palette_theme_switch(app_class: Any) -> None:
     mock_config = _mock_runtime_config()
 
     with patch("voidcode.tui.app.load_runtime_config", autospec=True, return_value=mock_config):
-        with patch("voidcode.tui.app.VoidCodeRuntime", autospec=True):
-            with patch("voidcode.tui.app.save_workspace_tui_preferences") as mock_save:
-                app = VoidCodeTUI(workspace=Path("."))
+        with patch(
+            "voidcode.tui.app.load_global_tui_preferences",
+            autospec=True,
+            return_value=None,
+        ):
+            with patch(
+                "voidcode.tui.app.load_workspace_tui_preferences",
+                autospec=True,
+                return_value=None,
+            ):
+                with patch("voidcode.tui.app.VoidCodeRuntime", autospec=True):
+                    with patch("voidcode.tui.app.save_global_tui_preferences") as mock_save:
+                        app = VoidCodeTUI(workspace=Path("."))
 
-                async with app.run_test() as pilot:
-                    await pilot.press("alt+x")
-                    await pilot.pause()
+                        async with app.run_test() as pilot:
+                            await pilot.press("alt+x")
+                            await pilot.pause()
 
-                    # session: new, session: resume, theme: switch
-                    await pilot.press("down", "down", "enter")
-                    await pilot.pause()
+                            # session: new, session: resume, theme: switch
+                            await pilot.press("s", "w", "i", "t", "c", "h", "enter")
+                            await pilot.pause()
 
-                    from voidcode.tui.screens import ThemePickerModal
+                            from voidcode.tui.screens import ThemePickerModal
 
-                    assert isinstance(app.screen, ThemePickerModal)
+                            assert isinstance(app.screen, ThemePickerModal)
 
-                    # select theme
-                    await pilot.press("enter")
-                    await pilot.pause()
+                            # select theme
+                            await pilot.press("enter")
+                            await pilot.pause()
 
-                    mock_save.assert_called_once()
-                    assert app._tui_preferences.theme is not None
-                    saved_preferences = mock_save.call_args.args[1]
-                    assert saved_preferences.theme == RuntimeTuiThemePreferences(
-                        name=app._tui_preferences.theme.name,
-                        mode=None,
-                    )
-                    assert saved_preferences.reading is None
+                            mock_save.assert_called_once()
+                            assert app._tui_preferences.theme is not None
+                            saved_preferences = mock_save.call_args.args[0]
+                            assert saved_preferences.theme == RuntimeTuiThemePreferences(
+                                name=app._tui_preferences.theme.name,
+                                mode=None,
+                            )
+                            assert saved_preferences.reading is None
 
 
 @pytest.mark.anyio
@@ -378,24 +390,41 @@ async def test_tui_command_palette_view_wrap(app_class: Any) -> None:
     )
 
     with patch("voidcode.tui.app.load_runtime_config", autospec=True, return_value=mock_config):
-        with patch("voidcode.tui.app.VoidCodeRuntime", autospec=True):
-            with patch("voidcode.tui.app.save_workspace_tui_preferences") as mock_save:
-                app = VoidCodeTUI(workspace=Path("."))
+        with patch(
+            "voidcode.tui.app.load_global_tui_preferences",
+            autospec=True,
+            return_value=RuntimeTuiPreferences(
+                theme=RuntimeTuiThemePreferences(name="textual-dark", mode="auto"),
+                reading=RuntimeTuiReadingPreferences(wrap=True, sidebar_collapsed=True),
+            ),
+        ):
+            with patch(
+                "voidcode.tui.app.load_workspace_tui_preferences",
+                autospec=True,
+                return_value=None,
+            ):
+                with patch("voidcode.tui.app.VoidCodeRuntime", autospec=True):
+                    with patch("voidcode.tui.app.save_global_tui_preferences") as mock_save:
+                        app = VoidCodeTUI(workspace=Path("."))
 
-                async with app.run_test() as pilot:
-                    await pilot.press("alt+x")
-                    await pilot.pause()
+                        async with app.run_test() as pilot:
+                            await pilot.press("alt+x")
+                            await pilot.pause()
 
-                    # view: wrap is 5th item
-                    await pilot.press("down", "down", "down", "down", "enter")
-                    await pilot.pause()
+                            # view: wrap is 5th item
+                            await pilot.press("w", "r", "a", "p", "enter")
+                            await pilot.pause()
 
-                    mock_save.assert_called_once()
-                    assert app._tui_preferences.reading is not None
-                    assert app._tui_preferences.reading.wrap is False
-                    saved_preferences = mock_save.call_args.args[1]
-                    assert saved_preferences.reading == RuntimeTuiReadingPreferences(wrap=False)
-                    assert saved_preferences.theme is None
+                            mock_save.assert_called_once()
+                            assert app._tui_preferences.reading is not None
+                            assert app._tui_preferences.reading.wrap is False
+                            saved_preferences = mock_save.call_args.args[0]
+                            assert saved_preferences.reading == RuntimeTuiReadingPreferences(
+                                wrap=False, sidebar_collapsed=True
+                            )
+                            assert saved_preferences.theme == RuntimeTuiThemePreferences(
+                                name="textual-dark", mode="auto"
+                            )
 
 
 @pytest.mark.anyio
@@ -424,18 +453,107 @@ async def test_tui_wrap_toggle_does_not_snapshot_inherited_global_theme(app_clas
                 return_value=None,
             ):
                 with patch("voidcode.tui.app.VoidCodeRuntime", autospec=True):
-                    with patch("voidcode.tui.app.save_workspace_tui_preferences") as mock_save:
+                    with patch("voidcode.tui.app.save_global_tui_preferences") as mock_save:
                         app = VoidCodeTUI(workspace=Path("."))
 
                         async with app.run_test() as pilot:
                             await pilot.press("alt+x")
                             await pilot.pause()
-                            await pilot.press("down", "down", "down", "down", "enter")
+                            await pilot.press("w", "r", "a", "p", "enter")
                             await pilot.pause()
 
-                            saved_preferences = mock_save.call_args.args[1]
+                            saved_preferences = mock_save.call_args.args[0]
                             assert saved_preferences == RuntimeTuiPreferences(
-                                reading=RuntimeTuiReadingPreferences(wrap=False)
+                                theme=RuntimeTuiThemePreferences(name="tokyo-night", mode="dark"),
+                                reading=RuntimeTuiReadingPreferences(
+                                    wrap=False, sidebar_collapsed=True
+                                ),
+                            )
+
+
+@pytest.mark.anyio
+async def test_tui_default_preference_changes_write_global_not_workspace(app_class: Any) -> None:
+    VoidCodeTUI, _, _ = app_class
+
+    mock_config = _mock_runtime_config(
+        preferences=RuntimeTuiPreferences(
+            theme=RuntimeTuiThemePreferences(name="textual-dark", mode="auto"),
+            reading=RuntimeTuiReadingPreferences(wrap=True, sidebar_collapsed=False),
+        )
+    )
+
+    with patch("voidcode.tui.app.load_runtime_config", autospec=True, return_value=mock_config):
+        with patch(
+            "voidcode.tui.app.load_global_tui_preferences",
+            autospec=True,
+            return_value=RuntimeTuiPreferences(
+                theme=RuntimeTuiThemePreferences(name="textual-dark", mode="auto"),
+                reading=RuntimeTuiReadingPreferences(wrap=True, sidebar_collapsed=False),
+            ),
+        ):
+            with patch(
+                "voidcode.tui.app.load_workspace_tui_preferences",
+                autospec=True,
+                return_value=RuntimeTuiPreferences(
+                    reading=RuntimeTuiReadingPreferences(sidebar_collapsed=True)
+                ),
+            ):
+                with patch("voidcode.tui.app.VoidCodeRuntime", autospec=True):
+                    with patch("voidcode.tui.app.save_global_tui_preferences") as mock_global_save:
+                        app = VoidCodeTUI(workspace=Path("."))
+
+                        async with app.run_test() as pilot:
+                            await pilot.press("alt+x")
+                            await pilot.pause()
+                            await pilot.press("w", "r", "a", "p", "enter")
+                            await pilot.pause()
+
+                            mock_global_save.assert_called_once()
+
+
+@pytest.mark.anyio
+async def test_tui_global_save_does_not_snapshot_workspace_only_override(app_class: Any) -> None:
+    VoidCodeTUI, _, _ = app_class
+
+    mock_config = _mock_runtime_config(
+        preferences=RuntimeTuiPreferences(
+            theme=RuntimeTuiThemePreferences(name="textual-dark", mode="auto"),
+            reading=RuntimeTuiReadingPreferences(wrap=True, sidebar_collapsed=True),
+        )
+    )
+
+    with patch("voidcode.tui.app.load_runtime_config", autospec=True, return_value=mock_config):
+        with patch(
+            "voidcode.tui.app.load_global_tui_preferences",
+            autospec=True,
+            return_value=RuntimeTuiPreferences(
+                theme=RuntimeTuiThemePreferences(name="textual-dark", mode="auto"),
+                reading=RuntimeTuiReadingPreferences(wrap=True, sidebar_collapsed=False),
+            ),
+        ):
+            with patch(
+                "voidcode.tui.app.load_workspace_tui_preferences",
+                autospec=True,
+                return_value=RuntimeTuiPreferences(
+                    reading=RuntimeTuiReadingPreferences(sidebar_collapsed=True)
+                ),
+            ):
+                with patch("voidcode.tui.app.VoidCodeRuntime", autospec=True):
+                    with patch("voidcode.tui.app.save_global_tui_preferences") as mock_save:
+                        app = VoidCodeTUI(workspace=Path("."))
+
+                        async with app.run_test() as pilot:
+                            await pilot.press("alt+x")
+                            await pilot.pause()
+                            await pilot.press("w", "r", "a", "p", "enter")
+                            await pilot.pause()
+
+                            saved_preferences = mock_save.call_args.args[0]
+                            assert saved_preferences == RuntimeTuiPreferences(
+                                theme=RuntimeTuiThemePreferences(name="textual-dark", mode="auto"),
+                                reading=RuntimeTuiReadingPreferences(
+                                    wrap=False, sidebar_collapsed=False
+                                ),
                             )
 
 

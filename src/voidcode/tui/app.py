@@ -21,7 +21,6 @@ from ..runtime.config import (
     load_workspace_tui_preferences,
     merge_runtime_tui_preferences,
     save_global_tui_preferences,
-    save_workspace_tui_preferences,
 )
 from ..runtime.contracts import RuntimeRequest
 from ..runtime.events import EventEnvelope
@@ -95,7 +94,7 @@ class VoidCodeTUI(App[int]):
         self._global_tui_preferences = load_global_tui_preferences()
         self._workspace_tui_preferences = load_workspace_tui_preferences(workspace)
         self._effective_preferences = RuntimeTuiPreferences()
-        self._tui_preferences = self._workspace_tui_preferences or RuntimeTuiPreferences()
+        self._tui_preferences = self._global_tui_preferences or RuntimeTuiPreferences()
 
         if self._global_tui_preferences is None and isinstance(config.tui, RuntimeTuiConfig):
             merged_preferences = config.tui.preferences
@@ -206,15 +205,13 @@ class VoidCodeTUI(App[int]):
             self._toggle_wrap()
         elif command == "view: sidebar":
             self._toggle_sidebar()
-        elif command == "preferences: save global":
-            self._save_current_preferences_as_global_default()
 
     def _effective_tui_preferences(self) -> RuntimeTuiPreferences:
         return self._effective_preferences
 
     def _apply_tui_preferences(self) -> RuntimeTuiPreferences:
         merged_preferences = merge_runtime_tui_preferences(
-            self._global_tui_preferences, self._tui_preferences
+            self._tui_preferences, self._workspace_tui_preferences
         )
         effective = effective_runtime_tui_preferences(merged_preferences)
         if isinstance(effective.theme.name, str) and effective.theme.name in self.available_themes:
@@ -236,8 +233,8 @@ class VoidCodeTUI(App[int]):
         )
         return self._effective_preferences
 
-    def _persist_workspace_preferences(self) -> None:
-        save_workspace_tui_preferences(self.workspace, self._tui_preferences)
+    def _persist_global_preferences(self) -> None:
+        save_global_tui_preferences(self._tui_preferences)
 
     def _available_theme_names(self) -> list[str]:
         theme_preferences = self._effective_preferences.theme or RuntimeTuiThemePreferences(
@@ -261,7 +258,7 @@ class VoidCodeTUI(App[int]):
             reading=prefs.reading,
         )
         self._apply_tui_preferences()
-        self._persist_workspace_preferences()
+        self._persist_global_preferences()
 
     def _handle_theme_mode_selection(self, mode: str | None) -> None:
         if mode is None:
@@ -275,7 +272,7 @@ class VoidCodeTUI(App[int]):
             reading=prefs.reading,
         )
         self._apply_tui_preferences()
-        self._persist_workspace_preferences()
+        self._persist_global_preferences()
 
     def _toggle_wrap(self) -> None:
         prefs = self._tui_preferences
@@ -290,7 +287,7 @@ class VoidCodeTUI(App[int]):
             ),
         )
         self._apply_tui_preferences()
-        self._persist_workspace_preferences()
+        self._persist_global_preferences()
 
     def _toggle_sidebar(self) -> None:
         prefs = self._tui_preferences
@@ -311,10 +308,7 @@ class VoidCodeTUI(App[int]):
             ),
         )
         self._apply_tui_preferences()
-        self._persist_workspace_preferences()
-
-    def _save_current_preferences_as_global_default(self) -> None:
-        save_global_tui_preferences(self._effective_preferences)
+        self._persist_global_preferences()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         prompt = event.value.strip()
