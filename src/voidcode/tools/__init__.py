@@ -1,4 +1,5 @@
 from .apply_patch import ApplyPatchTool
+from .ast_grep import AstGrepReplaceTool, AstGrepSearchTool
 from .code_search import CodeSearchTool
 from .contracts import ToolCall, ToolDefinition, ToolResult, ToolResultStatus
 from .edit import EditTool
@@ -29,6 +30,8 @@ __all__ = [
     "McpTool",
     "MultiEditTool",
     "ApplyPatchTool",
+    "AstGrepSearchTool",
+    "AstGrepReplaceTool",
     "CodeSearchTool",
     "TodoWriteTool",
     "ToolCall",
