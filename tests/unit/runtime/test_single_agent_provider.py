@@ -167,3 +167,48 @@ def test_stub_single_agent_provider_uses_bounded_context_window_results_for_fina
     )
 
     assert result.output == "new\n"
+
+
+def test_stub_single_agent_provider_applies_skill_context_to_final_output() -> None:
+    provider_model = resolve_provider_model(
+        "opencode/gpt-5.4",
+        registry=ModelProviderRegistry.with_defaults(),
+    )
+
+    result = StubSingleAgentProvider(name="opencode").propose_turn(
+        SingleAgentTurnRequest(
+            prompt="read sample.txt",
+            available_tools=_tool_definitions(),
+            tool_results=(
+                ToolResult(
+                    tool_name="read_file",
+                    content="alpha\nbeta\n",
+                    status="ok",
+                    data={"path": "sample.txt", "content": "alpha\nbeta\n"},
+                ),
+            ),
+            context_window=RuntimeContextWindow(
+                prompt="read sample.txt",
+                tool_results=(
+                    ToolResult(
+                        tool_name="read_file",
+                        content="alpha\nbeta\n",
+                        status="ok",
+                        data={"path": "sample.txt", "content": "alpha\nbeta\n"},
+                    ),
+                ),
+            ),
+            applied_skills=(
+                {
+                    "name": "demo",
+                    "description": "Demo skill",
+                    "content": "# Demo\nUse concise bullet points.",
+                },
+            ),
+            raw_model=provider_model.selection.raw_model,
+            provider_name=provider_model.selection.provider,
+            model_name=provider_model.selection.model,
+        )
+    )
+
+    assert result.output == "[applied skills]\n- demo: Demo skill\n\nalpha\nbeta\n"

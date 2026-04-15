@@ -90,7 +90,10 @@ class StubSingleAgentProvider:
             if not request.context_window.tool_results:
                 raise ValueError("request must contain at least one actionable command")
             last_result = request.context_window.tool_results[-1]
-            return SingleAgentTurnResult(output=last_result.content if last_result.content else "")
+            output = last_result.content if last_result.content else ""
+            return SingleAgentTurnResult(
+                output=self._apply_skill_context_to_output(output, request.applied_skills)
+            )
 
         trimmed_prompt = commands[step_index]
 
@@ -150,3 +153,19 @@ class StubSingleAgentProvider:
         if any(tool.name == tool_name and tool.read_only is read_only for tool in tools):
             return
         raise ValueError(f"{tool_name} tool is not registered for single-agent execution")
+
+    @staticmethod
+    def _apply_skill_context_to_output(
+        output: str,
+        applied_skills: tuple[AppliedSkill, ...],
+    ) -> str:
+        if not applied_skills:
+            return output
+
+        skill_lines = ["[applied skills]"]
+        skill_lines.extend(
+            f"- {skill['name']}: {skill['description']}" for skill in applied_skills
+        )
+        skill_lines.append("")
+        skill_lines.append(output)
+        return "\n".join(skill_lines)
