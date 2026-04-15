@@ -203,25 +203,25 @@ TUI app 负责：
 
 ## 偏好写回规则
 
-默认情况下，TUI 内发起的偏好修改应写入 workspace override 层。
+默认情况下，TUI 内发起的偏好修改应写入 **global default** 层。
 
 原因如下：
 
-- 这样对项目级使用更安全
-- 避免用户只是在某一个仓库里尝试某种样式，却意外影响所有仓库
-- 这也更符合项目当前已经存在的 repo-local config 心智模型
+- theme / theme mode / wrap / sidebar 本质上都更接近用户级偏好，而不是项目级配置
+- 用户在一个仓库里调整 TUI 外观和阅读习惯时，通常预期它会成为自己后续所有仓库的默认体验
+- 这样可以避免仅仅因为进入了某个项目，就在 workspace 下生成并长期保留一份本地 UI 偏好覆盖
 
-但产品仍然需要支持设置 global default，只是这个动作必须是显式的。
+workspace override 仍然保留读取能力，用于未来的显式项目级覆盖，但它不再是默认写回目标。
 
 ### 第一阶段的写回规则
 
 第一版实现中：
 
-- 命令面板内发生的普通偏好修改，默认写回 workspace override
+- 命令面板内发生的普通偏好修改，默认写回 global default
 - global default 的读取、解析与持久化能力必须在底层支持
-- command palette 中应包含一个显式动作：`Save current TUI preferences as global default`
+- workspace override 继续参与优先级解析，但不会因普通 TUI 偏好修改而被默认写回
 
-这样可以保证架构一开始就是对的，同时不会被迫引入一个过大的设置中心界面。
+这样可以让产品行为更符合用户直觉：TUI 偏好默认属于“我这个用户”，而不是“这个仓库”。
 
 ## 启动行为
 
