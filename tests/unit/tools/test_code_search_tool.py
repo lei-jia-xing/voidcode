@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import urllib.error
 from pathlib import Path
+from types import TracebackType
+from typing import cast
 from unittest.mock import patch
 
 import pytest
@@ -15,10 +17,15 @@ class _Resp:
     def __init__(self, text: str) -> None:
         self._text = text
 
-    def __enter__(self):
+    def __enter__(self) -> _Resp:
         return self
 
-    def __exit__(self, exc_type, exc, tb):
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> bool:
         return False
 
     def read(self) -> bytes:
@@ -70,12 +77,13 @@ def test_code_search_uses_web_search_exa_and_parses_snippets() -> None:
     assert result.status == "ok"
     assert result.data["source"] == "exa_mcp_web_search_exa"
     assert result.data["snippet_count"] == 2
-    assert len(result.data["sources"]) == 2
+    sources = cast(list[object], result.data["sources"])
+    assert len(sources) == 2
 
 
 def test_code_search_falls_back_when_no_snippets() -> None:
     tool = CodeSearchTool()
-    empty_payload = {"result": {"content": []}}
+    empty_payload: dict[str, object] = {"result": {"content": []}}
     response_text = f"data: {json.dumps(empty_payload)}\n"
 
     with patch("urllib.request.urlopen", return_value=_Resp(response_text)):

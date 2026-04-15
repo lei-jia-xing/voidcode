@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -20,13 +21,14 @@ def test_glob_tool_finds_matching_files(tmp_path: Path) -> None:
         ToolCall(tool_name="glob", arguments={"pattern": "*.py"}),
         workspace=tmp_path,
     )
+    content = cast(str, result.content)
 
     assert result.tool_name == "glob"
     assert result.status == "ok"
-    assert "test.py" in result.content
-    assert "main.py" in result.content
-    assert "README.md" not in result.content
-    assert "data.txt" not in result.content
+    assert "test.py" in content
+    assert "main.py" in content
+    assert "README.md" not in content
+    assert "data.txt" not in content
     assert result.data["pattern"] == "*.py"
     assert result.data["count"] == 2
 
@@ -77,9 +79,10 @@ def test_glob_tool_respects_path_argument(tmp_path: Path) -> None:
         ToolCall(tool_name="glob", arguments={"pattern": "*.txt", "path": "subdir"}),
         workspace=tmp_path,
     )
+    content = cast(str, result.content)
 
-    assert "nested.txt" in result.content
-    assert "root.txt" not in result.content
+    assert "nested.txt" in content
+    assert "root.txt" not in content
 
 
 def test_glob_tool_rejects_path_outside_workspace(tmp_path: Path) -> None:
@@ -104,8 +107,9 @@ def test_glob_tool_ignores_common_directories(tmp_path: Path) -> None:
         ToolCall(tool_name="glob", arguments={"pattern": "**/*.js"}),
         workspace=tmp_path,
     )
+    content = cast(str, result.content)
 
-    assert "dep.js" not in result.content
+    assert "dep.js" not in content
 
 
 def test_tools_package_and_default_registry_export_glob_tool() -> None:
