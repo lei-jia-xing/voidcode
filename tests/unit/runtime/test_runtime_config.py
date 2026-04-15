@@ -46,6 +46,55 @@ PRETTIER_ROOT_MARKERS = (
     "prettier.config.mjs",
 )
 
+PRETTIER_FALLBACK_COMMANDS = (
+    ("bunx", "prettier", "--write"),
+    ("pnpm", "exec", "prettier", "--write"),
+    ("npx", "prettier", "--write"),
+)
+
+
+def _prettier_preset(*extensions: str) -> RuntimeFormatterPresetConfig:
+    return RuntimeFormatterPresetConfig(
+        command=("prettier", "--write"),
+        extensions=extensions,
+        root_markers=PRETTIER_ROOT_MARKERS,
+        fallback_commands=PRETTIER_FALLBACK_COMMANDS,
+        cwd_policy="nearest_root",
+    )
+
+
+def _shfmt_preset(*extensions: str) -> RuntimeFormatterPresetConfig:
+    return RuntimeFormatterPresetConfig(
+        command=("shfmt", "-w"),
+        extensions=extensions,
+        root_markers=(".editorconfig", ".shfmt.conf", ".shfmt"),
+        cwd_policy="nearest_root",
+    )
+
+
+def _clang_format_preset(*extensions: str) -> RuntimeFormatterPresetConfig:
+    return RuntimeFormatterPresetConfig(
+        command=("clang-format", "-i"),
+        extensions=extensions,
+        root_markers=(".clang-format", "_clang-format", "compile_commands.json", "CMakeLists.txt"),
+        cwd_policy="nearest_root",
+    )
+
+
+def _sql_formatter_preset() -> RuntimeFormatterPresetConfig:
+    return RuntimeFormatterPresetConfig(
+        command=("sql-formatter", "--fix"),
+        extensions=(".sql",),
+        root_markers=(".sql-formatter.json", ".sql-formatter.jsonc", "package.json"),
+        fallback_commands=(
+            ("bunx", "sql-formatter", "--fix"),
+            ("pnpm", "exec", "sql-formatter", "--fix"),
+            ("npx", "sql-formatter", "--fix"),
+        ),
+        cwd_policy="nearest_root",
+    )
+
+
 DEFAULT_FORMATTER_PRESETS = {
     "python": RuntimeFormatterPresetConfig(
         command=("ruff", "format"),
@@ -54,61 +103,35 @@ DEFAULT_FORMATTER_PRESETS = {
         fallback_commands=(("uvx", "ruff", "format"), ("python", "-m", "ruff", "format")),
         cwd_policy="nearest_root",
     ),
-    "typescript": RuntimeFormatterPresetConfig(
-        command=("prettier", "--write"),
-        extensions=(".ts", ".tsx", ".mts", ".cts"),
-        root_markers=PRETTIER_ROOT_MARKERS,
-        fallback_commands=(
-            ("bunx", "prettier", "--write"),
-            ("pnpm", "exec", "prettier", "--write"),
-            ("npx", "prettier", "--write"),
-        ),
+    "typescript": _prettier_preset(".ts", ".tsx", ".mts", ".cts"),
+    "javascript": _prettier_preset(".js", ".jsx", ".mjs", ".cjs"),
+    "json": _prettier_preset(".json", ".jsonc"),
+    "markdown": _prettier_preset(".md", ".mdx"),
+    "yaml": _prettier_preset(".yaml", ".yml"),
+    "html": _prettier_preset(".html", ".htm"),
+    "css": _prettier_preset(".css"),
+    "scss": _prettier_preset(".scss"),
+    "less": _prettier_preset(".less"),
+    "vue": _prettier_preset(".vue"),
+    "svelte": _prettier_preset(".svelte"),
+    "astro": _prettier_preset(".astro"),
+    "graphql": _prettier_preset(".graphql", ".gql"),
+    "handlebars": _prettier_preset(".hbs", ".handlebars"),
+    "toml": RuntimeFormatterPresetConfig(
+        command=("taplo", "fmt"),
+        extensions=(".toml",),
+        root_markers=("taplo.toml", ".taplo.toml", "pyproject.toml", "Cargo.toml"),
         cwd_policy="nearest_root",
     ),
-    "javascript": RuntimeFormatterPresetConfig(
-        command=("prettier", "--write"),
-        extensions=(".js", ".jsx", ".mjs", ".cjs"),
-        root_markers=PRETTIER_ROOT_MARKERS,
-        fallback_commands=(
-            ("bunx", "prettier", "--write"),
-            ("pnpm", "exec", "prettier", "--write"),
-            ("npx", "prettier", "--write"),
-        ),
+    "shell": _shfmt_preset(".sh", ".bash", ".zsh"),
+    "dockerfile": _shfmt_preset("Dockerfile"),
+    "nix": RuntimeFormatterPresetConfig(
+        command=("nixfmt",),
+        extensions=(".nix",),
+        root_markers=("flake.nix", "shell.nix", "default.nix"),
         cwd_policy="nearest_root",
     ),
-    "json": RuntimeFormatterPresetConfig(
-        command=("prettier", "--write"),
-        extensions=(".json", ".jsonc"),
-        root_markers=PRETTIER_ROOT_MARKERS,
-        fallback_commands=(
-            ("bunx", "prettier", "--write"),
-            ("pnpm", "exec", "prettier", "--write"),
-            ("npx", "prettier", "--write"),
-        ),
-        cwd_policy="nearest_root",
-    ),
-    "markdown": RuntimeFormatterPresetConfig(
-        command=("prettier", "--write"),
-        extensions=(".md", ".mdx"),
-        root_markers=PRETTIER_ROOT_MARKERS,
-        fallback_commands=(
-            ("bunx", "prettier", "--write"),
-            ("pnpm", "exec", "prettier", "--write"),
-            ("npx", "prettier", "--write"),
-        ),
-        cwd_policy="nearest_root",
-    ),
-    "yaml": RuntimeFormatterPresetConfig(
-        command=("prettier", "--write"),
-        extensions=(".yaml", ".yml"),
-        root_markers=PRETTIER_ROOT_MARKERS,
-        fallback_commands=(
-            ("bunx", "prettier", "--write"),
-            ("pnpm", "exec", "prettier", "--write"),
-            ("npx", "prettier", "--write"),
-        ),
-        cwd_policy="nearest_root",
-    ),
+    "sql": _sql_formatter_preset(),
     "rust": RuntimeFormatterPresetConfig(
         command=("rustfmt",),
         extensions=(".rs",),
@@ -121,6 +144,21 @@ DEFAULT_FORMATTER_PRESETS = {
         root_markers=("go.mod",),
         cwd_policy="nearest_root",
     ),
+    "c": _clang_format_preset(".c", ".h"),
+    "cpp": _clang_format_preset(".cc", ".cpp", ".cxx", ".hpp", ".hh", ".hxx"),
+    "java": RuntimeFormatterPresetConfig(
+        command=("google-java-format", "--replace"),
+        extensions=(".java",),
+        root_markers=(".google-java-format", "pom.xml", "build.gradle", "build.gradle.kts"),
+        cwd_policy="nearest_root",
+    ),
+    "kotlin": RuntimeFormatterPresetConfig(
+        command=("ktlint", "-F"),
+        extensions=(".kt", ".kts"),
+        root_markers=("ktlint.yml", ".editorconfig", "build.gradle.kts"),
+        cwd_policy="nearest_root",
+    ),
+    "xml": _prettier_preset(".xml"),
 }
 
 
@@ -495,7 +533,11 @@ def test_runtime_config_keeps_builtin_formatter_presets_when_adding_custom_user_
                 "hooks": {
                     "enabled": True,
                     "formatter_presets": {
-                        "toml": {"command": ["taplo", "fmt"]},
+                        "php": {
+                            "command": ["php-cs-fixer", "fix"],
+                            "extensions": [".php"],
+                            "root_markers": ["composer.json", ".php-cs-fixer.php"],
+                        },
                     },
                 }
             }
@@ -509,7 +551,11 @@ def test_runtime_config_keeps_builtin_formatter_presets_when_adding_custom_user_
         enabled=True,
         formatter_presets={
             **DEFAULT_FORMATTER_PRESETS,
-            "toml": RuntimeFormatterPresetConfig(command=("taplo", "fmt")),
+            "php": RuntimeFormatterPresetConfig(
+                command=("php-cs-fixer", "fix"),
+                extensions=(".php",),
+                root_markers=("composer.json", ".php-cs-fixer.php"),
+            ),
         },
     )
 
