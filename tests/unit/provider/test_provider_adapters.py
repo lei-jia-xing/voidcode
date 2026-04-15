@@ -277,6 +277,27 @@ def test_provider_adapter_propose_turn_uses_model_map_for_litellm_alias(
     assert payload["model"] == "openrouter/openai/gpt-4o"
 
 
+def test_glm_provider_does_not_append_v1_to_base_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    from voidcode.provider.config import SimplifiedProviderConfig
+    from voidcode.provider.glm import GLMModelProvider
+
+    provider = GLMModelProvider(config=SimplifiedProviderConfig(api_key="glm-key"))
+    single_agent = provider.single_agent_provider()
+
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        completion_content="ok",
+    )
+
+    _ = single_agent.propose_turn(_build_turn_request(model_name="glm"))
+
+    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+    assert isinstance(payload_obj, dict)
+    payload = cast(dict[str, object], payload_obj)
+    assert payload["api_base"] == "https://open.bigmodel.cn/api/paas/v4"
+
+
 def test_provider_adapter_propose_turn_returns_tool_call_when_model_requests_tool(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

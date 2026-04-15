@@ -272,6 +272,42 @@ def test_discover_available_models_custom_provider_keeps_existing_v1_models_path
     assert captured["url"] == "https://gateway.example.com/v1/models"
 
 
+def test_discover_available_models_glm_base_url_uses_v4_models_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class _Response:
+        def __enter__(self) -> _Response:
+            return self
+
+        def __exit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            tb: TracebackType | None,
+        ) -> bool:
+            return False
+
+        def read(self) -> bytes:
+            return json.dumps({"data": [{"id": "glm/glm-4-flash"}]}).encode("utf-8")
+
+    def _fake_urlopen(request: Request, timeout: float) -> _Response:
+        captured["url"] = request.full_url
+        captured["timeout"] = timeout
+        return _Response()
+
+    monkeypatch.setattr(model_catalog, "urlopen", _fake_urlopen)
+
+    result = discover_available_models(
+        "glm",
+        LiteLLMProviderConfig(base_url="https://open.bigmodel.cn/api/paas/v4", api_key="glm-key"),
+    )
+
+    assert result.models == ("glm/glm-4-flash",)
+    assert captured["url"] == "https://open.bigmodel.cn/api/paas/v4/models"
+
+
 def test_discover_available_models_custom_provider_uses_token_auth_header_without_bearer_prefix(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
