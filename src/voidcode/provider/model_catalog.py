@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import cast
@@ -100,6 +101,16 @@ def _base_url_for_discovery(
         return "https://generativelanguage.googleapis.com"
     if provider_name == "litellm":
         return "http://127.0.0.1:4000"
+    if provider_name == "glm":
+        return "https://open.bigmodel.cn/api/paas/v4"
+    if provider_name == "minimax":
+        return "https://api.minimax.io"
+    if provider_name == "kimi":
+        return "https://api.moonshot.ai"
+    if provider_name == "opencode-go":
+        return "https://opencode.ai/zen/go/v1"
+    if provider_name == "qwen":
+        return "https://dashscope.aliyuncs.com/compatible-mode/v1"
     return None
 
 
@@ -168,6 +179,8 @@ def _fetch_openai_compatible_models(
     base_url = request.base_url.rstrip("/")
     if base_url.endswith("/v1/models"):
         models_url = base_url
+    elif re.search(r"/v[0-9]+(?:beta|alpha)?$", base_url, re.IGNORECASE):
+        models_url = f"{base_url}/models"
     elif base_url.endswith("/v1"):
         models_url = f"{base_url}/models"
     else:

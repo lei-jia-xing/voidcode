@@ -4,6 +4,41 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Literal, cast
 
+# =============================================================================
+# Simplified Provider Config for Chinese AI Providers
+# Provides a unified, minimal configuration interface for GLM, MiniMax, Kimi, and OpenCode Go
+# =============================================================================
+
+
+@dataclass(frozen=True, slots=True)
+class SimplifiedProviderConfig:
+    """Simplified provider configuration for Chinese AI providers.
+
+    All providers follow a minimal auth pattern: API_KEY + optional BASE_URL.
+    This reduces cognitive overhead and aligns with user expectations.
+    """
+
+    api_key: str | None = None
+    api_key_env_var: str | None = None
+    base_url: str | None = None
+    timeout_seconds: float | None = None
+    model_map: dict[str, str] = field(default_factory=dict)
+
+
+# =============================================================================
+# Environment Variables for Chinese AI Providers
+# =============================================================================
+
+_GLM_API_KEY_ENV_VAR = "GLM_API_KEY"
+_MINIMAX_API_KEY_ENV_VAR = "MINIMAX_API_KEY"
+_KIMI_API_KEY_ENV_VAR = "KIMI_API_KEY"
+_OPENCODE_GO_API_KEY_ENV_VAR = "OPENCODE_GO_API_KEY"
+
+
+# =============================================================================
+# Provider Config Classes
+# =============================================================================
+
 
 @dataclass(frozen=True, slots=True)
 class OpenAIProviderConfig:
@@ -80,6 +115,11 @@ class ProviderConfigs:
     google: GoogleProviderConfig | None = None
     copilot: CopilotProviderConfig | None = None
     litellm: LiteLLMProviderConfig | None = None
+    glm: SimplifiedProviderConfig | None = None
+    minimax: SimplifiedProviderConfig | None = None
+    kimi: SimplifiedProviderConfig | None = None
+    opencode_go: SimplifiedProviderConfig | None = None
+    qwen: SimplifiedProviderConfig | None = None
     custom: dict[str, LiteLLMProviderConfig] = field(default_factory=dict)
 
 
@@ -104,7 +144,19 @@ _VALID_LITELLM_AUTH_SCHEMES: tuple[Literal["bearer", "token", "none"], ...] = (
     "none",
 )
 _BUILTIN_PROVIDER_NAMES: frozenset[str] = frozenset(
-    {"openai", "anthropic", "google", "copilot", "litellm", "opencode"}
+    {
+        "openai",
+        "anthropic",
+        "google",
+        "copilot",
+        "litellm",
+        "opencode",
+        "glm",
+        "minimax",
+        "kimi",
+        "opencode-go",
+        "qwen",
+    }
 )
 
 
@@ -129,7 +181,19 @@ def parse_provider_configs_payload(
     _reject_unknown_keys(
         payload=payload,
         source=source,
-        allowed_keys=("openai", "anthropic", "google", "copilot", "litellm", "custom"),
+        allowed_keys=(
+            "openai",
+            "anthropic",
+            "google",
+            "copilot",
+            "litellm",
+            "glm",
+            "minimax",
+            "kimi",
+            "opencode-go",
+            "qwen",
+            "custom",
+        ),
     )
 
     environment: Mapping[str, str] = {} if env is None else env
@@ -159,6 +223,36 @@ def parse_provider_configs_payload(
             payload.get("litellm"),
             field_path=_nested_config_field(source, "litellm"),
             env=environment,
+        ),
+        glm=_parse_simplified_provider_config(
+            payload.get("glm"),
+            field_path=_nested_config_field(source, "glm"),
+            env=environment,
+            api_key_env_var=_GLM_API_KEY_ENV_VAR,
+        ),
+        minimax=_parse_simplified_provider_config(
+            payload.get("minimax"),
+            field_path=_nested_config_field(source, "minimax"),
+            env=environment,
+            api_key_env_var=_MINIMAX_API_KEY_ENV_VAR,
+        ),
+        kimi=_parse_simplified_provider_config(
+            payload.get("kimi"),
+            field_path=_nested_config_field(source, "kimi"),
+            env=environment,
+            api_key_env_var=_KIMI_API_KEY_ENV_VAR,
+        ),
+        opencode_go=_parse_simplified_provider_config(
+            payload.get("opencode-go"),
+            field_path=_nested_config_field(source, "opencode-go"),
+            env=environment,
+            api_key_env_var=_OPENCODE_GO_API_KEY_ENV_VAR,
+        ),
+        qwen=_parse_simplified_provider_config(
+            payload.get("qwen"),
+            field_path=_nested_config_field(source, "qwen"),
+            env=environment,
+            api_key_env_var="DASHSCOPE_API_KEY",
         ),
         custom=_parse_custom_litellm_provider_configs(
             payload.get("custom"),
@@ -199,6 +293,31 @@ def serialize_provider_configs(
     if providers.litellm is not None:
         serialized["litellm"] = _serialize_litellm_provider_config(
             providers.litellm,
+            include_secrets=include_secrets,
+        )
+    if providers.glm is not None:
+        serialized["glm"] = _serialize_simplified_provider_config(
+            providers.glm,
+            include_secrets=include_secrets,
+        )
+    if providers.minimax is not None:
+        serialized["minimax"] = _serialize_simplified_provider_config(
+            providers.minimax,
+            include_secrets=include_secrets,
+        )
+    if providers.kimi is not None:
+        serialized["kimi"] = _serialize_simplified_provider_config(
+            providers.kimi,
+            include_secrets=include_secrets,
+        )
+    if providers.opencode_go is not None:
+        serialized["opencode-go"] = _serialize_simplified_provider_config(
+            providers.opencode_go,
+            include_secrets=include_secrets,
+        )
+    if providers.qwen is not None:
+        serialized["qwen"] = _serialize_simplified_provider_config(
+            providers.qwen,
             include_secrets=include_secrets,
         )
     if providers.custom:
@@ -641,6 +760,54 @@ def _parse_litellm_provider_config(
     )
 
 
+def _parse_simplified_provider_config(
+    raw_value: object,
+    *,
+    field_path: str,
+    env: Mapping[str, str],
+    api_key_env_var: str,
+) -> SimplifiedProviderConfig | None:
+    if raw_value is None:
+        return None
+    if not isinstance(raw_value, dict):
+        raise ValueError(f"{field_path} must be an object when provided")
+    payload = cast(dict[str, object], raw_value)
+
+    api_key = _parse_optional_str(
+        payload.get("api_key"),
+        field_path=_nested_config_field(field_path, "api_key"),
+    )
+    api_key_env = _parse_optional_str(
+        payload.get("api_key_env_var"),
+        field_path=_nested_config_field(field_path, "api_key_env_var"),
+    )
+    if api_key is None:
+        if api_key_env is not None:
+            api_key = env.get(api_key_env)
+        else:
+            api_key = env.get(api_key_env_var)
+
+    base_url = _parse_optional_str(
+        payload.get("base_url"),
+        field_path=_nested_config_field(field_path, "base_url"),
+    )
+    timeout_seconds = _parse_optional_timeout_seconds(
+        payload.get("timeout_seconds"),
+        field_path=_nested_config_field(field_path, "timeout_seconds"),
+    )
+    model_map = _parse_string_mapping(
+        payload.get("model_map"),
+        field_path=_nested_config_field(field_path, "model_map"),
+    )
+    return SimplifiedProviderConfig(
+        api_key=api_key,
+        api_key_env_var=api_key_env,
+        base_url=base_url,
+        timeout_seconds=timeout_seconds,
+        model_map=model_map,
+    )
+
+
 def _serialize_openai_provider_config(
     provider: OpenAIProviderConfig,
     *,
@@ -765,6 +932,25 @@ def _serialize_litellm_provider_config(
     if provider.auth_header is not None:
         payload["auth_header"] = provider.auth_header
     payload["auth_scheme"] = provider.auth_scheme
+    if provider.timeout_seconds is not None:
+        payload["timeout_seconds"] = provider.timeout_seconds
+    if provider.model_map:
+        payload["model_map"] = dict(provider.model_map)
+    return payload
+
+
+def _serialize_simplified_provider_config(
+    provider: SimplifiedProviderConfig,
+    *,
+    include_secrets: bool,
+) -> dict[str, object]:
+    payload: dict[str, object] = {}
+    if include_secrets and provider.api_key is not None:
+        payload["api_key"] = provider.api_key
+    if provider.api_key_env_var is not None:
+        payload["api_key_env_var"] = provider.api_key_env_var
+    if provider.base_url is not None:
+        payload["base_url"] = provider.base_url
     if provider.timeout_seconds is not None:
         payload["timeout_seconds"] = provider.timeout_seconds
     if provider.model_map:
