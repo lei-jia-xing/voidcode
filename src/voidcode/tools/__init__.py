@@ -5,7 +5,7 @@ from .edit import EditTool
 from .glob import GlobTool
 from .grep import GrepTool
 from .list_dir import ListTool
-from .lsp import LspTool, FormatTool
+from .lsp import FormatTool, LspTool
 from .mcp import McpTool
 from .multi_edit import MultiEditTool
 from .read_file import ReadFileTool

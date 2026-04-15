@@ -5,7 +5,7 @@ import os
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal, Protocol, cast, final, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, cast, final, runtime_checkable
 from uuid import uuid4
 
 from ..graph.contracts import GraphEvent, GraphRunRequest
@@ -69,6 +69,9 @@ from .single_agent_provider import ProviderExecutionError
 from .skills import SkillRegistry, SkillRuntimeContext
 from .storage import SessionStore, SqliteSessionStore
 from .tool_provider import BuiltinToolProvider
+
+if TYPE_CHECKING:
+    from ..tools.lsp import FormatTool
 
 logger = logging.getLogger(__name__)
 
@@ -300,9 +303,10 @@ class VoidCodeRuntime:
         return LspTool(requester=self.request_lsp)
 
     def _build_format_tool(self) -> FormatTool:
-        from .tools.lsp import FormatTool
+        from ..tools.lsp import FormatTool
+
         return FormatTool(self._config.hooks, self._workspace)
-    
+
     def _build_mcp_tools(self) -> tuple[Tool, ...]:
         if self._mcp_manager.current_state().mode != "managed":
             return ()
@@ -1938,6 +1942,7 @@ class VoidCodeRuntime:
             return
         if session_workspace != str(self._workspace):
             raise ValueError(f"session {session_id} does not belong to workspace {self._workspace}")
+
 
 @dataclass(frozen=True, slots=True)
 class EffectiveRuntimeConfig:

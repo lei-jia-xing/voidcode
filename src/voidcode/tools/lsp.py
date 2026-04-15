@@ -193,12 +193,7 @@ FORMAT_DEFINITION = ToolDefinition(
     ),
     input_schema={
         "type": "object",
-        "properties": {
-            "path": {
-                "type": "string",
-                "description": "Path to the file to format"
-            }
-        },
+        "properties": {"path": {"type": "string", "description": "Path to the file to format"}},
         "required": ["path"],
     },
     read_only=False,
@@ -219,12 +214,12 @@ class FormatTool:
         resolved = self._hooks.resolve_formatter(file_path)
 
         if not resolved:
-                return ToolResult(
-                    tool_name=FORMAT_DEFINITION.name,
-                    status="error",
-                    error=f"No formatter available for {file_path}",
-                    data={"path": str(file_path)},
-                )
+            return ToolResult(
+                tool_name=FORMAT_DEFINITION.name,
+                status="error",
+                error=f"No formatter available for {file_path}",
+                data={"path": str(file_path)},
+            )
 
         lang, preset = resolved
         cwd = self._resolve_formatter_cwd(file_path=file_path, preset=preset)
