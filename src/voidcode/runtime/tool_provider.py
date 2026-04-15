@@ -20,9 +20,11 @@ except ImportError:
     _ApplyPatchTool = None
 
 try:
+    from ..tools.ast_grep import AstGrepPreviewTool as _AstGrepPreviewTool
     from ..tools.ast_grep import AstGrepReplaceTool as _AstGrepReplaceTool
     from ..tools.ast_grep import AstGrepSearchTool as _AstGrepSearchTool
 except ImportError:
+    _AstGrepPreviewTool = None
     _AstGrepReplaceTool = None
     _AstGrepSearchTool = None
 
@@ -74,6 +76,8 @@ class BuiltinToolProvider:
             tools.append(_ApplyPatchTool())
         if _AstGrepSearchTool is not None:
             tools.append(_AstGrepSearchTool())
+        if _AstGrepPreviewTool is not None:
+            tools.append(_AstGrepPreviewTool())
         if _AstGrepReplaceTool is not None:
             tools.append(_AstGrepReplaceTool())
         if _CodeSearchTool is not None:

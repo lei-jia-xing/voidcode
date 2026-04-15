@@ -75,6 +75,77 @@ def _is_no_match_result(completed: subprocess.CompletedProcess[str]) -> bool:
     )
 
 
+def _validate_search_call(call: ToolCall) -> AstGrepSearchArgs:
+    try:
+        return AstGrepSearchArgs.model_validate(
+            {
+                "pattern": call.arguments.get("pattern"),
+                "path": call.arguments.get("path"),
+                "lang": call.arguments.get("lang"),
+            }
+        )
+    except ValidationError as exc:
+        first_error = exc.errors()[0]
+        field_name = first_error.get("loc", (None,))[0]
+        if field_name == "path":
+            raise ValueError("ast_grep_search requires a string path argument") from exc
+        if field_name == "lang":
+            raise ValueError("ast_grep_search requires a string lang argument") from exc
+        if first_error.get("type") == "value_error":
+            raise ValueError("ast_grep_search pattern must not be empty") from exc
+        raise ValueError("ast_grep_search requires a string pattern argument") from exc
+
+
+def _validate_replace_call(call: ToolCall) -> AstGrepReplaceArgs:
+    try:
+        return AstGrepReplaceArgs.model_validate(
+            {
+                "pattern": call.arguments.get("pattern"),
+                "rewrite": call.arguments.get("rewrite"),
+                "path": call.arguments.get("path"),
+                "lang": call.arguments.get("lang"),
+                "apply": call.arguments.get("apply", False),
+            }
+        )
+    except ValidationError as exc:
+        first_error = exc.errors()[0]
+        field_name = first_error.get("loc", (None,))[0]
+        if field_name == "path":
+            raise ValueError("ast_grep_replace requires a string path argument") from exc
+        if field_name == "rewrite":
+            raise ValueError("ast_grep_replace requires a string rewrite argument") from exc
+        if field_name == "lang":
+            raise ValueError("ast_grep_replace requires a string lang argument") from exc
+        if field_name == "apply":
+            raise ValueError("ast_grep_replace apply must be boolean") from exc
+        if first_error.get("type") == "value_error":
+            raise ValueError("ast_grep_replace pattern must not be empty") from exc
+        raise ValueError("ast_grep_replace requires a string pattern argument") from exc
+
+
+def _run_preview_replace(
+    *, args: AstGrepReplaceArgs, workspace: Path
+) -> ToolResult | tuple[str, list[dict[str, Any]], int]:
+    _, relative_path = _resolve_candidate(workspace=workspace, path_text=args.path)
+    preview_cmd = ["ast-grep", "run", "--json=stream", "-p", args.pattern, "-r", args.rewrite]
+    if args.lang:
+        preview_cmd.extend(["--lang", args.lang])
+    preview_cmd.append(relative_path)
+
+    completed = _run_ast_grep(cmd=preview_cmd, workspace=workspace)
+    if isinstance(completed, ToolResult):
+        return completed
+
+    if _is_no_match_result(completed):
+        matches: list[dict[str, Any]] = []
+    else:
+        _raise_on_process_failure(completed=completed, fallback_message="ast-grep replace failed")
+        matches = _parse_stream_output(completed.stdout)
+
+    replacement_count = len(matches)
+    return relative_path, matches, replacement_count
+
+
 class AstGrepSearchTool:
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="ast_grep_search",
@@ -88,25 +159,7 @@ class AstGrepSearchTool:
     )
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
-        try:
-            args = AstGrepSearchArgs.model_validate(
-                {
-                    "pattern": call.arguments.get("pattern"),
-                    "path": call.arguments.get("path"),
-                    "lang": call.arguments.get("lang"),
-                }
-            )
-        except ValidationError as exc:
-            first_error = exc.errors()[0]
-            field_name = first_error.get("loc", (None,))[0]
-            if field_name == "path":
-                raise ValueError("ast_grep_search requires a string path argument") from exc
-            if field_name == "lang":
-                raise ValueError("ast_grep_search requires a string lang argument") from exc
-            if first_error.get("type") == "value_error":
-                raise ValueError("ast_grep_search pattern must not be empty") from exc
-            raise ValueError("ast_grep_search requires a string pattern argument") from exc
-
+        args = _validate_search_call(call)
         _, relative_path = _resolve_candidate(workspace=workspace, path_text=args.path)
         cmd = ["ast-grep", "run", "--json=stream", "-p", args.pattern]
         if args.lang:
@@ -145,10 +198,52 @@ class AstGrepSearchTool:
         )
 
 
+class AstGrepPreviewTool:
+    definition: ClassVar[ToolDefinition] = ToolDefinition(
+        name="ast_grep_preview",
+        description="Preview structural code rewrites with ast-grep without modifying files.",
+        input_schema={
+            "pattern": {"type": "string"},
+            "rewrite": {"type": "string"},
+            "path": {"type": "string"},
+            "lang": {"type": "string"},
+        },
+        read_only=True,
+    )
+
+    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
+        args = _validate_replace_call(call)
+        args = args.model_copy(update={"apply": False})
+
+        preview = _run_preview_replace(args=args, workspace=workspace)
+        if isinstance(preview, ToolResult):
+            return ToolResult(
+                tool_name=self.definition.name,
+                status=preview.status,
+                error=preview.error,
+            )
+        relative_path, matches, replacement_count = preview
+
+        return ToolResult(
+            tool_name=self.definition.name,
+            status="ok",
+            content=f"Previewed {replacement_count} AST replacement(s) in {relative_path}",
+            data={
+                "path": relative_path,
+                "pattern": args.pattern,
+                "rewrite": args.rewrite,
+                "lang": args.lang,
+                "replacement_count": replacement_count,
+                "matches": matches,
+                "applied": False,
+            },
+        )
+
+
 class AstGrepReplaceTool:
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="ast_grep_replace",
-        description="Preview or apply structural code rewrites with ast-grep.",
+        description="Apply structural code rewrites with ast-grep.",
         input_schema={
             "pattern": {"type": "string"},
             "rewrite": {"type": "string"},
@@ -160,110 +255,39 @@ class AstGrepReplaceTool:
     )
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
-        try:
-            args = AstGrepReplaceArgs.model_validate(
-                {
-                    "pattern": call.arguments.get("pattern"),
-                    "rewrite": call.arguments.get("rewrite"),
-                    "path": call.arguments.get("path"),
-                    "lang": call.arguments.get("lang"),
-                    "apply": call.arguments.get("apply", False),
-                }
-            )
-        except ValidationError as exc:
-            first_error = exc.errors()[0]
-            field_name = first_error.get("loc", (None,))[0]
-            if field_name == "path":
-                raise ValueError("ast_grep_replace requires a string path argument") from exc
-            if field_name == "rewrite" and first_error.get("type") == "value_error":
-                raise ValueError("ast_grep_replace rewrite must not be empty") from exc
-            if field_name == "rewrite":
-                raise ValueError("ast_grep_replace requires a string rewrite argument") from exc
-            if field_name == "lang":
-                raise ValueError("ast_grep_replace requires a string lang argument") from exc
-            if field_name == "apply":
-                raise ValueError("ast_grep_replace apply must be boolean") from exc
-            if first_error.get("type") == "value_error":
-                raise ValueError("ast_grep_replace pattern must not be empty") from exc
-            raise ValueError("ast_grep_replace requires a string pattern argument") from exc
+        args = _validate_replace_call(call)
+        if not args.apply:
+            raise ValueError("ast_grep_replace requires apply=True")
 
-        _, relative_path = _resolve_candidate(workspace=workspace, path_text=args.path)
-        preview_cmd = ["ast-grep", "run", "--json=stream", "-p", args.pattern, "-r", args.rewrite]
-        if args.lang:
-            preview_cmd.extend(["--lang", args.lang])
-
-        if args.apply:
-            preview_cmd.append(relative_path)
-            preview_completed = _run_ast_grep(cmd=preview_cmd, workspace=workspace)
-            if isinstance(preview_completed, ToolResult):
-                return ToolResult(
-                    tool_name=self.definition.name,
-                    status=preview_completed.status,
-                    error=preview_completed.error,
-                )
-            if _is_no_match_result(preview_completed):
-                matches: list[dict[str, Any]] = []
-            else:
-                _raise_on_process_failure(
-                    completed=preview_completed, fallback_message="ast-grep replace failed"
-                )
-                matches = _parse_stream_output(preview_completed.stdout)
-
-            replacement_count = len(matches)
-            apply_cmd = ["ast-grep", "run", "-p", args.pattern, "-r", args.rewrite]
-            if args.lang:
-                apply_cmd.extend(["--lang", args.lang])
-            apply_cmd.extend(["-U", relative_path])
-            completed = _run_ast_grep(cmd=apply_cmd, workspace=workspace)
-            if isinstance(completed, ToolResult):
-                return ToolResult(
-                    tool_name=self.definition.name,
-                    status=completed.status,
-                    error=completed.error,
-                )
-            if not _is_no_match_result(completed):
-                _raise_on_process_failure(
-                    completed=completed, fallback_message="ast-grep replace failed"
-                )
+        preview = _run_preview_replace(args=args, workspace=workspace)
+        if isinstance(preview, ToolResult):
             return ToolResult(
                 tool_name=self.definition.name,
-                status="ok",
-                content=f"Applied {replacement_count} AST replacement(s) in {relative_path}",
-                data={
-                    "path": relative_path,
-                    "pattern": args.pattern,
-                    "rewrite": args.rewrite,
-                    "lang": args.lang,
-                    "replacement_count": replacement_count,
-                    "matches": matches,
-                    "applied": True,
-                },
+                status=preview.status,
+                error=preview.error,
             )
+        relative_path, matches, replacement_count = preview
 
-        preview_cmd.append(relative_path)
-
-        completed = _run_ast_grep(cmd=preview_cmd, workspace=workspace)
+        apply_cmd = ["ast-grep", "run", "-p", args.pattern, "-r", args.rewrite]
+        if args.lang:
+            apply_cmd.extend(["--lang", args.lang])
+        apply_cmd.extend(["-U", relative_path])
+        completed = _run_ast_grep(cmd=apply_cmd, workspace=workspace)
         if isinstance(completed, ToolResult):
             return ToolResult(
                 tool_name=self.definition.name,
                 status=completed.status,
                 error=completed.error,
             )
-
-        if _is_no_match_result(completed):
-            matches = []
-        else:
+        if not _is_no_match_result(completed):
             _raise_on_process_failure(
                 completed=completed, fallback_message="ast-grep replace failed"
             )
-            matches = _parse_stream_output(completed.stdout)
 
-        replacement_count = len(matches)
-        action = "Applied" if args.apply else "Previewed"
         return ToolResult(
             tool_name=self.definition.name,
             status="ok",
-            content=f"{action} {replacement_count} AST replacement(s) in {relative_path}",
+            content=f"Applied {replacement_count} AST replacement(s) in {relative_path}",
             data={
                 "path": relative_path,
                 "pattern": args.pattern,
@@ -271,6 +295,6 @@ class AstGrepReplaceTool:
                 "lang": args.lang,
                 "replacement_count": replacement_count,
                 "matches": matches,
-                "applied": args.apply,
+                "applied": True,
             },
         )
