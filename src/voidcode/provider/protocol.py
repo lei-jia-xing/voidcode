@@ -163,9 +163,7 @@ class StubSingleAgentProvider:
             return output
 
         skill_lines = ["[applied skills]"]
-        skill_lines.extend(
-            f"- {skill['name']}: {skill['description']}" for skill in applied_skills
-        )
+        skill_lines.extend(f"- {skill['name']}: {skill['description']}" for skill in applied_skills)
         skill_lines.append("")
         skill_lines.append(output)
         return "\n".join(skill_lines)
