@@ -4,11 +4,11 @@ from pathlib import Path
 
 import pytest
 
-from voidcode.runtime.skills import (
+from voidcode.runtime.skills import SkillRuntimeContext, build_runtime_contexts
+from voidcode.skills import (
     DEFAULT_SKILL_SEARCH_PATHS,
     LocalSkillMetadataLoader,
     SkillRegistry,
-    SkillRuntimeContext,
     parse_skill_frontmatter,
 )
 
@@ -90,7 +90,7 @@ def test_skill_registry_builds_runtime_contexts_from_skill_bodies(tmp_path: Path
 
     registry = SkillRegistry.discover(workspace=tmp_path)
 
-    assert registry.runtime_contexts() == (
+    assert build_runtime_contexts(registry) == (
         SkillRuntimeContext(
             name="summarize",
             description="Summarize selected files.",

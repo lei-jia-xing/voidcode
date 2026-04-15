@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from voidcode.provider.litellm import LiteLLMModelProvider
 from voidcode.provider.models import ResolvedProviderConfig
 from voidcode.provider.registry import ModelProviderRegistry
 from voidcode.provider.resolution import (
@@ -52,6 +53,7 @@ def test_resolve_provider_model_creates_generic_provider_for_unknown_name() -> N
     assert resolved.selection.model == "demo-model"
     assert resolved.provider is not None
     assert resolved.provider.name == "custom"
+    assert isinstance(resolved.provider, LiteLLMModelProvider)
 
 
 def test_resolve_provider_chain_preserves_ordered_fallback_targets() -> None:

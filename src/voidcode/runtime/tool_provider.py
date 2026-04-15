@@ -20,6 +20,15 @@ except ImportError:
     _ApplyPatchTool = None
 
 try:
+    from ..tools.ast_grep import AstGrepPreviewTool as _AstGrepPreviewTool
+    from ..tools.ast_grep import AstGrepReplaceTool as _AstGrepReplaceTool
+    from ..tools.ast_grep import AstGrepSearchTool as _AstGrepSearchTool
+except ImportError:
+    _AstGrepPreviewTool = None
+    _AstGrepReplaceTool = None
+    _AstGrepSearchTool = None
+
+try:
     from ..tools.code_search import CodeSearchTool as _CodeSearchTool
 except ImportError:
     _CodeSearchTool = None
@@ -78,6 +87,12 @@ class BuiltinToolProvider:
         # Add optional tools if available.
         if _ApplyPatchTool is not None:
             tools.append(_ApplyPatchTool())
+        if _AstGrepSearchTool is not None:
+            tools.append(_AstGrepSearchTool())
+        if _AstGrepPreviewTool is not None:
+            tools.append(_AstGrepPreviewTool())
+        if _AstGrepReplaceTool is not None:
+            tools.append(_AstGrepReplaceTool())
         if _CodeSearchTool is not None:
             tools.append(_CodeSearchTool())
         if _MultiEditTool is not None:

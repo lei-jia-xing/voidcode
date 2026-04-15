@@ -6,6 +6,15 @@ from typing import cast
 
 import pytest
 
+from voidcode.provider.config import (
+    AnthropicProviderConfig,
+    CopilotProviderAuthConfig,
+    CopilotProviderConfig,
+    GoogleProviderAuthConfig,
+    GoogleProviderConfig,
+    LiteLLMProviderConfig,
+    OpenAIProviderConfig,
+)
 from voidcode.runtime import config as runtime_config
 from voidcode.runtime.config import (
     APPROVAL_MODE_ENV_VAR,
@@ -18,7 +27,9 @@ from voidcode.runtime.config import (
     RuntimeHooksConfig,
     RuntimeLspConfig,
     RuntimeLspServerConfig,
+    RuntimePlanConfig,
     RuntimeProviderFallbackConfig,
+    RuntimeProvidersConfig,
     RuntimeSkillsConfig,
     RuntimeToolsBuiltinConfig,
     RuntimeToolsConfig,
@@ -329,6 +340,61 @@ def test_runtime_config_parses_extension_domains(tmp_path: Path) -> None:
                     "preferred_model": "opencode/gpt-5.4",
                     "fallback_models": ["opencode/gpt-5.3", "custom/demo"],
                 },
+                "providers": {
+                    "openai": {
+                        "api_key": "openai-inline-key",
+                        "base_url": "https://api.openai.test/v1",
+                        "organization": "org_123",
+                        "project": "proj_123",
+                        "timeout_seconds": 30,
+                    },
+                    "anthropic": {
+                        "api_key": "anthropic-inline-key",
+                        "base_url": "https://api.anthropic.test",
+                        "version": "2023-06-01",
+                        "beta_headers": ["prompt-caching-2024-07-31"],
+                        "timeout_seconds": 45,
+                    },
+                    "google": {
+                        "auth": {
+                            "method": "api_key",
+                            "api_key": "google-inline-key",
+                        },
+                        "base_url": "https://generativelanguage.googleapis.com",
+                        "project": "project-123",
+                        "region": "us-central1",
+                        "timeout_seconds": 20,
+                    },
+                    "copilot": {
+                        "auth": {
+                            "method": "token",
+                            "token": "copilot-inline-token",
+                        },
+                        "base_url": "https://api.githubcopilot.test",
+                        "timeout_seconds": 15,
+                    },
+                    "litellm": {
+                        "api_key": "litellm-inline-key",
+                        "base_url": "http://127.0.0.1:4000",
+                        "auth_scheme": "token",
+                        "auth_header": "X-LiteLLM-Key",
+                        "timeout_seconds": 10,
+                        "model_map": {"gpt-4o": "openrouter/openai/gpt-4o"},
+                    },
+                    "custom": {
+                        "llama-local": {
+                            "base_url": "http://localhost:11434/v1",
+                            "auth_scheme": "none",
+                            "model_map": {"coder": "ollama/qwen2.5-coder:latest"},
+                        }
+                    },
+                },
+                "plan": {
+                    "provider": "custom",
+                    "module": "./.voidcode/plan_extension.py",
+                    "factory": "build",
+                    "options": {"mode": "strict"},
+                },
             }
         ),
         encoding="utf-8",
@@ -354,6 +420,146 @@ def test_runtime_config_parses_extension_domains(tmp_path: Path) -> None:
     assert config.provider_fallback == RuntimeProviderFallbackConfig(
         preferred_model="opencode/gpt-5.4",
         fallback_models=("opencode/gpt-5.3", "custom/demo"),
+    )
+    assert config.providers == RuntimeProvidersConfig(
+        openai=OpenAIProviderConfig(
+            api_key="openai-inline-key",
+            base_url="https://api.openai.test/v1",
+            organization="org_123",
+            project="proj_123",
+            timeout_seconds=30.0,
+        ),
+        anthropic=AnthropicProviderConfig(
+            api_key="anthropic-inline-key",
+            base_url="https://api.anthropic.test",
+            version="2023-06-01",
+            beta_headers=("prompt-caching-2024-07-31",),
+            timeout_seconds=45.0,
+        ),
+        google=GoogleProviderConfig(
+            auth=GoogleProviderAuthConfig(method="api_key", api_key="google-inline-key"),
+            base_url="https://generativelanguage.googleapis.com",
+            project="project-123",
+            region="us-central1",
+            timeout_seconds=20.0,
+        ),
+        copilot=CopilotProviderConfig(
+            auth=CopilotProviderAuthConfig(method="token", token="copilot-inline-token"),
+            base_url="https://api.githubcopilot.test",
+            timeout_seconds=15.0,
+        ),
+        litellm=LiteLLMProviderConfig(
+            api_key="litellm-inline-key",
+            base_url="http://127.0.0.1:4000",
+            auth_scheme="token",
+            auth_header="X-LiteLLM-Key",
+            timeout_seconds=10.0,
+            model_map={"gpt-4o": "openrouter/openai/gpt-4o"},
+        ),
+        custom={
+            "llama-local": LiteLLMProviderConfig(
+                base_url="http://localhost:11434/v1",
+                auth_scheme="none",
+                model_map={"coder": "ollama/qwen2.5-coder:latest"},
+            )
+        },
+    )
+    assert config.plan == RuntimePlanConfig(
+        provider="custom",
+        module="./.voidcode/plan_extension.py",
+        factory="build",
+        options={"mode": "strict"},
+    )
+
+
+def test_runtime_config_providers_use_environment_secrets_when_omitted(tmp_path: Path) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps(
+            {
+                "providers": {
+                    "openai": {},
+                    "anthropic": {},
+                    "google": {"auth": {"method": "api_key"}},
+                    "copilot": {"auth": {"method": "token", "token_env_var": "COPILOT_TOKEN"}},
+                    "litellm": {},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(
+        tmp_path,
+        env={
+            "OPENAI_API_KEY": "openai-env-key",
+            "ANTHROPIC_API_KEY": "anthropic-env-key",
+            "GOOGLE_API_KEY": "google-env-key",
+            "LITELLM_API_KEY": "litellm-env-key",
+            "LITELLM_BASE_URL": "http://localhost:4000",
+        },
+    )
+
+    assert config.providers == RuntimeProvidersConfig(
+        openai=OpenAIProviderConfig(api_key="openai-env-key"),
+        anthropic=AnthropicProviderConfig(api_key="anthropic-env-key"),
+        google=GoogleProviderConfig(
+            auth=GoogleProviderAuthConfig(method="api_key", api_key="google-env-key")
+        ),
+        copilot=CopilotProviderConfig(
+            auth=CopilotProviderAuthConfig(method="token", token_env_var="COPILOT_TOKEN")
+        ),
+        litellm=LiteLLMProviderConfig(
+            api_key="litellm-env-key",
+            base_url="http://localhost:4000",
+            auth_scheme="bearer",
+        ),
+    )
+
+
+def test_runtime_config_providers_prefer_repo_config_over_environment(tmp_path: Path) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps(
+            {
+                "providers": {
+                    "openai": {"api_key": "openai-repo-key"},
+                    "anthropic": {"api_key": "anthropic-repo-key"},
+                    "google": {
+                        "auth": {"method": "api_key", "api_key": "google-repo-key"},
+                    },
+                    "copilot": {
+                        "auth": {"method": "token", "token": "copilot-repo-token"},
+                    },
+                    "litellm": {"api_key": "litellm-repo-key"},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(
+        tmp_path,
+        env={
+            "OPENAI_API_KEY": "openai-env-key",
+            "ANTHROPIC_API_KEY": "anthropic-env-key",
+            "GOOGLE_API_KEY": "google-env-key",
+            "GITHUB_COPILOT_TOKEN": "copilot-env-token",
+            "LITELLM_API_KEY": "litellm-env-key",
+        },
+    )
+
+    assert config.providers == RuntimeProvidersConfig(
+        openai=OpenAIProviderConfig(api_key="openai-repo-key"),
+        anthropic=AnthropicProviderConfig(api_key="anthropic-repo-key"),
+        google=GoogleProviderConfig(
+            auth=GoogleProviderAuthConfig(method="api_key", api_key="google-repo-key")
+        ),
+        copilot=CopilotProviderConfig(
+            auth=CopilotProviderAuthConfig(method="token", token="copilot-repo-token")
+        ),
+        litellm=LiteLLMProviderConfig(
+            api_key="litellm-repo-key",
+            auth_scheme="bearer",
+        ),
     )
 
 
@@ -819,6 +1025,126 @@ def test_runtime_config_rejects_invalid_max_steps(
             },
             "provider fallback chain must not contain duplicate models",
             id="provider-fallback-duplicates",
+        ),
+        pytest.param(
+            {"providers": []},
+            "runtime config field 'providers'",
+            id="providers-shape",
+        ),
+        pytest.param(
+            {"providers": {"unknown": {}}},
+            "runtime config field 'providers.unknown'",
+            id="providers-unknown-provider",
+        ),
+        pytest.param(
+            {"providers": {"openai": []}},
+            "runtime config field 'providers.openai'",
+            id="providers-openai-shape",
+        ),
+        pytest.param(
+            {"providers": {"openai": {"api_key": 1}}},
+            "runtime config field 'providers.openai.api_key'",
+            id="providers-openai-api-key-type",
+        ),
+        pytest.param(
+            {"providers": {"openai": {"timeout_seconds": 0}}},
+            "runtime config field 'providers.openai.timeout_seconds'",
+            id="providers-openai-timeout-invalid",
+        ),
+        pytest.param(
+            {"providers": {"anthropic": {"beta_headers": [False]}}},
+            "runtime config field 'providers.anthropic.beta_headers\\[0\\]'",
+            id="providers-anthropic-beta-header-item-type",
+        ),
+        pytest.param(
+            {"providers": {"google": {"auth": {"method": "invalid"}}}},
+            "runtime config field 'providers.google.auth.method'",
+            id="providers-google-auth-method-invalid",
+        ),
+        pytest.param(
+            {"providers": {"google": {"auth": {"method": "api_key"}}}},
+            "runtime config field 'providers.google.auth.api_key'",
+            id="providers-google-api-key-missing",
+        ),
+        pytest.param(
+            {
+                "providers": {
+                    "google": {"auth": {"method": "oauth", "api_key": "x", "access_token": "y"}}
+                }
+            },
+            "runtime config field 'providers.google.auth.api_key'",
+            id="providers-google-oauth-conflict",
+        ),
+        pytest.param(
+            {
+                "providers": {
+                    "copilot": {"auth": {"method": "token", "token": "a", "token_env_var": "TOKEN"}}
+                }
+            },
+            (
+                "runtime config field 'providers.copilot.auth.token'.*"
+                "runtime config field 'providers.copilot.auth.token_env_var'"
+            ),
+            id="providers-copilot-token-conflict",
+        ),
+        pytest.param(
+            {
+                "providers": {
+                    "copilot": {"auth": {"method": "token", "token": "a", "refresh_token": "b"}}
+                }
+            },
+            "runtime config field 'providers.copilot.auth.refresh_token'",
+            id="providers-copilot-refresh-token-invalid-for-token-method",
+        ),
+        pytest.param(
+            {
+                "providers": {
+                    "copilot": {
+                        "auth": {
+                            "method": "oauth",
+                            "token_env_var": "TOKEN",
+                            "refresh_leeway_seconds": 0,
+                        }
+                    }
+                }
+            },
+            "runtime config field 'providers.copilot.auth.refresh_leeway_seconds'",
+            id="providers-copilot-refresh-leeway-invalid",
+        ),
+        pytest.param(
+            {"providers": {"litellm": {"auth_scheme": "oauth"}}},
+            "runtime config field 'providers.litellm.auth_scheme'",
+            id="providers-litellm-auth-scheme-invalid",
+        ),
+        pytest.param(
+            {"providers": {"litellm": {"model_map": {"gpt-4o": 4}}}},
+            "runtime config field 'providers.litellm.model_map.gpt-4o'",
+            id="providers-litellm-model-map-value-invalid",
+        ),
+        pytest.param(
+            {"plan": []},
+            "runtime config field 'plan'",
+            id="plan-shape",
+        ),
+        pytest.param(
+            {"plan": {"provider": ""}},
+            "runtime config field 'plan.provider'",
+            id="plan-provider-empty",
+        ),
+        pytest.param(
+            {"plan": {"module": ""}},
+            "runtime config field 'plan.module'",
+            id="plan-module-empty",
+        ),
+        pytest.param(
+            {"plan": {"factory": ""}},
+            "runtime config field 'plan.factory'",
+            id="plan-factory-empty",
+        ),
+        pytest.param(
+            {"plan": {"options": []}},
+            "runtime config field 'plan.options'",
+            id="plan-options-shape",
         ),
         pytest.param({"acp": []}, "runtime config field 'acp'", id="acp-shape"),
         pytest.param(

@@ -19,8 +19,11 @@ from ..provider import config as provider_config
 from .permission import PermissionDecision
 
 RuntimeProviderFallbackConfig = provider_config.ProviderFallbackConfig
+RuntimeProvidersConfig = provider_config.ProviderConfigs
 parse_provider_fallback_payload = provider_config.parse_provider_fallback_payload
+parse_provider_configs_payload = provider_config.parse_provider_configs_payload
 serialize_provider_fallback_config = provider_config.serialize_provider_fallback_config
+serialize_provider_configs = provider_config.serialize_provider_configs
 
 RUNTIME_CONFIG_FILE_NAME = ".voidcode.json"
 APPROVAL_MODE_ENV_VAR = "VOIDCODE_APPROVAL_MODE"
@@ -140,6 +143,14 @@ class RuntimeTuiConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class RuntimePlanConfig:
+    provider: str | None = None
+    module: str | None = None
+    factory: str | None = None
+    options: Mapping[str, object] | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class RuntimeConfig:
     approval_mode: PermissionDecision = "ask"
     model: str | None = None
@@ -153,6 +164,8 @@ class RuntimeConfig:
     mcp: RuntimeMcpConfig | None = None
     tui: RuntimeTuiConfig | None = None
     provider_fallback: RuntimeProviderFallbackConfig | None = None
+    providers: RuntimeProvidersConfig | None = None
+    plan: RuntimePlanConfig | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,6 +182,8 @@ class RuntimeConfigOverrides:
     mcp: RuntimeMcpConfig | None = None
     tui: RuntimeTuiConfig | None = None
     provider_fallback: RuntimeProviderFallbackConfig | None = None
+    providers: RuntimeProvidersConfig | None = None
+    plan: RuntimePlanConfig | None = None
 
 
 def runtime_config_path(workspace: Path) -> Path:
@@ -185,29 +200,30 @@ def load_runtime_config(
     env: Mapping[str, str] | None = None,
 ) -> RuntimeConfig:
     resolved_workspace = workspace.resolve()
-    repo_local = _load_repo_local_config(resolved_workspace)
-    environment = _load_environment_runtime_config(env)
+    environment: Mapping[str, str] = os.environ if env is None else env
+    env_overrides = _load_environment_runtime_config(environment)
+    repo_local = _load_repo_local_config(resolved_workspace, env=environment)
 
     return RuntimeConfig(
         approval_mode=_resolve_approval_mode(
             explicit=approval_mode,
             repo_local=repo_local.approval_mode,
-            environment=environment.approval_mode,
+            environment=env_overrides.approval_mode,
         ),
         model=_resolve_model(
             explicit=model,
             repo_local=repo_local.model,
-            environment=environment.model,
+            environment=env_overrides.model,
         ),
         execution_engine=_resolve_execution_engine(
             explicit=execution_engine,
             repo_local=repo_local.execution_engine,
-            environment=environment.execution_engine,
+            environment=env_overrides.execution_engine,
         ),
         max_steps=_resolve_max_steps(
             explicit=max_steps,
             repo_local=repo_local.max_steps,
-            environment=environment.max_steps,
+            environment=env_overrides.max_steps,
         ),
         hooks=repo_local.hooks,
         tools=repo_local.tools,
@@ -217,10 +233,16 @@ def load_runtime_config(
         mcp=repo_local.mcp,
         tui=repo_local.tui,
         provider_fallback=repo_local.provider_fallback,
+        providers=repo_local.providers,
+        plan=repo_local.plan,
     )
 
 
-def _load_repo_local_config(workspace: Path) -> RuntimeConfigOverrides:
+def _load_repo_local_config(
+    workspace: Path,
+    *,
+    env: Mapping[str, str],
+) -> RuntimeConfigOverrides:
     config_path = runtime_config_path(workspace)
     if not config_path.exists():
         return RuntimeConfigOverrides()
@@ -276,6 +298,12 @@ def _load_repo_local_config(workspace: Path) -> RuntimeConfigOverrides:
     raw_provider_fallback = payload.get("provider_fallback")
     provider_fallback = _parse_provider_fallback_config(raw_provider_fallback)
 
+    raw_providers = payload.get("providers")
+    providers = _parse_providers_config(raw_providers, env=env)
+
+    raw_plan = payload.get("plan")
+    plan = _parse_plan_config(raw_plan)
+
     raw_approval_mode = payload.get("approval_mode")
     parsed_approval_mode = _parse_approval_mode(
         raw_approval_mode,
@@ -296,6 +324,8 @@ def _load_repo_local_config(workspace: Path) -> RuntimeConfigOverrides:
         mcp=mcp,
         tui=tui,
         provider_fallback=provider_fallback,
+        providers=providers,
+        plan=plan,
     )
 
 
@@ -801,6 +831,62 @@ def _parse_tui_config(raw_tui: object) -> RuntimeTuiConfig | None:
     )
 
 
+def _parse_plan_config(raw_plan: object) -> RuntimePlanConfig | None:
+    if raw_plan is None:
+        return None
+    if not isinstance(raw_plan, dict):
+        raise ValueError("runtime config field 'plan' must be an object when provided")
+
+    payload = cast(dict[str, object], raw_plan)
+    provider = payload.get("provider")
+    if provider is not None and (not isinstance(provider, str) or not provider.strip()):
+        raise ValueError("runtime config field 'plan.provider' must be a non-empty string")
+
+    module = payload.get("module")
+    if module is not None and (not isinstance(module, str) or not module.strip()):
+        raise ValueError("runtime config field 'plan.module' must be a non-empty string")
+
+    factory = payload.get("factory")
+    if factory is not None and (not isinstance(factory, str) or not factory.strip()):
+        raise ValueError("runtime config field 'plan.factory' must be a non-empty string")
+
+    options = payload.get("options")
+    parsed_options: Mapping[str, object] | None = None
+    if options is not None:
+        if not isinstance(options, dict):
+            raise ValueError("runtime config field 'plan.options' must be an object when provided")
+        parsed_options = cast(dict[str, object], options)
+
+    return RuntimePlanConfig(
+        provider=provider,
+        module=module,
+        factory=factory,
+        options=parsed_options,
+    )
+
+
+def parse_runtime_plan_payload(raw_plan: object, *, source: str) -> RuntimePlanConfig | None:
+    try:
+        return _parse_plan_config(raw_plan)
+    except ValueError as exc:
+        raise ValueError(f"{source}: {exc}") from exc
+
+
+def serialize_runtime_plan_config(plan: RuntimePlanConfig | None) -> dict[str, object] | None:
+    if plan is None:
+        return None
+    payload: dict[str, object] = {}
+    if plan.provider is not None:
+        payload["provider"] = plan.provider
+    if plan.module is not None:
+        payload["module"] = plan.module
+    if plan.factory is not None:
+        payload["factory"] = plan.factory
+    if plan.options is not None:
+        payload["options"] = dict(plan.options)
+    return payload
+
+
 def _parse_runtime_config_section[TConfig, TModel: BaseModel](
     raw_value: object,
     *,
@@ -825,6 +911,18 @@ def _parse_provider_fallback_config(
     return parse_provider_fallback_payload(
         raw_provider_fallback,
         source="runtime config field 'provider_fallback'",
+    )
+
+
+def _parse_providers_config(
+    raw_providers: object,
+    *,
+    env: Mapping[str, str],
+) -> RuntimeProvidersConfig | None:
+    return parse_provider_configs_payload(
+        raw_providers,
+        source="runtime config field 'providers'",
+        env=env,
     )
 
 

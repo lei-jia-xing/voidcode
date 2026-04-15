@@ -69,3 +69,63 @@ class MultiEditArgs(BaseModel):
         if not value:
             raise ValueError("edits must not be empty")
         return value
+
+
+class AstGrepSearchArgs(BaseModel):
+    pattern: str
+    path: str
+    lang: str | None = None
+
+    @field_validator("pattern", mode="after")
+    @classmethod
+    def _validate_pattern(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("pattern must not be empty")
+        return value
+
+    @field_validator("path", mode="after")
+    @classmethod
+    def _validate_path(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("path must be a non-empty string")
+        return value
+
+    @field_validator("lang", mode="after")
+    @classmethod
+    def _validate_lang(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if not value.strip():
+            raise ValueError("lang must not be empty")
+        return value
+
+
+class AstGrepReplaceArgs(BaseModel):
+    pattern: str
+    rewrite: str
+    path: str
+    lang: str | None = None
+    apply: bool = False
+
+    @field_validator("pattern", mode="after")
+    @classmethod
+    def _validate_pattern(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("pattern must not be empty")
+        return value
+
+    @field_validator("path", mode="after")
+    @classmethod
+    def _validate_path(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("path must be a non-empty string")
+        return value
+
+    @field_validator("lang", mode="after")
+    @classmethod
+    def _validate_lang(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if not value.strip():
+            raise ValueError("lang must not be empty")
+        return value

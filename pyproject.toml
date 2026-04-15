@@ -34,6 +34,7 @@ dependencies = [
   "typing-extensions",
   "textual",
   "httpx",
+  "litellm>=1.82.6",
   "uvicorn",
   "rapidfuzz>=3.14.5",
   "unidiff>=0.7.5",
@@ -42,6 +43,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
   "basedpyright",
+  "hypothesis",
   "pre-commit",
   "pytest",
   "pytest-cov",

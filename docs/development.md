@@ -44,6 +44,8 @@ uv run voidcode sessions resume <session-id> --workspace .
 - `mise run typecheck` → `uv run basedpyright --warnings src`
 - `mise run test` → `uv run pytest`
 
+Python 测试现在同时包含示例型测试和一小批基于 Hypothesis 的 property tests。当前这类覆盖刻意保持在 helper 层，主要用于验证像 `apply_patch`、`edit`、`todo_write`、`glob` 这类确定性字符串/patch/summary/路径规范化逻辑，而不是直接对 runtime 主循环做随机化测试。为了让 CI 行为稳定，这批测试使用有界 strategy，并通过 Hypothesis 设置保持可重复的 deterministic 运行。
+
 ### 前端 任务
 
 - `mise run frontend:install` → `bun install`
@@ -57,6 +59,8 @@ uv run voidcode sessions resume <session-id> --workspace .
 
 - `mise run check` → 运行所有 Python 和前端检查
 - `mise run pre-commit` → `uv run pre-commit run --all-files`
+
+当前 pre-commit 会直接执行仓库约定的 Python 质量门禁：`ruff check --fix` 会自动修复可安全修复的问题，`ruff format` 会直接格式化文件，随后再运行 `basedpyright` 做类型检查。
 
 ## MVP 演示与验证
 

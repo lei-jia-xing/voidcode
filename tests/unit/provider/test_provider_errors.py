@@ -5,6 +5,10 @@ from voidcode.provider.errors import (
     classify_provider_error,
     format_fallback_exhausted_error,
     format_invalid_provider_config_error,
+    parse_provider_api_error,
+    parse_provider_stream_error,
+    provider_execution_error_from_api_payload,
+    provider_execution_error_from_stream_payload,
 )
 
 
@@ -38,3 +42,74 @@ def test_format_fallback_exhausted_error_includes_provider_model_and_attempt() -
         )
         == "provider fallback exhausted after opencode/gpt-5.4 failed at attempt 2"
     )
+
+
+def test_parse_provider_api_error_maps_429_to_rate_limit() -> None:
+    parsed = parse_provider_api_error(
+        {
+            "status_code": 429,
+            "error": {"message": "Too many requests", "code": "rate_limit_exceeded"},
+        }
+    )
+
+    assert parsed.kind == "rate_limit"
+    assert parsed.message == "Too many requests"
+    assert parsed.details["source"] == "api"
+
+
+def test_parse_provider_api_error_maps_401_to_invalid_model() -> None:
+    parsed = parse_provider_api_error({"status_code": 401, "message": "Unauthorized"})
+
+    assert parsed.kind == "invalid_model"
+
+
+def test_parse_provider_api_error_maps_context_overflow_patterns() -> None:
+    parsed = parse_provider_api_error(
+        {
+            "status_code": 400,
+            "message": "Input exceeds context window of this model",
+        }
+    )
+
+    assert parsed.kind == "context_limit"
+
+
+def test_parse_provider_stream_error_maps_context_length_exceeded_code() -> None:
+    parsed = parse_provider_stream_error(
+        {
+            "type": "error",
+            "error": {
+                "code": "context_length_exceeded",
+                "message": "input token count exceeds the maximum",
+            },
+        }
+    )
+
+    assert parsed.kind == "context_limit"
+    assert parsed.details["source"] == "stream"
+
+
+def test_provider_execution_error_from_api_payload_preserves_details() -> None:
+    exc = provider_execution_error_from_api_payload(
+        provider_name="openai",
+        model_name="gpt-5.4",
+        payload={"status_code": 503, "message": "upstream unavailable"},
+    )
+
+    assert exc.kind == "transient_failure"
+    assert exc.details is not None
+    assert exc.details["status_code"] == 503
+    assert exc.details["source"] == "api"
+
+
+def test_provider_execution_error_from_stream_payload_preserves_details() -> None:
+    exc = provider_execution_error_from_stream_payload(
+        provider_name="openai",
+        model_name="gpt-5.4",
+        payload={"status_code": 403, "message": "forbidden"},
+    )
+
+    assert exc.kind == "invalid_model"
+    assert exc.details is not None
+    assert exc.details["status_code"] == 403
+    assert exc.details["source"] == "stream"

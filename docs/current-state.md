@@ -40,8 +40,8 @@
 - [x] **Provider-backed execution engine 路径**：运行时已经具备 provider fallback、context window 管理、approval resume 连续性与可配置 step budget 的运行时治理基础。
 - [ ] **预定义 agent / multi-agent 边界**：未来将引入专门的 `src/voidcode/agent/` 边界来承载预定义 agent 的 prompt / hook / skill / MCP / tool / provider 配置；当前仓库尚未实现 multi-agent 执行语义。
 - [ ] **技能执行**：skill discovery 与 `runtime.skills_loaded` 事件已经完成，但运行时仍未执行技能逻辑，也尚未提供特定于技能的工具上下文。
-- [ ] **LSP preset/config 模块与 ACP 真实集成**：LSP 的只读 runtime-managed 基线已经存在，且 `src/voidcode/lsp/`、`src/voidcode/acp/` 等能力层边界目录已补齐文档，但仍缺少独立的 server preset/config 模块（extension/language 映射、root markers、默认 command、preset override merge）；ACP 也仍待真实传输与生命周期集成。
-- [ ] **长会话保留策略**：`#70` 已完成 waiting / terminal session 的内部 resume checkpoint groundwork，`#82` 也已经完成 retention / compaction / checkpoint invalidation 语义定义；当前 runtime 主线的直接后续工作转为 `#83`（corrupt / unreadable checkpoint fallback correctness）和 `#84`（cold-session archive / replay strategy）。
+- [ ] **ACP 真实集成**：LSP 的只读 runtime-managed 基线与独立 preset/config 模块已经存在，且 `src/voidcode/lsp/`、`src/voidcode/acp/` 等能力层边界目录已补齐文档；当前未完成的主要缺口转为 ACP 的真实传输与生命周期集成。
+- [ ] **下一批 runtime / tooling 主线 issue**：`#70`、`#82`、`#83` 与 `#84` 已经完成，因此“当前下一步”不再是 checkpoint fallback / archive 主线；更接近当前 open backlog 的工作转为 `#100`（TUI parity）、`#120`（formatter-aware edit）、`#122`（runtime capability doctor）、`#111`（LSP presets/defaults）与 `#110`（formatter presets/defaults）。
 - [~] **TUI 客户端**：已具备提示词输入和审批处理的初始实现，但会话管理、恢复/重放与规范冒烟验证仍未收口，当前优先级也已下调。
 - [x] **Web 客户端集成**：已接入真实的会话列表、会话重放、流式运行和审批处理路径，并具备真实 store/client 闭环验证。
 

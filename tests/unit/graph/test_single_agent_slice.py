@@ -9,6 +9,8 @@ from voidcode.provider.resolution import resolve_provider_model
 from voidcode.runtime.context_window import RuntimeContextWindow
 from voidcode.runtime.session import SessionRef, SessionState
 from voidcode.runtime.single_agent_provider import (
+    ProviderExecutionError,
+    ProviderStreamEvent,
     SingleAgentTurnRequest,
     SingleAgentTurnResult,
     StubSingleAgentProvider,
@@ -36,6 +38,93 @@ class _CapturingSingleAgentProvider:
     def propose_turn(self, request: SingleAgentTurnRequest) -> SingleAgentTurnResult:
         self.requests.append(request)
         return SingleAgentTurnResult(output="done")
+
+
+class _StreamOutputSingleAgentProvider:
+    name = "opencode"
+    stream_calls: int
+    propose_calls: int
+
+    def __init__(self) -> None:
+        self.stream_calls = 0
+        self.propose_calls = 0
+
+    def propose_turn(self, request: SingleAgentTurnRequest) -> SingleAgentTurnResult:
+        _ = request
+        self.propose_calls += 1
+        return SingleAgentTurnResult(output="stream-final")
+
+    def stream_turn(self, request: SingleAgentTurnRequest):
+        _ = request
+        self.stream_calls += 1
+        return iter(
+            (
+                ProviderStreamEvent(kind="delta", channel="text", text="stream-"),
+                ProviderStreamEvent(kind="delta", channel="text", text="final"),
+                ProviderStreamEvent(kind="done", done_reason="completed"),
+            )
+        )
+
+
+class _StreamErrorSingleAgentProvider:
+    name = "opencode"
+
+    def propose_turn(self, request: SingleAgentTurnRequest) -> SingleAgentTurnResult:
+        _ = request
+        return SingleAgentTurnResult(output="fallback")
+
+    def stream_turn(self, request: SingleAgentTurnRequest):
+        _ = request
+        return iter(
+            (
+                ProviderStreamEvent(
+                    kind="error",
+                    channel="error",
+                    error="network interrupted",
+                    error_kind="transient_failure",
+                ),
+                ProviderStreamEvent(kind="done", done_reason="error"),
+            )
+        )
+
+
+class _StreamNoTextDoneSingleAgentProvider:
+    name = "opencode"
+
+    def __init__(self) -> None:
+        self.stream_calls = 0
+        self.propose_calls = 0
+
+    def propose_turn(self, request: SingleAgentTurnRequest) -> SingleAgentTurnResult:
+        _ = request
+        self.propose_calls += 1
+        return SingleAgentTurnResult(output="should-not-be-used")
+
+    def stream_turn(self, request: SingleAgentTurnRequest):
+        _ = request
+        self.stream_calls += 1
+        return iter((ProviderStreamEvent(kind="done", done_reason="completed"),))
+
+
+class _StreamToolSingleAgentProvider:
+    name = "opencode"
+
+    def propose_turn(self, request: SingleAgentTurnRequest) -> SingleAgentTurnResult:
+        _ = request
+        return SingleAgentTurnResult(output="should-not-be-used")
+
+    def stream_turn(self, request: SingleAgentTurnRequest):
+        _ = request
+        return iter(
+            (
+                ProviderStreamEvent(
+                    kind="content",
+                    channel="tool",
+                    text='{"tool_name":"read_file","arguments":{"path":"sample.txt"}}',
+                ),
+                ProviderStreamEvent(kind="done", done_reason="completed"),
+            )
+        )
 
 
 def test_provider_single_agent_graph_requests_tool_on_first_turn() -> None:
@@ -71,6 +160,7 @@ def test_provider_single_agent_graph_requests_tool_on_first_turn() -> None:
         "provider": "opencode",
         "model": "gpt-5.4",
         "attempt": 0,
+        "streaming": False,
         "prompt": "read sample.txt",
     }
 
@@ -129,6 +219,7 @@ def test_provider_single_agent_graph_finalizes_after_tool_result() -> None:
         "provider": "opencode",
         "model": "gpt-5.4",
         "attempt": 0,
+        "streaming": False,
         "prompt": "read sample.txt",
     }
     assert step.events[2].payload == {"step": 3, "phase": "finalize", "max_steps": 4}
@@ -246,5 +337,117 @@ def test_provider_single_agent_graph_enforces_configured_max_steps() -> None:
                     data={"path": "sample.txt", "content": "alpha\n"},
                 ),
             ),
+            session=_session(),
+        )
+
+
+def test_provider_single_agent_graph_streams_ordered_events_and_deterministic_output() -> None:
+    provider_model = resolve_provider_model(
+        "opencode/gpt-5.4",
+        registry=ModelProviderRegistry.with_defaults(),
+    )
+    graph = ProviderSingleAgentGraph(
+        provider=_StreamOutputSingleAgentProvider(),
+        provider_model=provider_model,
+    )
+
+    step = graph.step(
+        request=GraphRunRequest(
+            session=_session(),
+            prompt="read sample.txt",
+            available_tools=_tool_definitions(),
+            context_window=RuntimeContextWindow(prompt="read sample.txt"),
+            metadata={"provider_stream": True},
+        ),
+        tool_results=(),
+        session=_session(),
+    )
+
+    assert step.is_finished is True
+    assert step.output == "stream-final"
+    stream_events = [event for event in step.events if event.event_type == "graph.provider_stream"]
+    assert [event.payload["kind"] for event in stream_events] == ["delta", "delta", "done"]
+    model_turn_events = [event for event in step.events if event.event_type == "graph.model_turn"]
+    assert model_turn_events
+    assert model_turn_events[0].payload["streaming"] is True
+
+
+def test_provider_single_agent_graph_stream_done_without_text_does_not_fallback_propose_turn() -> (
+    None
+):
+    provider_model = resolve_provider_model(
+        "opencode/gpt-5.4",
+        registry=ModelProviderRegistry.with_defaults(),
+    )
+    provider = _StreamNoTextDoneSingleAgentProvider()
+    graph = ProviderSingleAgentGraph(provider=provider, provider_model=provider_model)
+
+    step = graph.step(
+        request=GraphRunRequest(
+            session=_session(),
+            prompt="read sample.txt",
+            available_tools=_tool_definitions(),
+            context_window=RuntimeContextWindow(prompt="read sample.txt"),
+            metadata={"provider_stream": True},
+        ),
+        tool_results=(),
+        session=_session(),
+    )
+
+    assert step.is_finished is True
+    assert step.output == ""
+    assert provider.stream_calls == 1
+    assert provider.propose_calls == 0
+
+
+def test_provider_single_agent_graph_returns_streamed_tool_call() -> None:
+    provider_model = resolve_provider_model(
+        "opencode/gpt-5.4",
+        registry=ModelProviderRegistry.with_defaults(),
+    )
+    graph = ProviderSingleAgentGraph(
+        provider=_StreamToolSingleAgentProvider(),
+        provider_model=provider_model,
+    )
+
+    step = graph.step(
+        request=GraphRunRequest(
+            session=_session(),
+            prompt="read sample.txt",
+            available_tools=_tool_definitions(),
+            context_window=RuntimeContextWindow(prompt="read sample.txt"),
+            metadata={"provider_stream": True},
+        ),
+        tool_results=(),
+        session=_session(),
+    )
+
+    assert step.is_finished is False
+    assert step.output is None
+    assert step.tool_call is not None
+    assert step.tool_call.tool_name == "read_file"
+    assert step.tool_call.arguments == {"path": "sample.txt"}
+
+
+def test_provider_single_agent_graph_stream_error_maps_to_provider_execution_error() -> None:
+    provider_model = resolve_provider_model(
+        "opencode/gpt-5.4",
+        registry=ModelProviderRegistry.with_defaults(),
+    )
+    graph = ProviderSingleAgentGraph(
+        provider=_StreamErrorSingleAgentProvider(),
+        provider_model=provider_model,
+    )
+
+    with pytest.raises(ProviderExecutionError, match="network interrupted"):
+        _ = graph.step(
+            request=GraphRunRequest(
+                session=_session(),
+                prompt="read sample.txt",
+                available_tools=_tool_definitions(),
+                context_window=RuntimeContextWindow(prompt="read sample.txt"),
+                metadata={"provider_stream": True},
+            ),
+            tool_results=(),
             session=_session(),
         )

@@ -21,6 +21,9 @@ from voidcode.runtime.service import (
 )
 from voidcode.runtime.tool_provider import BuiltinToolProvider
 from voidcode.tools import (
+    AstGrepPreviewTool,
+    AstGrepReplaceTool,
+    AstGrepSearchTool,
     CodeSearchTool,
     EditTool,
     GlobTool,
@@ -146,6 +149,9 @@ def test_builtin_tool_provider_returns_expected_builtin_tools() -> None:
         ListTool,
         ReadFileTool,
         ShellExecTool,
+        AstGrepSearchTool,
+        AstGrepPreviewTool,
+        AstGrepReplaceTool,
         WebFetchTool,
         WebSearchTool,
         WriteFileTool,
@@ -211,7 +217,15 @@ def test_tool_registry_accepts_tools_from_provider_output() -> None:
         assert registry.resolve(tool_name).definition.name == tool_name
 
     # Optional tools
-    optional_tools = {"apply_patch", "code_search", "multi_edit", "todo_write"}
+    optional_tools = {
+        "apply_patch",
+        "ast_grep_search",
+        "ast_grep_preview",
+        "ast_grep_replace",
+        "code_search",
+        "multi_edit",
+        "todo_write",
+    }
     for tool_name in optional_tools:
         if tool_name in registry.tools:
             assert registry.resolve(tool_name).definition.name == tool_name
@@ -248,7 +262,15 @@ def test_tool_registry_with_defaults_delegates_through_builtin_provider() -> Non
         assert registry.resolve(tool_name) is provided_tools[i]
 
     # Verify optional tools if present
-    optional_tools = ["apply_patch", "code_search", "multi_edit", "todo_write"]
+    optional_tools = [
+        "apply_patch",
+        "ast_grep_search",
+        "ast_grep_preview",
+        "ast_grep_replace",
+        "code_search",
+        "multi_edit",
+        "todo_write",
+    ]
     for tool_name in optional_tools:
         if tool_name in registry.tools:
             assert registry.resolve(tool_name) is not None
@@ -416,5 +438,8 @@ def test_runtime_default_registry_behavior_remains_unchanged(tmp_path: Path) -> 
 
 def test_tools_package_exports_code_search_tool() -> None:
     tools_module = __import__("voidcode.tools", fromlist=["__all__"])
+    assert "AstGrepSearchTool" in tools_module.__all__
+    assert "AstGrepPreviewTool" in tools_module.__all__
+    assert "AstGrepReplaceTool" in tools_module.__all__
     assert "CodeSearchTool" in tools_module.__all__
     assert "McpTool" in tools_module.__all__

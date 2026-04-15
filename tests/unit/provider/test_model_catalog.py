@@ -1,0 +1,320 @@
+from __future__ import annotations
+
+import json
+from types import TracebackType
+from typing import cast
+from urllib.request import Request
+
+import pytest
+
+from voidcode.provider import model_catalog
+from voidcode.provider.config import LiteLLMProviderConfig
+from voidcode.provider.model_catalog import DiscoveryRequest, discover_available_models
+
+
+def test_discover_available_models_combines_alias_discovery_and_targets() -> None:
+    config = LiteLLMProviderConfig(
+        model_map={
+            "alias-a": "provider/model-a",
+            "alias-b": "provider/model-b",
+        }
+    )
+
+    models = discover_available_models(
+        "litellm",
+        config,
+        fetcher=lambda _request: ("provider/model-a", "provider/model-c"),
+    )
+
+    assert models.models == (
+        "alias-a",
+        "alias-b",
+        "provider/model-a",
+        "provider/model-c",
+        "provider/model-b",
+    )
+    assert models.source in {"remote", "mixed"}
+
+
+def test_discover_available_models_for_openai_uses_endpoint_fetcher() -> None:
+    captured: list[DiscoveryRequest] = []
+
+    def _fetcher(request: DiscoveryRequest) -> tuple[str, ...]:
+        captured.append(request)
+        return ("gpt-4o",)
+
+    config = LiteLLMProviderConfig(api_key="sk-test")
+    models = discover_available_models("openai", config, fetcher=_fetcher)
+
+    assert models.models == ("gpt-4o",)
+    assert len(captured) == 1
+    assert captured[0].provider == "openai"
+    assert captured[0].base_url == "https://api.openai.com"
+    assert captured[0].headers == {"Authorization": "Bearer sk-test"}
+    assert captured[0].timeout_seconds == 10.0
+
+
+def test_discover_available_models_for_anthropic_uses_provider_specific_headers() -> None:
+    captured: list[DiscoveryRequest] = []
+
+    def _fetcher(request: DiscoveryRequest) -> tuple[str, ...]:
+        captured.append(request)
+        return ("claude-3-7-sonnet-latest",)
+
+    config = LiteLLMProviderConfig(api_key="sk-ant-test")
+    models = discover_available_models("anthropic", config, fetcher=_fetcher)
+
+    assert models.models == ("claude-3-7-sonnet-latest",)
+    assert len(captured) == 1
+    assert captured[0].provider == "anthropic"
+    assert captured[0].base_url == "https://api.anthropic.com"
+    assert captured[0].headers == {
+        "anthropic-version": "2023-06-01",
+        "x-api-key": "sk-ant-test",
+    }
+
+
+def test_discover_available_models_for_google_uses_google_base_url() -> None:
+    captured: list[DiscoveryRequest] = []
+
+    def _fetcher(request: DiscoveryRequest) -> tuple[str, ...]:
+        captured.append(request)
+        return ("gemini-2.0-flash",)
+
+    config = LiteLLMProviderConfig(api_key="AIza-test")
+    models = discover_available_models("google", config, fetcher=_fetcher)
+
+    assert models.models == ("gemini-2.0-flash",)
+    assert len(captured) == 1
+    assert captured[0].provider == "google"
+    assert captured[0].base_url == "https://generativelanguage.googleapis.com"
+    assert captured[0].api_key == "AIza-test"
+    assert captured[0].headers == {"x-goog-api-key": "AIza-test"}
+
+
+def test_discover_available_models_for_google_with_api_key_header_does_not_append_key_query_param(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class _Response:
+        def __enter__(self) -> _Response:
+            return self
+
+        def __exit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            tb: TracebackType | None,
+        ) -> bool:
+            return False
+
+        def read(self) -> bytes:
+            return json.dumps({"models": [{"name": "models/gemini-2.0-flash"}]}).encode("utf-8")
+
+    def _fake_urlopen(request: Request, timeout: float) -> _Response:
+        captured["url"] = request.full_url
+        captured["timeout"] = timeout
+        captured["headers"] = {
+            str(key).lower(): str(value) for key, value in dict(request.header_items()).items()
+        }
+        return _Response()
+
+    monkeypatch.setattr(model_catalog, "urlopen", _fake_urlopen)
+
+    result = discover_available_models(
+        "google",
+        LiteLLMProviderConfig(
+            base_url="https://generativelanguage.googleapis.com",
+            api_key="AIza-test",
+            auth_header="x-goog-api-key",
+            auth_scheme="token",
+        ),
+    )
+
+    assert result.models == ("gemini-2.0-flash",)
+    assert captured["url"] == "https://generativelanguage.googleapis.com/v1beta/models"
+    headers = cast(dict[str, str], captured["headers"])
+    assert headers["x-goog-api-key"] == "AIza-test"
+
+
+def test_discover_available_models_for_google_with_oauth_header_does_not_append_key_query_param(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class _Response:
+        def __enter__(self) -> _Response:
+            return self
+
+        def __exit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            tb: TracebackType | None,
+        ) -> bool:
+            return False
+
+        def read(self) -> bytes:
+            return json.dumps({"models": [{"name": "models/gemini-2.0-flash"}]}).encode("utf-8")
+
+    def _fake_urlopen(request: Request, timeout: float) -> _Response:
+        captured["url"] = request.full_url
+        captured["timeout"] = timeout
+        return _Response()
+
+    monkeypatch.setattr(model_catalog, "urlopen", _fake_urlopen)
+
+    result = discover_available_models(
+        "google",
+        LiteLLMProviderConfig(
+            base_url="https://generativelanguage.googleapis.com",
+            api_key="oauth-token",
+            auth_header="Authorization",
+            auth_scheme="bearer",
+        ),
+    )
+
+    assert result.models == ("gemini-2.0-flash",)
+    assert captured["url"] == "https://generativelanguage.googleapis.com/v1beta/models"
+
+
+def test_discover_available_models_marks_fallback_on_fetch_failure() -> None:
+    config = LiteLLMProviderConfig(model_map={"alias": "provider/model"})
+
+    def _failing_fetcher(_request: DiscoveryRequest) -> tuple[str, ...]:
+        raise TimeoutError("timed out")
+
+    result = discover_available_models("openai", config, fetcher=_failing_fetcher)
+
+    assert result.models == ("alias", "provider/model")
+    assert result.source == "fallback"
+    assert result.last_refresh_status == "failed"
+    assert result.last_error == "remote model discovery failed"
+
+
+def test_discover_available_models_custom_provider_builds_url_from_plain_base_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class _Response:
+        def __enter__(self) -> _Response:
+            return self
+
+        def __exit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            tb: TracebackType | None,
+        ) -> bool:
+            return False
+
+        def read(self) -> bytes:
+            return json.dumps({"data": [{"id": "provider/model-a"}]}).encode("utf-8")
+
+    def _fake_urlopen(request: Request, timeout: float) -> _Response:
+        captured["url"] = request.full_url
+        captured["headers"] = {
+            str(key): str(value) for key, value in dict(request.header_items()).items()
+        }
+        captured["timeout"] = timeout
+        return _Response()
+
+    monkeypatch.setattr(model_catalog, "urlopen", _fake_urlopen)
+
+    result = discover_available_models(
+        "llama-local",
+        LiteLLMProviderConfig(base_url="https://gateway.example.com", api_key="k1"),
+    )
+
+    assert result.models == ("provider/model-a",)
+    assert captured["url"] == "https://gateway.example.com/v1/models"
+    assert captured["timeout"] == 10.0
+
+
+def test_discover_available_models_custom_provider_keeps_existing_v1_models_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class _Response:
+        def __enter__(self) -> _Response:
+            return self
+
+        def __exit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            tb: TracebackType | None,
+        ) -> bool:
+            return False
+
+        def read(self) -> bytes:
+            return json.dumps({"data": [{"id": "provider/model-b"}]}).encode("utf-8")
+
+    def _fake_urlopen(request: Request, timeout: float) -> _Response:
+        captured["url"] = request.full_url
+        captured["headers"] = {
+            str(key): str(value) for key, value in dict(request.header_items()).items()
+        }
+        captured["timeout"] = timeout
+        return _Response()
+
+    monkeypatch.setattr(model_catalog, "urlopen", _fake_urlopen)
+
+    result = discover_available_models(
+        "llama-local",
+        LiteLLMProviderConfig(base_url="https://gateway.example.com/v1/models", api_key="k2"),
+    )
+
+    assert result.models == ("provider/model-b",)
+    assert captured["url"] == "https://gateway.example.com/v1/models"
+
+
+def test_discover_available_models_custom_provider_uses_token_auth_header_without_bearer_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class _Response:
+        def __enter__(self) -> _Response:
+            return self
+
+        def __exit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            tb: TracebackType | None,
+        ) -> bool:
+            return False
+
+        def read(self) -> bytes:
+            return json.dumps({"data": [{"id": "provider/model-c"}]}).encode("utf-8")
+
+    def _fake_urlopen(request: Request, timeout: float) -> _Response:
+        captured["url"] = request.full_url
+        captured["headers"] = {
+            str(key): str(value) for key, value in dict(request.header_items()).items()
+        }
+        captured["timeout"] = timeout
+        return _Response()
+
+    monkeypatch.setattr(model_catalog, "urlopen", _fake_urlopen)
+
+    result = discover_available_models(
+        "llama-local",
+        LiteLLMProviderConfig(
+            base_url="https://gateway.example.com/v1",
+            api_key="token-raw",
+            auth_scheme="token",
+            auth_header="X-API-Key",
+        ),
+    )
+
+    assert result.models == ("provider/model-c",)
+    assert captured["url"] == "https://gateway.example.com/v1/models"
+    headers = {
+        str(k).lower(): str(v) for k, v in dict(cast(dict[str, str], captured["headers"])).items()
+    }
+    assert headers.get("x-api-key") == "token-raw"

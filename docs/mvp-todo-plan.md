@@ -232,5 +232,5 @@ VoidCode 已经拥有扎实的 pre-MVP 基础：
 - [x] 为运行时/会话设置添加可配置性设计笔记
 - [x] 完成 issue #70 的第一实现切片：为 waiting / terminal session 落地内部 resume checkpoint groundwork，并保持 replay / resume 兼容
 - [x] 完成 issue #82：定义 retention / compaction / checkpoint invalidation 语义
-- [ ] 为 issue #84 预留后续实现入口：cold-session archive / replay strategy
+- [x] 完成 issue #84：为 cold-session archive / replay strategy 落地后续实现入口
 - [ ] 在 runtime 主线稳定之后，再重新评估 TUI 特定 epic 和剩余客户端 polish 工作
