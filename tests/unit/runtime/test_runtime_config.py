@@ -32,6 +32,97 @@ _parse_tools_config = runtime_config.__dict__["_parse_tools_config"]
 _parse_skills_config = runtime_config.__dict__["_parse_skills_config"]
 _parse_acp_config = runtime_config.__dict__["_parse_acp_config"]
 
+PRETTIER_ROOT_MARKERS = (
+    "package.json",
+    ".prettierrc",
+    ".prettierrc.json",
+    ".prettierrc.yml",
+    ".prettierrc.yaml",
+    ".prettierrc.js",
+    ".prettierrc.cjs",
+    ".prettierrc.mjs",
+    "prettier.config.js",
+    "prettier.config.cjs",
+    "prettier.config.mjs",
+)
+
+DEFAULT_FORMATTER_PRESETS = {
+    "python": RuntimeFormatterPresetConfig(
+        command=("ruff", "format"),
+        extensions=(".py", ".pyi"),
+        root_markers=("pyproject.toml", "ruff.toml", ".ruff.toml"),
+        fallback_commands=(("uvx", "ruff", "format"), ("python", "-m", "ruff", "format")),
+        cwd_policy="nearest_root",
+    ),
+    "typescript": RuntimeFormatterPresetConfig(
+        command=("prettier", "--write"),
+        extensions=(".ts", ".tsx", ".mts", ".cts"),
+        root_markers=PRETTIER_ROOT_MARKERS,
+        fallback_commands=(
+            ("bunx", "prettier", "--write"),
+            ("pnpm", "exec", "prettier", "--write"),
+            ("npx", "prettier", "--write"),
+        ),
+        cwd_policy="nearest_root",
+    ),
+    "javascript": RuntimeFormatterPresetConfig(
+        command=("prettier", "--write"),
+        extensions=(".js", ".jsx", ".mjs", ".cjs"),
+        root_markers=PRETTIER_ROOT_MARKERS,
+        fallback_commands=(
+            ("bunx", "prettier", "--write"),
+            ("pnpm", "exec", "prettier", "--write"),
+            ("npx", "prettier", "--write"),
+        ),
+        cwd_policy="nearest_root",
+    ),
+    "json": RuntimeFormatterPresetConfig(
+        command=("prettier", "--write"),
+        extensions=(".json", ".jsonc"),
+        root_markers=PRETTIER_ROOT_MARKERS,
+        fallback_commands=(
+            ("bunx", "prettier", "--write"),
+            ("pnpm", "exec", "prettier", "--write"),
+            ("npx", "prettier", "--write"),
+        ),
+        cwd_policy="nearest_root",
+    ),
+    "markdown": RuntimeFormatterPresetConfig(
+        command=("prettier", "--write"),
+        extensions=(".md", ".mdx"),
+        root_markers=PRETTIER_ROOT_MARKERS,
+        fallback_commands=(
+            ("bunx", "prettier", "--write"),
+            ("pnpm", "exec", "prettier", "--write"),
+            ("npx", "prettier", "--write"),
+        ),
+        cwd_policy="nearest_root",
+    ),
+    "yaml": RuntimeFormatterPresetConfig(
+        command=("prettier", "--write"),
+        extensions=(".yaml", ".yml"),
+        root_markers=PRETTIER_ROOT_MARKERS,
+        fallback_commands=(
+            ("bunx", "prettier", "--write"),
+            ("pnpm", "exec", "prettier", "--write"),
+            ("npx", "prettier", "--write"),
+        ),
+        cwd_policy="nearest_root",
+    ),
+    "rust": RuntimeFormatterPresetConfig(
+        command=("rustfmt",),
+        extensions=(".rs",),
+        root_markers=("Cargo.toml", "rustfmt.toml", ".rustfmt.toml"),
+        cwd_policy="nearest_root",
+    ),
+    "go": RuntimeFormatterPresetConfig(
+        command=("gofmt",),
+        extensions=(".go",),
+        root_markers=("go.mod",),
+        cwd_policy="nearest_root",
+    ),
+}
+
 
 def test_runtime_config_defaults_to_ask_without_file_or_env(tmp_path: Path) -> None:
     config = load_runtime_config(tmp_path, env={})
@@ -336,30 +427,12 @@ def test_runtime_config_parses_formatter_preset_hooks(tmp_path: Path) -> None:
 
     assert config.hooks == RuntimeHooksConfig(
         enabled=True,
-        formatter_presets={
-            "python": RuntimeFormatterPresetConfig(command=("ruff", "format")),
-            "javascript": RuntimeFormatterPresetConfig(command=("prettier", "--write")),
-            "json": RuntimeFormatterPresetConfig(command=("prettier", "--write")),
-            "markdown": RuntimeFormatterPresetConfig(command=("prettier", "--write")),
-            "yaml": RuntimeFormatterPresetConfig(command=("prettier", "--write")),
-            "rust": RuntimeFormatterPresetConfig(command=("rustfmt",)),
-            "go": RuntimeFormatterPresetConfig(command=("gofmt",)),
-            "typescript": RuntimeFormatterPresetConfig(command=("prettier", "--write")),
-        },
+        formatter_presets=DEFAULT_FORMATTER_PRESETS,
     )
 
 
 def test_runtime_hooks_config_defaults_formatter_presets_to_common_language_builtins() -> None:
-    assert RuntimeHooksConfig().formatter_presets == {
-        "python": RuntimeFormatterPresetConfig(command=("ruff", "format")),
-        "typescript": RuntimeFormatterPresetConfig(command=("prettier", "--write")),
-        "javascript": RuntimeFormatterPresetConfig(command=("prettier", "--write")),
-        "json": RuntimeFormatterPresetConfig(command=("prettier", "--write")),
-        "markdown": RuntimeFormatterPresetConfig(command=("prettier", "--write")),
-        "yaml": RuntimeFormatterPresetConfig(command=("prettier", "--write")),
-        "rust": RuntimeFormatterPresetConfig(command=("rustfmt",)),
-        "go": RuntimeFormatterPresetConfig(command=("gofmt",)),
-    }
+    assert RuntimeHooksConfig().formatter_presets == DEFAULT_FORMATTER_PRESETS
 
 
 def test_runtime_config_keeps_builtin_formatter_presets_when_hooks_formatter_presets_missing(
@@ -401,14 +474,14 @@ def test_runtime_config_overrides_builtin_formatter_preset_with_user_value(tmp_p
     assert config.hooks == RuntimeHooksConfig(
         enabled=True,
         formatter_presets={
-            "python": RuntimeFormatterPresetConfig(command=("uvx", "ruff", "format")),
-            "typescript": RuntimeFormatterPresetConfig(command=("prettier", "--write")),
-            "javascript": RuntimeFormatterPresetConfig(command=("prettier", "--write")),
-            "json": RuntimeFormatterPresetConfig(command=("prettier", "--write")),
-            "markdown": RuntimeFormatterPresetConfig(command=("prettier", "--write")),
-            "yaml": RuntimeFormatterPresetConfig(command=("prettier", "--write")),
-            "rust": RuntimeFormatterPresetConfig(command=("rustfmt",)),
-            "go": RuntimeFormatterPresetConfig(command=("gofmt",)),
+            **DEFAULT_FORMATTER_PRESETS,
+            "python": RuntimeFormatterPresetConfig(
+                command=("uvx", "ruff", "format"),
+                extensions=(".py", ".pyi"),
+                root_markers=("pyproject.toml", "ruff.toml", ".ruff.toml"),
+                fallback_commands=(("uvx", "ruff", "format"), ("python", "-m", "ruff", "format")),
+                cwd_policy="nearest_root",
+            ),
         },
     )
 
@@ -435,15 +508,47 @@ def test_runtime_config_keeps_builtin_formatter_presets_when_adding_custom_user_
     assert config.hooks == RuntimeHooksConfig(
         enabled=True,
         formatter_presets={
-            "python": RuntimeFormatterPresetConfig(command=("ruff", "format")),
-            "typescript": RuntimeFormatterPresetConfig(command=("prettier", "--write")),
-            "javascript": RuntimeFormatterPresetConfig(command=("prettier", "--write")),
-            "json": RuntimeFormatterPresetConfig(command=("prettier", "--write")),
-            "markdown": RuntimeFormatterPresetConfig(command=("prettier", "--write")),
-            "yaml": RuntimeFormatterPresetConfig(command=("prettier", "--write")),
-            "rust": RuntimeFormatterPresetConfig(command=("rustfmt",)),
-            "go": RuntimeFormatterPresetConfig(command=("gofmt",)),
+            **DEFAULT_FORMATTER_PRESETS,
             "toml": RuntimeFormatterPresetConfig(command=("taplo", "fmt")),
+        },
+    )
+
+
+def test_runtime_config_merges_partial_builtin_formatter_override(tmp_path: Path) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "enabled": True,
+                    "formatter_presets": {
+                        "typescript": {
+                            "extensions": [".ts", ".tsx", ".vue"],
+                            "cwd_policy": "workspace",
+                        },
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.hooks == RuntimeHooksConfig(
+        enabled=True,
+        formatter_presets={
+            **DEFAULT_FORMATTER_PRESETS,
+            "typescript": RuntimeFormatterPresetConfig(
+                command=("prettier", "--write"),
+                extensions=(".ts", ".tsx", ".vue"),
+                root_markers=PRETTIER_ROOT_MARKERS,
+                fallback_commands=(
+                    ("bunx", "prettier", "--write"),
+                    ("pnpm", "exec", "prettier", "--write"),
+                    ("npx", "prettier", "--write"),
+                ),
+                cwd_policy="workspace",
+            ),
         },
     )
 
@@ -705,6 +810,26 @@ def test_runtime_config_rejects_invalid_max_steps(
             {"hooks": {"formatter_presets": {"python": {"command": [False]}}}},
             "runtime config field 'hooks.formatter_presets.python.command\\[0\\]'",
             id="hooks-formatter-preset-command-item-type",
+        ),
+        pytest.param(
+            {"hooks": {"formatter_presets": {"python": {"cwd_policy": "repo"}}}},
+            "runtime config field 'hooks.formatter_presets.python.cwd_policy'",
+            id="hooks-formatter-preset-cwd-policy",
+        ),
+        pytest.param(
+            {"hooks": {"formatter_presets": {"python": {"extensions": [False]}}}},
+            "runtime config field 'hooks.formatter_presets.python.extensions\\[0\\]'",
+            id="hooks-formatter-preset-extension-item-type",
+        ),
+        pytest.param(
+            {"hooks": {"formatter_presets": {"python": {"root_markers": [False]}}}},
+            "runtime config field 'hooks.formatter_presets.python.root_markers\\[0\\]'",
+            id="hooks-formatter-preset-root-marker-item-type",
+        ),
+        pytest.param(
+            {"hooks": {"formatter_presets": {"python": {"fallback_commands": [["uvx"], [False]]}}}},
+            "runtime config field 'hooks.formatter_presets.python.fallback_commands\\[1\\]\\[0\\]'",
+            id="hooks-formatter-preset-fallback-item-type",
         ),
     ],
 )

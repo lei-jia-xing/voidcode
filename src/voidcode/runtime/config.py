@@ -12,7 +12,7 @@ from typing import Literal, Protocol, cast
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from ..hook.config import RuntimeFormatterPresetConfig, RuntimeHooksConfig
+from ..hook.config import FormatterCwdPolicy, RuntimeFormatterPresetConfig, RuntimeHooksConfig
 from ..lsp import LspServerConfigOverride as RuntimeLspServerConfig
 from ..lsp import has_builtin_lsp_server_preset
 from ..provider import config as provider_config
@@ -336,26 +336,81 @@ def _parse_formatter_presets_config(
 
     raw_presets = cast(dict[str, object], raw_value)
     for preset_name, raw_preset in raw_presets.items():
+        builtin_preset = parsed_presets.get(preset_name)
         parsed_presets[preset_name] = _parse_formatter_preset_config(
             raw_preset,
             field_path=f"{field_path}.{preset_name}",
+            base_preset=builtin_preset,
         )
     return parsed_presets
 
 
 def _parse_formatter_preset_config(
-    raw_value: object, *, field_path: str
+    raw_value: object,
+    *,
+    field_path: str,
+    base_preset: RuntimeFormatterPresetConfig | None = None,
 ) -> RuntimeFormatterPresetConfig:
     if not isinstance(raw_value, dict):
         raise ValueError(f"runtime config field '{field_path}' must be an object")
 
     preset_payload = cast(dict[str, object], raw_value)
-    command = _parse_string_list(preset_payload.get("command"), field_path=f"{field_path}.command")
+    raw_command = preset_payload.get("command")
+    command = (
+        _parse_string_list(raw_command, field_path=f"{field_path}.command")
+        if "command" in preset_payload
+        else (base_preset.command if base_preset is not None else ())
+    )
     if not command:
         raise ValueError(
             f"runtime config field '{field_path}.command' must contain at least one string"
         )
-    return RuntimeFormatterPresetConfig(command=command)
+    extensions = (
+        _parse_string_list(preset_payload.get("extensions"), field_path=f"{field_path}.extensions")
+        if "extensions" in preset_payload
+        else (base_preset.extensions if base_preset is not None else ())
+    )
+    root_markers = (
+        _parse_string_list(
+            preset_payload.get("root_markers"),
+            field_path=f"{field_path}.root_markers",
+        )
+        if "root_markers" in preset_payload
+        else (base_preset.root_markers if base_preset is not None else ())
+    )
+    fallback_commands = (
+        _parse_command_list(
+            preset_payload.get("fallback_commands"),
+            field_path=f"{field_path}.fallback_commands",
+        )
+        if "fallback_commands" in preset_payload
+        else (base_preset.fallback_commands if base_preset is not None else ())
+    )
+    cwd_policy = _parse_formatter_cwd_policy(
+        preset_payload.get("cwd_policy") if "cwd_policy" in preset_payload else None,
+        field_path=f"{field_path}.cwd_policy",
+        default=base_preset.cwd_policy if base_preset is not None else "nearest_root",
+    )
+    return RuntimeFormatterPresetConfig(
+        command=command,
+        extensions=extensions,
+        root_markers=root_markers,
+        fallback_commands=fallback_commands,
+        cwd_policy=cwd_policy,
+    )
+
+
+def _parse_formatter_cwd_policy(
+    raw_value: object, *, field_path: str, default: FormatterCwdPolicy
+) -> FormatterCwdPolicy:
+    if raw_value is None:
+        return default
+    if raw_value not in ("workspace", "nearest_root", "file_directory"):
+        raise ValueError(
+            f"runtime config field '{field_path}' must be one of: "
+            "workspace, nearest_root, file_directory"
+        )
+    return cast(FormatterCwdPolicy, raw_value)
 
 
 class _RuntimeToolsBuiltinValidationModel(BaseModel):
