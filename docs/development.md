@@ -58,6 +58,8 @@ uv run voidcode sessions resume <session-id> --workspace .
 - `mise run check` → 运行所有 Python 和前端检查
 - `mise run pre-commit` → `uv run pre-commit run --all-files`
 
+当前 pre-commit 会直接执行仓库约定的 Python 质量门禁：`ruff check --fix` 会自动修复可安全修复的问题，`ruff format` 会直接格式化文件，随后再运行 `basedpyright` 做类型检查。
+
 ## MVP 演示与验证
 
 关于规范的端到端演示流程和完整的验证阶梯（单元测试、集成测试、客户端冒烟测试），请参阅 [`docs/mvp-demo-guide.md`](./mvp-demo-guide.md)。使用该指南验证稳定的确定性运行时循环、内联审批和会话持久化。
