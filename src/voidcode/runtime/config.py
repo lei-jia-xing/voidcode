@@ -410,7 +410,7 @@ def _parse_formatter_cwd_policy(
             f"runtime config field '{field_path}' must be one of: "
             "workspace, nearest_root, file_directory"
         )
-    return cast(FormatterCwdPolicy, raw_value)
+    return raw_value
 
 
 class _RuntimeToolsBuiltinValidationModel(BaseModel):

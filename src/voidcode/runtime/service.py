@@ -34,6 +34,7 @@ from .acp import AcpAdapter, AcpRequestEnvelope, AcpResponseEnvelope, build_acp_
 from .config import (
     ExecutionEngineName,
     RuntimeConfig,
+    RuntimeHooksConfig,
     RuntimeProviderFallbackConfig,
     load_runtime_config,
     parse_provider_fallback_payload,
@@ -113,10 +114,18 @@ class ToolRegistry:
 
     @classmethod
     def with_defaults(
-        cls, *, lsp_tool: Tool | None = None, mcp_tools: tuple[Tool, ...] = ()
+        cls,
+        *,
+        lsp_tool: Tool | None = None,
+        format_tool: Tool | None = None,
+        mcp_tools: tuple[Tool, ...] = (),
     ) -> ToolRegistry:
         return cls.from_tools(
-            BuiltinToolProvider(lsp_tool=lsp_tool, mcp_tools=mcp_tools).provide_tools()
+            BuiltinToolProvider(
+                lsp_tool=lsp_tool,
+                format_tool=format_tool,
+                mcp_tools=mcp_tools,
+            ).provide_tools()
         )
 
     def definitions(self) -> tuple[ToolDefinition, ...]:
@@ -305,7 +314,7 @@ class VoidCodeRuntime:
     def _build_format_tool(self) -> FormatTool:
         from ..tools.lsp import FormatTool
 
-        return FormatTool(self._config.hooks, self._workspace)
+        return FormatTool(self._config.hooks or RuntimeHooksConfig(), self._workspace)
 
     def _build_mcp_tools(self) -> tuple[Tool, ...]:
         if self._mcp_manager.current_state().mode != "managed":

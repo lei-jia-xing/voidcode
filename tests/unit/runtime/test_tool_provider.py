@@ -121,6 +121,21 @@ class _InjectedTool:
         )
 
 
+class _FormatTestTool:
+    @property
+    def definition(self) -> ToolDefinition:
+        return ToolDefinition(
+            name="format_file",
+            description="Format a file for tests",
+            input_schema={"type": "object"},
+            read_only=False,
+        )
+
+    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
+        _ = call, workspace
+        return ToolResult(tool_name="format_file", status="ok", content="formatted")
+
+
 def test_builtin_tool_provider_returns_expected_builtin_tools() -> None:
     tools = BuiltinToolProvider().provide_tools()
 
@@ -167,6 +182,14 @@ def test_builtin_tool_provider_can_include_runtime_managed_mcp_tools() -> None:
     tools = BuiltinToolProvider(mcp_tools=(mcp_tool,)).provide_tools()
 
     assert any(tool.definition.name == "mcp/echo/echo" for tool in tools)
+
+
+def test_builtin_tool_provider_can_include_runtime_managed_format_tool() -> None:
+    format_tool = _FormatTestTool()
+
+    tools = BuiltinToolProvider(format_tool=format_tool).provide_tools()
+
+    assert any(tool.definition.name == "format_file" for tool in tools)
 
 
 def test_tool_registry_accepts_tools_from_provider_output() -> None:
@@ -229,6 +252,25 @@ def test_tool_registry_with_defaults_delegates_through_builtin_provider() -> Non
     for tool_name in optional_tools:
         if tool_name in registry.tools:
             assert registry.resolve(tool_name) is not None
+
+
+def test_tool_registry_with_defaults_passes_format_tool_to_builtin_provider() -> None:
+    format_tool = _FormatTestTool()
+    provided_tools = (format_tool,)
+
+    with patch.object(
+        BuiltinToolProvider,
+        "provide_tools",
+        autospec=True,
+        return_value=provided_tools,
+    ) as provide_tools_mock:
+        registry = ToolRegistry.with_defaults(format_tool=format_tool)
+
+    provide_tools_mock.assert_called_once()
+    provider = provide_tools_mock.call_args.args[0]
+    assert isinstance(provider, BuiltinToolProvider)
+    assert provider._format_tool is format_tool
+    assert registry.resolve("format_file") is format_tool
 
 
 def test_runtime_registry_includes_discovered_mcp_tools(tmp_path: Path) -> None:
@@ -358,6 +400,9 @@ def test_runtime_default_registry_behavior_remains_unchanged(tmp_path: Path) -> 
     sample_file = tmp_path / "sample.txt"
     _ = sample_file.write_text("alpha beta\n", encoding="utf-8")
     runtime = VoidCodeRuntime(workspace=tmp_path, graph=_StubGraph())
+
+    assert "format_file" in runtime._base_tool_registry.tools
+
     response = runtime.run(RuntimeRequest(prompt="hello"))
 
     assert response.output == "hello"

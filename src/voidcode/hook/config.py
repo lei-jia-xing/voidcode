@@ -53,19 +53,6 @@ def _clang_format_preset(*extensions: str) -> RuntimeFormatterPresetConfig:
     )
 
 
-def _biome_preset(*extensions: str) -> RuntimeFormatterPresetConfig:
-    return RuntimeFormatterPresetConfig(
-        command=("biome", "format", "--write"),
-        extensions=extensions,
-        root_markers=("biome.json", "biome.jsonc", "package.json"),
-        fallback_commands=(
-            ("bunx", "biome", "format", "--write"),
-            ("pnpm", "exec", "biome", "format", "--write"),
-            ("npx", "biome", "format", "--write"),
-        ),
-    )
-
-
 def _sql_formatter_preset() -> RuntimeFormatterPresetConfig:
     return RuntimeFormatterPresetConfig(
         command=("sql-formatter", "--fix"),

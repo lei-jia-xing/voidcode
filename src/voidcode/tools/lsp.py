@@ -10,7 +10,7 @@ from typing import Any, ClassVar, Protocol, cast
 from lsprotocol import converters as lsp_converters
 from lsprotocol import types as lsp_types
 
-from ..hook.config import RuntimeFormatterPresetConfig
+from ..hook.config import RuntimeFormatterPresetConfig, RuntimeHooksConfig
 from .contracts import ToolCall, ToolDefinition, ToolResult
 
 
@@ -201,7 +201,7 @@ FORMAT_DEFINITION = ToolDefinition(
 
 
 class FormatTool:
-    def __init__(self, hooks_config, workspace: Path):
+    def __init__(self, hooks_config: RuntimeHooksConfig, workspace: Path) -> None:
         self._hooks = hooks_config
         self._workspace = workspace.resolve()
 
@@ -209,7 +209,7 @@ class FormatTool:
     def definition(self) -> ToolDefinition:
         return FORMAT_DEFINITION
 
-    def invoke(self, call: ToolCall, workspace: Path) -> ToolResult:
+    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
         file_path = self._resolve_target_path(call)
         resolved = self._hooks.resolve_formatter(file_path)
 
