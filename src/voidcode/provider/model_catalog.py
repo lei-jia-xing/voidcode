@@ -101,16 +101,8 @@ def _base_url_for_discovery(
         return "https://generativelanguage.googleapis.com"
     if provider_name == "litellm":
         return "http://127.0.0.1:4000"
-    if provider_name == "glm":
-        return "https://open.bigmodel.cn/api/paas/v4"
-    if provider_name == "minimax":
-        return "https://api.minimax.io"
-    if provider_name == "kimi":
-        return "https://api.moonshot.ai"
-    if provider_name == "opencode-go":
+    if provider_name in ("glm", "minimax", "kimi", "opencode-go", "qwen"):
         return None
-    if provider_name == "qwen":
-        return "https://dashscope.aliyuncs.com/compatible-mode"
     return None
 
 

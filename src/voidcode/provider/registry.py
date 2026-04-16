@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Any, cast
 
 from .anthropic import AnthropicModelProvider
 from .config import (
     LiteLLMProviderConfig,
     ProviderConfigs,
+    SimplifiedProviderConfig,
     simplified_config_to_litellm,
 )
 from .copilot import CopilotModelProvider
@@ -20,6 +22,14 @@ from .openai import OpenAIModelProvider
 from .opencode_go import OpenCodeGoModelProvider
 from .protocol import ModelProvider, SingleAgentProvider, StubSingleAgentProvider
 from .qwen import QwenModelProvider
+
+_SIMPLIFIED_PROVIDER_MAP: dict[str, type] = {
+    "glm": GLMModelProvider,
+    "minimax": MiniMaxModelProvider,
+    "kimi": KimiModelProvider,
+    "opencode-go": OpenCodeGoModelProvider,
+    "qwen": QwenModelProvider,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,26 +141,13 @@ class ModelProviderRegistry:
             provider = self.providers.get("litellm")
             if isinstance(provider, LiteLLMModelProvider):
                 return provider.config
-        if provider_name == "glm":
-            provider = self.providers.get("glm")
-            if isinstance(provider, GLMModelProvider):
-                return simplified_config_to_litellm("glm", provider.config)
-        if provider_name == "minimax":
-            provider = self.providers.get("minimax")
-            if isinstance(provider, MiniMaxModelProvider):
-                return simplified_config_to_litellm("minimax", provider.config)
-        if provider_name == "kimi":
-            provider = self.providers.get("kimi")
-            if isinstance(provider, KimiModelProvider):
-                return simplified_config_to_litellm("kimi", provider.config)
-        if provider_name == "opencode-go":
-            provider = self.providers.get("opencode-go")
-            if isinstance(provider, OpenCodeGoModelProvider):
-                return simplified_config_to_litellm("opencode-go", provider.config)
-        if provider_name == "qwen":
-            provider = self.providers.get("qwen")
-            if isinstance(provider, QwenModelProvider):
-                return simplified_config_to_litellm("qwen", provider.config)
+        provider_cls = _SIMPLIFIED_PROVIDER_MAP.get(provider_name)
+        if provider_cls is not None:
+            provider = self.providers.get(provider_name)
+            if isinstance(provider, provider_cls):
+                return simplified_config_to_litellm(
+                    provider_name, cast(SimplifiedProviderConfig | None, cast(Any, provider).config)
+                )
         if (
             self.custom_provider_configs is not None
             and provider_name in self.custom_provider_configs

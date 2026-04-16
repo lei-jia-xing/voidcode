@@ -82,6 +82,9 @@ _SIMPLIFIED_DEFAULTS: dict[str, tuple[str, dict[str, str]]] = {
 }
 
 
+_SIMPLIFIED_PROVIDER_NAMES = frozenset(_SIMPLIFIED_DEFAULTS)
+
+
 def simplified_defaults(provider_name: str) -> tuple[str, dict[str, str]]:
     default = _SIMPLIFIED_DEFAULTS.get(provider_name, ("", {}))
     return default[0], dict(default[1])
@@ -93,6 +96,8 @@ def simplified_config_to_litellm(
 ) -> LiteLLMProviderConfig | None:
     if config is None:
         return None
+    if provider_name not in _SIMPLIFIED_PROVIDER_NAMES:
+        raise ValueError(f"Unknown simplified provider: {provider_name!r}")
     default_base_url, default_model_map = simplified_defaults(provider_name)
     return LiteLLMProviderConfig(
         api_key=config.api_key,
