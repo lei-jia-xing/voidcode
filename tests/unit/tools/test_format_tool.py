@@ -196,7 +196,7 @@ def test_format_tool_treats_non_enoent_launch_failure_as_formatter_attempt_failu
     )
 
     with patch(
-        "voidcode.tools.lsp.subprocess.run", side_effect=PermissionError("permission denied")
+        "voidcode.tools._formatter.subprocess.run", side_effect=PermissionError("permission denied")
     ):
         result = tool.invoke(
             ToolCall(tool_name="format_file", arguments={"path": "example.py"}),

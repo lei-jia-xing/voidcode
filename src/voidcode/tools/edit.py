@@ -7,6 +7,8 @@ from typing import ClassVar
 
 from rapidfuzz.distance import Levenshtein
 
+from ..hook.config import RuntimeHooksConfig
+from ._formatter import FormatterExecutionResult, FormatterExecutor
 from .contracts import ToolCall, ToolDefinition, ToolResult
 
 
@@ -66,6 +68,79 @@ def _trim_diff(diff: str) -> str:
             trimmed_lines.append(line)
 
     return "\n".join(trimmed_lines)
+
+
+def read_utf8_text(path: Path) -> str:
+    try:
+        with path.open("r", encoding="utf-8", newline="") as handle:
+            return handle.read()
+    except UnicodeDecodeError as exc:
+        raise ValueError("edit only supports UTF-8 text files") from exc
+
+
+def summarize_diff(*, path: Path, before: str, after: str) -> tuple[str, int, int]:
+    def _ensure_newlines(lines: list[str]) -> list[str]:
+        return [line + "\n" for line in lines]
+
+    diff = _trim_diff(
+        "".join(
+            difflib.unified_diff(
+                _ensure_newlines(before.splitlines()) if before else [],
+                _ensure_newlines(after.splitlines()) if after else [],
+                fromfile=str(path),
+                tofile=str(path),
+            )
+        )
+    )
+
+    additions = sum(
+        1 for line in diff.splitlines() if line.startswith("+") and not line.startswith("+++")
+    )
+    deletions = sum(
+        1 for line in diff.splitlines() if line.startswith("-") and not line.startswith("---")
+    )
+    return diff, additions, deletions
+
+
+def formatter_payload(result: FormatterExecutionResult) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "status": result.status,
+    }
+    if result.language is not None:
+        payload["language"] = result.language
+    if result.cwd is not None:
+        payload["cwd"] = str(result.cwd)
+    if result.command is not None:
+        payload["command"] = list(result.command)
+    if result.attempted_commands:
+        payload["attempted_commands"] = [list(cmd) for cmd in result.attempted_commands]
+    if result.stdout is not None:
+        payload["stdout"] = result.stdout
+    if result.stderr is not None:
+        payload["stderr"] = result.stderr
+    if result.error is not None:
+        payload["error"] = result.error
+    return payload
+
+
+def formatter_diagnostics(result: FormatterExecutionResult | None) -> list[dict[str, object]]:
+    if result is None or result.status in {"not_configured", "formatted"} or result.error is None:
+        return []
+
+    diagnostic: dict[str, object] = {
+        "source": "formatter",
+        "severity": "warning",
+        "message": result.error,
+    }
+    if result.language is not None:
+        diagnostic["language"] = result.language
+    if result.cwd is not None:
+        diagnostic["cwd"] = str(result.cwd)
+    if result.command is not None:
+        diagnostic["command"] = list(result.command)
+    if result.attempted_commands:
+        diagnostic["attempted_commands"] = [list(cmd) for cmd in result.attempted_commands]
+    return [diagnostic]
 
 
 class SimpleReplacer:
@@ -405,6 +480,9 @@ class EditTool:
         read_only=False,
     )
 
+    def __init__(self, *, hooks_config: RuntimeHooksConfig | None = None) -> None:
+        self._hooks_config = hooks_config
+
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
         path_value = call.arguments.get("path")
         if not isinstance(path_value, str):
@@ -435,11 +513,7 @@ class EditTool:
         if not candidate.is_file():
             raise ValueError(f"edit target is not a file: {path_value}")
 
-        try:
-            with candidate.open("r", encoding="utf-8", newline="") as handle:
-                content_old = handle.read()
-        except UnicodeDecodeError as exc:
-            raise ValueError("edit only supports UTF-8 text files") from exc
+        content_old = read_utf8_text(candidate)
 
         ending = _detect_line_ending(content_old)
         normalized_old = _normalize_line_endings(old_string)
@@ -458,45 +532,39 @@ class EditTool:
 
         new_content = _convert_line_endings(new_content, ending)
 
-        def _ensure_newlines(lines: list[str]) -> list[str]:
-            return [line + "\n" for line in lines]
-
-        old_lines = content_old.splitlines()
-        new_lines = new_content.splitlines()
-
-        diff = _trim_diff(
-            "".join(
-                difflib.unified_diff(
-                    _ensure_newlines(old_lines) if old_lines else [],
-                    _ensure_newlines(new_lines) if new_lines else [],
-                    fromfile=str(candidate),
-                    tofile=str(candidate),
-                )
-            )
-        )
-
-        additions = sum(
-            1 for line in diff.splitlines() if line.startswith("+") and not line.startswith("+++")
-        )
-        deletions = sum(
-            1 for line in diff.splitlines() if line.startswith("-") and not line.startswith("---")
-        )
-
         candidate.write_bytes(new_content.encode("utf-8"))
+        formatter_result: FormatterExecutionResult | None = None
+        if self._hooks_config is not None:
+            formatter_result = FormatterExecutor(self._hooks_config, workspace_root).run(candidate)
+        final_content = read_utf8_text(candidate)
+        diff, additions, deletions = summarize_diff(
+            path=candidate,
+            before=content_old,
+            after=final_content,
+        )
+        diagnostics = formatter_diagnostics(formatter_result)
 
         output = "Edit applied successfully."
         if match_count > 1:
             output += f" ({match_count} occurrences replaced)"
+        if diagnostics:
+            output += f" Formatter warning: {diagnostics[0]['message']}"
+
+        data: dict[str, object] = {
+            "path": candidate.relative_to(workspace_root).as_posix(),
+            "additions": additions,
+            "deletions": deletions,
+            "match_count": match_count,
+            "diff": diff,
+        }
+        if formatter_result is not None and formatter_result.status != "not_configured":
+            data["formatter"] = formatter_payload(formatter_result)
+        if diagnostics:
+            data["diagnostics"] = diagnostics
 
         return ToolResult(
             tool_name=self.definition.name,
             status="ok",
             content=output,
-            data={
-                "path": candidate.relative_to(workspace_root).as_posix(),
-                "additions": additions,
-                "deletions": deletions,
-                "match_count": match_count,
-                "diff": diff,
-            },
+            data=data,
         )

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import sys
+import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import patch
 
+from voidcode.hook.config import RuntimeFormatterPresetConfig, RuntimeHooksConfig
 from voidcode.runtime.events import EventEnvelope
 from voidcode.runtime.mcp import (
     McpConfigState,
@@ -196,6 +199,47 @@ def test_builtin_tool_provider_can_include_runtime_managed_format_tool() -> None
     tools = BuiltinToolProvider(format_tool=format_tool).provide_tools()
 
     assert any(tool.definition.name == "format_file" for tool in tools)
+
+
+def test_builtin_tool_provider_injects_formatter_aware_edit_tools(tmp_path: Path) -> None:
+    formatter_script = tmp_path / "formatter.py"
+    formatter_script.write_text(
+        textwrap.dedent(
+            """
+            import pathlib
+            import sys
+
+            pathlib.Path(sys.argv[-1]).write_text("VALUE='BETA'\\n", encoding="utf-8")
+            """
+        ),
+        encoding="utf-8",
+    )
+    target = tmp_path / "sample.py"
+    target.write_text("value='alpha'\n", encoding="utf-8")
+
+    tools = BuiltinToolProvider(
+        hooks_config=RuntimeHooksConfig(
+            formatter_presets={
+                "python": RuntimeFormatterPresetConfig(
+                    command=(sys.executable, str(formatter_script)),
+                    extensions=(".py",),
+                )
+            }
+        )
+    ).provide_tools()
+
+    edit_tool = next(tool for tool in tools if tool.definition.name == "edit")
+    result = edit_tool.invoke(
+        ToolCall(
+            tool_name="edit",
+            arguments={"path": "sample.py", "oldString": "'alpha'", "newString": "'beta'"},
+        ),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert target.read_text(encoding="utf-8") == "VALUE='BETA'\n"
+    assert result.data["formatter"]["status"] == "formatted"
 
 
 def test_tool_registry_accepts_tools_from_provider_output() -> None:
