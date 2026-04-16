@@ -6,6 +6,7 @@ from typing import Literal, Protocol, runtime_checkable
 
 from .events import EventEnvelope
 from .session import SessionState
+from .task import BackgroundTaskState, StoredBackgroundTaskSummary
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,3 +57,14 @@ class RuntimeEntrypoint(Protocol):
 @runtime_checkable
 class StreamingRuntimeEntrypoint(Protocol):
     def run_stream(self, request: RuntimeRequest) -> Iterator[RuntimeStreamChunk]: ...
+
+
+@runtime_checkable
+class BackgroundTaskRuntimeEntrypoint(Protocol):
+    def start_background_task(self, request: RuntimeRequest) -> BackgroundTaskState: ...
+
+    def load_background_task(self, task_id: str) -> BackgroundTaskState: ...
+
+    def list_background_tasks(self) -> tuple[StoredBackgroundTaskSummary, ...]: ...
+
+    def cancel_background_task(self, task_id: str) -> BackgroundTaskState: ...

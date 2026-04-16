@@ -4,6 +4,7 @@ from importlib import import_module
 from typing import TYPE_CHECKING, Any
 
 from .contracts import (
+    BackgroundTaskRuntimeEntrypoint,
     RuntimeEntrypoint,
     RuntimeRequest,
     RuntimeResponse,
@@ -15,6 +16,14 @@ from .events import EventEnvelope, EventSource
 from .permission import PendingApproval, PermissionDecision, PermissionPolicy, PermissionResolution
 from .session import SessionRef, SessionState, SessionStatus, StoredSessionSummary
 from .storage import SessionStore
+from .task import (
+    BackgroundTaskRef,
+    BackgroundTaskRequestSnapshot,
+    BackgroundTaskState,
+    BackgroundTaskStatus,
+    StoredBackgroundTaskSummary,
+    validate_background_task_id,
+)
 
 if TYPE_CHECKING:
     from .http import RuntimeTransportApp, create_runtime_app
@@ -23,6 +32,11 @@ if TYPE_CHECKING:
 __all__ = [
     "EventEnvelope",
     "EventSource",
+    "BackgroundTaskRef",
+    "BackgroundTaskRequestSnapshot",
+    "BackgroundTaskRuntimeEntrypoint",
+    "BackgroundTaskState",
+    "BackgroundTaskStatus",
     "PendingApproval",
     "PermissionDecision",
     "PermissionPolicy",
@@ -39,9 +53,11 @@ __all__ = [
     "SessionStatus",
     "SessionStore",
     "StoredSessionSummary",
+    "StoredBackgroundTaskSummary",
     "ToolRegistry",
     "VoidCodeRuntime",
     "create_runtime_app",
+    "validate_background_task_id",
 ]
 
 

@@ -44,6 +44,16 @@ def test_contract_modules_export_expected_symbols() -> None:
     runtime_request = runtime.RuntimeRequest(
         prompt="Inspect the repo", session_id=session.session.id
     )
+    background_task_request = runtime.BackgroundTaskRequestSnapshot(
+        prompt=runtime_request.prompt,
+        session_id=session.session.id,
+    )
+    background_task = runtime.BackgroundTaskState(
+        task=runtime.BackgroundTaskRef(id="task-1"),
+        request=background_task_request,
+        created_at=1,
+        updated_at=1,
+    )
     session_summary = runtime.StoredSessionSummary(
         session=session.session,
         status="completed",
@@ -62,6 +72,8 @@ def test_contract_modules_export_expected_symbols() -> None:
     assert call.arguments == {"path": "README.md"}
     assert runtime_response.events == (event,)
     assert stream_chunk.event == event
+    assert background_task.task.id == "task-1"
+    assert background_task.request.prompt == runtime_request.prompt
     assert session_summary.session.id == "session-1"
     assert graph_request.available_tools == ()
     assert graph_result.tool_results == (result,)
@@ -72,10 +84,20 @@ def test_contracts_are_frozen_and_isolate_default_state() -> None:
 
     first_session = runtime.SessionState(session=runtime.SessionRef(id="session-1"))
     second_session = runtime.SessionState(session=runtime.SessionRef(id="session-2"))
+    first_task = runtime.BackgroundTaskState(
+        task=runtime.BackgroundTaskRef(id="task-1"),
+        request=runtime.BackgroundTaskRequestSnapshot(prompt="go"),
+    )
+    second_task = runtime.BackgroundTaskState(
+        task=runtime.BackgroundTaskRef(id="task-2"),
+        request=runtime.BackgroundTaskRequestSnapshot(prompt="go"),
+    )
 
     first_session.metadata["workspace"] = "/tmp/project"
+    first_task.request.metadata["workspace"] = "/tmp/project"
 
     assert second_session.metadata == {}
+    assert second_task.request.metadata == {}
 
     with pytest.raises(FrozenInstanceError):
         first_session.turn = 3
@@ -175,10 +197,12 @@ def test_contract_types_expose_explicit_annotations() -> None:
     tools = _tools_module()
 
     runtime_request_hints = get_type_hints(runtime.RuntimeRequest)
+    background_task_hints = get_type_hints(runtime.BackgroundTaskState)
     tool_result_hints = get_type_hints(tools.ToolResult)
     graph_runner_hints = get_type_hints(graph.GraphRunner.run)
 
     assert runtime_request_hints["prompt"] is str
+    assert str(background_task_hints["status"]) == "BackgroundTaskStatus"
     assert tool_result_hints["tool_name"] is str
     assert str(tool_result_hints["status"]) == "ToolResultStatus"
     assert graph_runner_hints["request"] is graph.GraphRunRequest
