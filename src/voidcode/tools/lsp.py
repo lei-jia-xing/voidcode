@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import enum
+import errno
 import subprocess
 from pathlib import Path
 from typing import Any, ClassVar, Protocol, cast
@@ -239,8 +240,22 @@ class FormatTool:
                     capture_output=True,
                     text=True,
                 )
-            except FileNotFoundError:
-                missing_tools.append(command_parts[0])
+            except OSError as exc:
+                if exc.errno == errno.ENOENT:
+                    missing_tools.append(command_parts[0])
+                    continue
+
+                failed_attempts.append(
+                    (
+                        cmd,
+                        subprocess.CompletedProcess(
+                            args=cmd,
+                            returncode=1,
+                            stdout="",
+                            stderr=str(exc),
+                        ),
+                    )
+                )
                 continue
 
             if proc.returncode == 0:
