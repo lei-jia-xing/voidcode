@@ -69,6 +69,12 @@ _SIMPLIFIED_DEFAULTS: dict[str, tuple[str, str | None, dict[str, str]]] = {
             "glm-5.1": "glm-5.1",
             "mimo-v2-pro": "mimo-v2-pro",
             "mimo-v2-omni": "mimo-v2-omni",
+            "qwen-plus": "qwen-plus",
+            "qwen-max": "qwen-max",
+            "qwen-flash": "qwen-flash",
+            "qwen3.5-plus": "qwen3.5-plus",
+            "qwen3.5-flash": "qwen3.5-flash",
+            "qwen3.6-plus": "qwen3.6-plus",
         },
     ),
     "qwen": (
@@ -114,7 +120,7 @@ def simplified_config_to_litellm(
     discovery_base_url = (
         config.discovery_base_url
         if config.discovery_base_url is not None
-        else (None if config.base_url is not None else default_discovery_base_url)
+        else default_discovery_base_url
     )
     return LiteLLMProviderConfig(
         api_key=config.api_key,
