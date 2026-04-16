@@ -279,7 +279,6 @@ class VoidCodeRuntime:
                 provider_model=provider_model,
                 max_steps=max_steps,
             )
-        raise ValueError(f"unknown execution engine: {engine_name}")
 
     def _build_graph_for_engine_from_config(self, config: EffectiveRuntimeConfig) -> RuntimeGraph:
         # Generate cache key from config
