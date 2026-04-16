@@ -12,6 +12,14 @@ from .contracts import RuntimeRequest, RuntimeResponse
 from .events import EventEnvelope, EventSource
 from .permission import PendingApproval
 from .session import SessionRef, SessionState, SessionStatus, StoredSessionSummary
+from .task import (
+    BackgroundTaskRef,
+    BackgroundTaskRequestSnapshot,
+    BackgroundTaskState,
+    BackgroundTaskStatus,
+    StoredBackgroundTaskSummary,
+    validate_background_task_id,
+)
 
 
 @runtime_checkable
@@ -47,6 +55,50 @@ class SessionStore(Protocol):
     def load_resume_checkpoint(
         self, *, workspace: Path, session_id: str
     ) -> dict[str, object] | None: ...
+
+    def create_background_task(
+        self,
+        *,
+        workspace: Path,
+        task: BackgroundTaskState,
+    ) -> None: ...
+
+    def load_background_task(self, *, workspace: Path, task_id: str) -> BackgroundTaskState: ...
+
+    def list_background_tasks(
+        self, *, workspace: Path
+    ) -> tuple[StoredBackgroundTaskSummary, ...]: ...
+
+    def mark_background_task_running(
+        self,
+        *,
+        workspace: Path,
+        task_id: str,
+        session_id: str,
+    ) -> BackgroundTaskState: ...
+
+    def mark_background_task_terminal(
+        self,
+        *,
+        workspace: Path,
+        task_id: str,
+        status: BackgroundTaskStatus,
+        error: str | None = None,
+    ) -> BackgroundTaskState: ...
+
+    def request_background_task_cancel(
+        self,
+        *,
+        workspace: Path,
+        task_id: str,
+    ) -> BackgroundTaskState: ...
+
+    def fail_incomplete_background_tasks(
+        self,
+        *,
+        workspace: Path,
+        message: str,
+    ) -> tuple[BackgroundTaskState, ...]: ...
 
 
 @final
@@ -104,6 +156,26 @@ class SqliteSessionStore:
             )
             """
         )
+        _ = connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS background_tasks (
+                task_id TEXT PRIMARY KEY,
+                workspace TEXT NOT NULL,
+                status TEXT NOT NULL,
+                prompt TEXT NOT NULL,
+                request_session_id TEXT,
+                request_metadata_json TEXT NOT NULL,
+                allocate_session_id INTEGER NOT NULL,
+                session_id TEXT,
+                error TEXT,
+                cancel_requested_at INTEGER,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                started_at INTEGER,
+                finished_at INTEGER
+            )
+            """
+        )
         user_version = self._read_user_version(connection=connection)
         columns = {
             cast(str, row["name"])
@@ -122,6 +194,8 @@ class SqliteSessionStore:
             target_user_version = max(target_user_version, 2)
         if user_version < 3:
             target_user_version = max(target_user_version, 3)
+        if user_version < 4:
+            target_user_version = max(target_user_version, 4)
         if target_user_version != user_version:
             _ = connection.execute(f"PRAGMA user_version = {target_user_version}")
         connection.commit()
@@ -138,6 +212,19 @@ class SqliteSessionStore:
         allowed: tuple[EventSource, ...] = ("runtime", "graph", "tool")
         if value not in allowed:
             raise ValueError(f"invalid event source: {value}")
+        return value
+
+    @staticmethod
+    def _parse_background_task_status(value: str) -> BackgroundTaskStatus:
+        allowed: tuple[BackgroundTaskStatus, ...] = (
+            "queued",
+            "running",
+            "completed",
+            "failed",
+            "cancelled",
+        )
+        if value not in allowed:
+            raise ValueError(f"invalid background task status: {value}")
         return value
 
     def save_run(
@@ -468,6 +555,230 @@ class SqliteSessionStore:
         return RuntimeResponse(
             session=session, events=events, output=cast(str | None, session_row["output"])
         )
+
+    def create_background_task(
+        self,
+        *,
+        workspace: Path,
+        task: BackgroundTaskState,
+    ) -> None:
+        task_id = validate_background_task_id(task.task.id)
+        with self._connect(workspace) as connection:
+            _ = connection.execute(
+                """
+                INSERT INTO background_tasks (
+                    task_id, workspace, status, prompt, request_session_id,
+                    request_metadata_json, allocate_session_id, session_id, error,
+                    cancel_requested_at, created_at, updated_at, started_at, finished_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    task_id,
+                    str(workspace),
+                    task.status,
+                    task.request.prompt,
+                    task.request.session_id,
+                    json.dumps(task.request.metadata, sort_keys=True),
+                    1 if task.request.allocate_session_id else 0,
+                    task.session_id,
+                    task.error,
+                    task.cancel_requested_at,
+                    task.created_at,
+                    task.updated_at,
+                    task.started_at,
+                    task.finished_at,
+                ),
+            )
+            connection.commit()
+
+    def load_background_task(self, *, workspace: Path, task_id: str) -> BackgroundTaskState:
+        task_id = validate_background_task_id(task_id)
+        with self._connect(workspace) as connection:
+            row = cast(
+                sqlite3.Row | None,
+                connection.execute(
+                    """
+                    SELECT * FROM background_tasks
+                    WHERE workspace = ? AND task_id = ?
+                    """,
+                    (str(workspace), task_id),
+                ).fetchone(),
+            )
+        if row is None:
+            raise ValueError(f"unknown background task: {task_id}")
+        return self._background_task_state_from_row(row)
+
+    def list_background_tasks(self, *, workspace: Path) -> tuple[StoredBackgroundTaskSummary, ...]:
+        with self._connect(workspace) as connection:
+            rows = cast(
+                list[sqlite3.Row],
+                connection.execute(
+                    """
+                    SELECT task_id, status, prompt, session_id, error, created_at, updated_at
+                    FROM background_tasks
+                    WHERE workspace = ?
+                    ORDER BY updated_at DESC, task_id ASC
+                    """,
+                    (str(workspace),),
+                ).fetchall(),
+            )
+        return tuple(
+            StoredBackgroundTaskSummary(
+                task=BackgroundTaskRef(id=cast(str, row["task_id"])),
+                status=self._parse_background_task_status(cast(str, row["status"])),
+                prompt=cast(str, row["prompt"]),
+                session_id=cast(str | None, row["session_id"]),
+                error=cast(str | None, row["error"]),
+                created_at=cast(int, row["created_at"]),
+                updated_at=cast(int, row["updated_at"]),
+            )
+            for row in rows
+        )
+
+    def mark_background_task_running(
+        self,
+        *,
+        workspace: Path,
+        task_id: str,
+        session_id: str,
+    ) -> BackgroundTaskState:
+        task_id = validate_background_task_id(task_id)
+        with self._connect(workspace) as connection:
+            updated_at = self._next_background_task_timestamp(connection=connection)
+            updated = connection.execute(
+                """
+                UPDATE background_tasks
+                SET status = ?, session_id = ?, started_at = COALESCE(started_at, ?), updated_at = ?
+                WHERE workspace = ? AND task_id = ? AND status = 'queued'
+                """,
+                ("running", session_id, updated_at, updated_at, str(workspace), task_id),
+            ).rowcount
+            connection.commit()
+        if updated == 0:
+            return self.load_background_task(workspace=workspace, task_id=task_id)
+        return self.load_background_task(workspace=workspace, task_id=task_id)
+
+    def mark_background_task_terminal(
+        self,
+        *,
+        workspace: Path,
+        task_id: str,
+        status: BackgroundTaskStatus,
+        error: str | None = None,
+    ) -> BackgroundTaskState:
+        if status not in ("completed", "failed", "cancelled"):
+            raise ValueError(
+                "background task terminal status must be completed, failed, or cancelled"
+            )
+        task_id = validate_background_task_id(task_id)
+        with self._connect(workspace) as connection:
+            updated_at = self._next_background_task_timestamp(connection=connection)
+            _ = connection.execute(
+                """
+                UPDATE background_tasks
+                SET status = ?, error = ?, finished_at = ?, updated_at = ?
+                WHERE workspace = ? AND task_id = ?
+                """,
+                (status, error, updated_at, updated_at, str(workspace), task_id),
+            )
+            connection.commit()
+        return self.load_background_task(workspace=workspace, task_id=task_id)
+
+    def request_background_task_cancel(
+        self,
+        *,
+        workspace: Path,
+        task_id: str,
+    ) -> BackgroundTaskState:
+        task_id = validate_background_task_id(task_id)
+        current = self.load_background_task(workspace=workspace, task_id=task_id)
+        if current.status == "queued":
+            return self.mark_background_task_terminal(
+                workspace=workspace,
+                task_id=task_id,
+                status="cancelled",
+                error="cancelled before start",
+            )
+        if current.status in ("completed", "failed", "cancelled"):
+            return current
+        with self._connect(workspace) as connection:
+            updated_at = self._next_background_task_timestamp(connection=connection)
+            _ = connection.execute(
+                """
+                UPDATE background_tasks
+                SET cancel_requested_at = ?, updated_at = ?
+                WHERE workspace = ? AND task_id = ?
+                """,
+                (updated_at, updated_at, str(workspace), task_id),
+            )
+            connection.commit()
+        return self.load_background_task(workspace=workspace, task_id=task_id)
+
+    def fail_incomplete_background_tasks(
+        self,
+        *,
+        workspace: Path,
+        message: str,
+    ) -> tuple[BackgroundTaskState, ...]:
+        with self._connect(workspace) as connection:
+            rows = cast(
+                list[sqlite3.Row],
+                connection.execute(
+                    """
+                    SELECT task_id FROM background_tasks
+                    WHERE workspace = ? AND status IN ('queued', 'running')
+                    ORDER BY updated_at ASC, task_id ASC
+                    """,
+                    (str(workspace),),
+                ).fetchall(),
+            )
+            if not rows:
+                return ()
+            updated_at = self._next_background_task_timestamp(connection=connection)
+            _ = connection.execute(
+                """
+                UPDATE background_tasks
+                SET status = 'failed', error = ?, finished_at = ?, updated_at = ?
+                WHERE workspace = ? AND status IN ('queued', 'running')
+                """,
+                (message, updated_at, updated_at, str(workspace)),
+            )
+            connection.commit()
+        return tuple(
+            self.load_background_task(workspace=workspace, task_id=cast(str, row["task_id"]))
+            for row in rows
+        )
+
+    def _background_task_state_from_row(self, row: sqlite3.Row) -> BackgroundTaskState:
+        metadata = json.loads(cast(str, row["request_metadata_json"]))
+        if not isinstance(metadata, dict):
+            raise ValueError("background task metadata must decode to an object")
+        return BackgroundTaskState(
+            task=BackgroundTaskRef(id=cast(str, row["task_id"])),
+            status=self._parse_background_task_status(cast(str, row["status"])),
+            request=BackgroundTaskRequestSnapshot(
+                prompt=cast(str, row["prompt"]),
+                session_id=cast(str | None, row["request_session_id"]),
+                metadata=cast(dict[str, object], metadata),
+                allocate_session_id=bool(cast(int, row["allocate_session_id"])),
+            ),
+            session_id=cast(str | None, row["session_id"]),
+            error=cast(str | None, row["error"]),
+            created_at=cast(int, row["created_at"]),
+            updated_at=cast(int, row["updated_at"]),
+            started_at=cast(int | None, row["started_at"]),
+            finished_at=cast(int | None, row["finished_at"]),
+            cancel_requested_at=cast(int | None, row["cancel_requested_at"]),
+        )
+
+    def _next_background_task_timestamp(self, *, connection: sqlite3.Connection) -> int:
+        row = cast(
+            sqlite3.Row,
+            connection.execute(
+                "SELECT COALESCE(MAX(updated_at), 0) + 1 AS next_ts FROM background_tasks"
+            ).fetchone(),
+        )
+        return cast(int, row["next_ts"])
 
     def _read_user_version(self, *, connection: sqlite3.Connection) -> int:
         row = cast(
