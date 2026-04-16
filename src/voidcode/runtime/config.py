@@ -421,6 +421,12 @@ def _parse_formatter_preset_config(
         field_path=f"{field_path}.cwd_policy",
         default=base_preset.cwd_policy if base_preset is not None else "nearest_root",
     )
+    if base_preset is None and not extensions:
+        raise ValueError(
+            "runtime config field "
+            f"'{field_path}.extensions' must contain at least one string "
+            "for custom formatter presets"
+        )
     return RuntimeFormatterPresetConfig(
         command=command,
         extensions=extensions,

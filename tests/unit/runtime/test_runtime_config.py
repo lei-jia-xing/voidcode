@@ -1212,6 +1212,11 @@ def test_runtime_config_rejects_invalid_max_steps(
             "runtime config field 'hooks.formatter_presets.python.fallback_commands\\[1\\]\\[0\\]'",
             id="hooks-formatter-preset-fallback-item-type",
         ),
+        pytest.param(
+            {"hooks": {"formatter_presets": {"php": {"command": ["php-cs-fixer", "fix"]}}}},
+            "runtime config field 'hooks.formatter_presets.php.extensions'",
+            id="hooks-formatter-preset-custom-name-missing-extension",
+        ),
     ],
 )
 def test_runtime_config_rejects_invalid_extension_domain_shapes(
