@@ -86,6 +86,41 @@ class LiteLLMBackendSingleAgentProvider:
             return stripped
         return f"{stripped}/v1"
 
+    @staticmethod
+    def _skill_system_message(request: SingleAgentTurnRequest) -> str | None:
+        if not request.applied_skills:
+            return None
+
+        rendered_skills: list[str] = []
+        for skill in request.applied_skills:
+            name = skill.get("name", "").strip() or "unnamed-skill"
+            description = skill.get("description", "").strip()
+            content = skill.get("content", "").strip()
+
+            lines = [f"## {name}"]
+            if description:
+                lines.append(f"Description: {description}")
+            if content:
+                lines.append(content)
+            rendered_skills.append("\n".join(lines))
+
+        if not rendered_skills:
+            return None
+
+        return (
+            "You must apply the following runtime-managed skills for this turn. "
+            "Treat them as active task instructions in addition to the user's request.\n\n"
+            + "\n\n".join(rendered_skills)
+        )
+
+    def _build_messages(self, request: SingleAgentTurnRequest) -> list[dict[str, str]]:
+        messages: list[dict[str, str]] = []
+        skill_message = self._skill_system_message(request)
+        if skill_message is not None:
+            messages.append({"role": "system", "content": skill_message})
+        messages.append({"role": "user", "content": request.prompt})
+        return messages
+
     def _auth_kwargs(self) -> dict[str, object]:
         if self.config is None:
             return {}
@@ -172,7 +207,7 @@ class LiteLLMBackendSingleAgentProvider:
         )
         payload: dict[str, object] = {
             "model": model_identifier,
-            "messages": [{"role": "user", "content": request.prompt}],
+            "messages": self._build_messages(request),
             "stream": False,
             "api_base": self._api_base(),
             "timeout": timeout_seconds,
@@ -224,7 +259,7 @@ class LiteLLMBackendSingleAgentProvider:
         )
         payload: dict[str, object] = {
             "model": model_identifier,
-            "messages": [{"role": "user", "content": request.prompt}],
+            "messages": self._build_messages(request),
             "stream": True,
             "api_base": self._api_base(),
             "timeout": timeout_seconds,
