@@ -60,7 +60,7 @@ _SIMPLIFIED_DEFAULTS: dict[str, tuple[str, str | None, dict[str, str]]] = {
     ),
     "opencode-go": (
         "https://opencode.ai/zen/go",
-        "https://opencode.ai/zen/v1",
+        "",
         {
             "kimi-k2.5": "kimi-k2.5",
             "minimax-m2.7": "minimax-m2.7",

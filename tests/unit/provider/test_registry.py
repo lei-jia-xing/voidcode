@@ -264,7 +264,7 @@ def test_registry_registers_opencode_go_provider() -> None:
     assert config is not None
     assert config.api_key == "opencode-go-key"
     assert config.base_url == "https://opencode.ai/zen/go"
-    assert config.discovery_base_url == "https://opencode.ai/zen/v1"
+    assert config.discovery_base_url == ""
     assert "kimi-k2.5" in config.model_map.values()
 
 
@@ -337,7 +337,7 @@ def test_registry_simplified_provider_uses_default_base_url_when_not_set() -> No
     opencode_go_config = registry.provider_config("opencode-go")
     assert opencode_go_config is not None
     assert opencode_go_config.base_url == "https://opencode.ai/zen/go"
-    assert opencode_go_config.discovery_base_url == "https://opencode.ai/zen/v1"
+    assert opencode_go_config.discovery_base_url == ""
     assert opencode_go_config.model_map.get("kimi-k2.5") == "kimi-k2.5"
     assert opencode_go_config.model_map.get("glm-5") == "glm-5"
 
