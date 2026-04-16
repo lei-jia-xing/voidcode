@@ -10,7 +10,9 @@ from typing import Protocol, cast
 from . import __version__
 from .doctor import (
     CapabilityCheckResult,
+    CapabilityCheckStatus,
     CapabilityDoctor,
+    DoctorCheckType,
     create_doctor_for_config,
     create_report,
     format_report,
@@ -340,6 +342,14 @@ def _handle_doctor_command(args: argparse.Namespace) -> int:
         doctor = CapabilityDoctor(workspace=workspace)
         doctor.add_executable_check("ast-grep", "ast-grep")
         results = doctor.results
+        results.append(
+            CapabilityCheckResult(
+                status=CapabilityCheckStatus.ERROR,
+                name="runtime.config",
+                check_type=DoctorCheckType.RUNTIME_CONFIG.value,
+                error_message=config_error,
+            )
+        )
     except Exception:
         # OSError (permissions, path not found) and other unexpected errors
         # should propagate so they are not silently swallowed.
@@ -361,8 +371,8 @@ def _handle_doctor_command(args: argparse.Namespace) -> int:
     else:
         print(format_report(report, verbose=verbose))
 
-    # Return 0 if healthy, 1 if there are issues
-    return 0 if report.is_healthy else 1
+    # Return 0 only when healthy and runtime config parsed successfully.
+    return 0 if (report.is_healthy and config_error is None) else 1
 
 
 def build_parser() -> argparse.ArgumentParser:

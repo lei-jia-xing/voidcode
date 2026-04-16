@@ -216,8 +216,11 @@ def create_doctor_for_config(
     # Check formatter presets.
     # When config.hooks is None, use the built-in defaults (same as runtime does).
     hooks_config = config.hooks if config.hooks is not None else _default_hooks_config()
-    for preset_name, preset in hooks_config.formatter_presets.items():
-        doctor.add_formatter_preset_check(preset_name, preset)
+    # Respect explicit disablement: runtime formatter execution short-circuits
+    # when hooks.enabled is False.
+    if hooks_config.enabled is not False:
+        for preset_name, preset in hooks_config.formatter_presets.items():
+            doctor.add_formatter_preset_check(preset_name, preset)
 
     # Check LSP servers (only when lsp.enabled is True).
     lsp_config = config.lsp

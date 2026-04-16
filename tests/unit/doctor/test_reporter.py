@@ -68,6 +68,31 @@ class TestCreateReport:
         assert report.is_healthy is False
         assert report.has_errors is True
 
+    def test_create_report_with_runtime_config_error_is_unhealthy(self) -> None:
+        """Runtime config parse errors should mark report unhealthy."""
+        results = [
+            CapabilityCheckResult(
+                status=CapabilityCheckStatus.READY,
+                name="ast-grep",
+                check_type="executable",
+                details={"command": "ast-grep"},
+            ),
+            CapabilityCheckResult(
+                status=CapabilityCheckStatus.ERROR,
+                name="runtime.config",
+                check_type="runtime_config",
+                error_message="runtime config parse failed",
+            ),
+        ]
+
+        report = create_report(results)
+
+        assert report.summary["total"] == 2
+        assert report.summary["ready"] == 1
+        assert report.summary["errors"] == 1
+        assert report.is_healthy is False
+        assert report.has_errors is True
+
 
 class TestFormatReport:
     """Tests for the format_report function."""
