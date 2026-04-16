@@ -240,6 +240,43 @@ def test_runtime_config_prefers_repo_file_over_environment(tmp_path: Path) -> No
     assert config.hooks == RuntimeHooksConfig(enabled=True)
 
 
+def test_runtime_config_parses_async_lifecycle_hook_surfaces(tmp_path: Path) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "enabled": True,
+                    "pre_tool": [["python", "scripts/pre_tool.py"]],
+                    "post_tool": [["python", "scripts/post_tool.py"]],
+                    "on_session_start": [["python", "scripts/session_start.py"]],
+                    "on_session_end": [["python", "scripts/session_end.py"]],
+                    "on_session_idle": [["python", "scripts/session_idle.py"]],
+                    "on_background_task_completed": [["python", "scripts/task_completed.py"]],
+                    "on_background_task_failed": [["python", "scripts/task_failed.py"]],
+                    "on_background_task_cancelled": [["python", "scripts/task_cancelled.py"]],
+                    "on_delegated_result_available": [["python", "scripts/delegated_result.py"]],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.hooks == RuntimeHooksConfig(
+        enabled=True,
+        pre_tool=(("python", "scripts/pre_tool.py"),),
+        post_tool=(("python", "scripts/post_tool.py"),),
+        on_session_start=(("python", "scripts/session_start.py"),),
+        on_session_end=(("python", "scripts/session_end.py"),),
+        on_session_idle=(("python", "scripts/session_idle.py"),),
+        on_background_task_completed=(("python", "scripts/task_completed.py"),),
+        on_background_task_failed=(("python", "scripts/task_failed.py"),),
+        on_background_task_cancelled=(("python", "scripts/task_cancelled.py"),),
+        on_delegated_result_available=(("python", "scripts/delegated_result.py"),),
+    )
+
+
 def test_runtime_config_prefers_explicit_model_override_over_repo_file_and_environment(
     tmp_path: Path,
 ) -> None:
