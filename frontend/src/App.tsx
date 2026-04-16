@@ -1,10 +1,29 @@
 import { useEffect, useRef, useState, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAppStore } from './store';
-import { Activity, Play, Settings, Code2, LayoutDashboard, CheckCircle2, Circle, Clock, Globe, Hash, AlertCircle, PauseCircle } from 'lucide-react';
+import { Activity, Play, Settings, Code2, LayoutDashboard, CheckCircle2, Circle, Clock, Globe, AlertCircle, PauseCircle } from 'lucide-react';
 import { RuntimeDebug } from './components/RuntimeDebug';
 import { deriveTasksFromEvents, deriveActivitiesFromEvents } from './lib/runtime/event-parser';
 import { EventEnvelope } from './lib/runtime/types';
+
+function formatSessionUpdatedAt(updatedAt: number, now = Date.now()): string {
+  const timestamp = updatedAt < 1_000_000_000_000 ? updatedAt * 1000 : updatedAt;
+  const diffMs = Math.max(0, now - timestamp);
+  const diffMinutes = Math.floor(diffMs / 60_000);
+  const diffHours = Math.floor(diffMs / 3_600_000);
+  const diffDays = Math.floor(diffMs / 86_400_000);
+
+  if (diffMinutes < 1) {
+    return 'just-now';
+  }
+  if (diffMinutes < 60) {
+    return `minutes:${diffMinutes}`;
+  }
+  if (diffHours < 24) {
+    return `hours:${diffHours}`;
+  }
+  return `days:${Math.max(1, diffDays)}`;
+}
 
 function getPendingApprovalEvent(events: EventEnvelope[]): EventEnvelope | null {
   for (let index = events.length - 1; index >= 0; index -= 1) {
@@ -89,12 +108,49 @@ function App() {
   };
 
   const getStatusColorClass = (status: string) => {
-    if (status === 'in_progress') return 'bg-indigo-500/10 text-indigo-400 border-indigo-500/20';
+    if (status === 'in_progress' || status === 'running') return 'bg-indigo-500/10 text-indigo-400 border-indigo-500/20';
     if (status === 'completed') return 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20';
     if (status === 'failed') return 'bg-rose-500/10 text-rose-400 border-rose-500/20';
     if (status === 'waiting') return 'bg-amber-500/10 text-amber-400 border-amber-500/20';
     return 'bg-slate-800 text-slate-400 border-slate-700';
   };
+
+  const getSessionStatusDotClass = (status: string) => {
+    if (status === 'running') return 'bg-indigo-400 shadow-[0_0_8px_rgba(129,140,248,0.5)] animate-pulse';
+    if (status === 'completed') return 'bg-emerald-400';
+    if (status === 'failed') return 'bg-rose-400';
+    if (status === 'waiting') return 'bg-amber-400';
+    return 'bg-slate-500';
+  };
+
+  const formatSessionUpdatedLabel = (updatedAt: number) => {
+    const token = formatSessionUpdatedAt(updatedAt);
+    if (token === 'just-now') {
+      return t('session.updatedAtJustNow');
+    }
+    const [unit, value] = token.split(':');
+    if (unit === 'minutes') {
+      return t('session.updatedAtMinutesAgo', { count: Number(value) });
+    }
+    if (unit === 'hours') {
+      return t('session.updatedAtHoursAgo', { count: Number(value) });
+    }
+    return t('session.updatedAtDaysAgo', { count: Number(value) });
+  };
+
+  const currentSessionSummary = useMemo(
+    () => sessions.find((s) => s.session.id === currentSessionId),
+    [sessions, currentSessionId]
+  );
+
+  const currentSessionTitle = useMemo(() => {
+    if (!currentSessionId) return null;
+    if (currentSessionSummary?.prompt) return currentSessionSummary.prompt;
+    const latestReq = [...currentSessionEvents]
+      .reverse()
+      .find((e) => e.event_type === 'runtime.request_received');
+    return (latestReq?.payload?.prompt as string) || currentSessionId;
+  }, [currentSessionId, currentSessionSummary, currentSessionEvents]);
 
   return (
     <div className="flex h-screen bg-[#09090b] text-slate-300 font-sans overflow-hidden selection:bg-indigo-500/30">
@@ -135,10 +191,33 @@ function App() {
                   type="button"
                   onClick={() => selectSession(s.session.id)}
                   disabled={isRunning || isReplayLoading}
-                  className={`w-full flex items-center justify-start px-4 py-2 rounded-lg transition-colors truncate ${currentSessionId === s.session.id ? 'bg-indigo-500/10 text-indigo-400' : 'text-slate-400 hover:bg-slate-800/50 hover:text-slate-200'}`}
+                  className={`w-full flex flex-col items-start justify-center px-4 py-2.5 rounded-lg transition-colors overflow-hidden border ${
+                    currentSessionId === s.session.id
+                      ? 'bg-indigo-500/10 border-indigo-500/30 shadow-[0_0_15px_rgba(99,102,241,0.05)] text-indigo-100'
+                      : 'border-transparent text-slate-400 hover:bg-slate-800/50 hover:text-slate-200'
+                  }`}
+                  title={s.prompt || s.session.id}
                 >
-                  <Hash className="w-4 h-4 mr-3 flex-shrink-0" />
-                  <span className="font-medium text-sm truncate">{s.session.id}</span>
+                  <div className="w-full flex items-start justify-between gap-2 mb-1">
+                    <div className="flex items-center truncate max-w-[75%]">
+                       <div className={`w-1.5 h-1.5 rounded-full flex-shrink-0 mr-2.5 ${getSessionStatusDotClass(s.status)}`} />
+                       <span className="font-medium text-sm truncate">
+                         {s.prompt || <span className="font-mono">{s.session.id.substring(0, 8)}</span>}
+                       </span>
+                     </div>
+                    <span className={`flex-shrink-0 text-[10px] px-2 py-0.5 rounded-md font-medium border ${getStatusColorClass(s.status)}`}>
+                      {s.status === 'running' ? t('session.agentBusy') : t(`task.status.${s.status}`)}
+                    </span>
+                   </div>
+                  <div className="w-full flex items-center justify-between gap-2 text-[11px] text-slate-500">
+                    <div className="min-w-0 flex flex-col items-start">
+                      <span className="font-mono truncate max-w-full" title={s.session.id}>
+                        {s.session.id.substring(0, 8)}
+                      </span>
+                      <span className="truncate max-w-full">{formatSessionUpdatedLabel(s.updated_at)}</span>
+                    </div>
+                    <span className="flex-shrink-0 font-medium">T{s.turn}</span>
+                  </div>
                 </button>
               ))}
             </div>
@@ -167,13 +246,20 @@ function App() {
       <main className="flex-1 flex flex-col min-w-0">
 
         <header className="h-16 flex items-center justify-between px-6 border-b border-slate-800 bg-[#0c0c0e]">
-          <h1 className="text-xl font-semibold text-slate-100 flex items-center space-x-2 truncate">
-            <span>{t('session.current')}</span>
-            {currentSessionId && (
-              <>
-                <span className="text-slate-600">/</span>
-                <span className="text-slate-400 text-sm font-normal truncate max-w-[200px]">{currentSessionId}</span>
-              </>
+          <h1 className="text-xl font-semibold text-slate-100 flex flex-col justify-center min-w-0">
+            <div className="flex items-center space-x-2 truncate">
+              <span>{t('session.current')}</span>
+              {currentSessionId && (
+                <>
+                  <span className="text-slate-600">/</span>
+                  <span className="text-slate-200 text-sm font-medium truncate max-w-[400px]">{currentSessionTitle}</span>
+                </>
+              )}
+            </div>
+            {currentSessionId && currentSessionTitle !== currentSessionId && (
+              <div className="text-xs text-slate-500 font-mono truncate mt-0.5" title={currentSessionId}>
+                {currentSessionId}
+              </div>
             )}
           </h1>
           <div className="flex items-center space-x-4">
