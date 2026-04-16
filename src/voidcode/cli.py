@@ -9,6 +9,7 @@ from typing import Protocol, cast
 
 from . import __version__
 from .doctor import (
+    CapabilityCheckResult,
     CapabilityDoctor,
     create_doctor_for_config,
     create_report,
@@ -16,7 +17,7 @@ from .doctor import (
     format_report_json,
 )
 from .provider.snapshot import resolved_provider_snapshot
-from .runtime.config import load_runtime_config, serialize_provider_fallback_config
+from .runtime.config import RuntimeConfig, load_runtime_config, serialize_provider_fallback_config
 from .runtime.contracts import RuntimeRequest, RuntimeStreamChunk
 from .runtime.events import EventEnvelope
 from .runtime.permission import PermissionDecision, PermissionResolution
@@ -327,15 +328,27 @@ def _handle_doctor_command(args: argparse.Namespace) -> int:
     json_output = cast(bool, args.json)
 
     # Load runtime config to get all capability settings
+    config_error: str | None = None
+    config: RuntimeConfig | None = None
+    results: list[CapabilityCheckResult] = []
     try:
         config = load_runtime_config(workspace)
-    except Exception:
-        # If config loading fails, run with minimal checks
+    except ValueError as exc:
+        # Config file has a parse/validation error - report it but continue
+        # with minimal checks so the user can still see what's wrong.
+        config_error = str(exc)
         doctor = CapabilityDoctor(workspace=workspace)
-        # Always check ast-grep
         doctor.add_executable_check("ast-grep", "ast-grep")
         results = doctor.results
-    else:
+    except Exception:
+        # OSError (permissions, path not found) and other unexpected errors
+        # should propagate so they are not silently swallowed.
+        raise
+
+    if config_error is not None:
+        print(f"WARN runtime config error: {config_error}", file=sys.stderr, flush=True)
+
+    if config is not None:
         # Create doctor with full config
         doctor = create_doctor_for_config(workspace, config)
         results = doctor.run_all_checks()
