@@ -8,6 +8,13 @@ from pathlib import Path
 from typing import Protocol, cast
 
 from . import __version__
+from .doctor import (
+    CapabilityDoctor,
+    create_doctor_for_config,
+    create_report,
+    format_report,
+    format_report_json,
+)
 from .provider.snapshot import resolved_provider_snapshot
 from .runtime.config import load_runtime_config, serialize_provider_fallback_config
 from .runtime.contracts import RuntimeRequest, RuntimeStreamChunk
@@ -313,6 +320,38 @@ def _handle_tui_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def _handle_doctor_command(args: argparse.Namespace) -> int:
+    """Run the capability doctor to check external tool readiness."""
+    workspace = cast(Path, args.workspace)
+    verbose = cast(bool, args.verbose)
+    json_output = cast(bool, args.json)
+
+    # Load runtime config to get all capability settings
+    try:
+        config = load_runtime_config(workspace)
+    except Exception:
+        # If config loading fails, run with minimal checks
+        doctor = CapabilityDoctor(workspace=workspace)
+        # Always check ast-grep
+        doctor.add_executable_check("ast-grep", "ast-grep")
+        results = doctor.results
+    else:
+        # Create doctor with full config
+        doctor = create_doctor_for_config(workspace, config)
+        results = doctor.run_all_checks()
+
+    # Create and format report
+    report = create_report(results, workspace=workspace)
+
+    if json_output:
+        print(format_report_json(report))
+    else:
+        print(format_report(report, verbose=verbose))
+
+    # Return 0 if healthy, 1 if there are issues
+    return 0 if report.is_healthy else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="voidcode",
@@ -468,6 +507,31 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional approval decision applied to the pending request during resume.",
     )
     resume_parser.set_defaults(handler=_handle_sessions_resume_command)
+
+    # Capability doctor command
+    doctor_parser = subparsers.add_parser(
+        "doctor",
+        help="Check runtime capability readiness (external tools, formatters, LSP, MCP).",
+    )
+    _ = doctor_parser.add_argument(
+        "--workspace",
+        type=Path,
+        default=Path.cwd(),
+        help="Workspace root used to resolve runtime config.",
+    )
+    _ = doctor_parser.add_argument(
+        "--verbose",
+        "-v",
+        action="store_true",
+        help="Show all capabilities including successful ones.",
+    )
+    _ = doctor_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Output report in JSON format.",
+    )
+    doctor_parser.set_defaults(handler=_handle_doctor_command)
+
     return parser
 
 
