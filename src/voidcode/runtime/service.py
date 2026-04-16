@@ -52,6 +52,7 @@ from .events import (
     RUNTIME_ACP_CONNECTED,
     RUNTIME_ACP_DISCONNECTED,
     RUNTIME_ACP_FAILED,
+    RUNTIME_FAILED,
     RUNTIME_LSP_SERVER_FAILED,
     RUNTIME_LSP_SERVER_STARTED,
     RUNTIME_LSP_SERVER_STOPPED,
@@ -1232,8 +1233,6 @@ class VoidCodeRuntime:
                 metadata=dict(validated_request.metadata),
                 allocate_session_id=validated_request.allocate_session_id,
             ),
-            created_at=1,
-            updated_at=1,
         )
         self._session_store.create_background_task(workspace=self._workspace, task=initial_state)
         worker = threading.Thread(
@@ -2019,9 +2018,13 @@ class VoidCodeRuntime:
             task = self.load_background_task(task_id)
             if task.status == "cancelled":
                 return
-            session_id = task.request.session_id
-            if session_id is None:
-                session_id = f"session-{uuid4().hex}"
+            request = RuntimeRequest(
+                prompt=task.request.prompt,
+                session_id=task.request.session_id,
+                metadata=task.request.metadata,
+                allocate_session_id=task.request.allocate_session_id,
+            )
+            session_id = self._resolve_session_id(request)
             running_task = self._session_store.mark_background_task_running(
                 workspace=self._workspace,
                 task_id=task_id,
@@ -2055,7 +2058,7 @@ class VoidCodeRuntime:
             error: str | None = None
             if terminal_status == "failed":
                 for event in reversed(response.events):
-                    if event.event_type == "runtime.failed":
+                    if event.event_type == RUNTIME_FAILED:
                         event_error = event.payload.get("error")
                         error = str(event_error) if event_error is not None else None
                         break

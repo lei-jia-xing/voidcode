@@ -564,6 +564,7 @@ class SqliteSessionStore:
     ) -> None:
         task_id = validate_background_task_id(task.task.id)
         with self._connect(workspace) as connection:
+            timestamp = self._next_background_task_timestamp(connection=connection)
             _ = connection.execute(
                 """
                 INSERT INTO background_tasks (
@@ -583,8 +584,8 @@ class SqliteSessionStore:
                     task.session_id,
                     task.error,
                     task.cancel_requested_at,
-                    task.created_at,
-                    task.updated_at,
+                    timestamp,
+                    timestamp,
                     task.started_at,
                     task.finished_at,
                 ),
@@ -707,7 +708,8 @@ class SqliteSessionStore:
                 """
                 UPDATE background_tasks
                 SET cancel_requested_at = ?, updated_at = ?
-                WHERE workspace = ? AND task_id = ?
+                WHERE workspace = ? AND task_id = ? AND status = 'running'
+                    AND cancel_requested_at IS NULL
                 """,
                 (updated_at, updated_at, str(workspace), task_id),
             )
