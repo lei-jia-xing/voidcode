@@ -37,6 +37,9 @@ class FormatterExecutor:
         self._workspace = workspace.resolve()
 
     def run(self, file_path: Path) -> FormatterExecutionResult:
+        if self._hooks.enabled is False:
+            return FormatterExecutionResult(status="not_configured", path=file_path)
+
         resolved = self._hooks.resolve_formatter(file_path)
         if not resolved:
             return FormatterExecutionResult(status="not_configured", path=file_path)

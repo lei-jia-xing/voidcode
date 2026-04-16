@@ -243,6 +243,37 @@ def test_edit_tool_skips_formatter_when_no_matching_preset(tmp_path: Path) -> No
     assert file_path.read_text(encoding="utf-8") == "hello voidcode\n"
 
 
+def test_edit_tool_skips_formatter_when_hooks_are_disabled(tmp_path: Path) -> None:
+    file_path = tmp_path / "main.py"
+    file_path.write_text("print('hi')\n", encoding="utf-8")
+
+    tool = EditTool(
+        hooks_config=RuntimeHooksConfig(
+            enabled=False,
+            formatter_presets={
+                "python": RuntimeFormatterPresetConfig(
+                    command=("missing-formatter-binary",),
+                    extensions=(".py",),
+                )
+            },
+        )
+    )
+
+    result = tool.invoke(
+        ToolCall(
+            tool_name="edit",
+            arguments={"path": "main.py", "oldString": "'hi'", "newString": "'bye'"},
+        ),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert result.content == "Edit applied successfully."
+    assert "diagnostics" not in result.data
+    assert "formatter" not in result.data
+    assert file_path.read_text(encoding="utf-8") == "print('bye')\n"
+
+
 def test_edit_tool_surfaces_warning_when_formatter_executable_is_missing(tmp_path: Path) -> None:
     file_path = tmp_path / "main.py"
     file_path.write_text("print('hi')\n", encoding="utf-8")

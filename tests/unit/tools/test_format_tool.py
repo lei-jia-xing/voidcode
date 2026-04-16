@@ -175,6 +175,34 @@ def test_format_tool_supports_custom_user_defined_formatter_presets(tmp_path: Pa
     assert target.read_text(encoding="utf-8") == "<?php echo 'formatted';\n"
 
 
+def test_format_tool_honors_disabled_hooks_config(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "example.py"
+    target.write_text("print('hi')\n", encoding="utf-8")
+
+    tool = FormatTool(
+        RuntimeHooksConfig(
+            enabled=False,
+            formatter_presets={
+                "python": RuntimeFormatterPresetConfig(
+                    command=("missing-formatter-binary",),
+                    extensions=(".py",),
+                )
+            },
+        ),
+        workspace,
+    )
+
+    result = tool.invoke(
+        ToolCall(tool_name="format_file", arguments={"path": "example.py"}),
+        workspace=workspace,
+    )
+
+    assert result.status == "error"
+    assert result.error == f"No formatter available for {target}"
+
+
 def test_format_tool_treats_non_enoent_launch_failure_as_formatter_attempt_failure(
     tmp_path: Path,
 ) -> None:

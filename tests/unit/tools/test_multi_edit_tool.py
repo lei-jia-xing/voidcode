@@ -132,6 +132,42 @@ def test_multi_edit_formats_once_after_all_edits(tmp_path: Path) -> None:
     assert "VALUE='A'" in str(result.data["diff"])
 
 
+def test_multi_edit_skips_formatter_when_hooks_are_disabled(tmp_path: Path) -> None:
+    target = tmp_path / "sample.py"
+    target.write_text("value = 'a'\nother = 'b'\n", encoding="utf-8")
+
+    tool = MultiEditTool(
+        hooks_config=RuntimeHooksConfig(
+            enabled=False,
+            formatter_presets={
+                "python": RuntimeFormatterPresetConfig(
+                    command=("missing-formatter-binary",),
+                    extensions=(".py",),
+                )
+            },
+        )
+    )
+    result = tool.invoke(
+        ToolCall(
+            tool_name="multi_edit",
+            arguments={
+                "path": "sample.py",
+                "edits": [
+                    {"oldString": "'a'", "newString": "'A'"},
+                    {"oldString": "'b'", "newString": "'B'"},
+                ],
+            },
+        ),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert result.data["applied"] == 2
+    assert "formatter" not in result.data
+    assert "diagnostics" not in result.data
+    assert target.read_text(encoding="utf-8") == "value = 'A'\nother = 'B'\n"
+
+
 def test_multi_edit_keeps_edits_successful_when_formatter_times_out(tmp_path: Path) -> None:
     target = tmp_path / "sample.py"
     target.write_text("value = 'a'\nother = 'b'\n", encoding="utf-8")
