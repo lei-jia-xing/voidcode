@@ -8,6 +8,8 @@ from typing import Literal
 
 from ..hook.config import RuntimeFormatterPresetConfig, RuntimeHooksConfig
 
+FORMATTER_TIMEOUT_SECONDS = 10.0
+
 type FormatterExecutionStatus = Literal[
     "not_configured",
     "formatted",
@@ -54,7 +56,24 @@ class FormatterExecutor:
                     cwd=cwd,
                     capture_output=True,
                     text=True,
+                    timeout=FORMATTER_TIMEOUT_SECONDS,
                 )
+            except subprocess.TimeoutExpired as exc:
+                timeout_message = f"formatter timed out after {FORMATTER_TIMEOUT_SECONDS:.1f}s"
+                stdout = self._coerce_timeout_stream(exc.stdout or exc.output)
+                stderr = self._coerce_timeout_stream(exc.stderr) or timeout_message
+                failed_attempts.append(
+                    (
+                        cmd,
+                        subprocess.CompletedProcess(
+                            args=list(cmd),
+                            returncode=124,
+                            stdout=stdout,
+                            stderr=stderr,
+                        ),
+                    )
+                )
+                continue
             except OSError as exc:
                 if exc.errno == errno.ENOENT:
                     missing_tools.append(command_parts[0])
@@ -140,3 +159,9 @@ class FormatterExecutor:
                 break
             current = current.parent
         return None
+
+    @staticmethod
+    def _coerce_timeout_stream(stream: bytes | str | None) -> str:
+        if isinstance(stream, bytes):
+            return stream.decode("utf-8", errors="replace")
+        return stream or ""

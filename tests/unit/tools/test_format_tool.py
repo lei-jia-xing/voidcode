@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 import sys
 import textwrap
 from pathlib import Path
@@ -210,3 +211,35 @@ def test_format_tool_treats_non_enoent_launch_failure_as_formatter_attempt_failu
         ["custom-formatter", str(target)],
         [sys.executable, "-c", "print('fallback')", str(target)],
     ]
+
+
+def test_format_tool_bounds_formatter_timeout(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "example.py"
+    target.write_text("print('hi')\n", encoding="utf-8")
+
+    tool = FormatTool(
+        RuntimeHooksConfig(
+            formatter_presets={
+                "python": RuntimeFormatterPresetConfig(
+                    command=("custom-formatter",),
+                    extensions=(".py",),
+                )
+            }
+        ),
+        workspace,
+    )
+
+    with patch(
+        "voidcode.tools._formatter.subprocess.run",
+        side_effect=subprocess.TimeoutExpired(cmd=["custom-formatter"], timeout=10.0),
+    ):
+        result = tool.invoke(
+            ToolCall(tool_name="format_file", arguments={"path": "example.py"}),
+            workspace=workspace,
+        )
+
+    assert result.status == "error"
+    assert "timed out after 10.0s" in (result.error or "")
+    assert result.data["attempted_commands"] == [["custom-formatter", str(target)]]

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import subprocess
 import sys
 import textwrap
 from pathlib import Path
+from typing import cast
+from unittest.mock import patch
 
 import pytest
 
@@ -376,9 +379,46 @@ def test_edit_tool_keeps_edit_successful_when_formatter_returns_non_zero(tmp_pat
     assert file_path.read_text(encoding="utf-8") == "print('partial')\n"
     diagnostics = result.data["diagnostics"]
     assert isinstance(diagnostics, list)
-    assert diagnostics[0]["source"] == "formatter"
-    assert "Format failed for main.py" in str(diagnostics[0]["message"])
+    first_diagnostic = cast(dict[str, object], diagnostics[0])
+    assert first_diagnostic["source"] == "formatter"
+    assert "Format failed for main.py" in str(first_diagnostic["message"])
     assert "print('partial')" in str(result.data["diff"])
+
+
+def test_edit_tool_keeps_edit_successful_when_formatter_times_out(tmp_path: Path) -> None:
+    file_path = tmp_path / "main.py"
+    file_path.write_text("print('hi')\n", encoding="utf-8")
+
+    tool = EditTool(
+        hooks_config=RuntimeHooksConfig(
+            formatter_presets={
+                "python": RuntimeFormatterPresetConfig(
+                    command=("slow-formatter",),
+                    extensions=(".py",),
+                )
+            }
+        )
+    )
+
+    with patch(
+        "voidcode.tools._formatter.subprocess.run",
+        side_effect=subprocess.TimeoutExpired(cmd=["slow-formatter"], timeout=10.0),
+    ):
+        result = tool.invoke(
+            ToolCall(
+                tool_name="edit",
+                arguments={"path": "main.py", "oldString": "'hi'", "newString": "'bye'"},
+            ),
+            workspace=tmp_path,
+        )
+
+    assert result.status == "ok"
+    assert "Formatter warning:" in (result.content or "")
+    diagnostics = result.data["diagnostics"]
+    assert isinstance(diagnostics, list)
+    first_diagnostic = cast(dict[str, object], diagnostics[0])
+    assert "timed out after 10.0s" in str(first_diagnostic["message"])
+    assert file_path.read_text(encoding="utf-8") == "print('bye')\n"
 
 
 def test_tools_package_and_default_registry_export_edit_tool() -> None:

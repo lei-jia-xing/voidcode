@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import subprocess
 import sys
 import textwrap
 from pathlib import Path
+from typing import cast
+from unittest.mock import patch
 
 import pytest
 
@@ -127,3 +130,44 @@ def test_multi_edit_formats_once_after_all_edits(tmp_path: Path) -> None:
         "attempted_commands": [[sys.executable, str(formatter_script), str(target)]],
     }
     assert "VALUE='A'" in str(result.data["diff"])
+
+
+def test_multi_edit_keeps_edits_successful_when_formatter_times_out(tmp_path: Path) -> None:
+    target = tmp_path / "sample.py"
+    target.write_text("value = 'a'\nother = 'b'\n", encoding="utf-8")
+
+    tool = MultiEditTool(
+        hooks_config=RuntimeHooksConfig(
+            formatter_presets={
+                "python": RuntimeFormatterPresetConfig(
+                    command=("slow-formatter",),
+                    extensions=(".py",),
+                )
+            }
+        )
+    )
+
+    with patch(
+        "voidcode.tools._formatter.subprocess.run",
+        side_effect=subprocess.TimeoutExpired(cmd=["slow-formatter"], timeout=10.0),
+    ):
+        result = tool.invoke(
+            ToolCall(
+                tool_name="multi_edit",
+                arguments={
+                    "path": "sample.py",
+                    "edits": [
+                        {"oldString": "'a'", "newString": "'A'"},
+                        {"oldString": "'b'", "newString": "'B'"},
+                    ],
+                },
+            ),
+            workspace=tmp_path,
+        )
+
+    assert result.status == "ok"
+    assert target.read_text(encoding="utf-8") == "value = 'A'\nother = 'B'\n"
+    diagnostics = result.data["diagnostics"]
+    assert isinstance(diagnostics, list)
+    first_diagnostic = cast(dict[str, object], diagnostics[0])
+    assert "timed out after 10.0s" in str(first_diagnostic["message"])
