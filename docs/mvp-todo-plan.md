@@ -221,9 +221,20 @@ VoidCode 已经拥有扎实的 pre-MVP 基础：
 1. 事件/API/配置契约
 2. 受监管的运行时执行循环
 3. 极简配置界面
-4. TUI MVP 客户端
-5. Web 客户端实时集成
-6. 集成/演示加固
+4. Web 客户端实时集成
+5. 集成/演示加固
+6. TUI MVP 客户端（在主路径产品化之后再继续）
+
+### 当前产品化冲刺的判断标准
+
+在有限时间内，MVP 待办不应再按“还有哪些能力没做”排序，而应按“是否让用户更快完成第一次真实改码任务”排序。当前最重要的四个结果是：
+
+1. **第一次安装后能尽快完成真实任务**：常见环境缺失要能被发现并给出修复建议；
+2. **编辑后的文件状态可信**：编辑、格式化、重读后的结果保持一致；
+3. **默认项目尽量少配置即可工作**：LSP / formatter defaults 能覆盖主流 Python / TypeScript 场景；
+4. **主客户端闭环稳定**：CLI + Web 可以稳定跑通输入任务、工具执行、审批、恢复与继续执行。
+
+因此，TUI polish、额外 provider 扩展和更宽的 capability surface，不应先于这些结果。
 
 ## 仓库立即要做的待办
 
@@ -232,5 +243,9 @@ VoidCode 已经拥有扎实的 pre-MVP 基础：
 - [x] 为运行时/会话设置添加可配置性设计笔记
 - [x] 完成 issue #70 的第一实现切片：为 waiting / terminal session 落地内部 resume checkpoint groundwork，并保持 replay / resume 兼容
 - [x] 完成 issue #82：定义 retention / compaction / checkpoint invalidation 语义
-- [ ] 为 issue #84 预留后续实现入口：cold-session archive / replay strategy
+- [x] 完成 issue #84：为 cold-session archive / replay strategy 落地后续实现入口
+- [ ] 完成 issue #122：为外部工具与运行环境提供 capability doctor，降低首次使用门槛
+- [ ] 完成 issue #120：让 edit 流程具备 formatter-aware 和 re-read aligned 行为
+- [ ] 继续完成 issue #111 / #110：把默认 LSP / formatter 配置推进到主流项目开箱可用
+- [ ] 用 CLI + Web 主路径固化一条标准 demo flow，并把失败诊断/恢复路径写成可重复操作手册
 - [ ] 在 runtime 主线稳定之后，再重新评估 TUI 特定 epic 和剩余客户端 polish 工作

@@ -12,6 +12,7 @@ from voidcode.provider.config import (
     OpenAIProviderConfig,
     ProviderConfigs,
     ProviderFallbackConfig,
+    SimplifiedProviderConfig,
     parse_provider_configs_payload,
     parse_provider_fallback_payload,
 )
@@ -21,8 +22,11 @@ def test_parse_provider_configs_payload_parses_provider_blocks_directly() -> Non
     parsed = parse_provider_configs_payload(
         {
             "openai": {"base_url": "https://api.openai.test"},
-            "anthropic": {},
-            "google": {"auth": {"method": "api_key"}},
+            "anthropic": {"discovery_base_url": "https://api.anthropic.com"},
+            "google": {
+                "auth": {"method": "api_key"},
+                "discovery_base_url": "https://generativelanguage.googleapis.com",
+            },
             "copilot": {
                 "auth": {
                     "method": "oauth",
@@ -58,10 +62,15 @@ def test_parse_provider_configs_payload_parses_provider_blocks_directly() -> Non
         openai=OpenAIProviderConfig(
             api_key="openai-env-key",
             base_url="https://api.openai.test",
+            discovery_base_url=None,
         ),
-        anthropic=AnthropicProviderConfig(api_key="anthropic-env-key"),
+        anthropic=AnthropicProviderConfig(
+            api_key="anthropic-env-key",
+            discovery_base_url="https://api.anthropic.com",
+        ),
         google=GoogleProviderConfig(
-            auth=GoogleProviderAuthConfig(method="api_key", api_key="google-env-key")
+            auth=GoogleProviderAuthConfig(method="api_key", api_key="google-env-key"),
+            discovery_base_url="https://generativelanguage.googleapis.com",
         ),
         copilot=CopilotProviderConfig(
             auth=CopilotProviderAuthConfig(
@@ -207,4 +216,252 @@ def test_parse_provider_fallback_payload_rejects_duplicate_chain_models() -> Non
                 "fallback_models": ["opencode/gpt-5.4"],
             },
             source="runtime config field 'provider_fallback'",
+        )
+
+
+# =============================================================================
+# Simplified Provider Config Tests (GLM, MiniMax, Kimi, OpenCode Go, Qwen)
+# =============================================================================
+
+
+def test_parse_glm_provider_config_from_env() -> None:
+    parsed = parse_provider_configs_payload(
+        {"glm": {}},
+        source="runtime config field 'providers'",
+        env={"GLM_API_KEY": "glm-env-key"},
+    )
+
+    assert parsed is not None
+    assert parsed.glm == SimplifiedProviderConfig(api_key="glm-env-key")
+
+
+def test_parse_glm_provider_config_with_api_key() -> None:
+    parsed = parse_provider_configs_payload(
+        {"glm": {"api_key": "glm-direct-key"}},
+        source="runtime config field 'providers'",
+        env={"GLM_API_KEY": "glm-env-key"},
+    )
+
+    assert parsed is not None
+    assert parsed.glm == SimplifiedProviderConfig(api_key="glm-direct-key")
+
+
+def test_parse_glm_provider_config_with_base_url_and_model_map() -> None:
+    parsed = parse_provider_configs_payload(
+        {
+            "glm": {
+                "api_key": "glm-key",
+                "base_url": "https://custom.glm.cn",
+                "model_map": {"glm4": "glm-4-flash", "glm4-plus": "glm-4-plus"},
+            }
+        },
+        source="runtime config field 'providers'",
+    )
+
+    assert parsed is not None
+    assert parsed.glm == SimplifiedProviderConfig(
+        api_key="glm-key",
+        base_url="https://custom.glm.cn",
+        model_map={"glm4": "glm-4-flash", "glm4-plus": "glm-4-plus"},
+    )
+
+
+def test_parse_minimax_provider_config_from_env() -> None:
+    parsed = parse_provider_configs_payload(
+        {"minimax": {}},
+        source="runtime config field 'providers'",
+        env={"MINIMAX_API_KEY": "minimax-env-key"},
+    )
+
+    assert parsed is not None
+    assert parsed.minimax == SimplifiedProviderConfig(api_key="minimax-env-key")
+
+
+def test_parse_minimax_provider_config_with_timeout() -> None:
+    parsed = parse_provider_configs_payload(
+        {
+            "minimax": {
+                "api_key": "minimax-key",
+                "timeout_seconds": 60.0,
+            }
+        },
+        source="runtime config field 'providers'",
+    )
+
+    assert parsed is not None
+    assert parsed.minimax == SimplifiedProviderConfig(
+        api_key="minimax-key",
+        timeout_seconds=60.0,
+    )
+
+
+def test_parse_kimi_provider_config_from_env() -> None:
+    parsed = parse_provider_configs_payload(
+        {"kimi": {}},
+        source="runtime config field 'providers'",
+        env={"KIMI_API_KEY": "kimi-env-key"},
+    )
+
+    assert parsed is not None
+    assert parsed.kimi == SimplifiedProviderConfig(api_key="kimi-env-key")
+
+
+def test_parse_kimi_provider_config_with_base_url() -> None:
+    parsed = parse_provider_configs_payload(
+        {
+            "kimi": {
+                "api_key": "kimi-key",
+                "base_url": "https://api.moonshot.cn/v1",
+            }
+        },
+        source="runtime config field 'providers'",
+    )
+
+    assert parsed is not None
+    assert parsed.kimi == SimplifiedProviderConfig(
+        api_key="kimi-key",
+        base_url="https://api.moonshot.cn/v1",
+    )
+
+
+def test_parse_simplified_provider_config_with_discovery_base_url() -> None:
+    parsed = parse_provider_configs_payload(
+        {
+            "kimi": {
+                "api_key": "kimi-key",
+                "base_url": "https://api.moonshot.ai",
+                "discovery_base_url": "https://api.moonshot.ai/v1",
+            }
+        },
+        source="runtime config field 'providers'",
+    )
+
+    assert parsed is not None
+    assert parsed.kimi == SimplifiedProviderConfig(
+        api_key="kimi-key",
+        base_url="https://api.moonshot.ai",
+        discovery_base_url="https://api.moonshot.ai/v1",
+    )
+
+
+def test_parse_opencode_go_provider_config_from_env() -> None:
+    parsed = parse_provider_configs_payload(
+        {"opencode-go": {}},
+        source="runtime config field 'providers'",
+        env={"OPENCODE_GO_API_KEY": "opencode-go-env-key"},
+    )
+
+    assert parsed is not None
+    assert parsed.opencode_go == SimplifiedProviderConfig(api_key="opencode-go-env-key")
+
+
+def test_parse_opencode_go_provider_config_with_model_map() -> None:
+    parsed = parse_provider_configs_payload(
+        {
+            "opencode-go": {
+                "api_key": "opencode-go-key",
+                "model_map": {"gpt-4o": "opencode/gpt-4o", "claude": "opencode/claude-3-5-sonnet"},
+            }
+        },
+        source="runtime config field 'providers'",
+    )
+
+    assert parsed is not None
+    assert parsed.opencode_go == SimplifiedProviderConfig(
+        api_key="opencode-go-key",
+        model_map={"gpt-4o": "opencode/gpt-4o", "claude": "opencode/claude-3-5-sonnet"},
+    )
+
+
+def test_parse_qwen_provider_config_from_env() -> None:
+    parsed = parse_provider_configs_payload(
+        {"qwen": {}},
+        source="runtime config field 'providers'",
+        env={"DASHSCOPE_API_KEY": "qwen-env-key"},
+    )
+
+    assert parsed is not None
+    assert parsed.qwen == SimplifiedProviderConfig(api_key="qwen-env-key")
+
+
+def test_parse_qwen_provider_config_with_base_url() -> None:
+    parsed = parse_provider_configs_payload(
+        {
+            "qwen": {
+                "api_key": "qwen-key",
+                "base_url": "https://dashscope.aliyuncs.com",
+            }
+        },
+        source="runtime config field 'providers'",
+    )
+
+    assert parsed is not None
+    assert parsed.qwen == SimplifiedProviderConfig(
+        api_key="qwen-key",
+        base_url="https://dashscope.aliyuncs.com",
+    )
+
+
+def test_parse_multiple_simplified_providers_together() -> None:
+    parsed = parse_provider_configs_payload(
+        {
+            "glm": {"api_key": "glm-key"},
+            "minimax": {"api_key": "minimax-key"},
+            "kimi": {"api_key": "kimi-key"},
+            "opencode-go": {"api_key": "opencode-go-key"},
+            "qwen": {"api_key": "qwen-key"},
+        },
+        source="runtime config field 'providers'",
+    )
+
+    assert parsed is not None
+    assert parsed.glm == SimplifiedProviderConfig(api_key="glm-key")
+    assert parsed.minimax == SimplifiedProviderConfig(api_key="minimax-key")
+    assert parsed.kimi == SimplifiedProviderConfig(api_key="kimi-key")
+    assert parsed.opencode_go == SimplifiedProviderConfig(api_key="opencode-go-key")
+    assert parsed.qwen == SimplifiedProviderConfig(api_key="qwen-key")
+
+
+def test_parse_simplified_provider_with_api_key_env_var_override() -> None:
+    parsed = parse_provider_configs_payload(
+        {
+            "glm": {
+                "api_key": "direct-key",
+                "api_key_env_var": "MY_CUSTOM_GLM_KEY",
+            }
+        },
+        source="runtime config field 'providers'",
+        env={"MY_CUSTOM_GLM_KEY": "env-key", "GLM_API_KEY": "default-env-key"},
+    )
+
+    assert parsed is not None
+    assert parsed.glm == SimplifiedProviderConfig(
+        api_key="direct-key",
+        api_key_env_var="MY_CUSTOM_GLM_KEY",
+    )
+
+
+def test_reject_unknown_simplified_provider() -> None:
+    with pytest.raises(
+        ValueError, match="runtime config field 'providers.deepseek' is not supported"
+    ):
+        _ = parse_provider_configs_payload(
+            {"deepseek": {"api_key": "key"}},
+            source="runtime config field 'providers'",
+        )
+
+
+@pytest.mark.parametrize("provider_name", ["glm", "minimax", "kimi", "opencode-go", "qwen"])
+def test_simplified_provider_not_allowed_in_custom_block(provider_name: str) -> None:
+    with pytest.raises(
+        ValueError,
+        match=rf"runtime config field 'providers.custom\.{provider_name}'",
+    ):
+        _ = parse_provider_configs_payload(
+            {
+                "custom": {
+                    provider_name: {"api_key": "key"},
+                }
+            },
+            source="runtime config field 'providers'",
         )

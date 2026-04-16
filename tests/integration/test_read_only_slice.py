@@ -1748,6 +1748,7 @@ def test_runtime_resume_accepts_legacy_sessions_without_runtime_config_metadata(
             "compaction_reason": None,
             "original_tool_result_count": 1,
             "retained_tool_result_count": 1,
+            "max_tool_result_count": 4,
         },
     }
 

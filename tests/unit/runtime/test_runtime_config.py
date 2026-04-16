@@ -34,14 +34,159 @@ from voidcode.runtime.config import (
     RuntimeToolsBuiltinConfig,
     RuntimeToolsConfig,
     RuntimeTuiConfig,
+    RuntimeTuiPreferences,
+    RuntimeTuiReadingPreferences,
+    RuntimeTuiThemePreferences,
+    effective_runtime_tui_preferences,
     load_runtime_config,
     runtime_config_path,
+    save_global_tui_preferences,
+    save_workspace_tui_preferences,
+    user_runtime_config_path,
 )
 
 _parse_tui_config = runtime_config.__dict__["_parse_tui_config"]
 _parse_tools_config = runtime_config.__dict__["_parse_tools_config"]
 _parse_skills_config = runtime_config.__dict__["_parse_skills_config"]
 _parse_acp_config = runtime_config.__dict__["_parse_acp_config"]
+
+PRETTIER_ROOT_MARKERS = (
+    "package.json",
+    ".prettierrc",
+    ".prettierrc.json",
+    ".prettierrc.yml",
+    ".prettierrc.yaml",
+    ".prettierrc.js",
+    ".prettierrc.cjs",
+    ".prettierrc.mjs",
+    "prettier.config.js",
+    "prettier.config.cjs",
+    "prettier.config.mjs",
+)
+
+PRETTIER_FALLBACK_COMMANDS = (
+    ("bunx", "prettier", "--write"),
+    ("pnpm", "exec", "prettier", "--write"),
+    ("npx", "prettier", "--write"),
+)
+
+
+def _prettier_preset(*extensions: str) -> RuntimeFormatterPresetConfig:
+    return RuntimeFormatterPresetConfig(
+        command=("prettier", "--write"),
+        extensions=extensions,
+        root_markers=PRETTIER_ROOT_MARKERS,
+        fallback_commands=PRETTIER_FALLBACK_COMMANDS,
+        cwd_policy="nearest_root",
+    )
+
+
+def _shfmt_preset(*extensions: str) -> RuntimeFormatterPresetConfig:
+    return RuntimeFormatterPresetConfig(
+        command=("shfmt", "-w"),
+        extensions=extensions,
+        root_markers=(".editorconfig", ".shfmt.conf", ".shfmt"),
+        cwd_policy="nearest_root",
+    )
+
+
+def _dockerfmt_preset(*extensions: str) -> RuntimeFormatterPresetConfig:
+    return RuntimeFormatterPresetConfig(
+        command=("dockerfmt", "--write"),
+        extensions=extensions,
+        root_markers=(".dockerfmt.toml", ".dockerfmt.hcl", "Dockerfile"),
+        cwd_policy="nearest_root",
+    )
+
+
+def _clang_format_preset(*extensions: str) -> RuntimeFormatterPresetConfig:
+    return RuntimeFormatterPresetConfig(
+        command=("clang-format", "-i"),
+        extensions=extensions,
+        root_markers=(".clang-format", "_clang-format", "compile_commands.json", "CMakeLists.txt"),
+        cwd_policy="nearest_root",
+    )
+
+
+def _sql_formatter_preset() -> RuntimeFormatterPresetConfig:
+    return RuntimeFormatterPresetConfig(
+        command=("sql-formatter", "--fix"),
+        extensions=(".sql",),
+        root_markers=(".sql-formatter.json", ".sql-formatter.jsonc", "package.json"),
+        fallback_commands=(
+            ("bunx", "sql-formatter", "--fix"),
+            ("pnpm", "exec", "sql-formatter", "--fix"),
+            ("npx", "sql-formatter", "--fix"),
+        ),
+        cwd_policy="nearest_root",
+    )
+
+
+DEFAULT_FORMATTER_PRESETS = {
+    "python": RuntimeFormatterPresetConfig(
+        command=("ruff", "format"),
+        extensions=(".py", ".pyi"),
+        root_markers=("pyproject.toml", "ruff.toml", ".ruff.toml"),
+        fallback_commands=(("uvx", "ruff", "format"), ("python", "-m", "ruff", "format")),
+        cwd_policy="nearest_root",
+    ),
+    "typescript": _prettier_preset(".ts", ".tsx", ".mts", ".cts"),
+    "javascript": _prettier_preset(".js", ".jsx", ".mjs", ".cjs"),
+    "json": _prettier_preset(".json", ".jsonc"),
+    "markdown": _prettier_preset(".md", ".mdx"),
+    "yaml": _prettier_preset(".yaml", ".yml"),
+    "html": _prettier_preset(".html", ".htm"),
+    "css": _prettier_preset(".css"),
+    "scss": _prettier_preset(".scss"),
+    "less": _prettier_preset(".less"),
+    "vue": _prettier_preset(".vue"),
+    "svelte": _prettier_preset(".svelte"),
+    "astro": _prettier_preset(".astro"),
+    "graphql": _prettier_preset(".graphql", ".gql"),
+    "handlebars": _prettier_preset(".hbs", ".handlebars"),
+    "toml": RuntimeFormatterPresetConfig(
+        command=("taplo", "fmt"),
+        extensions=(".toml",),
+        root_markers=("taplo.toml", ".taplo.toml", "pyproject.toml", "Cargo.toml"),
+        cwd_policy="nearest_root",
+    ),
+    "shell": _shfmt_preset(".sh", ".bash", ".zsh"),
+    "dockerfile": _dockerfmt_preset("Dockerfile"),
+    "nix": RuntimeFormatterPresetConfig(
+        command=("nixfmt",),
+        extensions=(".nix",),
+        root_markers=("flake.nix", "shell.nix", "default.nix"),
+        cwd_policy="nearest_root",
+    ),
+    "sql": _sql_formatter_preset(),
+    "rust": RuntimeFormatterPresetConfig(
+        command=("rustfmt",),
+        extensions=(".rs",),
+        root_markers=("Cargo.toml", "rustfmt.toml", ".rustfmt.toml"),
+        cwd_policy="nearest_root",
+    ),
+    "go": RuntimeFormatterPresetConfig(
+        command=("gofmt", "-w"),
+        extensions=(".go",),
+        root_markers=("go.mod",),
+        cwd_policy="nearest_root",
+    ),
+    "c": _clang_format_preset(".c", ".h"),
+    "cpp": _clang_format_preset(".cc", ".cpp", ".cxx", ".hpp", ".hh", ".hxx"),
+    "java": RuntimeFormatterPresetConfig(
+        command=("google-java-format", "--replace"),
+        extensions=(".java",),
+        root_markers=(".google-java-format", "pom.xml", "build.gradle", "build.gradle.kts"),
+        cwd_policy="nearest_root",
+    ),
+    "kotlin": RuntimeFormatterPresetConfig(
+        command=("ktlint", "-F"),
+        extensions=(".kt", ".kts"),
+        root_markers=("ktlint.yml", ".editorconfig", "build.gradle.kts"),
+        cwd_policy="nearest_root",
+    ),
+    "xml": _prettier_preset(".xml"),
+}
 
 
 def test_runtime_config_defaults_to_ask_without_file_or_env(tmp_path: Path) -> None:
@@ -542,30 +687,12 @@ def test_runtime_config_parses_formatter_preset_hooks(tmp_path: Path) -> None:
 
     assert config.hooks == RuntimeHooksConfig(
         enabled=True,
-        formatter_presets={
-            "python": RuntimeFormatterPresetConfig(command=("ruff", "format")),
-            "javascript": RuntimeFormatterPresetConfig(command=("prettier", "--write")),
-            "json": RuntimeFormatterPresetConfig(command=("prettier", "--write")),
-            "markdown": RuntimeFormatterPresetConfig(command=("prettier", "--write")),
-            "yaml": RuntimeFormatterPresetConfig(command=("prettier", "--write")),
-            "rust": RuntimeFormatterPresetConfig(command=("rustfmt",)),
-            "go": RuntimeFormatterPresetConfig(command=("gofmt",)),
-            "typescript": RuntimeFormatterPresetConfig(command=("prettier", "--write")),
-        },
+        formatter_presets=DEFAULT_FORMATTER_PRESETS,
     )
 
 
 def test_runtime_hooks_config_defaults_formatter_presets_to_common_language_builtins() -> None:
-    assert RuntimeHooksConfig().formatter_presets == {
-        "python": RuntimeFormatterPresetConfig(command=("ruff", "format")),
-        "typescript": RuntimeFormatterPresetConfig(command=("prettier", "--write")),
-        "javascript": RuntimeFormatterPresetConfig(command=("prettier", "--write")),
-        "json": RuntimeFormatterPresetConfig(command=("prettier", "--write")),
-        "markdown": RuntimeFormatterPresetConfig(command=("prettier", "--write")),
-        "yaml": RuntimeFormatterPresetConfig(command=("prettier", "--write")),
-        "rust": RuntimeFormatterPresetConfig(command=("rustfmt",)),
-        "go": RuntimeFormatterPresetConfig(command=("gofmt",)),
-    }
+    assert RuntimeHooksConfig().formatter_presets == DEFAULT_FORMATTER_PRESETS
 
 
 def test_runtime_config_keeps_builtin_formatter_presets_when_hooks_formatter_presets_missing(
@@ -607,14 +734,14 @@ def test_runtime_config_overrides_builtin_formatter_preset_with_user_value(tmp_p
     assert config.hooks == RuntimeHooksConfig(
         enabled=True,
         formatter_presets={
-            "python": RuntimeFormatterPresetConfig(command=("uvx", "ruff", "format")),
-            "typescript": RuntimeFormatterPresetConfig(command=("prettier", "--write")),
-            "javascript": RuntimeFormatterPresetConfig(command=("prettier", "--write")),
-            "json": RuntimeFormatterPresetConfig(command=("prettier", "--write")),
-            "markdown": RuntimeFormatterPresetConfig(command=("prettier", "--write")),
-            "yaml": RuntimeFormatterPresetConfig(command=("prettier", "--write")),
-            "rust": RuntimeFormatterPresetConfig(command=("rustfmt",)),
-            "go": RuntimeFormatterPresetConfig(command=("gofmt",)),
+            **DEFAULT_FORMATTER_PRESETS,
+            "python": RuntimeFormatterPresetConfig(
+                command=("uvx", "ruff", "format"),
+                extensions=(".py", ".pyi"),
+                root_markers=("pyproject.toml", "ruff.toml", ".ruff.toml"),
+                fallback_commands=(("uvx", "ruff", "format"), ("python", "-m", "ruff", "format")),
+                cwd_policy="nearest_root",
+            ),
         },
     )
 
@@ -628,7 +755,11 @@ def test_runtime_config_keeps_builtin_formatter_presets_when_adding_custom_user_
                 "hooks": {
                     "enabled": True,
                     "formatter_presets": {
-                        "toml": {"command": ["taplo", "fmt"]},
+                        "php": {
+                            "command": ["php-cs-fixer", "fix"],
+                            "extensions": [".php"],
+                            "root_markers": ["composer.json", ".php-cs-fixer.php"],
+                        },
                     },
                 }
             }
@@ -641,15 +772,51 @@ def test_runtime_config_keeps_builtin_formatter_presets_when_adding_custom_user_
     assert config.hooks == RuntimeHooksConfig(
         enabled=True,
         formatter_presets={
-            "python": RuntimeFormatterPresetConfig(command=("ruff", "format")),
-            "typescript": RuntimeFormatterPresetConfig(command=("prettier", "--write")),
-            "javascript": RuntimeFormatterPresetConfig(command=("prettier", "--write")),
-            "json": RuntimeFormatterPresetConfig(command=("prettier", "--write")),
-            "markdown": RuntimeFormatterPresetConfig(command=("prettier", "--write")),
-            "yaml": RuntimeFormatterPresetConfig(command=("prettier", "--write")),
-            "rust": RuntimeFormatterPresetConfig(command=("rustfmt",)),
-            "go": RuntimeFormatterPresetConfig(command=("gofmt",)),
-            "toml": RuntimeFormatterPresetConfig(command=("taplo", "fmt")),
+            **DEFAULT_FORMATTER_PRESETS,
+            "php": RuntimeFormatterPresetConfig(
+                command=("php-cs-fixer", "fix"),
+                extensions=(".php",),
+                root_markers=("composer.json", ".php-cs-fixer.php"),
+            ),
+        },
+    )
+
+
+def test_runtime_config_merges_partial_builtin_formatter_override(tmp_path: Path) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "enabled": True,
+                    "formatter_presets": {
+                        "typescript": {
+                            "extensions": [".ts", ".tsx", ".vue"],
+                            "cwd_policy": "workspace",
+                        },
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.hooks == RuntimeHooksConfig(
+        enabled=True,
+        formatter_presets={
+            **DEFAULT_FORMATTER_PRESETS,
+            "typescript": RuntimeFormatterPresetConfig(
+                command=("prettier", "--write"),
+                extensions=(".ts", ".tsx", ".vue"),
+                root_markers=PRETTIER_ROOT_MARKERS,
+                fallback_commands=(
+                    ("bunx", "prettier", "--write"),
+                    ("pnpm", "exec", "prettier", "--write"),
+                    ("npx", "prettier", "--write"),
+                ),
+                cwd_policy="workspace",
+            ),
         },
     )
 
@@ -1032,6 +1199,31 @@ def test_runtime_config_rejects_invalid_max_steps(
             "runtime config field 'hooks.formatter_presets.python.command\\[0\\]'",
             id="hooks-formatter-preset-command-item-type",
         ),
+        pytest.param(
+            {"hooks": {"formatter_presets": {"python": {"cwd_policy": "repo"}}}},
+            "runtime config field 'hooks.formatter_presets.python.cwd_policy'",
+            id="hooks-formatter-preset-cwd-policy",
+        ),
+        pytest.param(
+            {"hooks": {"formatter_presets": {"python": {"extensions": [False]}}}},
+            "runtime config field 'hooks.formatter_presets.python.extensions\\[0\\]'",
+            id="hooks-formatter-preset-extension-item-type",
+        ),
+        pytest.param(
+            {"hooks": {"formatter_presets": {"python": {"root_markers": [False]}}}},
+            "runtime config field 'hooks.formatter_presets.python.root_markers\\[0\\]'",
+            id="hooks-formatter-preset-root-marker-item-type",
+        ),
+        pytest.param(
+            {"hooks": {"formatter_presets": {"python": {"fallback_commands": [["uvx"], [False]]}}}},
+            "runtime config field 'hooks.formatter_presets.python.fallback_commands\\[1\\]\\[0\\]'",
+            id="hooks-formatter-preset-fallback-item-type",
+        ),
+        pytest.param(
+            {"hooks": {"formatter_presets": {"php": {"command": ["php-cs-fixer", "fix"]}}}},
+            "runtime config field 'hooks.formatter_presets.php.extensions'",
+            id="hooks-formatter-preset-custom-name-missing-extension",
+        ),
     ],
 )
 def test_runtime_config_rejects_invalid_extension_domain_shapes(
@@ -1046,7 +1238,325 @@ def test_runtime_config_rejects_invalid_extension_domain_shapes(
 
 
 def test_parse_tui_config_returns_defaults_when_fields_missing() -> None:
-    assert _parse_tui_config({}) == RuntimeTuiConfig(leader_key="alt+x", keymap=None)
+    assert _parse_tui_config({}) == RuntimeTuiConfig(leader_key=None, keymap=None)
+
+
+def test_parse_tui_config_preserves_preferences_shape() -> None:
+    assert _parse_tui_config(
+        {
+            "leader_key": "ctrl+space",
+            "preferences": {
+                "theme": {"name": "nord", "mode": "dark"},
+                "reading": {"wrap": False, "sidebar_collapsed": True},
+            },
+        }
+    ) == RuntimeTuiConfig(
+        leader_key="ctrl+space",
+        keymap=None,
+        preferences=RuntimeTuiPreferences(
+            theme=RuntimeTuiThemePreferences(name="nord", mode="dark"),
+            reading=RuntimeTuiReadingPreferences(wrap=False, sidebar_collapsed=True),
+        ),
+    )
+
+
+def test_load_runtime_config_resolves_tui_preferences_from_workspace_over_global(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    global_config_dir = tmp_path / "global-config"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(global_config_dir))
+    user_runtime_config_path().parent.mkdir(parents=True, exist_ok=True)
+    user_runtime_config_path().write_text(
+        json.dumps(
+            {
+                "tui": {
+                    "preferences": {
+                        "theme": {"name": "nord", "mode": "dark"},
+                        "reading": {"wrap": False, "sidebar_collapsed": True},
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    runtime_config_path(tmp_path).write_text(
+        json.dumps(
+            {
+                "tui": {
+                    "preferences": {
+                        "theme": {"name": "tokyo-night"},
+                        "reading": {"wrap": True},
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.tui is not None
+    assert config.tui.preferences == RuntimeTuiPreferences(
+        theme=RuntimeTuiThemePreferences(name="tokyo-night", mode="dark"),
+        reading=RuntimeTuiReadingPreferences(wrap=True, sidebar_collapsed=True),
+    )
+
+
+def test_load_runtime_config_resolves_tui_preferences_from_global_when_workspace_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    global_config_dir = tmp_path / "global-config"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(global_config_dir))
+    user_runtime_config_path().parent.mkdir(parents=True, exist_ok=True)
+    user_runtime_config_path().write_text(
+        json.dumps(
+            {
+                "tui": {
+                    "preferences": {
+                        "theme": {"name": "gruvbox", "mode": "dark"},
+                        "reading": {"wrap": False, "sidebar_collapsed": True},
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.tui is not None
+    assert config.tui.preferences == RuntimeTuiPreferences(
+        theme=RuntimeTuiThemePreferences(name="gruvbox", mode="dark"),
+        reading=RuntimeTuiReadingPreferences(wrap=False, sidebar_collapsed=True),
+    )
+
+
+def test_load_runtime_config_uses_builtin_tui_preference_defaults_when_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "global-config"))
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.tui is not None
+    assert config.tui.preferences == RuntimeTuiPreferences(
+        theme=RuntimeTuiThemePreferences(name="textual-dark", mode="auto"),
+        reading=RuntimeTuiReadingPreferences(wrap=True, sidebar_collapsed=False),
+    )
+
+
+def test_load_runtime_config_inherits_global_leader_key_when_workspace_only_sets_preferences(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    global_config_dir = tmp_path / "global-config"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(global_config_dir))
+    user_runtime_config_path().parent.mkdir(parents=True, exist_ok=True)
+    user_runtime_config_path().write_text(
+        json.dumps({"tui": {"leader_key": "ctrl+space"}}),
+        encoding="utf-8",
+    )
+    runtime_config_path(tmp_path).write_text(
+        json.dumps(
+            {
+                "tui": {
+                    "preferences": {
+                        "reading": {"wrap": False},
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.tui is not None
+    assert config.tui.leader_key == "ctrl+space"
+    assert config.tui.preferences == RuntimeTuiPreferences(
+        theme=RuntimeTuiThemePreferences(name="textual-dark", mode="auto"),
+        reading=RuntimeTuiReadingPreferences(wrap=False, sidebar_collapsed=False),
+    )
+
+
+def test_load_runtime_config_preserves_invalid_theme_name_and_defers_resolution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "global-config"))
+    runtime_config_path(tmp_path).write_text(
+        json.dumps(
+            {
+                "tui": {
+                    "preferences": {
+                        "theme": {"name": "unknown-theme", "mode": "dark"},
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.tui is not None
+    assert config.tui.preferences is not None
+    assert config.tui.preferences.theme == RuntimeTuiThemePreferences(
+        name="unknown-theme", mode="dark"
+    )
+
+
+def test_save_workspace_tui_preferences_preserves_unrelated_runtime_config_fields(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "global-config"))
+    runtime_config_path(tmp_path).write_text(
+        json.dumps(
+            {
+                "model": "opencode/gpt-5.4",
+                "approval_mode": "ask",
+                "tui": {"leader_key": "alt+x"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    save_workspace_tui_preferences(
+        tmp_path,
+        RuntimeTuiPreferences(
+            theme=RuntimeTuiThemePreferences(name="nord", mode="dark"),
+            reading=RuntimeTuiReadingPreferences(wrap=False, sidebar_collapsed=True),
+        ),
+    )
+
+    payload = json.loads(runtime_config_path(tmp_path).read_text(encoding="utf-8"))
+    assert payload["model"] == "opencode/gpt-5.4"
+    assert payload["approval_mode"] == "ask"
+    assert payload["tui"]["preferences"] == {
+        "theme": {"name": "nord", "mode": "dark"},
+        "reading": {"wrap": False, "sidebar_collapsed": True},
+    }
+
+
+def test_save_workspace_tui_preferences_preserves_tui_leader_key_and_keymap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "global-config"))
+    runtime_config_path(tmp_path).write_text(
+        json.dumps(
+            {
+                "tui": {
+                    "leader_key": "ctrl+space",
+                    "keymap": {"n": "session_new"},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    save_workspace_tui_preferences(
+        tmp_path,
+        RuntimeTuiPreferences(
+            theme=RuntimeTuiThemePreferences(name="gruvbox", mode="dark"),
+            reading=RuntimeTuiReadingPreferences(wrap=True, sidebar_collapsed=False),
+        ),
+    )
+
+    payload = json.loads(runtime_config_path(tmp_path).read_text(encoding="utf-8"))
+    assert payload["tui"]["leader_key"] == "ctrl+space"
+    assert payload["tui"]["keymap"] == {"n": "session_new"}
+    assert payload["tui"]["preferences"] == {
+        "theme": {"name": "gruvbox", "mode": "dark"},
+        "reading": {"wrap": True, "sidebar_collapsed": False},
+    }
+
+
+def test_save_workspace_tui_preferences_writes_only_local_override_values(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "global-config"))
+    runtime_config_path(tmp_path).write_text(
+        json.dumps(
+            {
+                "tui": {
+                    "preferences": {
+                        "reading": {"sidebar_collapsed": True},
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    save_workspace_tui_preferences(
+        tmp_path,
+        RuntimeTuiPreferences(
+            reading=RuntimeTuiReadingPreferences(wrap=False),
+        ),
+    )
+
+    payload = json.loads(runtime_config_path(tmp_path).read_text(encoding="utf-8"))
+    assert payload["tui"]["preferences"] == {"reading": {"wrap": False}}
+
+
+def test_save_global_tui_preferences_writes_user_config_shape(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    global_config_dir = tmp_path / "global-config"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(global_config_dir))
+
+    save_global_tui_preferences(
+        RuntimeTuiPreferences(
+            theme=RuntimeTuiThemePreferences(name="tokyo-night", mode="dark"),
+            reading=RuntimeTuiReadingPreferences(wrap=False, sidebar_collapsed=True),
+        )
+    )
+
+    payload = json.loads(user_runtime_config_path().read_text(encoding="utf-8"))
+    assert payload == {
+        "tui": {
+            "preferences": {
+                "theme": {"name": "tokyo-night", "mode": "dark"},
+                "reading": {"wrap": False, "sidebar_collapsed": True},
+            }
+        }
+    }
+
+
+def test_save_global_tui_preferences_preserves_unrelated_global_config_fields(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    global_config_dir = tmp_path / "global-config"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(global_config_dir))
+    user_runtime_config_path().parent.mkdir(parents=True, exist_ok=True)
+    user_runtime_config_path().write_text(
+        json.dumps({"model": "opencode/gpt-5.4", "tui": {"leader_key": "alt+x"}}),
+        encoding="utf-8",
+    )
+
+    save_global_tui_preferences(
+        RuntimeTuiPreferences(
+            theme=RuntimeTuiThemePreferences(name="textual-light", mode="light"),
+            reading=RuntimeTuiReadingPreferences(wrap=True, sidebar_collapsed=False),
+        )
+    )
+
+    payload = json.loads(user_runtime_config_path().read_text(encoding="utf-8"))
+    assert payload["model"] == "opencode/gpt-5.4"
+    assert payload["tui"]["leader_key"] == "alt+x"
+    assert payload["tui"]["preferences"] == {
+        "theme": {"name": "textual-light", "mode": "light"},
+        "reading": {"wrap": True, "sidebar_collapsed": False},
+    }
+
+
+def test_effective_runtime_tui_preferences_resolves_invalid_theme_name_to_mode_default() -> None:
+    effective = effective_runtime_tui_preferences(
+        RuntimeTuiPreferences(
+            theme=RuntimeTuiThemePreferences(name="unknown-theme", mode="light"),
+            reading=RuntimeTuiReadingPreferences(wrap=True, sidebar_collapsed=False),
+        )
+    )
+
+    assert effective.theme == RuntimeTuiThemePreferences(name="textual-light", mode="light")
 
 
 def test_parse_tui_config_preserves_valid_leader_key_and_keymap() -> None:
@@ -1098,6 +1608,36 @@ def test_parse_tui_config_preserves_valid_leader_key_and_keymap() -> None:
             "runtime config field 'tui.keymap' values must be one of: "
             "command_palette, session_new, session_resume",
             id="keymap-value-enum",
+        ),
+        pytest.param(
+            {"preferences": []},
+            "runtime config field 'tui.preferences'",
+            id="preferences-shape",
+        ),
+        pytest.param(
+            {"preferences": {"theme": []}},
+            "runtime config field 'tui.preferences.theme'",
+            id="preferences-theme-shape",
+        ),
+        pytest.param(
+            {"preferences": {"theme": {"mode": "sepia"}}},
+            "runtime config field 'tui.preferences.theme.mode'",
+            id="preferences-theme-mode-invalid",
+        ),
+        pytest.param(
+            {"preferences": {"reading": []}},
+            "runtime config field 'tui.preferences.reading'",
+            id="preferences-reading-shape",
+        ),
+        pytest.param(
+            {"preferences": {"reading": {"wrap": "yes"}}},
+            "runtime config field 'tui.preferences.reading.wrap'",
+            id="preferences-reading-wrap-type",
+        ),
+        pytest.param(
+            {"preferences": {"reading": {"sidebar_collapsed": "yes"}}},
+            "runtime config field 'tui.preferences.reading.sidebar_collapsed'",
+            id="preferences-reading-sidebar-collapsed-type",
         ),
     ],
 )

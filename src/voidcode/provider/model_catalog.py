@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import cast
@@ -87,19 +88,15 @@ def discover_available_models(
     )
 
 
-def _base_url_for_discovery(
-    *, provider_name: str, config: LiteLLMProviderConfig | None
-) -> str | None:
-    if config is not None and config.base_url:
-        return config.base_url.rstrip("/")
-    if provider_name == "openai":
-        return "https://api.openai.com"
-    if provider_name == "anthropic":
-        return "https://api.anthropic.com"
-    if provider_name == "google":
-        return "https://generativelanguage.googleapis.com"
-    if provider_name == "litellm":
-        return "http://127.0.0.1:4000"
+def _base_url_for_discovery(*, config: LiteLLMProviderConfig | None) -> str | None:
+    if config is not None:
+        if config.discovery_base_url is not None:
+            candidate = config.discovery_base_url.strip()
+            if not candidate:
+                return None
+            return candidate.rstrip("/")
+        if config.base_url:
+            return config.base_url.rstrip("/")
     return None
 
 
@@ -123,13 +120,21 @@ def _headers_for_discovery(config: LiteLLMProviderConfig | None) -> dict[str, st
 def _build_discovery_request(
     *, provider_name: str, config: LiteLLMProviderConfig | None
 ) -> DiscoveryRequest | None:
-    base_url = _base_url_for_discovery(provider_name=provider_name, config=config)
+    base_url = _base_url_for_discovery(config=config)
     if base_url is None:
         return None
 
     provider = provider_name.strip().lower()
     timeout_seconds = _timeout_for_discovery(config)
     headers = _headers_for_discovery(config)
+    if (
+        provider == "google"
+        and config is not None
+        and config.api_key is not None
+        and config.auth_scheme == "bearer"
+        and config.auth_header is None
+    ):
+        headers = {"x-goog-api-key": config.api_key}
     if provider == "anthropic":
         api_key = None if config is None else config.api_key
         anthropic_headers: dict[str, str] = {"anthropic-version": "2023-06-01"}
@@ -160,6 +165,8 @@ def _fetch_openai_compatible_models(
     base_url = request.base_url.rstrip("/")
     if base_url.endswith("/v1/models"):
         models_url = base_url
+    elif re.search(r"/v[0-9]+(?:beta|alpha)?$", base_url, re.IGNORECASE):
+        models_url = f"{base_url}/models"
     elif base_url.endswith("/v1"):
         models_url = f"{base_url}/models"
     else:
@@ -222,10 +229,17 @@ def _fetch_google_models(request: DiscoveryRequest) -> tuple[str, ...]:
     else:
         models_url = f"{base_url}/v1beta/models"
 
+    uses_google_api_key_header = any(
+        header_name.lower() == "x-goog-api-key" for header_name in request.headers
+    )
     uses_authorization_header = any(
         header_name.lower() == "authorization" for header_name in request.headers
     )
-    if request.api_key is not None and not uses_authorization_header:
+    if (
+        request.api_key is not None
+        and not uses_authorization_header
+        and not uses_google_api_key_header
+    ):
         models_url = f"{models_url}?key={quote(request.api_key, safe='')}"
 
     http_request = Request(url=models_url, headers=request.headers, method="GET")

@@ -1,37 +1,55 @@
 # `voidcode.agent`
 
-这里是预定义 agent 与 agent preset/configuration 的规划边界。
+这里是 VoidCode 已经落在仓库中的 agent 声明层目录。
 
 ## 定位
 
-`voidcode.agent` 用于承载未来 multi-agent 支持所需的预定义 agent 定义，例如 agent profile、prompt/profile 组合，以及对 hook、skill、MCP、tool、provider 等能力的声明式绑定。
+`voidcode.agent` 不负责执行，它负责描述**每一种 agent preset 是什么**，包括角色定位、默认权限、建议 skills、建议 hooks 与能力绑定方向。
+
+它的目标不是替代 `runtime/`，而是把“agent 是什么、默认带什么组合”从运行时治理逻辑里拆出来，形成一个薄的、声明式的组合层。
+
+当前这一层仍然是**文档化 / preset-intent 层**，不是独立的 agent runtime，也不是 multi-agent 已落地的证据。
 
 ## 负责什么
 
-- 预定义 agent manifest / preset
-- prompt / profile 定义
-- hook 绑定
-- skill 绑定
-- MCP server/profile 绑定
-- tool allowlist / default tool set
-- provider / model preference metadata
+- agent 角色说明
+- preset 级别的职责边界
+- 默认权限倾向
+- 建议 skill 绑定
+- 建议 hook 关注点
+- 与 runtime 的边界说明
 
 ## 不负责什么
 
 - session 持久化与恢复
-- 审批 / 权限决策
-- runtime 事件发射
-- transport / client 行为
-- 工具直接执行
-- provider invocation loop
+- approval / permission 决策
+- runtime event truth
+- tool 实际执行
+- hook 执行时机
+- MCP / LSP / ACP lifecycle
+- 当前 multi-agent orchestration
 
-## 边界关系
+## 当前角色集
 
-- `voidcode.runtime` 继续拥有 session、approval、permission、persistence、events、transport 与 capability lifecycle truth
-- `voidcode.graph` 继续拥有 loop / step orchestration
-- `voidcode.agent` 负责预定义 agent profile 与组合层
-- `hook/`、`skills/`、`mcp/`、`tools/`、`provider/` 继续提供可复用能力，由 runtime 集成、由 agent 定义按需声明
+- [`leader`](./leader/README.md)
+- [`worker`](./worker/README.md)
+- [`advisor`](./advisor/README.md)
+- [`explore`](./explore/README.md)
+- [`researcher`](./researcher/README.md)
+- [`product`](./product/README.md)
 
-## 当前状态
+其中只有 `leader` 对应今天真实存在的单 agent 主路径，其余角色都仍然是 post-MVP 的 preset 方向。
 
-这是一个规划中的能力边界。当前仓库尚未在此目录中实现真实的 multi-agent execution 语义；这里描述的是未来方向，而不是已交付功能。
+## 与 runtime 的边界
+
+`voidcode.agent` 可以描述“这个角色默认希望带哪些工具/skills/hooks/MCP profile”，但不能决定系统最终如何执行、治理、审批、恢复和持久化它。
+
+最终的执行真相仍然由 `voidcode.runtime` 持有。
+
+这也意味着：本目录中出现的“建议 hooks / 建议能力”只是在描述未来 preset 希望依赖什么，不代表 runtime 今天已经支持对应的 lifecycle phase。以当前现实看，hooks 仍然只覆盖 runtime-owned 的 `pre_tool` / `post_tool`；background task、child-session、leader notification、result retrieval 等 async agent substrate 仍未落地。
+
+## 相关文档
+
+- [`docs/agent-architecture.md`](../../../docs/agent-architecture.md)
+- [`docs/agent-boundary.md`](../../../docs/agent-boundary.md)
+- [`docs/architecture.md`](../../../docs/architecture.md)

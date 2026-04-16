@@ -56,13 +56,20 @@ def _build_turn_request(*, model_name: str) -> SingleAgentTurnRequest:
 
 
 class _StubStreamChunk:
-    def __init__(self, text: str | None, finish_reason: str | None = None) -> None:
+    def __init__(
+        self,
+        text: str | None,
+        finish_reason: str | None = None,
+        *,
+        tool_calls: list[dict[str, object]] | None = None,
+    ) -> None:
         self._text = text
         self._finish_reason = finish_reason
+        self._tool_calls = tool_calls
 
     def model_dump(self) -> dict[str, object]:
         choice: dict[str, object] = {
-            "delta": {"content": self._text},
+            "delta": {"content": self._text, "tool_calls": self._tool_calls},
             "finish_reason": self._finish_reason,
         }
         return {"choices": [choice]}
@@ -106,6 +113,7 @@ def _patch_litellm_completion(
     mode: str,
     completion_content: str = "hello world",
     stream_chunks: tuple[tuple[str | None, str | None], ...] = (),
+    stream_tool_chunks: tuple[tuple[list[dict[str, object]] | None, str | None], ...] = (),
     api_error: _StubAPIError | None = None,
     tool_calls: list[dict[str, object]] | None = None,
 ) -> None:
@@ -125,6 +133,10 @@ def _patch_litellm_completion(
             chunks: list[_StubStreamChunk] = [
                 _StubStreamChunk(text=text, finish_reason=finish) for text, finish in stream_chunks
             ]
+            chunks.extend(
+                _StubStreamChunk(text=None, finish_reason=finish, tool_calls=tool_calls_chunk)
+                for tool_calls_chunk, finish in stream_tool_chunks
+            )
             return iter(chunks)
         return _StubCompletionResponse(content=completion_content, tool_calls=tool_calls)
 
@@ -265,6 +277,27 @@ def test_provider_adapter_propose_turn_uses_model_map_for_litellm_alias(
     assert payload["model"] == "openrouter/openai/gpt-4o"
 
 
+def test_glm_provider_does_not_append_v1_to_base_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    from voidcode.provider.config import SimplifiedProviderConfig
+    from voidcode.provider.glm import GLMModelProvider
+
+    provider = GLMModelProvider(config=SimplifiedProviderConfig(api_key="glm-key"))
+    single_agent = provider.single_agent_provider()
+
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        completion_content="ok",
+    )
+
+    _ = single_agent.propose_turn(_build_turn_request(model_name="glm"))
+
+    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+    assert isinstance(payload_obj, dict)
+    payload = cast(dict[str, object], payload_obj)
+    assert payload["api_base"] == "https://open.bigmodel.cn/api/paas/v4"
+
+
 def test_provider_adapter_propose_turn_returns_tool_call_when_model_requests_tool(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -289,6 +322,73 @@ def test_provider_adapter_propose_turn_returns_tool_call_when_model_requests_too
     assert result.tool_call is not None
     assert result.tool_call.tool_name == "read_file"
     assert result.tool_call.arguments == {"path": "sample.txt"}
+
+
+def test_google_provider_api_key_uses_google_auth_header(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = GoogleModelProvider(
+        config=GoogleProviderConfig(
+            auth=GoogleProviderAuthConfig(method="api_key", api_key="AIza-test")
+        )
+    )
+    single_agent = provider.single_agent_provider()
+
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        completion_content="ok",
+    )
+
+    result = single_agent.propose_turn(_build_turn_request(model_name="google"))
+
+    assert result.output == "ok"
+    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+    assert isinstance(payload_obj, dict)
+    payload = cast(dict[str, object], payload_obj)
+    assert "api_key" not in payload
+    extra_headers = payload.get("extra_headers")
+    assert isinstance(extra_headers, dict)
+    assert extra_headers == {"x-goog-api-key": "AIza-test"}
+
+
+def test_provider_adapter_stream_turn_emits_tool_event_when_model_streams_tool_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = OpenAIModelProvider()
+    single_agent = provider.single_agent_provider()
+    assert isinstance(single_agent, StreamableSingleAgentProvider)
+
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="stream",
+        stream_tool_chunks=(
+            (
+                [
+                    {
+                        "index": 0,
+                        "function": {
+                            "name": "read_file",
+                            "arguments": '{"path":"sample.txt"}',
+                        },
+                    }
+                ],
+                None,
+            ),
+            (None, "tool_calls"),
+        ),
+    )
+
+    events = list(single_agent.stream_turn(_build_turn_request(model_name="openai")))
+
+    assert events == [
+        ProviderStreamEvent(
+            kind="content",
+            channel="tool",
+            text='{"tool_name": "read_file", "arguments": {"path": "sample.txt"}}',
+        ),
+        ProviderStreamEvent(kind="done", done_reason="completed"),
+    ]
 
 
 @pytest.mark.parametrize(

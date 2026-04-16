@@ -14,10 +14,11 @@ from voidcode.provider.model_catalog import DiscoveryRequest, discover_available
 
 def test_discover_available_models_combines_alias_discovery_and_targets() -> None:
     config = LiteLLMProviderConfig(
+        discovery_base_url="http://127.0.0.1:4000",
         model_map={
             "alias-a": "provider/model-a",
             "alias-b": "provider/model-b",
-        }
+        },
     )
 
     models = discover_available_models(
@@ -43,7 +44,10 @@ def test_discover_available_models_for_openai_uses_endpoint_fetcher() -> None:
         captured.append(request)
         return ("gpt-4o",)
 
-    config = LiteLLMProviderConfig(api_key="sk-test")
+    config = LiteLLMProviderConfig(
+        api_key="sk-test",
+        discovery_base_url="https://api.openai.com",
+    )
     models = discover_available_models("openai", config, fetcher=_fetcher)
 
     assert models.models == ("gpt-4o",)
@@ -61,7 +65,10 @@ def test_discover_available_models_for_anthropic_uses_provider_specific_headers(
         captured.append(request)
         return ("claude-3-7-sonnet-latest",)
 
-    config = LiteLLMProviderConfig(api_key="sk-ant-test")
+    config = LiteLLMProviderConfig(
+        api_key="sk-ant-test",
+        discovery_base_url="https://api.anthropic.com",
+    )
     models = discover_available_models("anthropic", config, fetcher=_fetcher)
 
     assert models.models == ("claude-3-7-sonnet-latest",)
@@ -81,7 +88,10 @@ def test_discover_available_models_for_google_uses_google_base_url() -> None:
         captured.append(request)
         return ("gemini-2.0-flash",)
 
-    config = LiteLLMProviderConfig(api_key="AIza-test")
+    config = LiteLLMProviderConfig(
+        api_key="AIza-test",
+        discovery_base_url="https://generativelanguage.googleapis.com",
+    )
     models = discover_available_models("google", config, fetcher=_fetcher)
 
     assert models.models == ("gemini-2.0-flash",)
@@ -89,6 +99,53 @@ def test_discover_available_models_for_google_uses_google_base_url() -> None:
     assert captured[0].provider == "google"
     assert captured[0].base_url == "https://generativelanguage.googleapis.com"
     assert captured[0].api_key == "AIza-test"
+    assert captured[0].headers == {"x-goog-api-key": "AIza-test"}
+
+
+def test_discover_available_models_for_google_with_api_key_header_does_not_append_key_query_param(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class _Response:
+        def __enter__(self) -> _Response:
+            return self
+
+        def __exit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            tb: TracebackType | None,
+        ) -> bool:
+            return False
+
+        def read(self) -> bytes:
+            return json.dumps({"models": [{"name": "models/gemini-2.0-flash"}]}).encode("utf-8")
+
+    def _fake_urlopen(request: Request, timeout: float) -> _Response:
+        captured["url"] = request.full_url
+        captured["timeout"] = timeout
+        captured["headers"] = {
+            str(key).lower(): str(value) for key, value in dict(request.header_items()).items()
+        }
+        return _Response()
+
+    monkeypatch.setattr(model_catalog, "urlopen", _fake_urlopen)
+
+    result = discover_available_models(
+        "google",
+        LiteLLMProviderConfig(
+            base_url="https://generativelanguage.googleapis.com",
+            api_key="AIza-test",
+            auth_header="x-goog-api-key",
+            auth_scheme="token",
+        ),
+    )
+
+    assert result.models == ("gemini-2.0-flash",)
+    assert captured["url"] == "https://generativelanguage.googleapis.com/v1beta/models"
+    headers = cast(dict[str, str], captured["headers"])
+    assert headers["x-goog-api-key"] == "AIza-test"
 
 
 def test_discover_available_models_for_google_with_oauth_header_does_not_append_key_query_param(
@@ -132,13 +189,26 @@ def test_discover_available_models_for_google_with_oauth_header_does_not_append_
     assert captured["url"] == "https://generativelanguage.googleapis.com/v1beta/models"
 
 
-def test_discover_available_models_marks_fallback_on_fetch_failure() -> None:
-    config = LiteLLMProviderConfig(model_map={"alias": "provider/model"})
+def test_discover_available_models_skips_when_no_discovery_base_url_or_base_url() -> None:
+    result = discover_available_models("openai", LiteLLMProviderConfig(api_key="sk-test"))
 
+    assert result.source == "fallback"
+    assert result.last_refresh_status == "skipped"
+    assert result.last_error == "provider has no model discovery endpoint"
+
+
+def test_discover_available_models_marks_fallback_on_fetch_failure() -> None:
     def _failing_fetcher(_request: DiscoveryRequest) -> tuple[str, ...]:
         raise TimeoutError("timed out")
 
-    result = discover_available_models("openai", config, fetcher=_failing_fetcher)
+    result = discover_available_models(
+        "openai",
+        LiteLLMProviderConfig(
+            model_map={"alias": "provider/model"},
+            discovery_base_url="https://api.openai.com",
+        ),
+        fetcher=_failing_fetcher,
+    )
 
     assert result.models == ("alias", "provider/model")
     assert result.source == "fallback"
@@ -223,6 +293,97 @@ def test_discover_available_models_custom_provider_keeps_existing_v1_models_path
 
     assert result.models == ("provider/model-b",)
     assert captured["url"] == "https://gateway.example.com/v1/models"
+
+
+def test_discover_available_models_glm_base_url_uses_v4_models_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class _Response:
+        def __enter__(self) -> _Response:
+            return self
+
+        def __exit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            tb: TracebackType | None,
+        ) -> bool:
+            return False
+
+        def read(self) -> bytes:
+            return json.dumps({"data": [{"id": "glm/glm-4-flash"}]}).encode("utf-8")
+
+    def _fake_urlopen(request: Request, timeout: float) -> _Response:
+        captured["url"] = request.full_url
+        captured["timeout"] = timeout
+        return _Response()
+
+    monkeypatch.setattr(model_catalog, "urlopen", _fake_urlopen)
+
+    result = discover_available_models(
+        "glm",
+        LiteLLMProviderConfig(base_url="https://open.bigmodel.cn/api/paas/v4", api_key="glm-key"),
+    )
+
+    assert result.models == ("glm/glm-4-flash",)
+    assert captured["url"] == "https://open.bigmodel.cn/api/paas/v4/models"
+
+
+def test_discover_available_models_respects_discovery_base_url_when_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class _Response:
+        def __enter__(self) -> _Response:
+            return self
+
+        def __exit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            tb: TracebackType | None,
+        ) -> bool:
+            return False
+
+        def read(self) -> bytes:
+            return json.dumps({"data": [{"id": "openai/gpt-4o"}]}).encode("utf-8")
+
+    def _fake_urlopen(request: Request, timeout: float) -> _Response:
+        captured["url"] = request.full_url
+        captured["timeout"] = timeout
+        return _Response()
+
+    monkeypatch.setattr(model_catalog, "urlopen", _fake_urlopen)
+
+    result = discover_available_models(
+        "opencode-go",
+        LiteLLMProviderConfig(
+            base_url="https://opencode.ai/zen/go",
+            discovery_base_url="https://opencode.ai/zen/v1",
+            api_key="opencode-go-key",
+        ),
+    )
+
+    assert result.models == ("openai/gpt-4o",)
+    assert captured["url"] == "https://opencode.ai/zen/v1/models"
+
+
+def test_discover_available_models_skips_remote_when_discovery_base_url_is_empty() -> None:
+    config = LiteLLMProviderConfig(
+        base_url="https://api.minimax.io",
+        discovery_base_url="",
+        model_map={"alias": "MiniMax-M2.7"},
+    )
+
+    result = discover_available_models("minimax", config)
+
+    assert result.models == ("alias", "MiniMax-M2.7")
+    assert result.source == "fallback"
+    assert result.last_refresh_status == "skipped"
+    assert result.last_error == "provider has no model discovery endpoint"
 
 
 def test_discover_available_models_custom_provider_uses_token_auth_header_without_bearer_prefix(

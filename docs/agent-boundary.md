@@ -2,9 +2,9 @@
 
 ## 状态
 
-**状态：规划中（proposed）**
+**状态：目录已存在，能力仍处于规划中**
 
-本文档描述未来 `voidcode.agent` 边界的定位与约束。它不是当前仓库已经实现的功能说明；当前仓库**尚未实现真实的 multi-agent 执行语义**。
+本文档描述 `voidcode.agent` 边界的定位与约束。`src/voidcode/agent/` 目录现在已经存在，但当前仍只是一个文档化的声明层；仓库**尚未实现真实的 multi-agent 执行语义**。
 
 ## 为什么需要这份文档
 
@@ -28,9 +28,9 @@
 
 因此，`voidcode.agent` 的设计目标不是引入第二套 runtime，而是补上“agent 定义层”。
 
-## 规划中的 `voidcode.agent` 边界
+## `voidcode.agent` 边界
 
-`voidcode.agent` 计划作为**预定义 agent 与 agent preset/configuration 的声明层**，负责描述一个 agent 是什么、默认携带哪些能力绑定，而不是负责执行它。
+`voidcode.agent` 作为**预定义 agent 与 agent preset/configuration 的声明层**，负责描述一个 agent 是什么、默认携带哪些能力绑定，而不是负责执行它。
 
 建议它承载的内容包括：
 
@@ -43,6 +43,8 @@
 - provider / model preference metadata
 
 这些内容应当保持为**声明式配置或类型化定义**，供 runtime 解析与消费。
+
+当前仓库里已经存在的 `src/voidcode/agent/README.md` 与 `src/voidcode/agent/<role>/README.md`，应被理解为这层声明边界的文档化外壳，而不是独立 agent runtime 的证据。
 
 ## 哪些东西必须继续留在 `runtime/`
 
@@ -57,6 +59,14 @@
 - MCP / LSP / ACP lifecycle truth
 - provider fallback 与 execution governance
 - resume / replay correctness
+
+如果未来要支持“leader 异步调用其他 agent，并在完成后收到通知”的协作语义，那么以下能力也必须首先成为 runtime truth，而不能悬空挂在 `agent/` 或 hook 文档上：
+
+- background task 状态机
+- parent / child session 关系
+- task completion / failure / cancellation / timeout lifecycle
+- leader notification 路径
+- background result retrieval / transcript recovery
 
 换句话说，`agent/` 可以决定“一个 agent 想带什么配置”，但不能决定“系统最终怎样执行、治理和恢复它”。
 
@@ -93,6 +103,15 @@
 - hook/skill/MCP/provider 引用
 
 这一阶段不做 multi-agent runtime，不做 agent-to-agent messaging，不做复杂 supervisor。
+
+文档与声明可以优先落在：
+
+- `src/voidcode/agent/README.md`
+- `src/voidcode/agent/<role>/README.md`
+
+这些文件用于描述角色 preset、本地权限倾向、建议 skills / hooks / MCP profile 以及与 runtime 的边界，但不代表这些角色当前已经拥有独立 runtime 实现。
+
+同样，这里的“建议 hooks”也应理解为未来 preset intent，而不是表示 runtime 今天已经支持 session-start/session-end、background completion notification 或 message transform 等 richer phases。
 
 ### Phase 2：由 runtime 解析 agent preset
 

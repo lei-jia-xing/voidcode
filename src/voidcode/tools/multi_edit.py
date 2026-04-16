@@ -5,9 +5,17 @@ from typing import ClassVar
 
 from pydantic import ValidationError
 
+from ..hook.config import RuntimeHooksConfig
+from ._formatter import FormatterExecutionResult, FormatterExecutor
 from ._pydantic_args import MultiEditArgs
 from .contracts import ToolCall, ToolDefinition, ToolResult
-from .edit import EditTool
+from .edit import (
+    EditTool,
+    formatter_diagnostics,
+    formatter_payload,
+    read_utf8_text,
+    summarize_diff,
+)
 
 
 class MultiEditTool:
@@ -23,6 +31,15 @@ class MultiEditTool:
         },
         read_only=False,
     )
+
+    def __init__(
+        self,
+        *,
+        hooks_config: RuntimeHooksConfig | None = None,
+        edit_tool: EditTool | None = None,
+    ) -> None:
+        self._hooks_config = hooks_config
+        self._edit_tool = edit_tool or EditTool()
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
         raw_path_value = call.arguments.get("path")
@@ -69,12 +86,12 @@ class MultiEditTool:
             raise ValueError(f"multi_edit target does not exist: {args.path}")
 
         relative_target = target.relative_to(workspace_root).as_posix()
+        content_before = read_utf8_text(target)
 
-        edit_tool = EditTool()
         applied = 0
         details: list[dict[str, object]] = []
         for idx, item in enumerate(args.edits, start=1):
-            result = edit_tool.invoke(
+            result = self._edit_tool.invoke(
                 ToolCall(
                     tool_name="edit",
                     arguments={
@@ -89,9 +106,37 @@ class MultiEditTool:
             applied += 1
             details.append({"index": idx, "result": result.data})
 
+        formatter_result: FormatterExecutionResult | None = None
+        if self._hooks_config is not None:
+            formatter_result = FormatterExecutor(self._hooks_config, workspace_root).run(target)
+        final_content = read_utf8_text(target)
+        diff, additions, deletions = summarize_diff(
+            path=target,
+            before=content_before,
+            after=final_content,
+        )
+        diagnostics = formatter_diagnostics(formatter_result)
+
+        content = f"Applied {applied} edits to {relative_target}"
+        if diagnostics:
+            content += f" Formatter warning: {diagnostics[0]['message']}"
+
+        data: dict[str, object] = {
+            "path": relative_target,
+            "applied": applied,
+            "edits": details,
+            "additions": additions,
+            "deletions": deletions,
+            "diff": diff,
+        }
+        if formatter_result is not None and formatter_result.status != "not_configured":
+            data["formatter"] = formatter_payload(formatter_result)
+        if diagnostics:
+            data["diagnostics"] = diagnostics
+
         return ToolResult(
             tool_name=self.definition.name,
             status="ok",
-            content=f"Applied {applied} edits to {relative_target}",
-            data={"path": relative_target, "applied": applied, "edits": details},
+            content=content,
+            data=data,
         )

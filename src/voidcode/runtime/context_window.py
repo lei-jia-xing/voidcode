@@ -22,6 +22,7 @@ class RuntimeContextWindow:
     compaction_reason: str | None = None
     original_tool_result_count: int = 0
     retained_tool_result_count: int = 0
+    max_tool_result_count: int = 0
 
     def metadata_payload(self) -> dict[str, object]:
         return {
@@ -29,6 +30,7 @@ class RuntimeContextWindow:
             "compaction_reason": self.compaction_reason,
             "original_tool_result_count": self.original_tool_result_count,
             "retained_tool_result_count": self.retained_tool_result_count,
+            "max_tool_result_count": self.max_tool_result_count,
         }
 
 
@@ -58,4 +60,5 @@ def prepare_single_agent_context(
         compaction_reason="tool_result_window" if compacted else None,
         original_tool_result_count=original_count,
         retained_tool_result_count=retained_count,
+        max_tool_result_count=effective_policy.max_tool_results,
     )

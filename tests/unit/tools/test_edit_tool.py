@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import subprocess
+import sys
+import textwrap
 from pathlib import Path
+from typing import cast
+from unittest.mock import patch
 
 import pytest
 
+from voidcode.hook.config import RuntimeFormatterPresetConfig, RuntimeHooksConfig
 from voidcode.runtime.service import ToolRegistry
 from voidcode.tools import EditTool, ToolCall
 
@@ -205,6 +211,245 @@ def test_edit_tool_matches_block_anchors_with_small_typos(tmp_path: Path) -> Non
     assert file_path.read_text(encoding="utf-8") == (
         "alpha\nstart block\nupdated middle\nend block\nomega\n"
     )
+
+
+def test_edit_tool_skips_formatter_when_no_matching_preset(tmp_path: Path) -> None:
+    file_path = tmp_path / "note.txt"
+    file_path.write_text("hello world\n", encoding="utf-8")
+
+    tool = EditTool(
+        hooks_config=RuntimeHooksConfig(
+            formatter_presets={
+                "python": RuntimeFormatterPresetConfig(
+                    command=("missing-formatter",),
+                    extensions=(".py",),
+                )
+            }
+        )
+    )
+
+    result = tool.invoke(
+        ToolCall(
+            tool_name="edit",
+            arguments={"path": "note.txt", "oldString": "world", "newString": "voidcode"},
+        ),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert result.content == "Edit applied successfully."
+    assert "diagnostics" not in result.data
+    assert "formatter" not in result.data
+    assert file_path.read_text(encoding="utf-8") == "hello voidcode\n"
+
+
+def test_edit_tool_skips_formatter_when_hooks_are_disabled(tmp_path: Path) -> None:
+    file_path = tmp_path / "main.py"
+    file_path.write_text("print('hi')\n", encoding="utf-8")
+
+    tool = EditTool(
+        hooks_config=RuntimeHooksConfig(
+            enabled=False,
+            formatter_presets={
+                "python": RuntimeFormatterPresetConfig(
+                    command=("missing-formatter-binary",),
+                    extensions=(".py",),
+                )
+            },
+        )
+    )
+
+    result = tool.invoke(
+        ToolCall(
+            tool_name="edit",
+            arguments={"path": "main.py", "oldString": "'hi'", "newString": "'bye'"},
+        ),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert result.content == "Edit applied successfully."
+    assert "diagnostics" not in result.data
+    assert "formatter" not in result.data
+    assert file_path.read_text(encoding="utf-8") == "print('bye')\n"
+
+
+def test_edit_tool_surfaces_warning_when_formatter_executable_is_missing(tmp_path: Path) -> None:
+    file_path = tmp_path / "main.py"
+    file_path.write_text("print('hi')\n", encoding="utf-8")
+
+    tool = EditTool(
+        hooks_config=RuntimeHooksConfig(
+            formatter_presets={
+                "python": RuntimeFormatterPresetConfig(
+                    command=("missing-formatter-binary",),
+                    extensions=(".py",),
+                    fallback_commands=(("also-missing",),),
+                )
+            }
+        )
+    )
+
+    result = tool.invoke(
+        ToolCall(
+            tool_name="edit",
+            arguments={"path": "main.py", "oldString": "'hi'", "newString": "'bye'"},
+        ),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert "Formatter warning:" in (result.content or "")
+    assert file_path.read_text(encoding="utf-8") == "print('bye')\n"
+    diagnostics = result.data["diagnostics"]
+    assert diagnostics == [
+        {
+            "source": "formatter",
+            "severity": "warning",
+            "message": (
+                "No formatter executable was available for preset 'python'. "
+                "Tried: missing-formatter-binary, also-missing. Install one of them or override "
+                "hooks.formatter_presets.python.command in .voidcode.json."
+            ),
+            "language": "python",
+            "cwd": str(tmp_path),
+            "attempted_commands": [
+                ["missing-formatter-binary", str(file_path)],
+                ["also-missing", str(file_path)],
+            ],
+        }
+    ]
+
+
+def test_edit_tool_re_reads_after_successful_formatter_rewrite(tmp_path: Path) -> None:
+    file_path = tmp_path / "main.py"
+    file_path.write_text("print('hi')\n", encoding="utf-8")
+    formatter_script = tmp_path / "formatter.py"
+    formatter_script.write_text(
+        textwrap.dedent(
+            """
+            import pathlib
+            import sys
+
+            pathlib.Path(sys.argv[-1]).write_text("print( 'bye' )\\n", encoding="utf-8")
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    tool = EditTool(
+        hooks_config=RuntimeHooksConfig(
+            formatter_presets={
+                "python": RuntimeFormatterPresetConfig(
+                    command=(sys.executable, str(formatter_script)),
+                    extensions=(".py",),
+                )
+            }
+        )
+    )
+
+    result = tool.invoke(
+        ToolCall(
+            tool_name="edit",
+            arguments={"path": "main.py", "oldString": "'hi'", "newString": "'bye'"},
+        ),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert file_path.read_text(encoding="utf-8") == "print( 'bye' )\n"
+    assert result.data["formatter"] == {
+        "status": "formatted",
+        "language": "python",
+        "cwd": str(tmp_path),
+        "command": [sys.executable, str(formatter_script), str(file_path)],
+        "attempted_commands": [[sys.executable, str(formatter_script), str(file_path)]],
+    }
+    assert "print( 'bye' )" in str(result.data["diff"])
+    assert "diagnostics" not in result.data
+
+
+def test_edit_tool_keeps_edit_successful_when_formatter_returns_non_zero(tmp_path: Path) -> None:
+    file_path = tmp_path / "main.py"
+    file_path.write_text("print('hi')\n", encoding="utf-8")
+    formatter_script = tmp_path / "broken_formatter.py"
+    formatter_script.write_text(
+        textwrap.dedent(
+            """
+            import pathlib
+            import sys
+
+            pathlib.Path(sys.argv[-1]).write_text("print('partial')\\n", encoding="utf-8")
+            raise SystemExit(1)
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    tool = EditTool(
+        hooks_config=RuntimeHooksConfig(
+            formatter_presets={
+                "python": RuntimeFormatterPresetConfig(
+                    command=(sys.executable, str(formatter_script)),
+                    extensions=(".py",),
+                )
+            }
+        )
+    )
+
+    result = tool.invoke(
+        ToolCall(
+            tool_name="edit",
+            arguments={"path": "main.py", "oldString": "'hi'", "newString": "'bye'"},
+        ),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert "Formatter warning:" in (result.content or "")
+    assert file_path.read_text(encoding="utf-8") == "print('partial')\n"
+    diagnostics = result.data["diagnostics"]
+    assert isinstance(diagnostics, list)
+    first_diagnostic = cast(dict[str, object], diagnostics[0])
+    assert first_diagnostic["source"] == "formatter"
+    assert "Format failed for main.py" in str(first_diagnostic["message"])
+    assert "print('partial')" in str(result.data["diff"])
+
+
+def test_edit_tool_keeps_edit_successful_when_formatter_times_out(tmp_path: Path) -> None:
+    file_path = tmp_path / "main.py"
+    file_path.write_text("print('hi')\n", encoding="utf-8")
+
+    tool = EditTool(
+        hooks_config=RuntimeHooksConfig(
+            formatter_presets={
+                "python": RuntimeFormatterPresetConfig(
+                    command=("slow-formatter",),
+                    extensions=(".py",),
+                )
+            }
+        )
+    )
+
+    with patch(
+        "voidcode.tools._formatter.subprocess.run",
+        side_effect=subprocess.TimeoutExpired(cmd=["slow-formatter"], timeout=10.0),
+    ):
+        result = tool.invoke(
+            ToolCall(
+                tool_name="edit",
+                arguments={"path": "main.py", "oldString": "'hi'", "newString": "'bye'"},
+            ),
+            workspace=tmp_path,
+        )
+
+    assert result.status == "ok"
+    assert "Formatter warning:" in (result.content or "")
+    diagnostics = result.data["diagnostics"]
+    assert isinstance(diagnostics, list)
+    first_diagnostic = cast(dict[str, object], diagnostics[0])
+    assert "timed out after 10.0s" in str(first_diagnostic["message"])
+    assert file_path.read_text(encoding="utf-8") == "print('bye')\n"
 
 
 def test_tools_package_and_default_registry_export_edit_tool() -> None:

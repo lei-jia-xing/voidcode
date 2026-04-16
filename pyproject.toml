@@ -43,6 +43,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
   "basedpyright",
+  "hypothesis",
   "pre-commit",
   "pytest",
   "pytest-cov",

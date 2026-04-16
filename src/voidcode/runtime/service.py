@@ -5,7 +5,7 @@ import os
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal, Protocol, cast, final, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, cast, final, runtime_checkable
 from uuid import uuid4
 
 from ..graph.contracts import GraphEvent, GraphRunRequest
@@ -36,6 +36,7 @@ from .acp import AcpAdapter, AcpRequestEnvelope, AcpResponseEnvelope, build_acp_
 from .config import (
     ExecutionEngineName,
     RuntimeConfig,
+    RuntimeHooksConfig,
     RuntimePlanConfig,
     RuntimeProviderFallbackConfig,
     load_runtime_config,
@@ -75,6 +76,9 @@ from .single_agent_provider import ProviderExecutionError
 from .skills import SkillRuntimeContext, build_runtime_contexts
 from .storage import SessionStore, SqliteSessionStore
 from .tool_provider import BuiltinToolProvider
+
+if TYPE_CHECKING:
+    from ..tools.lsp import FormatTool
 
 logger = logging.getLogger(__name__)
 
@@ -124,10 +128,20 @@ class ToolRegistry:
 
     @classmethod
     def with_defaults(
-        cls, *, lsp_tool: Tool | None = None, mcp_tools: tuple[Tool, ...] = ()
+        cls,
+        *,
+        lsp_tool: Tool | None = None,
+        format_tool: Tool | None = None,
+        mcp_tools: tuple[Tool, ...] = (),
+        hooks_config: RuntimeHooksConfig | None = None,
     ) -> ToolRegistry:
         return cls.from_tools(
-            BuiltinToolProvider(lsp_tool=lsp_tool, mcp_tools=mcp_tools).provide_tools()
+            BuiltinToolProvider(
+                lsp_tool=lsp_tool,
+                format_tool=format_tool,
+                mcp_tools=mcp_tools,
+                hooks_config=hooks_config,
+            ).provide_tools()
         )
 
     def definitions(self) -> tuple[ToolDefinition, ...]:
@@ -200,7 +214,9 @@ class VoidCodeRuntime:
         self._lsp_manager = lsp_manager or build_lsp_manager(self._config.lsp)
         self._mcp_manager = mcp_manager or build_mcp_manager(self._config.mcp)
         self._base_tool_registry = tool_registry or ToolRegistry.with_defaults(
-            lsp_tool=self._build_lsp_tool()
+            lsp_tool=self._build_lsp_tool(),
+            format_tool=self._build_format_tool(),
+            hooks_config=self._config.hooks or RuntimeHooksConfig(),
         )
         self._tool_registry = self._base_tool_registry
         self._graph_override = graph
@@ -321,6 +337,11 @@ class VoidCodeRuntime:
         from ..tools.lsp import LspTool
 
         return LspTool(requester=self.request_lsp)
+
+    def _build_format_tool(self) -> FormatTool:
+        from ..tools.lsp import FormatTool
+
+        return FormatTool(self._config.hooks or RuntimeHooksConfig(), self._workspace)
 
     def _build_mcp_tools(self) -> tuple[Tool, ...]:
         if self._mcp_manager.current_state().mode != "managed":

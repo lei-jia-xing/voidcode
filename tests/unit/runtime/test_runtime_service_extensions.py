@@ -1613,6 +1613,7 @@ def test_runtime_single_agent_compaction_emits_memory_refresh_and_persists_metad
         "compaction_reason": None,
         "original_tool_result_count": 0,
         "retained_tool_result_count": 0,
+        "max_tool_result_count": 4,
     }
 
 
@@ -2307,6 +2308,49 @@ def test_runtime_single_agent_streaming_emits_ordered_provider_stream_events(
     assert [event.payload["kind"] for event in stream_events] == ["delta", "delta", "done"]
     output_chunks = [chunk.output for chunk in chunks if chunk.kind == "output"]
     assert output_chunks == ["hello world"]
+
+
+def test_runtime_run_stream_preserves_streamed_tool_requests(tmp_path: Path) -> None:
+    (tmp_path / "sample.txt").write_text("sample contents", encoding="utf-8")
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(
+                    (
+                        ProviderStreamEvent(
+                            kind="content",
+                            channel="tool",
+                            text='{"tool_name":"read_file","arguments":{"path":"sample.txt"}}',
+                        ),
+                        ProviderStreamEvent(kind="done", done_reason="completed"),
+                    ),
+                    SingleAgentTurnResult(output="sample contents"),
+                ),
+            ),
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(execution_engine="single_agent", model="opencode/gpt-5.4"),
+        model_provider_registry=registry,
+    )
+
+    chunks = list(runtime.run_stream(RuntimeRequest(prompt="read sample.txt")))
+
+    events = [chunk.event for chunk in chunks if chunk.event is not None]
+    assert events
+    tool_request_events = [
+        event for event in events if event.event_type == "graph.tool_request_created"
+    ]
+    assert len(tool_request_events) == 1
+    assert tool_request_events[0].payload == {
+        "tool": "read_file",
+        "arguments": {"path": "sample.txt"},
+        "path": "sample.txt",
+    }
+    output_chunks = [chunk.output for chunk in chunks if chunk.kind == "output"]
+    assert output_chunks == ["sample contents"]
 
 
 def test_runtime_run_stream_enables_provider_stream_when_not_explicitly_set(tmp_path: Path) -> None:

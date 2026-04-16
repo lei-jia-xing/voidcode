@@ -27,6 +27,7 @@ def test_prepare_single_agent_context_keeps_results_within_limit() -> None:
     assert context.compaction_reason is None
     assert context.original_tool_result_count == 2
     assert context.retained_tool_result_count == 2
+    assert context.max_tool_result_count == 3
 
 
 def test_prepare_single_agent_context_compacts_old_results_and_reports_metadata() -> None:
@@ -42,3 +43,4 @@ def test_prepare_single_agent_context_compacts_old_results_and_reports_metadata(
     assert context.compaction_reason == "tool_result_window"
     assert context.original_tool_result_count == 4
     assert context.retained_tool_result_count == 2
+    assert context.max_tool_result_count == 2

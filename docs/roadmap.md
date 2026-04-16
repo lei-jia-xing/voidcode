@@ -51,7 +51,7 @@ VoidCode 仍处于 pre-MVP 开发阶段。路线图从基础工作贯穿至 MVP 
 
 将工具和扩展作为运行时的一等公民，包含元数据、注册、内置功能和统一的执行管线。此 Epic 还包括作为运行时管理接口的技能、语言服务器（LSP）和智能体通信协议（ACP）的基础设施。
 
-**当前状态：** 部分完成。内置工具和技能发现已实现。LSP 已具备 read-only runtime-managed 基线（manager、tool、事件与测试），并且仓库已经补齐了 `lsp/`、`skills/`、`provider/`、`acp/`、`mcp/` 等能力层边界目录文档。MCP 已具备 runtime-managed lifecycle、tool discovery、tool call 集成 groundwork，但当前仍是 config-gated / opt-in 能力（#107 目标：稳定化当前边界，而非新增功能）。LSP 仍缺少独立的 server preset/config 模块，ACP 也仍主要停留在受限的配置/适配器基础与 disabled-stub 阶段。
+**当前状态：** 部分完成。内置工具和技能发现已实现。LSP 已具备 read-only runtime-managed 基线（manager、tool、事件与测试），并且仓库已经补齐了 `lsp/`、`skills/`、`provider/`、`acp/`、`mcp/` 等能力层边界目录文档；独立的 LSP server preset/config 模块也已经落地。MCP 已具备 runtime-managed lifecycle、tool discovery、tool call 集成 groundwork，但当前仍是 config-gated / opt-in 能力（#107 目标：稳定化当前边界，而非新增功能）。ACP 仍主要停留在受限的配置/适配器基础与 disabled-stub 阶段。
 
 **技术细节：** `ProviderSingleAgentGraph` 代表当前已实现的 provider-backed execution path，直接调用 `SingleAgentProvider.propose_turn()`，不依赖 LangGraph；当前默认 execution engine 仍是 deterministic，因此仅 `DeterministicReadOnlyGraph` 使用 LangGraph `StateGraph` 这一事实不应被表述为“LangGraph 已退出主路径”。
 
@@ -77,7 +77,7 @@ VoidCode 仍处于 pre-MVP 开发阶段。路线图从基础工作贯穿至 MVP 
 
 管理长期运行的上下文，并提供对轮次、工具、审批、钩子和错误的追踪友好可见性。
 
-**当前状态：** 部分完成。通过事件流实现的轮次级可观测性已完成；provider fallback、step budget 与恢复关键配置的运行时治理已经落地。`#70` 已经为 waiting / terminal session 落地了内部 resume checkpoint groundwork，`#82` 也已完成 retention / compaction / checkpoint invalidation 语义定义；当前最直接的后续工作转为 `#83`（corrupt / unreadable checkpoint fallback correctness）和 `#84`（cold-session archive / replay strategy）。
+**当前状态：** 部分完成。通过事件流实现的轮次级可观测性已完成；provider fallback、step budget 与恢复关键配置的运行时治理已经落地。`#70`、`#82`、`#83` 与 `#84` 已经分别完成 waiting / terminal session resume checkpoint groundwork、retention / compaction / checkpoint invalidation 语义、corrupt / unreadable checkpoint fallback correctness，以及 cold-session archive / replay strategy。
 
 ### Epic 8: TUI / CLI / Web 客户端
 
@@ -102,19 +102,46 @@ VoidCode 仍处于 pre-MVP 开发阶段。路线图从基础工作贯穿至 MVP 
 
 ## 当前最直接的后续工作
 
-在最近几轮 runtime 配置、provider fallback、恢复语义和 checkpoint groundwork 收口之后，当前 backlog 中最直接的 runtime/platform follow-up 是两层：
+在最近几轮 runtime 配置、provider fallback、恢复语义、checkpoint groundwork 与 archive / replay 主线收口之后，当前 backlog 的优先级应以 GitHub issue 列表为准，而不再继续沿用 `#83` / `#84` 作为“当前下一步”的描述。
 
-### 1. 先完成当前存储/恢复主线的剩余实现 issue
+### 当前产品化原则（有限时间内）
 
-- `#83`：收口 corrupt / unreadable checkpoint fallback correctness
-- `#84`：继续保持为后续的 cold-session archive / replay strategy，而不是现在就把 archive 实现塞进当前主线
+接下来的工作不应再以能力面扩张为优先，而应以**尽快做出一个真正可用的 agent coding 工具**为目标。对当前仓库而言，这意味着：
 
-### 2. 在不扩大协议面的前提下，启动下一批更大的 runtime capability issue
+- 优先提升**真实任务成功率**，而不是继续增加更多表面能力；
+- 优先完善 **CLI + Web** 这条已经真实接入 runtime 的主路径，TUI 继续保持降权状态；
+- 优先解决“为什么这台机器不能用”“为什么改完代码后不稳定”“为什么默认项目还需要大量手动配置”这类首轮体验问题；
+- provider / multi-agent / ACP / MCP 等能力扩张，只有在不挤占主路径产品化时间的前提下才继续推进。
 
-- runtime-managed provider config hardening
-- runtime-managed skill execution semantics
-- read-only managed LSP vertical slice
-- tool contract hardening with formatter hook presets for common languages
+因此，后续 backlog 的判断标准应从“还能再做什么能力”转为“是否直接提高第一次真实改码任务的完成率”。
+
+### 1. 先处理当前仍然打开的 runtime / client parity / tooling issue
+
+- `#120`：make edit flows formatter-aware and re-read aligned
+- `#122`：add a runtime capability doctor for external tool readiness
+
+这两项是当前产品化最直接的主线：
+
+- `#122` 负责回答“当前环境为什么不能工作、缺什么、该怎么修”；
+- `#120` 负责回答“代码改完以后如何保持格式化、读取结果和实际文件状态一致”。
+
+如果这两条链路没有完成，用户即使看到了更多 provider、更多客户端表面或更多可选能力，也很难稳定完成第一次真实任务。
+
+### 2. 再继续能力层的完善与加固
+
+- `#111`：improve built-in LSP presets and defaults
+- `#110`：improve built-in formatter presets and defaults
+- `#130`：add more llm api
+
+这一层工作的目标不是继续堆 capability，而是提高**默认可用性**：让 Python、TypeScript 与常见本地环境在更少手动配置下直接进入可用状态。
+
+`#130` 这类 provider 扩展工作应放在默认可用性之后，避免在核心任务链路尚未稳定时继续扩大维护面。
+
+### 3. 当前不作为产品化第一优先级的工作
+
+- `#100`：TUI parity 仍然有价值，但当前不应与 CLI + Web 主路径并行争抢产品化时间；
+- `#126`：fuzz test 继续有价值，但应服务于主路径稳定化，而不是替代产品化主线本身；
+- `#97`：ACP contract extraction 仍应保持 boundary-first，不应抢占当前 MVP 主路径时间。
 
 这些 issue 都应继续遵守当前边界：
 
