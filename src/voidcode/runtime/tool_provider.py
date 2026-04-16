@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from ..hook.config import RuntimeHooksConfig
 from ..tools.contracts import Tool
 from ..tools.edit import EditTool
 from ..tools.glob import GlobTool
@@ -52,6 +53,7 @@ class BuiltinToolProvider:
     _lsp_tool: Tool | None
     _format_tool: Tool | None
     _mcp_tools: tuple[Tool, ...]
+    _hooks_config: RuntimeHooksConfig | None
 
     def __init__(
         self,
@@ -59,14 +61,17 @@ class BuiltinToolProvider:
         lsp_tool: Tool | None = None,
         format_tool: Tool | None = None,
         mcp_tools: tuple[Tool, ...] = (),
+        hooks_config: RuntimeHooksConfig | None = None,
     ) -> None:
         self._lsp_tool = lsp_tool
         self._format_tool = format_tool
         self._mcp_tools = mcp_tools
+        self._hooks_config = hooks_config
 
     def provide_tools(self) -> tuple[Tool, ...]:
+        edit_tool = EditTool(hooks_config=self._hooks_config)
         tools: list[Tool] = [
-            EditTool(),
+            edit_tool,
             GlobTool(),
             GrepTool(),
             ListTool(),
@@ -96,7 +101,7 @@ class BuiltinToolProvider:
         if _CodeSearchTool is not None:
             tools.append(_CodeSearchTool())
         if _MultiEditTool is not None:
-            tools.append(_MultiEditTool())
+            tools.append(_MultiEditTool(hooks_config=self._hooks_config))
         if _TodoWriteTool is not None:
             tools.append(_TodoWriteTool())
 

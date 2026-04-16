@@ -133,12 +133,14 @@ class ToolRegistry:
         lsp_tool: Tool | None = None,
         format_tool: Tool | None = None,
         mcp_tools: tuple[Tool, ...] = (),
+        hooks_config: RuntimeHooksConfig | None = None,
     ) -> ToolRegistry:
         return cls.from_tools(
             BuiltinToolProvider(
                 lsp_tool=lsp_tool,
                 format_tool=format_tool,
                 mcp_tools=mcp_tools,
+                hooks_config=hooks_config,
             ).provide_tools()
         )
 
@@ -214,6 +216,7 @@ class VoidCodeRuntime:
         self._base_tool_registry = tool_registry or ToolRegistry.with_defaults(
             lsp_tool=self._build_lsp_tool(),
             format_tool=self._build_format_tool(),
+            hooks_config=self._config.hooks or RuntimeHooksConfig(),
         )
         self._tool_registry = self._base_tool_registry
         self._graph_override = graph
