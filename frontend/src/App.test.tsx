@@ -1,5 +1,5 @@
 import { render, screen, fireEvent } from '@testing-library/react';
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import App from './App';
 import { useAppStore } from './store';
 import './i18n';
@@ -37,8 +37,14 @@ describe('App', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-16T06:00:00Z'));
     (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue(mockStore);
     (useAppStore as unknown as { getState: () => typeof mockStore }).getState = () => mockStore;
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it('toggles language when language button is clicked', () => {
@@ -57,16 +63,18 @@ describe('App', () => {
       ...mockStore,
       currentSessionEvents: [
         {
-          id: 'event-1',
-          type: 'tool_call',
-          payload: { tool_name: 'test_tool', args: {} },
-          metadata: { task_id: 'task-1' }
+          session_id: 'session-1',
+          sequence: 1,
+          event_type: 'graph.tool_request_created',
+          source: 'graph',
+          payload: { tool: 'test_tool' }
         },
         {
-          id: 'event-2',
-          type: 'tool_result',
-          payload: { result: 'success' },
-          metadata: { task_id: 'task-1' }
+          session_id: 'session-1',
+          sequence: 2,
+          event_type: 'runtime.tool_completed',
+          source: 'tool',
+          payload: { tool: 'test_tool', result: 'success' }
         }
       ]
     });
@@ -242,5 +250,117 @@ describe('App', () => {
 
     expect(screen.getByText('Approval failed: boom')).toBeInTheDocument();
     expect(screen.getAllByRole('button', { name: 'Submitting...' })).toHaveLength(2);
+  });
+
+  it('renders the session list item with prompt-first title, status, and updated time', () => {
+    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      ...mockStore,
+      sessions: [
+        {
+          session: { id: 'session-123456789' },
+          status: 'completed',
+          turn: 5,
+          prompt: 'test prompt subtitle',
+          updated_at: Math.floor(new Date('2026-04-16T05:58:00Z').getTime() / 1000)
+        }
+      ]
+    });
+
+    render(<App />);
+
+    expect(screen.getByText('test prompt subtitle')).toBeInTheDocument();
+    expect(screen.getAllByText('session-').length).toBeGreaterThan(0);
+    expect(screen.getByText('T5')).toBeInTheDocument();
+    expect(screen.getByText('Completed')).toBeInTheDocument();
+    expect(screen.getByText('2m ago')).toBeInTheDocument();
+  });
+
+  it('renders idle session status labels from contract-valid summaries', () => {
+    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      ...mockStore,
+      sessions: [
+        {
+          session: { id: 'session-idle-123' },
+          status: 'idle',
+          turn: 1,
+          prompt: 'Resume existing session',
+          updated_at: Math.floor(new Date('2026-04-16T05:59:30Z').getTime() / 1000)
+        }
+      ]
+    });
+
+    render(<App />);
+
+    expect(screen.getByText('Pending')).toBeInTheDocument();
+  });
+
+  it('renders the header subtitle with current session prompt', () => {
+    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      ...mockStore,
+      currentSessionId: 'session-123456789',
+      sessions: [
+        {
+          session: { id: 'session-123456789' },
+          status: 'completed',
+          turn: 5,
+          prompt: 'test prompt subtitle',
+          updated_at: 1000
+        }
+      ]
+    });
+
+    render(<App />);
+
+    const headers = screen.getAllByText('test prompt subtitle');
+    expect(headers.length).toBeGreaterThan(0);
+    expect(screen.getByText('session-123456789')).toBeInTheDocument();
+  });
+
+  it('falls back to the replayed request prompt in the header when summary prompt is unavailable', () => {
+    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      ...mockStore,
+      currentSessionId: 'session-123456789',
+      currentSessionEvents: [
+        {
+          session_id: 'session-123456789',
+          sequence: 1,
+          event_type: 'runtime.request_received',
+          source: 'runtime',
+          payload: { prompt: 'prompt from replay' }
+        }
+      ]
+    });
+
+    render(<App />);
+
+    expect(screen.getByText('prompt from replay')).toBeInTheDocument();
+  });
+
+  it('prefers the latest replayed request prompt in the header fallback', () => {
+    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      ...mockStore,
+      currentSessionId: 'session-123456789',
+      currentSessionEvents: [
+        {
+          session_id: 'session-123456789',
+          sequence: 1,
+          event_type: 'runtime.request_received',
+          source: 'runtime',
+          payload: { prompt: 'old prompt' }
+        },
+        {
+          session_id: 'session-123456789',
+          sequence: 4,
+          event_type: 'runtime.request_received',
+          source: 'runtime',
+          payload: { prompt: 'latest prompt' }
+        }
+      ]
+    });
+
+    render(<App />);
+
+    expect(screen.getByText('latest prompt')).toBeInTheDocument();
+    expect(screen.queryByText('old prompt')).not.toBeInTheDocument();
   });
 });
