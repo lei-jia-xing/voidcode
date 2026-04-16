@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
@@ -81,7 +82,7 @@ class LiteLLMBackendSingleAgentProvider:
         if base_url is None or not base_url.strip():
             return "http://127.0.0.1:4000/v1"
         stripped = base_url.rstrip("/")
-        if stripped.endswith("/v1"):
+        if re.search(r"/v[0-9]+(?:beta|alpha)?$", stripped, re.IGNORECASE):
             return stripped
         return f"{stripped}/v1"
 

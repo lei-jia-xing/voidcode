@@ -17,6 +17,7 @@ from .config import (
     LiteLLMProviderConfig,
     ProviderConfigs,
     ProviderFallbackConfig,
+    SimplifiedProviderConfig,
     parse_provider_configs_payload,
     parse_provider_fallback_payload,
     serialize_provider_configs,
@@ -30,8 +31,11 @@ from .errors import (
     format_fallback_exhausted_error,
     format_invalid_provider_config_error,
 )
+from .glm import GLMModelProvider
 from .google import GoogleModelProvider
+from .kimi import KimiModelProvider
 from .litellm import LiteLLMModelProvider
+from .minimax import MiniMaxModelProvider
 from .model_catalog import ProviderModelCatalog, discover_available_models
 from .models import (
     ProviderModelSelection,
@@ -40,6 +44,7 @@ from .models import (
     ResolvedProviderModel,
 )
 from .openai import OpenAIModelProvider
+from .opencode_go import OpenCodeGoModelProvider
 from .protocol import (
     ModelProvider,
     ProviderExecutionError,
@@ -48,6 +53,7 @@ from .protocol import (
     SingleAgentTurnResult,
     StubSingleAgentProvider,
 )
+from .qwen import QwenModelProvider
 from .registry import ModelProviderRegistry, StaticModelProvider
 from .resolution import (
     resolve_provider_chain,
@@ -90,8 +96,14 @@ __all__ = [
     "SingleAgentContextLimitError",
     "SingleAgentProviderError",
     "LiteLLMProviderConfig",
+    "SimplifiedProviderConfig",
     "StaticModelProvider",
     "StubSingleAgentProvider",
+    "GLMModelProvider",
+    "MiniMaxModelProvider",
+    "KimiModelProvider",
+    "OpenCodeGoModelProvider",
+    "QwenModelProvider",
     "classify_provider_error",
     "format_fallback_exhausted_error",
     "format_invalid_provider_config_error",

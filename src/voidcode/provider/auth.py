@@ -10,6 +10,7 @@ from .config import (
     GoogleProviderConfig,
     LiteLLMProviderConfig,
     ProviderConfigs,
+    SimplifiedProviderConfig,
 )
 
 type ProviderAuthProvider = str
@@ -108,6 +109,9 @@ _LITELLM_METHODS: tuple[ProviderAuthMethod, ...] = (
     ProviderAuthMethod(id="api_key", label="API Key"),
     ProviderAuthMethod(id="none", label="No Auth"),
 )
+_SIMPLIFIED_METHODS: tuple[ProviderAuthMethod, ...] = (
+    ProviderAuthMethod(id="api_key", label="API Key"),
+)
 
 
 class ProviderAuthResolver:
@@ -123,6 +127,16 @@ class ProviderAuthResolver:
 
     def _custom_provider_config(self, provider: str) -> LiteLLMProviderConfig | None:
         return self._providers.custom.get(provider)
+
+    def _simplified_provider_config(self, provider: str) -> SimplifiedProviderConfig | None:
+        provider_map = {
+            "glm": self._providers.glm,
+            "minimax": self._providers.minimax,
+            "kimi": self._providers.kimi,
+            "opencode-go": self._providers.opencode_go,
+            "qwen": self._providers.qwen,
+        }
+        return provider_map.get(provider)
 
     def methods(self, provider: ProviderAuthProvider) -> ProviderAuthMethodsResponse:
         if provider == "openai":
@@ -167,6 +181,16 @@ class ProviderAuthResolver:
                 methods=_LITELLM_METHODS,
                 default_method=default_method,
             )
+        simplified_config = self._simplified_provider_config(provider)
+        if simplified_config is not None:
+            default_method = "api_key"
+            if simplified_config.api_key is not None:
+                default_method = "api_key"
+            return ProviderAuthMethodsResponse(
+                provider=provider,
+                methods=_SIMPLIFIED_METHODS,
+                default_method=default_method,
+            )
         custom_config = self._custom_provider_config(provider)
         if custom_config is not None:
             default_method = "none"
@@ -200,6 +224,12 @@ class ProviderAuthResolver:
                 request=request,
                 provider_name="litellm",
                 provider_config=self._providers.litellm,
+            )
+        simplified_config = self._simplified_provider_config(request.provider)
+        if simplified_config is not None:
+            return self._authorize_simplified_provider(
+                request=request,
+                provider_config=simplified_config,
             )
         custom_config = self._custom_provider_config(request.provider)
         if custom_config is not None:
@@ -278,6 +308,29 @@ class ProviderAuthResolver:
             method=method,
             status="authorized",
             material=self._bearer_material(provider_name, method, token),
+        )
+
+    def _authorize_simplified_provider(
+        self,
+        *,
+        request: ProviderAuthAuthorizeRequest,
+        provider_config: SimplifiedProviderConfig,
+    ) -> ProviderAuthAuthorizeResult:
+        method = self._resolve_method(
+            request, default_method="api_key", allowed_methods={"api_key"}
+        )
+        payload = {} if request.payload is None else dict(request.payload)
+        token = self._resolve_api_key(
+            payload=payload,
+            field_name="api_key",
+            config_value=provider_config.api_key,
+            provider=request.provider,
+        )
+        return ProviderAuthAuthorizeResult(
+            provider=request.provider,
+            method=method,
+            status="authorized",
+            material=self._bearer_material(request.provider, method, token),
         )
 
     def callback(self, request: ProviderAuthCallbackRequest) -> ProviderAuthMaterial:
