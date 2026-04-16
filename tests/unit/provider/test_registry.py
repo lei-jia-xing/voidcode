@@ -301,6 +301,7 @@ def test_registry_glm_provider_config_with_base_url_and_model_map() -> None:
     assert config == LiteLLMProviderConfig(
         api_key="glm-key",
         base_url="https://custom.glm.cn",
+        discovery_base_url="https://open.bigmodel.cn/api/paas/v4",
         model_map={"glm4": "glm-4-flash"},
     )
 
