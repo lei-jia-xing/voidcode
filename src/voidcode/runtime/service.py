@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -75,6 +76,14 @@ from .session import SessionRef, SessionState, SessionStatus, StoredSessionSumma
 from .single_agent_provider import ProviderExecutionError
 from .skills import SkillRuntimeContext, build_runtime_contexts
 from .storage import SessionStore, SqliteSessionStore
+from .task import (
+    BackgroundTaskRef,
+    BackgroundTaskRequestSnapshot,
+    BackgroundTaskState,
+    BackgroundTaskStatus,
+    StoredBackgroundTaskSummary,
+    validate_background_task_id,
+)
 from .tool_provider import BuiltinToolProvider
 
 if TYPE_CHECKING:
@@ -176,6 +185,8 @@ class VoidCodeRuntime:
     _acp_adapter: AcpAdapter
     _graph_cache: dict[tuple[ExecutionEngineName, str], RuntimeGraph]
     _plan_contributor: PlanContributor
+    _background_task_threads: dict[str, threading.Thread]
+    _background_tasks_reconciled: bool
     _hook_recursion_env_var = "VOIDCODE_RUNNING_TOOL_HOOK"
     _default_context_window_policy = ContextWindowPolicy()
 
@@ -239,6 +250,8 @@ class VoidCodeRuntime:
         self._skill_registry = skill_registry or self._build_skill_registry()
         self._acp_adapter = acp_adapter or build_acp_adapter(self._config.acp)
         self._plan_contributor = build_plan_contributor(self._workspace, self._config.plan)
+        self._background_task_threads = {}
+        self._background_tasks_reconciled = False
 
     def __enter__(self) -> VoidCodeRuntime:
         return self
@@ -1206,6 +1219,50 @@ class VoidCodeRuntime:
     def list_sessions(self) -> tuple[StoredSessionSummary, ...]:
         return self._session_store.list_sessions(workspace=self._workspace)
 
+    def start_background_task(self, request: RuntimeRequest) -> BackgroundTaskState:
+        self._reconcile_background_tasks_if_needed()
+        validated_request = self._validated_request(request)
+        task_id = f"task-{uuid4().hex}"
+        initial_state = BackgroundTaskState(
+            task=BackgroundTaskRef(id=task_id),
+            status="queued",
+            request=BackgroundTaskRequestSnapshot(
+                prompt=validated_request.prompt,
+                session_id=validated_request.session_id,
+                metadata=dict(validated_request.metadata),
+                allocate_session_id=validated_request.allocate_session_id,
+            ),
+            created_at=1,
+            updated_at=1,
+        )
+        self._session_store.create_background_task(workspace=self._workspace, task=initial_state)
+        worker = threading.Thread(
+            target=self._run_background_task_worker,
+            args=(task_id,),
+            name=f"voidcode-background-task-{task_id}",
+            daemon=True,
+        )
+        self._background_task_threads[task_id] = worker
+        worker.start()
+        return self.load_background_task(task_id)
+
+    def load_background_task(self, task_id: str) -> BackgroundTaskState:
+        self._reconcile_background_tasks_if_needed()
+        validate_background_task_id(task_id)
+        return self._session_store.load_background_task(workspace=self._workspace, task_id=task_id)
+
+    def list_background_tasks(self) -> tuple[StoredBackgroundTaskSummary, ...]:
+        self._reconcile_background_tasks_if_needed()
+        return self._session_store.list_background_tasks(workspace=self._workspace)
+
+    def cancel_background_task(self, task_id: str) -> BackgroundTaskState:
+        validate_background_task_id(task_id)
+        self._reconcile_background_tasks_if_needed()
+        return self._session_store.request_background_task_cancel(
+            workspace=self._workspace,
+            task_id=task_id,
+        )
+
     def effective_runtime_config(self, *, session_id: str | None = None) -> EffectiveRuntimeConfig:
         if session_id is None:
             return self._effective_runtime_config_from_metadata(None)
@@ -1945,6 +2002,79 @@ class VoidCodeRuntime:
                 if persisted_approval_mode in ("allow", "deny", "ask"):
                     approval_mode = persisted_approval_mode
         return PermissionPolicy(mode=approval_mode)
+
+    def _reconcile_background_tasks_if_needed(self) -> None:
+        if self._background_tasks_reconciled:
+            return
+        fail_incomplete = getattr(self._session_store, "fail_incomplete_background_tasks", None)
+        if callable(fail_incomplete):
+            fail_incomplete(
+                workspace=self._workspace,
+                message="background task interrupted before completion",
+            )
+        self._background_tasks_reconciled = True
+
+    def _run_background_task_worker(self, task_id: str) -> None:
+        try:
+            task = self.load_background_task(task_id)
+            if task.status == "cancelled":
+                return
+            session_id = task.request.session_id
+            if session_id is None:
+                session_id = f"session-{uuid4().hex}"
+            running_task = self._session_store.mark_background_task_running(
+                workspace=self._workspace,
+                task_id=task_id,
+                session_id=session_id,
+            )
+            if running_task.status != "running":
+                return
+            if running_task.cancel_requested_at is not None:
+                self._session_store.mark_background_task_terminal(
+                    workspace=self._workspace,
+                    task_id=task_id,
+                    status="cancelled",
+                    error="cancelled before dispatch",
+                )
+                return
+            response = self.run(
+                RuntimeRequest(
+                    prompt=running_task.request.prompt,
+                    session_id=session_id,
+                    metadata={
+                        **running_task.request.metadata,
+                        "background_task_id": task_id,
+                        "background_run": True,
+                    },
+                    allocate_session_id=False,
+                )
+            )
+            terminal_status: BackgroundTaskStatus = (
+                "completed" if response.session.status == "completed" else "failed"
+            )
+            error: str | None = None
+            if terminal_status == "failed":
+                for event in reversed(response.events):
+                    if event.event_type == "runtime.failed":
+                        event_error = event.payload.get("error")
+                        error = str(event_error) if event_error is not None else None
+                        break
+            self._session_store.mark_background_task_terminal(
+                workspace=self._workspace,
+                task_id=task_id,
+                status=terminal_status,
+                error=error,
+            )
+        except Exception as exc:
+            logger.exception("background task failed: %s", task_id)
+            self._session_store.mark_background_task_terminal(
+                workspace=self._workspace,
+                task_id=task_id,
+                status="failed",
+                error=str(exc),
+            )
+        finally:
+            self._background_task_threads.pop(task_id, None)
 
     def _effective_runtime_config_from_metadata(
         self, metadata: dict[str, object] | None

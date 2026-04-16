@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import importlib
 import json
 import logging
 import os
 import sqlite3
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, cast
+from unittest.mock import Mock
 
 import pytest
 
@@ -49,6 +52,7 @@ from voidcode.runtime.single_agent_provider import (
     SingleAgentTurnRequest,
     SingleAgentTurnResult,
 )
+from voidcode.runtime.task import BackgroundTaskState
 from voidcode.skills import SkillRegistry
 from voidcode.tools import ToolCall
 
@@ -270,6 +274,45 @@ class _ApprovalResumeFallbackSingleAgentProvider:
         return SingleAgentTurnResult(output="done")
 
 
+class _BackgroundTaskSuccessGraph:
+    def step(
+        self,
+        request: GraphRunRequest,
+        tool_results: tuple[object, ...],
+        *,
+        session: SessionState,
+    ) -> _StubStep:
+        _ = tool_results, session
+        return _StubStep(output=request.prompt, is_finished=True)
+
+
+class _BackgroundTaskFailureGraph:
+    def step(
+        self,
+        request: GraphRunRequest,
+        tool_results: tuple[object, ...],
+        *,
+        session: SessionState,
+    ) -> _StubStep:
+        _ = request, tool_results, session
+        raise RuntimeError("background boom")
+
+
+def _wait_for_background_task(
+    runtime: VoidCodeRuntime,
+    task_id: str,
+    *,
+    timeout_seconds: float = 2.0,
+) -> BackgroundTaskState:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        task = runtime.load_background_task(task_id)
+        if task.status in ("completed", "failed", "cancelled"):
+            return task
+        time.sleep(0.01)
+    raise AssertionError(f"background task {task_id} did not reach terminal state")
+
+
 def _write_demo_skill(skill_dir: Path, *, description: str = "Demo skill", content: str) -> None:
     skill_dir.mkdir(parents=True, exist_ok=True)
     (skill_dir / "SKILL.md").write_text(
@@ -319,6 +362,115 @@ def test_runtime_initializes_empty_extension_state_by_default(tmp_path: Path) ->
             os.environ.pop("GITHUB_COPILOT_TOKEN", None)
         else:
             os.environ["GITHUB_COPILOT_TOKEN"] = previous_copilot_token
+
+
+def test_runtime_background_task_executes_through_existing_runtime_path(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+
+    started = runtime.start_background_task(RuntimeRequest(prompt="background hello"))
+    completed = _wait_for_background_task(runtime, started.task.id)
+    loaded = runtime.load_background_task(started.task.id)
+    linked_session_id = cast(str, loaded.session_id)
+    resumed = runtime.resume(linked_session_id)
+
+    assert started.status == "queued"
+    assert loaded.status == "completed"
+    assert loaded.session_id is not None
+    assert resumed.session.metadata["background_task_id"] == started.task.id
+    assert resumed.session.metadata["background_run"] is True
+    assert resumed.output == "background hello"
+    assert completed == loaded
+
+
+def test_runtime_background_task_persists_failure_state(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskFailureGraph())
+
+    started = runtime.start_background_task(RuntimeRequest(prompt="background fail"))
+    _ = runtime.load_background_task(started.task.id)
+    failed = _wait_for_background_task(runtime, started.task.id)
+
+    assert failed.status == "failed"
+    assert failed.error is not None
+    assert "background boom" in failed.error
+
+
+def test_runtime_cancel_background_task_reconciles_orphaned_queued_task(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    store = _private_attr(runtime, "_session_store")
+    task_module = importlib.import_module("voidcode.runtime.task")
+    store.create_background_task(
+        workspace=tmp_path,
+        task=task_module.BackgroundTaskState(
+            task=task_module.BackgroundTaskRef(id="task-pre-cancel"),
+            request=task_module.BackgroundTaskRequestSnapshot(prompt="background hello"),
+            created_at=1,
+            updated_at=1,
+        ),
+    )
+
+    cancelled = runtime.cancel_background_task("task-pre-cancel")
+
+    assert cancelled.status == "failed"
+    assert cancelled.error == "background task interrupted before completion"
+    assert cancelled.cancel_requested_at is None
+
+
+def test_runtime_reconciles_incomplete_background_tasks_on_init(tmp_path: Path) -> None:
+    first_runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    store = _private_attr(first_runtime, "_session_store")
+    task_module = importlib.import_module("voidcode.runtime.task")
+    store.create_background_task(
+        workspace=tmp_path,
+        task=task_module.BackgroundTaskState(
+            task=task_module.BackgroundTaskRef(id="task-orphan"),
+            request=task_module.BackgroundTaskRequestSnapshot(prompt="orphan"),
+            created_at=1,
+            updated_at=1,
+        ),
+    )
+
+    second_runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    reconciled = second_runtime.load_background_task("task-orphan")
+
+    assert reconciled.status == "failed"
+    assert reconciled.error == "background task interrupted before completion"
+
+
+def test_runtime_background_task_worker_exits_when_task_is_cancelled_before_start_transition(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    runtime._background_tasks_reconciled = True  # pyright: ignore[reportPrivateUsage]
+    store = _private_attr(runtime, "_session_store")
+    task_module = importlib.import_module("voidcode.runtime.task")
+    store.create_background_task(
+        workspace=tmp_path,
+        task=task_module.BackgroundTaskState(
+            task=task_module.BackgroundTaskRef(id="task-race-cancel"),
+            request=task_module.BackgroundTaskRequestSnapshot(prompt="background hello"),
+            created_at=1,
+            updated_at=1,
+        ),
+    )
+
+    original_mark_running = store.mark_background_task_running
+
+    def _cancel_before_mark_running(
+        *, workspace: Path, task_id: str, session_id: str
+    ) -> BackgroundTaskState:
+        _ = store.request_background_task_cancel(workspace=workspace, task_id=task_id)
+        return original_mark_running(workspace=workspace, task_id=task_id, session_id=session_id)
+
+    store.mark_background_task_running = _cancel_before_mark_running
+    run_mock = Mock(side_effect=AssertionError("runtime.run must not be called"))
+    runtime.run = run_mock
+
+    runtime._run_background_task_worker("task-race-cancel")  # pyright: ignore[reportPrivateUsage]
+
+    final_task = runtime.load_background_task("task-race-cancel")
+    assert final_task.status == "cancelled"
+    assert final_task.error == "cancelled before start"
+    run_mock.assert_not_called()
 
 
 def test_runtime_initializes_extension_state_from_config_when_enabled(tmp_path: Path) -> None:

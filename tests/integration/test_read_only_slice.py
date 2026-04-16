@@ -71,6 +71,23 @@ class RuntimeRequestFactory(Protocol):
     def __call__(self, *, prompt: str, session_id: str | None = None) -> RuntimeRequestLike: ...
 
 
+class BackgroundTaskRefLike(Protocol):
+    id: str
+
+
+class BackgroundTaskStateLike(Protocol):
+    task: BackgroundTaskRefLike
+    status: str
+    session_id: str | None
+    error: str | None
+    cancel_requested_at: int | None
+
+
+class StoredBackgroundTaskSummaryLike(Protocol):
+    task: BackgroundTaskRefLike
+    status: str
+
+
 class RuntimeRunner(Protocol):
     def run(self, request: RuntimeRequestLike) -> RuntimeResponseLike: ...
 
@@ -93,6 +110,14 @@ class RuntimeRunner(Protocol):
         approval_request_id: str | None = None,
         approval_decision: str | None = None,
     ) -> RuntimeResponseLike: ...
+
+    def start_background_task(self, request: RuntimeRequestLike) -> BackgroundTaskStateLike: ...
+
+    def load_background_task(self, task_id: str) -> BackgroundTaskStateLike: ...
+
+    def list_background_tasks(self) -> tuple[StoredBackgroundTaskSummaryLike, ...]: ...
+
+    def cancel_background_task(self, task_id: str) -> BackgroundTaskStateLike: ...
 
 
 class RuntimeFactory(Protocol):
@@ -158,6 +183,8 @@ class SessionStoreLike(Protocol):
     def load_pending_approval(self, *, workspace: Path, session_id: str) -> object: ...
 
     def clear_pending_approval(self, *, workspace: Path, session_id: str) -> None: ...
+
+    def create_background_task(self, *, workspace: Path, task: object) -> None: ...
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
@@ -1242,6 +1269,65 @@ def test_runtime_uses_environment_config_to_allow_write_requests_without_code_ch
     assert (tmp_path / "env.txt").read_text(encoding="utf-8") == "env approved"
 
 
+def test_runtime_background_task_persists_and_can_be_loaded_from_fresh_runtime(
+    tmp_path: Path,
+) -> None:
+    runtime_request, runtime_class = _load_runtime_types()
+
+    first_runtime = cast(RuntimeRunner, cast(object, runtime_class(workspace=tmp_path)))
+    task = first_runtime.start_background_task(runtime_request(prompt="read missing.txt"))
+
+    deadline = time.time() + 2
+    terminal_task = None
+    while time.time() < deadline:
+        current = first_runtime.load_background_task(task.task.id)
+        if current.status in ("completed", "failed", "cancelled"):
+            terminal_task = current
+            break
+        time.sleep(0.01)
+
+    assert terminal_task is not None
+    second_runtime = cast(RuntimeRunner, cast(object, runtime_class(workspace=tmp_path)))
+    reloaded = second_runtime.load_background_task(task.task.id)
+    listed = second_runtime.list_background_tasks()
+
+    assert reloaded.task.id == task.task.id
+    assert reloaded.status == terminal_task.status
+    assert any(item.task.id == task.task.id for item in listed)
+    if reloaded.session_id is not None:
+        replay = second_runtime.resume(reloaded.session_id)
+        assert replay.session.metadata["background_task_id"] == task.task.id
+        assert replay.session.metadata["background_run"] is True
+
+
+def test_runtime_background_task_cancel_reconciles_orphaned_task_from_fresh_runtime(
+    tmp_path: Path,
+) -> None:
+    _, runtime_class = _load_runtime_types()
+    task_module = importlib.import_module("voidcode.runtime.task")
+    storage_module = importlib.import_module("voidcode.runtime.storage")
+
+    first_runtime = cast(RuntimeRunner, cast(object, runtime_class(workspace=tmp_path)))
+    _ = first_runtime
+    store = cast(SessionStoreLike, storage_module.SqliteSessionStore())
+    store.create_background_task(
+        workspace=tmp_path,
+        task=task_module.BackgroundTaskState(
+            task=task_module.BackgroundTaskRef(id="task-fresh-cancel"),
+            request=task_module.BackgroundTaskRequestSnapshot(prompt="read sample.txt"),
+            created_at=1,
+            updated_at=1,
+        ),
+    )
+
+    second_runtime = cast(RuntimeRunner, cast(object, runtime_class(workspace=tmp_path)))
+    cancelled = second_runtime.cancel_background_task("task-fresh-cancel")
+
+    assert cancelled.status == "failed"
+    assert cancelled.error == "background task interrupted before completion"
+    assert cancelled.cancel_requested_at is None
+
+
 def test_runtime_executes_grep_read_only_slice_and_emits_events(tmp_path: Path) -> None:
     sample_file = tmp_path / "sample.txt"
     _ = sample_file.write_text("alpha\nbeta alpha\n", encoding="utf-8")
@@ -1602,7 +1688,7 @@ def test_runtime_migrates_legacy_session_schema_for_pending_approval(tmp_path: P
 
     assert "pending_approval_json" in columns
     assert "resume_checkpoint_json" in columns
-    assert user_version == 3
+    assert user_version == 4
 
 
 def test_runtime_replay_is_unchanged_when_resume_checkpoint_exists(tmp_path: Path) -> None:
