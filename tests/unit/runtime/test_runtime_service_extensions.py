@@ -382,6 +382,44 @@ def test_runtime_background_task_executes_through_existing_runtime_path(tmp_path
     assert completed == loaded
 
 
+def test_runtime_background_task_worker_uses_local_cli_session_when_no_session_id_and_allocate_session_id_is_false(  # noqa: E501
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+
+    started = runtime.start_background_task(RuntimeRequest(prompt="background hello"))
+    completed = _wait_for_background_task(runtime, started.task.id)
+    resumed = runtime.resume("local-cli-session")
+
+    assert completed.session_id == "local-cli-session"
+    assert resumed.session.session.id == "local-cli-session"
+    assert resumed.session.metadata["background_task_id"] == started.task.id
+    assert resumed.session.metadata["background_run"] is True
+    assert resumed.output == "background hello"
+
+
+def test_runtime_background_task_worker_allocates_session_id_when_requested_without_explicit_session(  # noqa: E501
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+
+    started = runtime.start_background_task(
+        RuntimeRequest(prompt="background hello", allocate_session_id=True)
+    )
+    completed = _wait_for_background_task(runtime, started.task.id)
+    allocated_session_id = cast(str, completed.session_id)
+    resumed = runtime.resume(allocated_session_id)
+
+    assert completed.session_id is not None
+    assert allocated_session_id != "local-cli-session"
+    assert allocated_session_id.startswith("session-")
+    assert len(allocated_session_id) == len("session-") + 32
+    assert resumed.session.session.id == allocated_session_id
+    assert resumed.session.metadata["background_task_id"] == started.task.id
+    assert resumed.session.metadata["background_run"] is True
+    assert resumed.output == "background hello"
+
+
 def test_runtime_background_task_persists_failure_state(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskFailureGraph())
 
