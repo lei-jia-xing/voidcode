@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from voidcode.provider.anthropic import AnthropicModelProvider
 from voidcode.provider.config import (
+    AnthropicProviderConfig,
     GoogleProviderAuthConfig,
     GoogleProviderConfig,
     LiteLLMProviderConfig,
+    OpenAIProviderConfig,
     ProviderConfigs,
     SimplifiedProviderConfig,
 )
@@ -137,9 +139,63 @@ def test_registry_google_provider_config_uses_google_api_key_header_for_api_key_
 
     assert config == LiteLLMProviderConfig(
         api_key="AIza-test",
+        discovery_base_url="https://generativelanguage.googleapis.com",
         auth_header="x-goog-api-key",
         auth_scheme="token",
     )
+
+
+def test_registry_openai_provider_config_sets_default_discovery_base_url() -> None:
+    registry = ModelProviderRegistry.with_defaults(
+        provider_configs=ProviderConfigs(openai=OpenAIProviderConfig(api_key="sk-openai"))
+    )
+
+    config = registry.provider_config("openai")
+
+    assert config is not None
+    assert config.api_key == "sk-openai"
+    assert config.discovery_base_url == "https://api.openai.com"
+
+
+def test_registry_openai_provider_config_with_custom_base_url_disables_default_discovery() -> None:
+    registry = ModelProviderRegistry.with_defaults(
+        provider_configs=ProviderConfigs(
+            openai=OpenAIProviderConfig(
+                api_key="sk-openai",
+                base_url="https://proxy.example.com/v1",
+            )
+        )
+    )
+
+    config = registry.provider_config("openai")
+
+    assert config is not None
+    assert config.base_url == "https://proxy.example.com/v1"
+    assert config.discovery_base_url is None
+
+
+def test_registry_anthropic_provider_config_sets_default_discovery_base_url() -> None:
+    registry = ModelProviderRegistry.with_defaults(
+        provider_configs=ProviderConfigs(anthropic=AnthropicProviderConfig(api_key="sk-anthropic"))
+    )
+
+    config = registry.provider_config("anthropic")
+
+    assert config is not None
+    assert config.api_key == "sk-anthropic"
+    assert config.discovery_base_url == "https://api.anthropic.com"
+
+
+def test_registry_litellm_provider_config_sets_default_discovery_base_url() -> None:
+    registry = ModelProviderRegistry.with_defaults(
+        provider_configs=ProviderConfigs(litellm=LiteLLMProviderConfig(api_key="litellm-key"))
+    )
+
+    config = registry.provider_config("litellm")
+
+    assert config is not None
+    assert config.api_key == "litellm-key"
+    assert config.discovery_base_url == "http://127.0.0.1:4000"
 
 
 def test_registry_registers_glm_provider() -> None:
@@ -155,6 +211,7 @@ def test_registry_registers_glm_provider() -> None:
     assert config is not None
     assert config.api_key == "glm-key"
     assert config.base_url == "https://open.bigmodel.cn/api/paas/v4"
+    assert config.discovery_base_url == "https://open.bigmodel.cn/api/paas/v4"
     assert "glm-4-flash" in config.model_map
 
 
@@ -171,6 +228,7 @@ def test_registry_registers_minimax_provider() -> None:
     assert config is not None
     assert config.api_key == "minimax-key"
     assert config.base_url == "https://api.minimax.io"
+    assert config.discovery_base_url == ""
     assert "MiniMax-M2.7" in config.model_map.values()
 
 
@@ -187,6 +245,7 @@ def test_registry_registers_kimi_provider() -> None:
     assert config is not None
     assert config.api_key == "kimi-key"
     assert config.base_url == "https://api.moonshot.ai"
+    assert config.discovery_base_url == "https://api.moonshot.ai/v1"
     assert "kimi-k2.5" in config.model_map.values()
 
 
@@ -205,6 +264,7 @@ def test_registry_registers_opencode_go_provider() -> None:
     assert config is not None
     assert config.api_key == "opencode-go-key"
     assert config.base_url == "https://opencode.ai/zen/go"
+    assert config.discovery_base_url == "https://opencode.ai/zen/v1"
     assert "kimi-k2.5" in config.model_map.values()
 
 
@@ -221,6 +281,7 @@ def test_registry_registers_qwen_provider() -> None:
     assert config is not None
     assert config.api_key == "qwen-key"
     assert config.base_url == "https://dashscope.aliyuncs.com/compatible-mode"
+    assert config.discovery_base_url == "https://dashscope.aliyuncs.com/compatible-mode/v1"
     assert "qwen-plus" in config.model_map.values()
 
 
@@ -258,27 +319,32 @@ def test_registry_simplified_provider_uses_default_base_url_when_not_set() -> No
     glm_config = registry.provider_config("glm")
     assert glm_config is not None
     assert glm_config.base_url == "https://open.bigmodel.cn/api/paas/v4"
+    assert glm_config.discovery_base_url == "https://open.bigmodel.cn/api/paas/v4"
     assert glm_config.model_map.get("glm-4-flash") == "glm-4-flash"
 
     minimax_config = registry.provider_config("minimax")
     assert minimax_config is not None
     assert minimax_config.base_url == "https://api.minimax.io"
+    assert minimax_config.discovery_base_url == ""
     assert minimax_config.model_map.get("minimax-m2.7") == "MiniMax-M2.7"
 
     kimi_config = registry.provider_config("kimi")
     assert kimi_config is not None
     assert kimi_config.base_url == "https://api.moonshot.ai"
+    assert kimi_config.discovery_base_url == "https://api.moonshot.ai/v1"
     assert kimi_config.model_map.get("kimi-k2.5") == "kimi-k2.5"
 
     opencode_go_config = registry.provider_config("opencode-go")
     assert opencode_go_config is not None
     assert opencode_go_config.base_url == "https://opencode.ai/zen/go"
+    assert opencode_go_config.discovery_base_url == "https://opencode.ai/zen/v1"
     assert opencode_go_config.model_map.get("kimi-k2.5") == "kimi-k2.5"
     assert opencode_go_config.model_map.get("glm-5") == "glm-5"
 
     qwen_config = registry.provider_config("qwen")
     assert qwen_config is not None
     assert qwen_config.base_url == "https://dashscope.aliyuncs.com/compatible-mode"
+    assert qwen_config.discovery_base_url == "https://dashscope.aliyuncs.com/compatible-mode/v1"
     assert qwen_config.model_map.get("qwen-plus") == "qwen-plus"
 
 

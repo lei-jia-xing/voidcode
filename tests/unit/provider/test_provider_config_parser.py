@@ -22,8 +22,11 @@ def test_parse_provider_configs_payload_parses_provider_blocks_directly() -> Non
     parsed = parse_provider_configs_payload(
         {
             "openai": {"base_url": "https://api.openai.test"},
-            "anthropic": {},
-            "google": {"auth": {"method": "api_key"}},
+            "anthropic": {"discovery_base_url": "https://api.anthropic.com"},
+            "google": {
+                "auth": {"method": "api_key"},
+                "discovery_base_url": "https://generativelanguage.googleapis.com",
+            },
             "copilot": {
                 "auth": {
                     "method": "oauth",
@@ -59,10 +62,15 @@ def test_parse_provider_configs_payload_parses_provider_blocks_directly() -> Non
         openai=OpenAIProviderConfig(
             api_key="openai-env-key",
             base_url="https://api.openai.test",
+            discovery_base_url=None,
         ),
-        anthropic=AnthropicProviderConfig(api_key="anthropic-env-key"),
+        anthropic=AnthropicProviderConfig(
+            api_key="anthropic-env-key",
+            discovery_base_url="https://api.anthropic.com",
+        ),
         google=GoogleProviderConfig(
-            auth=GoogleProviderAuthConfig(method="api_key", api_key="google-env-key")
+            auth=GoogleProviderAuthConfig(method="api_key", api_key="google-env-key"),
+            discovery_base_url="https://generativelanguage.googleapis.com",
         ),
         copilot=CopilotProviderConfig(
             auth=CopilotProviderAuthConfig(
@@ -313,6 +321,26 @@ def test_parse_kimi_provider_config_with_base_url() -> None:
     assert parsed.kimi == SimplifiedProviderConfig(
         api_key="kimi-key",
         base_url="https://api.moonshot.cn/v1",
+    )
+
+
+def test_parse_simplified_provider_config_with_discovery_base_url() -> None:
+    parsed = parse_provider_configs_payload(
+        {
+            "kimi": {
+                "api_key": "kimi-key",
+                "base_url": "https://api.moonshot.ai",
+                "discovery_base_url": "https://api.moonshot.ai/v1",
+            }
+        },
+        source="runtime config field 'providers'",
+    )
+
+    assert parsed is not None
+    assert parsed.kimi == SimplifiedProviderConfig(
+        api_key="kimi-key",
+        base_url="https://api.moonshot.ai",
+        discovery_base_url="https://api.moonshot.ai/v1",
     )
 
 

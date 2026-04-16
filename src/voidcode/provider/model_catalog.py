@@ -88,21 +88,15 @@ def discover_available_models(
     )
 
 
-def _base_url_for_discovery(
-    *, provider_name: str, config: LiteLLMProviderConfig | None
-) -> str | None:
-    if config is not None and config.base_url:
-        return config.base_url.rstrip("/")
-    if provider_name == "openai":
-        return "https://api.openai.com"
-    if provider_name == "anthropic":
-        return "https://api.anthropic.com"
-    if provider_name == "google":
-        return "https://generativelanguage.googleapis.com"
-    if provider_name == "litellm":
-        return "http://127.0.0.1:4000"
-    if provider_name in ("glm", "minimax", "kimi", "opencode-go", "qwen"):
-        return None
+def _base_url_for_discovery(*, config: LiteLLMProviderConfig | None) -> str | None:
+    if config is not None:
+        if config.discovery_base_url is not None:
+            candidate = config.discovery_base_url.strip()
+            if not candidate:
+                return None
+            return candidate.rstrip("/")
+        if config.base_url:
+            return config.base_url.rstrip("/")
     return None
 
 
@@ -126,7 +120,7 @@ def _headers_for_discovery(config: LiteLLMProviderConfig | None) -> dict[str, st
 def _build_discovery_request(
     *, provider_name: str, config: LiteLLMProviderConfig | None
 ) -> DiscoveryRequest | None:
-    base_url = _base_url_for_discovery(provider_name=provider_name, config=config)
+    base_url = _base_url_for_discovery(config=config)
     if base_url is None:
         return None
 

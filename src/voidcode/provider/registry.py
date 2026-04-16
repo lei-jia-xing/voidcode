@@ -23,6 +23,27 @@ from .opencode_go import OpenCodeGoModelProvider
 from .protocol import ModelProvider, SingleAgentProvider, StubSingleAgentProvider
 from .qwen import QwenModelProvider
 
+_DEFAULT_DISCOVERY_BASE_URLS: dict[str, str] = {
+    "openai": "https://api.openai.com",
+    "anthropic": "https://api.anthropic.com",
+    "google": "https://generativelanguage.googleapis.com",
+    "litellm": "http://127.0.0.1:4000",
+}
+
+
+def _default_discovery_base_url(
+    provider_name: str,
+    *,
+    configured_base_url: str | None,
+    configured_discovery_base_url: str | None,
+) -> str | None:
+    if configured_discovery_base_url is not None:
+        return configured_discovery_base_url
+    if configured_base_url is not None:
+        return None
+    return _DEFAULT_DISCOVERY_BASE_URLS.get(provider_name)
+
+
 _SIMPLIFIED_PROVIDER_MAP: dict[str, type] = {
     "glm": GLMModelProvider,
     "minimax": MiniMaxModelProvider,
@@ -88,6 +109,19 @@ class ModelProviderRegistry:
                 return LiteLLMProviderConfig(
                     api_key=None if provider.config is None else provider.config.api_key,
                     base_url=None if provider.config is None else provider.config.base_url,
+                    discovery_base_url=(
+                        _default_discovery_base_url(
+                            "openai",
+                            configured_base_url=(
+                                None if provider.config is None else provider.config.base_url
+                            ),
+                            configured_discovery_base_url=(
+                                None
+                                if provider.config is None
+                                else provider.config.discovery_base_url
+                            ),
+                        )
+                    ),
                     timeout_seconds=None
                     if provider.config is None
                     else provider.config.timeout_seconds,
@@ -98,6 +132,19 @@ class ModelProviderRegistry:
                 return LiteLLMProviderConfig(
                     api_key=None if provider.config is None else provider.config.api_key,
                     base_url=None if provider.config is None else provider.config.base_url,
+                    discovery_base_url=(
+                        _default_discovery_base_url(
+                            "anthropic",
+                            configured_base_url=(
+                                None if provider.config is None else provider.config.base_url
+                            ),
+                            configured_discovery_base_url=(
+                                None
+                                if provider.config is None
+                                else provider.config.discovery_base_url
+                            ),
+                        )
+                    ),
                     timeout_seconds=None
                     if provider.config is None
                     else provider.config.timeout_seconds,
@@ -118,6 +165,19 @@ class ModelProviderRegistry:
                 return LiteLLMProviderConfig(
                     api_key=api_key,
                     base_url=None if provider.config is None else provider.config.base_url,
+                    discovery_base_url=(
+                        _default_discovery_base_url(
+                            "google",
+                            configured_base_url=(
+                                None if provider.config is None else provider.config.base_url
+                            ),
+                            configured_discovery_base_url=(
+                                None
+                                if provider.config is None
+                                else provider.config.discovery_base_url
+                            ),
+                        )
+                    ),
                     auth_header=auth_header,
                     auth_scheme=auth_scheme,
                     timeout_seconds=None
@@ -140,7 +200,24 @@ class ModelProviderRegistry:
         if provider_name == "litellm":
             provider = self.providers.get("litellm")
             if isinstance(provider, LiteLLMModelProvider):
-                return provider.config
+                if provider.config is None:
+                    return LiteLLMProviderConfig(
+                        discovery_base_url=_DEFAULT_DISCOVERY_BASE_URLS["litellm"]
+                    )
+                return LiteLLMProviderConfig(
+                    api_key=provider.config.api_key,
+                    api_key_env_var=provider.config.api_key_env_var,
+                    base_url=provider.config.base_url,
+                    discovery_base_url=_default_discovery_base_url(
+                        "litellm",
+                        configured_base_url=provider.config.base_url,
+                        configured_discovery_base_url=provider.config.discovery_base_url,
+                    ),
+                    auth_header=provider.config.auth_header,
+                    auth_scheme=provider.config.auth_scheme,
+                    timeout_seconds=provider.config.timeout_seconds,
+                    model_map=dict(provider.config.model_map),
+                )
         provider_cls = _SIMPLIFIED_PROVIDER_MAP.get(provider_name)
         if provider_cls is not None:
             provider = self.providers.get(provider_name)
