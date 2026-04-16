@@ -55,6 +55,30 @@ def _build_turn_request(*, model_name: str) -> SingleAgentTurnRequest:
     )
 
 
+def _build_turn_request_with_skill(*, model_name: str) -> SingleAgentTurnRequest:
+    tool_results = (ToolResult(tool_name="read_file", status="ok", content="hello world"),)
+    return SingleAgentTurnRequest(
+        prompt="summarize sample.txt",
+        available_tools=(
+            ToolDefinition(name="read_file", description="read file", read_only=True),
+        ),
+        tool_results=tool_results,
+        context_window=_StubContextWindow(prompt="summarize sample.txt", tool_results=tool_results),
+        applied_skills=(
+            {
+                "name": "summarize",
+                "description": "Summarize selected files.",
+                "content": "# Summarize\nUse concise bullet points.",
+            },
+        ),
+        raw_model=f"{model_name}/demo",
+        provider_name=model_name,
+        model_name="demo",
+        attempt=0,
+        abort_signal=None,
+    )
+
+
 class _StubStreamChunk:
     def __init__(
         self,
@@ -250,6 +274,52 @@ def test_provider_adapter_propose_turn_returns_text_output(
     result = single_agent.propose_turn(_build_turn_request(model_name=provider_name))
 
     assert result.output == "hello world"
+
+
+@pytest.mark.parametrize(
+    ("provider_name", "provider"),
+    [
+        ("openai", OpenAIModelProvider()),
+        ("anthropic", AnthropicModelProvider()),
+        ("google", GoogleModelProvider()),
+        ("copilot", CopilotModelProvider()),
+    ],
+)
+def test_provider_adapter_injects_applied_skills_into_system_messages(
+    monkeypatch: pytest.MonkeyPatch,
+    provider_name: str,
+    provider: ModelProvider,
+) -> None:
+    single_agent = provider.single_agent_provider()
+
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        completion_content="hello world",
+    )
+
+    result = single_agent.propose_turn(_build_turn_request_with_skill(model_name=provider_name))
+
+    assert result.output == "hello world"
+    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+    assert isinstance(payload_obj, dict)
+    payload = cast(dict[str, object], payload_obj)
+    messages_obj = payload.get("messages")
+    assert isinstance(messages_obj, list)
+    messages = cast(list[dict[str, str]], messages_obj)
+    assert messages == [
+        {
+            "role": "system",
+            "content": (
+                "You must apply the following runtime-managed skills for this turn. "
+                "Treat them as active task instructions in addition to the user's request.\n\n"
+                "## summarize\n"
+                "Description: Summarize selected files.\n"
+                "# Summarize\nUse concise bullet points."
+            ),
+        },
+        {"role": "user", "content": "summarize sample.txt"},
+    ]
 
 
 def test_provider_adapter_propose_turn_uses_model_map_for_litellm_alias(
