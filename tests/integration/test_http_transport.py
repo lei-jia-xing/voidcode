@@ -433,6 +433,31 @@ def test_transport_replays_session_as_json_runtime_response(tmp_path: Path) -> N
     ]
 
 
+def test_transport_reads_session_result_with_transcript(tmp_path: Path) -> None:
+    sample_file = tmp_path / "sample.txt"
+    _ = sample_file.write_text("result payload\n", encoding="utf-8")
+    runtime_request, runtime_class = _load_runtime_types()
+    create_runtime_app = _load_transport_app_factory()
+
+    runtime = runtime_class(workspace=tmp_path)
+    stored = runtime.run(runtime_request(prompt="read sample.txt", session_id="result-session"))
+
+    app = create_runtime_app(workspace=tmp_path)
+    response = _run_app(app, method="GET", path="/api/sessions/result-session/result")
+    payload = cast(dict[str, object], response.json())
+
+    assert response.status == 200
+    assert payload["prompt"] == "read sample.txt"
+    assert payload["status"] == "completed"
+    assert payload["summary"] == "Completed: result payload"
+    assert payload["output"] == "result payload\n"
+    assert payload["error"] is None
+    assert payload["last_event_sequence"] == stored.events[-1].sequence
+    assert [
+        event["event_type"] for event in cast(list[dict[str, object]], payload["transcript"])
+    ] == [event.event_type for event in stored.events]
+
+
 def test_transport_resolves_pending_approval_allow_over_http(tmp_path: Path) -> None:
     runtime_request, runtime_class = _load_runtime_types()
     create_runtime_app = _load_transport_app_factory()
@@ -488,6 +513,42 @@ def test_transport_resolves_pending_approval_allow_over_http(tmp_path: Path) -> 
         "graph.response_ready",
     ]
     assert (tmp_path / "danger.txt").read_text(encoding="utf-8") == "approved later"
+
+
+def test_transport_lists_and_acknowledges_notifications(tmp_path: Path) -> None:
+    runtime_request, runtime_class = _load_runtime_types()
+    create_runtime_app = _load_transport_app_factory()
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    permission_policy = cast(object, permission_module.PermissionPolicy(mode="ask"))
+
+    runtime = runtime_class(workspace=tmp_path, permission_policy=permission_policy)
+    _ = runtime.run(
+        runtime_request(prompt="write danger.txt approved later", session_id="notification-session")
+    )
+
+    app = create_runtime_app(
+        workspace=tmp_path,
+        runtime_factory=lambda: runtime_class(
+            workspace=tmp_path,
+            permission_policy=permission_policy,
+        ),
+    )
+    list_response = _run_app(app, method="GET", path="/api/notifications")
+    notifications = cast(list[dict[str, object]], list_response.json())
+
+    assert list_response.status == 200
+    assert len(notifications) == 1
+    assert notifications[0]["kind"] == "approval_blocked"
+    assert notifications[0]["status"] == "unread"
+
+    notification_id = cast(str, notifications[0]["id"])
+    ack_response = _run_app(app, method="POST", path=f"/api/notifications/{notification_id}/ack")
+    ack_payload = cast(dict[str, object], ack_response.json())
+
+    assert ack_response.status == 200
+    assert ack_payload["id"] == notification_id
+    assert ack_payload["status"] == "acknowledged"
+    assert ack_payload["acknowledged_at"] is not None
 
 
 def test_transport_serializes_hook_events_from_runtime_stream(tmp_path: Path) -> None:

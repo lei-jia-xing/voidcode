@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from typing import Literal, Protocol, runtime_checkable
 
 from .events import EventEnvelope
-from .session import SessionState
+from .session import SessionRef, SessionState
 from .task import BackgroundTaskState, StoredBackgroundTaskSummary
 
 
@@ -30,6 +30,40 @@ class RuntimeResponse:
     session: SessionState
     events: tuple[EventEnvelope, ...] = ()
     output: str | None = None
+
+
+type RuntimeNotificationKind = Literal[
+    "completion",
+    "failure",
+    "cancellation",
+    "approval_blocked",
+]
+type RuntimeNotificationStatus = Literal["unread", "acknowledged"]
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeSessionResult:
+    session: SessionState
+    prompt: str
+    status: str
+    summary: str
+    output: str | None = None
+    error: str | None = None
+    transcript: tuple[EventEnvelope, ...] = ()
+    last_event_sequence: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeNotification:
+    id: str
+    session: SessionRef
+    kind: RuntimeNotificationKind
+    status: RuntimeNotificationStatus
+    summary: str
+    event_sequence: int
+    created_at: int
+    acknowledged_at: int | None = None
+    payload: dict[str, object] = field(default_factory=dict)
 
 
 type RuntimeStreamChunkKind = Literal["event", "output"]

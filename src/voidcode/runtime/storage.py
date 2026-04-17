@@ -8,7 +8,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Protocol, cast, final, runtime_checkable
 
-from .contracts import RuntimeRequest, RuntimeResponse
+from .contracts import RuntimeNotification, RuntimeRequest, RuntimeResponse, RuntimeSessionResult
 from .events import EventEnvelope, EventSource
 from .permission import PendingApproval
 from .session import SessionRef, SessionState, SessionStatus, StoredSessionSummary
@@ -36,6 +36,14 @@ class SessionStore(Protocol):
     def list_sessions(self, *, workspace: Path) -> tuple[StoredSessionSummary, ...]: ...
 
     def load_session(self, *, workspace: Path, session_id: str) -> RuntimeResponse: ...
+
+    def load_session_result(self, *, workspace: Path, session_id: str) -> RuntimeSessionResult: ...
+
+    def list_notifications(self, *, workspace: Path) -> tuple[RuntimeNotification, ...]: ...
+
+    def acknowledge_notification(
+        self, *, workspace: Path, notification_id: str
+    ) -> RuntimeNotification: ...
 
     def save_pending_approval(
         self,
@@ -176,6 +184,24 @@ class SqliteSessionStore:
             )
             """
         )
+        _ = connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS session_notifications (
+                notification_id TEXT PRIMARY KEY,
+                workspace TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                status TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                event_sequence INTEGER NOT NULL,
+                dedupe_key TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                acknowledged_at INTEGER,
+                UNIQUE(workspace, dedupe_key)
+            )
+            """
+        )
         user_version = self._read_user_version(connection=connection)
         columns = {
             cast(str, row["name"])
@@ -288,6 +314,13 @@ class SqliteSessionStore:
                     for event in response.events
                 ],
             )
+            self._sync_notifications(
+                connection=connection,
+                workspace=workspace,
+                request=request,
+                response=response,
+                pending_approval=None,
+            )
             connection.commit()
 
     def list_sessions(self, *, workspace: Path) -> tuple[StoredSessionSummary, ...]:
@@ -372,6 +405,13 @@ class SqliteSessionStore:
                     )
                     for event in response.events
                 ],
+            )
+            self._sync_notifications(
+                connection=connection,
+                workspace=workspace,
+                request=request,
+                response=response,
+                pending_approval=pending_approval,
             )
             connection.commit()
 
@@ -555,6 +595,52 @@ class SqliteSessionStore:
         return RuntimeResponse(
             session=session, events=events, output=cast(str | None, session_row["output"])
         )
+
+    def load_session_result(self, *, workspace: Path, session_id: str) -> RuntimeSessionResult:
+        response = self.load_session(workspace=workspace, session_id=session_id)
+        with self._connect(workspace) as connection:
+            row = cast(
+                sqlite3.Row | None,
+                connection.execute(
+                    """
+                    SELECT prompt
+                    FROM sessions
+                    WHERE workspace = ? AND session_id = ?
+                    """,
+                    (str(workspace), session_id),
+                ).fetchone(),
+            )
+        if row is None:
+            raise ValueError(f"unknown session: {session_id}")
+        prompt = cast(str, row["prompt"])
+        summary, error = self._result_summary(response=response, prompt=prompt)
+        return RuntimeSessionResult(
+            session=response.session,
+            prompt=prompt,
+            status=response.session.status,
+            summary=summary,
+            output=response.output,
+            error=error,
+            transcript=response.events,
+            last_event_sequence=response.events[-1].sequence if response.events else 0,
+        )
+
+    def list_notifications(self, *, workspace: Path) -> tuple[RuntimeNotification, ...]:
+        with self._connect(workspace) as connection:
+            rows = cast(
+                list[sqlite3.Row],
+                connection.execute(
+                    """
+                    SELECT notification_id, session_id, kind, status, summary, payload_json,
+                           event_sequence, created_at, acknowledged_at
+                    FROM session_notifications
+                    WHERE workspace = ?
+                    ORDER BY created_at DESC, notification_id DESC
+                    """,
+                    (str(workspace),),
+                ).fetchall(),
+            )
+        return tuple(self._notification_from_row(row) for row in rows)
 
     def create_background_task(
         self,
@@ -795,6 +881,196 @@ class SqliteSessionStore:
             ).fetchone(),
         )
         return cast(int, row["next_ts"])
+
+    def acknowledge_notification(
+        self, *, workspace: Path, notification_id: str
+    ) -> RuntimeNotification:
+        with self._connect(workspace) as connection:
+            existing_row = cast(
+                sqlite3.Row | None,
+                connection.execute(
+                    """
+                    SELECT notification_id, session_id, kind, status, summary, payload_json,
+                           event_sequence, created_at, acknowledged_at
+                    FROM session_notifications
+                    WHERE workspace = ? AND notification_id = ?
+                    """,
+                    (str(workspace), notification_id),
+                ).fetchone(),
+            )
+            if existing_row is None:
+                raise ValueError(f"unknown notification: {notification_id}")
+            acknowledged_at = cast(int | None, existing_row["acknowledged_at"])
+            if acknowledged_at is None:
+                acknowledged_at = self._next_timestamp(connection=connection)
+                _ = connection.execute(
+                    """
+                    UPDATE session_notifications
+                    SET status = 'acknowledged', acknowledged_at = ?
+                    WHERE workspace = ? AND notification_id = ?
+                    """,
+                    (acknowledged_at, str(workspace), notification_id),
+                )
+                connection.commit()
+            row = cast(
+                sqlite3.Row,
+                connection.execute(
+                    """
+                    SELECT notification_id, session_id, kind, status, summary, payload_json,
+                           event_sequence, created_at, acknowledged_at
+                    FROM session_notifications
+                    WHERE workspace = ? AND notification_id = ?
+                    """,
+                    (str(workspace), notification_id),
+                ).fetchone(),
+            )
+        return self._notification_from_row(row)
+
+    @staticmethod
+    def _result_summary(*, response: RuntimeResponse, prompt: str) -> tuple[str, str | None]:
+        if response.session.status == "completed":
+            output = (response.output or "").strip()
+            if output:
+                return f"Completed: {output[:120]}", None
+            return f"Completed session for prompt: {prompt[:80]}", None
+        if response.session.status == "waiting":
+            for event in reversed(response.events):
+                if event.event_type == "runtime.approval_requested":
+                    tool = str(event.payload.get("tool", "tool"))
+                    target = str(event.payload.get("target_summary", "")).strip()
+                    if target:
+                        return f"Approval blocked on {tool}: {target[:100]}", None
+                    return f"Approval blocked on {tool}", None
+            return "Approval blocked", None
+        if response.session.status == "failed":
+            for event in reversed(response.events):
+                if event.event_type == "runtime.failed":
+                    error = str(event.payload.get("error", "runtime failed"))
+                    return f"Failed: {error[:120]}", error
+            return "Failed", None
+        return f"{response.session.status.capitalize()} session", None
+
+    def _sync_notifications(
+        self,
+        *,
+        connection: sqlite3.Connection,
+        workspace: Path,
+        request: RuntimeRequest,
+        response: RuntimeResponse,
+        pending_approval: PendingApproval | None,
+    ) -> None:
+        session_id = response.session.session.id
+        if pending_approval is None:
+            _ = connection.execute(
+                """
+                UPDATE session_notifications
+                SET status = 'acknowledged',
+                    acknowledged_at = COALESCE(acknowledged_at, ?)
+                WHERE workspace = ?
+                  AND session_id = ?
+                  AND kind = 'approval_blocked'
+                  AND status = 'unread'
+                """,
+                (
+                    self._next_timestamp(connection=connection),
+                    str(workspace),
+                    session_id,
+                ),
+            )
+        notification = self._notification_candidate(
+            request=request,
+            response=response,
+            pending_approval=pending_approval,
+        )
+        if notification is None:
+            return
+        _ = connection.execute(
+            """
+            INSERT OR IGNORE INTO session_notifications (
+                notification_id, workspace, session_id, kind, status, summary, payload_json,
+                event_sequence, dedupe_key, created_at, acknowledged_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                notification["notification_id"],
+                str(workspace),
+                session_id,
+                notification["kind"],
+                "unread",
+                notification["summary"],
+                json.dumps(notification["payload"], sort_keys=True),
+                notification["event_sequence"],
+                notification["dedupe_key"],
+                self._next_timestamp(connection=connection),
+                None,
+            ),
+        )
+
+    def _notification_candidate(
+        self,
+        *,
+        request: RuntimeRequest,
+        response: RuntimeResponse,
+        pending_approval: PendingApproval | None,
+    ) -> dict[str, object] | None:
+        session_id = response.session.session.id
+        if pending_approval is not None:
+            summary, _ = self._result_summary(response=response, prompt=request.prompt)
+            event_sequence = response.events[-1].sequence if response.events else 0
+            dedupe_key = f"{session_id}:approval_blocked:{pending_approval.request_id}"
+            return {
+                "notification_id": dedupe_key,
+                "dedupe_key": dedupe_key,
+                "kind": "approval_blocked",
+                "summary": summary,
+                "event_sequence": event_sequence,
+                "payload": {
+                    "request_id": pending_approval.request_id,
+                    "tool": pending_approval.tool_name,
+                    "arguments": pending_approval.arguments,
+                    "target_summary": pending_approval.target_summary,
+                    "reason": pending_approval.reason,
+                },
+            }
+        if response.session.status == "completed":
+            summary, _ = self._result_summary(response=response, prompt=request.prompt)
+            event_sequence = response.events[-1].sequence if response.events else 0
+            dedupe_key = f"{session_id}:completion:{event_sequence}"
+            return {
+                "notification_id": dedupe_key,
+                "dedupe_key": dedupe_key,
+                "kind": "completion",
+                "summary": summary,
+                "event_sequence": event_sequence,
+                "payload": {"output": response.output},
+            }
+        if response.session.status == "failed":
+            summary, error = self._result_summary(response=response, prompt=request.prompt)
+            event_sequence = response.events[-1].sequence if response.events else 0
+            dedupe_key = f"{session_id}:failure:{event_sequence}"
+            return {
+                "notification_id": dedupe_key,
+                "dedupe_key": dedupe_key,
+                "kind": "failure",
+                "summary": summary,
+                "event_sequence": event_sequence,
+                "payload": {"error": error},
+            }
+        return None
+
+    @staticmethod
+    def _notification_from_row(row: sqlite3.Row) -> RuntimeNotification:
+        return RuntimeNotification(
+            id=cast(str, row["notification_id"]),
+            session=SessionRef(id=cast(str, row["session_id"])),
+            kind=cast(str, row["kind"]),
+            status=cast(str, row["status"]),
+            summary=cast(str, row["summary"]),
+            event_sequence=cast(int, row["event_sequence"]),
+            created_at=cast(int, row["created_at"]),
+            acknowledged_at=cast(int | None, row["acknowledged_at"]),
+            payload=cast(dict[str, object], json.loads(cast(str, row["payload_json"]))),
+        )
 
     def _read_user_version(self, *, connection: sqlite3.Connection) -> int:
         row = cast(

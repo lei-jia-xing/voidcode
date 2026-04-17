@@ -47,7 +47,14 @@ from .config import (
     serialize_runtime_plan_config,
 )
 from .context_window import ContextWindowPolicy, RuntimeContextWindow, prepare_single_agent_context
-from .contracts import RuntimeRequest, RuntimeResponse, RuntimeStreamChunk, validate_session_id
+from .contracts import (
+    RuntimeNotification,
+    RuntimeRequest,
+    RuntimeResponse,
+    RuntimeSessionResult,
+    RuntimeStreamChunk,
+    validate_session_id,
+)
 from .events import (
     RUNTIME_ACP_CONNECTED,
     RUNTIME_ACP_DISCONNECTED,
@@ -1261,6 +1268,34 @@ class VoidCodeRuntime:
             task_id=task_id,
         )
 
+    def session_result(self, *, session_id: str) -> RuntimeSessionResult:
+        validate_session_id(session_id)
+        result = self._session_store.load_session_result(
+            workspace=self._workspace,
+            session_id=session_id,
+        )
+        self._validate_session_workspace(result.session, session_id=session_id)
+        return result
+
+    def list_notifications(self) -> tuple[RuntimeNotification, ...]:
+        notifications = self._session_store.list_notifications(workspace=self._workspace)
+        return tuple(
+            notification
+            for notification in notifications
+            if self._session_belongs_to_workspace(notification.session.id)
+        )
+
+    def acknowledge_notification(self, *, notification_id: str) -> RuntimeNotification:
+        if not notification_id:
+            raise ValueError("notification_id must be a non-empty string")
+        notification = self._session_store.acknowledge_notification(
+            workspace=self._workspace,
+            notification_id=notification_id,
+        )
+        if not self._session_belongs_to_workspace(notification.session.id):
+            raise ValueError(f"unknown notification: {notification_id}")
+        return notification
+
     def effective_runtime_config(self, *, session_id: str | None = None) -> EffectiveRuntimeConfig:
         if session_id is None:
             return self._effective_runtime_config_from_metadata(None)
@@ -2211,6 +2246,20 @@ class VoidCodeRuntime:
             return
         if session_workspace != str(self._workspace):
             raise ValueError(f"session {session_id} does not belong to workspace {self._workspace}")
+
+    def _session_belongs_to_workspace(self, session_id: str) -> bool:
+        try:
+            response = self._session_store.load_session(
+                workspace=self._workspace,
+                session_id=session_id,
+            )
+        except ValueError:
+            return False
+        try:
+            self._validate_session_workspace(response.session, session_id=session_id)
+        except ValueError:
+            return False
+        return True
 
 
 @dataclass(frozen=True, slots=True)

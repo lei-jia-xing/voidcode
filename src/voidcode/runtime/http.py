@@ -10,7 +10,14 @@ from pathlib import Path
 from typing import Protocol, cast, final
 
 from .config import RuntimeConfig
-from .contracts import RuntimeRequest, RuntimeResponse, RuntimeStreamChunk, validate_session_id
+from .contracts import (
+    RuntimeNotification,
+    RuntimeRequest,
+    RuntimeResponse,
+    RuntimeSessionResult,
+    RuntimeStreamChunk,
+    validate_session_id,
+)
 from .events import EventEnvelope
 from .permission import PermissionResolution
 from .service import VoidCodeRuntime
@@ -23,6 +30,12 @@ class RuntimeTransport(Protocol):
     def run_stream(self, request: RuntimeRequest) -> Iterator[RuntimeStreamChunk]: ...
 
     def list_sessions(self) -> tuple[StoredSessionSummary, ...]: ...
+
+    def session_result(self, *, session_id: str) -> RuntimeSessionResult: ...
+
+    def list_notifications(self) -> tuple[RuntimeNotification, ...]: ...
+
+    def acknowledge_notification(self, *, notification_id: str) -> RuntimeNotification: ...
 
     def resume(
         self,
@@ -86,12 +99,51 @@ class RuntimeTransportApp:
             await self._handle_list_sessions(send)
             return
 
+        if path == "/api/notifications":
+            if method != "GET":
+                await self._json_response(
+                    send,
+                    status=405,
+                    payload={"error": "method not allowed"},
+                )
+                return
+            await self._handle_list_notifications(send)
+            return
+
+        notification_prefix = "/api/notifications/"
+        if path.startswith(notification_prefix):
+            notification_path = path.removeprefix(notification_prefix)
+            if not notification_path.endswith("/ack"):
+                await self._json_response(send, status=404, payload={"error": "not found"})
+                return
+            notification_id = notification_path.removesuffix("/ack")
+            if not notification_id:
+                await self._json_response(send, status=404, payload={"error": "not found"})
+                return
+            if method != "POST":
+                await self._json_response(
+                    send,
+                    status=405,
+                    payload={"error": "method not allowed"},
+                )
+                return
+            await self._handle_acknowledge_notification(
+                notification_id=notification_id,
+                send=send,
+            )
+            return
+
         session_prefix = "/api/sessions/"
         if path.startswith(session_prefix):
             session_path = path.removeprefix(session_prefix)
             is_approval_route = session_path.endswith("/approval")
+            is_result_route = session_path.endswith("/result")
             session_id = (
-                session_path.removesuffix("/approval") if is_approval_route else session_path
+                session_path.removesuffix("/approval")
+                if is_approval_route
+                else session_path.removesuffix("/result")
+                if is_result_route
+                else session_path
             )
             try:
                 validate_session_id(session_id)
@@ -115,6 +167,16 @@ class RuntimeTransportApp:
                     receive=receive,
                     send=send,
                 )
+                return
+            if is_result_route:
+                if method != "GET":
+                    await self._json_response(
+                        send,
+                        status=405,
+                        payload={"error": "method not allowed"},
+                    )
+                    return
+                await self._handle_session_result(session_id=session_id, send=send)
                 return
             if method != "GET":
                 await self._json_response(
@@ -190,6 +252,11 @@ class RuntimeTransportApp:
         payload = [self._serialize_stored_session_summary(item) for item in runtime.list_sessions()]
         await self._json_response(send, status=200, payload=payload)
 
+    async def _handle_list_notifications(self, send: Send) -> None:
+        runtime = self._runtime_factory()
+        payload = [self._serialize_notification(item) for item in runtime.list_notifications()]
+        await self._json_response(send, status=200, payload=payload)
+
     async def _handle_resume(self, *, session_id: str, send: Send) -> None:
         runtime = self._runtime_factory()
         try:
@@ -201,6 +268,19 @@ class RuntimeTransportApp:
             send,
             status=200,
             payload=self._serialize_runtime_response(response),
+        )
+
+    async def _handle_session_result(self, *, session_id: str, send: Send) -> None:
+        runtime = self._runtime_factory()
+        try:
+            result = runtime.session_result(session_id=session_id)
+        except ValueError as exc:
+            await self._json_response(send, status=404, payload={"error": str(exc)})
+            return
+        await self._json_response(
+            send,
+            status=200,
+            payload=self._serialize_session_result(result),
         )
 
     async def _handle_approval_resolution(
@@ -231,6 +311,24 @@ class RuntimeTransportApp:
             send,
             status=200,
             payload=self._serialize_runtime_response(response),
+        )
+
+    async def _handle_acknowledge_notification(
+        self,
+        *,
+        notification_id: str,
+        send: Send,
+    ) -> None:
+        runtime = self._runtime_factory()
+        try:
+            notification = runtime.acknowledge_notification(notification_id=notification_id)
+        except ValueError as exc:
+            await self._json_response(send, status=404, payload={"error": str(exc)})
+            return
+        await self._json_response(
+            send,
+            status=200,
+            payload=self._serialize_notification(notification),
         )
 
     async def _json_response(self, send: Send, *, status: int, payload: object) -> None:
@@ -337,6 +435,35 @@ class RuntimeTransportApp:
             "turn": summary.turn,
             "prompt": summary.prompt,
             "updated_at": summary.updated_at,
+        }
+
+    @staticmethod
+    def _serialize_session_result(result: RuntimeSessionResult) -> dict[str, object]:
+        return {
+            "session": RuntimeTransportApp._serialize_session_state(result.session),
+            "prompt": result.prompt,
+            "status": result.status,
+            "summary": result.summary,
+            "output": result.output,
+            "error": result.error,
+            "last_event_sequence": result.last_event_sequence,
+            "transcript": [
+                RuntimeTransportApp._serialize_event(event) for event in result.transcript
+            ],
+        }
+
+    @staticmethod
+    def _serialize_notification(notification: RuntimeNotification) -> dict[str, object]:
+        return {
+            "id": notification.id,
+            "session": RuntimeTransportApp._serialize_session_ref(notification.session),
+            "kind": notification.kind,
+            "status": notification.status,
+            "summary": notification.summary,
+            "event_sequence": notification.event_sequence,
+            "created_at": notification.created_at,
+            "acknowledged_at": notification.acknowledged_at,
+            "payload": notification.payload,
         }
 
     @staticmethod

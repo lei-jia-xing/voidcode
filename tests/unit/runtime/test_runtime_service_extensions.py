@@ -2286,6 +2286,68 @@ def test_runtime_persists_resume_checkpoint_for_waiting_session(tmp_path: Path) 
     assert checkpoint["last_event_sequence"] == waiting.events[-1].sequence
 
 
+def test_runtime_session_result_exposes_summary_and_transcript(tmp_path: Path) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("result body\n", encoding="utf-8")
+    runtime = VoidCodeRuntime(workspace=tmp_path, config=RuntimeConfig(approval_mode="allow"))
+
+    response = runtime.run(RuntimeRequest(prompt="read sample.txt", session_id="result-session"))
+    result = runtime.session_result(session_id="result-session")
+
+    assert result.session.status == "completed"
+    assert result.prompt == "read sample.txt"
+    assert result.status == "completed"
+    assert result.output == "result body\n"
+    assert result.error is None
+    assert result.summary == "Completed: result body"
+    assert result.transcript == response.events
+    assert result.last_event_sequence == response.events[-1].sequence
+
+
+def test_runtime_notifications_track_approval_blocked_and_completion(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    waiting = runtime.run(RuntimeRequest(prompt="go", session_id="notify-session"))
+    approval_request_id = str(waiting.events[-1].payload["request_id"])
+    waiting_notifications = runtime.list_notifications()
+
+    assert len(waiting_notifications) == 1
+    assert waiting_notifications[0].kind == "approval_blocked"
+    assert waiting_notifications[0].status == "unread"
+    assert waiting_notifications[0].session.id == "notify-session"
+
+    resumed = runtime.resume(
+        session_id="notify-session",
+        approval_request_id=approval_request_id,
+        approval_decision="allow",
+    )
+    notifications = runtime.list_notifications()
+
+    assert resumed.session.status == "completed"
+    assert len(notifications) == 2
+    assert [notification.kind for notification in notifications] == [
+        "completion",
+        "approval_blocked",
+    ]
+    assert notifications[0].status == "unread"
+    assert notifications[1].status == "acknowledged"
+
+    completion_notification = runtime.acknowledge_notification(notification_id=notifications[0].id)
+    duplicate_check = runtime.list_notifications()
+
+    assert completion_notification.status == "acknowledged"
+    assert len(duplicate_check) == 2
+    assert [notification.id for notification in duplicate_check] == [
+        notifications[0].id,
+        notifications[1].id,
+    ]
+
+
 def test_runtime_resume_approval_rebuilds_from_persisted_checkpoint_after_restart(
     tmp_path: Path,
 ) -> None:
