@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol, cast, final, runtime_checkable
 from uuid import uuid4
 
+from ..acp import AcpRequestEnvelope, AcpResponseEnvelope
 from ..graph.contracts import GraphEvent, GraphRunRequest
 from ..graph.read_only_slice import DeterministicReadOnlyGraph
 from ..graph.single_agent_slice import ProviderSingleAgentGraph
@@ -33,7 +34,7 @@ from ..provider.snapshot import (
 )
 from ..skills import SkillRegistry
 from ..tools.contracts import Tool, ToolCall, ToolDefinition, ToolResult, ToolResultStatus
-from .acp import AcpAdapter, AcpRequestEnvelope, AcpResponseEnvelope, build_acp_adapter
+from .acp import AcpAdapter, build_acp_adapter
 from .config import (
     ExecutionEngineName,
     RuntimeConfig,

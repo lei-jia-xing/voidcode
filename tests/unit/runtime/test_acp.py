@@ -5,28 +5,23 @@ from typing import Any
 
 import pytest
 
+from voidcode.acp import AcpConfigState, AcpRequestEnvelope, AcpResponseEnvelope
 from voidcode.runtime.config import RuntimeAcpConfig
 
 
 def _load_acp_symbols() -> tuple[Any, ...]:
     module: Any = import_module("voidcode.runtime.acp")
     return (
-        module.AcpConfigState,
-        module.AcpRequestEnvelope,
         module.DisabledAcpAdapter,
         module.ManagedAcpAdapter,
         module.build_acp_adapter,
     )
 
 
-AcpConfigState: Any
-AcpRequestEnvelope: Any
 DisabledAcpAdapter: Any
 ManagedAcpAdapter: Any
 build_acp_adapter: Any
 (
-    AcpConfigState,
-    AcpRequestEnvelope,
     DisabledAcpAdapter,
     ManagedAcpAdapter,
     build_acp_adapter,
@@ -34,13 +29,13 @@ build_acp_adapter: Any
 
 
 def test_acp_config_state_defaults_to_disabled() -> None:
-    state = AcpConfigState.from_runtime_config(None)
+    state = AcpConfigState.from_enabled(None)
 
     assert state.configured_enabled is False
 
 
 def test_acp_config_state_wraps_runtime_acp_config() -> None:
-    state = AcpConfigState.from_runtime_config(RuntimeAcpConfig(enabled=True))
+    state = AcpConfigState.from_enabled(RuntimeAcpConfig(enabled=True).enabled)
 
     assert state.configured_enabled is True
 
@@ -100,8 +95,11 @@ def test_managed_acp_adapter_request_before_connect_returns_error_without_failin
 
     response = adapter.request(AcpRequestEnvelope(request_type="ping"))
 
-    assert response.status == "error"
-    assert response.error == "ACP adapter is not connected"
+    assert response == AcpResponseEnvelope(
+        status="error",
+        error="ACP adapter is not connected",
+        payload={"request_type": "ping"},
+    )
     state = adapter.current_state()
     assert state.status == "disconnected"
     assert state.available is False

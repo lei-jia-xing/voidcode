@@ -3,32 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal, Protocol
 
+from ..acp import AcpConfigState, AcpRequestEnvelope, AcpRequestHandler, AcpResponseEnvelope
 from .config import RuntimeAcpConfig
 
 
-@dataclass(frozen=True, slots=True)
-class AcpConfigState:
-    configured_enabled: bool = False
-
-    @classmethod
-    def from_runtime_config(cls, config: RuntimeAcpConfig | None) -> AcpConfigState:
-        if config is None:
-            return cls()
-
-        return cls(configured_enabled=bool(config.enabled))
-
-
-@dataclass(frozen=True, slots=True)
-class AcpRequestEnvelope:
-    request_type: str
-    payload: dict[str, object] = field(default_factory=dict)
-
-
-@dataclass(frozen=True, slots=True)
-class AcpResponseEnvelope:
-    status: Literal["ok", "error"]
-    payload: dict[str, object] = field(default_factory=dict)
-    error: str | None = None
+def _config_state_from_runtime_config(config: RuntimeAcpConfig | None) -> AcpConfigState:
+    return AcpConfigState.from_enabled(config.enabled if config is not None else None)
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,7 +27,7 @@ class AcpAdapterState:
     last_error: str | None = None
 
 
-class AcpAdapter(Protocol):
+class AcpAdapter(AcpRequestHandler, Protocol):
     @property
     def configuration(self) -> AcpConfigState: ...
 
@@ -57,8 +37,6 @@ class AcpAdapter(Protocol):
 
     def disconnect(self) -> tuple[AcpRuntimeEvent, ...]: ...
 
-    def request(self, envelope: AcpRequestEnvelope) -> AcpResponseEnvelope: ...
-
     def fail(self, message: str) -> tuple[AcpRuntimeEvent, ...]: ...
 
     def drain_events(self) -> tuple[AcpRuntimeEvent, ...]: ...
@@ -66,7 +44,7 @@ class AcpAdapter(Protocol):
 
 class DisabledAcpAdapter:
     def __init__(self, config: RuntimeAcpConfig | None = None) -> None:
-        self._configuration = AcpConfigState.from_runtime_config(config)
+        self._configuration = _config_state_from_runtime_config(config)
 
     @property
     def configuration(self) -> AcpConfigState:
@@ -98,7 +76,7 @@ class DisabledAcpAdapter:
 
 class ManagedAcpAdapter:
     def __init__(self, config: RuntimeAcpConfig) -> None:
-        self._configuration = AcpConfigState.from_runtime_config(config)
+        self._configuration = _config_state_from_runtime_config(config)
         self._state = AcpAdapterState(
             mode="managed",
             configuration=self._configuration,
@@ -195,7 +173,7 @@ class ManagedAcpAdapter:
 
 
 def build_acp_adapter(config: RuntimeAcpConfig | None) -> AcpAdapter:
-    configuration = AcpConfigState.from_runtime_config(config)
+    configuration = _config_state_from_runtime_config(config)
     if configuration.configured_enabled is not True:
         return DisabledAcpAdapter(config)
     return ManagedAcpAdapter(config or RuntimeAcpConfig())
