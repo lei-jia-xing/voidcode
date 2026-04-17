@@ -8,7 +8,14 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Protocol, cast, final, runtime_checkable
 
-from .contracts import RuntimeNotification, RuntimeRequest, RuntimeResponse, RuntimeSessionResult
+from .contracts import (
+    RuntimeNotification,
+    RuntimeNotificationKind,
+    RuntimeNotificationStatus,
+    RuntimeRequest,
+    RuntimeResponse,
+    RuntimeSessionResult,
+)
 from .events import EventEnvelope, EventSource
 from .permission import PendingApproval
 from .session import SessionRef, SessionState, SessionStatus, StoredSessionSummary
@@ -1063,8 +1070,8 @@ class SqliteSessionStore:
         return RuntimeNotification(
             id=cast(str, row["notification_id"]),
             session=SessionRef(id=cast(str, row["session_id"])),
-            kind=cast(str, row["kind"]),
-            status=cast(str, row["status"]),
+            kind=cast(RuntimeNotificationKind, row["kind"]),
+            status=cast(RuntimeNotificationStatus, row["status"]),
             summary=cast(str, row["summary"]),
             event_sequence=cast(int, row["event_sequence"]),
             created_at=cast(int, row["created_at"]),
