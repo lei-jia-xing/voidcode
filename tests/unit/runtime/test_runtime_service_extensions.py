@@ -141,6 +141,32 @@ class _ApprovalThenCaptureSkillGraph:
         return _StubStep(output="done", is_finished=True)
 
 
+class _TwoApprovalThenDoneGraph:
+    def step(
+        self,
+        request: GraphRunRequest,
+        tool_results: tuple[object, ...],
+        *,
+        session: SessionState,
+    ) -> _StubStep:
+        _ = request, session
+        if len(tool_results) == 0:
+            return _StubStep(
+                tool_call=ToolCall(
+                    tool_name="write_file",
+                    arguments={"path": "first.txt", "content": "1"},
+                )
+            )
+        if len(tool_results) == 1:
+            return _StubStep(
+                tool_call=ToolCall(
+                    tool_name="write_file",
+                    arguments={"path": "second.txt", "content": "2"},
+                )
+            )
+        return _StubStep(output="done", is_finished=True)
+
+
 class _FailingProviderGraph:
     def step(
         self,
@@ -2346,6 +2372,82 @@ def test_runtime_notifications_track_approval_blocked_and_completion(tmp_path: P
         notifications[0].id,
         notifications[1].id,
     ]
+
+
+def test_runtime_notifications_generate_distinct_terminal_ids_per_run(tmp_path: Path) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("repeatable\n", encoding="utf-8")
+    runtime = VoidCodeRuntime(workspace=tmp_path, config=RuntimeConfig(approval_mode="allow"))
+
+    first = runtime.run(RuntimeRequest(prompt="read sample.txt"))
+    second = runtime.run(RuntimeRequest(prompt="read sample.txt"))
+    notifications = runtime.list_notifications()
+
+    assert first.session.session.id == "local-cli-session"
+    assert second.session.session.id == "local-cli-session"
+    assert first.events[-1].sequence == second.events[-1].sequence
+    assert len(notifications) == 2
+    assert [notification.kind for notification in notifications] == ["completion", "completion"]
+    assert notifications[0].id != notifications[1].id
+    assert notifications[0].event_sequence == second.events[-1].sequence
+    assert notifications[1].event_sequence == first.events[-1].sequence
+
+
+def test_runtime_notifications_generate_distinct_failure_ids_per_run(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_FailingProviderGraph())
+
+    first = runtime.run(RuntimeRequest(prompt="fail me"))
+    second = runtime.run(RuntimeRequest(prompt="fail me"))
+    notifications = runtime.list_notifications()
+
+    assert first.session.session.id == "local-cli-session"
+    assert second.session.session.id == "local-cli-session"
+    assert first.session.status == "failed"
+    assert second.session.status == "failed"
+    assert first.events[-1].sequence == second.events[-1].sequence
+    assert len(notifications) == 2
+    assert [notification.kind for notification in notifications] == ["failure", "failure"]
+    assert notifications[0].id != notifications[1].id
+    assert notifications[0].event_sequence == second.events[-1].sequence
+    assert notifications[1].event_sequence == first.events[-1].sequence
+
+
+def test_runtime_notifications_acknowledge_superseded_approval_blockers(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_TwoApprovalThenDoneGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    first_waiting = runtime.run(RuntimeRequest(prompt="go", session_id="notify-session"))
+    first_request_id = str(first_waiting.events[-1].payload["request_id"])
+    first_notifications = runtime.list_notifications()
+
+    assert len(first_notifications) == 1
+    assert first_notifications[0].kind == "approval_blocked"
+    assert first_notifications[0].status == "unread"
+    assert cast(str, first_notifications[0].payload["request_id"]) == first_request_id
+
+    second_waiting = runtime.resume(
+        session_id="notify-session",
+        approval_request_id=first_request_id,
+        approval_decision="allow",
+    )
+    second_request_id = str(second_waiting.events[-1].payload["request_id"])
+    second_notifications = runtime.list_notifications()
+
+    assert second_waiting.session.status == "waiting"
+    assert second_request_id != first_request_id
+    assert len(second_notifications) == 2
+    assert [notification.kind for notification in second_notifications] == [
+        "approval_blocked",
+        "approval_blocked",
+    ]
+    assert second_notifications[0].status == "unread"
+    assert second_notifications[1].status == "acknowledged"
+    assert cast(str, second_notifications[0].payload["request_id"]) == second_request_id
+    assert cast(str, second_notifications[1].payload["request_id"]) == first_request_id
 
 
 def test_runtime_resume_approval_rebuilds_from_persisted_checkpoint_after_restart(

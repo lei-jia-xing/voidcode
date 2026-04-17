@@ -327,6 +327,7 @@ class SqliteSessionStore:
                 request=request,
                 response=response,
                 pending_approval=None,
+                notification_run_id=updated_at,
             )
             connection.commit()
 
@@ -419,6 +420,7 @@ class SqliteSessionStore:
                 request=request,
                 response=response,
                 pending_approval=pending_approval,
+                notification_run_id=updated_at,
             )
             connection.commit()
 
@@ -965,8 +967,15 @@ class SqliteSessionStore:
         request: RuntimeRequest,
         response: RuntimeResponse,
         pending_approval: PendingApproval | None,
+        notification_run_id: int,
     ) -> None:
         session_id = response.session.session.id
+        notification = self._notification_candidate(
+            request=request,
+            response=response,
+            pending_approval=pending_approval,
+            notification_run_id=notification_run_id,
+        )
         if pending_approval is None:
             _ = connection.execute(
                 """
@@ -984,11 +993,25 @@ class SqliteSessionStore:
                     session_id,
                 ),
             )
-        notification = self._notification_candidate(
-            request=request,
-            response=response,
-            pending_approval=pending_approval,
-        )
+        elif notification is not None:
+            _ = connection.execute(
+                """
+                UPDATE session_notifications
+                SET status = 'acknowledged',
+                    acknowledged_at = COALESCE(acknowledged_at, ?)
+                WHERE workspace = ?
+                  AND session_id = ?
+                  AND kind = 'approval_blocked'
+                  AND status = 'unread'
+                  AND notification_id != ?
+                """,
+                (
+                    self._next_timestamp(connection=connection),
+                    str(workspace),
+                    session_id,
+                    notification["notification_id"],
+                ),
+            )
         if notification is None:
             return
         _ = connection.execute(
@@ -1019,6 +1042,7 @@ class SqliteSessionStore:
         request: RuntimeRequest,
         response: RuntimeResponse,
         pending_approval: PendingApproval | None,
+        notification_run_id: int,
     ) -> dict[str, object] | None:
         session_id = response.session.session.id
         if pending_approval is not None:
@@ -1042,7 +1066,7 @@ class SqliteSessionStore:
         if response.session.status == "completed":
             summary, _ = self._result_summary(response=response, prompt=request.prompt)
             event_sequence = response.events[-1].sequence if response.events else 0
-            dedupe_key = f"{session_id}:completion:{event_sequence}"
+            dedupe_key = f"{session_id}:completion:{notification_run_id}"
             return {
                 "notification_id": dedupe_key,
                 "dedupe_key": dedupe_key,
@@ -1054,7 +1078,7 @@ class SqliteSessionStore:
         if response.session.status == "failed":
             summary, error = self._result_summary(response=response, prompt=request.prompt)
             event_sequence = response.events[-1].sequence if response.events else 0
-            dedupe_key = f"{session_id}:failure:{event_sequence}"
+            dedupe_key = f"{session_id}:failure:{notification_run_id}"
             return {
                 "notification_id": dedupe_key,
                 "dedupe_key": dedupe_key,
