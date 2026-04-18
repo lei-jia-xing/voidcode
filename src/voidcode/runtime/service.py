@@ -55,6 +55,7 @@ from .contracts import (
     RuntimeSessionResult,
     RuntimeStreamChunk,
     validate_session_id,
+    validate_session_reference_id,
 )
 from .events import (
     RUNTIME_ACP_CONNECTED,
@@ -526,6 +527,7 @@ class VoidCodeRuntime:
         request_with_stream = RuntimeRequest(
             prompt=request.prompt,
             session_id=request.session_id,
+            parent_session_id=request.parent_session_id,
             metadata={**request.metadata, "provider_stream": True},
             allocate_session_id=request.allocate_session_id,
         )
@@ -536,7 +538,7 @@ class VoidCodeRuntime:
         effective_config = self._runtime_config_for_request(request)
         self._refresh_mcp_tools()
         session = SessionState(
-            session=SessionRef(id=session_id),
+            session=SessionRef(id=session_id, parent_id=request.parent_session_id),
             status="running",
             turn=1,
             metadata={
@@ -1239,6 +1241,7 @@ class VoidCodeRuntime:
             request=BackgroundTaskRequestSnapshot(
                 prompt=validated_request.prompt,
                 session_id=validated_request.session_id,
+                parent_session_id=validated_request.parent_session_id,
                 metadata=dict(validated_request.metadata),
                 allocate_session_id=validated_request.allocate_session_id,
             ),
@@ -1585,6 +1588,7 @@ class VoidCodeRuntime:
                 request = RuntimeRequest(
                     prompt=prompt,
                     session_id=stored.session.session.id,
+                    parent_session_id=stored.session.session.parent_id,
                 )
                 self._persist_response(request=request, response=response)
                 return
@@ -1599,6 +1603,7 @@ class VoidCodeRuntime:
         request = RuntimeRequest(
             prompt=prompt,
             session_id=stored.session.session.id,
+            parent_session_id=stored.session.session.parent_id,
         )
         self._persist_response(request=request, response=response)
         return
@@ -1733,13 +1738,50 @@ class VoidCodeRuntime:
             status = "completed"
         return VoidCodeRuntime._session_with_status(response_session, status)
 
-    @staticmethod
-    def _validated_request(request: RuntimeRequest) -> RuntimeRequest:
-        if request.session_id is None:
-            return request
+    def _validated_request(self, request: RuntimeRequest) -> RuntimeRequest:
+        session_id = request.session_id
+        if session_id is not None:
+            session_id = validate_session_id(session_id)
+
+        parent_session_id = request.parent_session_id
+        if parent_session_id is not None:
+            parent_session_id = validate_session_reference_id(
+                parent_session_id,
+                field_name="parent_session_id",
+            )
+        if session_id is not None and parent_session_id == session_id:
+            raise ValueError("parent_session_id must not match session_id")
+
+        existing_session = (
+            self._load_existing_session_if_present(session_id=session_id)
+            if session_id is not None
+            else None
+        )
+        if parent_session_id is not None:
+            parent_session = self._load_existing_session_if_present(session_id=parent_session_id)
+            if parent_session is None:
+                raise ValueError(f"parent session does not exist: {parent_session_id}")
+
+        resolved_parent_session_id = parent_session_id
+        if existing_session is not None:
+            existing_parent_session_id = existing_session.session.session.parent_id
+            if parent_session_id is None:
+                resolved_parent_session_id = existing_parent_session_id
+            elif existing_parent_session_id != parent_session_id:
+                existing_parent_label = (
+                    existing_parent_session_id
+                    if existing_parent_session_id is not None
+                    else "<top-level>"
+                )
+                raise ValueError(
+                    f"session {session_id} already belongs to {existing_parent_label} "
+                    f"and cannot be rebound to parent session {parent_session_id}"
+                )
+
         return RuntimeRequest(
             prompt=request.prompt,
-            session_id=validate_session_id(request.session_id),
+            session_id=session_id,
+            parent_session_id=resolved_parent_session_id,
             metadata=request.metadata,
             allocate_session_id=request.allocate_session_id,
         )
@@ -1748,7 +1790,7 @@ class VoidCodeRuntime:
     def _resolve_session_id(request: RuntimeRequest) -> str:
         if request.session_id is not None:
             return request.session_id
-        if request.allocate_session_id:
+        if request.allocate_session_id or request.parent_session_id is not None:
             return f"session-{uuid4().hex}"
         return "local-cli-session"
 
@@ -2060,6 +2102,7 @@ class VoidCodeRuntime:
             request = RuntimeRequest(
                 prompt=task.request.prompt,
                 session_id=task.request.session_id,
+                parent_session_id=task.request.parent_session_id,
                 metadata=task.request.metadata,
                 allocate_session_id=task.request.allocate_session_id,
             )
@@ -2086,6 +2129,7 @@ class VoidCodeRuntime:
                 RuntimeRequest(
                     prompt=dispatch_task.request.prompt,
                     session_id=session_id,
+                    parent_session_id=dispatch_task.request.parent_session_id,
                     metadata={
                         **dispatch_task.request.metadata,
                         "background_task_id": task_id,
@@ -2252,17 +2296,25 @@ class VoidCodeRuntime:
         if session_workspace != str(self._workspace):
             raise ValueError(f"session {session_id} does not belong to workspace {self._workspace}")
 
-    def _session_belongs_to_workspace(self, session_id: str) -> bool:
+    def _load_existing_session_if_present(self, *, session_id: str) -> RuntimeResponse | None:
         try:
             response = self._session_store.load_session(
                 workspace=self._workspace,
                 session_id=session_id,
             )
+        except ValueError as exc:
+            if str(exc) == f"unknown session: {session_id}":
+                return None
+            raise
+        self._validate_session_workspace(response.session, session_id=session_id)
+        return response
+
+    def _session_belongs_to_workspace(self, session_id: str) -> bool:
+        try:
+            response = self._load_existing_session_if_present(session_id=session_id)
         except ValueError:
             return False
-        try:
-            self._validate_session_workspace(response.session, session_id=session_id)
-        except ValueError:
+        if response is None:
             return False
         return True
 

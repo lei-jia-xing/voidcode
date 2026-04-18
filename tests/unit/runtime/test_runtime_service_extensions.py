@@ -424,6 +424,108 @@ def test_runtime_background_task_worker_uses_local_cli_session_when_no_session_i
     assert resumed.output == "background hello"
 
 
+def test_runtime_persists_child_session_lineage_across_list_resume_and_result(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+
+    child = runtime.run(RuntimeRequest(prompt="child task", parent_session_id="leader-session"))
+    child_session_id = child.session.session.id
+    listed = runtime.list_sessions()
+    resumed = runtime.resume(child_session_id)
+    result = runtime.session_result(session_id=child_session_id)
+
+    assert child_session_id.startswith("session-")
+    assert child.session.session.parent_id == "leader-session"
+    assert listed[0].session.id == child_session_id
+    assert listed[0].session.parent_id == "leader-session"
+    assert resumed.session.session.parent_id == "leader-session"
+    assert result.session.session.parent_id == "leader-session"
+
+
+def test_runtime_rejects_unknown_parent_session_id(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+
+    with pytest.raises(ValueError, match="parent session does not exist: missing-parent"):
+        _ = runtime.run(RuntimeRequest(prompt="child task", parent_session_id="missing-parent"))
+
+
+def test_runtime_rejects_self_parenting_session_request(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+
+    with pytest.raises(ValueError, match="parent_session_id must not match session_id"):
+        _ = runtime.run(
+            RuntimeRequest(
+                prompt="child task",
+                session_id="same-session",
+                parent_session_id="same-session",
+            )
+        )
+
+
+def test_runtime_background_task_preserves_parent_session_lineage(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+
+    started = runtime.start_background_task(
+        RuntimeRequest(prompt="background child", parent_session_id="leader-session")
+    )
+    completed = _wait_for_background_task(runtime, started.task.id)
+    child_session_id = cast(str, completed.session_id)
+    resumed = runtime.resume(child_session_id)
+
+    assert started.request.parent_session_id == "leader-session"
+    assert child_session_id.startswith("session-")
+    assert child_session_id != "local-cli-session"
+    assert resumed.session.session.parent_id == "leader-session"
+    assert resumed.session.metadata["background_task_id"] == started.task.id
+
+
+def test_runtime_reuses_existing_session_lineage_when_parent_is_omitted(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+    first_child = runtime.run(
+        RuntimeRequest(
+            prompt="child task",
+            session_id="child-session",
+            parent_session_id="leader-session",
+        )
+    )
+
+    second_child = runtime.run(
+        RuntimeRequest(prompt="child task follow-up", session_id="child-session")
+    )
+
+    assert first_child.session.session.parent_id == "leader-session"
+    assert second_child.session.session.parent_id == "leader-session"
+
+
+def test_runtime_rejects_rebinding_existing_session_to_new_parent(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    _ = runtime.run(RuntimeRequest(prompt="leader one", session_id="leader-one"))
+    _ = runtime.run(RuntimeRequest(prompt="leader two", session_id="leader-two"))
+    _ = runtime.run(
+        RuntimeRequest(
+            prompt="child task",
+            session_id="child-session",
+            parent_session_id="leader-one",
+        )
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="session child-session already belongs to leader-one",
+    ):
+        _ = runtime.run(
+            RuntimeRequest(
+                prompt="child task rebound",
+                session_id="child-session",
+                parent_session_id="leader-two",
+            )
+        )
+
+
 def test_runtime_background_task_worker_allocates_session_id_when_requested_without_explicit_session(  # noqa: E501
     tmp_path: Path,
 ) -> None:

@@ -589,6 +589,58 @@ def test_transport_lists_and_acknowledges_notifications(tmp_path: Path) -> None:
     assert ack_payload["acknowledged_at"] is not None
 
 
+def test_transport_round_trips_parent_session_lineage(tmp_path: Path) -> None:
+    create_runtime_app = _load_transport_app_factory()
+    runtime_module = importlib.import_module("voidcode.runtime")
+
+    class StubRuntime:
+        def run_stream(self, request: RuntimeRequestLike) -> Iterator[StreamChunkLike]:
+            assert request.prompt == "child task"
+            assert getattr(request, "parent_session_id", None) == "leader-session"
+            yield runtime_module.RuntimeStreamChunk(
+                kind="output",
+                session=runtime_module.SessionState(
+                    session=runtime_module.SessionRef(
+                        id="child-session",
+                        parent_id="leader-session",
+                    ),
+                    status="completed",
+                    turn=1,
+                    metadata={},
+                ),
+                output="done",
+            )
+
+        def list_sessions(self) -> tuple[StoredSessionSummaryLike, ...]:
+            raise AssertionError("list_sessions should not be called")
+
+        def resume(self, session_id: str) -> RuntimeResponseLike:
+            raise AssertionError(f"resume should not be called: {session_id}")
+
+    app = create_runtime_app(workspace=tmp_path, runtime_factory=lambda: StubRuntime())
+    response = _run_app(
+        app,
+        method="POST",
+        path="/api/runtime/run/stream",
+        body=json.dumps(
+            {
+                "prompt": "child task",
+                "parent_session_id": "leader-session",
+            }
+        ).encode("utf-8"),
+    )
+    payloads = _parse_sse_payloads(response)
+
+    assert response.status == 200
+    assert len(payloads) == 1
+    assert cast(dict[str, object], payloads[0]["session"])["session"] == {
+        "id": "child-session",
+        "parent_id": "leader-session",
+    }
+    assert cast(dict[str, object], payloads[0]["session"])["status"] == "completed"
+    assert payloads[0]["output"] == "done"
+
+
 def test_transport_serializes_hook_events_from_runtime_stream(tmp_path: Path) -> None:
     create_runtime_app = _load_transport_app_factory()
     runtime_stream_chunk, session_ref, session_state, event_envelope = _load_stream_types()

@@ -4,11 +4,25 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 type SessionStatus = Literal["idle", "running", "waiting", "completed", "failed"]
+type SessionKind = Literal["top_level", "child"]
 
 
 @dataclass(frozen=True, slots=True)
 class SessionRef:
     id: str
+    parent_id: str | None = None
+
+    @property
+    def kind(self) -> SessionKind:
+        return "child" if self.parent_id is not None else "top_level"
+
+    @property
+    def is_child(self) -> bool:
+        return self.parent_id is not None
+
+    @property
+    def is_top_level(self) -> bool:
+        return self.parent_id is None
 
 
 @dataclass(frozen=True, slots=True)

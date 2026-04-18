@@ -21,6 +21,7 @@ class BackgroundTaskRef:
 class BackgroundTaskRequestSnapshot:
     prompt: str
     session_id: str | None = None
+    parent_session_id: str | None = None
     metadata: dict[str, object] = field(default_factory=dict)
     allocate_session_id: bool = False
 
@@ -39,6 +40,10 @@ class BackgroundTaskState:
     started_at: int | None = None
     finished_at: int | None = None
     cancel_requested_at: int | None = None
+
+    @property
+    def parent_session_id(self) -> str | None:
+        return self.request.parent_session_id
 
 
 @dataclass(frozen=True, slots=True)

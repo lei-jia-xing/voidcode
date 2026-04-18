@@ -17,6 +17,7 @@ from .contracts import (
     RuntimeSessionResult,
     RuntimeStreamChunk,
     validate_session_id,
+    validate_session_reference_id,
 )
 from .events import EventEnvelope
 from .permission import PermissionResolution
@@ -400,6 +401,15 @@ class RuntimeTransportApp:
         if session_id is not None:
             validate_session_id(session_id)
 
+        parent_session_id = payload.get("parent_session_id")
+        if parent_session_id is not None and not isinstance(parent_session_id, str):
+            raise ValueError("parent_session_id must be a string when provided")
+        if parent_session_id is not None:
+            validate_session_reference_id(
+                parent_session_id,
+                field_name="parent_session_id",
+            )
+
         metadata = payload.get("metadata", {})
         if not isinstance(metadata, dict):
             raise ValueError("metadata must be an object when provided")
@@ -407,6 +417,7 @@ class RuntimeTransportApp:
         return RuntimeRequest(
             prompt=prompt,
             session_id=session_id,
+            parent_session_id=parent_session_id,
             metadata=cast(dict[str, object], metadata),
             allocate_session_id=session_id is None,
         )
@@ -492,7 +503,10 @@ class RuntimeTransportApp:
 
     @staticmethod
     def _serialize_session_ref(session_ref: SessionRef) -> dict[str, object]:
-        return {"id": session_ref.id}
+        payload: dict[str, object] = {"id": session_ref.id}
+        if session_ref.parent_id is not None:
+            payload["parent_id"] = session_ref.parent_id
+        return payload
 
     @staticmethod
     def _serialize_session_state(session: SessionState) -> dict[str, object]:
