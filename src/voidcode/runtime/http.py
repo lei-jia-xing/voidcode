@@ -13,6 +13,7 @@ from .config import RuntimeConfig
 from .contracts import (
     RuntimeNotification,
     RuntimeRequest,
+    RuntimeRequestError,
     RuntimeResponse,
     RuntimeSessionResult,
     RuntimeStreamChunk,
@@ -220,6 +221,37 @@ class RuntimeTransportApp:
             return
 
         runtime = self._runtime_factory()
+        stream = self._stream_runtime_chunks(runtime, request)
+        try:
+            first_chunk = await anext(stream)
+        except StopAsyncIteration:
+            logger.exception("runtime stream emitted no chunks before response start")
+            await self._json_response(send, status=500, payload={"error": "internal server error"})
+            return
+        except RuntimeRequestError as exc:
+            await self._json_response(send, status=400, payload={"error": str(exc)})
+            return
+        except Exception:
+            logger.exception("unexpected transport streaming failure")
+            await self._json_response(send, status=500, payload={"error": "internal server error"})
+            return
+
+        await self._send_stream_start(send)
+
+        emitted_failed_chunk = await self._send_runtime_stream_chunk(send, first_chunk)
+        try:
+            async for chunk in stream:
+                chunk_failed = await self._send_runtime_stream_chunk(send, chunk)
+                emitted_failed_chunk = emitted_failed_chunk or chunk_failed
+        except Exception:
+            if not emitted_failed_chunk:
+                logger.exception("unexpected transport streaming failure")
+            await send({"type": "http.response.body", "body": b"", "more_body": False})
+            return
+
+        await send({"type": "http.response.body", "body": b"", "more_body": False})
+
+    async def _send_stream_start(self, send: Send) -> None:
         await send(
             {
                 "type": "http.response.start",
@@ -231,30 +263,21 @@ class RuntimeTransportApp:
             }
         )
 
-        emitted_failed_chunk = False
-        try:
-            async for chunk in self._stream_runtime_chunks(runtime, request):
-                payload = self._serialize_runtime_stream_chunk(chunk)
-                emitted_failed_chunk = emitted_failed_chunk or (
-                    chunk.event is not None and chunk.event.event_type == "runtime.failed"
-                )
-                data = json.dumps(payload, sort_keys=True).encode("utf-8")
-                await send(
-                    {
-                        "type": "http.response.body",
-                        "body": b"data: " + data + b"\n\n",
-                        "more_body": True,
-                    }
-                )
-        except Exception:
-            if not emitted_failed_chunk:
-                logger.exception("unexpected transport streaming failure")
-            await send({"type": "http.response.body", "body": b"", "more_body": False})
-            return
-        finally:
-            self._close_runtime(runtime)
-
-        await send({"type": "http.response.body", "body": b"", "more_body": False})
+    async def _send_runtime_stream_chunk(
+        self,
+        send: Send,
+        chunk: RuntimeStreamChunk,
+    ) -> bool:
+        payload = self._serialize_runtime_stream_chunk(chunk)
+        data = json.dumps(payload, sort_keys=True).encode("utf-8")
+        await send(
+            {
+                "type": "http.response.body",
+                "body": b"data: " + data + b"\n\n",
+                "more_body": True,
+            }
+        )
+        return chunk.event is not None and chunk.event.event_type == "runtime.failed"
 
     async def _handle_list_sessions(self, send: Send) -> None:
         runtime = self._runtime_factory()

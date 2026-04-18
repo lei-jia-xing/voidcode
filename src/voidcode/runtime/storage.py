@@ -15,6 +15,7 @@ from .contracts import (
     RuntimeRequest,
     RuntimeResponse,
     RuntimeSessionResult,
+    UnknownSessionError,
 )
 from .events import EventEnvelope, EventSource
 from .permission import PendingApproval
@@ -464,7 +465,7 @@ class SqliteSessionStore:
                 ).fetchone(),
             )
         if row is None:
-            raise ValueError(f"unknown session: {session_id}")
+            raise UnknownSessionError(f"unknown session: {session_id}")
         payload = cast(str | None, row["pending_approval_json"])
         if payload is None:
             return None
@@ -505,7 +506,7 @@ class SqliteSessionStore:
                 ).fetchone(),
             )
         if row is None:
-            raise ValueError(f"unknown session: {session_id}")
+            raise UnknownSessionError(f"unknown session: {session_id}")
         payload = cast(str | None, row["resume_checkpoint_json"])
         if payload is None:
             return None
@@ -598,7 +599,7 @@ class SqliteSessionStore:
                 ).fetchone(),
             )
             if session_row is None:
-                raise ValueError(f"unknown session: {session_id}")
+                raise UnknownSessionError(f"unknown session: {session_id}")
             event_rows = cast(
                 list[sqlite3.Row],
                 connection.execute(
@@ -649,7 +650,7 @@ class SqliteSessionStore:
                 ).fetchone(),
             )
         if row is None:
-            raise ValueError(f"unknown session: {session_id}")
+            raise UnknownSessionError(f"unknown session: {session_id}")
         prompt = cast(str, row["prompt"])
         summary, error = self._result_summary(response=response, prompt=prompt)
         return RuntimeSessionResult(

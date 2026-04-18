@@ -1586,8 +1586,8 @@ def test_transport_logs_unexpected_streaming_errors(caplog: pytest.LogCaptureFix
             body=json.dumps({"prompt": "explode"}).encode("utf-8"),
         )
 
-    assert response.status == 200
-    assert response.body == b""
+    assert response.status == 500
+    assert response.json() == {"error": "internal server error"}
     assert "unexpected transport streaming failure" in caplog.text
 
 
@@ -1604,6 +1604,26 @@ def test_transport_rejects_invalid_run_stream_payload() -> None:
 
     assert response.status == 400
     assert response.json() == {"error": "prompt must be a non-empty string"}
+
+
+def test_transport_rejects_unknown_parent_session_in_run_stream_payload(tmp_path: Path) -> None:
+    create_runtime_app = _load_transport_app_factory()
+    app = create_runtime_app(workspace=tmp_path)
+
+    response = _run_app(
+        app,
+        method="POST",
+        path="/api/runtime/run/stream",
+        body=json.dumps(
+            {
+                "prompt": "child task",
+                "parent_session_id": "missing-parent",
+            }
+        ).encode("utf-8"),
+    )
+
+    assert response.status == 400
+    assert response.json() == {"error": "parent session does not exist: missing-parent"}
 
 
 def test_transport_rejects_empty_session_id_in_run_stream_payload() -> None:

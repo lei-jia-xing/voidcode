@@ -9,6 +9,14 @@ from .session import SessionRef, SessionState
 from .task import BackgroundTaskState, StoredBackgroundTaskSummary
 
 
+class RuntimeRequestError(ValueError):
+    """Raised when a client-supplied runtime request is invalid."""
+
+
+class UnknownSessionError(ValueError):
+    """Raised when a referenced session does not exist in storage."""
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeRequest:
     prompt: str
@@ -20,9 +28,9 @@ class RuntimeRequest:
 
 def validate_session_reference_id(value: str, *, field_name: str = "session_id") -> str:
     if not value:
-        raise ValueError(f"{field_name} must be a non-empty string when provided")
+        raise RuntimeRequestError(f"{field_name} must be a non-empty string when provided")
     if "/" in value:
-        raise ValueError(f"{field_name} must not contain '/'")
+        raise RuntimeRequestError(f"{field_name} must not contain '/'")
     return value
 
 
