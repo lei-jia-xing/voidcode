@@ -382,6 +382,7 @@ class ManagedLspManager:
             process=process,
             workspace_root=workspace_root,
         )
+        self._running_servers[server_name] = running_server
         self._initialize_server(running_server, server_name=server_name)
         return running_server
 

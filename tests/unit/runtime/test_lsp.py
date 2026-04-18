@@ -213,6 +213,79 @@ def test_managed_lsp_manager_marks_failed_startup_when_command_is_missing(tmp_pa
     assert "lsp.servers.broken.command" in str(exc_info.value)
 
 
+def test_managed_lsp_manager_terminates_process_when_initialize_fails(tmp_path: Path) -> None:
+    manager = ManagedLspManager(
+        RuntimeLspConfig(
+            enabled=True,
+            servers={"pyright": RuntimeLspServerConfig(command=("pyright-langserver", "--stdio"))},
+        )
+    )
+    module = import_module("voidcode.runtime.lsp")
+
+    class _FakeProcess:
+        stdin = object()
+        stdout = object()
+
+        def __init__(self) -> None:
+            self.terminated = False
+            self.killed = False
+
+        def poll(self) -> int | None:
+            if self.terminated or self.killed:
+                return 0
+            return None
+
+        def terminate(self) -> None:
+            self.terminated = True
+
+        def kill(self) -> None:
+            self.killed = True
+            self.terminated = True
+
+        def wait(self, timeout: float = 0.0) -> int:
+            _ = timeout
+            if self.terminated or self.killed:
+                return 0
+            raise subprocess.TimeoutExpired(cmd="fake-lsp", timeout=timeout)
+
+    fake_process = _FakeProcess()
+
+    def _fake_popen(
+        command: list[str], *, cwd: Path, stdin: object, stdout: object, stderr: object
+    ) -> _FakeProcess:
+        _ = command, cwd, stdin, stdout, stderr
+        return fake_process
+
+    def _fail_initialize(*args: object, **kwargs: object) -> object:
+        _ = args, kwargs
+        raise ValueError("No response from LSP server pyright for initialize")
+
+    def _ignore_notification(*args: object, **kwargs: object) -> None:
+        _ = args, kwargs
+
+    manager._send_request = _fail_initialize
+    manager._send_notification = _ignore_notification
+    original_popen = module.subprocess.Popen
+    module.subprocess.Popen = _fake_popen
+    try:
+        request = LspRequest(
+            server_name="pyright",
+            method="textDocument/definition",
+            params={"textDocument": {"uri": (tmp_path / "sample.py").as_uri()}},
+            workspace=tmp_path,
+        )
+
+        with pytest.raises(ValueError, match="No response from LSP server pyright for initialize"):
+            _ = manager.request(request)
+    finally:
+        module.subprocess.Popen = original_popen
+
+    state = manager.current_state().servers["pyright"]
+    assert state.status == "failed"
+    assert state.available is False
+    assert fake_process.terminated is True
+
+
 def test_stop_running_server_cleans_up_after_shutdown_timeout(tmp_path: Path) -> None:
     manager = ManagedLspManager(
         RuntimeLspConfig(
