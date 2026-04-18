@@ -224,7 +224,6 @@ def test_runtime_managed_lsp_tool_surfaces_failed_startup_state(
 
     assert runtime.current_lsp_state().servers["pyright"].status == "failed"
     assert "failed to start LSP server pyright" in caplog.text
-    assert "installed and available on PATH" in caplog.text
 
 
 def test_runtime_managed_lsp_tool_uses_builtin_root_markers_for_workspace_selection(

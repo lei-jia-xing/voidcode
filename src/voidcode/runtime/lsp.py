@@ -229,16 +229,13 @@ class ManagedLspManager:
                 stderr=subprocess.DEVNULL,
             )
         except (FileNotFoundError, OSError) as exc:
-            message = self._startup_failure_message(
-                server_name=server_name,
-                server_config=server_config,
-                details=str(exc),
-            )
+            message = f"failed to start LSP server {server_name}: {exc}"
             logger.error(
-                "%s (workspace=%s, command=%s)",
-                message,
+                "failed to start LSP server %s in %s with command %s: %s",
+                server_name,
                 workspace_root,
                 list(server_config.command),
+                exc,
             )
             self._mark_failed(server_name=server_name, error=message)
             self._record_event(
@@ -254,14 +251,10 @@ class ManagedLspManager:
         if process.stdin is None or process.stdout is None:
             process.kill()
             process.wait(timeout=1)
-            message = self._startup_failure_message(
-                server_name=server_name,
-                server_config=server_config,
-                details="missing stdio pipe",
-            )
+            message = f"failed to start LSP server {server_name}: missing stdio pipe"
             logger.error(
-                "%s (workspace=%s, command=%s)",
-                message,
+                "failed to start LSP server %s in %s with command %s: missing stdio pipe",
+                server_name,
                 workspace_root,
                 list(server_config.command),
             )
@@ -388,21 +381,6 @@ class ManagedLspManager:
             status="failed",
             available=False,
             last_error=error,
-        )
-
-    @staticmethod
-    def _startup_failure_message(
-        *,
-        server_name: str,
-        server_config: ResolvedLspServerConfig,
-        details: str,
-    ) -> str:
-        binary_name = server_config.command[0] if server_config.command else server_name
-        config_path = f"lsp.servers.{server_name}.command"
-        return (
-            f"failed to start LSP server {server_name}: {details}. "
-            f"Ensure '{binary_name}' is installed and available on PATH, "
-            f"or override '{config_path}' in .voidcode.json with a custom command."
         )
 
     @staticmethod

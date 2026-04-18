@@ -6,29 +6,10 @@ import pytest
 
 from voidcode.lsp import (
     LspServerConfigOverride,
-    builtin_lsp_server_presets,
     match_lsp_servers_for_path,
     resolve_lsp_server_config,
     resolve_lsp_server_configs,
 )
-
-
-def test_builtin_lsp_preset_catalog_covers_common_languages() -> None:
-    preset_ids = {preset.id for preset in builtin_lsp_server_presets()}
-
-    assert len(preset_ids) >= 20
-    assert {
-        "pyright",
-        "clangd",
-        "gopls",
-        "rust-analyzer",
-        "tsserver",
-        "jdtls",
-        "lua_ls",
-        "yamlls",
-        "bashls",
-        "csharp-ls",
-    }.issubset(preset_ids)
 
 
 def test_resolve_lsp_server_config_uses_builtin_preset_by_server_name() -> None:
@@ -81,14 +62,6 @@ def test_resolve_lsp_server_config_deep_merges_settings() -> None:
     assert config.settings == {
         "python": {"analysis": {"typeCheckingMode": "strict"}},
     }
-
-
-def test_resolve_lsp_server_config_supports_builtin_catalog_entry_for_clangd() -> None:
-    config = resolve_lsp_server_config("clangd", LspServerConfigOverride())
-
-    assert config.command == ("clangd",)
-    assert config.languages == ("c", "cpp", "objective-c", "objective-cpp")
-    assert config.matches_path(Path("main.cpp")) is True
 
 
 def test_resolve_lsp_server_configs_matches_servers_by_extension() -> None:

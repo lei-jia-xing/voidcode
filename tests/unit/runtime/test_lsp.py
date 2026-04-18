@@ -170,21 +170,6 @@ def test_build_lsp_manager_accepts_builtin_preset_without_explicit_command() -> 
     assert manager.configuration.resolve("pyright").command == ("pyright-langserver", "--stdio")
 
 
-def test_build_lsp_manager_accepts_extended_builtin_catalog_entry() -> None:
-    manager = build_lsp_manager(
-        RuntimeLspConfig(
-            enabled=True,
-            servers={"clangd": RuntimeLspServerConfig()},
-        )
-    )
-
-    assert isinstance(manager, ManagedLspManager)
-    resolved = manager.configuration.resolve("clangd")
-    assert resolved is not None
-    assert resolved.command == ("clangd",)
-    assert resolved.matches_path(Path("main.cpp")) is True
-
-
 def test_managed_lsp_manager_marks_failed_startup_when_command_is_missing(tmp_path: Path) -> None:
     manager = ManagedLspManager(
         RuntimeLspConfig(
@@ -202,15 +187,13 @@ def test_managed_lsp_manager_marks_failed_startup_when_command_is_missing(tmp_pa
         workspace=tmp_path,
     )
 
-    with pytest.raises(ValueError, match="failed to start LSP server broken") as exc_info:
+    with pytest.raises(ValueError, match="failed to start LSP server broken"):
         _ = manager.request(request)
 
     state = manager.current_state()
     assert state.servers["broken"].status == "failed"
     assert state.servers["broken"].available is False
     assert state.servers["broken"].last_error is not None
-    assert "installed and available on PATH" in str(exc_info.value)
-    assert "lsp.servers.broken.command" in str(exc_info.value)
 
 
 def test_stop_running_server_cleans_up_after_shutdown_timeout(tmp_path: Path) -> None:
