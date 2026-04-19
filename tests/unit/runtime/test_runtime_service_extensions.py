@@ -1550,6 +1550,60 @@ def test_runtime_failed_run_disconnects_acp_before_persisting_failure(
     }
 
 
+def test_runtime_resume_returns_disconnected_acp_state_after_waiting_again(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_TwoApprovalThenDoneGraph(),
+        config=RuntimeConfig(acp=RuntimeAcpConfig(enabled=True), approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    first_waiting = runtime.run(RuntimeRequest(prompt="go", session_id="acp-wait-twice"))
+    first_approval_request_id = str(first_waiting.events[-1].payload["request_id"])
+
+    second_waiting = runtime.resume(
+        session_id="acp-wait-twice",
+        approval_request_id=first_approval_request_id,
+        approval_decision="allow",
+    )
+
+    assert second_waiting.session.status == "waiting"
+    runtime_state_metadata = cast(
+        dict[str, object], second_waiting.session.metadata["runtime_state"]
+    )
+    assert runtime_state_metadata["acp"] == {
+        "mode": "managed",
+        "configured_enabled": True,
+        "status": "disconnected",
+        "available": False,
+        "last_error": None,
+    }
+
+
+def test_runtime_resume_stream_replay_keeps_failed_status_on_trailing_acp_disconnect(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_UnknownToolGraph(),
+        config=RuntimeConfig(acp=RuntimeAcpConfig(enabled=True)),
+    )
+
+    with pytest.raises(ValueError, match="unknown tool"):
+        for _chunk in runtime.run_stream(
+            RuntimeRequest(prompt="go", session_id="acp-failed-replay-status")
+        ):
+            pass
+
+    replay_chunks = list(runtime.resume_stream("acp-failed-replay-status"))
+
+    assert replay_chunks[-1].event is not None
+    assert replay_chunks[-1].event.event_type == "runtime.acp_disconnected"
+    assert replay_chunks[-1].session.status == "failed"
+
+
 def test_runtime_emits_skills_applied_and_persists_frozen_skill_payloads(tmp_path: Path) -> None:
     skill_dir = tmp_path / ".voidcode" / "skills" / "demo"
     _write_demo_skill(

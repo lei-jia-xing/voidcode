@@ -1709,6 +1709,9 @@ class VoidCodeRuntime:
         if final_session is None:
             raise ValueError("runtime stream emitted no chunks")
 
+        if final_session.status == "waiting":
+            final_session = self._reload_persisted_session(session_id=final_session.session.id)
+
         return stored_events, RuntimeResponse(
             session=final_session,
             events=stored_events + tuple(streamed_events),
@@ -2092,6 +2095,11 @@ class VoidCodeRuntime:
             status = "waiting"
         elif event.event_type == "runtime.failed":
             status = "failed"
+        elif event.event_type == "runtime.acp_disconnected" and response_session.status in {
+            "failed",
+            "completed",
+        }:
+            status = response_session.status
         elif response_session.status == "completed" and (
             event.event_type == "graph.response_ready"
             or (event.event_type == "graph.loop_step" and event.payload.get("phase") == "finalize")
