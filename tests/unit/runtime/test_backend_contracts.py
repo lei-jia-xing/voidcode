@@ -26,7 +26,7 @@ def test_contract_modules_export_expected_symbols() -> None:
     graph = _graph_module()
     tools = _tools_module()
 
-    session_ref = runtime.SessionRef(id="session-1")
+    session_ref = runtime.SessionRef(id="session-1", parent_id="session-parent")
     session = runtime.SessionState(session=session_ref, status="running", turn=1)
     event = runtime.EventEnvelope(
         session_id="session-1",
@@ -42,11 +42,14 @@ def test_contract_modules_export_expected_symbols() -> None:
     call = tools.ToolCall(tool_name=tool.name, arguments={"path": "README.md"})
     result = tools.ToolResult(tool_name=tool.name, status="ok", content="hello")
     runtime_request = runtime.RuntimeRequest(
-        prompt="Inspect the repo", session_id=session.session.id
+        prompt="Inspect the repo",
+        session_id=session.session.id,
+        parent_session_id=session.session.parent_id,
     )
     background_task_request = runtime.BackgroundTaskRequestSnapshot(
         prompt=runtime_request.prompt,
         session_id=session.session.id,
+        parent_session_id=runtime_request.parent_session_id,
     )
     background_task = runtime.BackgroundTaskState(
         task=runtime.BackgroundTaskRef(id="task-1"),
@@ -67,6 +70,8 @@ def test_contract_modules_export_expected_symbols() -> None:
     graph_result = graph.GraphRunResult(session=session, events=(event,), tool_results=(result,))
 
     assert session.session.id == "session-1"
+    assert session.session.parent_id == "session-parent"
+    assert session.session.kind == "child"
     assert event.sequence == 1
     assert tool.read_only is True
     assert call.arguments == {"path": "README.md"}
@@ -74,6 +79,7 @@ def test_contract_modules_export_expected_symbols() -> None:
     assert stream_chunk.event == event
     assert background_task.task.id == "task-1"
     assert background_task.request.prompt == runtime_request.prompt
+    assert background_task.parent_session_id == "session-parent"
     assert session_summary.session.id == "session-1"
     assert graph_request.available_tools == ()
     assert graph_result.tool_results == (result,)
@@ -202,6 +208,7 @@ def test_contract_types_expose_explicit_annotations() -> None:
     graph_runner_hints = get_type_hints(graph.GraphRunner.run)
 
     assert runtime_request_hints["prompt"] is str
+    assert str(runtime_request_hints["parent_session_id"]) == "str | None"
     assert str(background_task_hints["status"]) == "BackgroundTaskStatus"
     assert tool_result_hints["tool_name"] is str
     assert str(tool_result_hints["status"]) == "ToolResultStatus"

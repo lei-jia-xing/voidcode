@@ -15,6 +15,7 @@ from .contracts import (
     RuntimeRequest,
     RuntimeResponse,
     RuntimeSessionResult,
+    UnknownSessionError,
 )
 from .events import EventEnvelope, EventSource
 from .permission import PendingApproval
@@ -41,6 +42,8 @@ class SessionStore(Protocol):
     ) -> None: ...
 
     def list_sessions(self, *, workspace: Path) -> tuple[StoredSessionSummary, ...]: ...
+
+    def has_session(self, *, workspace: Path, session_id: str) -> bool: ...
 
     def load_session(self, *, workspace: Path, session_id: str) -> RuntimeResponse: ...
 
@@ -145,6 +148,7 @@ class SqliteSessionStore:
             """
             CREATE TABLE IF NOT EXISTS sessions (
                 session_id TEXT PRIMARY KEY,
+                parent_session_id TEXT,
                 workspace TEXT NOT NULL,
                 status TEXT NOT NULL,
                 turn INTEGER NOT NULL,
@@ -179,6 +183,7 @@ class SqliteSessionStore:
                 status TEXT NOT NULL,
                 prompt TEXT NOT NULL,
                 request_session_id TEXT,
+                request_parent_session_id TEXT,
                 request_metadata_json TEXT NOT NULL,
                 allocate_session_id INTEGER NOT NULL,
                 session_id TEXT,
@@ -216,19 +221,38 @@ class SqliteSessionStore:
                 list[sqlite3.Row], connection.execute("PRAGMA table_info(sessions)").fetchall()
             )
         }
+        background_task_columns = {
+            cast(str, row["name"])
+            for row in cast(
+                list[sqlite3.Row],
+                connection.execute("PRAGMA table_info(background_tasks)").fetchall(),
+            )
+        }
         target_user_version = user_version
+        if "parent_session_id" not in columns:
+            _ = connection.execute("ALTER TABLE sessions ADD COLUMN parent_session_id TEXT")
+            target_user_version = max(target_user_version, 5)
         if "pending_approval_json" not in columns:
             _ = connection.execute("ALTER TABLE sessions ADD COLUMN pending_approval_json TEXT")
             target_user_version = max(target_user_version, 1)
         if "resume_checkpoint_json" not in columns:
             _ = connection.execute("ALTER TABLE sessions ADD COLUMN resume_checkpoint_json TEXT")
             target_user_version = max(target_user_version, 3)
+        if "request_parent_session_id" not in background_task_columns:
+            _ = connection.execute(
+                "ALTER TABLE background_tasks ADD COLUMN request_parent_session_id TEXT"
+            )
+            target_user_version = max(target_user_version, 6)
         if user_version < 2:
             target_user_version = max(target_user_version, 2)
         if user_version < 3:
             target_user_version = max(target_user_version, 3)
         if user_version < 4:
             target_user_version = max(target_user_version, 4)
+        if user_version < 5:
+            target_user_version = max(target_user_version, 5)
+        if user_version < 6:
+            target_user_version = max(target_user_version, 6)
         if target_user_version != user_version:
             _ = connection.execute(f"PRAGMA user_version = {target_user_version}")
         connection.commit()
@@ -275,12 +299,13 @@ class SqliteSessionStore:
             _ = connection.execute(
                 """
                 INSERT OR REPLACE INTO sessions (
-                    session_id, workspace, status, turn, prompt, output,
+                    session_id, parent_session_id, workspace, status, turn, prompt, output,
                     metadata_json, pending_approval_json, resume_checkpoint_json, created_at, updated_at, last_event_sequence
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,  # noqa: E501
                 (
                     session_id,
+                    response.session.session.parent_id,
                     str(workspace),
                     response.session.status,
                     response.session.turn,
@@ -337,7 +362,7 @@ class SqliteSessionStore:
                 list[sqlite3.Row],
                 connection.execute(
                     """
-                SELECT session_id, status, turn, prompt, updated_at
+                SELECT session_id, parent_session_id, status, turn, prompt, updated_at
                 FROM sessions
                 WHERE workspace = ?
                 ORDER BY updated_at DESC, session_id ASC
@@ -347,7 +372,10 @@ class SqliteSessionStore:
             )
         return tuple(
             StoredSessionSummary(
-                session=SessionRef(id=cast(str, row["session_id"])),
+                session=SessionRef(
+                    id=cast(str, row["session_id"]),
+                    parent_id=cast(str | None, row["parent_session_id"]),
+                ),
                 status=self._parse_session_status(cast(str, row["status"])),
                 turn=cast(int, row["turn"]),
                 prompt=cast(str, row["prompt"]),
@@ -371,12 +399,13 @@ class SqliteSessionStore:
             _ = connection.execute(
                 """
                 INSERT OR REPLACE INTO sessions (
-                    session_id, workspace, status, turn, prompt, output,
+                    session_id, parent_session_id, workspace, status, turn, prompt, output,
                     metadata_json, pending_approval_json, resume_checkpoint_json, created_at, updated_at, last_event_sequence
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,  # noqa: E501
                 (
                     session_id,
+                    response.session.session.parent_id,
                     str(workspace),
                     response.session.status,
                     response.session.turn,
@@ -438,7 +467,7 @@ class SqliteSessionStore:
                 ).fetchone(),
             )
         if row is None:
-            raise ValueError(f"unknown session: {session_id}")
+            raise UnknownSessionError(f"unknown session: {session_id}")
         payload = cast(str | None, row["pending_approval_json"])
         if payload is None:
             return None
@@ -479,7 +508,7 @@ class SqliteSessionStore:
                 ).fetchone(),
             )
         if row is None:
-            raise ValueError(f"unknown session: {session_id}")
+            raise UnknownSessionError(f"unknown session: {session_id}")
         payload = cast(str | None, row["resume_checkpoint_json"])
         if payload is None:
             return None
@@ -558,13 +587,28 @@ class SqliteSessionStore:
             )
         return tool_results
 
+    def has_session(self, *, workspace: Path, session_id: str) -> bool:
+        with self._connect(workspace) as connection:
+            row = cast(
+                sqlite3.Row | None,
+                connection.execute(
+                    """
+                    SELECT 1
+                    FROM sessions
+                    WHERE workspace = ? AND session_id = ?
+                    """,
+                    (str(workspace), session_id),
+                ).fetchone(),
+            )
+        return row is not None
+
     def load_session(self, *, workspace: Path, session_id: str) -> RuntimeResponse:
         with self._connect(workspace) as connection:
             session_row = cast(
                 sqlite3.Row | None,
                 connection.execute(
                     """
-                SELECT session_id, status, turn, output, metadata_json
+                SELECT session_id, parent_session_id, status, turn, output, metadata_json
                 FROM sessions
                 WHERE workspace = ? AND session_id = ?
                 """,
@@ -572,7 +616,7 @@ class SqliteSessionStore:
                 ).fetchone(),
             )
             if session_row is None:
-                raise ValueError(f"unknown session: {session_id}")
+                raise UnknownSessionError(f"unknown session: {session_id}")
             event_rows = cast(
                 list[sqlite3.Row],
                 connection.execute(
@@ -586,7 +630,10 @@ class SqliteSessionStore:
                 ).fetchall(),
             )
         session = SessionState(
-            session=SessionRef(id=cast(str, session_row["session_id"])),
+            session=SessionRef(
+                id=cast(str, session_row["session_id"]),
+                parent_id=cast(str | None, session_row["parent_session_id"]),
+            ),
             status=self._parse_session_status(cast(str, session_row["status"])),
             turn=cast(int, session_row["turn"]),
             metadata=cast(dict[str, object], json.loads(cast(str, session_row["metadata_json"]))),
@@ -620,7 +667,7 @@ class SqliteSessionStore:
                 ).fetchone(),
             )
         if row is None:
-            raise ValueError(f"unknown session: {session_id}")
+            raise UnknownSessionError(f"unknown session: {session_id}")
         prompt = cast(str, row["prompt"])
         summary, error = self._result_summary(response=response, prompt=prompt)
         return RuntimeSessionResult(
@@ -640,11 +687,16 @@ class SqliteSessionStore:
                 list[sqlite3.Row],
                 connection.execute(
                     """
-                    SELECT notification_id, session_id, kind, status, summary, payload_json,
-                           event_sequence, created_at, acknowledged_at
-                    FROM session_notifications
-                    WHERE workspace = ?
-                    ORDER BY created_at DESC, notification_id DESC
+                    SELECT notifications.notification_id, notifications.session_id,
+                           notifications.kind, notifications.status, notifications.summary,
+                           notifications.payload_json, notifications.event_sequence,
+                           notifications.created_at, notifications.acknowledged_at,
+                           sessions.parent_session_id
+                    FROM session_notifications AS notifications
+                    LEFT JOIN sessions ON sessions.session_id = notifications.session_id
+                                      AND sessions.workspace = notifications.workspace
+                    WHERE notifications.workspace = ?
+                    ORDER BY notifications.created_at DESC, notifications.notification_id DESC
                     """,
                     (str(workspace),),
                 ).fetchall(),
@@ -664,9 +716,10 @@ class SqliteSessionStore:
                 """
                 INSERT INTO background_tasks (
                     task_id, workspace, status, prompt, request_session_id,
-                    request_metadata_json, allocate_session_id, session_id, error,
-                    cancel_requested_at, created_at, updated_at, started_at, finished_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    request_parent_session_id, request_metadata_json,
+                    allocate_session_id, session_id, error, cancel_requested_at,
+                    created_at, updated_at, started_at, finished_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task_id,
@@ -674,6 +727,7 @@ class SqliteSessionStore:
                     task.status,
                     task.request.prompt,
                     task.request.session_id,
+                    task.request.parent_session_id,
                     json.dumps(task.request.metadata, sort_keys=True),
                     1 if task.request.allocate_session_id else 0,
                     task.session_id,
@@ -870,6 +924,7 @@ class SqliteSessionStore:
             request=BackgroundTaskRequestSnapshot(
                 prompt=cast(str, row["prompt"]),
                 session_id=cast(str | None, row["request_session_id"]),
+                parent_session_id=cast(str | None, row["request_parent_session_id"]),
                 metadata=cast(dict[str, object], metadata),
                 allocate_session_id=bool(cast(int, row["allocate_session_id"])),
             ),
@@ -925,10 +980,15 @@ class SqliteSessionStore:
                 sqlite3.Row,
                 connection.execute(
                     """
-                    SELECT notification_id, session_id, kind, status, summary, payload_json,
-                           event_sequence, created_at, acknowledged_at
-                    FROM session_notifications
-                    WHERE workspace = ? AND notification_id = ?
+                    SELECT notifications.notification_id, notifications.session_id,
+                           notifications.kind, notifications.status, notifications.summary,
+                           notifications.payload_json, notifications.event_sequence,
+                           notifications.created_at, notifications.acknowledged_at,
+                           sessions.parent_session_id
+                    FROM session_notifications AS notifications
+                    LEFT JOIN sessions ON sessions.session_id = notifications.session_id
+                                      AND sessions.workspace = notifications.workspace
+                    WHERE notifications.workspace = ? AND notifications.notification_id = ?
                     """,
                     (str(workspace), notification_id),
                 ).fetchone(),
@@ -1093,7 +1153,10 @@ class SqliteSessionStore:
     def _notification_from_row(row: sqlite3.Row) -> RuntimeNotification:
         return RuntimeNotification(
             id=cast(str, row["notification_id"]),
-            session=SessionRef(id=cast(str, row["session_id"])),
+            session=SessionRef(
+                id=cast(str, row["session_id"]),
+                parent_id=cast(str | None, row["parent_session_id"]),
+            ),
             kind=cast(RuntimeNotificationKind, row["kind"]),
             status=cast(RuntimeNotificationStatus, row["status"]),
             summary=cast(str, row["summary"]),

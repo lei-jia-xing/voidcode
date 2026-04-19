@@ -1678,17 +1678,24 @@ def test_runtime_migrates_legacy_session_schema_for_pending_approval(tmp_path: P
 
     check = sqlite3.connect(database_path)
     try:
-        rows = cast(
+        session_rows = cast(
             list[tuple[object, ...]], check.execute("PRAGMA table_info(sessions)").fetchall()
         )
-        columns = [cast(str, row[1]) for row in rows]
+        background_task_rows = cast(
+            list[tuple[object, ...]],
+            check.execute("PRAGMA table_info(background_tasks)").fetchall(),
+        )
+        columns = [cast(str, row[1]) for row in session_rows]
+        background_task_columns = [cast(str, row[1]) for row in background_task_rows]
         user_version = cast(int, check.execute("PRAGMA user_version").fetchone()[0])
     finally:
         check.close()
 
+    assert "parent_session_id" in columns
     assert "pending_approval_json" in columns
     assert "resume_checkpoint_json" in columns
-    assert user_version == 4
+    assert "request_parent_session_id" in background_task_columns
+    assert user_version == 6
 
 
 def test_runtime_replay_is_unchanged_when_resume_checkpoint_exists(tmp_path: Path) -> None:

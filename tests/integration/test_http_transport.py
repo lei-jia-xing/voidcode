@@ -5,6 +5,7 @@ import importlib
 import json
 import logging
 import sys
+import threading
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -587,6 +588,58 @@ def test_transport_lists_and_acknowledges_notifications(tmp_path: Path) -> None:
     assert ack_payload["id"] == notification_id
     assert ack_payload["status"] == "acknowledged"
     assert ack_payload["acknowledged_at"] is not None
+
+
+def test_transport_round_trips_parent_session_lineage(tmp_path: Path) -> None:
+    create_runtime_app = _load_transport_app_factory()
+    runtime_module = importlib.import_module("voidcode.runtime")
+
+    class StubRuntime:
+        def run_stream(self, request: RuntimeRequestLike) -> Iterator[StreamChunkLike]:
+            assert request.prompt == "child task"
+            assert getattr(request, "parent_session_id", None) == "leader-session"
+            yield runtime_module.RuntimeStreamChunk(
+                kind="output",
+                session=runtime_module.SessionState(
+                    session=runtime_module.SessionRef(
+                        id="child-session",
+                        parent_id="leader-session",
+                    ),
+                    status="completed",
+                    turn=1,
+                    metadata={},
+                ),
+                output="done",
+            )
+
+        def list_sessions(self) -> tuple[StoredSessionSummaryLike, ...]:
+            raise AssertionError("list_sessions should not be called")
+
+        def resume(self, session_id: str) -> RuntimeResponseLike:
+            raise AssertionError(f"resume should not be called: {session_id}")
+
+    app = create_runtime_app(workspace=tmp_path, runtime_factory=lambda: StubRuntime())
+    response = _run_app(
+        app,
+        method="POST",
+        path="/api/runtime/run/stream",
+        body=json.dumps(
+            {
+                "prompt": "child task",
+                "parent_session_id": "leader-session",
+            }
+        ).encode("utf-8"),
+    )
+    payloads = _parse_sse_payloads(response)
+
+    assert response.status == 200
+    assert len(payloads) == 1
+    assert cast(dict[str, object], payloads[0]["session"])["session"] == {
+        "id": "child-session",
+        "parent_id": "leader-session",
+    }
+    assert cast(dict[str, object], payloads[0]["session"])["status"] == "completed"
+    assert payloads[0]["output"] == "done"
 
 
 def test_transport_serializes_hook_events_from_runtime_stream(tmp_path: Path) -> None:
@@ -1534,8 +1587,8 @@ def test_transport_logs_unexpected_streaming_errors(caplog: pytest.LogCaptureFix
             body=json.dumps({"prompt": "explode"}).encode("utf-8"),
         )
 
-    assert response.status == 200
-    assert response.body == b""
+    assert response.status == 500
+    assert response.json() == {"error": "internal server error"}
     assert "unexpected transport streaming failure" in caplog.text
 
 
@@ -1552,6 +1605,93 @@ def test_transport_rejects_invalid_run_stream_payload() -> None:
 
     assert response.status == 400
     assert response.json() == {"error": "prompt must be a non-empty string"}
+
+
+def test_transport_rejects_unknown_parent_session_in_run_stream_payload(tmp_path: Path) -> None:
+    create_runtime_app = _load_transport_app_factory()
+    app = create_runtime_app(workspace=tmp_path)
+
+    response = _run_app(
+        app,
+        method="POST",
+        path="/api/runtime/run/stream",
+        body=json.dumps(
+            {
+                "prompt": "child task",
+                "parent_session_id": "missing-parent",
+            }
+        ).encode("utf-8"),
+    )
+
+    assert response.status == 400
+    assert response.json() == {"error": "parent session does not exist: missing-parent"}
+
+
+def test_transport_allows_parent_session_while_parent_stream_request_is_active(
+    tmp_path: Path,
+) -> None:
+    _, runtime_class = _load_runtime_types()
+    create_runtime_app = _load_transport_app_factory()
+    service_module = importlib.import_module("voidcode.runtime.service")
+    active_registry = service_module._ACTIVE_SESSION_REGISTRY
+
+    app = create_runtime_app(
+        workspace=tmp_path,
+        runtime_factory=lambda: runtime_class(workspace=tmp_path),
+    )
+
+    parent_started = threading.Event()
+    allow_parent_to_finish = threading.Event()
+
+    original_register = active_registry.register
+
+    def _register_and_signal(*, workspace: Path, session_id: str) -> None:
+        original_register(workspace=workspace, session_id=session_id)
+        if session_id == "leader-session":
+            parent_started.set()
+            allow_parent_to_finish.wait(timeout=5)
+
+    parent_response_holder: dict[str, object] = {}
+
+    def _run_parent() -> None:
+        parent_response_holder["response"] = _run_app(
+            app,
+            method="POST",
+            path="/api/runtime/run/stream",
+            body=json.dumps(
+                {
+                    "prompt": "leader",
+                    "session_id": "leader-session",
+                }
+            ).encode("utf-8"),
+        )
+
+    parent_thread = threading.Thread(target=_run_parent, daemon=True)
+
+    with patch.object(active_registry, "register", _register_and_signal):
+        parent_thread.start()
+        assert parent_started.wait(timeout=5)
+        child_response = _run_app(
+            app,
+            method="POST",
+            path="/api/runtime/run/stream",
+            body=json.dumps(
+                {
+                    "prompt": "child",
+                    "parent_session_id": "leader-session",
+                }
+            ).encode("utf-8"),
+        )
+        allow_parent_to_finish.set()
+        parent_thread.join(timeout=5)
+
+    child_payloads = _parse_sse_payloads(child_response)
+    first_payload = child_payloads[0]
+    first_session = cast(dict[str, object], first_payload["session"])
+    first_session_ref = cast(dict[str, object], first_session["session"])
+
+    assert child_response.status == 200
+    assert first_session_ref["parent_id"] == "leader-session"
 
 
 def test_transport_rejects_empty_session_id_in_run_stream_payload() -> None:

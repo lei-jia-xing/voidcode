@@ -43,6 +43,7 @@ from voidcode.runtime.permission import PermissionPolicy
 from voidcode.runtime.service import (
     GraphRunRequest,
     RuntimeRequest,
+    RuntimeResponse,
     SessionState,
     VoidCodeRuntime,
 )
@@ -422,6 +423,281 @@ def test_runtime_background_task_worker_uses_local_cli_session_when_no_session_i
     assert resumed.session.metadata["background_task_id"] == started.task.id
     assert resumed.session.metadata["background_run"] is True
     assert resumed.output == "background hello"
+
+
+def test_runtime_persists_child_session_lineage_across_list_resume_and_result(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+
+    child = runtime.run(RuntimeRequest(prompt="child task", parent_session_id="leader-session"))
+    child_session_id = child.session.session.id
+    listed = runtime.list_sessions()
+    resumed = runtime.resume(child_session_id)
+    result = runtime.session_result(session_id=child_session_id)
+
+    assert child_session_id.startswith("session-")
+    assert child.session.session.parent_id == "leader-session"
+    assert listed[0].session.id == child_session_id
+    assert listed[0].session.parent_id == "leader-session"
+    assert resumed.session.session.parent_id == "leader-session"
+    assert result.session.session.parent_id == "leader-session"
+
+
+def test_runtime_rejects_unknown_parent_session_id(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+
+    with pytest.raises(ValueError, match="parent session does not exist: missing-parent"):
+        _ = runtime.run(RuntimeRequest(prompt="child task", parent_session_id="missing-parent"))
+
+
+def test_runtime_allows_child_session_while_parent_stream_is_active(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+
+    parent_stream = runtime.run_stream(RuntimeRequest(prompt="leader", session_id="leader-session"))
+    first_chunk = next(parent_stream)
+
+    child = runtime.run(RuntimeRequest(prompt="child task", parent_session_id="leader-session"))
+
+    assert first_chunk.session.session.id == "leader-session"
+    assert child.session.session.parent_id == "leader-session"
+    _ = list(parent_stream)
+
+
+def test_runtime_background_task_allows_parent_session_while_stream_is_active(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+
+    parent_stream = runtime.run_stream(RuntimeRequest(prompt="leader", session_id="leader-session"))
+    first_chunk = next(parent_stream)
+    started = runtime.start_background_task(
+        RuntimeRequest(prompt="background child", parent_session_id="leader-session")
+    )
+    completed = _wait_for_background_task(runtime, started.task.id)
+
+    assert first_chunk.session.session.id == "leader-session"
+    assert started.request.parent_session_id == "leader-session"
+    assert completed.parent_session_id == "leader-session"
+    _ = list(parent_stream)
+
+
+def test_runtime_keeps_parent_session_active_until_last_matching_stream_finishes(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+
+    first_stream = runtime.run_stream(
+        RuntimeRequest(prompt="leader one", session_id="leader-session")
+    )
+    second_stream = runtime.run_stream(
+        RuntimeRequest(prompt="leader two", session_id="leader-session")
+    )
+    _ = next(first_stream)
+    _ = next(second_stream)
+
+    _ = list(first_stream)
+    child = runtime.run(RuntimeRequest(prompt="child task", parent_session_id="leader-session"))
+
+    assert child.session.session.parent_id == "leader-session"
+    _ = list(second_stream)
+
+
+def test_runtime_uses_has_session_instead_of_missing_session_error_text(tmp_path: Path) -> None:
+    class _StoreWithNonCanonicalMissingSessionError:
+        def __init__(self) -> None:
+            self.saved_response: RuntimeResponse | None = None
+
+        def save_run(
+            self,
+            *,
+            workspace: Path,
+            request: RuntimeRequest,
+            response: RuntimeResponse,
+            clear_pending_approval: bool = True,
+        ) -> None:
+            _ = workspace, request, clear_pending_approval
+            self.saved_response = response
+
+        def list_sessions(self, *, workspace: Path) -> tuple[object, ...]:
+            _ = workspace
+            return ()
+
+        def has_session(self, *, workspace: Path, session_id: str) -> bool:
+            _ = workspace, session_id
+            return False
+
+        def load_session(self, *, workspace: Path, session_id: str) -> RuntimeResponse:
+            _ = workspace, session_id
+            raise ValueError("session store missing sentinel")
+
+        def load_session_result(self, *, workspace: Path, session_id: str) -> object:
+            _ = workspace, session_id
+            raise AssertionError("load_session_result should not be called")
+
+        def list_notifications(self, *, workspace: Path) -> tuple[object, ...]:
+            _ = workspace
+            return ()
+
+        def acknowledge_notification(self, *, workspace: Path, notification_id: str) -> object:
+            _ = workspace, notification_id
+            raise AssertionError("acknowledge_notification should not be called")
+
+        def save_pending_approval(
+            self,
+            *,
+            workspace: Path,
+            request: RuntimeRequest,
+            response: RuntimeResponse,
+            pending_approval: object,
+        ) -> None:
+            _ = workspace, request, response, pending_approval
+            raise AssertionError("save_pending_approval should not be called")
+
+        def load_pending_approval(self, *, workspace: Path, session_id: str) -> object:
+            _ = workspace, session_id
+            raise AssertionError("load_pending_approval should not be called")
+
+        def clear_pending_approval(self, *, workspace: Path, session_id: str) -> None:
+            _ = workspace, session_id
+
+        def load_resume_checkpoint(self, *, workspace: Path, session_id: str) -> object:
+            _ = workspace, session_id
+            raise AssertionError("load_resume_checkpoint should not be called")
+
+        def create_background_task(self, *, workspace: Path, task: object) -> None:
+            _ = workspace, task
+            raise AssertionError("create_background_task should not be called")
+
+        def load_background_task(self, *, workspace: Path, task_id: str) -> object:
+            _ = workspace, task_id
+            raise AssertionError("load_background_task should not be called")
+
+        def list_background_tasks(self, *, workspace: Path) -> tuple[object, ...]:
+            _ = workspace
+            return ()
+
+        def mark_background_task_running(
+            self,
+            *,
+            workspace: Path,
+            task_id: str,
+            session_id: str,
+        ) -> object:
+            _ = workspace, task_id, session_id
+            raise AssertionError("mark_background_task_running should not be called")
+
+        def mark_background_task_terminal(
+            self,
+            *,
+            workspace: Path,
+            task_id: str,
+            status: str,
+            error: str | None = None,
+        ) -> object:
+            _ = workspace, task_id, status, error
+            raise AssertionError("mark_background_task_terminal should not be called")
+
+        def request_background_task_cancel(self, *, workspace: Path, task_id: str) -> object:
+            _ = workspace, task_id
+            raise AssertionError("request_background_task_cancel should not be called")
+
+        def fail_incomplete_background_tasks(
+            self,
+            *,
+            workspace: Path,
+            message: str,
+        ) -> tuple[object, ...]:
+            _ = workspace, message
+            return ()
+
+    store = _StoreWithNonCanonicalMissingSessionError()
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_BackgroundTaskSuccessGraph(),
+        session_store=cast(Any, store),
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="child task", session_id="fresh-session"))
+
+    assert response.session.session.id == "fresh-session"
+    assert store.saved_response is not None
+
+
+def test_runtime_rejects_self_parenting_session_request(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+
+    with pytest.raises(ValueError, match="parent_session_id must not match session_id"):
+        _ = runtime.run(
+            RuntimeRequest(
+                prompt="child task",
+                session_id="same-session",
+                parent_session_id="same-session",
+            )
+        )
+
+
+def test_runtime_background_task_preserves_parent_session_lineage(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+
+    started = runtime.start_background_task(
+        RuntimeRequest(prompt="background child", parent_session_id="leader-session")
+    )
+    completed = _wait_for_background_task(runtime, started.task.id)
+    child_session_id = cast(str, completed.session_id)
+    resumed = runtime.resume(child_session_id)
+
+    assert started.request.parent_session_id == "leader-session"
+    assert child_session_id.startswith("session-")
+    assert child_session_id != "local-cli-session"
+    assert resumed.session.session.parent_id == "leader-session"
+    assert resumed.session.metadata["background_task_id"] == started.task.id
+
+
+def test_runtime_reuses_existing_session_lineage_when_parent_is_omitted(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+    first_child = runtime.run(
+        RuntimeRequest(
+            prompt="child task",
+            session_id="child-session",
+            parent_session_id="leader-session",
+        )
+    )
+
+    second_child = runtime.run(
+        RuntimeRequest(prompt="child task follow-up", session_id="child-session")
+    )
+
+    assert first_child.session.session.parent_id == "leader-session"
+    assert second_child.session.session.parent_id == "leader-session"
+
+
+def test_runtime_rejects_rebinding_existing_session_to_new_parent(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    _ = runtime.run(RuntimeRequest(prompt="leader one", session_id="leader-one"))
+    _ = runtime.run(RuntimeRequest(prompt="leader two", session_id="leader-two"))
+    _ = runtime.run(
+        RuntimeRequest(
+            prompt="child task",
+            session_id="child-session",
+            parent_session_id="leader-one",
+        )
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="session child-session already belongs to leader-one",
+    ):
+        _ = runtime.run(
+            RuntimeRequest(
+                prompt="child task rebound",
+                session_id="child-session",
+                parent_session_id="leader-two",
+            )
+        )
 
 
 def test_runtime_background_task_worker_allocates_session_id_when_requested_without_explicit_session(  # noqa: E501
