@@ -1825,6 +1825,11 @@ class VoidCodeRuntime:
                 cast(EventEnvelope, startup_failed_chunk.event),
                 sequence=emitted_sequence,
             )
+            failed_chunk = RuntimeStreamChunk(
+                kind="event",
+                session=startup_failed_chunk.session,
+                event=resequenced_failed,
+            )
             loop_events.append(resequenced_failed)
             response = RuntimeResponse(
                 session=startup_failed_chunk.session,
@@ -1837,6 +1842,7 @@ class VoidCodeRuntime:
                 parent_session_id=stored.session.session.parent_id,
             )
             self._persist_response(request=request, response=response)
+            yield failed_chunk
             return
 
         sequence = max_stored_sequence

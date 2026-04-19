@@ -1386,6 +1386,91 @@ def test_runtime_resume_stream_replays_graph_suffix_before_acp_connect_when_enab
     assert event_types[-1] == "runtime.acp_disconnected"
 
 
+def test_runtime_resume_fails_when_acp_handshake_fails_after_restart(
+    tmp_path: Path,
+) -> None:
+    initial_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(acp=RuntimeAcpConfig(enabled=True), approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+    waiting = initial_runtime.run(
+        RuntimeRequest(prompt="go", session_id="acp-resume-handshake-fail")
+    )
+    approval_request_id = str(waiting.events[-1].payload["request_id"])
+
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(
+            acp=RuntimeAcpConfig(enabled=True, handshake_request_type="handshake_fail"),
+            approval_mode="ask",
+        ),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    resumed = resumed_runtime.resume(
+        session_id="acp-resume-handshake-fail",
+        approval_request_id=approval_request_id,
+        approval_decision="allow",
+    )
+
+    assert resumed.session.status == "failed"
+    resumed_suffix = [
+        event.event_type for event in resumed.events if event.sequence > waiting.events[-1].sequence
+    ]
+    assert resumed_suffix[-1] == "runtime.failed"
+    assert resumed_suffix.count("runtime.acp_failed") >= 1
+    assert resumed.events[-1].payload == {
+        "error": "ACP handshake rejected by memory transport",
+        "kind": "acp_startup_failed",
+    }
+
+
+def test_runtime_resume_stream_emits_terminal_failure_when_acp_handshake_fails(
+    tmp_path: Path,
+) -> None:
+    initial_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(acp=RuntimeAcpConfig(enabled=True), approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+    waiting = initial_runtime.run(
+        RuntimeRequest(prompt="go", session_id="acp-resume-stream-handshake-fail")
+    )
+    approval_request_id = str(waiting.events[-1].payload["request_id"])
+
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(
+            acp=RuntimeAcpConfig(enabled=True, handshake_request_type="handshake_fail"),
+            approval_mode="ask",
+        ),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    chunks = list(
+        resumed_runtime.resume_stream(
+            session_id="acp-resume-stream-handshake-fail",
+            approval_request_id=approval_request_id,
+            approval_decision="allow",
+        )
+    )
+
+    event_types = [chunk.event.event_type for chunk in chunks if chunk.event is not None]
+    assert event_types[-1] == "runtime.failed"
+    assert event_types.count("runtime.acp_failed") >= 1
+    assert chunks[-1].session.status == "failed"
+    assert chunks[-1].event is not None
+    assert chunks[-1].event.payload == {
+        "error": "ACP handshake rejected by memory transport",
+        "kind": "acp_startup_failed",
+    }
+
+
 def test_runtime_emits_skills_applied_and_persists_frozen_skill_payloads(tmp_path: Path) -> None:
     skill_dir = tmp_path / ".voidcode" / "skills" / "demo"
     _write_demo_skill(
