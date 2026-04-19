@@ -142,6 +142,18 @@ class _ApprovalThenCaptureSkillGraph:
         return _StubStep(output="done", is_finished=True)
 
 
+class _UnknownToolGraph:
+    def step(
+        self,
+        request: GraphRunRequest,
+        tool_results: tuple[object, ...],
+        *,
+        session: SessionState,
+    ) -> _StubStep:
+        _ = request, tool_results, session
+        return _StubStep(tool_call=ToolCall(tool_name="missing_tool", arguments={}))
+
+
 class _TwoApprovalThenDoneGraph:
     def step(
         self,
@@ -1468,6 +1480,73 @@ def test_runtime_resume_stream_emits_terminal_failure_when_acp_handshake_fails(
     assert chunks[-1].event.payload == {
         "error": "ACP handshake rejected by memory transport",
         "kind": "acp_startup_failed",
+    }
+
+
+def test_runtime_resume_handshake_failure_emits_single_acp_failed_event(
+    tmp_path: Path,
+) -> None:
+    initial_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(acp=RuntimeAcpConfig(enabled=True), approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+    waiting = initial_runtime.run(RuntimeRequest(prompt="go", session_id="acp-resume-single-fail"))
+    approval_request_id = str(waiting.events[-1].payload["request_id"])
+
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(
+            acp=RuntimeAcpConfig(enabled=True, handshake_request_type="handshake_fail"),
+            approval_mode="ask",
+        ),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    resumed = resumed_runtime.resume(
+        session_id="acp-resume-single-fail",
+        approval_request_id=approval_request_id,
+        approval_decision="allow",
+    )
+
+    resumed_suffix = [
+        event.event_type for event in resumed.events if event.sequence > waiting.events[-1].sequence
+    ]
+    assert resumed_suffix == ["runtime.acp_failed", "runtime.failed"]
+
+
+def test_runtime_failed_run_disconnects_acp_before_persisting_failure(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_UnknownToolGraph(),
+        config=RuntimeConfig(acp=RuntimeAcpConfig(enabled=True)),
+    )
+
+    emitted_events: list[str] = []
+    with pytest.raises(ValueError, match="unknown tool"):
+        for chunk in runtime.run_stream(
+            RuntimeRequest(prompt="go", session_id="acp-failed-run-disconnect")
+        ):
+            if chunk.event is not None:
+                emitted_events.append(chunk.event.event_type)
+
+    assert "runtime.acp_connected" in emitted_events
+    assert emitted_events[-1] == "runtime.failed"
+    assert runtime.current_acp_state().status == "disconnected"
+
+    replay = runtime.resume("acp-failed-run-disconnect")
+    runtime_state_metadata = cast(dict[str, object], replay.session.metadata["runtime_state"])
+    assert replay.session.status == "failed"
+    assert runtime_state_metadata["acp"] == {
+        "mode": "managed",
+        "configured_enabled": True,
+        "status": "disconnected",
+        "available": False,
+        "last_error": None,
     }
 
 

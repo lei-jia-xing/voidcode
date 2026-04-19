@@ -673,6 +673,7 @@ class VoidCodeRuntime:
                     yield chunk
             except Exception:
                 if final_session is not None and final_session.status == "failed":
+                    final_session = self._disconnect_acp_for_session_state(final_session)
                     response = RuntimeResponse(
                         session=final_session, events=tuple(events), output=output
                     )
@@ -1796,10 +1797,16 @@ class VoidCodeRuntime:
         if self.current_acp_state().configuration.configured_enabled is True:
             try:
                 deferred_startup_acp_events = self._acp_adapter.connect()
-            except Exception:
-                startup_chunks, session, _, startup_failed_chunk = self._start_run_acp(
+            except Exception as exc:
+                startup_chunks, session, last_sequence = self._emit_current_acp_drain(
                     session=session,
-                    sequence=max_stored_sequence,
+                    start_sequence=max_stored_sequence + 1,
+                )
+                startup_failed_chunk = self._failed_chunk(
+                    session=self._session_with_current_acp_metadata(session),
+                    sequence=last_sequence + 1,
+                    error=str(exc),
+                    payload={"kind": "acp_startup_failed"},
                 )
             else:
                 session = self._session_with_current_acp_metadata(session)
