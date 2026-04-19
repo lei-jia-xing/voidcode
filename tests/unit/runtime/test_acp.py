@@ -90,6 +90,20 @@ def test_managed_acp_adapter_connects_and_disconnects() -> None:
     assert adapter.current_state().available is False
 
 
+def test_managed_acp_adapter_handshake_failure_marks_failed_state() -> None:
+    adapter = ManagedAcpAdapter(
+        RuntimeAcpConfig(enabled=True, handshake_request_type="handshake_fail")
+    )
+
+    with pytest.raises(RuntimeError, match="handshake rejected"):
+        _ = adapter.connect()
+
+    assert adapter.current_state().status == "failed"
+    assert adapter.current_state().available is False
+    assert adapter.current_state().last_error == "ACP handshake rejected by memory transport"
+    assert [event.event_type for event in adapter.drain_events()] == ["runtime.acp_failed"]
+
+
 def test_managed_acp_adapter_request_before_connect_returns_error_without_failing_adapter() -> None:
     adapter = ManagedAcpAdapter(RuntimeAcpConfig(enabled=True))
 

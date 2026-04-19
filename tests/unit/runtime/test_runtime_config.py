@@ -22,7 +22,6 @@ from voidcode.runtime.config import (
     MAX_STEPS_ENV_VAR,
     MODEL_ENV_VAR,
     RUNTIME_CONFIG_FILE_NAME,
-    RuntimeAcpConfig,
     RuntimeFormatterPresetConfig,
     RuntimeHooksConfig,
     RuntimeLspConfig,
@@ -48,7 +47,6 @@ from voidcode.runtime.config import (
 _parse_tui_config = runtime_config.__dict__["_parse_tui_config"]
 _parse_tools_config = runtime_config.__dict__["_parse_tools_config"]
 _parse_skills_config = runtime_config.__dict__["_parse_skills_config"]
-_parse_acp_config = runtime_config.__dict__["_parse_acp_config"]
 
 PRETTIER_ROOT_MARKERS = (
     "package.json",
@@ -379,7 +377,6 @@ def test_runtime_config_parses_extension_domains(tmp_path: Path) -> None:
                     "enabled": False,
                     "servers": {"pyright": {"command": ["pyright-langserver", "--stdio"]}},
                 },
-                "acp": {"enabled": False},
                 "provider_fallback": {
                     "preferred_model": "opencode/gpt-5.4",
                     "fallback_models": ["opencode/gpt-5.3", "custom/demo"],
@@ -460,7 +457,7 @@ def test_runtime_config_parses_extension_domains(tmp_path: Path) -> None:
         enabled=False,
         servers={"pyright": RuntimeLspServerConfig(command=("pyright-langserver", "--stdio"))},
     )
-    assert config.acp == RuntimeAcpConfig(enabled=False)
+    assert config.acp is None
     assert config.provider_fallback == RuntimeProviderFallbackConfig(
         preferred_model="opencode/gpt-5.4",
         fallback_models=("opencode/gpt-5.3", "custom/demo"),
@@ -1207,12 +1204,6 @@ def test_runtime_config_rejects_invalid_max_steps(
             "runtime config field 'plan.options'",
             id="plan-options-shape",
         ),
-        pytest.param({"acp": []}, "runtime config field 'acp'", id="acp-shape"),
-        pytest.param(
-            {"acp": {"enabled": "no"}},
-            "runtime config field 'acp.enabled'",
-            id="acp-enabled-type",
-        ),
         pytest.param(
             {"hooks": {"pre_tool": "python scripts/pre.py"}},
             "runtime config field 'hooks.pre_tool'",
@@ -1710,7 +1701,6 @@ def test_parse_simple_extension_configs_preserve_public_dataclasses() -> None:
     assert _parse_skills_config({"enabled": False, "paths": [".voidcode/skills"]}) == (
         RuntimeSkillsConfig(enabled=False, paths=(".voidcode/skills",))
     )
-    assert _parse_acp_config({"enabled": True}) == RuntimeAcpConfig(enabled=True)
 
 
 def test_runtime_config_uses_repo_local_filename_inside_workspace(tmp_path: Path) -> None:

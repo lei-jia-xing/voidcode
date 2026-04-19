@@ -7,6 +7,39 @@ from ..acp import AcpConfigState, AcpRequestEnvelope, AcpRequestHandler, AcpResp
 from .config import RuntimeAcpConfig
 
 
+@dataclass(frozen=True, slots=True)
+class _MemoryAcpTransport:
+    connected: bool = False
+
+    def open(self) -> _MemoryAcpTransport:
+        return _MemoryAcpTransport(connected=True)
+
+    def close(self) -> _MemoryAcpTransport:
+        return _MemoryAcpTransport(connected=False)
+
+    def request(self, envelope: AcpRequestEnvelope) -> AcpResponseEnvelope:
+        if not self.connected:
+            return AcpResponseEnvelope(
+                status="error",
+                error="ACP transport is not connected",
+                payload={"request_type": envelope.request_type},
+            )
+        if envelope.request_type == "handshake_fail":
+            return AcpResponseEnvelope(
+                status="error",
+                error="ACP handshake rejected by memory transport",
+                payload={"request_type": envelope.request_type},
+            )
+        return AcpResponseEnvelope(
+            status="ok",
+            payload={
+                "request_type": envelope.request_type,
+                "accepted": True,
+                **envelope.payload,
+            },
+        )
+
+
 def _config_state_from_runtime_config(config: RuntimeAcpConfig | None) -> AcpConfigState:
     return AcpConfigState.from_enabled(config.enabled if config is not None else None)
 
@@ -76,6 +109,7 @@ class DisabledAcpAdapter:
 
 class ManagedAcpAdapter:
     def __init__(self, config: RuntimeAcpConfig) -> None:
+        self._runtime_config = config
         self._configuration = _config_state_from_runtime_config(config)
         self._state = AcpAdapterState(
             mode="managed",
@@ -83,6 +117,7 @@ class ManagedAcpAdapter:
             configured=self._configuration.configured_enabled,
         )
         self._pending_events: list[AcpRuntimeEvent] = []
+        self._transport = _MemoryAcpTransport()
 
     @property
     def configuration(self) -> AcpConfigState:
@@ -94,6 +129,22 @@ class ManagedAcpAdapter:
     def connect(self) -> tuple[AcpRuntimeEvent, ...]:
         if self._state.status == "connected":
             return ()
+        try:
+            self._transport = self._transport.open()
+            handshake_response = self._transport.request(
+                AcpRequestEnvelope(
+                    request_type=self._runtime_config.handshake_request_type,
+                    payload=dict(self._runtime_config.handshake_payload),
+                )
+            )
+            if handshake_response.status != "ok":
+                error = handshake_response.error or "ACP handshake failed"
+                self._fail(error)
+                raise RuntimeError(error)
+        except Exception as exc:
+            if self._state.status != "failed" or self._state.last_error != str(exc):
+                self._fail(str(exc))
+            raise
         self._state = AcpAdapterState(
             mode="managed",
             configuration=self._configuration,
@@ -112,6 +163,7 @@ class ManagedAcpAdapter:
     def disconnect(self) -> tuple[AcpRuntimeEvent, ...]:
         if self._state.status != "connected":
             return ()
+        self._transport = self._transport.close()
         self._state = AcpAdapterState(
             mode="managed",
             configuration=self._configuration,
@@ -134,14 +186,7 @@ class ManagedAcpAdapter:
                 error="ACP adapter is not connected",
                 payload={"request_type": envelope.request_type},
             )
-        return AcpResponseEnvelope(
-            status="ok",
-            payload={
-                "request_type": envelope.request_type,
-                "accepted": True,
-                **envelope.payload,
-            },
-        )
+        return self._transport.request(envelope)
 
     def drain_events(self) -> tuple[AcpRuntimeEvent, ...]:
         events = tuple(self._pending_events)
@@ -153,6 +198,7 @@ class ManagedAcpAdapter:
         return self.drain_events()
 
     def _fail(self, message: str) -> None:
+        self._transport = self._transport.close()
         self._state = AcpAdapterState(
             mode="managed",
             configuration=self._configuration,

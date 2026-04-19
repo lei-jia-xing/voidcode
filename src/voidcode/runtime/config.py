@@ -118,6 +118,9 @@ class RuntimeLspConfig:
 @dataclass(frozen=True, slots=True)
 class RuntimeAcpConfig:
     enabled: bool | None = None
+    transport: Literal["memory"] = "memory"
+    handshake_request_type: str = "handshake"
+    handshake_payload: dict[str, object] = field(default_factory=dict)
 
 
 type McpTransport = Literal["stdio"]
@@ -309,7 +312,6 @@ def load_runtime_config(
         tools=repo_local.tools,
         skills=repo_local.skills,
         lsp=repo_local.lsp,
-        acp=repo_local.acp,
         mcp=repo_local.mcp,
         tui=resolved_tui,
         provider_fallback=repo_local.provider_fallback,
@@ -366,9 +368,6 @@ def _load_repo_local_config(
     raw_lsp = payload.get("lsp")
     lsp = _parse_lsp_config(raw_lsp)
 
-    raw_acp = payload.get("acp")
-    acp = _parse_acp_config(raw_acp)
-
     raw_mcp = payload.get("mcp")
     mcp = _parse_mcp_config(raw_mcp)
 
@@ -400,7 +399,6 @@ def _load_repo_local_config(
         tools=tools,
         skills=skills,
         lsp=lsp,
-        acp=acp,
         mcp=mcp,
         tui=tui,
         provider_fallback=provider_fallback,
@@ -645,18 +643,6 @@ class _RuntimeSkillsValidationModel(BaseModel):
 
     def to_runtime_config(self) -> RuntimeSkillsConfig:
         return RuntimeSkillsConfig(enabled=self.enabled, paths=self.paths)
-
-
-class _RuntimeAcpValidationModel(BaseModel):
-    enabled: bool | None = None
-
-    @field_validator("enabled", mode="before")
-    @classmethod
-    def _validate_enabled(cls, value: object) -> bool | None:
-        return _parse_optional_bool(value, field_path="acp.enabled")
-
-    def to_runtime_config(self) -> RuntimeAcpConfig:
-        return RuntimeAcpConfig(enabled=self.enabled)
 
 
 def _validation_context_field_path(info: ValidationInfo, *, default: str) -> str:
@@ -1054,23 +1040,6 @@ def _parse_lsp_server_config(
         root_markers=root_markers,
         settings=settings or {},
         init_options=init_options or {},
-    )
-
-
-def _parse_acp_config(raw_acp: object) -> RuntimeAcpConfig | None:
-    if raw_acp is None:
-        return None
-    if not isinstance(raw_acp, dict):
-        raise ValueError("runtime config field 'acp' must be an object when provided")
-
-    acp_payload = cast(dict[str, object], raw_acp)
-    return cast(
-        RuntimeAcpConfig | None,
-        _parse_runtime_config_section(
-            acp_payload,
-            field_path="acp",
-            model_type=_RuntimeAcpValidationModel,
-        ),
     )
 
 
