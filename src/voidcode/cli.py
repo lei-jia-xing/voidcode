@@ -37,6 +37,12 @@ def _format_event(event_type: str, source: str, data: dict[str, object]) -> str:
     return f"EVENT {event_type} source={source}"
 
 
+def _close_runtime(runtime: object) -> None:
+    exit_method = getattr(runtime, "__exit__", None)
+    if callable(exit_method):
+        exit_method(None, None, None)
+
+
 def _handle_run_command(args: argparse.Namespace) -> int:
     workspace = cast(Path, args.workspace)
     request_text = cast(str, args.request)
@@ -57,7 +63,7 @@ def _handle_run_command(args: argparse.Namespace) -> int:
         if not interactive:
             _print_runtime_output(output)
     finally:
-        _ = runtime.shutdown_lsp()
+        _close_runtime(runtime)
     return 0
 
 
@@ -171,7 +177,7 @@ def _handle_sessions_list_command(args: argparse.Namespace) -> int:
     try:
         sessions = runtime.list_sessions()
     finally:
-        _ = runtime.shutdown_lsp()
+        _close_runtime(runtime)
 
     for session in sessions:
         print(_format_session_summary(session))
@@ -201,7 +207,7 @@ def _handle_sessions_resume_command(args: argparse.Namespace) -> int:
         except ValueError as exc:
             raise SystemExit(f"error: {exc}") from None
     finally:
-        _ = runtime.shutdown_lsp()
+        _close_runtime(runtime)
 
     _print_runtime_response(result)
     return 0
@@ -235,7 +241,7 @@ def _handle_config_show_command(args: argparse.Namespace) -> int:
         except ValueError as exc:
             raise SystemExit(f"error: {exc}") from None
     finally:
-        _ = runtime.shutdown_lsp()
+        _close_runtime(runtime)
 
     print(
         json.dumps(
@@ -273,7 +279,7 @@ def _handle_provider_models_command(args: argparse.Namespace) -> int:
         except ValueError as exc:
             raise SystemExit(f"error: {exc}") from None
     finally:
-        _ = runtime.shutdown_lsp()
+        _close_runtime(runtime)
 
     catalog = runtime.provider_model_catalog(provider)
     payload: dict[str, object] = {

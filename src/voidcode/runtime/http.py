@@ -227,13 +227,16 @@ class RuntimeTransportApp:
         except StopAsyncIteration:
             logger.exception("runtime stream emitted no chunks before response start")
             await self._json_response(send, status=500, payload={"error": "internal server error"})
+            self._close_runtime(runtime)
             return
         except RuntimeRequestError as exc:
             await self._json_response(send, status=400, payload={"error": str(exc)})
+            self._close_runtime(runtime)
             return
         except Exception:
             logger.exception("unexpected transport streaming failure")
             await self._json_response(send, status=500, payload={"error": "internal server error"})
+            self._close_runtime(runtime)
             return
 
         await self._send_stream_start(send)
@@ -247,9 +250,11 @@ class RuntimeTransportApp:
             if not emitted_failed_chunk:
                 logger.exception("unexpected transport streaming failure")
             await send({"type": "http.response.body", "body": b"", "more_body": False})
+            self._close_runtime(runtime)
             return
 
         await send({"type": "http.response.body", "body": b"", "more_body": False})
+        self._close_runtime(runtime)
 
     async def _send_stream_start(self, send: Send) -> None:
         await send(

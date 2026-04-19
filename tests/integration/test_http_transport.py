@@ -428,6 +428,66 @@ def test_transport_closes_request_scoped_runtime_after_list_sessions(tmp_path: P
     assert closed == ["closed"]
 
 
+def test_transport_closes_request_scoped_runtime_after_stream_run(tmp_path: Path) -> None:
+    create_runtime_app = _load_transport_app_factory()
+    runtime_stream_chunk, session_ref, session_state, event_envelope = _load_stream_types()
+    closed: list[str] = []
+    running_session = session_state(
+        session=session_ref(id="stream-close-session"),
+        status="running",
+        turn=1,
+        metadata={"workspace": str(tmp_path)},
+    )
+    completed_session = session_state(
+        session=session_ref(id="stream-close-session"),
+        status="completed",
+        turn=1,
+        metadata={"workspace": str(tmp_path)},
+    )
+
+    class StubRuntime:
+        def run_stream(self, request: RuntimeRequestLike) -> Iterator[StreamChunkLike]:
+            assert request.prompt == "close after stream"
+            yield runtime_stream_chunk(
+                kind="event",
+                session=running_session,
+                event=event_envelope(
+                    session_id="stream-close-session",
+                    sequence=1,
+                    event_type="runtime.request_received",
+                    source="runtime",
+                    payload={"prompt": "close after stream"},
+                ),
+            )
+            yield runtime_stream_chunk(
+                kind="output",
+                session=completed_session,
+                output="done",
+            )
+
+        def list_sessions(self) -> tuple[StoredSessionSummaryLike, ...]:
+            raise AssertionError("list_sessions should not be called")
+
+        def resume(self, session_id: str) -> RuntimeResponseLike:
+            raise AssertionError(f"resume should not be called: {session_id}")
+
+        def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+            _ = exc_type, exc, tb
+            closed.append("closed")
+
+    app = create_runtime_app(workspace=tmp_path, runtime_factory=lambda: StubRuntime())
+
+    response = _run_app(
+        app,
+        method="POST",
+        path="/api/runtime/run/stream",
+        body=json.dumps({"prompt": "close after stream"}).encode("utf-8"),
+    )
+
+    assert response.status == 200
+    assert closed == ["closed"]
+
+
 def test_transport_rejects_other_unsupported_scope_types(tmp_path: Path) -> None:
     create_runtime_app = _load_transport_app_factory()
     app = create_runtime_app(workspace=tmp_path)
@@ -546,6 +606,10 @@ def test_transport_resolves_pending_approval_allow_over_http(tmp_path: Path) -> 
         "graph.tool_request_created",
         "runtime.tool_lookup_succeeded",
         "runtime.approval_requested",
+        "graph.loop_step",
+        "graph.model_turn",
+        "graph.tool_request_created",
+        "runtime.tool_lookup_succeeded",
         "runtime.approval_resolved",
         "runtime.tool_completed",
         "graph.loop_step",
@@ -767,6 +831,10 @@ def test_transport_resolves_pending_approval_deny_over_http(tmp_path: Path) -> N
         "graph.tool_request_created",
         "runtime.tool_lookup_succeeded",
         "runtime.approval_requested",
+        "graph.loop_step",
+        "graph.model_turn",
+        "graph.tool_request_created",
+        "runtime.tool_lookup_succeeded",
         "runtime.approval_resolved",
         "runtime.failed",
     ]
@@ -870,6 +938,10 @@ def test_transport_resumes_multi_step_loop_and_persists_replay_over_http(tmp_pat
         "graph.tool_request_created",
         "runtime.tool_lookup_succeeded",
         "runtime.approval_requested",
+        "graph.loop_step",
+        "graph.model_turn",
+        "graph.tool_request_created",
+        "runtime.tool_lookup_succeeded",
         "runtime.approval_resolved",
         "runtime.tool_completed",
         "graph.loop_step",
@@ -883,7 +955,7 @@ def test_transport_resumes_multi_step_loop_and_persists_replay_over_http(tmp_pat
     ]
     assert [
         event["sequence"] for event in cast(list[dict[str, object]], approve_payload["events"])
-    ] == list(range(1, 24))
+    ] == list(range(1, 28))
     assert list_response.status == 200
     assert list_response.json() == [
         {
@@ -979,12 +1051,16 @@ def test_transport_denied_multi_step_loop_preserves_failed_replay_over_http(tmp_
         "graph.tool_request_created",
         "runtime.tool_lookup_succeeded",
         "runtime.approval_requested",
+        "graph.loop_step",
+        "graph.model_turn",
+        "graph.tool_request_created",
+        "runtime.tool_lookup_succeeded",
         "runtime.approval_resolved",
         "runtime.failed",
     ]
     assert [
         event["sequence"] for event in cast(list[dict[str, object]], deny_payload["events"])
-    ] == list(range(1, 16))
+    ] == list(range(1, 20))
     assert list_response.status == 200
     assert list_response.json() == [
         {
