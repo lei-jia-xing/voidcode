@@ -49,6 +49,9 @@ EventEnvelope(
 - `runtime.request_received`
 - `runtime.skills_loaded`
 - `runtime.skills_applied`
+- `runtime.acp_connected`
+- `runtime.acp_disconnected`
+- `runtime.acp_failed`
 - `graph.loop_step`
 - `graph.model_turn`
 - `graph.tool_request_created`
@@ -79,16 +82,18 @@ EventEnvelope(
 
 1. `runtime.request_received`
 2. `runtime.skills_loaded`
-3. `runtime.skills_applied`（仅在本次 run 存在已启用 skill 时出现）
-4. `graph.loop_step`
-5. `graph.model_turn`
-6. `graph.tool_request_created`
-7. `runtime.tool_lookup_succeeded`
-8. 对于 `ask` 策略发出 `runtime.approval_requested`；或者对于 `allow`/`deny` 策略发出 `runtime.approval_resolved`；或者对于只读操作发出 `runtime.permission_resolved`
-9. `runtime.approval_resolved`（仅在 `ask` 后恢复运行时）
-10. `runtime.tool_completed`
-11. `graph.loop_step`
-12. `graph.response_ready`
+3. `runtime.acp_connected`（仅在 ACP 已启用且 startup/handshake 成功时出现）
+4. `runtime.skills_applied`（仅在本次 run 存在已启用 skill 时出现）
+5. `graph.loop_step`
+6. `graph.model_turn`
+7. `graph.tool_request_created`
+8. `runtime.tool_lookup_succeeded`
+9. 对于 `ask` 策略发出 `runtime.approval_requested`；或者对于 `allow`/`deny` 策略发出 `runtime.approval_resolved`；或者对于只读操作发出 `runtime.permission_resolved`
+10. `runtime.approval_resolved`（仅在 `ask` 后恢复运行时）
+11. `runtime.tool_completed`
+12. `graph.loop_step`
+13. `graph.response_ready`
+14. `runtime.acp_disconnected`（仅在 ACP 已启用且本次 run 结束时出现）
 
 当前已实现的最小 hooks 路径会在非只读工具的成功执行周围插入：
 
@@ -120,6 +125,17 @@ EventEnvelope(
   - `skills: list[str]` 本次 run 真正启用并注入执行语义的 skill 名称
   - `count: int`
 - 仅在存在已启用 skill 时发出
+
+### `runtime.acp_connected`
+### `runtime.acp_disconnected`
+### `runtime.acp_failed`
+- source: `runtime`
+- 当前 payload:
+  - `status: str`
+  - `available: bool`
+  - `error: str`（仅 `runtime.acp_failed` 时出现）
+- 这些事件由 runtime-owned ACP lifecycle 发出，并在响应/重放中按会话序列重新编号
+- 相关 ACP 运行态会写入 session metadata 的 `runtime_state.acp`，而不是用户主配置快照 `runtime_config`
 
 ### `graph.loop_step`
 - source: `graph`
