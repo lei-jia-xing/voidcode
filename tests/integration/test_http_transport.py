@@ -5,6 +5,7 @@ import importlib
 import json
 import logging
 import sys
+import threading
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -1624,6 +1625,73 @@ def test_transport_rejects_unknown_parent_session_in_run_stream_payload(tmp_path
 
     assert response.status == 400
     assert response.json() == {"error": "parent session does not exist: missing-parent"}
+
+
+def test_transport_allows_parent_session_while_parent_stream_request_is_active(
+    tmp_path: Path,
+) -> None:
+    _, runtime_class = _load_runtime_types()
+    create_runtime_app = _load_transport_app_factory()
+    service_module = importlib.import_module("voidcode.runtime.service")
+    active_registry = service_module._ACTIVE_SESSION_REGISTRY
+
+    app = create_runtime_app(
+        workspace=tmp_path,
+        runtime_factory=lambda: runtime_class(workspace=tmp_path),
+    )
+
+    parent_started = threading.Event()
+    allow_parent_to_finish = threading.Event()
+
+    original_register = active_registry.register
+
+    def _register_and_signal(*, workspace: Path, session_id: str) -> None:
+        original_register(workspace=workspace, session_id=session_id)
+        if session_id == "leader-session":
+            parent_started.set()
+            allow_parent_to_finish.wait(timeout=5)
+
+    parent_response_holder: dict[str, object] = {}
+
+    def _run_parent() -> None:
+        parent_response_holder["response"] = _run_app(
+            app,
+            method="POST",
+            path="/api/runtime/run/stream",
+            body=json.dumps(
+                {
+                    "prompt": "leader",
+                    "session_id": "leader-session",
+                }
+            ).encode("utf-8"),
+        )
+
+    parent_thread = threading.Thread(target=_run_parent, daemon=True)
+
+    with patch.object(active_registry, "register", _register_and_signal):
+        parent_thread.start()
+        assert parent_started.wait(timeout=5)
+        child_response = _run_app(
+            app,
+            method="POST",
+            path="/api/runtime/run/stream",
+            body=json.dumps(
+                {
+                    "prompt": "child",
+                    "parent_session_id": "leader-session",
+                }
+            ).encode("utf-8"),
+        )
+        allow_parent_to_finish.set()
+        parent_thread.join(timeout=5)
+
+    child_payloads = _parse_sse_payloads(child_response)
+    first_payload = child_payloads[0]
+    first_session = cast(dict[str, object], first_payload["session"])
+    first_session_ref = cast(dict[str, object], first_session["session"])
+
+    assert child_response.status == 200
+    assert first_session_ref["parent_id"] == "leader-session"
 
 
 def test_transport_rejects_empty_session_id_in_run_stream_payload() -> None:
