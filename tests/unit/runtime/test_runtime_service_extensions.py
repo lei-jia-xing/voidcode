@@ -1585,17 +1585,36 @@ def test_runtime_resume_returns_disconnected_acp_state_after_waiting_again(
 def test_runtime_resume_stream_replay_keeps_failed_status_on_trailing_acp_disconnect(
     tmp_path: Path,
 ) -> None:
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(
+                    ProviderExecutionError(
+                        kind="context_limit",
+                        provider_name="opencode",
+                        model_name="gpt-5.4",
+                        message="context exceeded",
+                    ),
+                ),
+            )
+        }
+    )
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_UnknownToolGraph(),
-        config=RuntimeConfig(acp=RuntimeAcpConfig(enabled=True)),
+        config=RuntimeConfig(
+            acp=RuntimeAcpConfig(enabled=True),
+            execution_engine="single_agent",
+            model="opencode/gpt-5.4",
+        ),
+        model_provider_registry=registry,
     )
 
-    with pytest.raises(ValueError, match="unknown tool"):
-        for _chunk in runtime.run_stream(
-            RuntimeRequest(prompt="go", session_id="acp-failed-replay-status")
-        ):
-            pass
+    response = runtime.run(
+        RuntimeRequest(prompt="read sample.txt", session_id="acp-failed-replay-status")
+    )
+    assert response.session.status == "failed"
+    assert response.events[-1].event_type == "runtime.acp_disconnected"
 
     replay_chunks = list(runtime.resume_stream("acp-failed-replay-status"))
 
