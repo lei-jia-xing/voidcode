@@ -1183,18 +1183,207 @@ def test_runtime_default_extension_construction_preserves_public_run_path(
     assert response.output == "hello"
     assert response.events[1].event_type == "runtime.skills_loaded"
     assert response.events[1].payload == {"skills": ["alpha", "zeta"]}
-    assert response.events[2].event_type == "runtime.skills_applied"
-    assert response.events[3].event_type == "graph.tool_request_created"
-    assert response.events[4].event_type == "runtime.tool_lookup_succeeded"
-    assert response.events[6].event_type == "runtime.tool_completed"
-    runtime_config_metadata = cast(dict[str, object], response.session.metadata["runtime_config"])
-    assert runtime_config_metadata["acp"] == {
+    assert response.events[2].event_type == "runtime.acp_connected"
+    assert response.events[3].event_type == "runtime.skills_applied"
+    assert response.events[4].event_type == "graph.tool_request_created"
+    assert response.events[5].event_type == "runtime.tool_lookup_succeeded"
+    assert response.events[7].event_type == "runtime.tool_completed"
+    assert response.events[-1].event_type == "runtime.acp_disconnected"
+    runtime_state_metadata = cast(dict[str, object], response.session.metadata["runtime_state"])
+    assert runtime_state_metadata["acp"] == {
         "mode": "managed",
         "configured_enabled": True,
         "status": "disconnected",
         "available": False,
         "last_error": None,
     }
+
+
+def test_runtime_run_emits_acp_lifecycle_events_and_persists_final_state(tmp_path: Path) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("hello from acp runtime\n", encoding="utf-8")
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_StubGraph(),
+        config=RuntimeConfig(acp=RuntimeAcpConfig(enabled=True)),
+    )
+
+    response = runtime.run(
+        RuntimeRequest(prompt="read sample.txt", session_id="acp-runtime-session")
+    )
+
+    assert [
+        event.event_type for event in response.events if event.event_type.startswith("runtime.acp_")
+    ] == [
+        "runtime.acp_connected",
+        "runtime.acp_disconnected",
+    ]
+    runtime_state_metadata = cast(dict[str, object], response.session.metadata["runtime_state"])
+    assert runtime_state_metadata["acp"] == {
+        "mode": "managed",
+        "configured_enabled": True,
+        "status": "disconnected",
+        "available": False,
+        "last_error": None,
+    }
+
+
+def test_runtime_run_fails_when_acp_handshake_fails(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_StubGraph(),
+        config=RuntimeConfig(
+            acp=RuntimeAcpConfig(enabled=True, handshake_request_type="handshake_fail")
+        ),
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="hello", session_id="acp-runtime-fail"))
+
+    assert response.session.status == "failed"
+    assert [event.event_type for event in response.events] == [
+        "runtime.request_received",
+        "runtime.skills_loaded",
+        "runtime.acp_failed",
+        "runtime.failed",
+    ]
+    assert response.events[-1].payload == {
+        "error": "ACP handshake rejected by memory transport",
+        "kind": "acp_startup_failed",
+    }
+    runtime_state_metadata = cast(dict[str, object], response.session.metadata["runtime_state"])
+    assert runtime_state_metadata["acp"] == {
+        "mode": "managed",
+        "configured_enabled": True,
+        "status": "failed",
+        "available": False,
+        "last_error": "ACP handshake rejected by memory transport",
+    }
+
+
+def test_runtime_waiting_run_disconnects_acp_and_resume_reconnects_on_same_runtime(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(acp=RuntimeAcpConfig(enabled=True), approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    waiting = runtime.run(RuntimeRequest(prompt="go", session_id="acp-approval-session"))
+    approval_request_id = str(waiting.events[-1].payload["request_id"])
+
+    assert waiting.session.status == "waiting"
+    assert [
+        event.event_type for event in waiting.events if event.event_type.startswith("runtime.acp_")
+    ] == ["runtime.acp_connected"]
+    runtime_state_metadata = cast(dict[str, object], waiting.session.metadata["runtime_state"])
+    acp_runtime_state = cast(dict[str, object], runtime_state_metadata["acp"])
+    assert acp_runtime_state["status"] == "disconnected"
+    assert runtime.current_acp_state().status == "disconnected"
+    assert runtime.request_acp(request_type="ping", payload={}).status == "error"
+
+    resumed = runtime.resume(
+        session_id="acp-approval-session",
+        approval_request_id=approval_request_id,
+        approval_decision="allow",
+    )
+
+    assert resumed.session.status == "completed"
+    resumed_acp_events = [
+        event.event_type for event in resumed.events if event.sequence > waiting.events[-1].sequence
+    ]
+    assert resumed_acp_events[:2] == [
+        "graph.tool_request_created",
+        "runtime.tool_lookup_succeeded",
+    ]
+    assert "runtime.acp_connected" in resumed_acp_events
+    assert "runtime.approval_resolved" in resumed_acp_events
+    assert resumed_acp_events[-1] == "runtime.acp_disconnected"
+    assert runtime.current_acp_state().status == "disconnected"
+
+
+def test_runtime_resume_with_fresh_runtime_keeps_unique_sequences_when_acp_enabled(
+    tmp_path: Path,
+) -> None:
+    initial_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(acp=RuntimeAcpConfig(enabled=True), approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    waiting = initial_runtime.run(
+        RuntimeRequest(prompt="go", session_id="acp-fresh-resume-session")
+    )
+    approval_request_id = str(waiting.events[-1].payload["request_id"])
+
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(acp=RuntimeAcpConfig(enabled=True), approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+    resumed = resumed_runtime.resume(
+        session_id="acp-fresh-resume-session",
+        approval_request_id=approval_request_id,
+        approval_decision="allow",
+    )
+
+    resumed_suffix = [
+        event for event in resumed.events if event.sequence > waiting.events[-1].sequence
+    ]
+    assert [event.sequence for event in resumed_suffix] == list(
+        range(waiting.events[-1].sequence + 1, resumed.events[-1].sequence + 1)
+    )
+    assert [
+        event.event_type for event in resumed_suffix if event.event_type.startswith("runtime.acp_")
+    ] == [
+        "runtime.acp_connected",
+        "runtime.acp_disconnected",
+    ]
+    assert any(event.event_type == "runtime.approval_resolved" for event in resumed_suffix)
+
+
+def test_runtime_resume_stream_replays_graph_suffix_before_acp_connect_when_enabled(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(acp=RuntimeAcpConfig(enabled=True), approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    waiting = runtime.run(RuntimeRequest(prompt="go", session_id="acp-stream-order-session"))
+    approval_request_id = str(waiting.events[-1].payload["request_id"])
+
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(acp=RuntimeAcpConfig(enabled=True), approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    chunks = list(
+        resumed_runtime.resume_stream(
+            session_id="acp-stream-order-session",
+            approval_request_id=approval_request_id,
+            approval_decision="allow",
+        )
+    )
+    event_types = [chunk.event.event_type for chunk in chunks if chunk.event is not None]
+
+    assert event_types[:2] == [
+        "graph.tool_request_created",
+        "runtime.tool_lookup_succeeded",
+    ]
+    assert event_types[2] == "runtime.acp_connected"
+    assert event_types[3:5] == [
+        "runtime.approval_resolved",
+        "runtime.tool_completed",
+    ]
+    assert event_types[-1] == "runtime.acp_disconnected"
 
 
 def test_runtime_emits_skills_applied_and_persists_frozen_skill_payloads(tmp_path: Path) -> None:
@@ -1794,13 +1983,6 @@ def test_runtime_effective_runtime_config_recovers_persisted_max_steps(tmp_path:
             ],
         },
         "lsp": {"mode": "disabled", "configured_enabled": False, "servers": []},
-        "acp": {
-            "mode": "disabled",
-            "configured_enabled": False,
-            "status": "disconnected",
-            "available": False,
-            "last_error": None,
-        },
         "mcp": {"mode": "disabled", "configured_enabled": False, "servers": []},
     }
 
@@ -1917,14 +2099,16 @@ def test_runtime_effective_runtime_config_uses_request_metadata_max_steps_for_ne
         "plan": None,
         "resolved_provider": None,
         "lsp": {"mode": "disabled", "configured_enabled": False, "servers": []},
+        "mcp": {"mode": "disabled", "configured_enabled": False, "servers": []},
+    }
+    assert response.session.metadata["runtime_state"] == {
         "acp": {
             "mode": "disabled",
             "configured_enabled": False,
             "status": "disconnected",
             "available": False,
             "last_error": None,
-        },
-        "mcp": {"mode": "disabled", "configured_enabled": False, "servers": []},
+        }
     }
 
 

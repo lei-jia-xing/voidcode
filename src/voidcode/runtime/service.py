@@ -34,7 +34,7 @@ from ..provider.snapshot import (
 )
 from ..skills import SkillRegistry
 from ..tools.contracts import Tool, ToolCall, ToolDefinition, ToolResult, ToolResultStatus
-from .acp import AcpAdapter, build_acp_adapter
+from .acp import AcpAdapter, AcpAdapterState, build_acp_adapter
 from .config import (
     ExecutionEngineName,
     RuntimeConfig,
@@ -312,6 +312,148 @@ class VoidCodeRuntime:
         _ = self.shutdown_lsp()
 
     @staticmethod
+    def _session_with_metadata(session: SessionState, metadata: dict[str, object]) -> SessionState:
+        return SessionState(
+            session=session.session,
+            status=session.status,
+            turn=session.turn,
+            metadata=metadata,
+        )
+
+    def _runtime_state_metadata_with_acp_state(
+        self,
+        metadata: dict[str, object],
+        acp_state: AcpAdapterState,
+    ) -> dict[str, object]:
+        runtime_state = metadata.get("runtime_state")
+        if runtime_state is None:
+            runtime_state_metadata: dict[str, object] = {}
+        elif isinstance(runtime_state, dict):
+            runtime_state_metadata = dict(cast(dict[str, object], runtime_state))
+        else:
+            return metadata
+        runtime_state_metadata["acp"] = {
+            "mode": acp_state.mode,
+            "configured_enabled": acp_state.configuration.configured_enabled,
+            "status": acp_state.status,
+            "available": acp_state.available,
+            "last_error": acp_state.last_error,
+        }
+        return {**metadata, "runtime_state": runtime_state_metadata}
+
+    def _session_with_current_acp_metadata(self, session: SessionState) -> SessionState:
+        return self._session_with_metadata(
+            session,
+            self._runtime_state_metadata_with_acp_state(
+                session.metadata,
+                self._acp_adapter.current_state(),
+            ),
+        )
+
+    def _disconnect_acp_for_session_state(self, session: SessionState) -> SessionState:
+        _ = self._acp_adapter.disconnect()
+        return self._session_with_current_acp_metadata(session)
+
+    def _reload_persisted_session(self, *, session_id: str) -> SessionState:
+        response = self._session_store.load_session(
+            workspace=self._workspace, session_id=session_id
+        )
+        return response.session
+
+    @staticmethod
+    def _resequence_event(event: EventEnvelope, *, sequence: int) -> EventEnvelope:
+        return EventEnvelope(
+            session_id=event.session_id,
+            sequence=sequence,
+            event_type=event.event_type,
+            source=event.source,
+            payload=event.payload,
+        )
+
+    def _emit_acp_events(
+        self,
+        *,
+        session: SessionState,
+        start_sequence: int,
+        acp_events: tuple[object, ...],
+    ) -> tuple[tuple[RuntimeStreamChunk, ...], SessionState, int]:
+        emitted: list[RuntimeStreamChunk] = []
+        current_session = session
+        sequence = start_sequence - 1
+        for acp_event in self._envelopes_for_acp_events(
+            session_id=session.session.id,
+            start_sequence=start_sequence,
+            acp_events=acp_events,
+        ):
+            sequence = acp_event.sequence
+            current_session = self._session_with_current_acp_metadata(current_session)
+            emitted.append(
+                RuntimeStreamChunk(kind="event", session=current_session, event=acp_event)
+            )
+        return tuple(emitted), current_session, sequence
+
+    def _emit_current_acp_drain(
+        self,
+        *,
+        session: SessionState,
+        start_sequence: int,
+    ) -> tuple[tuple[RuntimeStreamChunk, ...], SessionState, int]:
+        return self._emit_acp_events(
+            session=session,
+            start_sequence=start_sequence,
+            acp_events=self._acp_adapter.drain_events(),
+        )
+
+    def _start_run_acp(
+        self,
+        *,
+        session: SessionState,
+        sequence: int,
+    ) -> tuple[tuple[RuntimeStreamChunk, ...], SessionState, int, RuntimeStreamChunk | None]:
+        if self.current_acp_state().configuration.configured_enabled is not True:
+            return (), session, sequence, None
+        try:
+            acp_events = self._acp_adapter.connect()
+        except Exception as exc:
+            emitted, updated_session, last_sequence = self._emit_current_acp_drain(
+                session=session,
+                start_sequence=sequence + 1,
+            )
+            failed_session = self._session_with_current_acp_metadata(updated_session)
+            failed_chunk = self._failed_chunk(
+                session=failed_session,
+                sequence=last_sequence + 1,
+                error=str(exc),
+                payload={"kind": "acp_startup_failed"},
+            )
+            return emitted, failed_session, last_sequence + 1, failed_chunk
+        emitted, updated_session, last_sequence = self._emit_acp_events(
+            session=session,
+            start_sequence=sequence + 1,
+            acp_events=acp_events,
+        )
+        if not emitted:
+            updated_session = self._session_with_current_acp_metadata(updated_session)
+        return emitted, updated_session, last_sequence or sequence, None
+
+    def _finalize_run_acp(
+        self,
+        *,
+        session: SessionState,
+        sequence: int,
+    ) -> tuple[tuple[RuntimeStreamChunk, ...], SessionState, int]:
+        if self.current_acp_state().configuration.configured_enabled is not True:
+            return (), session, sequence
+        emitted, updated_session, last_sequence = self._emit_acp_events(
+            session=session,
+            start_sequence=sequence + 1,
+            acp_events=self._acp_adapter.disconnect(),
+        )
+        if not emitted:
+            updated_session = self._session_with_current_acp_metadata(updated_session)
+        return emitted, updated_session, last_sequence or sequence
+
+    @staticmethod
     def _build_graph_for_engine(
         engine_name: ExecutionEngineName,
         provider_model: ResolvedProviderModel,
@@ -540,6 +682,9 @@ class VoidCodeRuntime:
             if final_session is None:
                 raise ValueError("runtime stream emitted no chunks")
 
+            if final_session.status == "waiting":
+                final_session = self._disconnect_acp_for_session_state(final_session)
+
             response = RuntimeResponse(session=final_session, events=tuple(events), output=output)
             self._persist_response(request=request, response=response)
         finally:
@@ -559,6 +704,9 @@ class VoidCodeRuntime:
 
         if final_session is None:
             raise ValueError("runtime stream emitted no chunks")
+
+        if final_session.status == "waiting":
+            final_session = self._reload_persisted_session(session_id=final_session.session.id)
 
         return RuntimeResponse(session=final_session, events=tuple(events), output=output)
 
@@ -592,6 +740,7 @@ class VoidCodeRuntime:
                 **request.metadata,
                 "workspace": str(self._workspace),
                 "runtime_config": self._runtime_config_metadata(effective_config),
+                "runtime_state": self._runtime_state_metadata(),
             },
         )
         sequence = 1
@@ -620,6 +769,16 @@ class VoidCodeRuntime:
                 payload={"skills": self._loaded_skill_names()},
             ),
         )
+
+        startup_chunks, session, sequence, startup_failed_chunk = self._start_run_acp(
+            session=session,
+            sequence=sequence,
+        )
+        for chunk in startup_chunks:
+            yield chunk
+        if startup_failed_chunk is not None:
+            yield startup_failed_chunk
+            return
 
         applied_skill_contexts = self._applied_skill_contexts(session.metadata)
         frozen_applied_skills = self._frozen_applied_skill_payloads(applied_skill_contexts)
@@ -679,14 +838,33 @@ class VoidCodeRuntime:
         tool_results: list[ToolResult] = []
         graph = self._graph_for_session_metadata(session.metadata)
 
-        yield from self._execute_graph_loop(
+        last_chunk: RuntimeStreamChunk | None = None
+        last_sequence = sequence
+        for chunk in self._execute_graph_loop(
             graph=graph,
             session=session,
             sequence=sequence,
             graph_request=graph_request,
             tool_results=tool_results,
             permission_policy=self._permission_policy,
+        ):
+            last_chunk = chunk
+            if chunk.event is not None:
+                last_sequence = chunk.event.sequence
+            yield chunk
+
+        if last_chunk is None:
+            return
+
+        if last_chunk.session.status == "waiting":
+            return
+
+        final_chunks, _, _ = self._finalize_run_acp(
+            session=last_chunk.session,
+            sequence=last_sequence,
         )
+        for chunk in final_chunks:
+            yield chunk
 
     def _execute_graph_loop(
         self,
@@ -1021,6 +1199,14 @@ class VoidCodeRuntime:
             try:
                 tool_result = tool.invoke(plan_tool_call, workspace=self._workspace)
             except Exception as exc:
+                for acp_event in self._envelopes_for_acp_events(
+                    session_id=session.session.id,
+                    start_sequence=sequence + 1,
+                    acp_events=self._acp_adapter.drain_events(),
+                ):
+                    sequence = acp_event.sequence
+                    session = self._session_with_current_acp_metadata(session)
+                    yield RuntimeStreamChunk(kind="event", session=session, event=acp_event)
                 for mcp_event in self._envelopes_for_mcp_events(
                     session_id=session.session.id,
                     start_sequence=sequence + 1,
@@ -1037,6 +1223,15 @@ class VoidCodeRuntime:
                     yield RuntimeStreamChunk(kind="event", session=session, event=lsp_event)
                 yield self._failed_chunk(session=session, sequence=sequence + 1, error=str(exc))
                 raise
+
+            for acp_event in self._envelopes_for_acp_events(
+                session_id=session.session.id,
+                start_sequence=sequence + 1,
+                acp_events=self._acp_adapter.drain_events(),
+            ):
+                sequence = acp_event.sequence
+                session = self._session_with_current_acp_metadata(session)
+                yield RuntimeStreamChunk(kind="event", session=session, event=acp_event)
 
             for mcp_event in self._envelopes_for_mcp_events(
                 session_id=session.session.id,
@@ -1534,17 +1729,9 @@ class VoidCodeRuntime:
             metadata=stored.session.metadata,
         )
 
-        sequence_before_turn = 1
-        for event in reversed(stored.events):
-            if event.event_type in (
-                "runtime.tool_completed",
-                "runtime.skills_applied",
-                "runtime.skills_loaded",
-            ):
-                sequence_before_turn = event.sequence
-                break
-
         max_stored_sequence = stored.events[-1].sequence if stored.events else 0
+        loop_events: list[EventEnvelope] = []
+        output: str | None = None
 
         checkpoint_state = self._approval_resume_state_from_checkpoint(
             checkpoint=checkpoint,
@@ -1605,22 +1792,104 @@ class VoidCodeRuntime:
                     effective_config.max_steps,
                 )
 
-        loop_events: list[EventEnvelope] = []
-        output: str | None = None
+        deferred_startup_acp_events: tuple[object, ...] = ()
+        if self.current_acp_state().configuration.configured_enabled is True:
+            try:
+                deferred_startup_acp_events = self._acp_adapter.connect()
+            except Exception:
+                startup_chunks, session, _, startup_failed_chunk = self._start_run_acp(
+                    session=session,
+                    sequence=max_stored_sequence,
+                )
+            else:
+                session = self._session_with_current_acp_metadata(session)
+                startup_chunks = ()
+                startup_failed_chunk = None
+        else:
+            startup_chunks = ()
+            startup_failed_chunk = None
+        emitted_sequence = max_stored_sequence
+        for chunk in startup_chunks:
+            emitted_sequence += 1
+            resequenced_event = self._resequence_event(
+                cast(EventEnvelope, chunk.event), sequence=emitted_sequence
+            )
+            resequenced_chunk = RuntimeStreamChunk(
+                kind="event", session=chunk.session, event=resequenced_event
+            )
+            loop_events.append(resequenced_event)
+            yield resequenced_chunk
+        if startup_failed_chunk is not None:
+            emitted_sequence += 1
+            resequenced_failed = self._resequence_event(
+                cast(EventEnvelope, startup_failed_chunk.event),
+                sequence=emitted_sequence,
+            )
+            loop_events.append(resequenced_failed)
+            response = RuntimeResponse(
+                session=startup_failed_chunk.session,
+                events=stored.events + tuple(loop_events),
+                output=output,
+            )
+            request = RuntimeRequest(
+                prompt=prompt,
+                session_id=stored.session.session.id,
+                parent_session_id=stored.session.session.parent_id,
+            )
+            self._persist_response(request=request, response=response)
+            return
+
+        sequence = max_stored_sequence
         try:
             for chunk in self._execute_graph_loop(
                 graph=graph,
                 session=session,
-                sequence=sequence_before_turn,
+                sequence=sequence,
                 graph_request=graph_request,
                 tool_results=tool_results,
                 approval_resolution=(pending, approval_decision),
                 permission_policy=self._permission_policy_for_session(session.metadata),
             ):
+                if deferred_startup_acp_events and (
+                    (
+                        chunk.event is not None
+                        and chunk.event.event_type
+                        in {"runtime.approval_resolved", "runtime.failed"}
+                    )
+                    or chunk.kind == "output"
+                ):
+                    startup_chunks, updated_session, _ = self._emit_acp_events(
+                        session=chunk.session,
+                        start_sequence=emitted_sequence + 1,
+                        acp_events=deferred_startup_acp_events,
+                    )
+                    deferred_startup_acp_events = ()
+                    for startup_chunk in startup_chunks:
+                        startup_event = cast(EventEnvelope, startup_chunk.event)
+                        emitted_sequence = startup_event.sequence
+                        loop_events.append(startup_event)
+                        yield startup_chunk
+                    if chunk.event is not None:
+                        chunk = RuntimeStreamChunk(
+                            kind="event",
+                            session=updated_session,
+                            event=chunk.event,
+                        )
+                    elif chunk.kind == "output":
+                        chunk = RuntimeStreamChunk(
+                            kind="output",
+                            session=updated_session,
+                            output=chunk.output,
+                        )
                 if chunk.event is not None:
-                    if chunk.event.sequence > max_stored_sequence:
-                        loop_events.append(chunk.event)
-                        yield chunk
+                    emitted_sequence += 1
+                    resequenced_event = self._resequence_event(
+                        chunk.event, sequence=emitted_sequence
+                    )
+                    loop_events.append(resequenced_event)
+                    yield RuntimeStreamChunk(
+                        kind="event", session=chunk.session, event=resequenced_event
+                    )
                 if chunk.kind == "output":
                     output = chunk.output
                     yield chunk
@@ -1640,6 +1909,38 @@ class VoidCodeRuntime:
                 self._persist_response(request=request, response=response)
                 return
             raise
+
+        if deferred_startup_acp_events:
+            startup_chunks, session, _ = self._emit_acp_events(
+                session=session,
+                start_sequence=emitted_sequence + 1,
+                acp_events=deferred_startup_acp_events,
+            )
+            deferred_startup_acp_events = ()
+            for startup_chunk in startup_chunks:
+                startup_event = cast(EventEnvelope, startup_chunk.event)
+                emitted_sequence = startup_event.sequence
+                loop_events.append(startup_event)
+                yield startup_chunk
+
+        last_sequence = emitted_sequence
+        if session.status == "waiting":
+            session = self._disconnect_acp_for_session_state(session)
+        else:
+            final_chunks, session, _ = self._finalize_run_acp(
+                session=session,
+                sequence=last_sequence,
+            )
+            for chunk in final_chunks:
+                if chunk.event is not None:
+                    emitted_sequence += 1
+                    resequenced_event = self._resequence_event(
+                        chunk.event, sequence=emitted_sequence
+                    )
+                    loop_events.append(resequenced_event)
+                    yield RuntimeStreamChunk(
+                        kind="event", session=chunk.session, event=resequenced_event
+                    )
 
         response = RuntimeResponse(
             session=session,
@@ -1992,14 +2293,6 @@ class VoidCodeRuntime:
             "configured_enabled": lsp_state.configuration.configured_enabled,
             "servers": list(lsp_state.configuration.servers),
         }
-        acp_state = self._acp_adapter.current_state()
-        runtime_config_metadata["acp"] = {
-            "mode": acp_state.mode,
-            "configured_enabled": acp_state.configuration.configured_enabled,
-            "status": acp_state.status,
-            "available": acp_state.available,
-            "last_error": acp_state.last_error,
-        }
         mcp_state = self._mcp_manager.current_state()
         runtime_config_metadata["mcp"] = {
             "mode": mcp_state.mode,
@@ -2007,6 +2300,18 @@ class VoidCodeRuntime:
             "servers": list(mcp_state.configuration.servers),
         }
         return runtime_config_metadata
+
+    def _runtime_state_metadata(self) -> dict[str, object]:
+        acp_state = self._acp_adapter.current_state()
+        return {
+            "acp": {
+                "mode": acp_state.mode,
+                "configured_enabled": acp_state.configuration.configured_enabled,
+                "status": acp_state.status,
+                "available": acp_state.available,
+                "last_error": acp_state.last_error,
+            }
+        }
 
     @staticmethod
     def _envelopes_for_lsp_events(

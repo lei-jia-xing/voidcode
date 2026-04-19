@@ -606,14 +606,18 @@ def test_runtime_requests_and_resumes_shell_exec_approval(tmp_path: Path) -> Non
         "graph.tool_request_created",
         "runtime.tool_lookup_succeeded",
         "runtime.approval_requested",
+        "graph.loop_step",
+        "graph.model_turn",
+        "graph.tool_request_created",
+        "runtime.tool_lookup_succeeded",
         "runtime.approval_resolved",
         "runtime.tool_completed",
         "graph.loop_step",
         "graph.response_ready",
     ]
     assert resumed.output == f"{tmp_path.resolve()}\n"
-    assert resumed.events[8].payload["command"] == command
-    assert resumed.events[8].payload["exit_code"] == 0
+    assert resumed.events[12].payload["command"] == command
+    assert resumed.events[12].payload["exit_code"] == 0
 
 
 def test_runtime_denies_shell_exec_tool_when_policy_is_deny(tmp_path: Path) -> None:
@@ -1172,13 +1176,6 @@ def test_single_agent_runtime_executes_read_path_and_persists_config(tmp_path: P
     assert result.output == "alpha\nbeta\n"
     assert result.session.metadata["runtime_config"] == {
         "approval_mode": "allow",
-        "acp": {
-            "available": False,
-            "configured_enabled": False,
-            "last_error": None,
-            "mode": "disabled",
-            "status": "disconnected",
-        },
         "execution_engine": "single_agent",
         "max_steps": 4,
         "lsp": {"configured_enabled": False, "mode": "disabled", "servers": []},
@@ -1200,6 +1197,15 @@ def test_single_agent_runtime_executes_read_path_and_persists_config(tmp_path: P
                 }
             ],
         },
+    }
+    assert result.session.metadata["runtime_state"] == {
+        "acp": {
+            "available": False,
+            "configured_enabled": False,
+            "last_error": None,
+            "mode": "disabled",
+            "status": "disconnected",
+        }
     }
     assert result.events[3].payload["mode"] == "single_agent"
     assert replay.output == result.output
@@ -1400,6 +1406,10 @@ def test_runtime_allows_non_read_only_tool_after_explicit_resume_approval(tmp_pa
         "graph.tool_request_created",
         "runtime.tool_lookup_succeeded",
         "runtime.approval_requested",
+        "graph.loop_step",
+        "graph.model_turn",
+        "graph.tool_request_created",
+        "runtime.tool_lookup_succeeded",
         "runtime.approval_resolved",
         "runtime.tool_completed",
         "graph.loop_step",
@@ -1424,7 +1434,7 @@ def test_runtime_resumed_approval_renumbers_fixed_finalize_sequences(tmp_path: P
     )
 
     assert resumed.session.status == "completed"
-    assert [event.sequence for event in resumed.events] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    assert [event.sequence for event in resumed.events] == list(range(1, 16))
     assert resumed.events[-1].event_type == "graph.response_ready"
 
 
@@ -1525,6 +1535,10 @@ def test_runtime_resumes_multi_step_loop_with_approval_and_stable_replay(tmp_pat
         "graph.tool_request_created",
         "runtime.tool_lookup_succeeded",
         "runtime.approval_requested",
+        "graph.loop_step",
+        "graph.model_turn",
+        "graph.tool_request_created",
+        "runtime.tool_lookup_succeeded",
         "runtime.approval_resolved",
         "runtime.tool_completed",
         "graph.loop_step",
@@ -1536,14 +1550,14 @@ def test_runtime_resumes_multi_step_loop_with_approval_and_stable_replay(tmp_pat
         "graph.loop_step",
         "graph.response_ready",
     ]
-    assert [event.sequence for event in resumed.events] == list(range(1, 24))
+    assert [event.sequence for event in resumed.events] == list(range(1, 28))
     assert resumed.output == "Found 1 match(es) for 'copied' in copied.txt\n1: copied marker"
     assert replay.output == resumed.output
-    assert [event.sequence for event in replay.events] == list(range(1, 24))
+    assert [event.sequence for event in replay.events] == list(range(1, 28))
     assert [(event.sequence, event.event_type, event.payload) for event in replay.events] == [
         (event.sequence, event.event_type, event.payload) for event in resumed.events
     ]
-    assert resumed.events[20].payload == {
+    assert resumed.events[24].payload == {
         "path": "copied.txt",
         "pattern": "copied",
         "match_count": 1,
@@ -1608,17 +1622,21 @@ def test_runtime_denied_multi_step_loop_stops_before_follow_up_tools(tmp_path: P
         "graph.tool_request_created",
         "runtime.tool_lookup_succeeded",
         "runtime.approval_requested",
+        "graph.loop_step",
+        "graph.model_turn",
+        "graph.tool_request_created",
+        "runtime.tool_lookup_succeeded",
         "runtime.approval_resolved",
         "runtime.failed",
     ]
-    assert [event.sequence for event in denied.events] == list(range(1, 16))
+    assert [event.sequence for event in denied.events] == list(range(1, 20))
     assert denied.events[-1].payload == {"error": "permission denied for tool: write_file"}
     assert denied.output is None
     assert replay.output is None
     assert [(event.sequence, event.event_type, event.payload) for event in replay.events] == [
         (event.sequence, event.event_type, event.payload) for event in denied.events
     ]
-    assert [event.event_type for event in denied.events].count("graph.tool_request_created") == 2
+    assert [event.event_type for event in denied.events].count("graph.tool_request_created") == 3
     assert "grep" not in [
         cast(str, event.payload.get("tool"))
         for event in denied.events
@@ -1770,13 +1788,6 @@ def test_runtime_resume_uses_persisted_runtime_config_over_fresh_resume_override
 
     assert replay.session.metadata["runtime_config"] == {
         "approval_mode": "allow",
-        "acp": {
-            "available": False,
-            "configured_enabled": False,
-            "last_error": None,
-            "mode": "disabled",
-            "status": "disconnected",
-        },
         "execution_engine": "deterministic",
         "max_steps": 4,
         "lsp": {"configured_enabled": False, "mode": "disabled", "servers": []},
@@ -1798,6 +1809,15 @@ def test_runtime_resume_uses_persisted_runtime_config_over_fresh_resume_override
                 }
             ],
         },
+    }
+    assert replay.session.metadata["runtime_state"] == {
+        "acp": {
+            "available": False,
+            "configured_enabled": False,
+            "last_error": None,
+            "mode": "disabled",
+            "status": "disconnected",
+        }
     }
 
 
@@ -1836,6 +1856,15 @@ def test_runtime_resume_accepts_legacy_sessions_without_runtime_config_metadata(
     assert replay.output == response.output
     assert replay.session.metadata == {
         "workspace": str(tmp_path),
+        "runtime_state": {
+            "acp": {
+                "available": False,
+                "configured_enabled": False,
+                "last_error": None,
+                "mode": "disabled",
+                "status": "disconnected",
+            }
+        },
         "context_window": {
             "compacted": False,
             "compaction_reason": None,
@@ -2411,10 +2440,10 @@ def test_runtime_resume_stream_yields_incrementally_before_resumed_tool_completi
     original_invoke = write_tool.invoke
     tool_started = threading.Event()
     allow_tool_completion = threading.Event()
-    first_chunk_ready = threading.Event()
-    second_chunk_ready = threading.Event()
-    first_chunk: list[StreamChunkLike] = []
-    second_chunk: list[StreamChunkLike] = []
+    first_chunks_ready = threading.Event()
+    blocked_chunk_ready = threading.Event()
+    first_chunks: list[StreamChunkLike] = []
+    blocked_chunk: list[StreamChunkLike] = []
 
     def _blocking_invoke(self: object, _call: object, *, workspace: Path) -> object:
         tool_started.set()
@@ -2430,32 +2459,37 @@ def test_runtime_resume_stream_yields_incrementally_before_resumed_tool_completi
             approval_decision="allow",
         )
 
-        def _consume_first_chunk() -> None:
-            first_chunk.append(next(stream))
-            first_chunk_ready.set()
+        def _consume_first_chunks() -> None:
+            for _ in range(5):
+                first_chunks.append(next(stream))
+            first_chunks_ready.set()
 
-        first_worker = threading.Thread(target=_consume_first_chunk)
+        first_worker = threading.Thread(target=_consume_first_chunks)
         first_worker.start()
         first_worker.join(timeout=1)
 
         assert first_worker.is_alive() is False
-        assert first_chunk_ready.is_set() is True
+        assert first_chunks_ready.is_set() is True
         assert tool_started.is_set() is False
-        assert [chunk.event.event_type for chunk in first_chunk if chunk.event is not None] == [
-            "runtime.approval_resolved"
+        assert [chunk.event.event_type for chunk in first_chunks if chunk.event is not None] == [
+            "graph.loop_step",
+            "graph.model_turn",
+            "graph.tool_request_created",
+            "runtime.tool_lookup_succeeded",
+            "runtime.approval_resolved",
         ]
-        assert all(chunk.session.status == "running" for chunk in first_chunk)
+        assert all(chunk.session.status == "running" for chunk in first_chunks)
 
-        def _consume_second_chunk() -> None:
-            second_chunk.append(next(stream))
-            second_chunk_ready.set()
+        def _consume_blocked_chunk() -> None:
+            blocked_chunk.append(next(stream))
+            blocked_chunk_ready.set()
 
-        second_worker = threading.Thread(target=_consume_second_chunk)
+        second_worker = threading.Thread(target=_consume_blocked_chunk)
         second_worker.start()
 
         assert tool_started.wait(timeout=0.2) is True
         time.sleep(0.05)
-        assert second_chunk_ready.is_set() is False
+        assert blocked_chunk_ready.is_set() is False
 
         started = time.monotonic()
         allow_tool_completion.set()
@@ -2465,13 +2499,16 @@ def test_runtime_resume_stream_yields_incrementally_before_resumed_tool_completi
 
         assert second_worker.is_alive() is False
         assert elapsed < 1
-        assert [chunk.event.event_type for chunk in second_chunk if chunk.event is not None] == [
+        assert [chunk.event.event_type for chunk in blocked_chunk if chunk.event is not None] == [
             "runtime.tool_completed"
         ]
-        assert all(chunk.session.status == "running" for chunk in second_chunk)
+        assert all(chunk.session.status == "running" for chunk in blocked_chunk)
         assert [
             chunk.event.event_type for chunk in remaining_chunks if chunk.event is not None
-        ] == ["graph.loop_step", "graph.response_ready"]
+        ] == [
+            "graph.loop_step",
+            "graph.response_ready",
+        ]
         assert [chunk.output for chunk in remaining_chunks if chunk.kind == "output"] == [
             "resumed later"
         ]
@@ -2552,13 +2589,21 @@ def test_runtime_resume_stream_reconstructs_replayed_chunk_statuses(tmp_path: Pa
     )
     failed_chunks = list(approval_runtime.resume_stream("waiting-stream"))
 
-    assert [chunk.event.event_type for chunk in failed_chunks[-3:] if chunk.event is not None] == [
+    assert [chunk.event.event_type for chunk in failed_chunks[-7:] if chunk.event is not None] == [
         "runtime.approval_requested",
+        "graph.loop_step",
+        "graph.model_turn",
+        "graph.tool_request_created",
+        "runtime.tool_lookup_succeeded",
         "runtime.approval_resolved",
         "runtime.failed",
     ]
-    assert [chunk.session.status for chunk in failed_chunks[-3:]] == [
+    assert [chunk.session.status for chunk in failed_chunks[-7:]] == [
         "waiting",
+        "running",
+        "running",
+        "running",
+        "running",
         "running",
         "failed",
     ]
