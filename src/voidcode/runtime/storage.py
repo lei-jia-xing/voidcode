@@ -43,6 +43,8 @@ class SessionStore(Protocol):
 
     def list_sessions(self, *, workspace: Path) -> tuple[StoredSessionSummary, ...]: ...
 
+    def has_session(self, *, workspace: Path, session_id: str) -> bool: ...
+
     def load_session(self, *, workspace: Path, session_id: str) -> RuntimeResponse: ...
 
     def load_session_result(self, *, workspace: Path, session_id: str) -> RuntimeSessionResult: ...
@@ -584,6 +586,21 @@ class SqliteSessionStore:
                 }
             )
         return tool_results
+
+    def has_session(self, *, workspace: Path, session_id: str) -> bool:
+        with self._connect(workspace) as connection:
+            row = cast(
+                sqlite3.Row | None,
+                connection.execute(
+                    """
+                    SELECT 1
+                    FROM sessions
+                    WHERE workspace = ? AND session_id = ?
+                    """,
+                    (str(workspace), session_id),
+                ).fetchone(),
+            )
+        return row is not None
 
     def load_session(self, *, workspace: Path, session_id: str) -> RuntimeResponse:
         with self._connect(workspace) as connection:

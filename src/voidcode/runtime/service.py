@@ -55,7 +55,6 @@ from .contracts import (
     RuntimeResponse,
     RuntimeSessionResult,
     RuntimeStreamChunk,
-    UnknownSessionError,
     validate_session_id,
     validate_session_reference_id,
 )
@@ -104,6 +103,42 @@ if TYPE_CHECKING:
     from ..tools.lsp import FormatTool
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class _ActiveSessionKey:
+    workspace: Path
+    session_id: str
+
+
+class _ActiveSessionRegistry:
+    def __init__(self) -> None:
+        self._counts: dict[_ActiveSessionKey, int] = {}
+        self._lock = threading.Lock()
+
+    def register(self, *, workspace: Path, session_id: str) -> None:
+        key = _ActiveSessionKey(workspace=workspace, session_id=session_id)
+        with self._lock:
+            self._counts[key] = self._counts.get(key, 0) + 1
+
+    def unregister(self, *, workspace: Path, session_id: str) -> None:
+        key = _ActiveSessionKey(workspace=workspace, session_id=session_id)
+        with self._lock:
+            count = self._counts.get(key)
+            if count is None:
+                return
+            if count <= 1:
+                self._counts.pop(key, None)
+                return
+            self._counts[key] = count - 1
+
+    def contains(self, *, workspace: Path, session_id: str) -> bool:
+        key = _ActiveSessionKey(workspace=workspace, session_id=session_id)
+        with self._lock:
+            return key in self._counts
+
+
+_ACTIVE_SESSION_REGISTRY = _ActiveSessionRegistry()
 
 
 def _coerce_bool_like(value: object | None, default: bool) -> bool:
@@ -201,8 +236,6 @@ class VoidCodeRuntime:
     _plan_contributor: PlanContributor
     _background_task_threads: dict[str, threading.Thread]
     _background_tasks_reconciled: bool
-    _active_session_ids: set[str]
-    _active_session_ids_lock: threading.Lock
     _hook_recursion_env_var = "VOIDCODE_RUNNING_TOOL_HOOK"
     _default_context_window_policy = ContextWindowPolicy()
 
@@ -268,8 +301,6 @@ class VoidCodeRuntime:
         self._plan_contributor = build_plan_contributor(self._workspace, self._config.plan)
         self._background_task_threads = {}
         self._background_tasks_reconciled = False
-        self._active_session_ids = set()
-        self._active_session_ids_lock = threading.Lock()
 
     def __enter__(self) -> VoidCodeRuntime:
         return self
@@ -544,7 +575,12 @@ class VoidCodeRuntime:
         )
         return self._run_with_persistence(request_with_stream)
 
-    def _stream_chunks(self, request: RuntimeRequest, *, session_id: str | None = None) -> Iterator[RuntimeStreamChunk]:
+    def _stream_chunks(
+        self,
+        request: RuntimeRequest,
+        *,
+        session_id: str | None = None,
+    ) -> Iterator[RuntimeStreamChunk]:
         resolved_session_id = session_id or self._resolve_session_id(request)
         effective_config = self._runtime_config_for_request(request)
         self._refresh_mcp_tools()
@@ -1771,9 +1807,7 @@ class VoidCodeRuntime:
         if parent_session_id is not None:
             parent_session = self._load_existing_session_if_present(session_id=parent_session_id)
             if parent_session is None and not self._is_active_session_id(parent_session_id):
-                raise RuntimeRequestError(
-                    f"parent session does not exist: {parent_session_id}"
-                )
+                raise RuntimeRequestError(f"parent session does not exist: {parent_session_id}")
 
         resolved_parent_session_id = parent_session_id
         if existing_session is not None:
@@ -2310,29 +2344,23 @@ class VoidCodeRuntime:
             raise ValueError(f"session {session_id} does not belong to workspace {self._workspace}")
 
     def _load_existing_session_if_present(self, *, session_id: str) -> RuntimeResponse | None:
-        try:
-            response = self._session_store.load_session(
-                workspace=self._workspace,
-                session_id=session_id,
-            )
-        except UnknownSessionError:
+        if not self._session_store.has_session(workspace=self._workspace, session_id=session_id):
             return None
-        except ValueError:
-            raise
+        response = self._session_store.load_session(
+            workspace=self._workspace,
+            session_id=session_id,
+        )
         self._validate_session_workspace(response.session, session_id=session_id)
         return response
 
     def _is_active_session_id(self, session_id: str) -> bool:
-        with self._active_session_ids_lock:
-            return session_id in self._active_session_ids
+        return _ACTIVE_SESSION_REGISTRY.contains(workspace=self._workspace, session_id=session_id)
 
     def _register_active_session_id(self, session_id: str) -> None:
-        with self._active_session_ids_lock:
-            self._active_session_ids.add(session_id)
+        _ACTIVE_SESSION_REGISTRY.register(workspace=self._workspace, session_id=session_id)
 
     def _unregister_active_session_id(self, session_id: str) -> None:
-        with self._active_session_ids_lock:
-            self._active_session_ids.discard(session_id)
+        _ACTIVE_SESSION_REGISTRY.unregister(workspace=self._workspace, session_id=session_id)
 
     def _session_belongs_to_workspace(self, session_id: str) -> bool:
         try:
