@@ -672,6 +672,77 @@ def test_runtime_config_accepts_explicit_lsp_preset_override(tmp_path: Path) -> 
     )
 
 
+def test_runtime_config_derives_python_lsp_defaults_when_workspace_matches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\n", encoding="utf-8")
+
+    def _derive_defaults(_workspace: Path) -> dict[str, RuntimeLspServerConfig]:
+        return {"pyright": RuntimeLspServerConfig()}
+
+    monkeypatch.setattr(runtime_config, "derive_workspace_lsp_defaults", _derive_defaults)
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.lsp == RuntimeLspConfig(
+        enabled=True,
+        servers={"pyright": RuntimeLspServerConfig()},
+    )
+
+
+def test_runtime_config_derives_typescript_lsp_defaults_when_workspace_matches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "tsconfig.json").write_text("{}\n", encoding="utf-8")
+
+    def _derive_defaults(_workspace: Path) -> dict[str, RuntimeLspServerConfig]:
+        return {"tsserver": RuntimeLspServerConfig()}
+
+    monkeypatch.setattr(runtime_config, "derive_workspace_lsp_defaults", _derive_defaults)
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.lsp == RuntimeLspConfig(
+        enabled=True,
+        servers={"tsserver": RuntimeLspServerConfig()},
+    )
+
+
+def test_runtime_config_keeps_explicit_repo_lsp_config_over_derived_defaults(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps({"lsp": {"enabled": False, "servers": {"pyright": {}}}}),
+        encoding="utf-8",
+    )
+
+    def _derive_defaults(_workspace: Path) -> dict[str, RuntimeLspServerConfig]:
+        return {"tsserver": RuntimeLspServerConfig()}
+
+    monkeypatch.setattr(runtime_config, "derive_workspace_lsp_defaults", _derive_defaults)
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.lsp == RuntimeLspConfig(
+        enabled=False,
+        servers={"pyright": RuntimeLspServerConfig()},
+    )
+
+
+def test_runtime_config_leaves_lsp_unset_when_no_derived_defaults_exist(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+
+    def _derive_defaults(_workspace: Path) -> dict[str, RuntimeLspServerConfig]:
+        return {}
+
+    monkeypatch.setattr(runtime_config, "derive_workspace_lsp_defaults", _derive_defaults)
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.lsp is None
+
+
 def test_runtime_config_accepts_single_agent_execution_engine(tmp_path: Path) -> None:
     runtime_config_path(tmp_path).write_text(
         json.dumps({"execution_engine": "single_agent", "model": "opencode/gpt-5.4"}),

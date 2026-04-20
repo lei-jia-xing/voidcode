@@ -5,6 +5,7 @@ from .presets import (
     has_builtin_lsp_server_preset,
 )
 from .registry import (
+    derive_workspace_lsp_defaults,
     match_lsp_servers_for_path,
     resolve_lsp_server_config,
     resolve_lsp_server_configs,
@@ -16,6 +17,7 @@ __all__ = [
     "LspServerPreset",
     "ResolvedLspServerConfig",
     "builtin_lsp_server_presets",
+    "derive_workspace_lsp_defaults",
     "get_builtin_lsp_server_preset",
     "has_builtin_lsp_server_preset",
     "match_lsp_servers_for_path",

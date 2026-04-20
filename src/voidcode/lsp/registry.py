@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+import shutil
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import cast
 
@@ -73,6 +74,28 @@ def match_lsp_servers_for_path(
     )
 
 
+def derive_workspace_lsp_defaults(
+    workspace: Path,
+    *,
+    executable_exists: Callable[[str], bool] | None = None,
+) -> dict[str, LspServerConfigOverride]:
+    exists = executable_exists or _default_executable_exists
+    derived: dict[str, LspServerConfigOverride] = {}
+    for server_name, markers in (
+        ("pyright", _PYTHON_WORKSPACE_MARKERS),
+        ("tsserver", _TS_WORKSPACE_MARKERS),
+    ):
+        preset = get_builtin_lsp_server_preset(server_name)
+        if preset is None:
+            continue
+        if not _workspace_has_any_marker(workspace, markers):
+            continue
+        if not exists(preset.command[0]):
+            continue
+        derived[server_name] = LspServerConfigOverride()
+    return derived
+
+
 def _resolve_preset(
     *,
     server_name: str,
@@ -137,3 +160,20 @@ def _deep_merge_dicts(
             continue
         merged[key] = value
     return merged
+
+
+_PYTHON_WORKSPACE_MARKERS: tuple[str, ...] = (
+    "pyproject.toml",
+    "setup.py",
+    "setup.cfg",
+    "requirements.txt",
+)
+_TS_WORKSPACE_MARKERS: tuple[str, ...] = ("tsconfig.json", "jsconfig.json", "package.json")
+
+
+def _workspace_has_any_marker(workspace: Path, markers: Iterable[str]) -> bool:
+    return any((workspace / marker).exists() for marker in markers)
+
+
+def _default_executable_exists(command: str) -> bool:
+    return shutil.which(command) is not None

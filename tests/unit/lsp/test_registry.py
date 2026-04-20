@@ -7,6 +7,7 @@ import pytest
 from voidcode.lsp import (
     LspServerConfigOverride,
     builtin_lsp_server_presets,
+    derive_workspace_lsp_defaults,
     match_lsp_servers_for_path,
     resolve_lsp_server_config,
     resolve_lsp_server_configs,
@@ -134,3 +135,33 @@ def test_resolve_lsp_server_config_requires_command_for_unknown_server() -> None
             "custom-python",
             LspServerConfigOverride(),
         )
+
+
+def test_derive_workspace_lsp_defaults_detects_python_workspace(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\n", encoding="utf-8")
+
+    derived = derive_workspace_lsp_defaults(
+        tmp_path,
+        executable_exists=lambda command: command == "pyright-langserver",
+    )
+
+    assert derived == {"pyright": LspServerConfigOverride()}
+
+
+def test_derive_workspace_lsp_defaults_detects_typescript_workspace(tmp_path: Path) -> None:
+    (tmp_path / "tsconfig.json").write_text("{}\n", encoding="utf-8")
+
+    derived = derive_workspace_lsp_defaults(
+        tmp_path,
+        executable_exists=lambda command: command == "typescript-language-server",
+    )
+
+    assert derived == {"tsserver": LspServerConfigOverride()}
+
+
+def test_derive_workspace_lsp_defaults_skips_missing_executable(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\n", encoding="utf-8")
+
+    derived = derive_workspace_lsp_defaults(tmp_path, executable_exists=lambda command: False)
+
+    assert derived == {}

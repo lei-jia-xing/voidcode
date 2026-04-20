@@ -14,7 +14,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from ..hook.config import FormatterCwdPolicy, RuntimeFormatterPresetConfig, RuntimeHooksConfig
 from ..lsp import LspServerConfigOverride as RuntimeLspServerConfig
-from ..lsp import has_builtin_lsp_server_preset
+from ..lsp import derive_workspace_lsp_defaults, has_builtin_lsp_server_preset
 from ..provider import config as provider_config
 from .permission import PermissionDecision
 
@@ -286,6 +286,7 @@ def load_runtime_config(
     global_config = _load_user_config(environment)
     repo_local = _load_repo_local_config(resolved_workspace, env=environment)
     resolved_tui = _resolve_tui_config(global_config.tui, repo_local.tui)
+    resolved_lsp = repo_local.lsp or _derive_workspace_lsp_config(resolved_workspace)
 
     return RuntimeConfig(
         approval_mode=_resolve_approval_mode(
@@ -311,13 +312,20 @@ def load_runtime_config(
         hooks=repo_local.hooks,
         tools=repo_local.tools,
         skills=repo_local.skills,
-        lsp=repo_local.lsp,
+        lsp=resolved_lsp,
         mcp=repo_local.mcp,
         tui=resolved_tui,
         provider_fallback=repo_local.provider_fallback,
         providers=repo_local.providers,
         plan=repo_local.plan,
     )
+
+
+def _derive_workspace_lsp_config(workspace: Path) -> RuntimeLspConfig | None:
+    derived_servers = derive_workspace_lsp_defaults(workspace)
+    if not derived_servers:
+        return None
+    return RuntimeLspConfig(enabled=True, servers=derived_servers)
 
 
 def _load_repo_local_config(
