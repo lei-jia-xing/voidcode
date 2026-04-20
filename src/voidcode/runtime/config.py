@@ -34,6 +34,7 @@ _VALID_APPROVAL_MODES = ("allow", "deny", "ask")
 _VALID_TUI_COMMANDS = ("command_palette", "session_new", "session_resume")
 
 type ExecutionEngineName = Literal["deterministic", "single_agent"]
+type RuntimeAgentPresetId = Literal["leader"]
 
 _VALID_EXECUTION_ENGINES: tuple[ExecutionEngineName, ...] = ("deterministic", "single_agent")
 _TOP_LEVEL_ENV_VARS = (
@@ -182,6 +183,17 @@ class RuntimePlanConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class RuntimeAgentConfig:
+    preset: RuntimeAgentPresetId
+    prompt_profile: str | None = None
+    model: str | None = None
+    execution_engine: ExecutionEngineName | None = None
+    tools: RuntimeToolsConfig | None = None
+    skills: RuntimeSkillsConfig | None = None
+    provider_fallback: RuntimeProviderFallbackConfig | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class RuntimeConfig:
     approval_mode: PermissionDecision = "ask"
     model: str | None = None
@@ -197,6 +209,7 @@ class RuntimeConfig:
     provider_fallback: RuntimeProviderFallbackConfig | None = None
     providers: RuntimeProvidersConfig | None = None
     plan: RuntimePlanConfig | None = None
+    agent: RuntimeAgentConfig | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,6 +228,7 @@ class RuntimeConfigOverrides:
     provider_fallback: RuntimeProviderFallbackConfig | None = None
     providers: RuntimeProvidersConfig | None = None
     plan: RuntimePlanConfig | None = None
+    agent: RuntimeAgentConfig | None = None
 
 
 _VALID_TUI_THEME_MODES: tuple[RuntimeTuiThemeMode, ...] = ("auto", "light", "dark")
@@ -287,6 +301,7 @@ def load_runtime_config(
     repo_local = _load_repo_local_config(resolved_workspace, env=environment)
     resolved_tui = _resolve_tui_config(global_config.tui, repo_local.tui)
     resolved_lsp = repo_local.lsp or _derive_workspace_lsp_config(resolved_workspace)
+    resolved_agent = _resolve_agent_config(repo_local.agent)
 
     return RuntimeConfig(
         approval_mode=_resolve_approval_mode(
@@ -318,6 +333,7 @@ def load_runtime_config(
         provider_fallback=repo_local.provider_fallback,
         providers=repo_local.providers,
         plan=repo_local.plan,
+        agent=resolved_agent,
     )
 
 
@@ -390,6 +406,8 @@ def _load_repo_local_config(
 
     raw_plan = payload.get("plan")
     plan = _parse_plan_config(raw_plan)
+    raw_agent = payload.get("agent")
+    agent = _parse_agent_config(raw_agent)
 
     raw_approval_mode = payload.get("approval_mode")
     parsed_approval_mode = _parse_approval_mode(
@@ -412,6 +430,7 @@ def _load_repo_local_config(
         provider_fallback=provider_fallback,
         providers=providers,
         plan=plan,
+        agent=agent,
     )
 
 
@@ -1120,9 +1139,72 @@ def _parse_plan_config(raw_plan: object) -> RuntimePlanConfig | None:
     )
 
 
+def _parse_agent_config(raw_agent: object) -> RuntimeAgentConfig | None:
+    if raw_agent is None:
+        return None
+    if not isinstance(raw_agent, dict):
+        raise ValueError("runtime config field 'agent' must be an object when provided")
+
+    payload = cast(dict[str, object], raw_agent)
+    raw_preset = payload.get("preset")
+    if raw_preset != "leader":
+        raise ValueError("runtime config field 'agent.preset' must be one of: leader")
+
+    prompt_profile = payload.get("prompt_profile")
+    if prompt_profile is not None and (
+        not isinstance(prompt_profile, str) or not prompt_profile.strip()
+    ):
+        raise ValueError("runtime config field 'agent.prompt_profile' must be a non-empty string")
+
+    model = payload.get("model")
+    if model is not None and (not isinstance(model, str) or not model.strip()):
+        raise ValueError("runtime config field 'agent.model' must be a non-empty string")
+
+    execution_engine = _parse_execution_engine(
+        payload.get("execution_engine"),
+        source="runtime config field 'agent.execution_engine'",
+        allow_none=True,
+    )
+
+    provider_fallback = _parse_provider_fallback_config(payload.get("provider_fallback"))
+
+    return RuntimeAgentConfig(
+        preset="leader",
+        prompt_profile=prompt_profile.strip() if isinstance(prompt_profile, str) else None,
+        model=model.strip() if isinstance(model, str) else None,
+        execution_engine=execution_engine,
+        tools=_parse_tools_config(payload.get("tools")),
+        skills=_parse_skills_config(payload.get("skills")),
+        provider_fallback=provider_fallback,
+    )
+
+
+def _resolve_agent_config(agent: RuntimeAgentConfig | None) -> RuntimeAgentConfig | None:
+    if agent is None:
+        return None
+    if agent.preset == "leader":
+        return RuntimeAgentConfig(
+            preset="leader",
+            prompt_profile=agent.prompt_profile or "leader",
+            model=agent.model,
+            execution_engine=agent.execution_engine or "single_agent",
+            tools=agent.tools,
+            skills=agent.skills,
+            provider_fallback=agent.provider_fallback,
+        )
+    return agent
+
+
 def parse_runtime_plan_payload(raw_plan: object, *, source: str) -> RuntimePlanConfig | None:
     try:
         return _parse_plan_config(raw_plan)
+    except ValueError as exc:
+        raise ValueError(f"{source}: {exc}") from exc
+
+
+def parse_runtime_agent_payload(raw_agent: object, *, source: str) -> RuntimeAgentConfig | None:
+    try:
+        return _resolve_agent_config(_parse_agent_config(raw_agent))
     except ValueError as exc:
         raise ValueError(f"{source}: {exc}") from exc
 
@@ -1140,6 +1222,33 @@ def serialize_runtime_plan_config(plan: RuntimePlanConfig | None) -> dict[str, o
     if plan.options is not None:
         payload["options"] = dict(plan.options)
     return payload
+
+
+def serialize_runtime_agent_config(agent: RuntimeAgentConfig | None) -> dict[str, object] | None:
+    if agent is None:
+        return None
+    payload: dict[str, object] = {"preset": agent.preset}
+    if agent.prompt_profile is not None:
+        payload["prompt_profile"] = agent.prompt_profile
+    if agent.model is not None:
+        payload["model"] = agent.model
+    if agent.execution_engine is not None:
+        payload["execution_engine"] = agent.execution_engine
+    if agent.tools is not None:
+        payload["tools"] = {
+            "builtin": None
+            if agent.tools.builtin is None
+            else {"enabled": agent.tools.builtin.enabled},
+            "paths": list(agent.tools.paths) if agent.tools.paths else None,
+        }
+    if agent.skills is not None:
+        payload["skills"] = {
+            "enabled": agent.skills.enabled,
+            "paths": list(agent.skills.paths) if agent.skills.paths else None,
+        }
+    if agent.provider_fallback is not None:
+        payload["provider_fallback"] = serialize_provider_fallback_config(agent.provider_fallback)
+    return {key: value for key, value in payload.items() if value is not None}
 
 
 def _parse_runtime_config_section[TModel: BaseModel](

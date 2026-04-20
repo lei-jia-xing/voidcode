@@ -22,6 +22,7 @@ from voidcode.runtime.config import (
     MAX_STEPS_ENV_VAR,
     MODEL_ENV_VAR,
     RUNTIME_CONFIG_FILE_NAME,
+    RuntimeAgentConfig,
     RuntimeFormatterPresetConfig,
     RuntimeHooksConfig,
     RuntimeLspConfig,
@@ -38,9 +39,11 @@ from voidcode.runtime.config import (
     RuntimeTuiThemePreferences,
     effective_runtime_tui_preferences,
     load_runtime_config,
+    parse_runtime_agent_payload,
     runtime_config_path,
     save_global_tui_preferences,
     save_workspace_tui_preferences,
+    serialize_runtime_agent_config,
     user_runtime_config_path,
 )
 
@@ -811,6 +814,66 @@ def test_runtime_config_accepts_single_agent_execution_engine(tmp_path: Path) ->
 
     assert config.execution_engine == "single_agent"
     assert config.model == "opencode/gpt-5.4"
+
+
+def test_runtime_config_parses_leader_agent_preset_from_repo_file(tmp_path: Path) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps(
+            {
+                "agent": {
+                    "preset": "leader",
+                    "model": "opencode/gpt-5.4",
+                    "tools": {"builtin": {"enabled": True}, "paths": [".voidcode/tools"]},
+                    "skills": {"enabled": True, "paths": [".voidcode/skills"]},
+                    "provider_fallback": {
+                        "preferred_model": "opencode/gpt-5.4",
+                        "fallback_models": ["custom/demo"],
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.agent == RuntimeAgentConfig(
+        preset="leader",
+        prompt_profile="leader",
+        model="opencode/gpt-5.4",
+        execution_engine="single_agent",
+        tools=RuntimeToolsConfig(
+            builtin=RuntimeToolsBuiltinConfig(enabled=True),
+            paths=(".voidcode/tools",),
+        ),
+        skills=RuntimeSkillsConfig(enabled=True, paths=(".voidcode/skills",)),
+        provider_fallback=RuntimeProviderFallbackConfig(
+            preferred_model="opencode/gpt-5.4",
+            fallback_models=("custom/demo",),
+        ),
+    )
+
+
+def test_runtime_agent_payload_round_trips_through_serialization() -> None:
+    agent = parse_runtime_agent_payload(
+        {
+            "preset": "leader",
+            "model": "opencode/gpt-5.4",
+            "tools": {"builtin": {"enabled": True}, "paths": [".voidcode/tools"]},
+            "skills": {"enabled": False, "paths": [".voidcode/skills"]},
+        },
+        source="test payload",
+    )
+
+    assert agent is not None
+    assert serialize_runtime_agent_config(agent) == {
+        "preset": "leader",
+        "prompt_profile": "leader",
+        "model": "opencode/gpt-5.4",
+        "execution_engine": "single_agent",
+        "tools": {"builtin": {"enabled": True}, "paths": [".voidcode/tools"]},
+        "skills": {"enabled": False, "paths": [".voidcode/skills"]},
+    }
 
 
 def test_runtime_config_parses_repo_local_max_steps(tmp_path: Path) -> None:
