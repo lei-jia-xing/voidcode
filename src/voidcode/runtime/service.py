@@ -2382,6 +2382,33 @@ class VoidCodeRuntime:
             if agent.provider_fallback is not None
             else resolved.provider_fallback
         )
+        merged_agent = RuntimeAgentConfig(
+            preset=agent.preset,
+            prompt_profile=(
+                agent.prompt_profile
+                if agent.prompt_profile is not None
+                else resolved.agent.prompt_profile
+                if resolved.agent is not None
+                else None
+            ),
+            model=model,
+            execution_engine=execution_engine,
+            tools=(
+                agent.tools
+                if agent.tools is not None
+                else resolved.agent.tools
+                if resolved.agent is not None
+                else None
+            ),
+            skills=(
+                agent.skills
+                if agent.skills is not None
+                else resolved.agent.skills
+                if resolved.agent is not None
+                else None
+            ),
+            provider_fallback=provider_fallback,
+        )
         resolved_provider = resolve_provider_config(
             model,
             provider_fallback,
@@ -2395,7 +2422,7 @@ class VoidCodeRuntime:
             provider_fallback=provider_fallback,
             plan=resolved.plan,
             resolved_provider=resolved_provider,
-            agent=agent,
+            agent=merged_agent,
         )
 
     def _runtime_state_metadata(self) -> dict[str, object]:

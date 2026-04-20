@@ -2788,6 +2788,84 @@ def test_runtime_request_metadata_agent_override_persists_and_restores_agent_con
     )
 
 
+def test_runtime_partial_request_agent_override_preserves_inherited_agent_fields(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "sample.txt").write_text("leader partial override\n", encoding="utf-8")
+    created_providers: list[_ScriptedSingleAgentProvider] = []
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(SingleAgentTurnResult(output="partial override complete"),),
+                created_providers=created_providers,
+            )
+        }
+    )
+    fallback = RuntimeProviderFallbackConfig(
+        preferred_model="opencode/gpt-5.4",
+        fallback_models=("opencode/gpt-5.3",),
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            model="opencode/gpt-5.4",
+            provider_fallback=fallback,
+        ),
+        model_provider_registry=registry,
+    )
+
+    response = runtime.run(
+        RuntimeRequest(
+            prompt="read sample.txt",
+            session_id="leader-agent-partial-request",
+            metadata={"agent": {"preset": "leader"}},
+        )
+    )
+
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(model="other/model"),
+        model_provider_registry=registry,
+    )
+    effective = resumed_runtime.effective_runtime_config(session_id="leader-agent-partial-request")
+
+    assert response.session.status == "completed"
+    assert response.output == "partial override complete"
+    assert created_providers
+    assert created_providers[0].requests[0].agent_preset == {
+        "preset": "leader",
+        "prompt_profile": "leader",
+        "model": "opencode/gpt-5.4",
+        "execution_engine": "single_agent",
+        "provider_fallback": {
+            "preferred_model": "opencode/gpt-5.4",
+            "fallback_models": ["opencode/gpt-5.3"],
+        },
+    }
+    runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
+    assert runtime_config["agent"] == {
+        "preset": "leader",
+        "prompt_profile": "leader",
+        "model": "opencode/gpt-5.4",
+        "execution_engine": "single_agent",
+        "provider_fallback": {
+            "preferred_model": "opencode/gpt-5.4",
+            "fallback_models": ["opencode/gpt-5.3"],
+        },
+    }
+    assert effective.execution_engine == "single_agent"
+    assert effective.model == "opencode/gpt-5.4"
+    assert effective.provider_fallback == fallback
+    assert effective.agent == RuntimeAgentConfig(
+        preset="leader",
+        prompt_profile="leader",
+        model="opencode/gpt-5.4",
+        execution_engine="single_agent",
+        provider_fallback=fallback,
+    )
+
+
 def test_runtime_effective_runtime_config_recovers_provider_fallback_chain(tmp_path: Path) -> None:
     sample_file = tmp_path / "sample.txt"
     sample_file.write_text("fallback chain\n", encoding="utf-8")
