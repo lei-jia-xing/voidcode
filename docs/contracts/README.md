@@ -28,6 +28,7 @@
 - [`runtime-events.md`](./runtime-events.md) — 用于客户端渲染的稳定事件词汇表
 - [`client-api.md`](./client-api.md) — 客户端可见的 session/run/load/resume/stream 契约
 - [`approval-flow.md`](./approval-flow.md) — 受控执行与审批语义
+- [`agent-tool-calling.md`](./agent-tool-calling.md) — 面向 agent 的工具调用、参数、返回、审批与选择指南
 - [`runtime-config.md`](./runtime-config.md) — MVP 配置界面及优先级
 - [`stream-transport.md`](./stream-transport.md) — 运行时流的交付与重放预期
 
@@ -38,6 +39,7 @@
 - #15 审批模式
 - #16 运行时配置界面
 - #17 流传输抽象
+- #163 面向 agent 的工具调用契约与使用说明
 
 ## 相关代码
 
