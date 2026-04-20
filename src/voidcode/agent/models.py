@@ -3,7 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-type AgentManifestId = Literal["leader"]
+type AgentManifestId = Literal[
+    "leader",
+    "worker",
+    "advisor",
+    "explore",
+    "researcher",
+    "product",
+]
 type AgentMode = Literal["primary", "subagent", "all"]
 type AgentExecutionEngineName = Literal["deterministic", "single_agent"]
 

@@ -11,8 +11,53 @@ LEADER_AGENT_MANIFEST = AgentManifest(
     execution_engine="single_agent",
 )
 
+WORKER_AGENT_MANIFEST = AgentManifest(
+    id="worker",
+    name="Worker",
+    mode="subagent",
+    description="Focused future executor preset for narrow implementation tasks.",
+    prompt_profile="worker",
+)
+
+ADVISOR_AGENT_MANIFEST = AgentManifest(
+    id="advisor",
+    name="Advisor",
+    mode="subagent",
+    description="Read-only advisory preset for architecture, risk, and review guidance.",
+    prompt_profile="advisor",
+)
+
+EXPLORE_AGENT_MANIFEST = AgentManifest(
+    id="explore",
+    name="Explore",
+    mode="subagent",
+    description="Workspace-bound exploration preset for local code structure and pattern discovery.",
+    prompt_profile="explore",
+)
+
+RESEARCHER_AGENT_MANIFEST = AgentManifest(
+    id="researcher",
+    name="Researcher",
+    mode="subagent",
+    description="External research preset for public docs, repositories, and implementation examples.",
+    prompt_profile="researcher",
+)
+
+PRODUCT_AGENT_MANIFEST = AgentManifest(
+    id="product",
+    name="Product",
+    mode="subagent",
+    description="Requirements-alignment preset for scope, acceptance, and product intent review.",
+    prompt_profile="product",
+)
+
 _BUILTIN_AGENT_MANIFESTS: dict[AgentManifestId, AgentManifest] = {
-    LEADER_AGENT_MANIFEST.id: LEADER_AGENT_MANIFEST
+    LEADER_AGENT_MANIFEST.id: LEADER_AGENT_MANIFEST,
+    WORKER_AGENT_MANIFEST.id: WORKER_AGENT_MANIFEST,
+    ADVISOR_AGENT_MANIFEST.id: ADVISOR_AGENT_MANIFEST,
+    EXPLORE_AGENT_MANIFEST.id: EXPLORE_AGENT_MANIFEST,
+    RESEARCHER_AGENT_MANIFEST.id: RESEARCHER_AGENT_MANIFEST,
+    PRODUCT_AGENT_MANIFEST.id: PRODUCT_AGENT_MANIFEST,
 }
 
 
