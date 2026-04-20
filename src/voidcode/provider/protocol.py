@@ -47,6 +47,7 @@ class SingleAgentTurnRequest:
     raw_model: str | None
     provider_name: str | None
     model_name: str | None
+    skill_prompt_context: str = ""
     agent_preset: dict[str, object] | None = None
     attempt: int = 0
     abort_signal: SingleAgentAbortSignal | None = None

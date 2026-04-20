@@ -95,6 +95,13 @@ def test_runtime_build_runtime_contexts_from_skill_bodies(tmp_path: Path) -> Non
             name="summarize",
             description="Summarize selected files.",
             content="# Summarize\nUse concise bullet points.",
+            prompt_context=(
+                "Skill: summarize\n"
+                "Description: Summarize selected files.\n"
+                "Instructions:\n# Summarize\nUse concise bullet points."
+            ),
+            execution_notes="# Summarize\nUse concise bullet points.",
+            source_path=str((skill_dir / "SKILL.md").resolve()),
         ),
     )
 

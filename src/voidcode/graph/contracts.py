@@ -41,6 +41,7 @@ class GraphRunRequest:
     prompt: str
     available_tools: tuple[ToolDefinition, ...] = ()
     applied_skills: tuple[AppliedSkill, ...] = ()
+    skill_prompt_context: str = ""
     context_window: RuntimeContextWindow | None = None
     metadata: dict[str, object] = field(default_factory=dict)
 

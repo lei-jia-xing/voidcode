@@ -118,6 +118,7 @@ class ProviderSingleAgentGraph:
             raw_model=self._provider_model.selection.raw_model,
             provider_name=self._provider_model.selection.provider,
             model_name=self._provider_model.selection.model,
+            skill_prompt_context=request.skill_prompt_context,
             agent_preset=cast(dict[str, object] | None, request.metadata.get("agent_preset")),
             attempt=cast(int, request.metadata.get("provider_attempt", 0)),
             abort_signal=cast(SingleAgentAbortSignal, self._abort_signal),

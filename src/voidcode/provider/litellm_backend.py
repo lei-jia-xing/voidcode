@@ -88,6 +88,8 @@ class LiteLLMBackendSingleAgentProvider:
 
     @staticmethod
     def _skill_system_message(request: SingleAgentTurnRequest) -> str | None:
+        if request.skill_prompt_context.strip():
+            return request.skill_prompt_context.strip()
         if not request.applied_skills:
             return None
 
@@ -95,7 +97,7 @@ class LiteLLMBackendSingleAgentProvider:
         for skill in request.applied_skills:
             name = skill.get("name", "").strip() or "unnamed-skill"
             description = skill.get("description", "").strip()
-            content = skill.get("content", "").strip()
+            content = skill.get("prompt_context", "").strip() or skill.get("content", "").strip()
 
             lines = [f"## {name}"]
             if description:

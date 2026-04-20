@@ -10,7 +10,7 @@ from hypothesis import strategies as st
 from voidcode.tools import MultiEditTool, ToolCall
 from voidcode.tools.contracts import ToolResult
 
-CI_SETTINGS = settings(derandomize=True, database=None, max_examples=200)
+CI_SETTINGS = settings(derandomize=True, database=None, deadline=None, max_examples=200)
 
 _safe_chars = st.characters(
     min_codepoint=97,

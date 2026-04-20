@@ -322,6 +322,45 @@ def test_provider_adapter_injects_applied_skills_into_system_messages(
     ]
 
 
+def test_provider_adapter_prefers_runtime_skill_prompt_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = OpenAIModelProvider()
+    single_agent = provider.single_agent_provider()
+    request = _build_turn_request_with_skill(model_name="openai")
+    request = SingleAgentTurnRequest(
+        prompt=request.prompt,
+        available_tools=request.available_tools,
+        tool_results=request.tool_results,
+        context_window=request.context_window,
+        applied_skills=request.applied_skills,
+        raw_model=request.raw_model,
+        provider_name=request.provider_name,
+        model_name=request.model_name,
+        skill_prompt_context="Runtime skill context\n\nSkill: summarize\nInstructions:\nBe brief.",
+        attempt=request.attempt,
+        abort_signal=request.abort_signal,
+    )
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        completion_content="hello world",
+    )
+
+    _ = single_agent.propose_turn(request)
+
+    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+    assert isinstance(payload_obj, dict)
+    payload = cast(dict[str, object], payload_obj)
+    messages_obj = payload.get("messages")
+    assert isinstance(messages_obj, list)
+    messages = cast(list[dict[str, str]], messages_obj)
+    assert messages[0] == {
+        "role": "system",
+        "content": "Runtime skill context\n\nSkill: summarize\nInstructions:\nBe brief.",
+    }
+
+
 def test_provider_adapter_propose_turn_uses_model_map_for_litellm_alias(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

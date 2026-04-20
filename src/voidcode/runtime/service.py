@@ -95,7 +95,13 @@ from .permission import (
 from .plan import PlanContributor, apply_plan_patch, build_plan_contributor
 from .session import SessionRef, SessionState, SessionStatus, StoredSessionSummary
 from .single_agent_provider import ProviderExecutionError
-from .skills import SkillRuntimeContext, build_runtime_contexts
+from .skills import (
+    SkillRuntimeContext,
+    build_runtime_context,
+    build_runtime_contexts,
+    build_skill_prompt_context,
+    runtime_context_from_payload,
+)
 from .storage import SessionStore, SqliteSessionStore
 from .task import (
     BackgroundTaskRef,
@@ -770,13 +776,14 @@ class VoidCodeRuntime:
     ) -> Iterator[RuntimeStreamChunk]:
         resolved_session_id = session_id or self._resolve_session_id(request)
         effective_config = self._runtime_config_for_request(request)
+        request_metadata = self._fresh_request_metadata(request.metadata)
         self._refresh_mcp_tools()
         session = SessionState(
             session=SessionRef(id=resolved_session_id, parent_id=request.parent_session_id),
             status="running",
             turn=1,
             metadata={
-                **request.metadata,
+                **request_metadata,
                 "workspace": str(self._workspace),
                 "runtime_config": self._runtime_config_metadata(effective_config),
                 "runtime_state": self._runtime_state_metadata(),
@@ -821,6 +828,7 @@ class VoidCodeRuntime:
 
         applied_skill_contexts = self._applied_skill_contexts(session.metadata)
         frozen_applied_skills = self._frozen_applied_skill_payloads(applied_skill_contexts)
+        skill_prompt_context = build_skill_prompt_context(applied_skill_contexts)
         if self._config.skills is not None and self._config.skills.enabled is True:
             session = SessionState(
                 session=session.session,
@@ -829,7 +837,7 @@ class VoidCodeRuntime:
                 metadata={
                     **session.metadata,
                     "applied_skills": [skill.name for skill in applied_skill_contexts],
-                    "applied_skill_payloads": [dict(skill) for skill in frozen_applied_skills],
+                    "applied_skill_payloads": list(frozen_applied_skills),
                 },
             )
         if applied_skill_contexts:
@@ -845,6 +853,8 @@ class VoidCodeRuntime:
                     payload={
                         "skills": [skill.name for skill in applied_skill_contexts],
                         "count": len(applied_skill_contexts),
+                        "prompt_context_built": bool(skill_prompt_context),
+                        "prompt_context_length": len(skill_prompt_context),
                     },
                 ),
             )
@@ -852,14 +862,15 @@ class VoidCodeRuntime:
         planned_prompt, planned_metadata = apply_plan_patch(
             contributor=self._plan_contributor,
             prompt=request.prompt,
-            metadata=request.metadata,
+            metadata=request_metadata,
         )
 
         graph_request = GraphRunRequest(
             session=session,
             prompt=planned_prompt,
             available_tools=self._tool_registry.definitions(),
-            applied_skills=self._graph_applied_skills(session.metadata),
+            applied_skills=frozen_applied_skills,
+            skill_prompt_context=skill_prompt_context,
             context_window=self._prepare_single_agent_context_window(
                 prompt=planned_prompt,
                 tool_results=(),
@@ -945,6 +956,7 @@ class VoidCodeRuntime:
                 prompt=graph_request.prompt,
                 available_tools=graph_request.available_tools,
                 applied_skills=graph_request.applied_skills,
+                skill_prompt_context=graph_request.skill_prompt_context,
                 context_window=context_window,
                 metadata=graph_request.metadata,
             )
@@ -1062,6 +1074,7 @@ class VoidCodeRuntime:
                             prompt=graph_request.prompt,
                             available_tools=graph_request.available_tools,
                             applied_skills=graph_request.applied_skills,
+                            skill_prompt_context=graph_request.skill_prompt_context,
                             metadata={
                                 **graph_request.metadata,
                                 "provider_attempt": provider_attempt,
@@ -1835,11 +1848,15 @@ class VoidCodeRuntime:
         session = self._session_with_current_acp_metadata(session)
         preserved_continuity_state = self._continuity_state_from_session_metadata(session.metadata)
 
+        resumed_applied_skills = self._graph_applied_skills(session.metadata)
         graph_request = GraphRunRequest(
             session=session,
             prompt=prompt,
             available_tools=self._tool_registry.definitions(),
-            applied_skills=self._graph_applied_skills(session.metadata),
+            applied_skills=resumed_applied_skills,
+            skill_prompt_context=build_skill_prompt_context(
+                tuple(runtime_context_from_payload(payload) for payload in resumed_applied_skills)
+            ),
             context_window=self._prepare_single_agent_context_window(
                 prompt=prompt,
                 tool_results=tuple(tool_results),
@@ -2342,8 +2359,27 @@ class VoidCodeRuntime:
     def _applied_skill_contexts(
         self, metadata: dict[str, object] | None = None
     ) -> tuple[SkillRuntimeContext, ...]:
-        _ = metadata
-        return build_runtime_contexts(self._skill_registry)
+        selected_skill_names: tuple[str, ...] | None = None
+        if metadata is not None and "skills" in metadata:
+            raw_skills = metadata["skills"]
+            if not isinstance(raw_skills, list):
+                raise ValueError("request metadata 'skills' must be a list of skill names")
+            parsed_names: list[str] = []
+            for index, raw_name in enumerate(cast(list[object], raw_skills)):
+                if not isinstance(raw_name, str) or not raw_name:
+                    raise ValueError(
+                        f"request metadata 'skills[{index}]' must be a non-empty string"
+                    )
+                parsed_names.append(raw_name)
+            selected_skill_names = tuple(parsed_names)
+        return build_runtime_contexts(self._skill_registry, skill_names=selected_skill_names)
+
+    @staticmethod
+    def _fresh_request_metadata(metadata: dict[str, object]) -> dict[str, object]:
+        sanitized = dict(metadata)
+        sanitized.pop("applied_skills", None)
+        sanitized.pop("applied_skill_payloads", None)
+        return sanitized
 
     @staticmethod
     def _frozen_applied_skill_payloads(
@@ -2354,6 +2390,9 @@ class VoidCodeRuntime:
                 "name": context.name,
                 "description": context.description,
                 "content": context.content,
+                "prompt_context": context.prompt_context,
+                "execution_notes": context.execution_notes,
+                "source_path": context.source_path,
             }
             for context in contexts
         )
@@ -2377,14 +2416,45 @@ class VoidCodeRuntime:
             name = payload.get("name")
             description = payload.get("description")
             content = payload.get("content")
+            prompt_context = payload.get("prompt_context")
+            execution_notes = payload.get("execution_notes")
+            source_path = payload.get("source_path")
             if (
                 not isinstance(name, str)
                 or not isinstance(description, str)
                 or not isinstance(content, str)
             ):
                 raise ValueError("persisted applied skill payloads must include string fields")
-            payloads.append({"name": name, "description": description, "content": content})
+            normalized_payload = {"name": name, "description": description, "content": content}
+            if prompt_context is not None:
+                if not isinstance(prompt_context, str):
+                    raise ValueError(
+                        "persisted applied skill payload prompt_context must be a string"
+                    )
+                normalized_payload["prompt_context"] = prompt_context
+            if execution_notes is not None:
+                if not isinstance(execution_notes, str):
+                    raise ValueError(
+                        "persisted applied skill payload execution_notes must be a string"
+                    )
+                normalized_payload["execution_notes"] = execution_notes
+            if source_path is not None:
+                if not isinstance(source_path, str):
+                    raise ValueError("persisted applied skill payload source_path must be a string")
+                normalized_payload["source_path"] = source_path
+            payloads.append(normalized_payload)
         return tuple(payloads)
+
+    def _available_runtime_contexts(
+        self, skill_names: Iterable[str]
+    ) -> tuple[SkillRuntimeContext, ...]:
+        contexts: list[SkillRuntimeContext] = []
+        for skill_name in skill_names:
+            skill = self._skill_registry.skills.get(skill_name)
+            if skill is None:
+                continue
+            contexts.append(build_runtime_context(skill))
+        return tuple(contexts)
 
     def _graph_applied_skills(
         self, metadata: dict[str, object] | None = None
@@ -2399,16 +2469,9 @@ class VoidCodeRuntime:
                 persisted_names = [item for item in persisted_values if isinstance(item, str)]
                 if not persisted_names:
                     return ()
-                names = set(persisted_names)
-                if names:
-                    return tuple(
-                        {
-                            "name": skill.name,
-                            "description": skill.description,
-                            "content": skill.content,
-                        }
-                        for skill in self._skill_registry.all()
-                        if skill.name in names
+                if persisted_names:
+                    return self._frozen_applied_skill_payloads(
+                        self._available_runtime_contexts(persisted_names)
                     )
         return self._frozen_applied_skill_payloads(self._applied_skill_contexts(metadata))
 

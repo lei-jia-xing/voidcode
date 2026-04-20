@@ -245,8 +245,14 @@ def test_provider_single_agent_graph_passes_applied_skill_context_to_provider() 
                     "name": "summarize",
                     "description": "Summarize selected files.",
                     "content": "# Summarize\nUse concise bullet points.",
+                    "prompt_context": (
+                        "Skill: summarize\n"
+                        "Description: Summarize selected files.\n"
+                        "Instructions:\n# Summarize\nUse concise bullet points."
+                    ),
                 },
             ),
+            skill_prompt_context="Runtime-managed skills are active.",
         ),
         tool_results=(),
         session=_session(),
@@ -258,8 +264,14 @@ def test_provider_single_agent_graph_passes_applied_skill_context_to_provider() 
             "name": "summarize",
             "description": "Summarize selected files.",
             "content": "# Summarize\nUse concise bullet points.",
+            "prompt_context": (
+                "Skill: summarize\n"
+                "Description: Summarize selected files.\n"
+                "Instructions:\n# Summarize\nUse concise bullet points."
+            ),
         },
     )
+    assert provider.requests[0].skill_prompt_context == "Runtime-managed skills are active."
     assert provider.requests[0].context_window.prompt == "read sample.txt"
 
 
