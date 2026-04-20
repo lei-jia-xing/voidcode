@@ -47,20 +47,20 @@
 - `researcher`
 - `product`
 
-其中只有 `leader` 对应今天真实存在的单 agent 主路径，其余角色都仍然是 post-MVP 的 future preset。
+其中只有 `leader` 对应今天真实存在的单 agent 主路径，其余角色都仍然是 post-MVP 的 future preset。Runtime 当前会解析这些 future preset 以验证声明层 shape，但会拒绝把它们作为 active execution agent 运行。
 
 ## Preset intent vs runtime truth
 
 本目录描述的是“一个角色默认希望带什么组合”，不是“runtime 今天已经能怎样执行它”。
 
-- `leader`：当前唯一映射到真实执行路径的角色
+- `leader`：当前唯一映射到真实执行路径的角色；`preset` / `prompt_profile` / `model` / `execution_engine` / `provider_fallback` 会进入 runtime config truth 并随 session 持久化
 - `worker`：future focused executor preset，不代表今天已经有 delegated runtime
 - `advisor`：future advisory preset，不代表今天已有独立审查/判断 runtime
 - `explore`：future local-code exploration preset，不代表今天已有独立 explore session model
 - `researcher`：future external research preset，不代表今天已有独立 researcher orchestration
 - `product`：future scope/alignment preset，不代表今天已有需求对齐 gate runtime
 
-同样，文档中出现的 skill / hook / permission / MCP intent 只是声明层建议，不是 runtime 已经实现的行为。
+同样，文档中出现的 tool allowlist、skill / hook / permission / MCP intent 只是声明层建议，不是 runtime 已经实现的行为。
 
 ## 与 runtime 的边界
 

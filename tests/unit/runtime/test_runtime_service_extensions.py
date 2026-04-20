@@ -3190,6 +3190,33 @@ def test_runtime_partial_request_agent_override_preserves_inherited_agent_fields
     )
 
 
+def test_runtime_rejects_declaration_only_agent_config(tmp_path: Path) -> None:
+    with pytest.raises(
+        ValueError,
+        match="agent preset 'worker' is declaration-only",
+    ):
+        _ = VoidCodeRuntime(
+            workspace=tmp_path,
+            config=RuntimeConfig(agent=RuntimeAgentConfig(preset="worker")),
+        )
+
+
+def test_runtime_rejects_declaration_only_request_agent_override(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, config=RuntimeConfig())
+
+    with pytest.raises(
+        ValueError,
+        match="request metadata 'agent': agent preset 'worker' is declaration-only",
+    ):
+        _ = runtime.run(
+            RuntimeRequest(
+                prompt="read sample.txt",
+                session_id="worker-agent-request",
+                metadata={"agent": {"preset": "worker"}},
+            )
+        )
+
+
 def test_runtime_effective_runtime_config_recovers_provider_fallback_chain(tmp_path: Path) -> None:
     sample_file = tmp_path / "sample.txt"
     sample_file.write_text("fallback chain\n", encoding="utf-8")

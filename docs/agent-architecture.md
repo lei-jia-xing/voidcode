@@ -261,7 +261,7 @@ hook 在这里很重要，但它更多是通知与干预层，而不是异步 ag
 
 第一步不是多 agent，而是让 runtime 能够解析并应用 `leader` 的 preset 到现有 provider-backed 单 agent 路径中。
 
-这一步的意义是：先把 agent 从“概念”变成“可被 runtime 消费的结构”。
+这一步的意义是：先把 agent 从“概念”变成“可被 runtime 消费的结构”。当前实现已经把 `leader` preset 接入 runtime config / request metadata / provider-backed single-agent path，并且显式拒绝把 future role preset 当作 active execution agent。
 
 ### Phase 2：引入只读辅助角色
 

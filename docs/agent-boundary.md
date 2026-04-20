@@ -117,6 +117,8 @@
 
 让 runtime 在现有 execution path 中能够解析和应用 agent preset，同时继续保持 runtime 对 approval、permission、event、persistence 的控制。
 
+当前实现已经完成 `leader` preset 的最小 runtime consumption：`leader` 可以映射到 provider-backed single-agent 主路径，并把可执行配置持久化到 session runtime config。其他内置角色仍是 declaration-only preset；runtime 可以解析它们的声明 shape，但不会把它们作为 active execution agent 运行。
+
 ### Phase 3：再评估 multi-agent orchestration
 
 只有当 capability substrate 已经稳定、并且真实出现 multi-agent workflow 需求时，再决定是否引入更重的 orchestration 机制（包括但不限于 LangGraph）。

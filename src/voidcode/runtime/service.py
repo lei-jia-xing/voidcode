@@ -118,6 +118,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_EXECUTABLE_AGENT_PRESETS = frozenset({"leader"})
+
 
 @dataclass(frozen=True, slots=True)
 class _ActiveSessionKey:
@@ -280,6 +282,11 @@ class VoidCodeRuntime:
         if initial_agent is not None:
             initial_agent = parse_runtime_agent_payload(
                 serialize_runtime_agent_config(initial_agent),
+                source="runtime config agent",
+            )
+            assert initial_agent is not None
+            self._validate_runtime_agent_for_execution(
+                initial_agent,
                 source="runtime config agent",
             )
         initial_model = (
@@ -2522,6 +2529,7 @@ class VoidCodeRuntime:
         if agent is None:
             raise ValueError("request metadata 'agent' must be an object when provided")
         assert agent is not None
+        self._validate_runtime_agent_for_execution(agent, source="request metadata 'agent'")
         model = agent.model if agent.model is not None else resolved.model
         execution_engine = (
             agent.execution_engine
@@ -2574,6 +2582,20 @@ class VoidCodeRuntime:
             plan=resolved.plan,
             resolved_provider=resolved_provider,
             agent=merged_agent,
+        )
+
+    @staticmethod
+    def _validate_runtime_agent_for_execution(
+        agent: RuntimeAgentConfig,
+        *,
+        source: str,
+    ) -> None:
+        if agent.preset in _EXECUTABLE_AGENT_PRESETS:
+            return
+        valid = ", ".join(sorted(_EXECUTABLE_AGENT_PRESETS))
+        raise ValueError(
+            f"{source}: agent preset '{agent.preset}' is declaration-only in the current "
+            f"runtime; executable agent presets are: {valid}"
         )
 
     def _runtime_state_metadata(self) -> dict[str, object]:
@@ -2807,6 +2829,11 @@ class VoidCodeRuntime:
                 serialize_runtime_agent_config(agent),
                 source="runtime config agent",
             )
+            assert agent is not None
+            self._validate_runtime_agent_for_execution(
+                agent,
+                source="runtime config agent",
+            )
         execution_engine_override = (
             agent.execution_engine
             if agent is not None and agent.execution_engine is not None
@@ -2898,6 +2925,11 @@ class VoidCodeRuntime:
                 runtime_config.get("agent"),
                 source="persisted runtime_config.agent",
             )
+            if agent is not None:
+                self._validate_runtime_agent_for_execution(
+                    agent,
+                    source="persisted runtime_config.agent",
+                )
         else:
             agent = None
         persisted_execution_engine = runtime_config.get("execution_engine")
