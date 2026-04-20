@@ -2210,7 +2210,6 @@ def test_runtime_effective_runtime_config_recovers_persisted_max_steps(tmp_path:
         "execution_engine": "deterministic",
         "max_steps": 7,
         "model": "session/model",
-        "agent": None,
         "provider_fallback": None,
         "plan": None,
         "resolved_provider": {
@@ -2324,6 +2323,38 @@ def test_runtime_effective_runtime_config_falls_back_for_legacy_sessions(tmp_pat
     assert effective.max_steps == 9
 
 
+def test_runtime_effective_runtime_config_keeps_persisted_non_agent_sessions_clear_of_fresh_agent_defaults(  # noqa: E501
+    tmp_path: Path,
+) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("non agent session\n", encoding="utf-8")
+
+    initial_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(approval_mode="allow", model="session/model"),
+    )
+    _ = initial_runtime.run(
+        RuntimeRequest(prompt="read sample.txt", session_id="non-agent-session")
+    )
+
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            model="fresh/model",
+            agent=RuntimeAgentConfig(
+                preset="leader",
+                model="opencode/gpt-5.4",
+            ),
+        ),
+    )
+    effective = resumed_runtime.effective_runtime_config(session_id="non-agent-session")
+
+    assert effective.approval_mode == "allow"
+    assert effective.model == "session/model"
+    assert effective.execution_engine == "deterministic"
+    assert effective.agent is None
+
+
 def test_runtime_effective_runtime_config_uses_request_metadata_max_steps_for_new_runs(
     tmp_path: Path,
 ) -> None:
@@ -2340,7 +2371,6 @@ def test_runtime_effective_runtime_config_uses_request_metadata_max_steps_for_ne
         "approval_mode": "ask",
         "execution_engine": "deterministic",
         "max_steps": 2,
-        "agent": None,
         "provider_fallback": None,
         "plan": None,
         "resolved_provider": None,

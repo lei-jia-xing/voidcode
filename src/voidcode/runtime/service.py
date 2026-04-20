@@ -2343,7 +2343,9 @@ class VoidCodeRuntime:
         }
         if effective_config.model is not None:
             runtime_config_metadata["model"] = effective_config.model
-        runtime_config_metadata["agent"] = serialize_runtime_agent_config(effective_config.agent)
+        serialized_agent = serialize_runtime_agent_config(effective_config.agent)
+        if serialized_agent is not None:
+            runtime_config_metadata["agent"] = serialized_agent
         lsp_state = self._lsp_manager.current_state()
         runtime_config_metadata["lsp"] = {
             "mode": lsp_state.mode,
@@ -2716,6 +2718,8 @@ class VoidCodeRuntime:
                 runtime_config.get("agent"),
                 source="persisted runtime_config.agent",
             )
+        else:
+            agent = None
         persisted_execution_engine = runtime_config.get("execution_engine")
         if persisted_execution_engine in ("deterministic", "single_agent"):
             execution_engine = persisted_execution_engine
