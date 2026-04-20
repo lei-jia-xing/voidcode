@@ -50,7 +50,12 @@ from .config import (
     serialize_runtime_agent_config,
     serialize_runtime_plan_config,
 )
-from .context_window import ContextWindowPolicy, RuntimeContextWindow, prepare_single_agent_context
+from .context_window import (
+    ContextWindowPolicy,
+    RuntimeContextWindow,
+    RuntimeContinuityState,
+    prepare_single_agent_context,
+)
 from .contracts import (
     RuntimeNotification,
     RuntimeRequest,
@@ -257,6 +262,7 @@ class VoidCodeRuntime:
         lsp_manager: LspManager | None = None,
         mcp_manager: McpManager | None = None,
         acp_adapter: AcpAdapter | None = None,
+        context_window_policy: ContextWindowPolicy | None = None,
     ) -> None:
         self._workspace = workspace.resolve()
         self._config = config or load_runtime_config(self._workspace)
@@ -328,6 +334,7 @@ class VoidCodeRuntime:
         self._plan_contributor = build_plan_contributor(self._workspace, self._config.plan)
         self._background_task_threads = {}
         self._background_tasks_reconciled = False
+        self._default_context_window_policy = context_window_policy or ContextWindowPolicy()
 
     def __enter__(self) -> VoidCodeRuntime:
         return self
@@ -911,6 +918,7 @@ class VoidCodeRuntime:
         tool_results: list[ToolResult],
         approval_resolution: tuple[PendingApproval, PermissionResolution] | None = None,
         permission_policy: PermissionPolicy | None = None,
+        preserved_continuity_state: RuntimeContinuityState | None = None,
     ) -> Iterator[RuntimeStreamChunk]:
         active_permission_policy = permission_policy or self._permission_policy
         provider_attempt = cast(int, graph_request.metadata.get("provider_attempt", 0))
@@ -920,6 +928,17 @@ class VoidCodeRuntime:
                 tool_results=tuple(tool_results),
                 session_metadata=session.metadata,
             )
+            if preserved_continuity_state is not None:
+                context_window = RuntimeContextWindow(
+                    prompt=context_window.prompt,
+                    tool_results=context_window.tool_results,
+                    compacted=context_window.compacted,
+                    compaction_reason=context_window.compaction_reason,
+                    original_tool_result_count=context_window.original_tool_result_count,
+                    retained_tool_result_count=context_window.retained_tool_result_count,
+                    max_tool_result_count=context_window.max_tool_result_count,
+                    continuity_state=preserved_continuity_state,
+                )
             session = self._session_with_context_window_metadata(session, context_window)
             graph_request = GraphRunRequest(
                 session=session,
@@ -929,7 +948,7 @@ class VoidCodeRuntime:
                 context_window=context_window,
                 metadata=graph_request.metadata,
             )
-            if context_window.compacted:
+            if context_window.compacted and preserved_continuity_state is None:
                 sequence += 1
                 yield RuntimeStreamChunk(
                     kind="event",
@@ -944,6 +963,11 @@ class VoidCodeRuntime:
                             "original_tool_result_count": context_window.original_tool_result_count,
                             "retained_tool_result_count": context_window.retained_tool_result_count,
                             "compacted": True,
+                            "continuity_state": (
+                                context_window.continuity_state.metadata_payload()
+                                if context_window.continuity_state is not None
+                                else None
+                            ),
                         },
                     ),
                 )
@@ -1293,7 +1317,13 @@ class VoidCodeRuntime:
                     sequence=sequence,
                     event_type="runtime.tool_completed",
                     source="tool",
-                    payload=tool_result.data,
+                    payload={
+                        "tool": tool_result.tool_name,
+                        "status": tool_result.status,
+                        "content": tool_result.content,
+                        "error": tool_result.error,
+                        **tool_result.data,
+                    },
                 ),
             )
 
@@ -1801,6 +1831,8 @@ class VoidCodeRuntime:
                         )
                     )
 
+        preserved_continuity_state = self._continuity_state_from_session_metadata(session.metadata)
+
         graph_request = GraphRunRequest(
             session=session,
             prompt=prompt,
@@ -1902,6 +1934,7 @@ class VoidCodeRuntime:
                 tool_results=tool_results,
                 approval_resolution=(pending, approval_decision),
                 permission_policy=self._permission_policy_for_session(session.metadata),
+                preserved_continuity_state=preserved_continuity_state,
             ):
                 if deferred_startup_acp_events and (
                     (
@@ -2225,9 +2258,46 @@ class VoidCodeRuntime:
         )
 
     @staticmethod
+    def _continuity_state_from_session_metadata(
+        session_metadata: dict[str, object],
+    ) -> RuntimeContinuityState | None:
+        runtime_state = session_metadata.get("runtime_state")
+        if not isinstance(runtime_state, dict):
+            return None
+        runtime_state_payload = cast(dict[str, object], runtime_state)
+        continuity = runtime_state_payload.get("continuity")
+        if not isinstance(continuity, dict):
+            return None
+        continuity_payload = cast(dict[str, object], continuity)
+        summary_text = continuity_payload.get("summary_text")
+        dropped = continuity_payload.get("dropped_tool_result_count")
+        retained = continuity_payload.get("retained_tool_result_count")
+        source = continuity_payload.get("source")
+        if summary_text is not None and not isinstance(summary_text, str):
+            return None
+        if not isinstance(dropped, int) or isinstance(dropped, bool):
+            return None
+        if not isinstance(retained, int) or isinstance(retained, bool):
+            return None
+        if not isinstance(source, str):
+            return None
+        return RuntimeContinuityState(
+            summary_text=summary_text,
+            dropped_tool_result_count=dropped,
+            retained_tool_result_count=retained,
+            source=source,
+        )
+
+    @staticmethod
     def _session_with_context_window_metadata(
         session: SessionState, context_window: RuntimeContextWindow
     ) -> SessionState:
+        runtime_state = cast(dict[str, object], session.metadata.get("runtime_state", {}))
+        continuity_payload = (
+            context_window.continuity_state.metadata_payload()
+            if context_window.continuity_state is not None
+            else None
+        )
         return SessionState(
             session=session.session,
             status=session.status,
@@ -2235,6 +2305,12 @@ class VoidCodeRuntime:
             metadata={
                 **session.metadata,
                 "context_window": context_window.metadata_payload(),
+                "runtime_state": {
+                    **runtime_state,
+                    **(
+                        {"continuity": continuity_payload} if continuity_payload is not None else {}
+                    ),
+                },
             },
         )
 

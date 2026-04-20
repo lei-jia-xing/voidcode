@@ -1360,6 +1360,10 @@ def test_runtime_executes_grep_read_only_slice_and_emits_events(tmp_path: Path) 
         "path": "sample.txt",
     }
     assert result.events[7].payload == {
+        "tool": "grep",
+        "status": "ok",
+        "content": "Found 2 match(es) for 'alpha' in sample.txt\n1: alpha\n2: beta alpha",
+        "error": None,
         "path": "sample.txt",
         "pattern": "alpha",
         "match_count": 2,
@@ -1558,6 +1562,10 @@ def test_runtime_resumes_multi_step_loop_with_approval_and_stable_replay(tmp_pat
         (event.sequence, event.event_type, event.payload) for event in resumed.events
     ]
     assert resumed.events[24].payload == {
+        "tool": "grep",
+        "status": "ok",
+        "content": "Found 1 match(es) for 'copied' in copied.txt\n1: copied marker",
+        "error": None,
         "path": "copied.txt",
         "pattern": "copied",
         "match_count": 1,

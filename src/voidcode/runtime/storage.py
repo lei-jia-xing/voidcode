@@ -575,14 +575,21 @@ class SqliteSessionStore:
             if event.event_type != "runtime.tool_completed":
                 continue
             payload = event.payload
-            is_err = "error" in payload
+            raw_status = payload.get("status")
+            is_err = raw_status == "error"
+            if raw_status not in {"ok", "error"}:
+                is_err = payload.get("error") is not None
+            raw_content = payload.get("content")
+            raw_error = payload.get("error")
             tool_results.append(
                 {
                     "tool_name": str(payload.get("tool", "unknown")),
-                    "content": str(payload.get("content", "")) if not is_err else None,
+                    "content": (
+                        str(raw_content) if raw_content is not None and not is_err else None
+                    ),
                     "status": "error" if is_err else "ok",
                     "data": payload,
-                    "error": str(payload["error"]) if is_err else None,
+                    "error": str(raw_error) if raw_error is not None and is_err else None,
                 }
             )
         return tool_results

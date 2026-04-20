@@ -34,9 +34,11 @@ from voidcode.runtime.config import (
     RuntimeProvidersConfig,
     RuntimeSkillsConfig,
 )
+from voidcode.runtime.context_window import ContextWindowPolicy, RuntimeContinuityState
 from voidcode.runtime.events import (
     RUNTIME_MCP_SERVER_STARTED,
     RUNTIME_MCP_SERVER_STOPPED,
+    RUNTIME_MEMORY_REFRESHED,
     EventEnvelope,
 )
 from voidcode.runtime.lsp import DisabledLspManager
@@ -2113,9 +2115,93 @@ def test_runtime_resume_uses_persisted_approval_mode_for_follow_up_gated_tools(
 
     assert resumed.session.status == "waiting"
     assert resumed.events[-1].event_type == "runtime.approval_requested"
-    assert resumed.events[-1].payload["tool"] == "write_file"
-    assert resumed.events[-1].payload["arguments"] == {"path": "beta.txt", "content": "2"}
-    assert resumed.events[-1].payload["policy"] == {"mode": "ask"}
+
+
+def test_runtime_approval_resume_preserves_canonical_continuity_state(tmp_path: Path) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("alpha\n", encoding="utf-8")
+    created_providers: list[_ScriptedSingleAgentProvider] = []
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(
+                    SingleAgentTurnResult(tool_call=ToolCall("read_file", {"path": "sample.txt"})),
+                    SingleAgentTurnResult(tool_call=ToolCall("read_file", {"path": "sample.txt"})),
+                    SingleAgentTurnResult(
+                        tool_call=ToolCall(
+                            "write_file",
+                            {"path": "beta.txt", "content": "2"},
+                        )
+                    ),
+                    SingleAgentTurnResult(
+                        tool_call=ToolCall(
+                            "write_file",
+                            {"path": "beta.txt", "content": "2"},
+                        )
+                    ),
+                    SingleAgentTurnResult(output="done"),
+                ),
+                created_providers=created_providers,
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            execution_engine="single_agent",
+            model="opencode/gpt-5.4",
+            approval_mode="ask",
+        ),
+        permission_policy=PermissionPolicy(mode="ask"),
+        model_provider_registry=registry,
+        context_window_policy=ContextWindowPolicy(max_tool_results=1),
+    )
+
+    waiting = runtime.run(
+        RuntimeRequest(
+            prompt="read sample.txt\nread sample.txt\nwrite beta.txt 2",
+            session_id="continuity-approval",
+        )
+    )
+    expected_continuity = {
+        "summary_text": (
+            "Compacted 1 earlier tool results:\n"
+            '1. read_file ok path=sample.txt content_preview="alpha"'
+        ),
+        "dropped_tool_result_count": 1,
+        "retained_tool_result_count": 1,
+        "source": "tool_result_window",
+    }
+
+    assert waiting.session.status == "waiting"
+    waiting_runtime_state = cast(dict[str, object], waiting.session.metadata["runtime_state"])
+    assert waiting_runtime_state["continuity"] == expected_continuity
+
+    approval_request_id = str(waiting.events[-1].payload["request_id"])
+    resumed = runtime.resume(
+        session_id="continuity-approval",
+        approval_request_id=approval_request_id,
+        approval_decision="allow",
+    )
+
+    resumed_runtime_state = cast(dict[str, object], resumed.session.metadata["runtime_state"])
+    assert resumed_runtime_state["continuity"] == expected_continuity
+    continuity_state = cast(
+        RuntimeContinuityState | None,
+        created_providers[-1].requests[-1].context_window.continuity_state,
+    )
+    assert continuity_state is not None
+    assert continuity_state.metadata_payload() == expected_continuity
+    resumed_event_types = [event.event_type for event in resumed.events]
+    assert resumed_event_types.count("runtime.approval_requested") == 1
+    assert resumed_event_types.count("runtime.approval_resolved") == 1
+    tool_completed_events = [
+        event for event in resumed.events if event.event_type == "runtime.tool_completed"
+    ]
+    assert tool_completed_events[-1].payload["tool"] == "write_file"
+    assert tool_completed_events[-1].payload["path"] == "beta.txt"
+    assert (tmp_path / "beta.txt").read_text(encoding="utf-8") == "2"
 
 
 def test_runtime_resume_falls_back_to_fresh_policy_for_legacy_sessions_without_runtime_config(
@@ -2624,25 +2710,70 @@ def test_runtime_classifies_provider_context_limit_failures(tmp_path: Path) -> N
     }
 
 
-def test_runtime_single_agent_compaction_emits_memory_refresh_and_persists_metadata(
+def test_runtime_single_agent_compaction_emits_continuity_state_and_persists_metadata(
     tmp_path: Path,
 ) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("alpha\n", encoding="utf-8")
+    created_providers: list[_ScriptedSingleAgentProvider] = []
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(SingleAgentTurnResult(output="done"),),
+                created_providers=created_providers,
+            )
+        }
+    )
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_SkillCapturingStubGraph(),
-        config=RuntimeConfig(execution_engine="single_agent", model="opencode/gpt-5.4"),
+        config=RuntimeConfig(model="opencode/gpt-5.4"),
+        model_provider_registry=registry,
+        context_window_policy=ContextWindowPolicy(max_tool_results=1),
     )
 
-    response = runtime.run(RuntimeRequest(prompt="hello", metadata={}))
+    response = runtime.run(
+        RuntimeRequest(
+            prompt="read sample.txt\nread sample.txt",
+            session_id="continuity-session",
+        )
+    )
+    replay = runtime.resume("continuity-session")
+
+    expected_continuity = {
+        "summary_text": (
+            "Compacted 1 earlier tool results:\n"
+            '1. read_file ok path=sample.txt content_preview="alpha"'
+        ),
+        "dropped_tool_result_count": 1,
+        "retained_tool_result_count": 1,
+        "source": "tool_result_window",
+    }
+    memory_events = [
+        event for event in response.events if event.event_type == RUNTIME_MEMORY_REFRESHED
+    ]
 
     assert response.session.status == "completed"
-    assert response.session.metadata["context_window"] == {
-        "compacted": False,
-        "compaction_reason": None,
-        "original_tool_result_count": 0,
-        "retained_tool_result_count": 0,
-        "max_tool_result_count": 4,
+    assert len(memory_events) == 1
+    assert memory_events[0].payload == {
+        "reason": "tool_result_window",
+        "original_tool_result_count": 2,
+        "retained_tool_result_count": 1,
+        "compacted": True,
+        "continuity_state": expected_continuity,
     }
+    assert response.session.metadata["context_window"] == {
+        "compacted": True,
+        "compaction_reason": "tool_result_window",
+        "original_tool_result_count": 2,
+        "retained_tool_result_count": 1,
+        "max_tool_result_count": 1,
+        "continuity_state": expected_continuity,
+    }
+    runtime_state = cast(dict[str, object], response.session.metadata["runtime_state"])
+    assert runtime_state["continuity"] == expected_continuity
+    replay_runtime_state = cast(dict[str, object], replay.session.metadata["runtime_state"])
+    assert replay_runtime_state["continuity"] == expected_continuity
 
 
 def test_runtime_rejects_single_agent_engine_without_model(tmp_path: Path) -> None:
