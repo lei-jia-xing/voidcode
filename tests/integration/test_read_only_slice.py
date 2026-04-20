@@ -1883,6 +1883,52 @@ def test_runtime_resume_accepts_legacy_sessions_without_runtime_config_metadata(
     }
 
 
+def test_runtime_resume_repairs_legacy_non_dict_runtime_state_metadata(tmp_path: Path) -> None:
+    runtime_request, runtime = _approval_runtime(tmp_path, mode="ask")
+    waiting = runtime.run(
+        runtime_request(prompt="write danger.txt approved later", session_id="legacy-runtime-state")
+    )
+    approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
+
+    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    connection = sqlite3.connect(database_path)
+    try:
+        row = cast(
+            tuple[str],
+            connection.execute(
+                "SELECT metadata_json FROM sessions WHERE session_id = ?",
+                ("legacy-runtime-state",),
+            ).fetchone(),
+        )
+        metadata = cast(dict[str, object], json.loads(row[0]))
+        metadata["runtime_state"] = "broken"
+        _ = connection.execute(
+            "UPDATE sessions SET metadata_json = ? WHERE session_id = ?",
+            (json.dumps(metadata, sort_keys=True), "legacy-runtime-state"),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    replay = runtime.resume(
+        "legacy-runtime-state",
+        approval_request_id=approval_request_id,
+        approval_decision="allow",
+    )
+
+    assert replay.session.status == "completed"
+    assert replay.output == "approved later"
+    assert replay.session.metadata["runtime_state"] == {
+        "acp": {
+            "available": False,
+            "configured_enabled": False,
+            "last_error": None,
+            "mode": "disabled",
+            "status": "disconnected",
+        }
+    }
+
+
 def test_runtime_denies_non_read_only_tool_on_resume(tmp_path: Path) -> None:
     runtime_request, runtime = _approval_runtime(tmp_path, mode="ask")
 

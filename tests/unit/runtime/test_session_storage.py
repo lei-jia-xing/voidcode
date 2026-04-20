@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 from contextlib import closing
 from pathlib import Path
+from typing import Any
 
 from voidcode.runtime.contracts import RuntimeRequest, RuntimeResponse
 from voidcode.runtime.events import EventEnvelope
@@ -13,6 +14,10 @@ from voidcode.runtime.task import (
     BackgroundTaskRequestSnapshot,
     BackgroundTaskState,
 )
+
+
+def _private_attr(instance: object, name: str) -> Any:
+    return getattr(instance, name)
 
 
 def test_session_storage_persists_parent_lineage_across_read_surfaces(tmp_path: Path) -> None:
@@ -162,3 +167,40 @@ def test_session_storage_migrates_legacy_schema_for_parent_lineage(tmp_path: Pat
     assert "parent_session_id" in session_columns
     assert "request_parent_session_id" in background_task_columns
     assert loaded_task.request.parent_session_id == "leader-session"
+
+
+def test_tool_results_from_events_keeps_success_payloads_with_null_error() -> None:
+    tool_results_from_events: Any = _private_attr(SqliteSessionStore, "_tool_results_from_events")
+    tool_results = tool_results_from_events(
+        (
+            EventEnvelope(
+                session_id="s1",
+                sequence=1,
+                event_type="runtime.tool_completed",
+                source="runtime",
+                payload={
+                    "tool": "read_file",
+                    "status": "ok",
+                    "content": "alpha\n",
+                    "error": None,
+                    "path": "sample.txt",
+                },
+            ),
+        )
+    )
+
+    assert tool_results == [
+        {
+            "tool_name": "read_file",
+            "content": "alpha\n",
+            "status": "ok",
+            "data": {
+                "tool": "read_file",
+                "status": "ok",
+                "content": "alpha\n",
+                "error": None,
+                "path": "sample.txt",
+            },
+            "error": None,
+        }
+    ]

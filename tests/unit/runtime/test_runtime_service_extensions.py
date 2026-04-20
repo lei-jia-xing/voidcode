@@ -3706,6 +3706,85 @@ def test_runtime_resume_falls_back_when_persisted_checkpoint_payload_is_not_obje
     assert resumed.output == "done"
 
 
+def test_runtime_resume_fallback_keeps_successful_tool_results_with_null_error(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_MultiStepStubGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    waiting = runtime.run(RuntimeRequest(prompt="go", session_id="checkpoint-null-error-session"))
+    first_approval_request_id = str(waiting.events[-1].payload["request_id"])
+
+    second_waiting = runtime.resume(
+        session_id="checkpoint-null-error-session",
+        approval_request_id=first_approval_request_id,
+        approval_decision="allow",
+    )
+
+    assert second_waiting.session.status == "waiting"
+    second_approval_request_id = str(second_waiting.events[-1].payload["request_id"])
+
+    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    connection = sqlite3.connect(database_path)
+    try:
+        _ = connection.execute(
+            "UPDATE sessions SET resume_checkpoint_json = NULL WHERE session_id = ?",
+            ("checkpoint-null-error-session",),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_MultiStepStubGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    resumed = resumed_runtime.resume(
+        session_id="checkpoint-null-error-session",
+        approval_request_id=second_approval_request_id,
+        approval_decision="allow",
+    )
+
+    assert resumed.session.status == "completed"
+    assert resumed.output == "done"
+
+
+def test_runtime_run_repairs_non_dict_runtime_state_metadata_when_acp_enabled(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SkillCapturingStubGraph(),
+        config=RuntimeConfig(acp=RuntimeAcpConfig(enabled=True)),
+    )
+
+    response = runtime.run(
+        RuntimeRequest(
+            prompt="hello",
+            session_id="bad-runtime-state-session",
+            metadata={"runtime_state": "broken"},
+        )
+    )
+
+    runtime_state_metadata = cast(dict[str, object], response.session.metadata["runtime_state"])
+    assert runtime_state_metadata == {
+        "acp": {
+            "mode": "managed",
+            "configured_enabled": True,
+            "status": "disconnected",
+            "available": False,
+            "last_error": None,
+        }
+    }
+
+
 @pytest.mark.parametrize("error_kind", ["rate_limit", "invalid_model", "transient_failure"])
 def test_runtime_downgrades_to_next_provider_target_on_provider_failures(
     tmp_path: Path,

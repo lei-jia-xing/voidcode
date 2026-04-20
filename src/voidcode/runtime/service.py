@@ -365,7 +365,7 @@ class VoidCodeRuntime:
         elif isinstance(runtime_state, dict):
             runtime_state_metadata = dict(cast(dict[str, object], runtime_state))
         else:
-            return metadata
+            runtime_state_metadata = {}
         runtime_state_metadata["acp"] = {
             "mode": acp_state.mode,
             "configured_enabled": acp_state.configuration.configured_enabled,
@@ -1820,17 +1820,19 @@ class VoidCodeRuntime:
             tool_results = []
             for event in stored.events:
                 if event.event_type == "runtime.tool_completed":
-                    is_err = "error" in event.payload
+                    error_value = event.payload.get("error")
+                    is_err = error_value is not None
                     tool_results.append(
                         ToolResult(
                             tool_name=str(event.payload.get("tool", "unknown")),
                             content=str(event.payload.get("content", "")) if not is_err else None,
                             status="error" if is_err else "ok",
                             data=event.payload,
-                            error=str(event.payload["error"]) if is_err else None,
+                            error=str(error_value) if is_err else None,
                         )
                     )
 
+        session = self._session_with_current_acp_metadata(session)
         preserved_continuity_state = self._continuity_state_from_session_metadata(session.metadata)
 
         graph_request = GraphRunRequest(
@@ -2292,7 +2294,12 @@ class VoidCodeRuntime:
     def _session_with_context_window_metadata(
         session: SessionState, context_window: RuntimeContextWindow
     ) -> SessionState:
-        runtime_state = cast(dict[str, object], session.metadata.get("runtime_state", {}))
+        raw_runtime_state = session.metadata.get("runtime_state")
+        runtime_state = (
+            dict(cast(dict[str, object], raw_runtime_state))
+            if isinstance(raw_runtime_state, dict)
+            else {}
+        )
         continuity_payload = (
             context_window.continuity_state.metadata_payload()
             if context_window.continuity_state is not None
