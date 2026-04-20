@@ -12,18 +12,13 @@
 
 ## 状态
 
-当前仓库已经具备：
+当前仓库已经具备 runtime-owned per-agent tool enforcement：
 
-- `AgentManifest.tool_allowlist`
-- agent preset/runtime consumption 的最小 leader slice
-- runtime-owned tool registry 与 tool invocation path
-
-但当前仍未形成稳定的 per-agent tool enforcement contract。
-
-这意味着：
-
-- declaration layer 已经能表达工具边界 intent
-- runtime 还没有把这层 intent 变成执行治理 truth
+- builtin `AgentManifest.tool_allowlist` 会进入 active agent 的工具边界计算；
+- active `RuntimeAgentConfig.tools.allowlist` 会作为额外硬边界；
+- active `RuntimeAgentConfig.tools.default` 只能进一步收窄默认暴露集合；
+- provider-facing `available_tools` 与实际 tool lookup / invocation 使用同一个 filtered registry；
+- approval resume 继续使用 session metadata 中持久化的 active agent config。
 
 ## 范围
 
@@ -91,15 +86,17 @@ runtime 对 tool boundary 的治理必须满足：
 
 runtime 在计算 active agent 工具集合时，允许消费以下输入：
 
-1. builtin manifest 中的 `tool_allowlist`
-2. active agent config 中的 `agent.tools`
-3. runtime 当前构建出的 tool registry
+1. runtime 当前构建出的 tool registry
+2. builtin manifest 中的 `tool_allowlist`
+3. active agent config 中的 `agent.tools.allowlist`
+4. active agent config 中的 `agent.tools.default`
 
 这些输入的角色不同：
 
-- `tool_allowlist` 负责表达“该 agent 最多可以使用哪些工具”
-- default tool set 负责表达“该 agent 默认暴露哪些工具”
 - tool registry 负责表达“当前运行时实际上存在哪些工具”
+- manifest `tool_allowlist` 负责表达“该 preset 最多可以使用哪些工具”
+- `agent.tools.allowlist` 负责表达运行时配置/请求对 active agent 的额外硬边界
+- `agent.tools.default` 负责表达“该 agent 默认暴露哪些工具”，且只能进一步收窄
 
 ## 合并规则
 
@@ -115,9 +112,9 @@ active agent 最终可见/可调用的工具必须永远是 runtime 当前注册
 
 ### Rule 2：Allowlist 是硬边界
 
-如果 active agent 存在 `tool_allowlist`，那么最终可见/可调用工具集合必须是：
+如果 active agent 存在 manifest `tool_allowlist` 或 `agent.tools.allowlist`，那么最终可见/可调用工具集合必须是这些边界的交集：
 
-> runtime registry ∩ tool_allowlist
+> runtime registry ∩ manifest.tool_allowlist ∩ agent.tools.allowlist
 
 也就是说：
 
@@ -126,7 +123,7 @@ active agent 最终可见/可调用的工具必须永远是 runtime 当前注册
 
 ### Rule 3：Default tool set 只能进一步收窄，不得放宽 allowlist
 
-如果后续实现引入 default tool set，它只能在 allowlist 允许的范围内收窄默认暴露面，不能扩大工具权限。
+`agent.tools.default` 只能在 allowlist 允许的范围内收窄默认暴露面，不能扩大工具权限。
 
 ### Rule 4：客户端不是 authority
 
@@ -185,7 +182,7 @@ tool allowlist enforcement 发生在 approval 之前。
 
 也就是说，`tool_allowlist` 的语义不能只覆盖 builtins。
 
-如果某 MCP tool 在 registry 中存在，则它与 builtin tool 一样需要经过同样的可见性/调用性判断。
+如果某 MCP tool 在 registry 中存在，则它与 builtin tool 一样需要经过同样的可见性/调用性判断。Allowlist 支持 shell-style pattern，例如 `mcp/*`。
 
 ## 失败语义
 

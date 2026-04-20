@@ -2,6 +2,32 @@ from __future__ import annotations
 
 from .models import AgentManifest, AgentManifestId
 
+_READ_ONLY_WORKSPACE_TOOLS = (
+    "read_file",
+    "list",
+    "glob",
+    "grep",
+    "ast_grep_search",
+    "lsp",
+)
+
+_LEADER_TOOL_ALLOWLIST = (
+    *_READ_ONLY_WORKSPACE_TOOLS,
+    "write_file",
+    "edit",
+    "multi_edit",
+    "apply_patch",
+    "shell_exec",
+    "format_file",
+    "todo_write",
+    "ast_grep_preview",
+    "ast_grep_replace",
+    "web_search",
+    "web_fetch",
+    "code_search",
+    "mcp/*",
+)
+
 LEADER_AGENT_MANIFEST = AgentManifest(
     id="leader",
     name="Leader",
@@ -9,6 +35,7 @@ LEADER_AGENT_MANIFEST = AgentManifest(
     description="Primary user-facing agent preset mapped to the current single-agent path.",
     prompt_profile="leader",
     execution_engine="single_agent",
+    tool_allowlist=_LEADER_TOOL_ALLOWLIST,
 )
 
 WORKER_AGENT_MANIFEST = AgentManifest(
@@ -17,6 +44,15 @@ WORKER_AGENT_MANIFEST = AgentManifest(
     mode="subagent",
     description="Focused future executor preset for narrow implementation tasks.",
     prompt_profile="worker",
+    tool_allowlist=(
+        *_READ_ONLY_WORKSPACE_TOOLS,
+        "write_file",
+        "edit",
+        "multi_edit",
+        "apply_patch",
+        "shell_exec",
+        "format_file",
+    ),
 )
 
 ADVISOR_AGENT_MANIFEST = AgentManifest(
@@ -25,22 +61,29 @@ ADVISOR_AGENT_MANIFEST = AgentManifest(
     mode="subagent",
     description="Read-only advisory preset for architecture, risk, and review guidance.",
     prompt_profile="advisor",
+    tool_allowlist=_READ_ONLY_WORKSPACE_TOOLS,
 )
 
 EXPLORE_AGENT_MANIFEST = AgentManifest(
     id="explore",
     name="Explore",
     mode="subagent",
-    description="Workspace-bound exploration preset for local code structure and pattern discovery.",
+    description=(
+        "Workspace-bound exploration preset for local code structure and pattern discovery."
+    ),
     prompt_profile="explore",
+    tool_allowlist=_READ_ONLY_WORKSPACE_TOOLS,
 )
 
 RESEARCHER_AGENT_MANIFEST = AgentManifest(
     id="researcher",
     name="Researcher",
     mode="subagent",
-    description="External research preset for public docs, repositories, and implementation examples.",
+    description=(
+        "External research preset for public docs, repositories, and implementation examples."
+    ),
     prompt_profile="researcher",
+    tool_allowlist=("web_search", "web_fetch", "code_search"),
 )
 
 PRODUCT_AGENT_MANIFEST = AgentManifest(
@@ -49,6 +92,7 @@ PRODUCT_AGENT_MANIFEST = AgentManifest(
     mode="subagent",
     description="Requirements-alignment preset for scope, acceptance, and product intent review.",
     prompt_profile="product",
+    tool_allowlist=("read_file", "list", "glob", "grep"),
 )
 
 _BUILTIN_AGENT_MANIFESTS: dict[AgentManifestId, AgentManifest] = {

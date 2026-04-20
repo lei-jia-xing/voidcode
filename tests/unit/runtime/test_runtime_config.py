@@ -883,7 +883,12 @@ def test_runtime_agent_payload_round_trips_through_serialization() -> None:
         {
             "preset": "leader",
             "model": "opencode/gpt-5.4",
-            "tools": {"builtin": {"enabled": True}, "paths": [".voidcode/tools"]},
+            "tools": {
+                "builtin": {"enabled": True},
+                "paths": [".voidcode/tools"],
+                "allowlist": ["read_file", "grep"],
+                "default": ["read_file"],
+            },
             "skills": {"enabled": False, "paths": [".voidcode/skills"]},
         },
         source="test payload",
@@ -895,7 +900,12 @@ def test_runtime_agent_payload_round_trips_through_serialization() -> None:
         "prompt_profile": "leader",
         "model": "opencode/gpt-5.4",
         "execution_engine": "single_agent",
-        "tools": {"builtin": {"enabled": True}, "paths": [".voidcode/tools"]},
+        "tools": {
+            "builtin": {"enabled": True},
+            "paths": [".voidcode/tools"],
+            "allowlist": ["read_file", "grep"],
+            "default": ["read_file"],
+        },
         "skills": {"enabled": False, "paths": [".voidcode/skills"]},
     }
 
@@ -1932,10 +1942,19 @@ def test_parse_tui_config_rejects_invalid_shapes_and_values(raw_value: object, m
 
 
 def test_parse_simple_extension_configs_preserve_public_dataclasses() -> None:
-    assert _parse_tools_config({"builtin": {"enabled": True}, "paths": [".voidcode/tools"]}) == (
+    assert _parse_tools_config(
+        {
+            "builtin": {"enabled": True},
+            "paths": [".voidcode/tools"],
+            "allowlist": ["read_file", "grep"],
+            "default": ["read_file"],
+        }
+    ) == (
         RuntimeToolsConfig(
             builtin=RuntimeToolsBuiltinConfig(enabled=True),
             paths=(".voidcode/tools",),
+            allowlist=("read_file", "grep"),
+            default=("read_file",),
         )
     )
     assert _parse_skills_config({"enabled": False, "paths": [".voidcode/skills"]}) == (

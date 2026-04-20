@@ -33,6 +33,7 @@ from voidcode.runtime.config import (
     RuntimeProviderFallbackConfig,
     RuntimeProvidersConfig,
     RuntimeSkillsConfig,
+    RuntimeToolsConfig,
 )
 from voidcode.runtime.context_window import ContextWindowPolicy, RuntimeContinuityState
 from voidcode.runtime.events import (
@@ -3215,6 +3216,170 @@ def test_runtime_rejects_declaration_only_request_agent_override(tmp_path: Path)
                 metadata={"agent": {"preset": "worker"}},
             )
         )
+
+
+def test_runtime_agent_tool_allowlist_limits_provider_visible_tools(tmp_path: Path) -> None:
+    created_providers: list[_ScriptedSingleAgentProvider] = []
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(SingleAgentTurnResult(output="allowed tools captured"),),
+                created_providers=created_providers,
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            agent=RuntimeAgentConfig(
+                preset="leader",
+                model="opencode/gpt-5.4",
+                tools=RuntimeToolsConfig(allowlist=("read_file",)),
+            )
+        ),
+        model_provider_registry=registry,
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="inspect tools", session_id="agent-tools-visible"))
+
+    assert response.session.status == "completed"
+    assert created_providers
+    visible_tool_names = {tool.name for tool in created_providers[0].requests[0].available_tools}
+    assert visible_tool_names == {"read_file"}
+    runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
+    assert runtime_config["agent"] == {
+        "preset": "leader",
+        "prompt_profile": "leader",
+        "model": "opencode/gpt-5.4",
+        "execution_engine": "single_agent",
+        "tools": {"allowlist": ["read_file"]},
+    }
+
+
+def test_runtime_agent_tool_default_set_further_narrows_allowlist(tmp_path: Path) -> None:
+    created_providers: list[_ScriptedSingleAgentProvider] = []
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(SingleAgentTurnResult(output="default tools captured"),),
+                created_providers=created_providers,
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            agent=RuntimeAgentConfig(
+                preset="leader",
+                model="opencode/gpt-5.4",
+                tools=RuntimeToolsConfig(
+                    allowlist=("read_file", "grep"),
+                    default=("grep", "write_file"),
+                ),
+            )
+        ),
+        model_provider_registry=registry,
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="inspect tools", session_id="agent-tools-default"))
+
+    assert response.session.status == "completed"
+    assert created_providers
+    visible_tool_names = {tool.name for tool in created_providers[0].requests[0].available_tools}
+    assert visible_tool_names == {"grep"}
+
+
+def test_runtime_agent_tool_allowlist_blocks_invocation(tmp_path: Path) -> None:
+    target = tmp_path / "blocked.txt"
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(
+                    SingleAgentTurnResult(
+                        tool_call=ToolCall(
+                            tool_name="write_file",
+                            arguments={"path": "blocked.txt", "content": "blocked"},
+                        )
+                    ),
+                ),
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            agent=RuntimeAgentConfig(
+                preset="leader",
+                model="opencode/gpt-5.4",
+                tools=RuntimeToolsConfig(allowlist=("read_file",)),
+            )
+        ),
+        model_provider_registry=registry,
+    )
+
+    with pytest.raises(ValueError, match="unknown tool: write_file"):
+        _ = runtime.run(RuntimeRequest(prompt="write blocked", session_id="agent-tools-block"))
+
+    assert not target.exists()
+
+
+def test_runtime_agent_tool_allowlist_survives_approval_resume(tmp_path: Path) -> None:
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(
+                    SingleAgentTurnResult(
+                        tool_call=ToolCall(
+                            tool_name="write_file",
+                            arguments={"path": "allowed.txt", "content": "allowed"},
+                        )
+                    ),
+                    SingleAgentTurnResult(output="done"),
+                ),
+            )
+        }
+    )
+    initial_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            agent=RuntimeAgentConfig(
+                preset="leader",
+                model="opencode/gpt-5.4",
+                tools=RuntimeToolsConfig(allowlist=("write_file",)),
+            )
+        ),
+        model_provider_registry=registry,
+    )
+
+    waiting = initial_runtime.run(
+        RuntimeRequest(prompt="write allowed", session_id="agent-tools-approval")
+    )
+    approval_event = waiting.events[-1]
+
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            agent=RuntimeAgentConfig(
+                preset="leader",
+                model="opencode/gpt-5.4",
+                tools=RuntimeToolsConfig(allowlist=("read_file",)),
+            )
+        ),
+        model_provider_registry=registry,
+    )
+    resumed = resumed_runtime.resume(
+        "agent-tools-approval",
+        approval_request_id=str(approval_event.payload["request_id"]),
+        approval_decision="allow",
+    )
+
+    assert resumed.session.status == "completed"
+    assert resumed.output == "done"
+    assert (tmp_path / "allowed.txt").read_text(encoding="utf-8") == "allowed"
 
 
 def test_runtime_effective_runtime_config_recovers_provider_fallback_chain(tmp_path: Path) -> None:

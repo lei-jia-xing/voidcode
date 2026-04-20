@@ -19,6 +19,9 @@ def test_builtin_agent_registry_exposes_leader_manifest() -> None:
     assert leader.mode == "primary"
     assert leader.prompt_profile == "leader"
     assert leader.execution_engine == "single_agent"
+    assert "read_file" in leader.tool_allowlist
+    assert "write_file" in leader.tool_allowlist
+    assert "mcp/*" in leader.tool_allowlist
 
 
 def test_builtin_agent_registry_lists_leader_manifest() -> None:
@@ -51,3 +54,10 @@ def test_builtin_agent_registry_exposes_future_role_skeletons() -> None:
         assert manifest is not None
         assert manifest.mode == "subagent"
         assert manifest.execution_engine is None
+        assert manifest.tool_allowlist
+
+    assert "edit" in worker.tool_allowlist
+    assert "write_file" not in advisor.tool_allowlist
+    assert "ast_grep_search" in explore.tool_allowlist
+    assert researcher.tool_allowlist == ("web_search", "web_fetch", "code_search")
+    assert product.tool_allowlist == ("read_file", "list", "glob", "grep")

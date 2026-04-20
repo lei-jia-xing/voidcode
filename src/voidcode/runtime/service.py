@@ -5,11 +5,13 @@ import os
 import threading
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
+from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol, cast, final, runtime_checkable
 from uuid import uuid4
 
 from ..acp import AcpRequestEnvelope, AcpResponseEnvelope
+from ..agent import get_builtin_agent_manifest
 from ..graph.contracts import GraphEvent, GraphRunRequest
 from ..graph.read_only_slice import DeterministicReadOnlyGraph
 from ..graph.single_agent_slice import ProviderSingleAgentGraph
@@ -226,6 +228,18 @@ class ToolRegistry:
             return self.tools[tool_name]
         except KeyError as exc:
             raise ValueError(f"unknown tool: {tool_name}") from exc
+
+    def filtered(self, patterns: Iterable[str]) -> ToolRegistry:
+        normalized_patterns = tuple(pattern for pattern in patterns if pattern)
+        if not normalized_patterns:
+            return self
+        return ToolRegistry(
+            tools={
+                name: tool
+                for name, tool in self.tools.items()
+                if any(fnmatchcase(name, pattern) for pattern in normalized_patterns)
+            }
+        )
 
 
 @final
@@ -621,6 +635,27 @@ class VoidCodeRuntime:
             merged_tools[tool.definition.name] = tool
         self._tool_registry = ToolRegistry(tools=merged_tools)
 
+    def _tool_registry_for_effective_config(
+        self,
+        effective_config: EffectiveRuntimeConfig,
+    ) -> ToolRegistry:
+        agent = effective_config.agent
+        if agent is None:
+            return self._tool_registry
+
+        scoped_registry = self._tool_registry
+        manifest = get_builtin_agent_manifest(agent.preset)
+        if manifest is not None and manifest.tool_allowlist:
+            scoped_registry = scoped_registry.filtered(manifest.tool_allowlist)
+
+        if agent.tools is not None:
+            if agent.tools.allowlist:
+                scoped_registry = scoped_registry.filtered(agent.tools.allowlist)
+            if agent.tools.default:
+                scoped_registry = scoped_registry.filtered(agent.tools.default)
+
+        return scoped_registry
+
     def current_lsp_state(self) -> LspManagerState:
         return self._lsp_manager.current_state()
 
@@ -785,6 +820,7 @@ class VoidCodeRuntime:
         effective_config = self._runtime_config_for_request(request)
         request_metadata = self._fresh_request_metadata(request.metadata)
         self._refresh_mcp_tools()
+        tool_registry = self._tool_registry_for_effective_config(effective_config)
         session = SessionState(
             session=SessionRef(id=resolved_session_id, parent_id=request.parent_session_id),
             status="running",
@@ -875,7 +911,7 @@ class VoidCodeRuntime:
         graph_request = GraphRunRequest(
             session=session,
             prompt=planned_prompt,
-            available_tools=self._tool_registry.definitions(),
+            available_tools=tool_registry.definitions(),
             applied_skills=frozen_applied_skills,
             skill_prompt_context=skill_prompt_context,
             context_window=self._prepare_single_agent_context_window(
@@ -902,6 +938,7 @@ class VoidCodeRuntime:
         last_sequence = sequence
         for chunk in self._execute_graph_loop(
             graph=graph,
+            tool_registry=tool_registry,
             session=session,
             sequence=sequence,
             graph_request=graph_request,
@@ -930,6 +967,7 @@ class VoidCodeRuntime:
         self,
         *,
         graph: RuntimeGraph,
+        tool_registry: ToolRegistry,
         session: SessionState,
         sequence: int,
         graph_request: GraphRunRequest,
@@ -1204,7 +1242,7 @@ class VoidCodeRuntime:
             )
 
             try:
-                tool = self._tool_registry.resolve(plan_tool_call.tool_name)
+                tool = tool_registry.resolve(plan_tool_call.tool_name)
             except Exception as exc:
                 yield self._failed_chunk(session=session, sequence=sequence + 1, error=str(exc))
                 raise
@@ -1859,12 +1897,15 @@ class VoidCodeRuntime:
 
         session = self._session_with_current_acp_metadata(session)
         preserved_continuity_state = self._continuity_state_from_session_metadata(session.metadata)
+        self._refresh_mcp_tools()
+        effective_config = self._effective_runtime_config_from_metadata(session.metadata)
+        tool_registry = self._tool_registry_for_effective_config(effective_config)
 
         resumed_applied_skills = self._graph_applied_skills(session.metadata)
         graph_request = GraphRunRequest(
             session=session,
             prompt=prompt,
-            available_tools=self._tool_registry.definitions(),
+            available_tools=tool_registry.definitions(),
             applied_skills=resumed_applied_skills,
             skill_prompt_context=build_skill_prompt_context(
                 tuple(runtime_context_from_payload(payload) for payload in resumed_applied_skills)
@@ -1876,9 +1917,7 @@ class VoidCodeRuntime:
             ),
             metadata={
                 **session.metadata,
-                "agent_preset": serialize_runtime_agent_config(
-                    self._effective_runtime_config_from_metadata(session.metadata).agent
-                ),
+                "agent_preset": serialize_runtime_agent_config(effective_config.agent),
                 "provider_attempt": cast(int, session.metadata.get("provider_attempt", 0)),
             },
         )
@@ -1959,6 +1998,7 @@ class VoidCodeRuntime:
         try:
             for chunk in self._execute_graph_loop(
                 graph=graph,
+                tool_registry=tool_registry,
                 session=session,
                 sequence=sequence,
                 graph_request=graph_request,
