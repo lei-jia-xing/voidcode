@@ -910,6 +910,32 @@ def test_runtime_agent_payload_round_trips_through_serialization() -> None:
     }
 
 
+def test_runtime_agent_payload_round_trips_explicit_empty_tool_boundaries() -> None:
+    agent = parse_runtime_agent_payload(
+        {
+            "preset": "leader",
+            "tools": {
+                "allowlist": [],
+                "default": [],
+            },
+        },
+        source="test payload",
+    )
+
+    assert agent == RuntimeAgentConfig(
+        preset="leader",
+        prompt_profile="leader",
+        execution_engine="single_agent",
+        tools=RuntimeToolsConfig(allowlist=(), default=()),
+    )
+    assert serialize_runtime_agent_config(agent) == {
+        "preset": "leader",
+        "prompt_profile": "leader",
+        "execution_engine": "single_agent",
+        "tools": {"allowlist": [], "default": []},
+    }
+
+
 def test_runtime_agent_payload_resolves_through_builtin_agent_manifest() -> None:
     manifest = get_builtin_agent_manifest("leader")
 
@@ -1956,6 +1982,10 @@ def test_parse_simple_extension_configs_preserve_public_dataclasses() -> None:
             allowlist=("read_file", "grep"),
             default=("read_file",),
         )
+    )
+    assert _parse_tools_config({"allowlist": [], "default": []}) == RuntimeToolsConfig(
+        allowlist=(),
+        default=(),
     )
     assert _parse_skills_config({"enabled": False, "paths": [".voidcode/skills"]}) == (
         RuntimeSkillsConfig(enabled=False, paths=(".voidcode/skills",))

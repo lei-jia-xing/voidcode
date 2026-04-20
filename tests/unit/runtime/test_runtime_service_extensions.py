@@ -3291,6 +3291,73 @@ def test_runtime_agent_tool_default_set_further_narrows_allowlist(tmp_path: Path
     assert visible_tool_names == {"grep"}
 
 
+def test_runtime_agent_empty_tool_allowlist_exposes_no_tools(tmp_path: Path) -> None:
+    created_providers: list[_ScriptedSingleAgentProvider] = []
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(SingleAgentTurnResult(output="no tools exposed"),),
+                created_providers=created_providers,
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            agent=RuntimeAgentConfig(
+                preset="leader",
+                model="opencode/gpt-5.4",
+                tools=RuntimeToolsConfig(allowlist=()),
+            )
+        ),
+        model_provider_registry=registry,
+    )
+
+    response = runtime.run(
+        RuntimeRequest(prompt="inspect tools", session_id="agent-tools-empty-allowlist")
+    )
+
+    assert response.session.status == "completed"
+    assert created_providers
+    assert created_providers[0].requests[0].available_tools == ()
+
+
+def test_runtime_agent_empty_default_set_exposes_no_tools(tmp_path: Path) -> None:
+    created_providers: list[_ScriptedSingleAgentProvider] = []
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(SingleAgentTurnResult(output="empty default captured"),),
+                created_providers=created_providers,
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            agent=RuntimeAgentConfig(
+                preset="leader",
+                model="opencode/gpt-5.4",
+                tools=RuntimeToolsConfig(
+                    allowlist=("read_file", "grep"),
+                    default=(),
+                ),
+            )
+        ),
+        model_provider_registry=registry,
+    )
+
+    response = runtime.run(
+        RuntimeRequest(prompt="inspect tools", session_id="agent-tools-empty-default")
+    )
+
+    assert response.session.status == "completed"
+    assert created_providers
+    assert created_providers[0].requests[0].available_tools == ()
+
+
 def test_runtime_agent_tool_allowlist_blocks_invocation(tmp_path: Path) -> None:
     target = tmp_path / "blocked.txt"
     registry = ModelProviderRegistry(

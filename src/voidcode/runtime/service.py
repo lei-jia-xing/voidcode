@@ -231,8 +231,6 @@ class ToolRegistry:
 
     def filtered(self, patterns: Iterable[str]) -> ToolRegistry:
         normalized_patterns = tuple(pattern for pattern in patterns if pattern)
-        if not normalized_patterns:
-            return self
         return ToolRegistry(
             tools={
                 name: tool
@@ -649,9 +647,9 @@ class VoidCodeRuntime:
             scoped_registry = scoped_registry.filtered(manifest.tool_allowlist)
 
         if agent.tools is not None:
-            if agent.tools.allowlist:
+            if agent.tools.allowlist is not None:
                 scoped_registry = scoped_registry.filtered(agent.tools.allowlist)
-            if agent.tools.default:
+            if agent.tools.default is not None:
                 scoped_registry = scoped_registry.filtered(agent.tools.default)
 
         return scoped_registry

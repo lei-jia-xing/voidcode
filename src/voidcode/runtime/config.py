@@ -103,8 +103,8 @@ class RuntimeToolsBuiltinConfig:
 class RuntimeToolsConfig:
     builtin: RuntimeToolsBuiltinConfig | None = None
     paths: tuple[str, ...] = ()
-    allowlist: tuple[str, ...] = ()
-    default: tuple[str, ...] = ()
+    allowlist: tuple[str, ...] | None = None
+    default: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -633,8 +633,8 @@ class _RuntimeToolsBuiltinValidationModel(BaseModel):
 class _RuntimeToolsValidationModel(BaseModel):
     builtin: _RuntimeToolsBuiltinValidationModel | None = None
     paths: tuple[str, ...] = ()
-    allowlist: tuple[str, ...] = ()
-    default: tuple[str, ...] = ()
+    allowlist: tuple[str, ...] | None = None
+    default: tuple[str, ...] | None = None
 
     @field_validator("builtin", mode="before")
     @classmethod
@@ -654,12 +654,16 @@ class _RuntimeToolsValidationModel(BaseModel):
 
     @field_validator("allowlist", mode="before")
     @classmethod
-    def _validate_allowlist(cls, value: object) -> tuple[str, ...]:
+    def _validate_allowlist(cls, value: object) -> tuple[str, ...] | None:
+        if value is None:
+            return None
         return _parse_string_list(value, field_path="tools.allowlist")
 
     @field_validator("default", mode="before")
     @classmethod
-    def _validate_default(cls, value: object) -> tuple[str, ...]:
+    def _validate_default(cls, value: object) -> tuple[str, ...] | None:
+        if value is None:
+            return None
         return _parse_string_list(value, field_path="tools.default")
 
     def to_runtime_config(self) -> RuntimeToolsConfig:
@@ -1277,8 +1281,10 @@ def serialize_runtime_agent_config(agent: RuntimeAgentConfig | None) -> dict[str
             if agent.tools.builtin is None
             else {"enabled": agent.tools.builtin.enabled},
             "paths": list(agent.tools.paths) if agent.tools.paths else None,
-            "allowlist": list(agent.tools.allowlist) if agent.tools.allowlist else None,
-            "default": list(agent.tools.default) if agent.tools.default else None,
+            "allowlist": (
+                list(agent.tools.allowlist) if agent.tools.allowlist is not None else None
+            ),
+            "default": list(agent.tools.default) if agent.tools.default is not None else None,
         }
         payload["tools"] = {key: value for key, value in tools_payload.items() if value is not None}
     if agent.skills is not None:
