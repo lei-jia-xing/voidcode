@@ -743,6 +743,60 @@ def test_runtime_config_leaves_lsp_unset_when_no_derived_defaults_exist(
     assert config.lsp is None
 
 
+def test_runtime_config_derives_go_lsp_defaults_when_workspace_matches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "go.mod").write_text("module example.com/demo\n", encoding="utf-8")
+
+    def _derive_defaults(_workspace: Path) -> dict[str, RuntimeLspServerConfig]:
+        return {"gopls": RuntimeLspServerConfig()}
+
+    monkeypatch.setattr(runtime_config, "derive_workspace_lsp_defaults", _derive_defaults)
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.lsp == RuntimeLspConfig(
+        enabled=True,
+        servers={"gopls": RuntimeLspServerConfig()},
+    )
+
+
+def test_runtime_config_derives_rust_lsp_defaults_when_workspace_matches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "Cargo.toml").write_text("[package]\nname = 'demo'\n", encoding="utf-8")
+
+    def _derive_defaults(_workspace: Path) -> dict[str, RuntimeLspServerConfig]:
+        return {"rust-analyzer": RuntimeLspServerConfig()}
+
+    monkeypatch.setattr(runtime_config, "derive_workspace_lsp_defaults", _derive_defaults)
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.lsp == RuntimeLspConfig(
+        enabled=True,
+        servers={"rust-analyzer": RuntimeLspServerConfig()},
+    )
+
+
+def test_runtime_config_derives_java_lsp_defaults_when_workspace_matches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "pom.xml").write_text("<project/>\n", encoding="utf-8")
+
+    def _derive_defaults(_workspace: Path) -> dict[str, RuntimeLspServerConfig]:
+        return {"jdtls": RuntimeLspServerConfig()}
+
+    monkeypatch.setattr(runtime_config, "derive_workspace_lsp_defaults", _derive_defaults)
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.lsp == RuntimeLspConfig(
+        enabled=True,
+        servers={"jdtls": RuntimeLspServerConfig()},
+    )
+
+
 def test_runtime_config_accepts_single_agent_execution_engine(tmp_path: Path) -> None:
     runtime_config_path(tmp_path).write_text(
         json.dumps({"execution_engine": "single_agent", "model": "opencode/gpt-5.4"}),

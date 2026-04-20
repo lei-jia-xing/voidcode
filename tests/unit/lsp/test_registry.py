@@ -165,3 +165,134 @@ def test_derive_workspace_lsp_defaults_skips_missing_executable(tmp_path: Path) 
     derived = derive_workspace_lsp_defaults(tmp_path, executable_exists=lambda command: False)
 
     assert derived == {}
+
+
+def test_derive_workspace_lsp_defaults_detects_go_workspace(tmp_path: Path) -> None:
+    (tmp_path / "go.mod").write_text("module example.com/demo\n", encoding="utf-8")
+
+    derived = derive_workspace_lsp_defaults(
+        tmp_path,
+        executable_exists=lambda command: command == "gopls",
+    )
+
+    assert derived == {"gopls": LspServerConfigOverride()}
+
+
+def test_derive_workspace_lsp_defaults_detects_rust_workspace(tmp_path: Path) -> None:
+    (tmp_path / "Cargo.toml").write_text("[package]\nname = 'demo'\n", encoding="utf-8")
+
+    derived = derive_workspace_lsp_defaults(
+        tmp_path,
+        executable_exists=lambda command: command == "rust-analyzer",
+    )
+
+    assert derived == {"rust-analyzer": LspServerConfigOverride()}
+
+
+def test_derive_workspace_lsp_defaults_detects_clangd_workspace(tmp_path: Path) -> None:
+    (tmp_path / "compile_commands.json").write_text("[]\n", encoding="utf-8")
+
+    derived = derive_workspace_lsp_defaults(
+        tmp_path,
+        executable_exists=lambda command: command == "clangd",
+    )
+
+    assert derived == {"clangd": LspServerConfigOverride()}
+
+
+def test_derive_workspace_lsp_defaults_detects_java_workspace(tmp_path: Path) -> None:
+    (tmp_path / "pom.xml").write_text("<project/>\n", encoding="utf-8")
+
+    derived = derive_workspace_lsp_defaults(
+        tmp_path,
+        executable_exists=lambda command: command == "jdtls",
+    )
+
+    assert derived == {"jdtls": LspServerConfigOverride()}
+
+
+def test_derive_workspace_lsp_defaults_detects_lua_workspace(tmp_path: Path) -> None:
+    (tmp_path / ".luarc.json").write_text("{}\n", encoding="utf-8")
+
+    derived = derive_workspace_lsp_defaults(
+        tmp_path,
+        executable_exists=lambda command: command == "lua-language-server",
+    )
+
+    assert derived == {"lua_ls": LspServerConfigOverride()}
+
+
+def test_derive_workspace_lsp_defaults_detects_zig_workspace(tmp_path: Path) -> None:
+    (tmp_path / "build.zig").write_text("pub fn build() void {}\n", encoding="utf-8")
+
+    derived = derive_workspace_lsp_defaults(
+        tmp_path,
+        executable_exists=lambda command: command == "zls",
+    )
+
+    assert derived == {"zls": LspServerConfigOverride()}
+
+
+def test_derive_workspace_lsp_defaults_detects_csharp_workspace(tmp_path: Path) -> None:
+    (tmp_path / "global.json").write_text("{}\n", encoding="utf-8")
+
+    derived = derive_workspace_lsp_defaults(
+        tmp_path,
+        executable_exists=lambda command: command == "csharp-ls",
+    )
+
+    assert derived == {"csharp-ls": LspServerConfigOverride()}
+
+
+def test_derive_workspace_lsp_defaults_does_not_enable_ruff_for_python_workspace(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\n", encoding="utf-8")
+
+    derived = derive_workspace_lsp_defaults(
+        tmp_path,
+        executable_exists=lambda command: command in {"pyright-langserver", "ruff"},
+    )
+
+    assert derived == {"pyright": LspServerConfigOverride()}
+
+
+def test_derive_workspace_lsp_defaults_does_not_enable_web_auxiliary_servers_from_package_json(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "package.json").write_text("{}\n", encoding="utf-8")
+
+    derived = derive_workspace_lsp_defaults(
+        tmp_path,
+        executable_exists=lambda command: (
+            command
+            in {
+                "typescript-language-server",
+                "vscode-eslint-language-server",
+                "vscode-html-language-server",
+                "vscode-css-language-server",
+                "vue-language-server",
+            }
+        ),
+    )
+
+    assert derived == {"tsserver": LspServerConfigOverride()}
+
+
+def test_derive_workspace_lsp_defaults_does_not_enable_git_only_presets(tmp_path: Path) -> None:
+    (tmp_path / ".git").mkdir()
+
+    derived = derive_workspace_lsp_defaults(
+        tmp_path,
+        executable_exists=lambda command: (
+            command
+            in {
+                "yaml-language-server",
+                "bash-language-server",
+                "marksman",
+                "vscode-json-language-server",
+            }
+        ),
+    )
+
+    assert derived == {}
