@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 from voidcode.runtime.contracts import RuntimeRequest, RuntimeResponse
@@ -54,7 +55,7 @@ def test_session_storage_persists_parent_lineage_across_read_surfaces(tmp_path: 
 
 def test_session_storage_migrates_legacy_schema_for_parent_lineage(tmp_path: Path) -> None:
     database_path = tmp_path / "legacy-sessions.sqlite3"
-    with sqlite3.connect(database_path) as connection:
+    with closing(sqlite3.connect(database_path)) as connection:
         _ = connection.execute(
             """
             CREATE TABLE sessions (
@@ -149,7 +150,7 @@ def test_session_storage_migrates_legacy_schema_for_parent_lineage(tmp_path: Pat
         task_id="task-parent-lineage",
     )
 
-    with sqlite3.connect(database_path) as connection:
+    with closing(sqlite3.connect(database_path)) as connection:
         session_columns = {
             row[1] for row in connection.execute("PRAGMA table_info(sessions)").fetchall()
         }
