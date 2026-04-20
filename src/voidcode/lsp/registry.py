@@ -81,10 +81,7 @@ def derive_workspace_lsp_defaults(
 ) -> dict[str, LspServerConfigOverride]:
     exists = executable_exists or _default_executable_exists
     derived: dict[str, LspServerConfigOverride] = {}
-    for server_name, markers in (
-        ("pyright", _PYTHON_WORKSPACE_MARKERS),
-        ("tsserver", _TS_WORKSPACE_MARKERS),
-    ):
+    for server_name, markers in _SAFE_IMPLICIT_WORKSPACE_DEFAULTS:
         preset = get_builtin_lsp_server_preset(server_name)
         if preset is None:
             continue
@@ -169,6 +166,34 @@ _PYTHON_WORKSPACE_MARKERS: tuple[str, ...] = (
     "requirements.txt",
 )
 _TS_WORKSPACE_MARKERS: tuple[str, ...] = ("tsconfig.json", "jsconfig.json", "package.json")
+_GO_WORKSPACE_MARKERS: tuple[str, ...] = ("go.work", "go.mod")
+_RUST_WORKSPACE_MARKERS: tuple[str, ...] = ("Cargo.toml", "rust-project.json")
+_CLANGD_WORKSPACE_MARKERS: tuple[str, ...] = (
+    "compile_commands.json",
+    "compile_flags.txt",
+    ".clangd",
+)
+_JAVA_WORKSPACE_MARKERS: tuple[str, ...] = (
+    "pom.xml",
+    "build.gradle",
+    "build.gradle.kts",
+    "settings.gradle",
+)
+_LUA_WORKSPACE_MARKERS: tuple[str, ...] = (".luarc.json", ".luarc.jsonc")
+_ZIG_WORKSPACE_MARKERS: tuple[str, ...] = ("build.zig", "zls.json")
+_CSHARP_WORKSPACE_MARKERS: tuple[str, ...] = ("global.json", "Directory.Build.props")
+
+_SAFE_IMPLICIT_WORKSPACE_DEFAULTS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("pyright", _PYTHON_WORKSPACE_MARKERS),
+    ("tsserver", _TS_WORKSPACE_MARKERS),
+    ("gopls", _GO_WORKSPACE_MARKERS),
+    ("rust-analyzer", _RUST_WORKSPACE_MARKERS),
+    ("clangd", _CLANGD_WORKSPACE_MARKERS),
+    ("jdtls", _JAVA_WORKSPACE_MARKERS),
+    ("lua_ls", _LUA_WORKSPACE_MARKERS),
+    ("zls", _ZIG_WORKSPACE_MARKERS),
+    ("csharp-ls", _CSHARP_WORKSPACE_MARKERS),
+)
 
 
 def _workspace_has_any_marker(workspace: Path, markers: Iterable[str]) -> bool:

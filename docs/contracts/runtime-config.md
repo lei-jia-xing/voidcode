@@ -182,7 +182,7 @@ workspace 本地覆盖路径保持为：
 - `acp` 当前只支持 runtime-owned `memory` transport。启用后，运行时会在 run / approval-resume 启动阶段执行 connect + handshake，并在该次运行结束时 disconnect。
 - 如果 `acp` startup / handshake 失败，运行时会将 ACP 状态标记为 `failed`，发出 `runtime.acp_failed`，并使本次运行通过已有失败路径结束；不会静默降级为 disconnected 继续执行。
 - `lsp` 已支持最小的 runtime-managed server 启动与只读工具访问，并且 `lsp.servers` 已可消费内置 preset、extension/language 映射、root markers 与默认 command/preset override merge。
-- 当 repo-local `.voidcode.json` 未显式提供 `lsp` 配置时，运行时现在会为高置信度 workspace 自动推导最小默认值：当前仅覆盖 Python (`pyright`) 与 TypeScript/JavaScript (`tsserver`)，并且只有在对应语言服务器可执行文件存在时才会启用。
+- 当 repo-local `.voidcode.json` 未显式提供 `lsp` 配置时，运行时现在会为高置信度 workspace 自动推导最小默认值：当前覆盖 Python (`pyright`)、TypeScript/JavaScript (`tsserver`)、Go (`gopls`)、Rust (`rust-analyzer`)、C/C++ (`clangd`)、Java (`jdtls`)、Lua (`lua_ls`)、Zig (`zls`) 与 C# (`csharp-ls`)，并且只有在对应语言服务器可执行文件存在时才会启用。
 - 显式的 repo-local `lsp` 配置（包括 `enabled: false`）继续具有最高优先级；自动推导默认值不会覆盖用户已声明的 server 列表或关闭语义。
 
 ## 工作区的引导规则
