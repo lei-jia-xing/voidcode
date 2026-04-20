@@ -1,204 +1,172 @@
 # `voidcode.acp`
 
-这里是 ACP capability layer 的目标目录。
+这里是 VoidCode 当前已经落地的 ACP capability layer。
 
-当前它的定位不是“把 `runtime/acp.py` 里的所有实现整体搬过来”，而是只承载那些已经被运行时路径证明稳定、又不依赖 runtime lifecycle ownership 的纯 contract / schema / model 定义。
+它的职责不是接管 runtime 里的 ACP lifecycle，而是承载那些已经被运行时路径验证过、并且可以脱离 runtime ownership 复用的 **contract / schema / helper**。
 
-## 负责什么
+换句话说，`voidcode.acp` 现在已经不是一个纯占位目录，但它也不是“ACP 已经被完整迁出 runtime”的信号。
 
-- 与 runtime 生命周期解耦的 ACP request / response envelope model
-- 可复用的 ACP adapter-facing protocol contract
-- 可复用的 ACP 配置 schema helper
-- 不直接绑定 connect / disconnect / recovery 行为的纯状态模型
+## 当前定位
 
-## 不负责什么
+当前仓库里，ACP 的合理分层是：
 
-- connect / disconnect lifecycle 管理
-- runtime 管理的 availability / status ownership
-- session persistence / resume 语义
-- runtime event emission / recovery flow
-- runtime 对 ACP adapter 的装配与治理
+- `src/voidcode/acp/`：稳定的 capability-layer contract / schema
+- `src/voidcode/runtime/acp.py`：runtime-owned lifecycle / adapter management / event ownership
 
-## 与 `runtime` 的边界
+这和仓库对 `runtime` 作为系统控制面的整体判断一致：
 
-[`src/voidcode/runtime/acp.py`](../runtime/acp.py) 当前仍然是 runtime-owned control plane。
+- runtime 持有连接、状态、事件、恢复与治理真相
+- capability layer 只承载已经稳定、可复用、且不依赖 runtime 生命周期所有权的定义
 
-它现在同时包含：
+## 当前已经承载什么
+
+当前 `voidcode.acp` 已经承载的稳定定义包括：
 
 - `AcpConfigState`
-- `AcpRequestEnvelope`
-- `AcpResponseEnvelope`
-- `AcpRuntimeEvent`
-- `AcpAdapterState`
-- `AcpAdapter` protocol
-- `DisabledAcpAdapter`
-- `ManagedAcpAdapter`
-- `build_acp_adapter()`
-
-其中有些部分看起来像 capability-layer primitive，但是否适合迁入 `src/voidcode/acp/`，必须先由现有 runtime 语义反推，而不是提前假设边界已经稳定。
-
-## `#97` 当前要求
-
-[`#97`](https://github.com/lei-jia-xing/voidcode/issues/97) 的要求不是直接迁移 ACP，而是两阶段推进：
-
-1. 先验证哪些 ACP contract 已经稳定
-2. 只有验证成立后，再把稳定的那部分迁入 `src/voidcode/acp/`
-
-这条 issue 当前关注的验证问题是：
-
-- `AcpRequestEnvelope` / `AcpResponseEnvelope` 是否已经覆盖 runtime 真正需要的语义
-- `AcpAdapter` protocol 是否已经稳定表达 runtime 依赖的 adapter-facing contract
-- `AcpConfigState` / `AcpAdapterState` 里哪些字段是纯模型，哪些仍强依赖 runtime lifecycle ownership
-- 现有 ACP 测试与调用路径是否足以证明这些边界稳定
-
-## 当前清单
-
-基于当前代码状态，可以先把对象分成三类。
-
-### 已经较稳定、优先验证后可抽取
-
-- `AcpRequestEnvelope`
-  - 目前只是 `request_type` + `payload`
-  - 作为 adapter-facing request contract，相对纯净
-- `AcpResponseEnvelope`
-  - 目前只是 `status` + `payload` + `error`
-  - 作为 adapter-facing response contract，相对纯净
-- `AcpAdapter` protocol
-  - 是这次 issue 最值得验证的一层
-  - 但要先确认其中哪些方法属于纯 adapter-facing contract，哪些其实夹带了 runtime lifecycle 语义
-
-### 可抽取潜力存在，但需要更保守判断
-
-- `AcpConfigState`
-  - `configured_enabled` 很像纯配置派生结果
-  - 但它当前直接依赖 `RuntimeAcpConfig`
-  - 如果迁移，最好避免 capability layer 继续直接反向依赖 runtime config
-- `AcpAdapterState`
-  - 其中一部分字段像纯状态模型
-  - 但 `mode` / `configured` / `available` / `status` / `last_error` 已明显带有 runtime ownership 色彩
-  - 很可能需要拆成“纯状态片段”和“runtime-owned 聚合状态”两层，而不是整类搬迁
-
-### 当前不应抽取，继续留在 `runtime`
-
-- `AcpRuntimeEvent`
-  - 事件类型和 payload 直接绑定 runtime event flow
-- `DisabledAcpAdapter`
-- `ManagedAcpAdapter`
-- `build_acp_adapter()`
-  - 这些都直接属于 runtime-managed control-plane 行为
-- `connect()` / `disconnect()` / `fail()` 相关 lifecycle 实现
-  - 当前明显是 runtime ownership，不适合能力层提前接管
-
-## 当前判断
-
-按现在仓库的实现强度，`#97` 更像一个“先写清楚边界，再小步抽取”的任务，而不是一次性重构。
-
-比较稳妥的判断是：
-
-- `AcpRequestEnvelope` / `AcpResponseEnvelope` 大概率已经接近稳定
-- `AcpAdapter` protocol 需要先判断方法集合是否过于 runtime-owned
-- `AcpConfigState` / `AcpAdapterState` 不适合整类直接迁出
-- adapter 实现与 lifecycle 逻辑当前不应离开 `runtime/acp.py`
-
-## 如何完成 `#97`
-
-推荐按下面顺序推进。
-
-### 第一步：先写出验证结论
-
-先在代码和测试基础上形成一份明确结论，回答：
-
-- 哪些 envelope / contract 已稳定
-- 哪些 state/model 仍耦合 runtime lifecycle
-- 为什么某些对象现在不能抽
-
-如果没有这一步，后面的迁移很容易变成“结构先行”。
-
-### 第二步：最小化抽取稳定 primitive
-
-如果第一步验证成立，优先只抽这些相对稳定的对象：
-
-- `AcpRequestEnvelope`
-- `AcpResponseEnvelope`
-- 经过收缩后的 adapter-facing protocol contract
-- 必要的 schema / helper
-
-优先策略应该是：
-
-- 小范围迁移
-- runtime 继续消费新位置的定义
-- 行为保持不变
-
-### 第三步：保留 runtime-owned 聚合与 lifecycle
-
-以下内容应继续保留在 `runtime/acp.py`：
-
-- adapter 管理与装配
-- disabled / managed 行为分支
-- runtime event emission
-- connect / disconnect / fail lifecycle
-- availability / recovery / status ownership
-
-### 第四步：用测试证明边界没有被破坏
-
-完成 `#97` 时，至少应确保：
-
-- 现有 ACP 行为测试语义保持一致
-- runtime 仍然通过同样的边界消费 ACP contract
-- 新的 `src/voidcode/acp/` 不只是占位，而是真正承载已验证稳定的定义
-
-## 不应把 `#97` 做成什么
-
-这条 issue 不应演变成：
-
-- 现在就把 ACP 全量迁入 `src/voidcode/acp/`
-- 提前设计未来网络/传输层扩展
-- 在 runtime 语义未稳定前发明过大的 capability-layer API 面
-- 为了“目录整洁”而提前固化尚未验证的边界
-
-## 当前建议
-
-如果现在开始实现，最稳的做法是：
-
-1. 先审查 `runtime/acp.py` 与测试，写出“稳定 / 不稳定”结论
-2. 只抽取最小稳定 contract 集合
-3. 让 `runtime/acp.py` 改为消费 `voidcode.acp` 的稳定定义
-4. 保持 runtime lifecycle 行为完全不变
-
-## 当前落地状态
-
-当前目录已经开始承载最小稳定 contract 集合：
-
 - `AcpRequestEnvelope`
 - `AcpResponseEnvelope`
 - `AcpRequestHandler`
 
-这些定义现在位于：
+这些定义位于：
 
-- [contracts.py](./contracts.py)
-- [__init__.py](./__init__.py)
+- [`contracts.py`](./contracts.py)
+- [`__init__.py`](./__init__.py)
 
-`runtime/acp.py` 继续保留 runtime-owned lifecycle、state 聚合和 adapter 实现，并消费这里暴露出的稳定 contract。
+它们当前的语义是：
 
-一句话说，`#97` 的完成标准不是“ACP 被搬走了”，而是：
+- `AcpConfigState`
+  - 只保留 capability-layer 需要的最小配置派生结果
+  - 当前字段只有 `configured_enabled`
+  - 提供 `from_enabled()` 作为 runtime-agnostic helper
+- `AcpRequestEnvelope`
+  - adapter-facing request envelope
+  - 当前只包含 `request_type` 与 `payload`
+- `AcpResponseEnvelope`
+  - adapter-facing response envelope
+  - 当前只包含 `status`、`payload` 与 `error`
+- `AcpRequestHandler`
+  - 最小 adapter-facing protocol contract
+  - 当前只要求 `request(envelope)`
 
-`src/voidcode/acp/` 承载了已经被证明稳定的 ACP contract/schema 层，而 `runtime/acp.py` 继续持有 runtime-managed control-plane 行为。
-## 2026-04-17 Validation Update
+## 不负责什么
 
-The current validation result for `#97` is:
+`voidcode.acp` 当前**不**负责：
 
-- Stable and now extracted into `src/voidcode/acp/`:
-  `AcpConfigState`, `AcpRequestEnvelope`, `AcpResponseEnvelope`, `AcpRequestHandler`
-- `AcpConfigState` has been reduced to a capability-layer model plus a runtime-agnostic helper:
-  `configured_enabled` and `from_enabled()`
-- Still runtime-owned:
-  `AcpAdapterState`, `AcpRuntimeEvent`, `DisabledAcpAdapter`, `ManagedAcpAdapter`,
-  `build_acp_adapter()`, and the connect/disconnect/fail lifecycle
-- Validation coverage:
-  `tests/unit/acp/test_acp.py`,
-  `tests/unit/runtime/test_acp.py`,
-  `tests/unit/runtime/test_runtime_service_extensions.py`
+- connect / disconnect / fail lifecycle
+- runtime-owned availability / status ownership
+- session persistence / resume semantics
+- runtime event emission
+- adapter 装配与治理
+- recovery / startup / handshake flow
+- agent-to-agent messaging semantics
+- multi-agent routing plane
+- delegated execution substrate
 
-This means `src/voidcode/acp/` is no longer just a placeholder directory. It now
-holds the ACP contract/schema layer that has been validated against real runtime
-usage, while `runtime/acp.py` continues to own the runtime control-plane behavior.
+这些能力仍然必须留在 `runtime/`，而不是提前抽成 capability-layer API。
+
+## 与 `runtime/acp.py` 的边界
+
+[`src/voidcode/runtime/acp.py`](../runtime/acp.py) 当前仍然是 runtime-owned ACP control plane。
+
+它继续持有：
+
+- `_MemoryAcpTransport`
+- `AcpRuntimeEvent`
+- `AcpAdapterState`
+- `AcpAdapter`
+- `DisabledAcpAdapter`
+- `ManagedAcpAdapter`
+- `build_acp_adapter()`
+- connect / disconnect / fail / drain-events lifecycle
+
+当前 runtime 里的 ACP 行为是：
+
+- 仅支持 runtime-owned `memory` transport
+- 在 run / approval-resume 启动阶段 connect + handshake
+- 在 finalized run / approval-resume 结束路径上 disconnect；某些 waiting / approval-blocked 路径也会断开 ACP 并持久化运行态，但不会在当次响应里发出 `runtime.acp_disconnected`
+- 通过 `runtime.acp_connected` / `runtime.acp_failed` 发出事件，并在正常 finalized disconnect 路径上发出 `runtime.acp_disconnected`
+- 将运行态写入 `session.metadata["runtime_state"]["acp"]`
+
+因此，ACP 现在应被理解为：
+
+> 一个已经进入最小 runtime-managed transport / lifecycle 路径、但尚未扩展成 agent control-plane 的受管能力边界。
+
+## 它现在不是什么
+
+当前 ACP 还不是：
+
+- agent-to-agent messaging bus
+- multi-agent routing layer
+- supervisor / worker handoff transport
+- 可恢复 delegated execution infrastructure
+- 当前可直接产品化的 agent control plane
+
+这点非常重要。对 VoidCode 当前阶段而言，ACP 仍然是**边界预留**，不是已经成熟的协作底座。
+
+即使未来想做 async leader / worker 协作，仅有 ACP 也不够；更靠前的前提通常仍然是：
+
+- background task truth
+- parent / child session linkage
+- leader notification path
+- result retrieval / transcript recovery
+- approval / resume correctness across delegated work
+
+只有这些 runtime capability 先成立，ACP 才更像是协作控制面的放大器，而不是空中楼阁。
+
+## 为什么没有继续大规模迁移
+
+`#97` 的核心不是“把 ACP 全搬走”，而是先验证哪些定义已经稳定，再做小范围抽取。
+
+当前验证结论是：
+
+- 已稳定并适合留在 capability layer：
+  - `AcpConfigState`
+  - `AcpRequestEnvelope`
+  - `AcpResponseEnvelope`
+  - `AcpRequestHandler`
+- 仍然 runtime-owned：
+  - `AcpAdapterState`
+  - `AcpRuntimeEvent`
+  - `DisabledAcpAdapter`
+  - `ManagedAcpAdapter`
+  - `build_acp_adapter()`
+  - connect / disconnect / fail lifecycle
+
+这意味着当前仓库已经完成了一轮 boundary-first 的最小落地，但还没有进入“更宽 ACP capability surface”的阶段。
+
+## 验证覆盖
+
+当前 ACP 边界由以下测试共同覆盖：
+
+- `tests/unit/acp/test_acp.py`
+- `tests/unit/runtime/test_acp.py`
+- `tests/unit/runtime/test_runtime_service_extensions.py`
+
+这些测试的意义不是证明 ACP 已经是成熟控制面，而是证明：
+
+- capability-layer contracts 已经能被 runtime 稳定消费
+- runtime-owned lifecycle 语义仍保持不变
+- boundary 抽取没有破坏现有 run / resume / event 行为
+
+## 与 agent 层的关系
+
+ACP 和 agent 不是同一个维度。
+
+- `voidcode.agent` 负责声明角色 preset / capability intent
+- `voidcode.runtime` 负责执行治理与 capability lifecycle truth
+- `voidcode.acp` 负责稳定的 ACP contract / schema 边界
+
+因此，当前不应把 “已有 `voidcode.acp` 目录” 误读成 “多 agent 只差一点 transport”。
+
+更准确的说法是：
+
+> ACP 已经有了最小 contract 层与 runtime-managed lifecycle 基线，但距离真正的 agent coordination control plane 仍然很远。
+
+## 相关文档
+
+- [`docs/architecture.md`](../../../docs/architecture.md)
+- [`docs/current-state.md`](../../../docs/current-state.md)
+- [`docs/roadmap.md`](../../../docs/roadmap.md)
+- [`docs/agent-architecture.md`](../../../docs/agent-architecture.md)
+- [`docs/contracts/runtime-config.md`](../../../docs/contracts/runtime-config.md)
+- [`docs/contracts/runtime-events.md`](../../../docs/contracts/runtime-events.md)

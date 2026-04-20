@@ -8,7 +8,7 @@
 
 它的目标不是替代 `runtime/`，而是把“agent 是什么、默认带什么组合”从运行时治理逻辑里拆出来，形成一个薄的、声明式的组合层。
 
-当前这一层仍然是**文档化 / preset-intent 层**，不是独立的 agent runtime，也不是 multi-agent 已落地的证据。
+当前这一层仍然是**声明式 preset / preset-intent 层**，不是独立的 agent runtime，也不是 multi-agent 已落地的证据。
 
 ## 负责什么
 
@@ -38,7 +38,29 @@
 - [`researcher`](./researcher/README.md)
 - [`product`](./product/README.md)
 
-其中只有 `leader` 对应今天真实存在的单 agent 主路径，其余角色都仍然是 post-MVP 的 preset 方向。
+当前 builtin manifest 已覆盖以下角色：
+
+- `leader`
+- `worker`
+- `advisor`
+- `explore`
+- `researcher`
+- `product`
+
+其中只有 `leader` 对应今天真实存在的单 agent 主路径，其余角色都仍然是 post-MVP 的 future preset。
+
+## Preset intent vs runtime truth
+
+本目录描述的是“一个角色默认希望带什么组合”，不是“runtime 今天已经能怎样执行它”。
+
+- `leader`：当前唯一映射到真实执行路径的角色
+- `worker`：future focused executor preset，不代表今天已经有 delegated runtime
+- `advisor`：future advisory preset，不代表今天已有独立审查/判断 runtime
+- `explore`：future local-code exploration preset，不代表今天已有独立 explore session model
+- `researcher`：future external research preset，不代表今天已有独立 researcher orchestration
+- `product`：future scope/alignment preset，不代表今天已有需求对齐 gate runtime
+
+同样，文档中出现的 skill / hook / permission / MCP intent 只是声明层建议，不是 runtime 已经实现的行为。
 
 ## 与 runtime 的边界
 
@@ -47,6 +69,14 @@
 最终的执行真相仍然由 `voidcode.runtime` 持有。
 
 这也意味着：本目录中出现的“建议 hooks / 建议能力”只是在描述未来 preset 希望依赖什么，不代表 runtime 今天已经支持对应的 lifecycle phase。以当前现实看，hooks 仍然只覆盖 runtime-owned 的 `pre_tool` / `post_tool`；background task、child-session、leader notification、result retrieval 等 async agent substrate 仍未落地。
+
+从 OMO/OMOA 的经验看，更值得借鉴的是以下结构判断，而不是直接照搬执行语义：
+
+- 角色要有清晰的 responsibility boundary，而不是只有 prompt 名称
+- 窄职责角色应当配更窄的工具权限与更明确的 skill 附着
+- `explore` 与 `researcher` 应分开：前者面向本地仓库，后者面向外部资料
+- `product` 更像 pre-plan / acceptance 对齐角色，而不是新的 orchestrator
+- hook 应按 event 类型表达系统干预点，而不是混成角色自己的执行权
 
 ## 相关文档
 
