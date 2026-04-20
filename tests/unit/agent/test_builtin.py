@@ -1,4 +1,13 @@
-from voidcode.agent import LEADER_AGENT_MANIFEST, get_builtin_agent_manifest, list_builtin_agent_manifests
+from voidcode.agent import (
+    ADVISOR_AGENT_MANIFEST,
+    EXPLORE_AGENT_MANIFEST,
+    LEADER_AGENT_MANIFEST,
+    PRODUCT_AGENT_MANIFEST,
+    RESEARCHER_AGENT_MANIFEST,
+    WORKER_AGENT_MANIFEST,
+    get_builtin_agent_manifest,
+    list_builtin_agent_manifests,
+)
 
 
 def test_builtin_agent_registry_exposes_leader_manifest() -> None:
@@ -15,4 +24,30 @@ def test_builtin_agent_registry_exposes_leader_manifest() -> None:
 def test_builtin_agent_registry_lists_leader_manifest() -> None:
     manifests = list_builtin_agent_manifests()
 
-    assert manifests == (LEADER_AGENT_MANIFEST,)
+    assert manifests == (
+        LEADER_AGENT_MANIFEST,
+        WORKER_AGENT_MANIFEST,
+        ADVISOR_AGENT_MANIFEST,
+        EXPLORE_AGENT_MANIFEST,
+        RESEARCHER_AGENT_MANIFEST,
+        PRODUCT_AGENT_MANIFEST,
+    )
+
+
+def test_builtin_agent_registry_exposes_future_role_skeletons() -> None:
+    worker = get_builtin_agent_manifest("worker")
+    advisor = get_builtin_agent_manifest("advisor")
+    explore = get_builtin_agent_manifest("explore")
+    researcher = get_builtin_agent_manifest("researcher")
+    product = get_builtin_agent_manifest("product")
+
+    assert worker == WORKER_AGENT_MANIFEST
+    assert advisor == ADVISOR_AGENT_MANIFEST
+    assert explore == EXPLORE_AGENT_MANIFEST
+    assert researcher == RESEARCHER_AGENT_MANIFEST
+    assert product == PRODUCT_AGENT_MANIFEST
+
+    for manifest in (worker, advisor, explore, researcher, product):
+        assert manifest is not None
+        assert manifest.mode == "subagent"
+        assert manifest.execution_engine is None

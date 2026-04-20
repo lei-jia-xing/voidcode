@@ -914,6 +914,16 @@ def test_runtime_agent_payload_resolves_through_builtin_agent_manifest() -> None
     )
 
 
+def test_runtime_agent_payload_accepts_future_role_presets_without_execution_mapping() -> None:
+    agent = parse_runtime_agent_payload({"preset": "worker"}, source="test payload")
+
+    assert agent == RuntimeAgentConfig(
+        preset="worker",
+        prompt_profile="worker",
+        execution_engine=None,
+    )
+
+
 def test_runtime_config_parses_repo_local_max_steps(tmp_path: Path) -> None:
     runtime_config_path(tmp_path).write_text(
         json.dumps({"max_steps": 7}),
