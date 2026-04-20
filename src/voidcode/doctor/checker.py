@@ -246,13 +246,16 @@ class LspServerChecker:
             )
 
         if shutil.which(executable) is not None:
+            preset_id = self._preset.id if hasattr(self._preset, "id") else None
+            if preset_id == self._server_name:
+                preset_id = None
             return CapabilityCheckResult(
                 status=CapabilityCheckStatus.READY,
                 name=f"lsp:{self._server_name}",
                 check_type=DoctorCheckType.LSP_SERVER.value,
                 details={
                     "server_name": self._server_name,
-                    "preset_id": self._preset.id if hasattr(self._preset, "id") else None,
+                    "preset_id": preset_id,
                     "command": list(command),
                     "languages": list(self._preset.languages) if self._preset.languages else [],
                     "extensions": list(self._preset.extensions) if self._preset.extensions else [],

@@ -101,6 +101,23 @@ class TestLspServerChecker:
         assert result.status == CapabilityCheckStatus.READY
         assert result.name == "lsp:test-lsp"
         assert result.check_type == DoctorCheckType.LSP_SERVER.value
+        assert result.details.get("preset_id") is None
+
+    def test_check_with_alias_lsp_preserves_preset_id(self) -> None:
+        """Test checker keeps preset id for alias-style builtin mappings."""
+        from voidcode.lsp.presets import LspServerPreset
+
+        preset = LspServerPreset(
+            id="pyright",
+            command=("python", "--version"),
+            extensions=(".py",),
+            languages=("python",),
+        )
+        checker = LspServerChecker("python", preset)
+        result = checker.check()
+
+        assert result.status == CapabilityCheckStatus.READY
+        assert result.details.get("preset_id") == "pyright"
 
     def test_check_with_missing_lsp(self) -> None:
         """Test checker with a missing LSP server."""

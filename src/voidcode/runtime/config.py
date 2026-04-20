@@ -1008,6 +1008,7 @@ def _parse_lsp_server_config(
 
     server_payload = cast(dict[str, object], raw_value)
     preset = server_payload.get("preset")
+    uses_builtin_server_name = has_builtin_lsp_server_preset(server_name)
     if preset is not None:
         if not isinstance(preset, str) or not preset:
             raise ValueError(f"runtime config field '{field_path}.preset' must be a string")
@@ -1016,7 +1017,7 @@ def _parse_lsp_server_config(
                 f"runtime config field '{field_path}.preset' references unknown preset"
             )
     command = _parse_string_list(server_payload.get("command"), field_path=f"{field_path}.command")
-    if not command and preset is None and not has_builtin_lsp_server_preset(server_name):
+    if not command and preset is None and not uses_builtin_server_name:
         raise ValueError(
             f"runtime config field '{field_path}.command' must contain at least one string"
         )

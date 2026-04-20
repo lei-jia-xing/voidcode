@@ -604,7 +604,9 @@ def test_runtime_config_providers_prefer_repo_config_over_environment(tmp_path: 
     )
 
 
-def test_runtime_config_accepts_builtin_lsp_preset_without_explicit_command(tmp_path: Path) -> None:
+def test_runtime_config_accepts_builtin_lsp_server_by_name_without_explicit_command(
+    tmp_path: Path,
+) -> None:
     runtime_config_path(tmp_path).write_text(
         json.dumps({"lsp": {"enabled": True, "servers": {"pyright": {}}}}),
         encoding="utf-8",
@@ -635,7 +637,9 @@ def test_runtime_config_accepts_extended_builtin_lsp_catalog_entries(tmp_path: P
     )
 
 
-def test_runtime_config_accepts_explicit_lsp_preset_override(tmp_path: Path) -> None:
+def test_runtime_config_keeps_explicit_lsp_preset_alias_support_for_compatibility(
+    tmp_path: Path,
+) -> None:
     runtime_config_path(tmp_path).write_text(
         json.dumps(
             {
