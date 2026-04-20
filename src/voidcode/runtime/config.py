@@ -12,6 +12,7 @@ from typing import Literal, Protocol, cast
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from ..agent import AgentManifestId, get_builtin_agent_manifest, list_builtin_agent_manifests
 from ..hook.config import FormatterCwdPolicy, RuntimeFormatterPresetConfig, RuntimeHooksConfig
 from ..lsp import LspServerConfigOverride as RuntimeLspServerConfig
 from ..lsp import derive_workspace_lsp_defaults, has_builtin_lsp_server_preset
@@ -34,7 +35,7 @@ _VALID_APPROVAL_MODES = ("allow", "deny", "ask")
 _VALID_TUI_COMMANDS = ("command_palette", "session_new", "session_resume")
 
 type ExecutionEngineName = Literal["deterministic", "single_agent"]
-type RuntimeAgentPresetId = Literal["leader"]
+type RuntimeAgentPresetId = AgentManifestId
 
 _VALID_EXECUTION_ENGINES: tuple[ExecutionEngineName, ...] = ("deterministic", "single_agent")
 _TOP_LEVEL_ENV_VARS = (
@@ -1146,9 +1147,28 @@ def _parse_agent_config(raw_agent: object) -> RuntimeAgentConfig | None:
         raise ValueError("runtime config field 'agent' must be an object when provided")
 
     payload = cast(dict[str, object], raw_agent)
+    if "preset" not in payload:
+        builtin_manifests = list_builtin_agent_manifests()
+        valid_ids = {manifest.id for manifest in builtin_manifests}
+        payload_keys = set(payload)
+        if payload_keys != valid_ids.intersection(payload_keys) or len(payload_keys) != 1:
+            valid_presets = ", ".join(manifest.id for manifest in builtin_manifests)
+            raise ValueError(
+                "runtime config field 'agent' must declare exactly one built-in agent key: "
+                f"{valid_presets}"
+            )
+        matching_id = next(iter(payload_keys))
+        nested_payload = payload.get(matching_id)
+        if not isinstance(nested_payload, dict):
+            raise ValueError(
+                f"runtime config field 'agent.{matching_id}' must be an object when provided"
+            )
+        payload = {"preset": matching_id, **cast(dict[str, object], nested_payload)}
+
     raw_preset = payload.get("preset")
-    if raw_preset != "leader":
-        raise ValueError("runtime config field 'agent.preset' must be one of: leader")
+    if not isinstance(raw_preset, str) or get_builtin_agent_manifest(raw_preset) is None:
+        valid_presets = ", ".join(manifest.id for manifest in list_builtin_agent_manifests())
+        raise ValueError(f"runtime config field 'agent.preset' must be one of: {valid_presets}")
 
     prompt_profile = payload.get("prompt_profile")
     if prompt_profile is not None and (
@@ -1169,7 +1189,7 @@ def _parse_agent_config(raw_agent: object) -> RuntimeAgentConfig | None:
     provider_fallback = _parse_provider_fallback_config(payload.get("provider_fallback"))
 
     return RuntimeAgentConfig(
-        preset="leader",
+        preset=cast(RuntimeAgentPresetId, raw_preset),
         prompt_profile=prompt_profile.strip() if isinstance(prompt_profile, str) else None,
         model=model.strip() if isinstance(model, str) else None,
         execution_engine=execution_engine,
@@ -1182,12 +1202,13 @@ def _parse_agent_config(raw_agent: object) -> RuntimeAgentConfig | None:
 def _resolve_agent_config(agent: RuntimeAgentConfig | None) -> RuntimeAgentConfig | None:
     if agent is None:
         return None
-    if agent.preset == "leader":
+    manifest = get_builtin_agent_manifest(agent.preset)
+    if manifest is not None:
         return RuntimeAgentConfig(
-            preset="leader",
-            prompt_profile=agent.prompt_profile or "leader",
-            model=agent.model,
-            execution_engine=agent.execution_engine or "single_agent",
+            preset=agent.preset,
+            prompt_profile=agent.prompt_profile or manifest.prompt_profile,
+            model=agent.model or manifest.model_preference,
+            execution_engine=agent.execution_engine or manifest.execution_engine,
             tools=agent.tools,
             skills=agent.skills,
             provider_fallback=agent.provider_fallback,

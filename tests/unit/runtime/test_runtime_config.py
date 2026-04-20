@@ -6,6 +6,7 @@ from typing import cast
 
 import pytest
 
+from voidcode.agent import LEADER_AGENT_MANIFEST, get_builtin_agent_manifest
 from voidcode.provider.config import (
     AnthropicProviderConfig,
     CopilotProviderAuthConfig,
@@ -821,13 +822,14 @@ def test_runtime_config_parses_leader_agent_preset_from_repo_file(tmp_path: Path
         json.dumps(
             {
                 "agent": {
-                    "preset": "leader",
-                    "model": "opencode/gpt-5.4",
-                    "tools": {"builtin": {"enabled": True}, "paths": [".voidcode/tools"]},
-                    "skills": {"enabled": True, "paths": [".voidcode/skills"]},
-                    "provider_fallback": {
-                        "preferred_model": "opencode/gpt-5.4",
-                        "fallback_models": ["custom/demo"],
+                    "leader": {
+                        "model": "opencode/gpt-5.4",
+                        "tools": {"builtin": {"enabled": True}, "paths": [".voidcode/tools"]},
+                        "skills": {"enabled": True, "paths": [".voidcode/skills"]},
+                        "provider_fallback": {
+                            "preferred_model": "opencode/gpt-5.4",
+                            "fallback_models": ["custom/demo"],
+                        },
                     },
                 }
             }
@@ -854,6 +856,28 @@ def test_runtime_config_parses_leader_agent_preset_from_repo_file(tmp_path: Path
     )
 
 
+def test_runtime_config_rejects_agent_maps_without_exactly_one_built_in_key(
+    tmp_path: Path,
+) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps(
+            {
+                "agent": {
+                    "leader": {"model": "opencode/gpt-5.4"},
+                    "unknown": {"model": "custom/demo"},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="runtime config field 'agent' must declare exactly one built-in agent key: leader",
+    ):
+        _ = load_runtime_config(tmp_path, env={})
+
+
 def test_runtime_agent_payload_round_trips_through_serialization() -> None:
     agent = parse_runtime_agent_payload(
         {
@@ -874,6 +898,20 @@ def test_runtime_agent_payload_round_trips_through_serialization() -> None:
         "tools": {"builtin": {"enabled": True}, "paths": [".voidcode/tools"]},
         "skills": {"enabled": False, "paths": [".voidcode/skills"]},
     }
+
+
+def test_runtime_agent_payload_resolves_through_builtin_agent_manifest() -> None:
+    manifest = get_builtin_agent_manifest("leader")
+
+    assert manifest == LEADER_AGENT_MANIFEST
+
+    agent = parse_runtime_agent_payload({"preset": "leader"}, source="test payload")
+
+    assert agent == RuntimeAgentConfig(
+        preset="leader",
+        prompt_profile=LEADER_AGENT_MANIFEST.prompt_profile,
+        execution_engine=LEADER_AGENT_MANIFEST.execution_engine,
+    )
 
 
 def test_runtime_config_parses_repo_local_max_steps(tmp_path: Path) -> None:
