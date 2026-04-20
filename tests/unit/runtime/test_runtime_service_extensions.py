@@ -13,6 +13,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from voidcode.graph.read_only_slice import DeterministicReadOnlyGraph
 from voidcode.provider.auth import ProviderAuthAuthorizeRequest
 from voidcode.provider.config import (
     CopilotProviderAuthConfig,
@@ -2353,6 +2354,45 @@ def test_runtime_effective_runtime_config_keeps_persisted_non_agent_sessions_cle
     assert effective.model == "session/model"
     assert effective.execution_engine == "deterministic"
     assert effective.agent is None
+
+
+def test_runtime_graph_selection_avoids_reusing_initial_single_agent_graph(
+    tmp_path: Path,
+) -> None:
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(SingleAgentTurnResult(output="unused"),),
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            agent=RuntimeAgentConfig(
+                preset="leader",
+                model="opencode/gpt-5.4",
+            )
+        ),
+        model_provider_registry=registry,
+    )
+
+    graph = runtime._graph_for_session_metadata(  # pyright: ignore[reportPrivateUsage]
+        {
+            "runtime_config": {
+                "approval_mode": "ask",
+                "execution_engine": "deterministic",
+                "max_steps": 4,
+                "provider_fallback": None,
+                "resolved_provider": None,
+                "plan": None,
+            }
+        }
+    )
+
+    assert graph is not _private_attr(runtime, "_graph")
+    assert isinstance(graph, DeterministicReadOnlyGraph)
 
 
 def test_runtime_effective_runtime_config_uses_request_metadata_max_steps_for_new_runs(

@@ -225,6 +225,7 @@ class VoidCodeRuntime:
     _graph: RuntimeGraph
     _graph_override: RuntimeGraph | None
     _config: RuntimeConfig
+    _initial_effective_config: EffectiveRuntimeConfig
     _permission_policy: PermissionPolicy
     _session_store: SessionStore
     _model_provider_registry: ModelProviderRegistry
@@ -305,17 +306,18 @@ class VoidCodeRuntime:
         self._tool_registry = self._base_tool_registry
         self._graph_override = graph
         self._graph_cache = {}
+        self._initial_effective_config = EffectiveRuntimeConfig(
+            approval_mode=self._config.approval_mode,
+            model=initial_model,
+            execution_engine=initial_execution_engine,
+            max_steps=self._config.max_steps,
+            provider_fallback=initial_provider_fallback,
+            plan=self._config.plan,
+            resolved_provider=self._resolved_provider_config,
+            agent=initial_agent,
+        )
         self._graph = graph or self._build_graph_for_engine_from_config(
-            EffectiveRuntimeConfig(
-                approval_mode=self._config.approval_mode,
-                model=initial_model,
-                execution_engine=initial_execution_engine,
-                max_steps=self._config.max_steps,
-                provider_fallback=initial_provider_fallback,
-                plan=self._config.plan,
-                resolved_provider=self._resolved_provider_config,
-                agent=initial_agent,
-            )
+            self._initial_effective_config
         )
         self._permission_policy = permission_policy or PermissionPolicy(
             mode=self._config.approval_mode
@@ -2763,10 +2765,12 @@ class VoidCodeRuntime:
 
         # Reuse self._graph if the session's config matches the runtime's config
         if (
-            effective_config.execution_engine == self._config.execution_engine
-            and effective_config.model == self._config.model
-            and effective_config.max_steps == self._config.max_steps
-            and effective_config.provider_fallback == self._config.provider_fallback
+            effective_config.execution_engine == self._initial_effective_config.execution_engine
+            and effective_config.model == self._initial_effective_config.model
+            and effective_config.max_steps == self._initial_effective_config.max_steps
+            and effective_config.provider_fallback
+            == self._initial_effective_config.provider_fallback
+            and effective_config.agent == self._initial_effective_config.agent
         ):
             return self._graph
 
