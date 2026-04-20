@@ -33,6 +33,9 @@ class SingleAgentContextWindow(Protocol):
     @property
     def retained_tool_result_count(self) -> int: ...
 
+    @property
+    def continuity_state(self) -> object | None: ...
+
 
 @dataclass(frozen=True, slots=True)
 class SingleAgentTurnRequest:

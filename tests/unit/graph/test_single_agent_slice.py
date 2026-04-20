@@ -6,7 +6,7 @@ from voidcode.graph.contracts import GraphRunRequest
 from voidcode.graph.single_agent_slice import ProviderSingleAgentGraph
 from voidcode.provider.registry import ModelProviderRegistry
 from voidcode.provider.resolution import resolve_provider_model
-from voidcode.runtime.context_window import RuntimeContextWindow
+from voidcode.runtime.context_window import RuntimeContextWindow, RuntimeContinuityState
 from voidcode.runtime.session import SessionRef, SessionState
 from voidcode.runtime.single_agent_provider import (
     ProviderExecutionError,
@@ -321,6 +321,16 @@ def test_provider_single_agent_graph_forwards_bounded_context_window_to_provider
         compaction_reason="tool_result_window",
         original_tool_result_count=3,
         retained_tool_result_count=1,
+        continuity_state=RuntimeContinuityState(
+            summary_text=(
+                "Compacted 2 earlier tool results:\n"
+                '1. read_file ok path=sample.txt content_preview="old\\n"\n'
+                '2. read_file ok path=sample.txt content_preview="older\\n"'
+            ),
+            dropped_tool_result_count=2,
+            retained_tool_result_count=1,
+            source="tool_result_window",
+        ),
     )
 
     _ = graph.step(
@@ -344,6 +354,16 @@ def test_provider_single_agent_graph_forwards_bounded_context_window_to_provider
     assert provider.requests[0].context_window is bounded_context
     assert provider.requests[0].context_window.compacted is True
     assert provider.requests[0].context_window.retained_tool_result_count == 1
+    assert provider.requests[0].context_window.continuity_state == RuntimeContinuityState(
+        summary_text=(
+            "Compacted 2 earlier tool results:\n"
+            '1. read_file ok path=sample.txt content_preview="old\\n"\n'
+            '2. read_file ok path=sample.txt content_preview="older\\n"'
+        ),
+        dropped_tool_result_count=2,
+        retained_tool_result_count=1,
+        source="tool_result_window",
+    )
 
 
 def test_provider_single_agent_graph_enforces_configured_max_steps() -> None:
