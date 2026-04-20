@@ -251,6 +251,229 @@ VoidCode 当前更应该学习的是：
 3. 为 subagent handoff 定义稳定的 session-scoped 摘要与恢复边界
 4. 等到跨 session 的稳定知识复用真的成为高频需求，再引入长期 memory 层
 
+## 下一步应产出的设计对象
+
+如果当前阶段决定继续推进 memory，最合理的目标不是实现长期 memory，而是把 **Layer 1 / Layer 2** 设计收敛到可执行的 runtime design。
+
+更具体地说，下一步设计对象应当是：
+
+### Design A：Session Continuity Memory
+
+它解决的问题是：
+
+- 单个活跃 session 在 context 变长后如何继续工作
+- compaction 后如何保住执行主线
+- approval / resume 之后如何保持同一条 workstream 的连续性
+
+它不解决：
+
+- 新 session 如何继承长期偏好
+- 项目级长期知识如何跨 session 检索
+- 团队共享知识如何沉淀
+
+### Design B：Handoff / Coordination Memory
+
+它解决的问题是：
+
+- parent / child session 之间需要什么最小摘要
+- background / delegated work 完成后，leader 应该看到什么结构化结果
+- child transcript 如何继续通过现有 `resume(child_session_id)` 路径恢复，而不是复制进 leader session
+
+它不解决：
+
+- 完整 multi-agent orchestration runtime
+- agent-to-agent transport
+- 长期 memory retrieval
+
+## 当前代码基线意味着什么
+
+从当前实现出发，VoidCode 已经拥有以下 memory 相关基础：
+
+- session persistence / replay / resume
+- approval resume checkpoint
+- background task truth 与 parent/child linkage 基线
+- provider-backed execution 中的最小 context window compaction
+- `runtime.memory_refreshed` 事件词汇
+
+但当前缺失同样明确：
+
+- 语义化 compaction（现在只是 last-N tool results 截断）
+- compaction 后的 distilled memory 注入
+- leader-facing background result retrieval / notification 真相
+- 可执行的 skill-based memory distillation 机制
+- cross-session long-term memory store / retrieval / governance
+
+这意味着今天的“memory”不能被理解成一个已经存在的 subsystem；它更像是若干 runtime truth 的空缺交叉点。
+
+## Layer 1：Session Continuity Memory 设计要求
+
+这一层应当建立在现有 `run / stream / resume` 主路径之上，而不是建立第二套旁路状态。
+
+### 目标
+
+- 让长会话在 compaction 后继续可工作
+- 让 provider-backed execution 在上下文收缩后仍能保住当前任务主线
+- 让 approval / resume / replay 继续基于同一份 session truth
+
+### 应拥有的数据
+
+这层应只拥有 **session-scoped、可丢弃、与当前活跃工作直接相关** 的记忆材料，例如：
+
+- 当前任务目标摘要
+- 最近已完成的重要子结论
+- 仍然开放的未完成项
+- 必须保留的约束 / decision log
+- tool results 的 distilled summary，而不是完整原文重复注入
+
+### 不应拥有的数据
+
+这层不应承载：
+
+- 用户长期偏好
+- 项目级长期事实库
+- 历史 session 的完整摘要集合
+- todo / transcript / plan 的全量镜像
+- 与当前 workstream 无关的知识片段
+
+### 刷新触发点
+
+从当前 runtime 模型推导，Layer 1 最合理的刷新触发点应是：
+
+- context window 触发 compaction 时
+- approval wait 进入持久化 checkpoint 前
+- resume 重新进入 provider-backed execution 前
+- 明确的 runtime-owned memory refresh operation（如果后续需要暴露）
+
+其中最关键的一点是：
+
+> memory refresh 必须是 runtime-owned continuation machinery，而不是 provider prompt hack。
+
+### 与当前代码的最小映射
+
+今天最接近这个入口的是：
+
+- `src/voidcode/runtime/context_window.py`
+- `src/voidcode/runtime/service.py` 中对 `RUNTIME_MEMORY_REFRESHED` 的触发
+
+但它们当前只表达“发生了截断”，还没有表达“保留了什么 distilled state”。
+
+因此这一层未来最小实现切片的方向应是：
+
+1. 先把 compaction 从“机械截断”升级为“截断 + distilled summary shape”
+2. 再决定 distilled summary 是如何注入 provider-backed context
+3. 保持 replay / resume / approval semantics 不变
+
+## Layer 2：Handoff / Coordination Memory 设计要求
+
+这一层本质上是 session-scoped coordination memory，而不是 long-term memory。
+
+### 目标
+
+- 为 parent / child session 交接定义最小摘要
+- 让 leader 看见结构化结果，而不是完整 transcript copy
+- 让 delegated/background work 在恢复后仍然可追溯
+
+### 最小数据形状
+
+从 `docs/contracts/background-task-delegation.md` 推导，这层至少需要：
+
+- `task_id`
+- `parent_session_id`
+- `child_session_id`
+- status / approval_blocked
+- `summary_output`
+- result_available / error
+
+这层最重要的边界是：
+
+- parent session 持有 leader-facing notification 与 result summary
+- child session 持有完整 delegated execution history
+- 完整 child transcript 继续通过 `resume(child_session_id)` 恢复
+
+### 非目标
+
+这一层不应演变成：
+
+- 把 child transcript 复制到 parent
+- prompt 文本承载的伪 handoff
+- 客户端本地拼接的通知模型
+- 脱离 runtime truth 的“memory helper”
+
+## 为什么它还不能被当成统一实现项
+
+虽然 Layer 1 / Layer 2 都已经值得设计，但它们的前置条件并不相同，不能被写成同一组依赖。
+
+### Layer 1 的主要前置条件：更真实的 compaction contract
+
+Layer 1 已经拥有部分 substrate：
+
+- session persistence / replay / resume
+- approval resume checkpoint
+- `runtime.memory_refreshed` 事件词汇
+- provider-backed execution 中的最小 context window compaction
+
+但当前 `RuntimeContextWindow` 仍只是 last-N tool result retention。只在这之上谈“memory refreshed”还不够，因为它还没有 distinguished summary shape，也没有 durable injection semantics。
+
+因此，Layer 1 当前真正缺的不是长期 memory store，而是：
+
+- 更语义化的 compaction output
+- 可恢复的 distilled summary shape
+- 与 replay / resume 兼容的 reinjection boundary
+
+### Layer 2 的主要前置条件：Leader-facing background result truth
+
+Layer 2 直接依赖 `docs/contracts/background-task-delegation.md` 中仍处于 proposed 状态的那些能力：
+
+- leader notification
+- background result retrieval
+- parent / child linkage 之上的结构化 summary truth
+- restart / dedupe correctness
+
+当前仓库已经有 raw parent / child linkage 与 `resume(child_session_id)` 路径，但还没有 leader-facing structured result truth。因此 Layer 2 现在可以继续设计，但仍应保持 design-only 表述。
+
+### Skill execution 的位置
+
+如果未来希望 memory refresh / distillation 通过 skill 或相似 capability 参与，那么 `#153` 这类 runtime-managed skill execution 仍然非常重要。
+
+但它更像是：
+
+- Layer 1 的增强器 / 执行载体候选
+- 而不是 Layer 1 设计文档本身的硬前提
+
+也就是说，Layer 1 可以先把 shape 设计清楚；真正实现自动 distillation 时，skill execution 才会成为更直接的依赖。
+
+## 推荐的设计顺序（更新版）
+
+结合当前仓库状态，更稳妥的顺序应当是：
+
+1. 完成 runtime-managed skill execution（让 skill 不再只是 discovery / event / static payload）
+2. 完成 leader-facing background result / notification contract
+3. 基于现有 resume / replay truth，为 Layer 1 设计可持续工作的 compaction memory
+4. 基于 parent / child linkage，为 Layer 2 设计 handoff / coordination memory
+5. 最后才考虑 selective 的 long-term memory
+
+也就是说，memory 设计现在可以继续，但应当**严格以 Layer 1 / Layer 2 为范围**，并且不应被误写成当前主路径已经准备好立即实现 long-term memory。
+
+## 当前阶段最值得产出的文档结果
+
+如果继续推进本方向，当前最值得补出的不是长期 memory API，而是以下两份更具体的设计：
+
+1. `Session Continuity Memory Design`
+   - compaction 输入/输出 shape
+   - refresh trigger
+   - replay / resume compatibility
+   - provider context reinjection boundary
+   - 参考文档：[`session-continuity-memory-design.md`](./session-continuity-memory-design.md)
+   - 详见 [`docs/session-continuity-memory-design.md`](./session-continuity-memory-design.md)
+
+2. `Handoff Memory Contract`
+   - leader-facing summary shape
+   - parent / child ownership
+   - result retrieval vs transcript replay boundary
+   - restart / dedupe / approval-blocked behavior
+
+这两份设计会直接服务于未来 agent runtime 的真实连续性，而不是把精力提前消耗在长期 memory retrieval 上。
+
 ## 非目标
 
 本文档当前**不**主张以下方向：
