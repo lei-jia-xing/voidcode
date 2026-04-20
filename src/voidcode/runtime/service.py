@@ -37,14 +37,17 @@ from ..tools.contracts import Tool, ToolCall, ToolDefinition, ToolResult, ToolRe
 from .acp import AcpAdapter, AcpAdapterState, build_acp_adapter
 from .config import (
     ExecutionEngineName,
+    RuntimeAgentConfig,
     RuntimeConfig,
     RuntimeHooksConfig,
     RuntimePlanConfig,
     RuntimeProviderFallbackConfig,
     load_runtime_config,
     parse_provider_fallback_payload,
+    parse_runtime_agent_payload,
     parse_runtime_plan_payload,
     serialize_provider_fallback_config,
+    serialize_runtime_agent_config,
     serialize_runtime_plan_config,
 )
 from .context_window import ContextWindowPolicy, RuntimeContextWindow, prepare_single_agent_context
@@ -222,6 +225,7 @@ class VoidCodeRuntime:
     _graph: RuntimeGraph
     _graph_override: RuntimeGraph | None
     _config: RuntimeConfig
+    _initial_effective_config: EffectiveRuntimeConfig
     _permission_policy: PermissionPolicy
     _session_store: SessionStore
     _model_provider_registry: ModelProviderRegistry
@@ -260,9 +264,30 @@ class VoidCodeRuntime:
             model_provider_registry
             or ModelProviderRegistry.with_defaults(provider_configs=self._config.providers)
         )
+        initial_agent = self._config.agent
+        if initial_agent is not None:
+            initial_agent = parse_runtime_agent_payload(
+                serialize_runtime_agent_config(initial_agent),
+                source="runtime config agent",
+            )
+        initial_model = (
+            initial_agent.model
+            if initial_agent is not None and initial_agent.model is not None
+            else self._config.model
+        )
+        initial_execution_engine = (
+            initial_agent.execution_engine
+            if initial_agent is not None and initial_agent.execution_engine is not None
+            else self._config.execution_engine
+        )
+        initial_provider_fallback = (
+            initial_agent.provider_fallback
+            if initial_agent is not None and initial_agent.provider_fallback is not None
+            else self._config.provider_fallback
+        )
         self._resolved_provider_config = resolve_provider_config(
-            self._config.model,
-            self._config.provider_fallback,
+            initial_model,
+            initial_provider_fallback,
             registry=self._model_provider_registry,
         )
         self._provider_model = self._resolved_provider_config.active_target
@@ -281,16 +306,18 @@ class VoidCodeRuntime:
         self._tool_registry = self._base_tool_registry
         self._graph_override = graph
         self._graph_cache = {}
+        self._initial_effective_config = EffectiveRuntimeConfig(
+            approval_mode=self._config.approval_mode,
+            model=initial_model,
+            execution_engine=initial_execution_engine,
+            max_steps=self._config.max_steps,
+            provider_fallback=initial_provider_fallback,
+            plan=self._config.plan,
+            resolved_provider=self._resolved_provider_config,
+            agent=initial_agent,
+        )
         self._graph = graph or self._build_graph_for_engine_from_config(
-            EffectiveRuntimeConfig(
-                approval_mode=self._config.approval_mode,
-                model=self._config.model,
-                execution_engine=self._config.execution_engine,
-                max_steps=self._config.max_steps,
-                provider_fallback=self._config.provider_fallback,
-                plan=self._config.plan,
-                resolved_provider=self._resolved_provider_config,
-            )
+            self._initial_effective_config
         )
         self._permission_policy = permission_policy or PermissionPolicy(
             mode=self._config.approval_mode
@@ -504,6 +531,9 @@ class VoidCodeRuntime:
 
     def _runtime_config_for_request(self, request: RuntimeRequest) -> EffectiveRuntimeConfig:
         resolved = self._effective_runtime_config_from_metadata(None)
+        request_agent = request.metadata.get("agent")
+        if request_agent is not None:
+            resolved = self._config_with_request_agent_override(resolved, request_agent)
         request_max_steps = request.metadata.get("max_steps")
         if request_max_steps is not None:
             if not isinstance(request_max_steps, int) or isinstance(request_max_steps, bool):
@@ -520,6 +550,7 @@ class VoidCodeRuntime:
                 provider_fallback=resolved.provider_fallback,
                 plan=resolved.plan,
                 resolved_provider=resolved.resolved_provider,
+                agent=resolved.agent,
             )
         return resolved
 
@@ -829,6 +860,9 @@ class VoidCodeRuntime:
             ),
             metadata={
                 **planned_metadata,
+                "agent_preset": serialize_runtime_agent_config(
+                    self._effective_runtime_config_from_metadata(session.metadata).agent
+                ),
                 "provider_attempt": 0,
                 "provider_stream": _coerce_bool_like(
                     planned_metadata.get("provider_stream", False),
@@ -1779,6 +1813,9 @@ class VoidCodeRuntime:
             ),
             metadata={
                 **session.metadata,
+                "agent_preset": serialize_runtime_agent_config(
+                    self._effective_runtime_config_from_metadata(session.metadata).agent
+                ),
                 "provider_attempt": cast(int, session.metadata.get("provider_attempt", 0)),
             },
         )
@@ -2308,6 +2345,9 @@ class VoidCodeRuntime:
         }
         if effective_config.model is not None:
             runtime_config_metadata["model"] = effective_config.model
+        serialized_agent = serialize_runtime_agent_config(effective_config.agent)
+        if serialized_agent is not None:
+            runtime_config_metadata["agent"] = serialized_agent
         lsp_state = self._lsp_manager.current_state()
         runtime_config_metadata["lsp"] = {
             "mode": lsp_state.mode,
@@ -2321,6 +2361,69 @@ class VoidCodeRuntime:
             "servers": list(mcp_state.configuration.servers),
         }
         return runtime_config_metadata
+
+    def _config_with_request_agent_override(
+        self,
+        resolved: EffectiveRuntimeConfig,
+        raw_agent: object,
+    ) -> EffectiveRuntimeConfig:
+        agent = parse_runtime_agent_payload(raw_agent, source="request metadata 'agent'")
+        if agent is None:
+            raise ValueError("request metadata 'agent' must be an object when provided")
+        assert agent is not None
+        model = agent.model if agent.model is not None else resolved.model
+        execution_engine = (
+            agent.execution_engine
+            if agent.execution_engine is not None
+            else resolved.execution_engine
+        )
+        provider_fallback = (
+            agent.provider_fallback
+            if agent.provider_fallback is not None
+            else resolved.provider_fallback
+        )
+        merged_agent = RuntimeAgentConfig(
+            preset=agent.preset,
+            prompt_profile=(
+                agent.prompt_profile
+                if agent.prompt_profile is not None
+                else resolved.agent.prompt_profile
+                if resolved.agent is not None
+                else None
+            ),
+            model=model,
+            execution_engine=execution_engine,
+            tools=(
+                agent.tools
+                if agent.tools is not None
+                else resolved.agent.tools
+                if resolved.agent is not None
+                else None
+            ),
+            skills=(
+                agent.skills
+                if agent.skills is not None
+                else resolved.agent.skills
+                if resolved.agent is not None
+                else None
+            ),
+            provider_fallback=provider_fallback,
+        )
+        resolved_provider = resolve_provider_config(
+            model,
+            provider_fallback,
+            registry=self._model_provider_registry,
+        )
+        return EffectiveRuntimeConfig(
+            approval_mode=resolved.approval_mode,
+            model=model,
+            execution_engine=execution_engine,
+            max_steps=resolved.max_steps,
+            provider_fallback=provider_fallback,
+            plan=resolved.plan,
+            resolved_provider=resolved_provider,
+            agent=merged_agent,
+        )
 
     def _runtime_state_metadata(self) -> dict[str, object]:
         acp_state = self._acp_adapter.current_state()
@@ -2547,7 +2650,34 @@ class VoidCodeRuntime:
         max_steps = self._config.max_steps
         provider_fallback = self._config.provider_fallback
         plan = self._config.plan
-        resolved_provider = self._resolved_provider_config
+        agent = self._config.agent
+        if agent is not None:
+            agent = parse_runtime_agent_payload(
+                serialize_runtime_agent_config(agent),
+                source="runtime config agent",
+            )
+        execution_engine_override = (
+            agent.execution_engine
+            if agent is not None and agent.execution_engine is not None
+            else None
+        )
+        model_override = agent.model if agent is not None and agent.model is not None else None
+        provider_fallback_override = (
+            agent.provider_fallback
+            if agent is not None and agent.provider_fallback is not None
+            else None
+        )
+        if execution_engine_override is not None:
+            execution_engine = execution_engine_override
+        if model_override is not None:
+            model = model_override
+        if provider_fallback_override is not None:
+            provider_fallback = provider_fallback_override
+        resolved_provider = resolve_provider_config(
+            model,
+            provider_fallback,
+            registry=self._model_provider_registry,
+        )
         if metadata is None:
             return EffectiveRuntimeConfig(
                 approval_mode=approval_mode,
@@ -2557,6 +2687,7 @@ class VoidCodeRuntime:
                 provider_fallback=provider_fallback,
                 plan=plan,
                 resolved_provider=resolved_provider,
+                agent=agent,
             )
 
         persisted_runtime_config = metadata.get("runtime_config")
@@ -2569,6 +2700,7 @@ class VoidCodeRuntime:
                 provider_fallback=provider_fallback,
                 plan=plan,
                 resolved_provider=resolved_provider,
+                agent=agent,
             )
 
         runtime_config = cast(dict[str, object], persisted_runtime_config)
@@ -2610,6 +2742,13 @@ class VoidCodeRuntime:
                         str(exc),
                     )
                 ) from exc
+        if "agent" in runtime_config:
+            agent = parse_runtime_agent_payload(
+                runtime_config.get("agent"),
+                source="persisted runtime_config.agent",
+            )
+        else:
+            agent = None
         persisted_execution_engine = runtime_config.get("execution_engine")
         if persisted_execution_engine in ("deterministic", "single_agent"):
             execution_engine = persisted_execution_engine
@@ -2636,6 +2775,7 @@ class VoidCodeRuntime:
             provider_fallback=provider_fallback,
             plan=plan,
             resolved_provider=resolved_provider,
+            agent=agent,
         )
 
     def _provider_chain_for_session_metadata(
@@ -2652,10 +2792,12 @@ class VoidCodeRuntime:
 
         # Reuse self._graph if the session's config matches the runtime's config
         if (
-            effective_config.execution_engine == self._config.execution_engine
-            and effective_config.model == self._config.model
-            and effective_config.max_steps == self._config.max_steps
-            and effective_config.provider_fallback == self._config.provider_fallback
+            effective_config.execution_engine == self._initial_effective_config.execution_engine
+            and effective_config.model == self._initial_effective_config.model
+            and effective_config.max_steps == self._initial_effective_config.max_steps
+            and effective_config.provider_fallback
+            == self._initial_effective_config.provider_fallback
+            and effective_config.agent == self._initial_effective_config.agent
         ):
             return self._graph
 
@@ -2707,6 +2849,7 @@ class EffectiveRuntimeConfig:
     provider_fallback: RuntimeProviderFallbackConfig | None = None
     plan: RuntimePlanConfig | None = None
     resolved_provider: ResolvedProviderConfig = field(default_factory=ResolvedProviderConfig)
+    agent: RuntimeAgentConfig | None = None
 
 
 @dataclass(frozen=True, slots=True)

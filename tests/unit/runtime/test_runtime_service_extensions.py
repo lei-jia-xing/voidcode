@@ -13,6 +13,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from voidcode.graph.read_only_slice import DeterministicReadOnlyGraph
 from voidcode.provider.auth import ProviderAuthAuthorizeRequest
 from voidcode.provider.config import (
     CopilotProviderAuthConfig,
@@ -23,6 +24,7 @@ from voidcode.provider.registry import ModelProviderRegistry
 from voidcode.runtime.acp import DisabledAcpAdapter
 from voidcode.runtime.config import (
     RuntimeAcpConfig,
+    RuntimeAgentConfig,
     RuntimeConfig,
     RuntimeLspConfig,
     RuntimeLspServerConfig,
@@ -196,9 +198,10 @@ class _ScriptedSingleAgentProvider:
     def __init__(self, *, name: str, outcomes: tuple[object, ...]) -> None:
         self.name = name
         self._outcomes = list(outcomes)
+        self.requests: list[SingleAgentTurnRequest] = []
 
     def propose_turn(self, request: object) -> SingleAgentTurnResult:
-        _ = request
+        self.requests.append(cast(SingleAgentTurnRequest, request))
         if not self._outcomes:
             return SingleAgentTurnResult(output="done")
         outcome = self._outcomes.pop(0)
@@ -208,6 +211,7 @@ class _ScriptedSingleAgentProvider:
 
     def stream_turn(self, request: object):
         turn_request = cast(SingleAgentTurnRequest, request)
+        self.requests.append(turn_request)
         if turn_request.abort_signal is not None and turn_request.abort_signal.cancelled:
             return iter(
                 (
@@ -247,9 +251,13 @@ class _ScriptedSingleAgentProvider:
 class _ScriptedModelProvider:
     name: str
     outcomes: tuple[object, ...]
+    created_providers: list[_ScriptedSingleAgentProvider] | None = None
 
     def single_agent_provider(self) -> _ScriptedSingleAgentProvider:
-        return _ScriptedSingleAgentProvider(name=self.name, outcomes=self.outcomes)
+        provider = _ScriptedSingleAgentProvider(name=self.name, outcomes=self.outcomes)
+        if self.created_providers is not None:
+            self.created_providers.append(provider)
+        return provider
 
 
 class _AlwaysFailingModelProvider:
@@ -2316,6 +2324,77 @@ def test_runtime_effective_runtime_config_falls_back_for_legacy_sessions(tmp_pat
     assert effective.max_steps == 9
 
 
+def test_runtime_effective_runtime_config_keeps_persisted_non_agent_sessions_clear_of_fresh_agent_defaults(  # noqa: E501
+    tmp_path: Path,
+) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("non agent session\n", encoding="utf-8")
+
+    initial_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(approval_mode="allow", model="session/model"),
+    )
+    _ = initial_runtime.run(
+        RuntimeRequest(prompt="read sample.txt", session_id="non-agent-session")
+    )
+
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            model="fresh/model",
+            agent=RuntimeAgentConfig(
+                preset="leader",
+                model="opencode/gpt-5.4",
+            ),
+        ),
+    )
+    effective = resumed_runtime.effective_runtime_config(session_id="non-agent-session")
+
+    assert effective.approval_mode == "allow"
+    assert effective.model == "session/model"
+    assert effective.execution_engine == "deterministic"
+    assert effective.agent is None
+
+
+def test_runtime_graph_selection_avoids_reusing_initial_single_agent_graph(
+    tmp_path: Path,
+) -> None:
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(SingleAgentTurnResult(output="unused"),),
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            agent=RuntimeAgentConfig(
+                preset="leader",
+                model="opencode/gpt-5.4",
+            )
+        ),
+        model_provider_registry=registry,
+    )
+
+    graph = runtime._graph_for_session_metadata(  # pyright: ignore[reportPrivateUsage]
+        {
+            "runtime_config": {
+                "approval_mode": "ask",
+                "execution_engine": "deterministic",
+                "max_steps": 4,
+                "provider_fallback": None,
+                "resolved_provider": None,
+                "plan": None,
+            }
+        }
+    )
+
+    assert graph is not _private_attr(runtime, "_graph")
+    assert isinstance(graph, DeterministicReadOnlyGraph)
+
+
 def test_runtime_effective_runtime_config_uses_request_metadata_max_steps_for_new_runs(
     tmp_path: Path,
 ) -> None:
@@ -2597,6 +2676,194 @@ def test_runtime_effective_runtime_config_recovers_single_agent_engine(tmp_path:
     assert effective.approval_mode == "allow"
     assert effective.execution_engine == "single_agent"
     assert effective.model == "opencode/gpt-5.4"
+
+
+def test_runtime_agent_config_selects_single_agent_graph_and_persists_agent_metadata(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "sample.txt").write_text("leader config\n", encoding="utf-8")
+    created_providers: list[_ScriptedSingleAgentProvider] = []
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(SingleAgentTurnResult(output="leader complete"),),
+                created_providers=created_providers,
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            agent=RuntimeAgentConfig(
+                preset="leader",
+                model="opencode/gpt-5.4",
+            )
+        ),
+        model_provider_registry=registry,
+    )
+
+    response = runtime.run(
+        RuntimeRequest(prompt="read sample.txt", session_id="leader-agent-config")
+    )
+    effective = runtime.effective_runtime_config(session_id="leader-agent-config")
+
+    assert response.session.status == "completed"
+    assert response.output == "leader complete"
+    assert created_providers
+    assert created_providers[0].requests[0].agent_preset == {
+        "preset": "leader",
+        "prompt_profile": "leader",
+        "model": "opencode/gpt-5.4",
+        "execution_engine": "single_agent",
+    }
+    runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
+    assert runtime_config["agent"] == {
+        "preset": "leader",
+        "prompt_profile": "leader",
+        "model": "opencode/gpt-5.4",
+        "execution_engine": "single_agent",
+    }
+    assert effective.execution_engine == "single_agent"
+    assert effective.model == "opencode/gpt-5.4"
+    assert effective.agent == RuntimeAgentConfig(
+        preset="leader",
+        prompt_profile="leader",
+        model="opencode/gpt-5.4",
+        execution_engine="single_agent",
+    )
+
+
+def test_runtime_request_metadata_agent_override_persists_and_restores_agent_config(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "sample.txt").write_text("leader override\n", encoding="utf-8")
+    created_providers: list[_ScriptedSingleAgentProvider] = []
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(SingleAgentTurnResult(output="override complete"),),
+                created_providers=created_providers,
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(model="fresh/model"),
+        model_provider_registry=registry,
+    )
+
+    response = runtime.run(
+        RuntimeRequest(
+            prompt="read sample.txt",
+            session_id="leader-agent-request",
+            metadata={"agent": {"preset": "leader", "model": "opencode/gpt-5.4"}},
+        )
+    )
+
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(model="other/model"),
+        model_provider_registry=registry,
+    )
+    effective = resumed_runtime.effective_runtime_config(session_id="leader-agent-request")
+
+    assert response.session.status == "completed"
+    assert response.output == "override complete"
+    assert created_providers
+    assert created_providers[0].requests[0].agent_preset == {
+        "preset": "leader",
+        "prompt_profile": "leader",
+        "model": "opencode/gpt-5.4",
+        "execution_engine": "single_agent",
+    }
+    assert effective.execution_engine == "single_agent"
+    assert effective.model == "opencode/gpt-5.4"
+    assert effective.agent == RuntimeAgentConfig(
+        preset="leader",
+        prompt_profile="leader",
+        model="opencode/gpt-5.4",
+        execution_engine="single_agent",
+    )
+
+
+def test_runtime_partial_request_agent_override_preserves_inherited_agent_fields(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "sample.txt").write_text("leader partial override\n", encoding="utf-8")
+    created_providers: list[_ScriptedSingleAgentProvider] = []
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(SingleAgentTurnResult(output="partial override complete"),),
+                created_providers=created_providers,
+            )
+        }
+    )
+    fallback = RuntimeProviderFallbackConfig(
+        preferred_model="opencode/gpt-5.4",
+        fallback_models=("opencode/gpt-5.3",),
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            model="opencode/gpt-5.4",
+            provider_fallback=fallback,
+        ),
+        model_provider_registry=registry,
+    )
+
+    response = runtime.run(
+        RuntimeRequest(
+            prompt="read sample.txt",
+            session_id="leader-agent-partial-request",
+            metadata={"agent": {"preset": "leader"}},
+        )
+    )
+
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(model="other/model"),
+        model_provider_registry=registry,
+    )
+    effective = resumed_runtime.effective_runtime_config(session_id="leader-agent-partial-request")
+
+    assert response.session.status == "completed"
+    assert response.output == "partial override complete"
+    assert created_providers
+    assert created_providers[0].requests[0].agent_preset == {
+        "preset": "leader",
+        "prompt_profile": "leader",
+        "model": "opencode/gpt-5.4",
+        "execution_engine": "single_agent",
+        "provider_fallback": {
+            "preferred_model": "opencode/gpt-5.4",
+            "fallback_models": ["opencode/gpt-5.3"],
+        },
+    }
+    runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
+    assert runtime_config["agent"] == {
+        "preset": "leader",
+        "prompt_profile": "leader",
+        "model": "opencode/gpt-5.4",
+        "execution_engine": "single_agent",
+        "provider_fallback": {
+            "preferred_model": "opencode/gpt-5.4",
+            "fallback_models": ["opencode/gpt-5.3"],
+        },
+    }
+    assert effective.execution_engine == "single_agent"
+    assert effective.model == "opencode/gpt-5.4"
+    assert effective.provider_fallback == fallback
+    assert effective.agent == RuntimeAgentConfig(
+        preset="leader",
+        prompt_profile="leader",
+        model="opencode/gpt-5.4",
+        execution_engine="single_agent",
+        provider_fallback=fallback,
+    )
 
 
 def test_runtime_effective_runtime_config_recovers_provider_fallback_chain(tmp_path: Path) -> None:
