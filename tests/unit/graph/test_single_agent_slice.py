@@ -263,6 +263,42 @@ def test_provider_single_agent_graph_passes_applied_skill_context_to_provider() 
     assert provider.requests[0].context_window.prompt == "read sample.txt"
 
 
+def test_provider_single_agent_graph_forwards_agent_preset_to_provider() -> None:
+    provider_model = resolve_provider_model(
+        "opencode/gpt-5.4",
+        registry=ModelProviderRegistry.with_defaults(),
+    )
+    provider = _CapturingSingleAgentProvider()
+    graph = ProviderSingleAgentGraph(provider=provider, provider_model=provider_model)
+
+    step = graph.step(
+        request=GraphRunRequest(
+            session=_session(),
+            prompt="read sample.txt",
+            available_tools=_tool_definitions(),
+            context_window=RuntimeContextWindow(prompt="read sample.txt"),
+            metadata={
+                "agent_preset": {
+                    "preset": "leader",
+                    "prompt_profile": "leader",
+                    "model": "opencode/gpt-5.4",
+                    "execution_engine": "single_agent",
+                }
+            },
+        ),
+        tool_results=(),
+        session=_session(),
+    )
+
+    assert step.output == "done"
+    assert provider.requests[0].agent_preset == {
+        "preset": "leader",
+        "prompt_profile": "leader",
+        "model": "opencode/gpt-5.4",
+        "execution_engine": "single_agent",
+    }
+
+
 def test_provider_single_agent_graph_forwards_bounded_context_window_to_provider() -> None:
     provider_model = resolve_provider_model(
         "opencode/gpt-5.4",
