@@ -1858,6 +1858,7 @@ class VoidCodeRuntime:
             session_id=session_id,
             approval_request_id=approval_request_id,
             approval_decision=approval_decision,
+            finalize_background_task=True,
         )
 
     def _pending_approval_from_response(self, response: RuntimeResponse) -> PendingApproval:
@@ -1891,6 +1892,7 @@ class VoidCodeRuntime:
         session_id: str,
         approval_request_id: str,
         approval_decision: PermissionResolution,
+        finalize_background_task: bool = False,
     ) -> Iterator[RuntimeStreamChunk]:
         stored_response = self._session_store.load_session(
             workspace=self._workspace, session_id=session_id
@@ -1903,12 +1905,29 @@ class VoidCodeRuntime:
             raise ValueError(f"no pending approval for session: {session_id}")
         if pending.request_id != approval_request_id:
             raise ValueError("approval request id does not match pending session approval")
-        yield from self._resume_pending_approval_impl(
+        streamed_events: list[EventEnvelope] = []
+        output: str | None = None
+        final_session: SessionState | None = None
+        for chunk in self._resume_pending_approval_impl(
             stored=stored_response,
             pending=pending,
             approval_decision=approval_decision,
             checkpoint=checkpoint,
-        )
+        ):
+            final_session = chunk.session
+            if chunk.event is not None:
+                streamed_events.append(chunk.event)
+            if chunk.kind == "output":
+                output = chunk.output
+            yield chunk
+        if finalize_background_task:
+            response = self._response_from_resumed_chunks(
+                stored_response=stored_response,
+                streamed_events=streamed_events,
+                output=output,
+                final_session=final_session,
+            )
+            self._finalize_background_task_from_session_response(session_response=response)
 
     def _resume_pending_approval_response(
         self,
@@ -1947,18 +1966,31 @@ class VoidCodeRuntime:
             if chunk.kind == "output":
                 output = chunk.output
 
-        if final_session is None:
-            raise ValueError("runtime stream emitted no chunks")
-
-        if final_session.status == "waiting":
-            final_session = self._reload_persisted_session(session_id=final_session.session.id)
-
-        response = RuntimeResponse(
-            session=final_session,
-            events=stored_events + tuple(streamed_events),
+        response = self._response_from_resumed_chunks(
+            stored_response=stored_response,
+            streamed_events=streamed_events,
             output=output,
+            final_session=final_session,
         )
         return stored_events, response
+
+    def _response_from_resumed_chunks(
+        self,
+        *,
+        stored_response: RuntimeResponse,
+        streamed_events: list[EventEnvelope],
+        output: str | None,
+        final_session: SessionState | None,
+    ) -> RuntimeResponse:
+        if final_session is None:
+            raise ValueError("runtime stream emitted no chunks")
+        if final_session.status == "waiting":
+            final_session = self._reload_persisted_session(session_id=final_session.session.id)
+        return RuntimeResponse(
+            session=final_session,
+            events=stored_response.events + tuple(streamed_events),
+            output=output,
+        )
 
     def _resume_pending_approval_impl(
         self,
@@ -3029,7 +3061,10 @@ class VoidCodeRuntime:
         background_run = metadata.get("background_run")
         if not isinstance(background_task_id, str) or background_run is not True:
             return
-        current_task = self.load_background_task(background_task_id)
+        current_task = self._session_store.load_background_task(
+            workspace=self._workspace,
+            task_id=background_task_id,
+        )
         if current_task.status in ("completed", "failed", "cancelled"):
             return
         if session_response.session.status == "waiting":

@@ -1026,23 +1026,36 @@ class SqliteSessionStore:
                 list[sqlite3.Row],
                 connection.execute(
                     """
-                    SELECT task_id FROM background_tasks
-                    WHERE workspace = ? AND status IN ('queued', 'running')
-                    ORDER BY updated_at ASC, task_id ASC
+                    SELECT background_tasks.task_id
+                    FROM background_tasks
+                    LEFT JOIN sessions
+                      ON sessions.workspace = background_tasks.workspace
+                     AND sessions.session_id = background_tasks.session_id
+                    WHERE background_tasks.workspace = ?
+                      AND background_tasks.status IN ('queued', 'running')
+                      AND NOT (
+                          background_tasks.status = 'running'
+                          AND background_tasks.session_id IS NOT NULL
+                          AND sessions.status = 'waiting'
+                          AND sessions.pending_approval_json IS NOT NULL
+                      )
+                    ORDER BY background_tasks.updated_at ASC, background_tasks.task_id ASC
                     """,
                     (str(workspace),),
                 ).fetchall(),
             )
             if not rows:
                 return ()
+            task_ids = tuple(cast(str, row["task_id"]) for row in rows)
+            placeholders = ", ".join("?" for _ in task_ids)
             updated_at = self._next_background_task_timestamp(connection=connection)
             _ = connection.execute(
-                """
+                f"""
                 UPDATE background_tasks
                 SET status = 'failed', error = ?, finished_at = ?, updated_at = ?
-                WHERE workspace = ? AND status IN ('queued', 'running')
+                WHERE workspace = ? AND task_id IN ({placeholders})
                 """,
-                (message, updated_at, updated_at, str(workspace)),
+                (message, updated_at, updated_at, str(workspace), *task_ids),
             )
             connection.commit()
         return tuple(
