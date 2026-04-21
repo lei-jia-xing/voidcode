@@ -1835,6 +1835,7 @@ class VoidCodeRuntime:
             approval_request_id=approval_request_id,
             approval_decision=approval_decision,
         )
+        self._finalize_background_task_from_session_response(session_response=response)
         return response
 
     def resume_stream(
@@ -1952,11 +1953,12 @@ class VoidCodeRuntime:
         if final_session.status == "waiting":
             final_session = self._reload_persisted_session(session_id=final_session.session.id)
 
-        return stored_events, RuntimeResponse(
+        response = RuntimeResponse(
             session=final_session,
             events=stored_events + tuple(streamed_events),
             output=output,
         )
+        return stored_events, response
 
     def _resume_pending_approval_impl(
         self,
@@ -3017,6 +3019,43 @@ class VoidCodeRuntime:
                 parent_session_id,
             )
 
+    def _finalize_background_task_from_session_response(
+        self,
+        *,
+        session_response: RuntimeResponse,
+    ) -> None:
+        metadata = session_response.session.metadata
+        background_task_id = metadata.get("background_task_id")
+        background_run = metadata.get("background_run")
+        if not isinstance(background_task_id, str) or background_run is not True:
+            return
+        current_task = self.load_background_task(background_task_id)
+        if current_task.status in ("completed", "failed", "cancelled"):
+            return
+        if session_response.session.status == "waiting":
+            self._emit_background_task_waiting_approval(
+                task=current_task,
+                child_response=session_response,
+            )
+            return
+        terminal_status: BackgroundTaskStatus = (
+            "completed" if session_response.session.status == "completed" else "failed"
+        )
+        error: str | None = None
+        if terminal_status == "failed":
+            for event in reversed(session_response.events):
+                if event.event_type == RUNTIME_FAILED:
+                    event_error = event.payload.get("error")
+                    error = str(event_error) if event_error is not None else None
+                    break
+        terminal_task = self._session_store.mark_background_task_terminal(
+            workspace=self._workspace,
+            task_id=background_task_id,
+            status=terminal_status,
+            error=error,
+        )
+        self._run_background_task_lifecycle_hook(terminal_task)
+
     def _run_background_task_lifecycle_hook(self, task: BackgroundTaskState) -> None:
         surface_by_status: dict[BackgroundTaskStatus, RuntimeHookSurface] = {
             "completed": "background_task_completed",
@@ -3131,30 +3170,7 @@ class VoidCodeRuntime:
                     allocate_session_id=False,
                 )
             )
-            if response.session.status == "waiting":
-                running_task = self.load_background_task(task_id)
-                self._emit_background_task_waiting_approval(
-                    task=running_task,
-                    child_response=response,
-                )
-                return
-            terminal_status: BackgroundTaskStatus = (
-                "completed" if response.session.status == "completed" else "failed"
-            )
-            error: str | None = None
-            if terminal_status == "failed":
-                for event in reversed(response.events):
-                    if event.event_type == RUNTIME_FAILED:
-                        event_error = event.payload.get("error")
-                        error = str(event_error) if event_error is not None else None
-                        break
-            terminal_task = self._session_store.mark_background_task_terminal(
-                workspace=self._workspace,
-                task_id=task_id,
-                status=terminal_status,
-                error=error,
-            )
-            self._run_background_task_lifecycle_hook(terminal_task)
+            self._finalize_background_task_from_session_response(session_response=response)
         except Exception as exc:
             logger.exception("background task failed: %s", task_id)
             terminal_task = self._session_store.mark_background_task_terminal(
