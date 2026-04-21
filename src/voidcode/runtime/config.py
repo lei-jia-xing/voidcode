@@ -235,6 +235,7 @@ class RuntimeConfigOverrides:
     execution_engine: ExecutionEngineName | None = None
     max_steps: int | None = None
     tool_timeout_seconds: int | None = None
+    tool_timeout_seconds_configured: bool = False
     hooks: RuntimeHooksConfig | None = None
     tools: RuntimeToolsConfig | None = None
     skills: RuntimeSkillsConfig | None = None
@@ -349,6 +350,7 @@ def load_runtime_config(
         tool_timeout_seconds=_resolve_tool_timeout_seconds(
             explicit=tool_timeout_seconds,
             repo_local=repo_local.tool_timeout_seconds,
+            repo_local_configured=repo_local.tool_timeout_seconds_configured,
             environment=env_overrides.tool_timeout_seconds,
         ),
         hooks=repo_local.hooks,
@@ -407,6 +409,7 @@ def _load_repo_local_config(
         allow_none=True,
     )
 
+    tool_timeout_seconds_configured = "tool_timeout_seconds" in payload
     parsed_tool_timeout_seconds = _parse_tool_timeout_seconds(
         payload.get("tool_timeout_seconds"),
         source=f"runtime config field 'tool_timeout_seconds' in {config_path}",
@@ -455,6 +458,7 @@ def _load_repo_local_config(
         execution_engine=parsed_execution_engine,
         max_steps=parsed_max_steps,
         tool_timeout_seconds=parsed_tool_timeout_seconds,
+        tool_timeout_seconds_configured=tool_timeout_seconds_configured,
         hooks=hooks,
         tools=tools,
         skills=skills,
@@ -1778,7 +1782,11 @@ def _parse_environment_tool_timeout_seconds(raw_value: object) -> int | None:
 
 
 def _resolve_tool_timeout_seconds(
-    *, explicit: int | None, repo_local: int | None, environment: int | None
+    *,
+    explicit: int | None,
+    repo_local: int | None,
+    repo_local_configured: bool,
+    environment: int | None,
 ) -> int | None:
     if explicit is not None:
         return _parse_tool_timeout_seconds(
@@ -1786,7 +1794,7 @@ def _resolve_tool_timeout_seconds(
             source="explicit runtime config override 'tool_timeout_seconds'",
             allow_none=True,
         )
-    if repo_local is not None:
+    if repo_local_configured:
         return repo_local
     if environment is not None:
         return environment

@@ -350,6 +350,19 @@ def test_runtime_config_prefers_repo_file_tool_timeout_over_environment(tmp_path
     assert config.tool_timeout_seconds == 4
 
 
+def test_runtime_config_treats_null_repo_file_tool_timeout_as_explicit_override(
+    tmp_path: Path,
+) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps({"tool_timeout_seconds": None}),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(tmp_path, env={TOOL_TIMEOUT_ENV_VAR: "7"})
+
+    assert config.tool_timeout_seconds is None
+
+
 def test_runtime_config_prefers_explicit_execution_engine_over_repo_file_and_environment(
     tmp_path: Path,
 ) -> None:
