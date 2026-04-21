@@ -14,7 +14,8 @@ class OpenCodeGoModelProvider:
     OpenCode Go provides unified access to multiple Chinese AI models through
     a single subscription at https://opencode.ai
 
-    Supported models: GLM-5, Kimi K2.5, MiniMax M2.5, MiniMax M2.7, Qwen3.5, Qwen3.6, MiMo
+    Supported models: GLM-5/5.1, Kimi K2.5/2.6, MiniMax M2.5/M2.7,
+    Qwen3.5+/3.6+, MiMo v2 (Pro/Omni)
 
     Usage:
         providers:
