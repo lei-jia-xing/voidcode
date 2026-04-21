@@ -1385,43 +1385,6 @@ class VoidCodeRuntime:
                         workspace=self._workspace,
                         timeout_seconds=_tool_timeout,
                     )
-                elif tool.definition.read_only:
-                    tool_result_holder: ToolResult | None = None
-                    tool_error_holder: Exception | None = None
-
-                    def _invoke_tool_with_timeout_guard(
-                        timeout_tool: Tool,
-                        timeout_tool_call: ToolCall,
-                    ) -> None:
-                        nonlocal tool_result_holder, tool_error_holder
-                        try:
-                            tool_result_holder = timeout_tool.invoke(
-                                timeout_tool_call,
-                                workspace=self._workspace,
-                            )
-                        except Exception as exc:
-                            tool_error_holder = exc
-
-                    timeout_thread = threading.Thread(
-                        target=_invoke_tool_with_timeout_guard,
-                        args=(tool, plan_tool_call),
-                        name=f"voidcode-tool-timeout-{plan_tool_call.tool_name}",
-                        daemon=True,
-                    )
-                    timeout_thread.start()
-                    timeout_thread.join(timeout=_tool_timeout)
-                    if timeout_thread.is_alive():
-                        raise RuntimeToolTimeoutError(
-                            f"tool '{plan_tool_call.tool_name}' exceeded "
-                            f"runtime timeout of {_tool_timeout}s"
-                        )
-                    if tool_error_holder is not None:
-                        raise tool_error_holder
-                    if tool_result_holder is None:
-                        raise RuntimeError(
-                            f"tool '{plan_tool_call.tool_name}' finished without a result"
-                        )
-                    tool_result = tool_result_holder
                 else:
                     tool_result = tool.invoke(plan_tool_call, workspace=self._workspace)
             except Exception as exc:

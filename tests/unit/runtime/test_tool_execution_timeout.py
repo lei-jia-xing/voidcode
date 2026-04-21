@@ -140,31 +140,52 @@ def test_slow_tool_that_finishes_within_timeout_is_not_interrupted(tmp_path: Pat
     assert "runtime.failed" not in event_types
 
 
-def test_hanging_tool_emits_tool_timeout_event(tmp_path: Path) -> None:
+def test_hanging_tool_does_not_emit_runtime_tool_timeout(tmp_path: Path) -> None:
     runtime = _make_runtime(tmp_path, _HangingTool(), tool_timeout_seconds=1)
-    event_types = _collect_events(runtime)
 
-    assert "runtime.tool_timeout" in event_types
-    assert "runtime.failed" in event_types
+    start = time.monotonic()
+    iterator = runtime.run_stream(RuntimeRequest(prompt="go"))
+    first_chunks: list[Any] = []
+    for _ in range(3):
+        first_chunks.append(next(iterator))
+    elapsed = time.monotonic() - start
+    event_types = [
+        chunk.event.event_type
+        for chunk in first_chunks
+        if chunk.kind == "event" and chunk.event is not None
+    ]
+
+    assert elapsed < 5
+    assert "runtime.tool_timeout" not in event_types
+    assert "runtime.failed" not in event_types
 
 
 def test_hanging_tool_does_not_emit_tool_completed(tmp_path: Path) -> None:
     runtime = _make_runtime(tmp_path, _HangingTool(), tool_timeout_seconds=1)
-    event_types = _collect_events(runtime)
+
+    iterator = runtime.run_stream(RuntimeRequest(prompt="go"))
+    first_chunks = [next(iterator) for _ in range(3)]
+    event_types = [
+        chunk.event.event_type
+        for chunk in first_chunks
+        if chunk.kind == "event" and chunk.event is not None
+    ]
 
     assert "runtime.tool_completed" not in event_types
 
 
 def test_timeout_event_payload_contains_tool_name_and_seconds(tmp_path: Path) -> None:
     timeout = 1
-    tool = _HangingTool()
-    registry = ToolRegistry.from_tools([tool])
-    config = RuntimeConfig(tool_timeout_seconds=timeout)
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        tool_registry=registry,
-        graph=_SingleToolCallGraph(tool.definition.name),
-        config=config,
+        tool_registry=ToolRegistry.from_tools([ShellExecTool()]),
+        graph=_ShellExecGraph(
+            {
+                "command": f'"{sys.executable}" -c "import time; time.sleep(2)"',
+                "timeout": 10,
+            }
+        ),
+        config=RuntimeConfig(approval_mode="allow", tool_timeout_seconds=timeout),
     )
 
     chunks = list(runtime.run_stream(RuntimeRequest(prompt="go")))
@@ -178,12 +199,22 @@ def test_timeout_event_payload_contains_tool_name_and_seconds(tmp_path: Path) ->
 
     assert len(timeout_events) == 1
     payload = timeout_events[0].payload
-    assert payload["tool"] == "hanging_tool"
+    assert payload["tool"] == "shell_exec"
     assert payload["timeout_seconds"] == timeout
 
 
 def test_runtime_does_not_hang_after_tool_timeout(tmp_path: Path) -> None:
-    runtime = _make_runtime(tmp_path, _HangingTool(), tool_timeout_seconds=1)
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        tool_registry=ToolRegistry.from_tools([ShellExecTool()]),
+        graph=_ShellExecGraph(
+            {
+                "command": f'"{sys.executable}" -c "import time; time.sleep(2)"',
+                "timeout": 10,
+            }
+        ),
+        config=RuntimeConfig(approval_mode="allow", tool_timeout_seconds=1),
+    )
 
     start = time.monotonic()
     _collect_events(runtime)
@@ -201,14 +232,16 @@ def test_runtime_timeout_unset_does_not_emit_runtime_tool_timeout(tmp_path: Path
 
 
 def test_session_status_is_failed_after_timeout(tmp_path: Path) -> None:
-    tool = _HangingTool()
-    registry = ToolRegistry.from_tools([tool])
-    config = RuntimeConfig(tool_timeout_seconds=1)
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        tool_registry=registry,
-        graph=_SingleToolCallGraph(tool.definition.name),
-        config=config,
+        tool_registry=ToolRegistry.from_tools([ShellExecTool()]),
+        graph=_ShellExecGraph(
+            {
+                "command": f'"{sys.executable}" -c "import time; time.sleep(2)"',
+                "timeout": 10,
+            }
+        ),
+        config=RuntimeConfig(approval_mode="allow", tool_timeout_seconds=1),
     )
 
     chunks = list(runtime.run_stream(RuntimeRequest(prompt="go")))
