@@ -23,6 +23,8 @@ RuntimeProviderFallbackConfig = provider_config.ProviderFallbackConfig
 RuntimeProvidersConfig = provider_config.ProviderConfigs
 parse_provider_fallback_payload = provider_config.parse_provider_fallback_payload
 parse_provider_configs_payload = provider_config.parse_provider_configs_payload
+provider_configs_from_env = provider_config.provider_configs_from_env
+merge_provider_configs = provider_config.merge_provider_configs
 serialize_provider_fallback_config = provider_config.serialize_provider_fallback_config
 serialize_provider_configs = provider_config.serialize_provider_configs
 
@@ -306,6 +308,10 @@ def load_runtime_config(
     resolved_lsp = repo_local.lsp or _derive_workspace_lsp_config(resolved_workspace)
     resolved_agent = _resolve_agent_config(repo_local.agent)
 
+    resolved_providers = merge_provider_configs(
+        repo_local.providers, provider_configs_from_env(environment)
+    )
+
     return RuntimeConfig(
         approval_mode=_resolve_approval_mode(
             explicit=approval_mode,
@@ -334,7 +340,7 @@ def load_runtime_config(
         mcp=repo_local.mcp,
         tui=resolved_tui,
         provider_fallback=repo_local.provider_fallback,
-        providers=repo_local.providers,
+        providers=resolved_providers,
         plan=repo_local.plan,
         agent=resolved_agent,
     )

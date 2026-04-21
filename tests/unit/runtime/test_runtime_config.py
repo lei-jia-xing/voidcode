@@ -15,6 +15,7 @@ from voidcode.provider.config import (
     GoogleProviderConfig,
     LiteLLMProviderConfig,
     OpenAIProviderConfig,
+    SimplifiedProviderConfig,
 )
 from voidcode.runtime import config as runtime_config
 from voidcode.runtime.config import (
@@ -1996,3 +1997,35 @@ def test_runtime_config_uses_repo_local_filename_inside_workspace(tmp_path: Path
     config_file = tmp_path / RUNTIME_CONFIG_FILE_NAME
 
     assert runtime_config_path(tmp_path) == config_file
+
+
+def test_runtime_config_uses_opencode_go_environment_credentials_without_provider_block(
+    tmp_path: Path,
+) -> None:
+    config = load_runtime_config(
+        tmp_path,
+        env={
+            MODEL_ENV_VAR: "opencode-go/glm-5",
+            EXECUTION_ENGINE_ENV_VAR: "single_agent",
+            "OPENCODE_GO_API_KEY": "opencode-go-env-key",
+        },
+    )
+
+    assert config.model == "opencode-go/glm-5"
+    assert config.execution_engine == "single_agent"
+    assert config.providers is not None
+    assert config.providers.opencode_go == SimplifiedProviderConfig(api_key="opencode-go-env-key")
+
+
+def test_runtime_config_repo_provider_overrides_environment_provider_credentials(
+    tmp_path: Path,
+) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps({"providers": {"opencode-go": {"api_key": "repo-key"}}}),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(tmp_path, env={"OPENCODE_GO_API_KEY": "env-key"})
+
+    assert config.providers is not None
+    assert config.providers.opencode_go == SimplifiedProviderConfig(api_key="repo-key")

@@ -276,6 +276,110 @@ class ProviderFallbackConfig:
     fallback_models: tuple[str, ...] = ()
 
 
+def provider_configs_from_env(env: Mapping[str, str]) -> ProviderConfigs | None:
+    """Build provider config from credential environment variables alone.
+
+    This keeps first-run provider setup lightweight: setting VOIDCODE_MODEL plus
+    the provider's standard API-key environment variable is enough for runtime
+    provider resolution without requiring a .voidcode.json providers block.
+    """
+    providers = ProviderConfigs(
+        openai=(
+            OpenAIProviderConfig(api_key=openai_key)
+            if (openai_key := env.get(_OPENAI_API_KEY_ENV_VAR))
+            else None
+        ),
+        anthropic=(
+            AnthropicProviderConfig(api_key=anthropic_key)
+            if (anthropic_key := env.get(_ANTHROPIC_API_KEY_ENV_VAR))
+            else None
+        ),
+        google=(
+            GoogleProviderConfig(
+                auth=GoogleProviderAuthConfig(method="api_key", api_key=google_key)
+            )
+            if (google_key := env.get(_GOOGLE_API_KEY_ENV_VAR))
+            else None
+        ),
+        copilot=(
+            CopilotProviderConfig(
+                auth=CopilotProviderAuthConfig(method="token", token=copilot_token)
+            )
+            if (copilot_token := env.get(_COPILOT_TOKEN_ENV_VAR))
+            else None
+        ),
+        litellm=_litellm_provider_config_from_env(env),
+        glm=_simplified_provider_config_from_env(env, _GLM_API_KEY_ENV_VAR),
+        minimax=_simplified_provider_config_from_env(env, _MINIMAX_API_KEY_ENV_VAR),
+        kimi=_simplified_provider_config_from_env(env, _KIMI_API_KEY_ENV_VAR),
+        opencode_go=_simplified_provider_config_from_env(env, _OPENCODE_GO_API_KEY_ENV_VAR),
+        qwen=_simplified_provider_config_from_env(env, "DASHSCOPE_API_KEY"),
+    )
+    if _provider_configs_has_entries(providers):
+        return providers
+    return None
+
+
+def merge_provider_configs(
+    primary: ProviderConfigs | None,
+    fallback: ProviderConfigs | None,
+) -> ProviderConfigs | None:
+    """Merge provider configs, preserving primary values over fallback values."""
+    if primary is None:
+        return fallback
+    if fallback is None:
+        return primary
+    return ProviderConfigs(
+        openai=primary.openai or fallback.openai,
+        anthropic=primary.anthropic or fallback.anthropic,
+        google=primary.google or fallback.google,
+        copilot=primary.copilot or fallback.copilot,
+        litellm=primary.litellm or fallback.litellm,
+        glm=primary.glm or fallback.glm,
+        minimax=primary.minimax or fallback.minimax,
+        kimi=primary.kimi or fallback.kimi,
+        opencode_go=primary.opencode_go or fallback.opencode_go,
+        qwen=primary.qwen or fallback.qwen,
+        custom={**fallback.custom, **primary.custom},
+    )
+
+
+def _litellm_provider_config_from_env(env: Mapping[str, str]) -> LiteLLMProviderConfig | None:
+    api_key = env.get(_LITELLM_API_KEY_ENV_VAR) or env.get(_LITELLM_PROXY_API_KEY_ENV_VAR)
+    base_url = env.get(_LITELLM_BASE_URL_ENV_VAR) or env.get(_LITELLM_PROXY_URL_ENV_VAR)
+    if api_key is None and base_url is None:
+        return None
+    return LiteLLMProviderConfig(api_key=api_key, base_url=base_url)
+
+
+def _simplified_provider_config_from_env(
+    env: Mapping[str, str],
+    api_key_env_var: str,
+) -> SimplifiedProviderConfig | None:
+    api_key = env.get(api_key_env_var)
+    if api_key is None:
+        return None
+    return SimplifiedProviderConfig(api_key=api_key)
+
+
+def _provider_configs_has_entries(providers: ProviderConfigs) -> bool:
+    return any(
+        (
+            providers.openai,
+            providers.anthropic,
+            providers.google,
+            providers.copilot,
+            providers.litellm,
+            providers.glm,
+            providers.minimax,
+            providers.kimi,
+            providers.opencode_go,
+            providers.qwen,
+            providers.custom,
+        )
+    )
+
+
 def parse_provider_configs_payload(
     raw_providers: object,
     *,

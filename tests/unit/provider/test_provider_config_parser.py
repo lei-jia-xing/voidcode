@@ -13,8 +13,10 @@ from voidcode.provider.config import (
     ProviderConfigs,
     ProviderFallbackConfig,
     SimplifiedProviderConfig,
+    merge_provider_configs,
     parse_provider_configs_payload,
     parse_provider_fallback_payload,
+    provider_configs_from_env,
 )
 
 
@@ -465,3 +467,20 @@ def test_simplified_provider_not_allowed_in_custom_block(provider_name: str) -> 
             },
             source="runtime config field 'providers'",
         )
+
+
+def test_provider_configs_from_env_builds_opencode_go_without_repo_provider_block() -> None:
+    parsed = provider_configs_from_env({"OPENCODE_GO_API_KEY": "opencode-go-env-key"})
+
+    assert parsed is not None
+    assert parsed.opencode_go == SimplifiedProviderConfig(api_key="opencode-go-env-key")
+
+
+def test_merge_provider_configs_keeps_repo_provider_over_environment_fallback() -> None:
+    merged = merge_provider_configs(
+        ProviderConfigs(opencode_go=SimplifiedProviderConfig(api_key="repo-key")),
+        ProviderConfigs(opencode_go=SimplifiedProviderConfig(api_key="env-key")),
+    )
+
+    assert merged is not None
+    assert merged.opencode_go == SimplifiedProviderConfig(api_key="repo-key")

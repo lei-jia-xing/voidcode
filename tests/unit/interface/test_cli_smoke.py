@@ -839,6 +839,48 @@ def test_config_show_outputs_workspace_effective_config() -> None:
     assert "Traceback" not in result.stderr
 
 
+def test_config_show_uses_opencode_go_environment_without_leaking_key() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        env = with_src_pythonpath(os.environ.copy())
+        env.update(
+            {
+                "VOIDCODE_MODEL": "opencode-go/glm-5",
+                "VOIDCODE_EXECUTION_ENGINE": "single_agent",
+                "OPENCODE_GO_API_KEY": "opencode-go-secret",
+            }
+        )
+
+        result = _run_module_cli(
+            "config",
+            "show",
+            "--workspace",
+            str(workspace),
+            env=env,
+        )
+
+    payload = json.loads(result.stdout)
+    assert result.returncode == 0
+    assert payload["model"] == "opencode-go/glm-5"
+    assert payload["execution_engine"] == "single_agent"
+    assert payload["resolved_provider"] == {
+        "active_target": {
+            "raw_model": "opencode-go/glm-5",
+            "provider": "opencode-go",
+            "model": "glm-5",
+        },
+        "targets": [
+            {
+                "raw_model": "opencode-go/glm-5",
+                "provider": "opencode-go",
+                "model": "glm-5",
+            }
+        ],
+    }
+    assert "opencode-go-secret" not in result.stdout
+    assert "Traceback" not in result.stderr
+
+
 def test_config_show_outputs_resumed_session_effective_config() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         workspace = Path(tmp)
