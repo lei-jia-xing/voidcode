@@ -74,17 +74,6 @@ class SessionStore(Protocol):
         self, *, workspace: Path, session_id: str
     ) -> dict[str, object] | None: ...
 
-    def append_session_event(
-        self,
-        *,
-        workspace: Path,
-        session_id: str,
-        event_type: str,
-        source: EventSource,
-        payload: dict[str, object],
-        dedupe_key: str | None = None,
-    ) -> EventEnvelope | None: ...
-
     def create_background_task(
         self,
         *,
@@ -132,6 +121,20 @@ class SessionStore(Protocol):
         workspace: Path,
         message: str,
     ) -> tuple[BackgroundTaskState, ...]: ...
+
+
+@runtime_checkable
+class SessionEventAppender(Protocol):
+    def append_session_event(
+        self,
+        *,
+        workspace: Path,
+        session_id: str,
+        event_type: str,
+        source: EventSource,
+        payload: dict[str, object],
+        dedupe_key: str | None = None,
+    ) -> EventEnvelope | None: ...
 
 
 @final

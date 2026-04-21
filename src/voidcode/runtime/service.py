@@ -114,7 +114,7 @@ from .skills import (
     build_skill_prompt_context,
     runtime_context_from_payload,
 )
-from .storage import SessionStore, SqliteSessionStore
+from .storage import SessionEventAppender, SessionStore, SqliteSessionStore
 from .task import (
     BackgroundTaskRef,
     BackgroundTaskRequestSnapshot,
@@ -2990,8 +2990,14 @@ class VoidCodeRuntime:
             if approval_request_id is not None
             else f"background_task_waiting_approval:{task.task.id}:{child_session_id}"
         )
+        session_event_appender = self._session_store
+        if not isinstance(session_event_appender, SessionEventAppender):
+            logger.debug(
+                "skipping background waiting event for session store without append support"
+            )
+            return
         try:
-            _ = self._session_store.append_session_event(
+            _ = session_event_appender.append_session_event(
                 workspace=self._workspace,
                 session_id=parent_session_id,
                 event_type=RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL,
