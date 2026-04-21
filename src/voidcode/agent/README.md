@@ -53,18 +53,18 @@
 
 本目录描述的是“一个角色默认希望带什么组合”，不是“runtime 今天已经能怎样执行它”。
 
-- `leader`：当前唯一映射到真实执行路径的角色；`preset` / `prompt_profile` / `model` / `execution_engine` / `provider_fallback` 会进入 runtime config truth 并随 session 持久化
+- `leader`：当前唯一映射到真实执行路径的角色；`preset` / `prompt_profile` / `model` / `execution_engine` / `tools` / `skills` / `provider_fallback` 会进入 runtime config truth 并随 session 持久化
 - `worker`：future focused executor preset，不代表今天已经有 delegated runtime
 - `advisor`：future advisory preset，不代表今天已有独立审查/判断 runtime
 - `explore`：future local-code exploration preset，不代表今天已有独立 explore session model
 - `researcher`：future external research preset，不代表今天已有独立 researcher orchestration
 - `product`：future scope/alignment preset，不代表今天已有需求对齐 gate runtime
 
-当前 `tool_allowlist` 已经是 runtime 可消费的硬边界：active agent 的 manifest allowlist 会收窄 provider 可见的 `available_tools`，并且同一边界也会约束实际 tool lookup / invocation。文档中出现的 skill / hook / permission / MCP intent 仍然只是声明层建议，不是 runtime 已经实现的行为。
+当前 `leader` 是第一阶段 runtime-managed agent slice：active agent 的 manifest allowlist 会收窄 provider 可见的 `available_tools`，并且同一边界也会约束实际 tool lookup / invocation。`leader` 的 `prompt_profile` 会进入 provider system message，`model` / `execution_engine` / `provider_fallback` 会决定 provider-backed single-agent 主路径，manifest `skill_refs` 会作为默认 skill selection 进入 runtime skill application，`agent.skills` 会覆盖本次运行使用的 runtime-managed skill discovery / application policy。
 
 ## 与 runtime 的边界
 
-`voidcode.agent` 可以描述“这个角色默认希望带哪些工具/skills/hooks/MCP profile”。其中工具 allowlist 已进入 runtime enforcement；其他能力绑定仍不能决定系统最终如何执行、治理、审批、恢复和持久化它。
+`voidcode.agent` 可以描述“这个角色默认希望带哪些工具/skills/hooks/MCP profile”。其中 `leader` 的 prompt profile、工具边界、skills、model、execution engine 与 provider fallback 已进入 runtime enforcement / persistence；其他 preset 的能力绑定仍不能决定系统最终如何执行、治理、审批、恢复和持久化它。
 
 最终的执行真相仍然由 `voidcode.runtime` 持有。
 

@@ -59,6 +59,7 @@ from .config import (
     RuntimeHooksConfig,
     RuntimePlanConfig,
     RuntimeProviderFallbackConfig,
+    RuntimeSkillsConfig,
     load_runtime_config,
     parse_provider_fallback_payload,
     parse_runtime_agent_payload,
@@ -142,6 +143,28 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _EXECUTABLE_AGENT_PRESETS = frozenset({"leader"})
+_BUILTIN_TOOL_NAMES = frozenset(
+    {
+        "apply_patch",
+        "ast_grep_preview",
+        "ast_grep_replace",
+        "ast_grep_search",
+        "code_search",
+        "edit",
+        "format_file",
+        "glob",
+        "grep",
+        "list",
+        "lsp",
+        "multi_edit",
+        "read_file",
+        "shell_exec",
+        "todo_write",
+        "web_fetch",
+        "web_search",
+        "write_file",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -260,6 +283,12 @@ class ToolRegistry:
             }
         )
 
+    def excluding(self, tool_names: Iterable[str]) -> ToolRegistry:
+        excluded = frozenset(tool_names)
+        return ToolRegistry(
+            tools={name: tool for name, tool in self.tools.items() if name not in excluded}
+        )
+
 
 @final
 class VoidCodeRuntime:
@@ -279,6 +308,7 @@ class VoidCodeRuntime:
     _provider_chain: ResolvedProviderChain
     _provider_auth_resolver: ProviderAuthResolver
     _skill_registry: SkillRegistry
+    _skill_registry_is_injected: bool
     _lsp_manager: LspManager
     _mcp_manager: McpManager
     _acp_adapter: AcpAdapter
@@ -376,7 +406,8 @@ class VoidCodeRuntime:
             mode=self._config.approval_mode
         )
         self._session_store = session_store or SqliteSessionStore()
-        self._skill_registry = skill_registry or self._build_skill_registry()
+        self._skill_registry_is_injected = skill_registry is not None
+        self._skill_registry = skill_registry or self._build_skill_registry(self._config.skills)
         self._acp_adapter = acp_adapter or build_acp_adapter(self._config.acp)
         self._plan_contributor = build_plan_contributor(self._workspace, self._config.plan)
         self._background_task_threads = {}
@@ -604,8 +635,7 @@ class VoidCodeRuntime:
             )
         return resolved
 
-    def _build_skill_registry(self) -> SkillRegistry:
-        skills_config = self._config.skills
+    def _build_skill_registry(self, skills_config: RuntimeSkillsConfig | None) -> SkillRegistry:
         if skills_config is None or skills_config.enabled is not True:
             return SkillRegistry()
         if skills_config.paths:
@@ -614,6 +644,24 @@ class VoidCodeRuntime:
                 search_paths=skills_config.paths,
             )
         return SkillRegistry.discover(workspace=self._workspace)
+
+    def _skills_config_for_effective_config(
+        self,
+        effective_config: EffectiveRuntimeConfig,
+    ) -> RuntimeSkillsConfig | None:
+        if effective_config.agent is not None and effective_config.agent.skills is not None:
+            return effective_config.agent.skills
+        return self._config.skills
+
+    def _skill_registry_for_effective_config(
+        self,
+        effective_config: EffectiveRuntimeConfig,
+    ) -> SkillRegistry:
+        if self._skill_registry_is_injected:
+            return self._skill_registry
+        return self._build_skill_registry(
+            self._skills_config_for_effective_config(effective_config)
+        )
 
     def _build_lsp_tool(self) -> Tool | None:
         if self._lsp_manager.current_state().mode != "managed":
@@ -665,6 +713,8 @@ class VoidCodeRuntime:
             scoped_registry = scoped_registry.filtered(manifest.tool_allowlist)
 
         if agent.tools is not None:
+            if agent.tools.builtin is not None and agent.tools.builtin.enabled is False:
+                scoped_registry = scoped_registry.excluding(_BUILTIN_TOOL_NAMES)
             if agent.tools.allowlist is not None:
                 scoped_registry = scoped_registry.filtered(agent.tools.allowlist)
             if agent.tools.default is not None:
@@ -847,6 +897,8 @@ class VoidCodeRuntime:
         request_metadata = self._fresh_request_metadata(request.metadata)
         self._refresh_mcp_tools()
         tool_registry = self._tool_registry_for_effective_config(effective_config)
+        skill_registry = self._skill_registry_for_effective_config(effective_config)
+        skills_config = self._skills_config_for_effective_config(effective_config)
         session = SessionState(
             session=SessionRef(id=resolved_session_id, parent_id=request.parent_session_id),
             status="running",
@@ -897,7 +949,7 @@ class VoidCodeRuntime:
                 sequence=sequence,
                 event_type=RUNTIME_SKILLS_LOADED,
                 source="runtime",
-                payload={"skills": self._loaded_skill_names()},
+                payload={"skills": self._loaded_skill_names(skill_registry)},
             ),
         )
 
@@ -911,10 +963,14 @@ class VoidCodeRuntime:
             yield startup_failed_chunk
             return
 
-        applied_skill_contexts = self._applied_skill_contexts(session.metadata)
+        applied_skill_contexts = self._applied_skill_contexts(
+            skill_registry,
+            session.metadata,
+            effective_config.agent,
+        )
         frozen_applied_skills = self._frozen_applied_skill_payloads(applied_skill_contexts)
         skill_prompt_context = build_skill_prompt_context(applied_skill_contexts)
-        if self._config.skills is not None and self._config.skills.enabled is True:
+        if skills_config is not None and skills_config.enabled is True:
             session = SessionState(
                 session=session.session,
                 status=session.status,
@@ -2099,8 +2155,13 @@ class VoidCodeRuntime:
         self._refresh_mcp_tools()
         effective_config = self._effective_runtime_config_from_metadata(session.metadata)
         tool_registry = self._tool_registry_for_effective_config(effective_config)
+        skill_registry = self._skill_registry_for_effective_config(effective_config)
 
-        resumed_applied_skills = self._graph_applied_skills(session.metadata)
+        resumed_applied_skills = self._graph_applied_skills(
+            skill_registry,
+            session.metadata,
+            effective_config.agent,
+        )
         graph_request = GraphRunRequest(
             session=session,
             prompt=prompt,
@@ -2692,13 +2753,17 @@ class VoidCodeRuntime:
             for index, event in enumerate(events)
         )
 
-    def _loaded_skill_names(self) -> list[str]:
-        return sorted(self._skill_registry.skills)
+    @staticmethod
+    def _loaded_skill_names(skill_registry: SkillRegistry) -> list[str]:
+        return sorted(skill_registry.skills)
 
     def _applied_skill_contexts(
-        self, metadata: dict[str, object] | None = None
+        self,
+        skill_registry: SkillRegistry,
+        metadata: dict[str, object] | None = None,
+        agent: RuntimeAgentConfig | None = None,
     ) -> tuple[SkillRuntimeContext, ...]:
-        selected_skill_names: tuple[str, ...] | None = None
+        request_skill_names: tuple[str, ...] | None = None
         if metadata is not None and "skills" in metadata:
             raw_skills = metadata["skills"]
             if not isinstance(raw_skills, list):
@@ -2710,8 +2775,34 @@ class VoidCodeRuntime:
                         f"request metadata 'skills[{index}]' must be a non-empty string"
                     )
                 parsed_names.append(raw_name)
-            selected_skill_names = tuple(parsed_names)
-        return build_runtime_contexts(self._skill_registry, skill_names=selected_skill_names)
+            request_skill_names = tuple(parsed_names)
+
+        selected_skill_names = self._selected_skill_names_for_agent(
+            agent,
+            request_skill_names=request_skill_names,
+        )
+        return build_runtime_contexts(skill_registry, skill_names=selected_skill_names)
+
+    @staticmethod
+    def _selected_skill_names_for_agent(
+        agent: RuntimeAgentConfig | None,
+        *,
+        request_skill_names: tuple[str, ...] | None,
+    ) -> tuple[str, ...] | None:
+        manifest_skill_refs: tuple[str, ...] = ()
+        if agent is not None:
+            manifest = get_builtin_agent_manifest(agent.preset)
+            if manifest is not None:
+                manifest_skill_refs = manifest.skill_refs
+
+        if request_skill_names is None:
+            return manifest_skill_refs if manifest_skill_refs else None
+
+        selected_names: list[str] = []
+        for skill_name in (*manifest_skill_refs, *request_skill_names):
+            if skill_name not in selected_names:
+                selected_names.append(skill_name)
+        return tuple(selected_names)
 
     @staticmethod
     def _fresh_request_metadata(metadata: RuntimeRequestMetadataPayload) -> dict[str, object]:
@@ -2784,19 +2875,24 @@ class VoidCodeRuntime:
             payloads.append(normalized_payload)
         return tuple(payloads)
 
+    @staticmethod
     def _available_runtime_contexts(
-        self, skill_names: Iterable[str]
+        skill_registry: SkillRegistry,
+        skill_names: Iterable[str],
     ) -> tuple[SkillRuntimeContext, ...]:
         contexts: list[SkillRuntimeContext] = []
         for skill_name in skill_names:
-            skill = self._skill_registry.skills.get(skill_name)
+            skill = skill_registry.skills.get(skill_name)
             if skill is None:
                 continue
             contexts.append(build_runtime_context(skill))
         return tuple(contexts)
 
     def _graph_applied_skills(
-        self, metadata: dict[str, object] | None = None
+        self,
+        skill_registry: SkillRegistry,
+        metadata: dict[str, object] | None = None,
+        agent: RuntimeAgentConfig | None = None,
     ) -> tuple[dict[str, str], ...]:
         if metadata is not None:
             persisted_payloads = self._persisted_applied_skill_payloads(metadata)
@@ -2810,9 +2906,11 @@ class VoidCodeRuntime:
                     return ()
                 if persisted_names:
                     return self._frozen_applied_skill_payloads(
-                        self._available_runtime_contexts(persisted_names)
+                        self._available_runtime_contexts(skill_registry, persisted_names)
                     )
-        return self._frozen_applied_skill_payloads(self._applied_skill_contexts(metadata))
+        return self._frozen_applied_skill_payloads(
+            self._applied_skill_contexts(skill_registry, metadata, agent)
+        )
 
     def _runtime_config_metadata(
         self, config: EffectiveRuntimeConfig | None = None

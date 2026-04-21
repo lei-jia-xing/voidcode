@@ -7,13 +7,15 @@ import os
 import sqlite3
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal, cast
 from unittest.mock import Mock
 
 import pytest
 
+import voidcode.runtime.service as runtime_service_module
+from voidcode.agent import LEADER_AGENT_MANIFEST, get_builtin_agent_manifest
 from voidcode.graph.read_only_slice import DeterministicReadOnlyGraph
 from voidcode.provider.auth import ProviderAuthAuthorizeRequest
 from voidcode.provider.config import (
@@ -35,6 +37,7 @@ from voidcode.runtime.config import (
     RuntimeProviderFallbackConfig,
     RuntimeProvidersConfig,
     RuntimeSkillsConfig,
+    RuntimeToolsBuiltinConfig,
     RuntimeToolsConfig,
 )
 from voidcode.runtime.context_window import ContextWindowPolicy, RuntimeContinuityState
@@ -49,13 +52,20 @@ from voidcode.runtime.events import (
     EventEnvelope,
 )
 from voidcode.runtime.lsp import DisabledLspManager
-from voidcode.runtime.mcp import McpConfigState, McpManagerState, McpRuntimeEvent
+from voidcode.runtime.mcp import (
+    McpConfigState,
+    McpManagerState,
+    McpRuntimeEvent,
+    McpToolCallResult,
+    McpToolDescriptor,
+)
 from voidcode.runtime.permission import PermissionPolicy
 from voidcode.runtime.service import (
     GraphRunRequest,
     RuntimeRequest,
     RuntimeResponse,
     SessionState,
+    ToolRegistry,
     VoidCodeRuntime,
 )
 from voidcode.runtime.single_agent_provider import (
@@ -67,6 +77,7 @@ from voidcode.runtime.single_agent_provider import (
 from voidcode.runtime.task import BackgroundTaskState
 from voidcode.skills import SkillRegistry
 from voidcode.tools import ToolCall
+from voidcode.tools.contracts import ToolDefinition, ToolResult
 
 
 def _private_attr(instance: object, name: str) -> Any:
@@ -430,6 +441,22 @@ def _expected_demo_skill_payload(
         "execution_notes": content,
         "source_path": str((skill_dir / "SKILL.md").resolve()),
     }
+
+
+class _InjectedMcpNamespaceTool:
+    definition = ToolDefinition(
+        name="mcp/custom/bridge",
+        description="Injected custom MCP-namespace tool",
+        input_schema={"type": "object"},
+    )
+
+    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
+        _ = call, workspace
+        return ToolResult(
+            tool_name=self.definition.name,
+            status="ok",
+            content="custom bridge ok",
+        )
 
 
 def test_runtime_initializes_empty_extension_state_by_default(tmp_path: Path) -> None:
@@ -3878,6 +3905,348 @@ def test_runtime_agent_empty_default_set_exposes_no_tools(tmp_path: Path) -> Non
     assert response.session.status == "completed"
     assert created_providers
     assert created_providers[0].requests[0].available_tools == ()
+
+
+def test_runtime_agent_builtin_tools_disabled_exposes_no_builtin_tools(tmp_path: Path) -> None:
+    created_providers: list[_ScriptedSingleAgentProvider] = []
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(SingleAgentTurnResult(output="no builtins exposed"),),
+                created_providers=created_providers,
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            agent=RuntimeAgentConfig(
+                preset="leader",
+                model="opencode/gpt-5.4",
+                tools=RuntimeToolsConfig(
+                    builtin=RuntimeToolsBuiltinConfig(enabled=False),
+                ),
+            )
+        ),
+        model_provider_registry=registry,
+    )
+
+    response = runtime.run(
+        RuntimeRequest(prompt="inspect tools", session_id="agent-tools-builtin-disabled")
+    )
+
+    assert response.session.status == "completed"
+    assert created_providers
+    assert created_providers[0].requests[0].available_tools == ()
+    runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
+    assert runtime_config["agent"] == {
+        "preset": "leader",
+        "prompt_profile": "leader",
+        "model": "opencode/gpt-5.4",
+        "execution_engine": "single_agent",
+        "tools": {"builtin": {"enabled": False}},
+    }
+
+
+def test_runtime_agent_builtin_tools_disabled_preserves_mcp_tools(tmp_path: Path) -> None:
+    class _StubMcpManager:
+        @property
+        def configuration(self) -> McpConfigState:
+            return McpConfigState(configured_enabled=True)
+
+        def current_state(self) -> McpManagerState:
+            return McpManagerState(mode="managed", configuration=self.configuration)
+
+        def list_tools(self, *, workspace: Path):
+            _ = workspace
+            return (
+                McpToolDescriptor(
+                    server_name="echo",
+                    tool_name="echo",
+                    description="Echo input",
+                    input_schema={"type": "object"},
+                ),
+            )
+
+        def call_tool(
+            self,
+            *,
+            server_name: str,
+            tool_name: str,
+            arguments: dict[str, object],
+            workspace: Path,
+        ) -> McpToolCallResult:
+            _ = server_name, tool_name, arguments, workspace
+            return McpToolCallResult(content=[{"type": "text", "text": "echo:hi"}])
+
+        def shutdown(self):
+            return ()
+
+        def drain_events(self):
+            return ()
+
+    created_providers: list[_ScriptedSingleAgentProvider] = []
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(SingleAgentTurnResult(output="mcp tools captured"),),
+                created_providers=created_providers,
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            agent=RuntimeAgentConfig(
+                preset="leader",
+                model="opencode/gpt-5.4",
+                tools=RuntimeToolsConfig(
+                    builtin=RuntimeToolsBuiltinConfig(enabled=False),
+                ),
+            )
+        ),
+        mcp_manager=_StubMcpManager(),
+        model_provider_registry=registry,
+    )
+
+    response = runtime.run(
+        RuntimeRequest(prompt="inspect tools", session_id="agent-tools-builtin-disabled-mcp")
+    )
+
+    assert response.session.status == "completed"
+    assert created_providers
+    visible_tool_names = {tool.name for tool in created_providers[0].requests[0].available_tools}
+    assert visible_tool_names == {"mcp/echo/echo"}
+
+
+def test_runtime_agent_builtin_tools_disabled_preserves_injected_non_builtin_tools(
+    tmp_path: Path,
+) -> None:
+    created_providers: list[_ScriptedSingleAgentProvider] = []
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(SingleAgentTurnResult(output="custom tools captured"),),
+                created_providers=created_providers,
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        tool_registry=ToolRegistry.from_tools((_InjectedMcpNamespaceTool(),)),
+        config=RuntimeConfig(
+            agent=RuntimeAgentConfig(
+                preset="leader",
+                model="opencode/gpt-5.4",
+                tools=RuntimeToolsConfig(
+                    builtin=RuntimeToolsBuiltinConfig(enabled=False),
+                ),
+            )
+        ),
+        model_provider_registry=registry,
+    )
+
+    response = runtime.run(
+        RuntimeRequest(prompt="inspect tools", session_id="agent-tools-builtin-disabled-custom")
+    )
+
+    assert response.session.status == "completed"
+    assert created_providers
+    visible_tool_names = {tool.name for tool in created_providers[0].requests[0].available_tools}
+    assert visible_tool_names == {"mcp/custom/bridge"}
+
+
+def test_runtime_agent_skills_config_loads_and_persists_runtime_skills(
+    tmp_path: Path,
+) -> None:
+    skill_dir = tmp_path / "agent-skills" / "demo"
+    _write_demo_skill(skill_dir, content="# Demo\nUse the leader-local skill.")
+
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SkillCapturingStubGraph(),
+        config=RuntimeConfig(
+            agent=RuntimeAgentConfig(
+                preset="leader",
+                skills=RuntimeSkillsConfig(enabled=True, paths=("agent-skills",)),
+            )
+        ),
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="hello", session_id="leader-agent-skills-config"))
+
+    assert response.session.status == "completed"
+    assert response.events[1].event_type == "runtime.skills_loaded"
+    assert response.events[1].payload == {"skills": ["demo"]}
+    assert response.events[2].event_type == "runtime.skills_applied"
+    assert response.session.metadata["applied_skills"] == ["demo"]
+    assert response.session.metadata["applied_skill_payloads"] == [
+        _expected_demo_skill_payload(
+            skill_dir,
+            content="# Demo\nUse the leader-local skill.",
+        )
+    ]
+    runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
+    assert runtime_config["agent"] == {
+        "preset": "leader",
+        "prompt_profile": "leader",
+        "execution_engine": "single_agent",
+        "skills": {"enabled": True, "paths": ["agent-skills"]},
+    }
+    assert _SkillCapturingStubGraph.last_request is not None
+    assert [skill["name"] for skill in _SkillCapturingStubGraph.last_request.applied_skills] == [
+        "demo"
+    ]
+
+
+def test_runtime_agent_manifest_skill_refs_select_runtime_skills(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    demo_dir = tmp_path / ".voidcode" / "skills" / "demo"
+    zeta_dir = tmp_path / ".voidcode" / "skills" / "zeta"
+    _write_demo_skill(demo_dir, content="# Demo\nApply leader skill ref.")
+    zeta_dir.mkdir(parents=True)
+    (zeta_dir / "SKILL.md").write_text(
+        "---\nname: zeta\ndescription: Zeta skill\n---\n# Zeta\nDo not apply by default.\n",
+        encoding="utf-8",
+    )
+
+    def _manifest_with_skill_refs(agent_id: str):
+        if agent_id == "leader":
+            return replace(LEADER_AGENT_MANIFEST, skill_refs=("demo",))
+        return get_builtin_agent_manifest(agent_id)
+
+    monkeypatch.setattr(
+        runtime_service_module,
+        "get_builtin_agent_manifest",
+        _manifest_with_skill_refs,
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SkillCapturingStubGraph(),
+        config=RuntimeConfig(
+            agent=RuntimeAgentConfig(
+                preset="leader",
+                skills=RuntimeSkillsConfig(enabled=True),
+            )
+        ),
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="hello", session_id="leader-skill-refs"))
+
+    assert response.session.status == "completed"
+    assert response.events[2].payload["skills"] == ["demo"]
+    assert response.session.metadata["applied_skills"] == ["demo"]
+    assert _SkillCapturingStubGraph.last_request is not None
+    assert [skill["name"] for skill in _SkillCapturingStubGraph.last_request.applied_skills] == [
+        "demo"
+    ]
+    assert "Skill: demo" in _SkillCapturingStubGraph.last_request.skill_prompt_context
+    assert "Skill: zeta" not in _SkillCapturingStubGraph.last_request.skill_prompt_context
+
+
+def test_runtime_agent_manifest_skill_refs_combine_with_request_skills(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    demo_dir = tmp_path / ".voidcode" / "skills" / "demo"
+    zeta_dir = tmp_path / ".voidcode" / "skills" / "zeta"
+    _write_demo_skill(demo_dir, content="# Demo\nApply leader skill ref.")
+    zeta_dir.mkdir(parents=True)
+    (zeta_dir / "SKILL.md").write_text(
+        "---\nname: zeta\ndescription: Zeta skill\n---\n# Zeta\nApply requested skill.\n",
+        encoding="utf-8",
+    )
+
+    def _manifest_with_skill_refs(agent_id: str):
+        if agent_id == "leader":
+            return replace(LEADER_AGENT_MANIFEST, skill_refs=("demo",))
+        return get_builtin_agent_manifest(agent_id)
+
+    monkeypatch.setattr(
+        runtime_service_module,
+        "get_builtin_agent_manifest",
+        _manifest_with_skill_refs,
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SkillCapturingStubGraph(),
+        config=RuntimeConfig(
+            agent=RuntimeAgentConfig(
+                preset="leader",
+                skills=RuntimeSkillsConfig(enabled=True),
+            )
+        ),
+    )
+
+    response = runtime.run(
+        RuntimeRequest(
+            prompt="hello",
+            session_id="leader-skill-refs-request",
+            metadata={"skills": ["zeta"]},
+        )
+    )
+
+    assert response.session.status == "completed"
+    assert response.events[2].payload["skills"] == ["demo", "zeta"]
+    assert response.session.metadata["applied_skills"] == ["demo", "zeta"]
+    assert _SkillCapturingStubGraph.last_request is not None
+    assert [skill["name"] for skill in _SkillCapturingStubGraph.last_request.applied_skills] == [
+        "demo",
+        "zeta",
+    ]
+
+
+def test_runtime_request_agent_override_can_enable_skill_loading(
+    tmp_path: Path,
+) -> None:
+    skill_dir = tmp_path / "agent-skills" / "demo"
+    _write_demo_skill(skill_dir, content="# Demo\nApply request override skill.")
+
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SkillCapturingStubGraph(),
+        config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=False)),
+    )
+
+    response = runtime.run(
+        RuntimeRequest(
+            prompt="hello",
+            session_id="leader-agent-skills-request",
+            metadata={
+                "agent": {
+                    "preset": "leader",
+                    "skills": {"enabled": True, "paths": ["agent-skills"]},
+                }
+            },
+        )
+    )
+
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SkillCapturingStubGraph(),
+        config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=False)),
+    )
+    effective = resumed_runtime.effective_runtime_config(session_id="leader-agent-skills-request")
+
+    assert response.session.status == "completed"
+    assert response.session.metadata["applied_skills"] == ["demo"]
+    assert response.session.metadata["applied_skill_payloads"] == [
+        _expected_demo_skill_payload(
+            skill_dir,
+            content="# Demo\nApply request override skill.",
+        )
+    ]
+    assert effective.agent == RuntimeAgentConfig(
+        preset="leader",
+        prompt_profile="leader",
+        execution_engine="single_agent",
+        skills=RuntimeSkillsConfig(enabled=True, paths=("agent-skills",)),
+    )
 
 
 def test_runtime_agent_tool_allowlist_blocks_invocation(tmp_path: Path) -> None:
