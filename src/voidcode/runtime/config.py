@@ -33,8 +33,10 @@ APPROVAL_MODE_ENV_VAR = "VOIDCODE_APPROVAL_MODE"
 MODEL_ENV_VAR = "VOIDCODE_MODEL"
 EXECUTION_ENGINE_ENV_VAR = "VOIDCODE_EXECUTION_ENGINE"
 MAX_STEPS_ENV_VAR = "VOIDCODE_MAX_STEPS"
+TOOL_TIMEOUT_ENV_VAR = "VOIDCODE_TOOL_TIMEOUT_SECONDS"
 _VALID_APPROVAL_MODES = ("allow", "deny", "ask")
 _VALID_TUI_COMMANDS = ("command_palette", "session_new", "session_resume")
+DEFAULT_TOOL_TIMEOUT_SECONDS = 300
 
 type ExecutionEngineName = Literal["deterministic", "single_agent"]
 type RuntimeAgentPresetId = AgentManifestId
@@ -45,6 +47,7 @@ _TOP_LEVEL_ENV_VARS = (
     MODEL_ENV_VAR,
     EXECUTION_ENGINE_ENV_VAR,
     MAX_STEPS_ENV_VAR,
+    TOOL_TIMEOUT_ENV_VAR,
 )
 _ENV_SETTINGS_LOCK = Lock()
 
@@ -62,6 +65,10 @@ class _EnvironmentRuntimeSettings(BaseSettings):
         validation_alias=EXECUTION_ENGINE_ENV_VAR,
     )
     max_steps: int | None = Field(default=None, validation_alias=MAX_STEPS_ENV_VAR)
+    tool_timeout_seconds: int | None = Field(
+        default=None,
+        validation_alias=TOOL_TIMEOUT_ENV_VAR,
+    )
 
     @field_validator("approval_mode", mode="before")
     @classmethod
@@ -94,6 +101,11 @@ class _EnvironmentRuntimeSettings(BaseSettings):
     @classmethod
     def _validate_max_steps(cls, value: object) -> int | None:
         return _parse_environment_max_steps(value)
+
+    @field_validator("tool_timeout_seconds", mode="before")
+    @classmethod
+    def _validate_tool_timeout_seconds(cls, value: object) -> int | None:
+        return _parse_environment_tool_timeout_seconds(value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,6 +216,7 @@ class RuntimeConfig:
     model: str | None = None
     execution_engine: ExecutionEngineName = "deterministic"
     max_steps: int = 4
+    tool_timeout_seconds: int | None = None
     hooks: RuntimeHooksConfig | None = None
     tools: RuntimeToolsConfig | None = None
     skills: RuntimeSkillsConfig | None = None
@@ -223,6 +236,7 @@ class RuntimeConfigOverrides:
     model: str | None = None
     execution_engine: ExecutionEngineName | None = None
     max_steps: int | None = None
+    tool_timeout_seconds: int | None = None
     hooks: RuntimeHooksConfig | None = None
     tools: RuntimeToolsConfig | None = None
     skills: RuntimeSkillsConfig | None = None
@@ -297,6 +311,7 @@ def load_runtime_config(
     model: str | None = None,
     execution_engine: ExecutionEngineName | None = None,
     max_steps: int | None = None,
+    tool_timeout_seconds: int | None = None,
     env: Mapping[str, str] | None = None,
 ) -> RuntimeConfig:
     resolved_workspace = workspace.resolve()
@@ -332,6 +347,11 @@ def load_runtime_config(
             explicit=max_steps,
             repo_local=repo_local.max_steps,
             environment=env_overrides.max_steps,
+        ),
+        tool_timeout_seconds=_resolve_tool_timeout_seconds(
+            explicit=tool_timeout_seconds,
+            repo_local=repo_local.tool_timeout_seconds,
+            environment=env_overrides.tool_timeout_seconds,
         ),
         hooks=repo_local.hooks,
         tools=repo_local.tools,
@@ -389,6 +409,12 @@ def _load_repo_local_config(
         allow_none=True,
     )
 
+    parsed_tool_timeout_seconds = _parse_tool_timeout_seconds(
+        payload.get("tool_timeout_seconds"),
+        source=f"runtime config field 'tool_timeout_seconds' in {config_path}",
+        allow_none=True,
+    )
+
     raw_hooks = payload.get("hooks")
     hooks = _parse_hooks_config(raw_hooks)
 
@@ -430,6 +456,7 @@ def _load_repo_local_config(
         model=raw_model,
         execution_engine=parsed_execution_engine,
         max_steps=parsed_max_steps,
+        tool_timeout_seconds=parsed_tool_timeout_seconds,
         hooks=hooks,
         tools=tools,
         skills=skills,
@@ -1569,6 +1596,7 @@ def _load_environment_runtime_config(env: Mapping[str, str] | None) -> RuntimeCo
         model=settings.model,
         execution_engine=settings.execution_engine,
         max_steps=settings.max_steps,
+        tool_timeout_seconds=settings.tool_timeout_seconds,
     )
 
 
@@ -1722,3 +1750,42 @@ def _parse_environment_max_steps(raw_value: object) -> int | None:
         source=f"environment variable {MAX_STEPS_ENV_VAR}",
         allow_none=True,
     )
+
+
+def _parse_tool_timeout_seconds(raw_value: object, *, source: str, allow_none: bool) -> int | None:
+    if raw_value is None and allow_none:
+        return None
+    if not isinstance(raw_value, int) or isinstance(raw_value, bool) or raw_value < 1:
+        raise ValueError(f"{source} must be an integer greater than or equal to 1")
+    return raw_value
+
+
+def _parse_environment_tool_timeout_seconds(raw_value: object) -> int | None:
+    if raw_value is None:
+        return None
+    parsed_value = raw_value
+    if isinstance(raw_value, str):
+        try:
+            parsed_value = int(raw_value)
+        except ValueError as exc:
+            raise ValueError(
+                f"environment variable {TOOL_TIMEOUT_ENV_VAR} must be an integer "
+                "greater than or equal to 1"
+            ) from exc
+    return _parse_tool_timeout_seconds(
+        parsed_value,
+        source=f"environment variable {TOOL_TIMEOUT_ENV_VAR}",
+        allow_none=True,
+    )
+
+
+def _resolve_tool_timeout_seconds(
+    *, explicit: int | None, repo_local: int | None, environment: int | None
+) -> int | None:
+    if explicit is not None:
+        return explicit
+    if repo_local is not None:
+        return repo_local
+    if environment is not None:
+        return environment
+    return None

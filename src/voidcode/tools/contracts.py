@@ -7,6 +7,10 @@ from typing import ClassVar, Literal, Protocol, runtime_checkable
 type ToolResultStatus = Literal["ok", "error"]
 
 
+class RuntimeToolTimeoutError(TimeoutError):
+    """Raised when the runtime-owned outer tool timeout wins."""
+
+
 @dataclass(frozen=True, slots=True)
 class ToolDefinition:
     name: str
@@ -49,6 +53,17 @@ class DynamicTool(Protocol):
     def definition(self) -> ToolDefinition: ...
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult: ...
+
+
+@runtime_checkable
+class RuntimeTimeoutAwareTool(Protocol):
+    def invoke_with_runtime_timeout(
+        self,
+        call: ToolCall,
+        *,
+        workspace: Path,
+        timeout_seconds: int,
+    ) -> ToolResult: ...
 
 
 type Tool = StaticTool | DynamicTool
