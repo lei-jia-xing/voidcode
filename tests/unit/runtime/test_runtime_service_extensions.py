@@ -2797,6 +2797,7 @@ def test_runtime_effective_runtime_config_recovers_persisted_max_steps(tmp_path:
         "approval_mode": "allow",
         "execution_engine": "deterministic",
         "max_steps": 7,
+        "tool_timeout_seconds": None,
         "model": "session/model",
         "provider_fallback": None,
         "plan": None,
@@ -2828,6 +2829,115 @@ def test_runtime_effective_runtime_config_recovers_persisted_max_steps(tmp_path:
     assert effective.model == "session/model"
     assert effective.execution_engine == "deterministic"
     assert effective.max_steps == 7
+
+
+def test_runtime_effective_runtime_config_recovers_persisted_tool_timeout(tmp_path: Path) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("config session\n", encoding="utf-8")
+
+    initial_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            approval_mode="allow",
+            model="session/model",
+            tool_timeout_seconds=7,
+        ),
+    )
+    response = initial_runtime.run(
+        RuntimeRequest(prompt="read sample.txt", session_id="tool-timeout-session")
+    )
+
+    assert response.session.metadata["runtime_config"]["tool_timeout_seconds"] == 7
+
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            approval_mode="deny",
+            model="fresh/model",
+            tool_timeout_seconds=3,
+        ),
+    )
+    effective = resumed_runtime.effective_runtime_config(session_id="tool-timeout-session")
+
+    assert effective.approval_mode == "allow"
+    assert effective.model == "session/model"
+    assert effective.tool_timeout_seconds == 7
+
+
+def test_runtime_effective_runtime_config_preserves_explicit_persisted_none_tool_timeout(
+    tmp_path: Path,
+) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("config session\n", encoding="utf-8")
+
+    initial_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(approval_mode="allow", model="session/model"),
+    )
+    response = initial_runtime.run(
+        RuntimeRequest(prompt="read sample.txt", session_id="tool-timeout-none-session")
+    )
+
+    assert response.session.metadata["runtime_config"]["tool_timeout_seconds"] is None
+
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            approval_mode="deny",
+            model="fresh/model",
+            tool_timeout_seconds=9,
+        ),
+    )
+    effective = resumed_runtime.effective_runtime_config(session_id="tool-timeout-none-session")
+
+    assert effective.approval_mode == "allow"
+    assert effective.model == "session/model"
+    assert effective.tool_timeout_seconds is None
+
+
+def test_runtime_effective_runtime_config_rejects_invalid_persisted_tool_timeout(
+    tmp_path: Path,
+) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("config session\n", encoding="utf-8")
+
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(approval_mode="allow", model="session/model", tool_timeout_seconds=7),
+    )
+    _ = runtime.run(RuntimeRequest(prompt="read sample.txt", session_id="invalid-tool-timeout"))
+
+    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    connection = sqlite3.connect(database_path)
+    try:
+        row = connection.execute(
+            "SELECT metadata_json FROM sessions WHERE session_id = ?",
+            ("invalid-tool-timeout",),
+        ).fetchone()
+        assert row is not None
+        metadata = json.loads(str(row[0]))
+        assert isinstance(metadata, dict)
+        metadata_dict = cast(dict[str, object], metadata)
+        runtime_config = cast(dict[str, object], metadata_dict["runtime_config"])
+        runtime_config["tool_timeout_seconds"] = 0
+        _ = connection.execute(
+            "UPDATE sessions SET metadata_json = ? WHERE session_id = ?",
+            (json.dumps(metadata_dict, sort_keys=True), "invalid-tool-timeout"),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(tool_timeout_seconds=3),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="persisted runtime_config tool_timeout_seconds must be at least 1",
+    ):
+        _ = resumed_runtime.effective_runtime_config(session_id="invalid-tool-timeout")
 
 
 def test_runtime_effective_runtime_config_rejects_invalid_persisted_max_steps(
@@ -2909,6 +3019,58 @@ def test_runtime_effective_runtime_config_falls_back_for_legacy_sessions(tmp_pat
     assert effective.model == "fresh/model"
     assert effective.execution_engine == "deterministic"
     assert effective.max_steps == 9
+
+
+def test_runtime_effective_runtime_config_falls_back_to_fresh_tool_timeout_for_legacy_sessions(
+    tmp_path: Path,
+) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("legacy config\n", encoding="utf-8")
+
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            approval_mode="allow",
+            model="session/model",
+            tool_timeout_seconds=5,
+        ),
+    )
+    _ = runtime.run(RuntimeRequest(prompt="read sample.txt", session_id="legacy-tool-timeout"))
+
+    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    connection = sqlite3.connect(database_path)
+    try:
+        row = connection.execute(
+            "SELECT metadata_json FROM sessions WHERE session_id = ?",
+            ("legacy-tool-timeout",),
+        ).fetchone()
+        assert row is not None
+        metadata = json.loads(str(row[0]))
+        assert isinstance(metadata, dict)
+        metadata_dict = cast(dict[str, object], metadata)
+        runtime_config = cast(dict[str, object], metadata_dict["runtime_config"])
+        runtime_config.pop("tool_timeout_seconds", None)
+        _ = connection.execute(
+            "UPDATE sessions SET metadata_json = ? WHERE session_id = ?",
+            (json.dumps(metadata_dict, sort_keys=True), "legacy-tool-timeout"),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            approval_mode="deny",
+            model="fresh/model",
+            tool_timeout_seconds=9,
+        ),
+    )
+    effective = resumed_runtime.effective_runtime_config(session_id="legacy-tool-timeout")
+
+    assert effective.approval_mode == "allow"
+    assert effective.model == "session/model"
+    assert effective.tool_timeout_seconds == 9
 
 
 def test_runtime_effective_runtime_config_keeps_persisted_non_agent_sessions_clear_of_fresh_agent_defaults(  # noqa: E501
@@ -2998,6 +3160,7 @@ def test_runtime_effective_runtime_config_uses_request_metadata_max_steps_for_ne
         "approval_mode": "ask",
         "execution_engine": "deterministic",
         "max_steps": 2,
+        "tool_timeout_seconds": None,
         "provider_fallback": None,
         "plan": None,
         "resolved_provider": None,

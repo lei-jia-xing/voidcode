@@ -1208,6 +1208,7 @@ def test_single_agent_runtime_executes_read_path_and_persists_config(tmp_path: P
                 }
             ],
         },
+        "tool_timeout_seconds": None,
     }
     assert result.session.metadata["runtime_state"] == {
         "acp": {
@@ -1847,6 +1848,7 @@ def test_runtime_resume_uses_persisted_runtime_config_over_fresh_resume_override
         "approval_mode": "allow",
         "execution_engine": "deterministic",
         "max_steps": 4,
+        "tool_timeout_seconds": None,
         "lsp": {"configured_enabled": False, "mode": "disabled", "servers": []},
         "mcp": {"configured_enabled": False, "mode": "disabled", "servers": []},
         "model": "session/model",

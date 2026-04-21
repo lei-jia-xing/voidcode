@@ -42,7 +42,15 @@ from ..provider.snapshot import (
     resolved_provider_snapshot,
 )
 from ..skills import SkillRegistry
-from ..tools.contracts import Tool, ToolCall, ToolDefinition, ToolResult, ToolResultStatus
+from ..tools.contracts import (
+    RuntimeTimeoutAwareTool,
+    RuntimeToolTimeoutError,
+    Tool,
+    ToolCall,
+    ToolDefinition,
+    ToolResult,
+    ToolResultStatus,
+)
 from .acp import AcpAdapter, AcpAdapterState, build_acp_adapter
 from .config import (
     ExecutionEngineName,
@@ -352,6 +360,7 @@ class VoidCodeRuntime:
             model=initial_model,
             execution_engine=initial_execution_engine,
             max_steps=self._config.max_steps,
+            tool_timeout_seconds=self._config.tool_timeout_seconds,
             provider_fallback=initial_provider_fallback,
             plan=self._config.plan,
             resolved_provider=self._resolved_provider_config,
@@ -589,6 +598,7 @@ class VoidCodeRuntime:
                 model=resolved.model,
                 execution_engine=resolved.execution_engine,
                 max_steps=request_max_steps,
+                tool_timeout_seconds=resolved.tool_timeout_seconds,
                 provider_fallback=resolved.provider_fallback,
                 plan=resolved.plan,
                 resolved_provider=resolved.resolved_provider,
@@ -1028,7 +1038,8 @@ class VoidCodeRuntime:
         preserved_continuity_state: RuntimeContinuityState | None = None,
     ) -> Iterator[RuntimeStreamChunk]:
         active_permission_policy = permission_policy or self._permission_policy
-        provider_attempt = cast(int, graph_request.metadata.get("provider_attempt", 0))
+        raw_provider_attempt = graph_request.metadata.get("provider_attempt", 0)
+        provider_attempt = raw_provider_attempt if isinstance(raw_provider_attempt, int) else 0
         active_preserved_continuity_state = preserved_continuity_state
         while True:
             context_window = self._prepare_single_agent_context_window(
@@ -1365,8 +1376,20 @@ class VoidCodeRuntime:
                 )
                 raise RuntimeError(pre_hook_outcome.failed_error)
 
+            _tool_timeout = self._effective_runtime_config_from_metadata(
+                session.metadata
+            ).tool_timeout_seconds
             try:
-                tool_result = tool.invoke(plan_tool_call, workspace=self._workspace)
+                if _tool_timeout is None:
+                    tool_result = tool.invoke(plan_tool_call, workspace=self._workspace)
+                elif isinstance(tool, RuntimeTimeoutAwareTool):
+                    tool_result = tool.invoke_with_runtime_timeout(
+                        plan_tool_call,
+                        workspace=self._workspace,
+                        timeout_seconds=_tool_timeout,
+                    )
+                else:
+                    tool_result = tool.invoke(plan_tool_call, workspace=self._workspace)
             except Exception as exc:
                 for acp_event in self._envelopes_for_acp_events(
                     session_id=session.session.id,
@@ -1390,6 +1413,24 @@ class VoidCodeRuntime:
                 ):
                     sequence = lsp_event.sequence
                     yield RuntimeStreamChunk(kind="event", session=session, event=lsp_event)
+                if isinstance(exc, RuntimeToolTimeoutError):
+                    sequence += 1
+                    yield RuntimeStreamChunk(
+                        kind="event",
+                        session=session,
+                        event=EventEnvelope(
+                            session_id=session.session.id,
+                            sequence=sequence,
+                            event_type="runtime.tool_timeout",
+                            source="runtime",
+                            payload={
+                                "tool": plan_tool_call.tool_name,
+                                "timeout_seconds": _tool_timeout,
+                            },
+                        ),
+                    )
+                    yield self._failed_chunk(session=session, sequence=sequence + 1, error=str(exc))
+                    return
                 yield self._failed_chunk(session=session, sequence=sequence + 1, error=str(exc))
                 raise
 
@@ -2068,10 +2109,15 @@ class VoidCodeRuntime:
             metadata={
                 **session.metadata,
                 "agent_preset": serialize_runtime_agent_config(effective_config.agent),
-                "provider_attempt": cast(int, session.metadata.get("provider_attempt", 0)),
+                "provider_attempt": (
+                    session.metadata.get("provider_attempt", 0)
+                    if isinstance(session.metadata.get("provider_attempt", 0), int)
+                    else 0
+                ),
             },
         )
-        provider_attempt = cast(int, graph_request.metadata.get("provider_attempt", 0))
+        raw_provider_attempt = graph_request.metadata.get("provider_attempt", 0)
+        provider_attempt = raw_provider_attempt if isinstance(raw_provider_attempt, int) else 0
         graph = self._graph_for_session_metadata(session.metadata)
         if provider_attempt > 0:
             effective_config = self._effective_runtime_config_from_metadata(session.metadata)
@@ -2760,6 +2806,7 @@ class VoidCodeRuntime:
             "approval_mode": effective_config.approval_mode,
             "execution_engine": effective_config.execution_engine,
             "max_steps": effective_config.max_steps,
+            "tool_timeout_seconds": effective_config.tool_timeout_seconds,
             "provider_fallback": serialize_provider_fallback_config(
                 effective_config.provider_fallback
             ),
@@ -2843,6 +2890,7 @@ class VoidCodeRuntime:
             model=model,
             execution_engine=execution_engine,
             max_steps=resolved.max_steps,
+            tool_timeout_seconds=resolved.tool_timeout_seconds,
             provider_fallback=provider_fallback,
             plan=resolved.plan,
             resolved_provider=resolved_provider,
@@ -3266,6 +3314,7 @@ class VoidCodeRuntime:
                 model=model,
                 execution_engine=execution_engine,
                 max_steps=max_steps,
+                tool_timeout_seconds=self._config.tool_timeout_seconds,
                 provider_fallback=provider_fallback,
                 plan=plan,
                 resolved_provider=resolved_provider,
@@ -3279,6 +3328,7 @@ class VoidCodeRuntime:
                 model=model,
                 execution_engine=execution_engine,
                 max_steps=max_steps,
+                tool_timeout_seconds=self._config.tool_timeout_seconds,
                 provider_fallback=provider_fallback,
                 plan=plan,
                 resolved_provider=resolved_provider,
@@ -3297,6 +3347,19 @@ class VoidCodeRuntime:
             if persisted_max_steps < 1:
                 raise ValueError("persisted runtime_config max_steps must be at least 1")
             max_steps = persisted_max_steps
+        tool_timeout_seconds = self._config.tool_timeout_seconds
+        if "tool_timeout_seconds" in runtime_config:
+            persisted_tool_timeout = runtime_config.get("tool_timeout_seconds")
+            if persisted_tool_timeout is None:
+                tool_timeout_seconds = None
+            elif isinstance(persisted_tool_timeout, int) and not isinstance(
+                persisted_tool_timeout, bool
+            ):
+                if persisted_tool_timeout < 1:
+                    raise ValueError(
+                        "persisted runtime_config tool_timeout_seconds must be at least 1"
+                    )
+                tool_timeout_seconds = persisted_tool_timeout
         provider_fallback = None
         if "provider_fallback" in runtime_config:
             try:
@@ -3359,6 +3422,7 @@ class VoidCodeRuntime:
             model=model,
             execution_engine=execution_engine,
             max_steps=max_steps,
+            tool_timeout_seconds=tool_timeout_seconds,
             provider_fallback=provider_fallback,
             plan=plan,
             resolved_provider=resolved_provider,
@@ -3433,6 +3497,7 @@ class EffectiveRuntimeConfig:
     model: str | None
     execution_engine: ExecutionEngineName
     max_steps: int
+    tool_timeout_seconds: int | None = None
     provider_fallback: RuntimeProviderFallbackConfig | None = None
     plan: RuntimePlanConfig | None = None
     resolved_provider: ResolvedProviderConfig = field(default_factory=ResolvedProviderConfig)

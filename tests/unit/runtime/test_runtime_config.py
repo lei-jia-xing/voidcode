@@ -24,6 +24,7 @@ from voidcode.runtime.config import (
     MAX_STEPS_ENV_VAR,
     MODEL_ENV_VAR,
     RUNTIME_CONFIG_FILE_NAME,
+    TOOL_TIMEOUT_ENV_VAR,
     RuntimeAgentConfig,
     RuntimeFormatterPresetConfig,
     RuntimeHooksConfig,
@@ -228,6 +229,14 @@ def test_runtime_config_uses_max_steps_environment_when_repo_file_missing(tmp_pa
     assert config.max_steps == 7
 
 
+def test_runtime_config_uses_tool_timeout_environment_when_repo_file_missing(
+    tmp_path: Path,
+) -> None:
+    config = load_runtime_config(tmp_path, env={TOOL_TIMEOUT_ENV_VAR: "7"})
+
+    assert config.tool_timeout_seconds == 7
+
+
 def test_runtime_config_prefers_repo_file_over_environment(tmp_path: Path) -> None:
     runtime_config_path(tmp_path).write_text(
         json.dumps(
@@ -330,6 +339,30 @@ def test_runtime_config_prefers_repo_file_max_steps_over_environment(tmp_path: P
     assert config.max_steps == 4
 
 
+def test_runtime_config_prefers_repo_file_tool_timeout_over_environment(tmp_path: Path) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps({"tool_timeout_seconds": 4}),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(tmp_path, env={TOOL_TIMEOUT_ENV_VAR: "7"})
+
+    assert config.tool_timeout_seconds == 4
+
+
+def test_runtime_config_treats_null_repo_file_tool_timeout_as_explicit_override(
+    tmp_path: Path,
+) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps({"tool_timeout_seconds": None}),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(tmp_path, env={TOOL_TIMEOUT_ENV_VAR: "7"})
+
+    assert config.tool_timeout_seconds is None
+
+
 def test_runtime_config_prefers_explicit_execution_engine_over_repo_file_and_environment(
     tmp_path: Path,
 ) -> None:
@@ -362,6 +395,23 @@ def test_runtime_config_prefers_explicit_max_steps_over_repo_file_and_environmen
     )
 
     assert config.max_steps == 9
+
+
+def test_runtime_config_prefers_explicit_tool_timeout_over_repo_file_and_environment(
+    tmp_path: Path,
+) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps({"tool_timeout_seconds": 4}),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(
+        tmp_path,
+        tool_timeout_seconds=9,
+        env={TOOL_TIMEOUT_ENV_VAR: "7"},
+    )
+
+    assert config.tool_timeout_seconds == 9
 
 
 def test_runtime_config_parses_extension_domains(tmp_path: Path) -> None:
@@ -1197,6 +1247,22 @@ def test_runtime_config_rejects_invalid_environment_max_steps(
         _ = load_runtime_config(tmp_path, env={MAX_STEPS_ENV_VAR: raw_value})
 
 
+@pytest.mark.parametrize("raw_value", ["0", "-1", "four"])
+def test_runtime_config_rejects_invalid_environment_tool_timeout(
+    tmp_path: Path, raw_value: str
+) -> None:
+    with pytest.raises(ValueError, match=TOOL_TIMEOUT_ENV_VAR):
+        _ = load_runtime_config(tmp_path, env={TOOL_TIMEOUT_ENV_VAR: raw_value})
+
+
+@pytest.mark.parametrize("raw_value", [0, -1, True, False])
+def test_runtime_config_rejects_invalid_explicit_tool_timeout(
+    tmp_path: Path, raw_value: object
+) -> None:
+    with pytest.raises(ValueError, match="explicit runtime config override 'tool_timeout_seconds'"):
+        _ = load_runtime_config(tmp_path, tool_timeout_seconds=raw_value, env={})
+
+
 def test_runtime_config_rejects_empty_model_environment(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match=MODEL_ENV_VAR):
         _ = load_runtime_config(tmp_path, env={MODEL_ENV_VAR: ""})
@@ -1238,6 +1304,21 @@ def test_runtime_config_rejects_invalid_repo_local_execution_engine(tmp_path: Pa
         ),
         pytest.param(
             {"max_steps": "four"}, "runtime config field 'max_steps'", id="max-steps-type"
+        ),
+        pytest.param(
+            {"tool_timeout_seconds": 0},
+            "runtime config field 'tool_timeout_seconds'",
+            id="tool-timeout-zero",
+        ),
+        pytest.param(
+            {"tool_timeout_seconds": -1},
+            "runtime config field 'tool_timeout_seconds'",
+            id="tool-timeout-negative",
+        ),
+        pytest.param(
+            {"tool_timeout_seconds": "slow"},
+            "runtime config field 'tool_timeout_seconds'",
+            id="tool-timeout-type",
         ),
     ],
 )

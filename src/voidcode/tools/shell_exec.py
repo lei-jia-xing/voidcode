@@ -8,7 +8,7 @@ from typing import ClassVar, final
 from pydantic import ValidationError
 
 from ._pydantic_args import ShellExecArgs
-from .contracts import ToolCall, ToolDefinition, ToolResult
+from .contracts import RuntimeToolTimeoutError, ToolCall, ToolDefinition, ToolResult
 
 DEFAULT_TIMEOUT_SECONDS = 30
 MAX_TIMEOUT_SECONDS = 120
@@ -37,6 +37,24 @@ class ShellExecTool:
     )
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
+        return self._invoke(call, workspace=workspace, runtime_timeout_seconds=None)
+
+    def invoke_with_runtime_timeout(
+        self,
+        call: ToolCall,
+        *,
+        workspace: Path,
+        timeout_seconds: int,
+    ) -> ToolResult:
+        return self._invoke(call, workspace=workspace, runtime_timeout_seconds=timeout_seconds)
+
+    def _invoke(
+        self,
+        call: ToolCall,
+        *,
+        workspace: Path,
+        runtime_timeout_seconds: int | None,
+    ) -> ToolResult:
         try:
             args = ShellExecArgs.model_validate({"command": call.arguments.get("command")})
         except ValidationError as exc:
@@ -53,9 +71,15 @@ class ShellExecTool:
 
         timeout_value = call.arguments.get("timeout", DEFAULT_TIMEOUT_SECONDS)
         if isinstance(timeout_value, (int, float)) and timeout_value > 0:
-            timeout_seconds = min(int(timeout_value), MAX_TIMEOUT_SECONDS)
+            local_timeout_seconds = min(int(timeout_value), MAX_TIMEOUT_SECONDS)
         else:
-            timeout_seconds = DEFAULT_TIMEOUT_SECONDS
+            local_timeout_seconds = DEFAULT_TIMEOUT_SECONDS
+
+        timeout_seconds = local_timeout_seconds
+        runtime_timeout_selected = False
+        if runtime_timeout_seconds is not None and runtime_timeout_seconds < timeout_seconds:
+            timeout_seconds = runtime_timeout_seconds
+            runtime_timeout_selected = True
 
         try:
             completed = subprocess.run(
@@ -68,6 +92,10 @@ class ShellExecTool:
                 timeout=timeout_seconds,
             )
         except subprocess.TimeoutExpired as exc:
+            if runtime_timeout_selected:
+                raise RuntimeToolTimeoutError(
+                    f"tool '{self.definition.name}' exceeded runtime timeout of {timeout_seconds}s"
+                ) from exc
             raise ValueError(f"shell_exec command timed out after {timeout_seconds}s") from exc
         except OSError as exc:
             raise ValueError(f"shell_exec failed to execute command: {exc}") from exc
