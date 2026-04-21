@@ -81,6 +81,64 @@ def test_background_task_storage_create_assigns_store_timestamps_and_orders_by_l
     assert [task.task.id for task in listed] == ["task-ts-2", "task-ts-1"]
 
 
+def test_background_task_storage_lists_by_parent_session_and_preserves_order(
+    tmp_path: Path,
+) -> None:
+    store = SqliteSessionStore()
+    first = BackgroundTaskState(
+        task=BackgroundTaskRef(id="task-parent-a-1"),
+        request=BackgroundTaskRequestSnapshot(prompt="first", parent_session_id="leader-a"),
+    )
+    second = BackgroundTaskState(
+        task=BackgroundTaskRef(id="task-parent-b-1"),
+        request=BackgroundTaskRequestSnapshot(prompt="second", parent_session_id="leader-b"),
+    )
+    third = BackgroundTaskState(
+        task=BackgroundTaskRef(id="task-parent-a-2"),
+        request=BackgroundTaskRequestSnapshot(prompt="third", parent_session_id="leader-a"),
+    )
+    fourth = BackgroundTaskState(
+        task=BackgroundTaskRef(id="task-unparented"),
+        request=BackgroundTaskRequestSnapshot(prompt="fourth"),
+    )
+
+    store.create_background_task(workspace=tmp_path, task=first)
+    store.create_background_task(workspace=tmp_path, task=second)
+    store.create_background_task(workspace=tmp_path, task=third)
+    store.create_background_task(workspace=tmp_path, task=fourth)
+
+    listed = store.list_background_tasks_by_parent_session(
+        workspace=tmp_path,
+        parent_session_id="leader-a",
+    )
+
+    assert [task.task.id for task in listed] == ["task-parent-a-2", "task-parent-a-1"]
+    assert all(task.prompt in {"first", "third"} for task in listed)
+
+
+def test_background_task_storage_lists_by_parent_session_returns_empty_when_no_match(
+    tmp_path: Path,
+) -> None:
+    store = SqliteSessionStore()
+    store.create_background_task(
+        workspace=tmp_path,
+        task=BackgroundTaskState(
+            task=BackgroundTaskRef(id="task-other-parent"),
+            request=BackgroundTaskRequestSnapshot(
+                prompt="child background task",
+                parent_session_id="leader-other",
+            ),
+        ),
+    )
+
+    listed = store.list_background_tasks_by_parent_session(
+        workspace=tmp_path,
+        parent_session_id="leader-missing",
+    )
+
+    assert listed == ()
+
+
 def test_background_task_storage_marks_running_and_terminal(tmp_path: Path) -> None:
     store = SqliteSessionStore()
     store.create_background_task(workspace=tmp_path, task=_task(task_id="task-b"))

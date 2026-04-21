@@ -87,6 +87,10 @@ class SessionStore(Protocol):
         self, *, workspace: Path
     ) -> tuple[StoredBackgroundTaskSummary, ...]: ...
 
+    def list_background_tasks_by_parent_session(
+        self, *, workspace: Path, parent_session_id: str
+    ) -> tuple[StoredBackgroundTaskSummary, ...]: ...
+
     def mark_background_task_running(
         self,
         *,
@@ -777,6 +781,35 @@ class SqliteSessionStore:
                     ORDER BY updated_at DESC, task_id ASC
                     """,
                     (str(workspace),),
+                ).fetchall(),
+            )
+        return tuple(
+            StoredBackgroundTaskSummary(
+                task=BackgroundTaskRef(id=cast(str, row["task_id"])),
+                status=self._parse_background_task_status(cast(str, row["status"])),
+                prompt=cast(str, row["prompt"]),
+                session_id=cast(str | None, row["session_id"]),
+                error=cast(str | None, row["error"]),
+                created_at=cast(int, row["created_at"]),
+                updated_at=cast(int, row["updated_at"]),
+            )
+            for row in rows
+        )
+
+    def list_background_tasks_by_parent_session(
+        self, *, workspace: Path, parent_session_id: str
+    ) -> tuple[StoredBackgroundTaskSummary, ...]:
+        with self._connect(workspace) as connection:
+            rows = cast(
+                list[sqlite3.Row],
+                connection.execute(
+                    """
+                    SELECT task_id, status, prompt, session_id, error, created_at, updated_at
+                    FROM background_tasks
+                    WHERE workspace = ? AND request_parent_session_id = ?
+                    ORDER BY updated_at DESC, task_id ASC
+                    """,
+                    (str(workspace), parent_session_id),
                 ).fetchall(),
             )
         return tuple(

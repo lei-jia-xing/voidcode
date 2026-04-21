@@ -4,6 +4,7 @@ import sys
 import textwrap
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 from unittest.mock import patch
 
 from voidcode.hook.config import RuntimeFormatterPresetConfig, RuntimeHooksConfig
@@ -239,7 +240,8 @@ def test_builtin_tool_provider_injects_formatter_aware_edit_tools(tmp_path: Path
 
     assert result.status == "ok"
     assert target.read_text(encoding="utf-8") == "VALUE='BETA'\n"
-    assert result.data["formatter"]["status"] == "formatted"
+    formatter_payload = cast(dict[str, object], result.data["formatter"])
+    assert formatter_payload["status"] == "formatted"
 
 
 def test_tool_registry_accepts_tools_from_provider_output() -> None:
@@ -466,8 +468,9 @@ def test_runtime_default_registry_behavior_remains_unchanged(tmp_path: Path) -> 
     sample_file = tmp_path / "sample.txt"
     _ = sample_file.write_text("alpha beta\n", encoding="utf-8")
     runtime = VoidCodeRuntime(workspace=tmp_path, graph=_StubGraph())
+    base_registry = cast(ToolRegistry, runtime._base_tool_registry)
 
-    assert "format_file" in runtime._base_tool_registry.tools
+    assert "format_file" in base_registry.tools
 
     response = runtime.run(RuntimeRequest(prompt="hello"))
 

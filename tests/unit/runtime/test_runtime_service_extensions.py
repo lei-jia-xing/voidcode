@@ -631,6 +631,12 @@ def test_runtime_uses_has_session_instead_of_missing_session_error_text(tmp_path
             _ = workspace
             return ()
 
+        def list_background_tasks_by_parent_session(
+            self, *, workspace: Path, parent_session_id: str
+        ) -> tuple[object, ...]:
+            _ = workspace, parent_session_id
+            return ()
+
         def mark_background_task_running(
             self,
             *,
@@ -707,6 +713,51 @@ def test_runtime_background_task_preserves_parent_session_lineage(tmp_path: Path
     assert child_session_id != "local-cli-session"
     assert resumed.session.session.parent_id == "leader-session"
     assert resumed.session.metadata["background_task_id"] == started.task.id
+
+
+def test_runtime_lists_background_tasks_by_parent_session(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    _ = runtime.run(RuntimeRequest(prompt="leader a", session_id="leader-a"))
+    _ = runtime.run(RuntimeRequest(prompt="leader b", session_id="leader-b"))
+
+    first = runtime.start_background_task(
+        RuntimeRequest(prompt="child a1", parent_session_id="leader-a")
+    )
+    second = runtime.start_background_task(
+        RuntimeRequest(prompt="child b1", parent_session_id="leader-b")
+    )
+    third = runtime.start_background_task(
+        RuntimeRequest(prompt="child a2", parent_session_id="leader-a")
+    )
+
+    _ = _wait_for_background_task(runtime, first.task.id)
+    _ = _wait_for_background_task(runtime, second.task.id)
+    _ = _wait_for_background_task(runtime, third.task.id)
+
+    listed = runtime.list_background_tasks_by_parent_session(parent_session_id="leader-a")
+
+    assert [task.task.id for task in listed] == [third.task.id, first.task.id]
+    assert all(task.prompt in {"child a1", "child a2"} for task in listed)
+
+
+def test_runtime_lists_background_tasks_by_parent_session_returns_empty_for_unknown_parent(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+
+    listed = runtime.list_background_tasks_by_parent_session(parent_session_id="leader-missing")
+
+    assert listed == ()
+
+
+def test_runtime_validates_parent_session_id_when_listing_background_tasks(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+
+    with pytest.raises(ValueError, match="parent_session_id must be a non-empty string"):
+        _ = runtime.list_background_tasks_by_parent_session(parent_session_id="")
+
+    with pytest.raises(ValueError, match="parent_session_id must not contain '/'"):
+        _ = runtime.list_background_tasks_by_parent_session(parent_session_id="leader/session")
 
 
 def test_runtime_reuses_existing_session_lineage_when_parent_is_omitted(tmp_path: Path) -> None:

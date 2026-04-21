@@ -1721,6 +1721,19 @@ class VoidCodeRuntime:
         self._reconcile_background_tasks_if_needed()
         return self._session_store.list_background_tasks(workspace=self._workspace)
 
+    def list_background_tasks_by_parent_session(
+        self, *, parent_session_id: str
+    ) -> tuple[StoredBackgroundTaskSummary, ...]:
+        self._reconcile_background_tasks_if_needed()
+        validated_parent_session_id = validate_session_reference_id(
+            parent_session_id,
+            field_name="parent_session_id",
+        )
+        return self._session_store.list_background_tasks_by_parent_session(
+            workspace=self._workspace,
+            parent_session_id=validated_parent_session_id,
+        )
+
     def cancel_background_task(self, task_id: str) -> BackgroundTaskState:
         validate_background_task_id(task_id)
         self._reconcile_background_tasks_if_needed()

@@ -68,7 +68,13 @@ class RuntimeRequestLike(Protocol):
 
 
 class RuntimeRequestFactory(Protocol):
-    def __call__(self, *, prompt: str, session_id: str | None = None) -> RuntimeRequestLike: ...
+    def __call__(
+        self,
+        *,
+        prompt: str,
+        session_id: str | None = None,
+        parent_session_id: str | None = None,
+    ) -> RuntimeRequestLike: ...
 
 
 class BackgroundTaskRefLike(Protocol):
@@ -86,6 +92,7 @@ class BackgroundTaskStateLike(Protocol):
 class StoredBackgroundTaskSummaryLike(Protocol):
     task: BackgroundTaskRefLike
     status: str
+    prompt: str
 
 
 class RuntimeRunner(Protocol):
@@ -116,6 +123,10 @@ class RuntimeRunner(Protocol):
     def load_background_task(self, task_id: str) -> BackgroundTaskStateLike: ...
 
     def list_background_tasks(self) -> tuple[StoredBackgroundTaskSummaryLike, ...]: ...
+
+    def list_background_tasks_by_parent_session(
+        self, *, parent_session_id: str
+    ) -> tuple[StoredBackgroundTaskSummaryLike, ...]: ...
 
     def cancel_background_task(self, task_id: str) -> BackgroundTaskStateLike: ...
 
@@ -1304,6 +1315,36 @@ def test_runtime_background_task_persists_and_can_be_loaded_from_fresh_runtime(
         replay = second_runtime.resume(reloaded.session_id)
         assert replay.session.metadata["background_task_id"] == task.task.id
         assert replay.session.metadata["background_run"] is True
+
+
+def test_runtime_lists_background_tasks_by_parent_session_from_fresh_runtime(
+    tmp_path: Path,
+) -> None:
+    runtime_request, runtime_class = _load_runtime_types()
+    _ = (tmp_path / "sample.txt").write_text("hello\n", encoding="utf-8")
+
+    first_runtime = cast(RuntimeRunner, cast(object, runtime_class(workspace=tmp_path)))
+    _ = first_runtime.run(runtime_request(prompt="read sample.txt", session_id="leader-session"))
+    leader_task = first_runtime.start_background_task(
+        runtime_request(prompt="read sample.txt", parent_session_id="leader-session")
+    )
+    _ = first_runtime.start_background_task(runtime_request(prompt="read sample.txt"))
+
+    deadline = time.time() + 2
+    while time.time() < deadline:
+        current = first_runtime.load_background_task(leader_task.task.id)
+        if current.status in ("completed", "failed", "cancelled"):
+            break
+        time.sleep(0.01)
+
+    second_runtime = cast(RuntimeRunner, cast(object, runtime_class(workspace=tmp_path)))
+    listed = second_runtime.list_background_tasks_by_parent_session(
+        parent_session_id="leader-session"
+    )
+
+    assert len(listed) == 1
+    assert listed[0].task.id == leader_task.task.id
+    assert listed[0].prompt == "read sample.txt"
 
 
 def test_runtime_background_task_cancel_reconciles_orphaned_task_from_fresh_runtime(
