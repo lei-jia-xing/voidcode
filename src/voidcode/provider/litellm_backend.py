@@ -115,11 +115,26 @@ class LiteLLMBackendSingleAgentProvider:
             + "\n\n".join(rendered_skills)
         )
 
+    @staticmethod
+    def _continuity_system_message(request: SingleAgentTurnRequest) -> str | None:
+        continuity_state = request.context_window.continuity_state
+        if continuity_state is None:
+            return None
+
+        summary_text = getattr(continuity_state, "summary_text", None)
+        if not isinstance(summary_text, str) or not summary_text.strip():
+            return None
+
+        return f"Runtime continuity summary:\n{summary_text.strip()}"
+
     def _build_messages(self, request: SingleAgentTurnRequest) -> list[dict[str, str]]:
         messages: list[dict[str, str]] = []
         skill_message = self._skill_system_message(request)
         if skill_message is not None:
             messages.append({"role": "system", "content": skill_message})
+        continuity_message = self._continuity_system_message(request)
+        if continuity_message is not None:
+            messages.append({"role": "system", "content": continuity_message})
         messages.append({"role": "user", "content": request.prompt})
         return messages
 

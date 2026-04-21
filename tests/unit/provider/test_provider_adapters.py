@@ -30,11 +30,21 @@ from voidcode.tools.contracts import ToolDefinition, ToolResult
 
 
 @dataclass(frozen=True, slots=True)
+class _StubContinuityState:
+    summary_text: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class _StubContextWindow:
     prompt: str
     tool_results: tuple[ToolResult, ...]
     compacted: bool = False
     retained_tool_result_count: int = 0
+    _continuity_state: object | None = None
+
+    @property
+    def continuity_state(self) -> object | None:
+        return self._continuity_state
 
 
 def _build_turn_request(*, model_name: str) -> SingleAgentTurnRequest:
@@ -71,6 +81,36 @@ def _build_turn_request_with_skill(*, model_name: str) -> SingleAgentTurnRequest
                 "content": "# Summarize\nUse concise bullet points.",
             },
         ),
+        raw_model=f"{model_name}/demo",
+        provider_name=model_name,
+        model_name="demo",
+        attempt=0,
+        abort_signal=None,
+    )
+
+
+def _build_turn_request_with_continuity(*, model_name: str) -> SingleAgentTurnRequest:
+    tool_results = (ToolResult(tool_name="read_file", status="ok", content="hello world"),)
+    return SingleAgentTurnRequest(
+        prompt="summarize sample.txt",
+        available_tools=(
+            ToolDefinition(name="read_file", description="read file", read_only=True),
+        ),
+        tool_results=tool_results,
+        context_window=_StubContextWindow(
+            prompt="summarize sample.txt",
+            tool_results=tool_results,
+            compacted=True,
+            retained_tool_result_count=1,
+            _continuity_state=_StubContinuityState(
+                summary_text=(
+                    "Compacted 2 earlier tool results:\n"
+                    '1. read_file ok path=sample.txt content_preview="old"\n'
+                    '2. read_file ok path=sample.txt content_preview="older"'
+                )
+            ),
+        ),
+        applied_skills=(),
         raw_model=f"{model_name}/demo",
         provider_name=model_name,
         model_name="demo",
@@ -359,6 +399,92 @@ def test_provider_adapter_prefers_runtime_skill_prompt_context(
         "role": "system",
         "content": "Runtime skill context\n\nSkill: summarize\nInstructions:\nBe brief.",
     }
+
+
+@pytest.mark.parametrize(
+    ("provider_name", "provider"),
+    [
+        ("openai", OpenAIModelProvider()),
+        ("anthropic", AnthropicModelProvider()),
+        ("google", GoogleModelProvider()),
+        ("copilot", CopilotModelProvider()),
+    ],
+)
+def test_provider_adapter_injects_continuity_summary_into_system_messages(
+    monkeypatch: pytest.MonkeyPatch,
+    provider_name: str,
+    provider: ModelProvider,
+) -> None:
+    single_agent = provider.single_agent_provider()
+
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        completion_content="hello world",
+    )
+
+    result = single_agent.propose_turn(
+        _build_turn_request_with_continuity(model_name=provider_name)
+    )
+
+    assert result.output == "hello world"
+    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+    assert isinstance(payload_obj, dict)
+    payload = cast(dict[str, object], payload_obj)
+    messages_obj = payload.get("messages")
+    assert isinstance(messages_obj, list)
+    messages = cast(list[dict[str, str]], messages_obj)
+    assert messages == [
+        {
+            "role": "system",
+            "content": (
+                "Runtime continuity summary:\n"
+                "Compacted 2 earlier tool results:\n"
+                '1. read_file ok path=sample.txt content_preview="old"\n'
+                '2. read_file ok path=sample.txt content_preview="older"'
+            ),
+        },
+        {"role": "user", "content": "summarize sample.txt"},
+    ]
+
+
+def test_provider_adapter_omits_continuity_message_without_summary_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = OpenAIModelProvider()
+    single_agent = provider.single_agent_provider()
+    request = _build_turn_request(model_name="openai")
+    request = SingleAgentTurnRequest(
+        prompt=request.prompt,
+        available_tools=request.available_tools,
+        tool_results=request.tool_results,
+        context_window=_StubContextWindow(
+            prompt=request.context_window.prompt,
+            tool_results=request.context_window.tool_results,
+            _continuity_state=_StubContinuityState(summary_text="   "),
+        ),
+        applied_skills=request.applied_skills,
+        raw_model=request.raw_model,
+        provider_name=request.provider_name,
+        model_name=request.model_name,
+        attempt=request.attempt,
+        abort_signal=request.abort_signal,
+    )
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        completion_content="hello world",
+    )
+
+    _ = single_agent.propose_turn(request)
+
+    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+    assert isinstance(payload_obj, dict)
+    payload = cast(dict[str, object], payload_obj)
+    messages_obj = payload.get("messages")
+    assert isinstance(messages_obj, list)
+    messages = cast(list[dict[str, str]], messages_obj)
+    assert messages == [{"role": "user", "content": "read sample.txt"}]
 
 
 def test_provider_adapter_propose_turn_uses_model_map_for_litellm_alias(
