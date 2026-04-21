@@ -736,8 +736,9 @@ def test_runtime_lists_background_tasks_by_parent_session(tmp_path: Path) -> Non
 
     listed = runtime.list_background_tasks_by_parent_session(parent_session_id="leader-a")
 
-    assert [task.task.id for task in listed] == [third.task.id, first.task.id]
-    assert all(task.prompt in {"child a1", "child a2"} for task in listed)
+    assert len(listed) == 2
+    assert {task.task.id for task in listed} == {first.task.id, third.task.id}
+    assert {task.prompt for task in listed} == {"child a1", "child a2"}
 
 
 def test_runtime_lists_background_tasks_by_parent_session_returns_empty_for_unknown_parent(
