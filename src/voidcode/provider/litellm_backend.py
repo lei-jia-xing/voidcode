@@ -153,6 +153,24 @@ class LiteLLMBackendSingleAgentProvider:
 
         return f"Runtime continuity summary:\n{summary_text.strip()}"
 
+    @classmethod
+    def _agent_profile_system_message(cls, request: SingleAgentTurnRequest) -> str | None:
+        agent_preset = request.agent_preset
+        if agent_preset is None:
+            return None
+        prompt_profile = agent_preset.get("prompt_profile")
+        if not isinstance(prompt_profile, str) or not prompt_profile.strip():
+            return None
+        normalized_prompt_profile = prompt_profile.strip()
+        if normalized_prompt_profile == "leader":
+            return cls._LEADER_PROFILE_PROMPT
+        return (
+            "Runtime-selected VoidCode agent prompt profile: "
+            f"{normalized_prompt_profile}. Treat this as the active agent role profile "
+            "for this single-agent turn while still following the runtime-provided tool "
+            "and skill boundaries."
+        )
+
     def _build_messages(self, request: SingleAgentTurnRequest) -> list[dict[str, str]]:
         messages: list[dict[str, str]] = []
         agent_profile_message = self._agent_profile_system_message(request)

@@ -614,6 +614,48 @@ def test_provider_adapter_omits_continuity_message_without_summary_text(
     messages = cast(list[dict[str, str]], messages_obj)
     assert messages == [{"role": "user", "content": "read sample.txt"}]
 
+def test_provider_adapter_injects_leader_prompt_profile_system_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = OpenAIModelProvider()
+    single_agent = provider.single_agent_provider()
+    request = _build_turn_request(model_name="openai")
+    request = SingleAgentTurnRequest(
+        prompt=request.prompt,
+        available_tools=request.available_tools,
+        tool_results=request.tool_results,
+        context_window=request.context_window,
+        applied_skills=request.applied_skills,
+        raw_model=request.raw_model,
+        provider_name=request.provider_name,
+        model_name=request.model_name,
+        agent_preset={
+            "preset": "leader",
+            "prompt_profile": "leader",
+            "model": "openai/demo",
+            "execution_engine": "single_agent",
+        },
+        attempt=request.attempt,
+        abort_signal=request.abort_signal,
+    )
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        completion_content="hello world",
+    )
+
+    _ = single_agent.propose_turn(request)
+
+    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+    assert isinstance(payload_obj, dict)
+    payload = cast(dict[str, object], payload_obj)
+    messages_obj = payload.get("messages")
+    assert isinstance(messages_obj, list)
+    messages = cast(list[dict[str, str]], messages_obj)
+    assert messages[0]["role"] == "system"
+    assert "VoidCode leader agent" in messages[0]["content"]
+    assert messages[1] == {"role": "user", "content": "read sample.txt"}
+
 
 def test_provider_adapter_propose_turn_uses_model_map_for_litellm_alias(
     monkeypatch: pytest.MonkeyPatch,
