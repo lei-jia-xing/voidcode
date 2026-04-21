@@ -93,6 +93,24 @@ def test_session_storage_migrates_legacy_schema_for_parent_lineage(tmp_path: Pat
         )
         _ = connection.execute(
             """
+            CREATE TABLE session_notifications (
+                notification_id TEXT PRIMARY KEY,
+                workspace TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                status TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                event_sequence INTEGER NOT NULL,
+                dedupe_key TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                acknowledged_at INTEGER,
+                UNIQUE(workspace, dedupe_key)
+            )
+            """
+        )
+        _ = connection.execute(
+            """
             CREATE TABLE background_tasks (
                 task_id TEXT PRIMARY KEY,
                 workspace TEXT NOT NULL,
@@ -162,11 +180,20 @@ def test_session_storage_migrates_legacy_schema_for_parent_lineage(tmp_path: Pat
         background_task_columns = {
             row[1] for row in connection.execute("PRAGMA table_info(background_tasks)").fetchall()
         }
+        delivery_tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        user_version = connection.execute("PRAGMA user_version").fetchone()[0]
 
     assert loaded.session.session.parent_id is None
     assert "parent_session_id" in session_columns
     assert "request_parent_session_id" in background_task_columns
+    assert "session_event_deliveries" in delivery_tables
     assert loaded_task.request.parent_session_id == "leader-session"
+    assert user_version == 6
 
 
 def test_tool_results_from_events_keeps_success_payloads_with_null_error() -> None:

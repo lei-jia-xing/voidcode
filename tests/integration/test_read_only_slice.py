@@ -1752,6 +1752,13 @@ def test_runtime_migrates_legacy_session_schema_for_pending_approval(tmp_path: P
             list[tuple[object, ...]],
             check.execute("PRAGMA table_info(background_tasks)").fetchall(),
         )
+        delivery_tables = cast(
+            list[tuple[object, ...]],
+            check.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type = 'table' AND name = 'session_event_deliveries'"
+            ).fetchall(),
+        )
         columns = [cast(str, row[1]) for row in session_rows]
         background_task_columns = [cast(str, row[1]) for row in background_task_rows]
         user_version = cast(int, check.execute("PRAGMA user_version").fetchone()[0])
@@ -1762,6 +1769,7 @@ def test_runtime_migrates_legacy_session_schema_for_pending_approval(tmp_path: P
     assert "pending_approval_json" in columns
     assert "resume_checkpoint_json" in columns
     assert "request_parent_session_id" in background_task_columns
+    assert delivery_tables == [("session_event_deliveries",)]
     assert user_version == 6
 
 
