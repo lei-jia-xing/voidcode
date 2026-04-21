@@ -614,6 +614,7 @@ def test_provider_adapter_omits_continuity_message_without_summary_text(
     messages = cast(list[dict[str, str]], messages_obj)
     assert messages == [{"role": "user", "content": "read sample.txt"}]
 
+
 def test_provider_adapter_injects_leader_prompt_profile_system_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

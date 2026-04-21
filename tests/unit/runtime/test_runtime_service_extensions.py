@@ -2651,6 +2651,130 @@ def test_runtime_resume_skips_missing_legacy_applied_skill_names(
     )
 
 
+def test_runtime_resume_legacy_applied_skill_names_override_changed_manifest_defaults(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    alpha_dir = tmp_path / ".voidcode" / "skills" / "alpha"
+    beta_dir = tmp_path / ".voidcode" / "skills" / "beta"
+    alpha_dir.mkdir(parents=True)
+    beta_dir.mkdir(parents=True)
+    (alpha_dir / "SKILL.md").write_text(
+        "---\nname: alpha\ndescription: Alpha skill\n---\n# Alpha\nOriginal alpha.\n",
+        encoding="utf-8",
+    )
+    (beta_dir / "SKILL.md").write_text(
+        "---\nname: beta\ndescription: Beta skill\n---\n# Beta\nOriginal beta.\n",
+        encoding="utf-8",
+    )
+
+    def _leader_manifest_with_alpha(agent_id: str):
+        if agent_id == "leader":
+            return replace(LEADER_AGENT_MANIFEST, skill_refs=("alpha",))
+        return get_builtin_agent_manifest(agent_id)
+
+    monkeypatch.setattr(
+        runtime_service_module,
+        "get_builtin_agent_manifest",
+        _leader_manifest_with_alpha,
+    )
+    initial_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(
+            agent=RuntimeAgentConfig(
+                preset="leader",
+                skills=RuntimeSkillsConfig(enabled=True),
+            ),
+            approval_mode="ask",
+        ),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    waiting = initial_runtime.run(RuntimeRequest(prompt="go", session_id="legacy-applied-skills"))
+
+    assert waiting.session.status == "waiting"
+    approval_request_id = str(waiting.events[-1].payload["request_id"])
+
+    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    connection = sqlite3.connect(database_path)
+    try:
+        row = connection.execute(
+            "SELECT metadata_json FROM sessions WHERE session_id = ?",
+            ("legacy-applied-skills",),
+        ).fetchone()
+        assert row is not None
+        metadata = json.loads(str(row[0]))
+        assert isinstance(metadata, dict)
+        metadata_dict = cast(dict[str, object], metadata)
+        metadata_dict.pop("applied_skill_payloads", None)
+        metadata_dict.pop("selected_skill_names", None)
+        metadata_dict["applied_skills"] = ["alpha"]
+        _ = connection.execute(
+            "UPDATE sessions SET metadata_json = ? WHERE session_id = ?",
+            (json.dumps(metadata_dict, sort_keys=True), "legacy-applied-skills"),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    (alpha_dir / "SKILL.md").write_text(
+        "---\nname: alpha\ndescription: Alpha skill\n---\n# Alpha\nChanged alpha.\n",
+        encoding="utf-8",
+    )
+    (beta_dir / "SKILL.md").write_text(
+        "---\nname: beta\ndescription: Beta skill\n---\n# Beta\nChanged beta.\n",
+        encoding="utf-8",
+    )
+
+    def _leader_manifest_with_beta(agent_id: str):
+        if agent_id == "leader":
+            return replace(LEADER_AGENT_MANIFEST, skill_refs=("beta",))
+        return get_builtin_agent_manifest(agent_id)
+
+    monkeypatch.setattr(
+        runtime_service_module,
+        "get_builtin_agent_manifest",
+        _leader_manifest_with_beta,
+    )
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(
+            agent=RuntimeAgentConfig(
+                preset="leader",
+                skills=RuntimeSkillsConfig(enabled=True),
+            ),
+            approval_mode="ask",
+        ),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    resumed = resumed_runtime.resume(
+        session_id="legacy-applied-skills",
+        approval_request_id=approval_request_id,
+        approval_decision="allow",
+    )
+
+    assert resumed.session.status == "completed"
+    assert _ApprovalThenCaptureSkillGraph.last_request is not None
+    assert [
+        skill["name"] for skill in _ApprovalThenCaptureSkillGraph.last_request.applied_skills
+    ] == ["alpha"]
+    assert _ApprovalThenCaptureSkillGraph.last_request.applied_skills == (
+        {
+            "name": "alpha",
+            "description": "Alpha skill",
+            "content": "# Alpha\nChanged alpha.",
+            "prompt_context": (
+                "Skill: alpha\nDescription: Alpha skill\nInstructions:\n# Alpha\nChanged alpha."
+            ),
+            "execution_notes": "# Alpha\nChanged alpha.",
+            "source_path": str(alpha_dir / "SKILL.md"),
+        },
+    )
+
+
 def test_runtime_resume_uses_persisted_approval_mode_for_follow_up_gated_tools(
     tmp_path: Path,
 ) -> None:
@@ -4199,6 +4323,132 @@ def test_runtime_agent_manifest_skill_refs_combine_with_request_skills(
         "demo",
         "zeta",
     ]
+
+
+def test_runtime_resume_uses_persisted_selected_skill_names_when_payloads_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    alpha_dir = tmp_path / ".voidcode" / "skills" / "alpha"
+    beta_dir = tmp_path / ".voidcode" / "skills" / "beta"
+    alpha_dir.mkdir(parents=True)
+    (alpha_dir / "SKILL.md").write_text(
+        "---\nname: alpha\ndescription: Alpha skill\n---\n# Alpha\nOriginal alpha.\n",
+        encoding="utf-8",
+    )
+    beta_dir.mkdir(parents=True)
+    (beta_dir / "SKILL.md").write_text(
+        "---\nname: beta\ndescription: Beta skill\n---\n# Beta\nOriginal beta.\n",
+        encoding="utf-8",
+    )
+
+    def _leader_manifest_with_alpha(agent_id: str):
+        if agent_id == "leader":
+            return replace(LEADER_AGENT_MANIFEST, skill_refs=("alpha",))
+        return get_builtin_agent_manifest(agent_id)
+
+    monkeypatch.setattr(
+        runtime_service_module,
+        "get_builtin_agent_manifest",
+        _leader_manifest_with_alpha,
+    )
+    initial_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(
+            agent=RuntimeAgentConfig(
+                preset="leader",
+                skills=RuntimeSkillsConfig(enabled=True),
+            ),
+            approval_mode="ask",
+        ),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    waiting = initial_runtime.run(
+        RuntimeRequest(prompt="go", session_id="selected-skill-names-resume")
+    )
+
+    assert waiting.session.status == "waiting"
+    assert waiting.session.metadata["selected_skill_names"] == ["alpha"]
+    approval_request_id = str(waiting.events[-1].payload["request_id"])
+
+    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    connection = sqlite3.connect(database_path)
+    try:
+        row = connection.execute(
+            "SELECT metadata_json FROM sessions WHERE session_id = ?",
+            ("selected-skill-names-resume",),
+        ).fetchone()
+        assert row is not None
+        metadata = json.loads(str(row[0]))
+        assert isinstance(metadata, dict)
+        metadata_dict = cast(dict[str, object], metadata)
+        metadata_dict.pop("applied_skill_payloads", None)
+        metadata_dict.pop("applied_skills", None)
+        _ = connection.execute(
+            "UPDATE sessions SET metadata_json = ? WHERE session_id = ?",
+            (json.dumps(metadata_dict, sort_keys=True), "selected-skill-names-resume"),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    (alpha_dir / "SKILL.md").write_text(
+        "---\nname: alpha\ndescription: Alpha skill\n---\n# Alpha\nChanged alpha.\n",
+        encoding="utf-8",
+    )
+    (beta_dir / "SKILL.md").write_text(
+        "---\nname: beta\ndescription: Beta skill\n---\n# Beta\nChanged beta.\n",
+        encoding="utf-8",
+    )
+
+    def _leader_manifest_with_beta(agent_id: str):
+        if agent_id == "leader":
+            return replace(LEADER_AGENT_MANIFEST, skill_refs=("beta",))
+        return get_builtin_agent_manifest(agent_id)
+
+    monkeypatch.setattr(
+        runtime_service_module,
+        "get_builtin_agent_manifest",
+        _leader_manifest_with_beta,
+    )
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(
+            agent=RuntimeAgentConfig(
+                preset="leader",
+                skills=RuntimeSkillsConfig(enabled=True),
+            ),
+            approval_mode="ask",
+        ),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    resumed = resumed_runtime.resume(
+        session_id="selected-skill-names-resume",
+        approval_request_id=approval_request_id,
+        approval_decision="allow",
+    )
+
+    assert resumed.session.status == "completed"
+    assert _ApprovalThenCaptureSkillGraph.last_request is not None
+    assert [
+        skill["name"] for skill in _ApprovalThenCaptureSkillGraph.last_request.applied_skills
+    ] == ["alpha"]
+    assert _ApprovalThenCaptureSkillGraph.last_request.applied_skills == (
+        {
+            "name": "alpha",
+            "description": "Alpha skill",
+            "content": "# Alpha\nChanged alpha.",
+            "prompt_context": (
+                "Skill: alpha\nDescription: Alpha skill\nInstructions:\n# Alpha\nChanged alpha."
+            ),
+            "execution_notes": "# Alpha\nChanged alpha.",
+            "source_path": str(alpha_dir / "SKILL.md"),
+        },
+    )
 
 
 def test_runtime_request_agent_override_can_enable_skill_loading(

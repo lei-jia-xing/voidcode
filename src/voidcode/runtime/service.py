@@ -977,6 +977,7 @@ class VoidCodeRuntime:
                 turn=session.turn,
                 metadata={
                     **session.metadata,
+                    "selected_skill_names": [skill.name for skill in applied_skill_contexts],
                     "applied_skills": [skill.name for skill in applied_skill_contexts],
                     "applied_skill_payloads": list(frozen_applied_skills),
                 },
@@ -2777,9 +2778,13 @@ class VoidCodeRuntime:
                 parsed_names.append(raw_name)
             request_skill_names = tuple(parsed_names)
 
+        persisted_selected_skill_names = (
+            self._persisted_selected_skill_names(metadata) if metadata is not None else None
+        )
         selected_skill_names = self._selected_skill_names_for_agent(
             agent,
             request_skill_names=request_skill_names,
+            persisted_selected_skill_names=persisted_selected_skill_names,
         )
         return build_runtime_contexts(skill_registry, skill_names=selected_skill_names)
 
@@ -2788,12 +2793,16 @@ class VoidCodeRuntime:
         agent: RuntimeAgentConfig | None,
         *,
         request_skill_names: tuple[str, ...] | None,
+        persisted_selected_skill_names: tuple[str, ...] | None = None,
     ) -> tuple[str, ...] | None:
         manifest_skill_refs: tuple[str, ...] = ()
+        if persisted_selected_skill_names is not None:
+            manifest_skill_refs = persisted_selected_skill_names
         if agent is not None:
-            manifest = get_builtin_agent_manifest(agent.preset)
-            if manifest is not None:
-                manifest_skill_refs = manifest.skill_refs
+            if not manifest_skill_refs:
+                manifest = get_builtin_agent_manifest(agent.preset)
+                if manifest is not None:
+                    manifest_skill_refs = manifest.skill_refs
 
         if request_skill_names is None:
             return manifest_skill_refs if manifest_skill_refs else None
@@ -2809,6 +2818,7 @@ class VoidCodeRuntime:
         sanitized = dict(metadata)
         sanitized.pop("applied_skills", None)
         sanitized.pop("applied_skill_payloads", None)
+        sanitized.pop("selected_skill_names", None)
         return sanitized
 
     @staticmethod
@@ -2826,6 +2836,23 @@ class VoidCodeRuntime:
             }
             for context in contexts
         )
+
+    @staticmethod
+    def _persisted_selected_skill_names(
+        metadata: dict[str, object],
+    ) -> tuple[str, ...] | None:
+        if "selected_skill_names" not in metadata:
+            return None
+        raw_skill_names = metadata["selected_skill_names"]
+        if not isinstance(raw_skill_names, list):
+            raise ValueError("persisted selected skill names must be a list")
+
+        selected_skill_names: list[str] = []
+        for index, raw_name in enumerate(cast(list[object], raw_skill_names)):
+            if not isinstance(raw_name, str):
+                raise ValueError(f"persisted selected skill names[{index}] must be a string")
+            selected_skill_names.append(raw_name)
+        return tuple(selected_skill_names)
 
     @staticmethod
     def _persisted_applied_skill_payloads(
@@ -2898,6 +2925,13 @@ class VoidCodeRuntime:
             persisted_payloads = self._persisted_applied_skill_payloads(metadata)
             if persisted_payloads is not None:
                 return persisted_payloads
+            persisted_selected_skill_names = self._persisted_selected_skill_names(metadata)
+            if persisted_selected_skill_names is not None:
+                if not persisted_selected_skill_names:
+                    return ()
+                return self._frozen_applied_skill_payloads(
+                    self._available_runtime_contexts(skill_registry, persisted_selected_skill_names)
+                )
             persisted = metadata.get("applied_skills")
             if isinstance(persisted, list):
                 persisted_values = cast(list[object], persisted)
