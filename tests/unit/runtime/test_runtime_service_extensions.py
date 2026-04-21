@@ -2111,6 +2111,21 @@ def test_runtime_rejects_unsupported_request_metadata_field(tmp_path: Path) -> N
         _ = runtime.run(RuntimeRequest(prompt="hello", metadata={"runtime_state": "broken"}))
 
 
+def test_runtime_rejects_non_string_request_metadata_key(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_SkillCapturingStubGraph())
+
+    with pytest.raises(
+        ValueError,
+        match="request metadata keys must be strings; received invalid key\\(s\\): 1",
+    ):
+        _ = runtime.run(
+            RuntimeRequest(
+                prompt="hello",
+                metadata=cast(object, {1: "broken"}),  # pyright: ignore[reportArgumentType]
+            )
+        )
+
+
 def test_runtime_run_stream_rejects_unsupported_request_metadata_field(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(workspace=tmp_path, graph=_SkillCapturingStubGraph())
 

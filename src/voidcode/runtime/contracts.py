@@ -48,6 +48,14 @@ def validate_runtime_request_metadata(
     *,
     allow_internal_fields: bool = False,
 ) -> RuntimeRequestMetadataPayload:
+    metadata_items = cast(dict[object, object], metadata)
+    non_string_keys = sorted(repr(key) for key in metadata_items if not isinstance(key, str))
+    if non_string_keys:
+        joined = ", ".join(non_string_keys)
+        raise RuntimeRequestError(
+            f"request metadata keys must be strings; received invalid key(s): {joined}"
+        )
+
     allowed_keys = set(_STABLE_RUNTIME_REQUEST_METADATA_KEYS)
     if allow_internal_fields:
         allowed_keys.update(_INTERNAL_RUNTIME_REQUEST_METADATA_KEYS)
