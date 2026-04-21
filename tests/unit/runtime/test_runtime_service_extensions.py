@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import sqlite3
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,6 +27,7 @@ from voidcode.runtime.config import (
     RuntimeAcpConfig,
     RuntimeAgentConfig,
     RuntimeConfig,
+    RuntimeHooksConfig,
     RuntimeLspConfig,
     RuntimeLspServerConfig,
     RuntimeMcpServerConfig,
@@ -40,6 +42,9 @@ from voidcode.runtime.events import (
     RUNTIME_MCP_SERVER_STARTED,
     RUNTIME_MCP_SERVER_STOPPED,
     RUNTIME_MEMORY_REFRESHED,
+    RUNTIME_SESSION_ENDED,
+    RUNTIME_SESSION_IDLE,
+    RUNTIME_SESSION_STARTED,
     EventEnvelope,
 )
 from voidcode.runtime.lsp import DisabledLspManager
@@ -361,6 +366,15 @@ def _wait_for_background_task(
             return task
         time.sleep(0.01)
     raise AssertionError(f"background task {task_id} did not reach terminal state")
+
+
+def _wait_for_path_text(path: Path, *, timeout_seconds: float = 2.0) -> str:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if path.exists():
+            return path.read_text()
+        time.sleep(0.01)
+    raise AssertionError(f"path was not written: {path}")
 
 
 def _write_demo_skill(skill_dir: Path, *, description: str = "Demo skill", content: str) -> None:
@@ -4872,3 +4886,175 @@ def test_runtime_provider_fallback_exhaustion_after_three_targets_reports_termin
         "model": "claude-3-7-sonnet",
         "fallback_exhausted": True,
     }
+
+
+def test_runtime_executes_session_start_and_end_hooks(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_BackgroundTaskSuccessGraph(),
+        config=RuntimeConfig(
+            hooks=RuntimeHooksConfig(
+                enabled=True,
+                on_session_start=((sys.executable, "-c", ""),),
+                on_session_end=((sys.executable, "-c", ""),),
+            )
+        ),
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="hello", session_id="hooked-session"))
+
+    event_types = [event.event_type for event in response.events]
+    assert RUNTIME_SESSION_STARTED in event_types
+    assert RUNTIME_SESSION_ENDED in event_types
+    started = next(
+        event for event in response.events if event.event_type == RUNTIME_SESSION_STARTED
+    )
+    ended = next(event for event in response.events if event.event_type == RUNTIME_SESSION_ENDED)
+    assert started.payload["surface"] == "session_start"
+    assert started.payload["prompt"] == "hello"
+    assert started.payload["hook_status"] == "ok"
+    assert ended.payload["surface"] == "session_end"
+    assert ended.payload["session_status"] == "completed"
+    assert ended.payload["hook_status"] == "ok"
+
+
+def test_runtime_executes_session_idle_hook_without_losing_pending_approval(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(
+            hooks=RuntimeHooksConfig(
+                enabled=True,
+                on_session_idle=((sys.executable, "-c", ""),),
+            )
+        ),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="needs approval", session_id="idle-session"))
+    replayed = runtime.resume("idle-session")
+
+    assert response.session.status == "waiting"
+    assert replayed.session.status == "waiting"
+    event_types = [event.event_type for event in response.events]
+    assert "runtime.approval_requested" in event_types
+    assert RUNTIME_SESSION_IDLE in event_types
+    idle = next(event for event in response.events if event.event_type == RUNTIME_SESSION_IDLE)
+    assert idle.payload["reason"] == "waiting_for_approval"
+    assert idle.payload["hook_status"] == "ok"
+
+
+def test_runtime_executes_background_task_completion_hook_with_task_context(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_BackgroundTaskSuccessGraph(),
+        config=RuntimeConfig(
+            hooks=RuntimeHooksConfig(
+                enabled=True,
+                on_background_task_completed=(
+                    (
+                        sys.executable,
+                        "-c",
+                        "import os, pathlib; "
+                        "pathlib.Path('background-hook.txt').write_text("
+                        "os.environ['VOIDCODE_HOOK_SURFACE'] + ':' + "
+                        "os.environ['VOIDCODE_BACKGROUND_TASK_ID'] + ':' + "
+                        "os.environ['VOIDCODE_BACKGROUND_TASK_STATUS'])",
+                    ),
+                ),
+            )
+        ),
+    )
+
+    started = runtime.start_background_task(RuntimeRequest(prompt="background hello"))
+    completed = _wait_for_background_task(runtime, started.task.id)
+
+    assert completed.status == "completed"
+    assert _wait_for_path_text(tmp_path / "background-hook.txt") == (
+        f"background_task_completed:{started.task.id}:completed"
+    )
+
+
+def test_runtime_executes_background_task_cancelled_hook_for_queued_cancel(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_BackgroundTaskSuccessGraph(),
+        config=RuntimeConfig(
+            hooks=RuntimeHooksConfig(
+                enabled=True,
+                on_background_task_cancelled=(
+                    (
+                        sys.executable,
+                        "-c",
+                        "import os, pathlib; "
+                        "pathlib.Path('cancel-hook.txt').write_text("
+                        "os.environ['VOIDCODE_HOOK_SURFACE'] + ':' + "
+                        "os.environ['VOIDCODE_BACKGROUND_TASK_ID'])",
+                    ),
+                ),
+            )
+        ),
+    )
+    runtime._background_tasks_reconciled = True  # pyright: ignore[reportPrivateUsage]
+    store = _private_attr(runtime, "_session_store")
+    task_module = importlib.import_module("voidcode.runtime.task")
+    store.create_background_task(
+        workspace=tmp_path,
+        task=task_module.BackgroundTaskState(
+            task=task_module.BackgroundTaskRef(id="task-cancel-hook"),
+            request=task_module.BackgroundTaskRequestSnapshot(prompt="background hello"),
+            created_at=1,
+            updated_at=1,
+        ),
+    )
+
+    cancelled = runtime.cancel_background_task("task-cancel-hook")
+
+    assert cancelled.status == "cancelled"
+    assert _wait_for_path_text(tmp_path / "cancel-hook.txt") == (
+        "background_task_cancelled:task-cancel-hook"
+    )
+
+
+def test_runtime_executes_delegated_result_hook_for_completed_background_child(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_BackgroundTaskSuccessGraph(),
+        config=RuntimeConfig(
+            hooks=RuntimeHooksConfig(
+                enabled=True,
+                on_delegated_result_available=(
+                    (
+                        sys.executable,
+                        "-c",
+                        "import os, pathlib; "
+                        "pathlib.Path('delegated-hook.txt').write_text("
+                        "os.environ['VOIDCODE_HOOK_SURFACE'] + ':' + "
+                        "os.environ['VOIDCODE_SESSION_ID'] + ':' + "
+                        "os.environ['VOIDCODE_BACKGROUND_TASK_ID'] + ':' + "
+                        "os.environ['VOIDCODE_DELEGATED_SESSION_ID'])",
+                    ),
+                ),
+            )
+        ),
+    )
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+
+    started = runtime.start_background_task(
+        RuntimeRequest(prompt="background child", parent_session_id="leader-session")
+    )
+    completed = _wait_for_background_task(runtime, started.task.id)
+
+    assert completed.status == "completed"
+    delegated_session_id = completed.session_id or ""
+    assert _wait_for_path_text(tmp_path / "delegated-hook.txt") == (
+        f"delegated_result_available:leader-session:{started.task.id}:{delegated_session_id}"
+    )

@@ -4,7 +4,13 @@ import sys
 from pathlib import Path
 
 from voidcode.hook.config import RuntimeHooksConfig
-from voidcode.hook.executor import HookExecutionOutcome, HookExecutionRequest, run_tool_hooks
+from voidcode.hook.executor import (
+    HookExecutionOutcome,
+    HookExecutionRequest,
+    LifecycleHookExecutionRequest,
+    run_lifecycle_hooks,
+    run_tool_hooks,
+)
 
 
 def test_run_tool_hooks_executes_configured_pre_commands_and_reports_success(
@@ -68,3 +74,98 @@ def test_runtime_hooks_config_exposes_async_lifecycle_surfaces() -> None:
     assert hooks.commands_for_surface("delegated_result_available") == (
         ("python", "scripts/delegated_result.py"),
     )
+
+
+def test_run_lifecycle_hooks_executes_configured_session_command_and_reports_event(
+    tmp_path: Path,
+) -> None:
+    hooks = RuntimeHooksConfig(
+        enabled=True,
+        on_session_start=((sys.executable, "-c", ""),),
+    )
+
+    outcome: HookExecutionOutcome = run_lifecycle_hooks(
+        LifecycleHookExecutionRequest(
+            hooks=hooks,
+            workspace=tmp_path,
+            session_id="hook-session",
+            surface="session_start",
+            recursion_env_var="VOIDCODE_RUNNING_TOOL_HOOK",
+            environment={},
+            sequence_start=11,
+            payload={"prompt": "hello"},
+        )
+    )
+
+    assert outcome.failed_error is None
+    assert outcome.last_sequence == 12
+    assert len(outcome.events) == 1
+    event = outcome.events[0]
+    assert event.sequence == 12
+    assert event.event_type == "runtime.session_started"
+    assert event.payload == {
+        "surface": "session_start",
+        "session_id": "hook-session",
+        "prompt": "hello",
+        "hook_status": "ok",
+    }
+
+
+def test_run_lifecycle_hooks_exposes_context_as_environment(tmp_path: Path) -> None:
+    output_path = tmp_path / "hook-env.txt"
+    hooks = RuntimeHooksConfig(
+        enabled=True,
+        on_background_task_completed=(
+            (
+                sys.executable,
+                "-c",
+                "import os, pathlib; "
+                "pathlib.Path('hook-env.txt').write_text("
+                "os.environ['VOIDCODE_HOOK_SURFACE'] + ':' + "
+                "os.environ['VOIDCODE_BACKGROUND_TASK_ID'])",
+            ),
+        ),
+    )
+
+    outcome = run_lifecycle_hooks(
+        LifecycleHookExecutionRequest(
+            hooks=hooks,
+            workspace=tmp_path,
+            session_id="hook-session",
+            surface="background_task_completed",
+            recursion_env_var="VOIDCODE_RUNNING_TOOL_HOOK",
+            environment={},
+            sequence_start=0,
+            payload={"background_task_id": "task-1"},
+        )
+    )
+
+    assert outcome.failed_error is None
+    assert output_path.read_text() == "background_task_completed:task-1"
+
+
+def test_run_lifecycle_hooks_reports_failed_command(tmp_path: Path) -> None:
+    hooks = RuntimeHooksConfig(
+        enabled=True,
+        on_session_end=((sys.executable, "-c", "raise SystemExit(7)"),),
+    )
+
+    outcome = run_lifecycle_hooks(
+        LifecycleHookExecutionRequest(
+            hooks=hooks,
+            workspace=tmp_path,
+            session_id="hook-session",
+            surface="session_end",
+            recursion_env_var="VOIDCODE_RUNNING_TOOL_HOOK",
+            environment={},
+            sequence_start=4,
+        )
+    )
+
+    assert outcome.failed_error is not None
+    assert outcome.last_sequence == 5
+    assert len(outcome.events) == 1
+    event = outcome.events[0]
+    assert event.event_type == "runtime.session_ended"
+    assert event.payload["hook_status"] == "error"
+    assert "lifecycle hook failed for session_end" in str(event.payload["error"])

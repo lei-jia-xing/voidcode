@@ -15,7 +15,14 @@ from ..agent import get_builtin_agent_manifest
 from ..graph.contracts import GraphEvent, GraphRunRequest
 from ..graph.read_only_slice import DeterministicReadOnlyGraph
 from ..graph.single_agent_slice import ProviderSingleAgentGraph
-from ..hook.executor import HookExecutionOutcome, HookExecutionRequest, run_tool_hooks
+from ..hook.config import RuntimeHookSurface
+from ..hook.executor import (
+    HookExecutionOutcome,
+    HookExecutionRequest,
+    LifecycleHookExecutionRequest,
+    run_lifecycle_hooks,
+    run_tool_hooks,
+)
 from ..provider.auth import ProviderAuthResolver
 from ..provider.errors import (
     SingleAgentContextLimitError,
@@ -844,6 +851,22 @@ class VoidCodeRuntime:
             ),
         )
 
+        start_hook_outcome = self._run_lifecycle_hooks(
+            session=session,
+            sequence=sequence,
+            surface="session_start",
+            payload={"prompt": request.prompt},
+        )
+        yield from start_hook_outcome.chunks
+        sequence = start_hook_outcome.last_sequence
+        if start_hook_outcome.failed_error is not None:
+            yield self._failed_chunk(
+                session=session,
+                sequence=sequence + 1,
+                error=start_hook_outcome.failed_error,
+            )
+            return
+
         sequence += 1
         yield RuntimeStreamChunk(
             kind="event",
@@ -952,14 +975,40 @@ class VoidCodeRuntime:
             return
 
         if last_chunk.session.status == "waiting":
+            idle_hook_outcome = self._run_lifecycle_hooks(
+                session=last_chunk.session,
+                sequence=last_sequence,
+                surface="session_idle",
+                payload={"reason": "waiting_for_approval"},
+            )
+            yield from idle_hook_outcome.chunks
+            if idle_hook_outcome.failed_error is not None:
+                yield self._failed_chunk(
+                    session=last_chunk.session,
+                    sequence=idle_hook_outcome.last_sequence + 1,
+                    error=idle_hook_outcome.failed_error,
+                )
             return
 
-        final_chunks, _, _ = self._finalize_run_acp(
+        final_chunks, finalized_session, final_sequence = self._finalize_run_acp(
             session=last_chunk.session,
             sequence=last_sequence,
         )
         for chunk in final_chunks:
             yield chunk
+        end_hook_outcome = self._run_lifecycle_hooks(
+            session=finalized_session,
+            sequence=final_sequence,
+            surface="session_end",
+            payload={"session_status": finalized_session.status},
+        )
+        yield from end_hook_outcome.chunks
+        if end_hook_outcome.failed_error is not None:
+            yield self._failed_chunk(
+                session=finalized_session,
+                sequence=end_hook_outcome.last_sequence + 1,
+                error=end_hook_outcome.failed_error,
+            )
 
     def _execute_graph_loop(
         self,
@@ -1403,6 +1452,46 @@ class VoidCodeRuntime:
             tool_results.append(tool_result)
             active_preserved_continuity_state = None
 
+    def _run_lifecycle_hooks(
+        self,
+        *,
+        session: SessionState,
+        sequence: int,
+        surface: RuntimeHookSurface,
+        payload: dict[str, object] | None = None,
+    ) -> _HookOutcome:
+        outcome: HookExecutionOutcome = run_lifecycle_hooks(
+            LifecycleHookExecutionRequest(
+                hooks=self._config.hooks,
+                workspace=self._workspace,
+                session_id=session.session.id,
+                surface=surface,
+                recursion_env_var=self._hook_recursion_env_var,
+                environment=os.environ,
+                sequence_start=sequence,
+                payload=payload or {},
+            )
+        )
+        emitted_chunks = tuple(
+            RuntimeStreamChunk(
+                kind="event",
+                session=session,
+                event=EventEnvelope(
+                    session_id=session.session.id,
+                    sequence=event.sequence,
+                    event_type=event.event_type,
+                    source="runtime",
+                    payload=event.payload,
+                ),
+            )
+            for event in outcome.events
+        )
+        return _HookOutcome(
+            chunks=emitted_chunks,
+            last_sequence=outcome.last_sequence,
+            failed_error=outcome.failed_error,
+        )
+
     def _run_tool_hooks(
         self,
         *,
@@ -1634,10 +1723,13 @@ class VoidCodeRuntime:
     def cancel_background_task(self, task_id: str) -> BackgroundTaskState:
         validate_background_task_id(task_id)
         self._reconcile_background_tasks_if_needed()
-        return self._session_store.request_background_task_cancel(
+        task = self._session_store.request_background_task_cancel(
             workspace=self._workspace,
             task_id=task_id,
         )
+        if task.status == "cancelled":
+            self._run_background_task_lifecycle_hook(task)
+        return task
 
     def session_result(self, *, session_id: str) -> RuntimeSessionResult:
         validate_session_id(session_id)
@@ -1747,11 +1839,16 @@ class VoidCodeRuntime:
         )
 
     def _pending_approval_from_response(self, response: RuntimeResponse) -> PendingApproval:
-        if not response.events:
+        approval_event = next(
+            (
+                event
+                for event in reversed(response.events)
+                if event.event_type == "runtime.approval_requested"
+            ),
+            None,
+        )
+        if approval_event is None:
             raise ValueError("waiting runtime response must include an approval event")
-        approval_event = response.events[-1]
-        if approval_event.event_type != "runtime.approval_requested":
-            raise ValueError("waiting runtime response must end with approval request")
         payload = approval_event.payload
         raw_policy = cast(dict[str, object], payload.get("policy", {}))
         raw_policy_mode = raw_policy.get("mode", "ask")
@@ -1992,6 +2089,39 @@ class VoidCodeRuntime:
             yield failed_chunk
             return
 
+        resume_start_hook_outcome = self._run_lifecycle_hooks(
+            session=session,
+            sequence=emitted_sequence,
+            surface="session_start",
+            payload={"resume": True, "approval_request_id": pending.request_id},
+        )
+        for hook_chunk in resume_start_hook_outcome.chunks:
+            hook_event = cast(EventEnvelope, hook_chunk.event)
+            emitted_sequence = hook_event.sequence
+            loop_events.append(hook_event)
+            yield hook_chunk
+        if resume_start_hook_outcome.failed_error is not None:
+            failed_chunk = self._failed_chunk(
+                session=session,
+                sequence=resume_start_hook_outcome.last_sequence + 1,
+                error=resume_start_hook_outcome.failed_error,
+            )
+            failed_event = cast(EventEnvelope, failed_chunk.event)
+            loop_events.append(failed_event)
+            response = RuntimeResponse(
+                session=failed_chunk.session,
+                events=stored.events + tuple(loop_events),
+                output=output,
+            )
+            request = RuntimeRequest(
+                prompt=prompt,
+                session_id=stored.session.session.id,
+                parent_session_id=stored.session.session.parent_id,
+            )
+            self._persist_response(request=request, response=response)
+            yield failed_chunk
+            return
+
         sequence = max_stored_sequence
         try:
             for chunk in self._execute_graph_loop(
@@ -2081,6 +2211,27 @@ class VoidCodeRuntime:
         last_sequence = emitted_sequence
         if session.status == "waiting":
             session = self._disconnect_acp_for_session_state(session)
+            idle_hook_outcome = self._run_lifecycle_hooks(
+                session=session,
+                sequence=last_sequence,
+                surface="session_idle",
+                payload={"reason": "waiting_for_approval", "resume": True},
+            )
+            for hook_chunk in idle_hook_outcome.chunks:
+                hook_event = cast(EventEnvelope, hook_chunk.event)
+                emitted_sequence = hook_event.sequence
+                loop_events.append(hook_event)
+                yield hook_chunk
+            if idle_hook_outcome.failed_error is not None:
+                failed_chunk = self._failed_chunk(
+                    session=session,
+                    sequence=idle_hook_outcome.last_sequence + 1,
+                    error=idle_hook_outcome.failed_error,
+                )
+                failed_event = cast(EventEnvelope, failed_chunk.event)
+                loop_events.append(failed_event)
+                session = failed_chunk.session
+                yield failed_chunk
         else:
             final_chunks, session, _ = self._finalize_run_acp(
                 session=session,
@@ -2096,6 +2247,27 @@ class VoidCodeRuntime:
                     yield RuntimeStreamChunk(
                         kind="event", session=chunk.session, event=resequenced_event
                     )
+            end_hook_outcome = self._run_lifecycle_hooks(
+                session=session,
+                sequence=emitted_sequence,
+                surface="session_end",
+                payload={"session_status": session.status, "resume": True},
+            )
+            for hook_chunk in end_hook_outcome.chunks:
+                hook_event = cast(EventEnvelope, hook_chunk.event)
+                emitted_sequence = hook_event.sequence
+                loop_events.append(hook_event)
+                yield hook_chunk
+            if end_hook_outcome.failed_error is not None:
+                failed_chunk = self._failed_chunk(
+                    session=session,
+                    sequence=end_hook_outcome.last_sequence + 1,
+                    error=end_hook_outcome.failed_error,
+                )
+                failed_event = cast(EventEnvelope, failed_chunk.event)
+                loop_events.append(failed_event)
+                session = failed_chunk.session
+                yield failed_chunk
 
         response = RuntimeResponse(
             session=session,
@@ -2770,15 +2942,73 @@ class VoidCodeRuntime:
                     approval_mode = persisted_approval_mode
         return PermissionPolicy(mode=approval_mode)
 
+    def _run_background_task_lifecycle_hook(self, task: BackgroundTaskState) -> None:
+        surface_by_status: dict[BackgroundTaskStatus, RuntimeHookSurface] = {
+            "completed": "background_task_completed",
+            "failed": "background_task_failed",
+            "cancelled": "background_task_cancelled",
+        }
+        surface = surface_by_status.get(task.status)
+        if surface is None:
+            return
+        self._run_background_task_lifecycle_surface(
+            task=task,
+            surface=surface,
+            session_id=task.session_id or task.request.session_id or "runtime",
+        )
+        if task.status == "completed" and task.parent_session_id is not None:
+            self._run_background_task_lifecycle_surface(
+                task=task,
+                surface="delegated_result_available",
+                session_id=task.parent_session_id,
+                extra_payload={
+                    "delegated_session_id": task.session_id or "",
+                    "parent_session_id": task.parent_session_id,
+                },
+            )
+
+    def _run_background_task_lifecycle_surface(
+        self,
+        *,
+        task: BackgroundTaskState,
+        surface: RuntimeHookSurface,
+        session_id: str,
+        extra_payload: dict[str, object] | None = None,
+    ) -> None:
+        outcome = run_lifecycle_hooks(
+            LifecycleHookExecutionRequest(
+                hooks=self._config.hooks,
+                workspace=self._workspace,
+                session_id=session_id,
+                surface=surface,
+                recursion_env_var=self._hook_recursion_env_var,
+                environment=os.environ,
+                sequence_start=0,
+                payload={
+                    "background_task_id": task.task.id,
+                    "background_task_status": task.status,
+                    **({"background_task_error": task.error} if task.error is not None else {}),
+                    **(extra_payload or {}),
+                },
+            )
+        )
+        if outcome.failed_error is not None:
+            logger.warning("background task lifecycle hook failed: %s", outcome.failed_error)
+
     def _reconcile_background_tasks_if_needed(self) -> None:
         if self._background_tasks_reconciled:
             return
         fail_incomplete = getattr(self._session_store, "fail_incomplete_background_tasks", None)
         if callable(fail_incomplete):
-            fail_incomplete(
-                workspace=self._workspace,
-                message="background task interrupted before completion",
+            failed_tasks = cast(
+                tuple[BackgroundTaskState, ...],
+                fail_incomplete(
+                    workspace=self._workspace,
+                    message="background task interrupted before completion",
+                ),
             )
+            for failed_task in failed_tasks:
+                self._run_background_task_lifecycle_hook(failed_task)
         self._background_tasks_reconciled = True
 
     def _run_background_task_worker(self, task_id: str) -> None:
@@ -2805,12 +3035,13 @@ class VoidCodeRuntime:
             if dispatch_task.status != "running":
                 return
             if dispatch_task.cancel_requested_at is not None:
-                self._session_store.mark_background_task_terminal(
+                terminal_task = self._session_store.mark_background_task_terminal(
                     workspace=self._workspace,
                     task_id=task_id,
                     status="cancelled",
                     error="cancelled before dispatch",
                 )
+                self._run_background_task_lifecycle_hook(terminal_task)
                 return
             response = self.run(
                 RuntimeRequest(
@@ -2835,20 +3066,22 @@ class VoidCodeRuntime:
                         event_error = event.payload.get("error")
                         error = str(event_error) if event_error is not None else None
                         break
-            self._session_store.mark_background_task_terminal(
+            terminal_task = self._session_store.mark_background_task_terminal(
                 workspace=self._workspace,
                 task_id=task_id,
                 status=terminal_status,
                 error=error,
             )
+            self._run_background_task_lifecycle_hook(terminal_task)
         except Exception as exc:
             logger.exception("background task failed: %s", task_id)
-            self._session_store.mark_background_task_terminal(
+            terminal_task = self._session_store.mark_background_task_terminal(
                 workspace=self._workspace,
                 task_id=task_id,
                 status="failed",
                 error=str(exc),
             )
+            self._run_background_task_lifecycle_hook(terminal_task)
         finally:
             self._background_task_threads.pop(task_id, None)
 
