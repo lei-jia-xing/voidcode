@@ -74,6 +74,17 @@ class SessionStore(Protocol):
         self, *, workspace: Path, session_id: str
     ) -> dict[str, object] | None: ...
 
+    def append_session_event(
+        self,
+        *,
+        workspace: Path,
+        session_id: str,
+        event_type: str,
+        source: EventSource,
+        payload: dict[str, object],
+        dedupe_key: str | None = None,
+    ) -> EventEnvelope | None: ...
+
     def create_background_task(
         self,
         *,
@@ -215,6 +226,17 @@ class SqliteSessionStore:
                 created_at INTEGER NOT NULL,
                 acknowledged_at INTEGER,
                 UNIQUE(workspace, dedupe_key)
+            )
+            """
+        )
+        _ = connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS session_event_deliveries (
+                workspace TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                dedupe_key TEXT NOT NULL,
+                delivered_at INTEGER NOT NULL,
+                PRIMARY KEY (workspace, session_id, dedupe_key)
             )
             """
         )
@@ -523,6 +545,76 @@ class SqliteSessionStore:
         if not isinstance(checkpoint, dict):
             return None
         return cast(dict[str, object], checkpoint)
+
+    def append_session_event(
+        self,
+        *,
+        workspace: Path,
+        session_id: str,
+        event_type: str,
+        source: EventSource,
+        payload: dict[str, object],
+        dedupe_key: str | None = None,
+    ) -> EventEnvelope | None:
+        with self._connect(workspace) as connection:
+            session_row = cast(
+                sqlite3.Row | None,
+                connection.execute(
+                    """
+                    SELECT last_event_sequence
+                    FROM sessions
+                    WHERE workspace = ? AND session_id = ?
+                    """,
+                    (str(workspace), session_id),
+                ).fetchone(),
+            )
+            if session_row is None:
+                raise UnknownSessionError(f"unknown session: {session_id}")
+            if dedupe_key is not None:
+                delivered_at = self._next_timestamp(connection=connection)
+                inserted_delivery = connection.execute(
+                    """
+                    INSERT OR IGNORE INTO session_event_deliveries (
+                        workspace, session_id, dedupe_key, delivered_at
+                    ) VALUES (?, ?, ?, ?)
+                    """,
+                    (str(workspace), session_id, dedupe_key, delivered_at),
+                )
+                if inserted_delivery.rowcount == 0:
+                    connection.commit()
+                    return None
+            sequence = cast(int, session_row["last_event_sequence"]) + 1
+            event = EventEnvelope(
+                session_id=session_id,
+                sequence=sequence,
+                event_type=event_type,
+                source=source,
+                payload=payload,
+            )
+            _ = connection.execute(
+                """
+                INSERT INTO session_events (session_id, sequence, event_type, source, payload_json)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    event.session_id,
+                    event.sequence,
+                    event.event_type,
+                    event.source,
+                    json.dumps(event.payload, sort_keys=True),
+                ),
+            )
+            updated_at = self._next_timestamp(connection=connection)
+            _ = connection.execute(
+                """
+                UPDATE sessions
+                SET updated_at = ?, last_event_sequence = ?
+                WHERE workspace = ? AND session_id = ?
+                """,
+                (updated_at, sequence, str(workspace), session_id),
+            )
+            connection.commit()
+            return event
 
     def _read_pending_approval_json(
         self, *, connection: sqlite3.Connection, session_id: str

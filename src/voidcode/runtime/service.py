@@ -72,6 +72,7 @@ from .contracts import (
     RuntimeResponse,
     RuntimeSessionResult,
     RuntimeStreamChunk,
+    UnknownSessionError,
     validate_session_id,
     validate_session_reference_id,
 )
@@ -79,6 +80,8 @@ from .events import (
     RUNTIME_ACP_CONNECTED,
     RUNTIME_ACP_DISCONNECTED,
     RUNTIME_ACP_FAILED,
+    RUNTIME_APPROVAL_REQUESTED,
+    RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL,
     RUNTIME_FAILED,
     RUNTIME_LSP_SERVER_FAILED,
     RUNTIME_LSP_SERVER_REUSED,
@@ -2960,6 +2963,54 @@ class VoidCodeRuntime:
                     approval_mode = persisted_approval_mode
         return PermissionPolicy(mode=approval_mode)
 
+    @staticmethod
+    def _approval_request_id_from_waiting_response(response: RuntimeResponse) -> str | None:
+        if response.session.status != "waiting":
+            return None
+        for event in reversed(response.events):
+            if event.event_type != RUNTIME_APPROVAL_REQUESTED:
+                continue
+            request_id = event.payload.get("request_id")
+            return str(request_id) if request_id is not None else None
+        return None
+
+    def _emit_background_task_waiting_approval(
+        self,
+        *,
+        task: BackgroundTaskState,
+        child_response: RuntimeResponse,
+    ) -> None:
+        parent_session_id = task.parent_session_id
+        child_session_id = task.session_id
+        if parent_session_id is None or child_session_id is None:
+            return
+        approval_request_id = self._approval_request_id_from_waiting_response(child_response)
+        dedupe_key = (
+            f"background_task_waiting_approval:{task.task.id}:{approval_request_id}"
+            if approval_request_id is not None
+            else f"background_task_waiting_approval:{task.task.id}:{child_session_id}"
+        )
+        try:
+            _ = self._session_store.append_session_event(
+                workspace=self._workspace,
+                session_id=parent_session_id,
+                event_type=RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL,
+                source="runtime",
+                payload={
+                    "task_id": task.task.id,
+                    "parent_session_id": parent_session_id,
+                    "child_session_id": child_session_id,
+                    "status": "running",
+                    "approval_blocked": True,
+                },
+                dedupe_key=dedupe_key,
+            )
+        except UnknownSessionError:
+            logger.debug(
+                "skipping background waiting event for unavailable parent session: %s",
+                parent_session_id,
+            )
+
     def _run_background_task_lifecycle_hook(self, task: BackgroundTaskState) -> None:
         surface_by_status: dict[BackgroundTaskStatus, RuntimeHookSurface] = {
             "completed": "background_task_completed",
@@ -3074,6 +3125,13 @@ class VoidCodeRuntime:
                     allocate_session_id=False,
                 )
             )
+            if response.session.status == "waiting":
+                running_task = self.load_background_task(task_id)
+                self._emit_background_task_waiting_approval(
+                    task=running_task,
+                    child_response=response,
+                )
+                return
             terminal_status: BackgroundTaskStatus = (
                 "completed" if response.session.status == "completed" else "failed"
             )

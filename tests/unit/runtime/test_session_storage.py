@@ -241,3 +241,63 @@ def test_tool_results_from_events_preserves_successful_null_content() -> None:
             "error": None,
         }
     ]
+
+
+def test_session_storage_append_session_event_assigns_sequence_and_dedupes(
+    tmp_path: Path,
+) -> None:
+    store = SqliteSessionStore()
+    request = RuntimeRequest(prompt="leader task", session_id="leader-session")
+    response = RuntimeResponse(
+        session=SessionState(
+            session=SessionRef(id="leader-session"),
+            status="completed",
+            turn=1,
+            metadata={},
+        ),
+        events=(
+            EventEnvelope(
+                session_id="leader-session",
+                sequence=1,
+                event_type="graph.response_ready",
+                source="graph",
+            ),
+        ),
+        output="done",
+    )
+    store.save_run(workspace=tmp_path, request=request, response=response)
+
+    first_event = store.append_session_event(
+        workspace=tmp_path,
+        session_id="leader-session",
+        event_type="runtime.background_task_waiting_approval",
+        source="runtime",
+        payload={
+            "task_id": "task-123",
+            "parent_session_id": "leader-session",
+            "child_session_id": "child-session",
+            "status": "running",
+            "approval_blocked": True,
+        },
+        dedupe_key="background_task_waiting_approval:task-123:req-1",
+    )
+    duplicate_event = store.append_session_event(
+        workspace=tmp_path,
+        session_id="leader-session",
+        event_type="runtime.background_task_waiting_approval",
+        source="runtime",
+        payload={
+            "task_id": "task-123",
+            "parent_session_id": "leader-session",
+            "child_session_id": "child-session",
+            "status": "running",
+            "approval_blocked": True,
+        },
+        dedupe_key="background_task_waiting_approval:task-123:req-1",
+    )
+    loaded = store.load_session(workspace=tmp_path, session_id="leader-session")
+
+    assert first_event is not None
+    assert first_event.sequence == 2
+    assert duplicate_event is None
+    assert loaded.events[-1] == first_event
