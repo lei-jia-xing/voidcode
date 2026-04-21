@@ -36,8 +36,6 @@ MAX_STEPS_ENV_VAR = "VOIDCODE_MAX_STEPS"
 TOOL_TIMEOUT_ENV_VAR = "VOIDCODE_TOOL_TIMEOUT_SECONDS"
 _VALID_APPROVAL_MODES = ("allow", "deny", "ask")
 _VALID_TUI_COMMANDS = ("command_palette", "session_new", "session_resume")
-DEFAULT_TOOL_TIMEOUT_SECONDS = 300
-
 type ExecutionEngineName = Literal["deterministic", "single_agent"]
 type RuntimeAgentPresetId = AgentManifestId
 
@@ -1783,7 +1781,11 @@ def _resolve_tool_timeout_seconds(
     *, explicit: int | None, repo_local: int | None, environment: int | None
 ) -> int | None:
     if explicit is not None:
-        return explicit
+        return _parse_tool_timeout_seconds(
+            explicit,
+            source="explicit runtime config override 'tool_timeout_seconds'",
+            allow_none=True,
+        )
     if repo_local is not None:
         return repo_local
     if environment is not None:

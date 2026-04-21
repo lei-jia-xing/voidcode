@@ -1242,6 +1242,14 @@ def test_runtime_config_rejects_invalid_environment_tool_timeout(
         _ = load_runtime_config(tmp_path, env={TOOL_TIMEOUT_ENV_VAR: raw_value})
 
 
+@pytest.mark.parametrize("raw_value", [0, -1, True, False])
+def test_runtime_config_rejects_invalid_explicit_tool_timeout(
+    tmp_path: Path, raw_value: object
+) -> None:
+    with pytest.raises(ValueError, match="explicit runtime config override 'tool_timeout_seconds'"):
+        _ = load_runtime_config(tmp_path, tool_timeout_seconds=raw_value, env={})
+
+
 def test_runtime_config_rejects_empty_model_environment(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match=MODEL_ENV_VAR):
         _ = load_runtime_config(tmp_path, env={MODEL_ENV_VAR: ""})
