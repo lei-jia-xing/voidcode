@@ -560,18 +560,20 @@ class SqliteSessionStore:
         dedupe_key: str | None = None,
     ) -> EventEnvelope | None:
         with self._connect(workspace) as connection:
-            session_row = cast(
+            updated_at = self._next_timestamp(connection=connection)
+            sequence_row = cast(
                 sqlite3.Row | None,
                 connection.execute(
                     """
-                    SELECT last_event_sequence
-                    FROM sessions
+                    UPDATE sessions
+                    SET updated_at = ?, last_event_sequence = last_event_sequence + 1
                     WHERE workspace = ? AND session_id = ?
+                    RETURNING last_event_sequence
                     """,
-                    (str(workspace), session_id),
+                    (updated_at, str(workspace), session_id),
                 ).fetchone(),
             )
-            if session_row is None:
+            if sequence_row is None:
                 raise UnknownSessionError(f"unknown session: {session_id}")
             if dedupe_key is not None:
                 delivered_at = self._next_timestamp(connection=connection)
@@ -584,9 +586,17 @@ class SqliteSessionStore:
                     (str(workspace), session_id, dedupe_key, delivered_at),
                 )
                 if inserted_delivery.rowcount == 0:
+                    _ = connection.execute(
+                        """
+                        UPDATE sessions
+                        SET updated_at = ?, last_event_sequence = last_event_sequence - 1
+                        WHERE workspace = ? AND session_id = ?
+                        """,
+                        (updated_at, str(workspace), session_id),
+                    )
                     connection.commit()
                     return None
-            sequence = cast(int, session_row["last_event_sequence"]) + 1
+            sequence = cast(int, sequence_row["last_event_sequence"])
             event = EventEnvelope(
                 session_id=session_id,
                 sequence=sequence,
@@ -606,15 +616,6 @@ class SqliteSessionStore:
                     event.source,
                     json.dumps(event.payload, sort_keys=True),
                 ),
-            )
-            updated_at = self._next_timestamp(connection=connection)
-            _ = connection.execute(
-                """
-                UPDATE sessions
-                SET updated_at = ?, last_event_sequence = ?
-                WHERE workspace = ? AND session_id = ?
-                """,
-                (updated_at, sequence, str(workspace), session_id),
             )
             connection.commit()
             return event
