@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 from contextlib import closing
 from pathlib import Path
 from typing import Any
@@ -93,6 +94,24 @@ def test_session_storage_migrates_legacy_schema_for_parent_lineage(tmp_path: Pat
         )
         _ = connection.execute(
             """
+            CREATE TABLE session_notifications (
+                notification_id TEXT PRIMARY KEY,
+                workspace TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                status TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                event_sequence INTEGER NOT NULL,
+                dedupe_key TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                acknowledged_at INTEGER,
+                UNIQUE(workspace, dedupe_key)
+            )
+            """
+        )
+        _ = connection.execute(
+            """
             CREATE TABLE background_tasks (
                 task_id TEXT PRIMARY KEY,
                 workspace TEXT NOT NULL,
@@ -162,11 +181,20 @@ def test_session_storage_migrates_legacy_schema_for_parent_lineage(tmp_path: Pat
         background_task_columns = {
             row[1] for row in connection.execute("PRAGMA table_info(background_tasks)").fetchall()
         }
+        delivery_tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        user_version = connection.execute("PRAGMA user_version").fetchone()[0]
 
     assert loaded.session.session.parent_id is None
     assert "parent_session_id" in session_columns
     assert "request_parent_session_id" in background_task_columns
+    assert "session_event_deliveries" in delivery_tables
     assert loaded_task.request.parent_session_id == "leader-session"
+    assert user_version == 6
 
 
 def test_tool_results_from_events_keeps_success_payloads_with_null_error() -> None:
@@ -241,3 +269,128 @@ def test_tool_results_from_events_preserves_successful_null_content() -> None:
             "error": None,
         }
     ]
+
+
+def test_session_storage_append_session_event_assigns_sequence_and_dedupes(
+    tmp_path: Path,
+) -> None:
+    store = SqliteSessionStore()
+    request = RuntimeRequest(prompt="leader task", session_id="leader-session")
+    response = RuntimeResponse(
+        session=SessionState(
+            session=SessionRef(id="leader-session"),
+            status="completed",
+            turn=1,
+            metadata={},
+        ),
+        events=(
+            EventEnvelope(
+                session_id="leader-session",
+                sequence=1,
+                event_type="graph.response_ready",
+                source="graph",
+            ),
+        ),
+        output="done",
+    )
+    store.save_run(workspace=tmp_path, request=request, response=response)
+
+    first_event = store.append_session_event(
+        workspace=tmp_path,
+        session_id="leader-session",
+        event_type="runtime.background_task_waiting_approval",
+        source="runtime",
+        payload={
+            "task_id": "task-123",
+            "parent_session_id": "leader-session",
+            "child_session_id": "child-session",
+            "status": "running",
+            "approval_blocked": True,
+        },
+        dedupe_key="background_task_waiting_approval:task-123:req-1",
+    )
+    duplicate_event = store.append_session_event(
+        workspace=tmp_path,
+        session_id="leader-session",
+        event_type="runtime.background_task_waiting_approval",
+        source="runtime",
+        payload={
+            "task_id": "task-123",
+            "parent_session_id": "leader-session",
+            "child_session_id": "child-session",
+            "status": "running",
+            "approval_blocked": True,
+        },
+        dedupe_key="background_task_waiting_approval:task-123:req-1",
+    )
+    loaded = store.load_session(workspace=tmp_path, session_id="leader-session")
+
+    assert first_event is not None
+    assert first_event.sequence == 2
+    assert duplicate_event is None
+    assert loaded.events[-1] == first_event
+
+
+def test_session_storage_append_session_event_allocates_sequences_atomically(
+    tmp_path: Path,
+) -> None:
+    store = SqliteSessionStore()
+    request = RuntimeRequest(prompt="leader task", session_id="leader-session")
+    response = RuntimeResponse(
+        session=SessionState(
+            session=SessionRef(id="leader-session"),
+            status="completed",
+            turn=1,
+            metadata={},
+        ),
+        events=(
+            EventEnvelope(
+                session_id="leader-session",
+                sequence=1,
+                event_type="graph.response_ready",
+                source="graph",
+            ),
+        ),
+        output="done",
+    )
+    store.save_run(workspace=tmp_path, request=request, response=response)
+
+    events: list[EventEnvelope] = []
+    errors: list[BaseException] = []
+    barrier = threading.Barrier(2)
+
+    def _append_event(label: str) -> None:
+        try:
+            barrier.wait(timeout=5)
+            event = store.append_session_event(
+                workspace=tmp_path,
+                session_id="leader-session",
+                event_type="runtime.background_task_waiting_approval",
+                source="runtime",
+                payload={
+                    "task_id": f"task-{label}",
+                    "parent_session_id": "leader-session",
+                    "child_session_id": f"child-{label}",
+                    "status": "running",
+                    "approval_blocked": True,
+                },
+                dedupe_key=f"background_task_waiting_approval:task-{label}:req-{label}",
+            )
+            assert event is not None
+            events.append(event)
+        except BaseException as exc:  # pragma: no cover - test captures unexpected failures
+            errors.append(exc)
+
+    first_thread = threading.Thread(target=_append_event, args=("a",))
+    second_thread = threading.Thread(target=_append_event, args=("b",))
+    first_thread.start()
+    second_thread.start()
+    first_thread.join(timeout=5)
+    second_thread.join(timeout=5)
+
+    loaded = store.load_session(workspace=tmp_path, session_id="leader-session")
+
+    assert errors == []
+    assert len(events) == 2
+    assert {event.sequence for event in events} == {2, 3}
+    assert [event.sequence for event in loaded.events[-2:]] == [2, 3]

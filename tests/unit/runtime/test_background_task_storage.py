@@ -5,6 +5,10 @@ from typing import cast
 
 import pytest
 
+from voidcode.runtime.contracts import RuntimeRequest, RuntimeResponse
+from voidcode.runtime.events import EventEnvelope
+from voidcode.runtime.permission import PendingApproval
+from voidcode.runtime.session import SessionRef, SessionState
 from voidcode.runtime.storage import SqliteSessionStore
 from voidcode.runtime.task import (
     BackgroundTaskRef,
@@ -226,6 +230,84 @@ def test_background_task_storage_running_cancel_records_request(tmp_path: Path) 
 
     assert cancelled.status == "running"
     assert cancelled.cancel_requested_at is not None
+
+
+def test_background_task_storage_fail_incomplete_preserves_waiting_approval_tasks(
+    tmp_path: Path,
+) -> None:
+    store = SqliteSessionStore()
+    waiting_request = RuntimeRequest(prompt="background child", session_id="child-session")
+    waiting_response = RuntimeResponse(
+        session=SessionState(
+            session=SessionRef(id="child-session", parent_id="leader-session"),
+            status="waiting",
+            turn=1,
+            metadata={"background_task_id": "task-waiting", "background_run": True},
+        ),
+        events=(
+            EventEnvelope(
+                session_id="child-session",
+                sequence=1,
+                event_type="runtime.request_received",
+                source="runtime",
+                payload={"prompt": "background child"},
+            ),
+            EventEnvelope(
+                session_id="child-session",
+                sequence=2,
+                event_type="runtime.approval_requested",
+                source="runtime",
+                payload={"request_id": "approval-1", "tool": "write_file"},
+            ),
+        ),
+    )
+    store.save_pending_approval(
+        workspace=tmp_path,
+        request=waiting_request,
+        response=waiting_response,
+        pending_approval=PendingApproval(
+            request_id="approval-1",
+            tool_name="write_file",
+        ),
+    )
+    store.create_background_task(
+        workspace=tmp_path,
+        task=BackgroundTaskState(
+            task=BackgroundTaskRef(id="task-waiting"),
+            status="running",
+            request=BackgroundTaskRequestSnapshot(
+                prompt="background child",
+                parent_session_id="leader-session",
+            ),
+            session_id="child-session",
+            started_at=1,
+            updated_at=1,
+        ),
+    )
+    store.create_background_task(
+        workspace=tmp_path,
+        task=BackgroundTaskState(
+            task=BackgroundTaskRef(id="task-interrupted"),
+            status="running",
+            request=BackgroundTaskRequestSnapshot(prompt="interrupted child"),
+            session_id="interrupted-session",
+            started_at=2,
+            updated_at=2,
+        ),
+    )
+
+    failed = store.fail_incomplete_background_tasks(
+        workspace=tmp_path,
+        message="background task interrupted before completion",
+    )
+    waiting = store.load_background_task(workspace=tmp_path, task_id="task-waiting")
+    interrupted = store.load_background_task(workspace=tmp_path, task_id="task-interrupted")
+
+    assert [task.task.id for task in failed] == ["task-interrupted"]
+    assert waiting.status == "running"
+    assert waiting.error is None
+    assert interrupted.status == "failed"
+    assert interrupted.error == "background task interrupted before completion"
 
 
 def test_background_task_storage_running_cancel_is_idempotent_on_repeat_requests(

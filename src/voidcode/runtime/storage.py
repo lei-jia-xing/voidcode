@@ -123,6 +123,20 @@ class SessionStore(Protocol):
     ) -> tuple[BackgroundTaskState, ...]: ...
 
 
+@runtime_checkable
+class SessionEventAppender(Protocol):
+    def append_session_event(
+        self,
+        *,
+        workspace: Path,
+        session_id: str,
+        event_type: str,
+        source: EventSource,
+        payload: dict[str, object],
+        dedupe_key: str | None = None,
+    ) -> EventEnvelope | None: ...
+
+
 @final
 class SqliteSessionStore:
     _database_path: Path | None
@@ -215,6 +229,17 @@ class SqliteSessionStore:
                 created_at INTEGER NOT NULL,
                 acknowledged_at INTEGER,
                 UNIQUE(workspace, dedupe_key)
+            )
+            """
+        )
+        _ = connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS session_event_deliveries (
+                workspace TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                dedupe_key TEXT NOT NULL,
+                delivered_at INTEGER NOT NULL,
+                PRIMARY KEY (workspace, session_id, dedupe_key)
             )
             """
         )
@@ -523,6 +548,77 @@ class SqliteSessionStore:
         if not isinstance(checkpoint, dict):
             return None
         return cast(dict[str, object], checkpoint)
+
+    def append_session_event(
+        self,
+        *,
+        workspace: Path,
+        session_id: str,
+        event_type: str,
+        source: EventSource,
+        payload: dict[str, object],
+        dedupe_key: str | None = None,
+    ) -> EventEnvelope | None:
+        with self._connect(workspace) as connection:
+            updated_at = self._next_timestamp(connection=connection)
+            sequence_row = cast(
+                sqlite3.Row | None,
+                connection.execute(
+                    """
+                    UPDATE sessions
+                    SET updated_at = ?, last_event_sequence = last_event_sequence + 1
+                    WHERE workspace = ? AND session_id = ?
+                    RETURNING last_event_sequence
+                    """,
+                    (updated_at, str(workspace), session_id),
+                ).fetchone(),
+            )
+            if sequence_row is None:
+                raise UnknownSessionError(f"unknown session: {session_id}")
+            if dedupe_key is not None:
+                delivered_at = self._next_timestamp(connection=connection)
+                inserted_delivery = connection.execute(
+                    """
+                    INSERT OR IGNORE INTO session_event_deliveries (
+                        workspace, session_id, dedupe_key, delivered_at
+                    ) VALUES (?, ?, ?, ?)
+                    """,
+                    (str(workspace), session_id, dedupe_key, delivered_at),
+                )
+                if inserted_delivery.rowcount == 0:
+                    _ = connection.execute(
+                        """
+                        UPDATE sessions
+                        SET updated_at = ?, last_event_sequence = last_event_sequence - 1
+                        WHERE workspace = ? AND session_id = ?
+                        """,
+                        (updated_at, str(workspace), session_id),
+                    )
+                    connection.commit()
+                    return None
+            sequence = cast(int, sequence_row["last_event_sequence"])
+            event = EventEnvelope(
+                session_id=session_id,
+                sequence=sequence,
+                event_type=event_type,
+                source=source,
+                payload=payload,
+            )
+            _ = connection.execute(
+                """
+                INSERT INTO session_events (session_id, sequence, event_type, source, payload_json)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    event.session_id,
+                    event.sequence,
+                    event.event_type,
+                    event.source,
+                    json.dumps(event.payload, sort_keys=True),
+                ),
+            )
+            connection.commit()
+            return event
 
     def _read_pending_approval_json(
         self, *, connection: sqlite3.Connection, session_id: str
@@ -930,23 +1026,36 @@ class SqliteSessionStore:
                 list[sqlite3.Row],
                 connection.execute(
                     """
-                    SELECT task_id FROM background_tasks
-                    WHERE workspace = ? AND status IN ('queued', 'running')
-                    ORDER BY updated_at ASC, task_id ASC
+                    SELECT background_tasks.task_id
+                    FROM background_tasks
+                    LEFT JOIN sessions
+                      ON sessions.workspace = background_tasks.workspace
+                     AND sessions.session_id = background_tasks.session_id
+                    WHERE background_tasks.workspace = ?
+                      AND background_tasks.status IN ('queued', 'running')
+                      AND NOT (
+                          background_tasks.status = 'running'
+                          AND background_tasks.session_id IS NOT NULL
+                          AND sessions.status = 'waiting'
+                          AND sessions.pending_approval_json IS NOT NULL
+                      )
+                    ORDER BY background_tasks.updated_at ASC, background_tasks.task_id ASC
                     """,
                     (str(workspace),),
                 ).fetchall(),
             )
             if not rows:
                 return ()
+            task_ids = tuple(cast(str, row["task_id"]) for row in rows)
+            placeholders = ", ".join("?" for _ in task_ids)
             updated_at = self._next_background_task_timestamp(connection=connection)
             _ = connection.execute(
-                """
+                f"""
                 UPDATE background_tasks
                 SET status = 'failed', error = ?, finished_at = ?, updated_at = ?
-                WHERE workspace = ? AND status IN ('queued', 'running')
+                WHERE workspace = ? AND task_id IN ({placeholders})
                 """,
-                (message, updated_at, updated_at, str(workspace)),
+                (message, updated_at, updated_at, str(workspace), *task_ids),
             )
             connection.commit()
         return tuple(

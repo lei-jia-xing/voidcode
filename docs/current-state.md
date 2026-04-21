@@ -41,7 +41,7 @@
 - [x] **预定义 agent 声明边界**：`src/voidcode/agent/` 现在已经具备真实的声明层与多角色 skeleton，并且最小的 leader preset/runtime apply slice 已经进入主路径；当前仍未实现的仍然是 multi-agent 执行语义本身。
 - [~] **技能执行**：skill discovery 与 `runtime.skills_loaded` 事件之外，仓库现在已经落地最小的 runtime skill execution model；但更完整的 skill context 注入、能力绑定与产品化语义仍未完成。
 - [~] **ACP 能力面**：`acp` 已具备 runtime-managed transport / lifecycle、run / approval-resume integration 与事件基线；当前仍未进入更宽的 agent control-plane 或跨运行时协作语义。
-- [~] **当前剩余的 runtime / tooling 主线 gap**：最近已经完成 agent preset 最小接入、runtime skill execution 最小模型与 session continuity memory 第一切片；当前后续实现工作已重新收敛到新的 open issues，包括 `#174`（`runtime.background_task_waiting_approval`）与 `#175`（稳定 `RuntimeRequest.metadata` schema）。下一轮 backlog 应围绕这些能力的深化与产品化缺口继续推进，而不是继续沿用已完成的 `#152` / `#153` 作为“当前剩余主线”。
+- [~] **当前剩余的 runtime / tooling 主线 gap**：最近已经完成 agent preset 最小接入、runtime skill execution 最小模型、session continuity memory 第一切片，以及 `#174` 中 `runtime.background_task_waiting_approval` 的 runtime 发射；当前后续实现工作继续收敛到新的 open issues，例如 `#175`（稳定 `RuntimeRequest.metadata` schema）。下一轮 backlog 应围绕这些能力的深化与产品化缺口继续推进，而不是继续沿用已完成的 `#152` / `#153` 作为“当前剩余主线”。
 - [~] **TUI 客户端**：已具备提示词输入和审批处理的初始实现，但会话管理、恢复/重放与规范冒烟验证仍未收口，当前优先级也已下调。
 - [x] **Web 客户端集成**：已接入真实的会话列表、会话重放、流式运行和审批处理路径，并具备真实 store/client 闭环验证。
 

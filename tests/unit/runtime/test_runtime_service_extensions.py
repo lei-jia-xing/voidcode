@@ -39,6 +39,7 @@ from voidcode.runtime.config import (
 )
 from voidcode.runtime.context_window import ContextWindowPolicy, RuntimeContinuityState
 from voidcode.runtime.events import (
+    RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL,
     RUNTIME_MCP_SERVER_STARTED,
     RUNTIME_MCP_SERVER_STOPPED,
     RUNTIME_MEMORY_REFRESHED,
@@ -366,6 +367,36 @@ def _wait_for_background_task(
             return task
         time.sleep(0.01)
     raise AssertionError(f"background task {task_id} did not reach terminal state")
+
+
+def _wait_for_background_task_session(
+    runtime: VoidCodeRuntime, task_id: str
+) -> BackgroundTaskState:
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        task = runtime.load_background_task(task_id)
+        if task.session_id is not None:
+            return task
+        time.sleep(0.01)
+    raise AssertionError(f"background task {task_id} did not allocate a child session")
+
+
+def _wait_for_session_event(
+    runtime: VoidCodeRuntime,
+    session_id: str,
+    event_type: str,
+) -> RuntimeResponse:
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        try:
+            response = runtime.resume(session_id)
+        except ValueError:
+            time.sleep(0.01)
+            continue
+        if any(event.event_type == event_type for event in response.events):
+            return response
+        time.sleep(0.01)
+    raise AssertionError(f"session {session_id} did not receive {event_type}")
 
 
 def _wait_for_path_text(path: Path, *, timeout_seconds: float = 2.0) -> str:
@@ -759,6 +790,216 @@ def test_runtime_validates_parent_session_id_when_listing_background_tasks(tmp_p
 
     with pytest.raises(ValueError, match="parent_session_id must not contain '/'"):
         _ = runtime.list_background_tasks_by_parent_session(parent_session_id="leader/session")
+
+
+def test_runtime_background_task_waiting_approval_emits_parent_session_event_once(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+
+    started = runtime.start_background_task(
+        RuntimeRequest(prompt="background child", parent_session_id="leader-session")
+    )
+    running = _wait_for_background_task_session(runtime, started.task.id)
+    child_session_id = cast(str, running.session_id)
+    child_response = _wait_for_session_event(
+        runtime,
+        child_session_id,
+        "runtime.approval_requested",
+    )
+    leader_response = _wait_for_session_event(
+        runtime,
+        "leader-session",
+        RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL,
+    )
+
+    assert running.status == "running"
+    assert child_response.session.status == "waiting"
+    assert child_response.events[-1].event_type == "runtime.approval_requested"
+
+    waiting_events = [
+        event
+        for event in leader_response.events
+        if event.event_type == RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL
+    ]
+    assert len(waiting_events) == 1
+    assert waiting_events[0].payload == {
+        "task_id": started.task.id,
+        "parent_session_id": "leader-session",
+        "child_session_id": child_session_id,
+        "status": "running",
+        "approval_blocked": True,
+    }
+    assert [event.sequence for event in leader_response.events] == sorted(
+        event.sequence for event in leader_response.events
+    )
+
+    runtime._emit_background_task_waiting_approval(  # pyright: ignore[reportPrivateUsage]
+        task=running,
+        child_response=child_response,
+    )
+    deduped_response = runtime.resume("leader-session")
+
+    assert (
+        sum(
+            event.event_type == RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL
+            for event in deduped_response.events
+        )
+        == 1
+    )
+
+
+def test_runtime_background_task_waiting_approval_resume_finalizes_task(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+
+    started = runtime.start_background_task(
+        RuntimeRequest(prompt="background child", parent_session_id="leader-session")
+    )
+    running = _wait_for_background_task_session(runtime, started.task.id)
+    child_session_id = cast(str, running.session_id)
+    child_response = _wait_for_session_event(
+        runtime,
+        child_session_id,
+        "runtime.approval_requested",
+    )
+    approval_request_id = cast(str, child_response.events[-1].payload["request_id"])
+
+    resumed = runtime.resume(
+        child_session_id,
+        approval_request_id=approval_request_id,
+        approval_decision="allow",
+    )
+    finalized = runtime.load_background_task(started.task.id)
+
+    assert resumed.session.status == "completed"
+    assert finalized.status == "completed"
+    assert finalized.finished_at is not None
+
+
+def test_runtime_background_task_waiting_approval_resume_stream_finalizes_task(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+
+    started = runtime.start_background_task(
+        RuntimeRequest(prompt="background child", parent_session_id="leader-session")
+    )
+    running = _wait_for_background_task_session(runtime, started.task.id)
+    child_session_id = cast(str, running.session_id)
+    child_response = _wait_for_session_event(
+        runtime,
+        child_session_id,
+        "runtime.approval_requested",
+    )
+    approval_request_id = cast(str, child_response.events[-1].payload["request_id"])
+
+    chunks = list(
+        runtime.resume_stream(
+            child_session_id,
+            approval_request_id=approval_request_id,
+            approval_decision="allow",
+        )
+    )
+    finalized = runtime.load_background_task(started.task.id)
+
+    assert chunks[-1].session.status == "completed"
+    assert finalized.status == "completed"
+    assert finalized.finished_at is not None
+
+
+def test_runtime_background_task_waiting_approval_resume_with_fresh_runtime_preserves_task(
+    tmp_path: Path,
+) -> None:
+    initial_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+    _ = initial_runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+
+    started = initial_runtime.start_background_task(
+        RuntimeRequest(prompt="background child", parent_session_id="leader-session")
+    )
+    running = _wait_for_background_task_session(initial_runtime, started.task.id)
+    child_session_id = cast(str, running.session_id)
+    child_response = _wait_for_session_event(
+        initial_runtime,
+        child_session_id,
+        "runtime.approval_requested",
+    )
+    approval_request_id = cast(str, child_response.events[-1].payload["request_id"])
+
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+    preserved = resumed_runtime.load_background_task(started.task.id)
+    resumed = resumed_runtime.resume(
+        child_session_id,
+        approval_request_id=approval_request_id,
+        approval_decision="allow",
+    )
+    finalized = resumed_runtime.load_background_task(started.task.id)
+
+    assert preserved.status == "running"
+    assert preserved.error is None
+    assert resumed.session.status == "completed"
+    assert finalized.status == "completed"
+    assert finalized.error is None
+
+
+def test_runtime_background_task_waiting_approval_race_does_not_fail_child_task(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+    started = runtime.start_background_task(
+        RuntimeRequest(prompt="background child", parent_session_id="leader-session")
+    )
+    running = _wait_for_background_task_session(runtime, started.task.id)
+    child_session_id = cast(str, running.session_id)
+    child_response = _wait_for_session_event(
+        runtime,
+        child_session_id,
+        "runtime.approval_requested",
+    )
+
+    runtime._emit_background_task_waiting_approval(  # pyright: ignore[reportPrivateUsage]
+        task=running,
+        child_response=child_response,
+    )
+    after_duplicate_emit = runtime.load_background_task(started.task.id)
+
+    assert after_duplicate_emit.status == "running"
+    assert after_duplicate_emit.error is None
 
 
 def test_runtime_reuses_existing_session_lineage_when_parent_is_omitted(tmp_path: Path) -> None:

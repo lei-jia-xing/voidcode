@@ -72,6 +72,7 @@ from .contracts import (
     RuntimeResponse,
     RuntimeSessionResult,
     RuntimeStreamChunk,
+    UnknownSessionError,
     validate_session_id,
     validate_session_reference_id,
 )
@@ -79,6 +80,8 @@ from .events import (
     RUNTIME_ACP_CONNECTED,
     RUNTIME_ACP_DISCONNECTED,
     RUNTIME_ACP_FAILED,
+    RUNTIME_APPROVAL_REQUESTED,
+    RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL,
     RUNTIME_FAILED,
     RUNTIME_LSP_SERVER_FAILED,
     RUNTIME_LSP_SERVER_REUSED,
@@ -111,7 +114,7 @@ from .skills import (
     build_skill_prompt_context,
     runtime_context_from_payload,
 )
-from .storage import SessionStore, SqliteSessionStore
+from .storage import SessionEventAppender, SessionStore, SqliteSessionStore
 from .task import (
     BackgroundTaskRef,
     BackgroundTaskRequestSnapshot,
@@ -1832,6 +1835,7 @@ class VoidCodeRuntime:
             approval_request_id=approval_request_id,
             approval_decision=approval_decision,
         )
+        self._finalize_background_task_from_session_response(session_response=response)
         return response
 
     def resume_stream(
@@ -1854,6 +1858,7 @@ class VoidCodeRuntime:
             session_id=session_id,
             approval_request_id=approval_request_id,
             approval_decision=approval_decision,
+            finalize_background_task=True,
         )
 
     def _pending_approval_from_response(self, response: RuntimeResponse) -> PendingApproval:
@@ -1887,6 +1892,7 @@ class VoidCodeRuntime:
         session_id: str,
         approval_request_id: str,
         approval_decision: PermissionResolution,
+        finalize_background_task: bool = False,
     ) -> Iterator[RuntimeStreamChunk]:
         stored_response = self._session_store.load_session(
             workspace=self._workspace, session_id=session_id
@@ -1899,12 +1905,29 @@ class VoidCodeRuntime:
             raise ValueError(f"no pending approval for session: {session_id}")
         if pending.request_id != approval_request_id:
             raise ValueError("approval request id does not match pending session approval")
-        yield from self._resume_pending_approval_impl(
+        streamed_events: list[EventEnvelope] = []
+        output: str | None = None
+        final_session: SessionState | None = None
+        for chunk in self._resume_pending_approval_impl(
             stored=stored_response,
             pending=pending,
             approval_decision=approval_decision,
             checkpoint=checkpoint,
-        )
+        ):
+            final_session = chunk.session
+            if chunk.event is not None:
+                streamed_events.append(chunk.event)
+            if chunk.kind == "output":
+                output = chunk.output
+            yield chunk
+        if finalize_background_task:
+            response = self._response_from_resumed_chunks(
+                stored_response=stored_response,
+                streamed_events=streamed_events,
+                output=output,
+                final_session=final_session,
+            )
+            self._finalize_background_task_from_session_response(session_response=response)
 
     def _resume_pending_approval_response(
         self,
@@ -1943,15 +1966,29 @@ class VoidCodeRuntime:
             if chunk.kind == "output":
                 output = chunk.output
 
+        response = self._response_from_resumed_chunks(
+            stored_response=stored_response,
+            streamed_events=streamed_events,
+            output=output,
+            final_session=final_session,
+        )
+        return stored_events, response
+
+    def _response_from_resumed_chunks(
+        self,
+        *,
+        stored_response: RuntimeResponse,
+        streamed_events: list[EventEnvelope],
+        output: str | None,
+        final_session: SessionState | None,
+    ) -> RuntimeResponse:
         if final_session is None:
             raise ValueError("runtime stream emitted no chunks")
-
         if final_session.status == "waiting":
             final_session = self._reload_persisted_session(session_id=final_session.session.id)
-
-        return stored_events, RuntimeResponse(
+        return RuntimeResponse(
             session=final_session,
-            events=stored_events + tuple(streamed_events),
+            events=stored_response.events + tuple(streamed_events),
             output=output,
         )
 
@@ -2960,6 +2997,100 @@ class VoidCodeRuntime:
                     approval_mode = persisted_approval_mode
         return PermissionPolicy(mode=approval_mode)
 
+    @staticmethod
+    def _approval_request_id_from_waiting_response(response: RuntimeResponse) -> str | None:
+        if response.session.status != "waiting":
+            return None
+        for event in reversed(response.events):
+            if event.event_type != RUNTIME_APPROVAL_REQUESTED:
+                continue
+            request_id = event.payload.get("request_id")
+            return str(request_id) if request_id is not None else None
+        return None
+
+    def _emit_background_task_waiting_approval(
+        self,
+        *,
+        task: BackgroundTaskState,
+        child_response: RuntimeResponse,
+    ) -> None:
+        parent_session_id = task.parent_session_id
+        child_session_id = task.session_id
+        if parent_session_id is None or child_session_id is None:
+            return
+        approval_request_id = self._approval_request_id_from_waiting_response(child_response)
+        dedupe_key = (
+            f"background_task_waiting_approval:{task.task.id}:{approval_request_id}"
+            if approval_request_id is not None
+            else f"background_task_waiting_approval:{task.task.id}:{child_session_id}"
+        )
+        session_event_appender = self._session_store
+        if not isinstance(session_event_appender, SessionEventAppender):
+            logger.debug(
+                "skipping background waiting event for session store without append support"
+            )
+            return
+        try:
+            _ = session_event_appender.append_session_event(
+                workspace=self._workspace,
+                session_id=parent_session_id,
+                event_type=RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL,
+                source="runtime",
+                payload={
+                    "task_id": task.task.id,
+                    "parent_session_id": parent_session_id,
+                    "child_session_id": child_session_id,
+                    "status": "running",
+                    "approval_blocked": True,
+                },
+                dedupe_key=dedupe_key,
+            )
+        except UnknownSessionError:
+            logger.debug(
+                "skipping background waiting event for unavailable parent session: %s",
+                parent_session_id,
+            )
+
+    def _finalize_background_task_from_session_response(
+        self,
+        *,
+        session_response: RuntimeResponse,
+    ) -> None:
+        metadata = session_response.session.metadata
+        background_task_id = metadata.get("background_task_id")
+        background_run = metadata.get("background_run")
+        if not isinstance(background_task_id, str) or background_run is not True:
+            return
+        current_task = self._session_store.load_background_task(
+            workspace=self._workspace,
+            task_id=background_task_id,
+        )
+        if current_task.status in ("completed", "failed", "cancelled"):
+            return
+        if session_response.session.status == "waiting":
+            self._emit_background_task_waiting_approval(
+                task=current_task,
+                child_response=session_response,
+            )
+            return
+        terminal_status: BackgroundTaskStatus = (
+            "completed" if session_response.session.status == "completed" else "failed"
+        )
+        error: str | None = None
+        if terminal_status == "failed":
+            for event in reversed(session_response.events):
+                if event.event_type == RUNTIME_FAILED:
+                    event_error = event.payload.get("error")
+                    error = str(event_error) if event_error is not None else None
+                    break
+        terminal_task = self._session_store.mark_background_task_terminal(
+            workspace=self._workspace,
+            task_id=background_task_id,
+            status=terminal_status,
+            error=error,
+        )
+        self._run_background_task_lifecycle_hook(terminal_task)
+
     def _run_background_task_lifecycle_hook(self, task: BackgroundTaskState) -> None:
         surface_by_status: dict[BackgroundTaskStatus, RuntimeHookSurface] = {
             "completed": "background_task_completed",
@@ -3074,23 +3205,7 @@ class VoidCodeRuntime:
                     allocate_session_id=False,
                 )
             )
-            terminal_status: BackgroundTaskStatus = (
-                "completed" if response.session.status == "completed" else "failed"
-            )
-            error: str | None = None
-            if terminal_status == "failed":
-                for event in reversed(response.events):
-                    if event.event_type == RUNTIME_FAILED:
-                        event_error = event.payload.get("error")
-                        error = str(event_error) if event_error is not None else None
-                        break
-            terminal_task = self._session_store.mark_background_task_terminal(
-                workspace=self._workspace,
-                task_id=task_id,
-                status=terminal_status,
-                error=error,
-            )
-            self._run_background_task_lifecycle_hook(terminal_task)
+            self._finalize_background_task_from_session_response(session_response=response)
         except Exception as exc:
             logger.exception("background task failed: %s", task_id)
             terminal_task = self._session_store.mark_background_task_terminal(
