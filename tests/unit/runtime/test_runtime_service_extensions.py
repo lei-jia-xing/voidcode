@@ -4946,6 +4946,34 @@ def test_runtime_executes_session_idle_hook_without_losing_pending_approval(
     assert idle.payload["hook_status"] == "ok"
 
 
+def test_runtime_disconnects_acp_before_failing_on_session_idle_hook_error(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(
+            acp=RuntimeAcpConfig(enabled=True),
+            approval_mode="ask",
+            hooks=RuntimeHooksConfig(
+                enabled=True,
+                on_session_idle=((sys.executable, "-c", "raise SystemExit(9)"),),
+            ),
+        ),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="needs approval", session_id="idle-acp-session"))
+
+    assert response.session.status == "failed"
+    assert response.events[-1].event_type == "runtime.failed"
+    assert "lifecycle hook failed for session_idle" in str(response.events[-1].payload["error"])
+    runtime_state_metadata = cast(dict[str, object], response.session.metadata["runtime_state"])
+    acp_runtime_state = cast(dict[str, object], runtime_state_metadata["acp"])
+    assert acp_runtime_state["status"] == "disconnected"
+    assert runtime.current_acp_state().status == "disconnected"
+
+
 def test_runtime_executes_background_task_completion_hook_with_task_context(
     tmp_path: Path,
 ) -> None:
@@ -4993,9 +5021,9 @@ def test_runtime_executes_background_task_cancelled_hook_for_queued_cancel(
                         sys.executable,
                         "-c",
                         "import os, pathlib; "
-                        "pathlib.Path('cancel-hook.txt').write_text("
+                        "pathlib.Path('cancel-hook.txt').open('a').write("
                         "os.environ['VOIDCODE_HOOK_SURFACE'] + ':' + "
-                        "os.environ['VOIDCODE_BACKGROUND_TASK_ID'])",
+                        "os.environ['VOIDCODE_BACKGROUND_TASK_ID'] + '\\n')",
                     ),
                 ),
             )
@@ -5015,11 +5043,13 @@ def test_runtime_executes_background_task_cancelled_hook_for_queued_cancel(
     )
 
     cancelled = runtime.cancel_background_task("task-cancel-hook")
+    repeated = runtime.cancel_background_task("task-cancel-hook")
 
     assert cancelled.status == "cancelled"
-    assert _wait_for_path_text(tmp_path / "cancel-hook.txt") == (
+    assert repeated.status == "cancelled"
+    assert _wait_for_path_text(tmp_path / "cancel-hook.txt").splitlines() == [
         "background_task_cancelled:task-cancel-hook"
-    )
+    ]
 
 
 def test_runtime_executes_delegated_result_hook_for_completed_background_child(

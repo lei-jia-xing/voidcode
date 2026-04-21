@@ -983,8 +983,9 @@ class VoidCodeRuntime:
             )
             yield from idle_hook_outcome.chunks
             if idle_hook_outcome.failed_error is not None:
+                failed_session = self._disconnect_acp_for_session_state(last_chunk.session)
                 yield self._failed_chunk(
-                    session=last_chunk.session,
+                    session=failed_session,
                     sequence=idle_hook_outcome.last_sequence + 1,
                     error=idle_hook_outcome.failed_error,
                 )
@@ -1723,11 +1724,15 @@ class VoidCodeRuntime:
     def cancel_background_task(self, task_id: str) -> BackgroundTaskState:
         validate_background_task_id(task_id)
         self._reconcile_background_tasks_if_needed()
+        previous_task = self._session_store.load_background_task(
+            workspace=self._workspace,
+            task_id=task_id,
+        )
         task = self._session_store.request_background_task_cancel(
             workspace=self._workspace,
             task_id=task_id,
         )
-        if task.status == "cancelled":
+        if previous_task.status != "cancelled" and task.status == "cancelled":
             self._run_background_task_lifecycle_hook(task)
         return task
 
