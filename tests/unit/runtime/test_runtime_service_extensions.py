@@ -39,9 +39,9 @@ from voidcode.runtime.config import (
 )
 from voidcode.runtime.context_window import ContextWindowPolicy, RuntimeContinuityState
 from voidcode.runtime.events import (
+    RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL,
     RUNTIME_MCP_SERVER_STARTED,
     RUNTIME_MCP_SERVER_STOPPED,
-    RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL,
     RUNTIME_MEMORY_REFRESHED,
     RUNTIME_SESSION_ENDED,
     RUNTIME_SESSION_IDLE,
@@ -369,7 +369,9 @@ def _wait_for_background_task(
     raise AssertionError(f"background task {task_id} did not reach terminal state")
 
 
-def _wait_for_background_task_session(runtime: VoidCodeRuntime, task_id: str) -> BackgroundTaskState:
+def _wait_for_background_task_session(
+    runtime: VoidCodeRuntime, task_id: str
+) -> BackgroundTaskState:
     deadline = time.monotonic() + 2.0
     while time.monotonic() < deadline:
         task = runtime.load_background_task(task_id)
