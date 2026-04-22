@@ -1233,6 +1233,63 @@ def test_transport_streams_runtime_chunks_in_sse_order() -> None:
     assert payloads[-1]["output"] == "transported"
 
 
+def test_transport_run_stream_accepts_metadata_passthrough_for_skills_and_max_steps() -> None:
+    create_runtime_app = _load_transport_app_factory()
+    runtime_stream_chunk, session_ref, session_state, event_envelope = _load_stream_types()
+    session = session_state(
+        session=session_ref(id="stream-meta-session"),
+        status="completed",
+        turn=1,
+        metadata={"workspace": "/tmp/workspace"},
+    )
+
+    class StubRuntime:
+        def run_stream(self, request: RuntimeRequestLike) -> Iterator[StreamChunkLike]:
+            assert request.prompt == "transport meta"
+            assert request.session_id == "stream-meta-session"
+            assert request.metadata == {
+                "provider_stream": True,
+                "max_steps": 6,
+                "skills": ["demo"],
+            }
+            yield runtime_stream_chunk(
+                kind="event",
+                session=session,
+                event=event_envelope(
+                    session_id="stream-meta-session",
+                    sequence=1,
+                    event_type="runtime.request_received",
+                    source="runtime",
+                    payload={"prompt": request.prompt},
+                ),
+            )
+
+        def list_sessions(self) -> tuple[StoredSessionSummaryLike, ...]:
+            raise AssertionError("list_sessions should not be called")
+
+        def resume(self, session_id: str) -> RuntimeResponseLike:
+            raise AssertionError(f"resume should not be called: {session_id}")
+
+    app = create_runtime_app(
+        workspace=Path("/tmp/workspace"), runtime_factory=lambda: StubRuntime()
+    )
+
+    response = _run_app(
+        app,
+        method="POST",
+        path="/api/runtime/run/stream",
+        body=json.dumps(
+            {
+                "prompt": "transport meta",
+                "session_id": "stream-meta-session",
+                "metadata": {"provider_stream": True, "max_steps": 6, "skills": ["demo"]},
+            }
+        ).encode("utf-8"),
+    )
+
+    assert response.status == 200
+
+
 def test_transport_serializes_additive_future_event_type_unchanged() -> None:
     create_runtime_app = _load_transport_app_factory()
     runtime_stream_chunk, session_ref, session_state, event_envelope = _load_stream_types()

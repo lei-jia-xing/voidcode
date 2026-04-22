@@ -7,7 +7,10 @@ import pytest
 from voidcode.runtime.skills import (
     SkillRuntimeContext,
     build_runtime_contexts,
+    build_skill_execution_snapshot,
     build_skill_prompt_context,
+    snapshot_from_payload,
+    snapshot_payload,
 )
 from voidcode.skills import (
     DEFAULT_SKILL_SEARCH_PATHS,
@@ -143,3 +146,63 @@ def test_skill_runtime_context_builds_execution_prompt_context(tmp_path: Path) -
 def test_skill_loader_rejects_workspace_escape_search_paths(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="escapes workspace"):
         _ = LocalSkillMetadataLoader().discover(workspace=tmp_path, search_paths=("../skills",))
+
+
+def test_build_skill_execution_snapshot_stable_payload() -> None:
+    contexts = (
+        SkillRuntimeContext(
+            name="demo",
+            description="Demo",
+            content="# Demo\nUse it.",
+            prompt_context="Skill: demo\nDescription: Demo\nInstructions:\n# Demo\nUse it.",
+            execution_notes="# Demo\nUse it.",
+            source_path="C:/demo/SKILL.md",
+        ),
+    )
+
+    first = build_skill_execution_snapshot(contexts, source="run")
+    second = build_skill_execution_snapshot(contexts, source="run")
+
+    assert first.snapshot_hash == second.snapshot_hash
+    assert snapshot_payload(first) == snapshot_payload(second)
+
+
+def test_snapshot_roundtrip_from_payload() -> None:
+    contexts = (
+        SkillRuntimeContext(
+            name="demo",
+            description="Demo",
+            content="# Demo\nUse it.",
+            prompt_context="Skill: demo\nDescription: Demo\nInstructions:\n# Demo\nUse it.",
+            execution_notes="# Demo\nUse it.",
+            source_path="C:/demo/SKILL.md",
+        ),
+    )
+    snapshot = build_skill_execution_snapshot(contexts, source="run")
+
+    restored = snapshot_from_payload(snapshot_payload(snapshot))
+
+    assert restored.selected_skill_names == snapshot.selected_skill_names
+    assert restored.applied_skill_payloads == snapshot.applied_skill_payloads
+    assert restored.skill_prompt_context == snapshot.skill_prompt_context
+    assert restored.snapshot_hash == snapshot.snapshot_hash
+
+
+def test_snapshot_from_payload_recomputes_stale_hash() -> None:
+    contexts = (
+        SkillRuntimeContext(
+            name="demo",
+            description="Demo",
+            content="# Demo\nUse it.",
+            prompt_context="Skill: demo\nDescription: Demo\nInstructions:\n# Demo\nUse it.",
+            execution_notes="# Demo\nUse it.",
+            source_path="C:/demo/SKILL.md",
+        ),
+    )
+    snapshot = build_skill_execution_snapshot(contexts, source="run")
+    payload = snapshot_payload(snapshot)
+    payload["snapshot_hash"] = "stale-hash"
+
+    restored = snapshot_from_payload(payload)
+
+    assert restored.snapshot_hash == snapshot.snapshot_hash

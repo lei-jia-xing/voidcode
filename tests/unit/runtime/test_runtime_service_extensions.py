@@ -49,6 +49,7 @@ from voidcode.runtime.events import (
     RUNTIME_SESSION_ENDED,
     RUNTIME_SESSION_IDLE,
     RUNTIME_SESSION_STARTED,
+    RUNTIME_SKILLS_BINDING_MISMATCH,
     EventEnvelope,
 )
 from voidcode.runtime.lsp import DisabledLspManager
@@ -4997,7 +4998,10 @@ def test_runtime_persists_resume_checkpoint_for_waiting_session(tmp_path: Path) 
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(approval_mode="ask"),
+        config=RuntimeConfig(
+            approval_mode="ask",
+            skills=RuntimeSkillsConfig(enabled=True),
+        ),
         permission_policy=PermissionPolicy(mode="ask"),
     )
 
@@ -5024,6 +5028,10 @@ def test_runtime_persists_resume_checkpoint_for_waiting_session(tmp_path: Path) 
     assert checkpoint["prompt"] == "go"
     assert checkpoint["session_status"] == "waiting"
     assert checkpoint["session_metadata"] == waiting.session.metadata
+    skill_snapshot = cast(dict[str, object], waiting.session.metadata["skill_snapshot"])
+    assert checkpoint["skill_snapshot_hash"] == skill_snapshot["snapshot_hash"]
+    assert checkpoint["skill_snapshot_version"] == 1
+    assert checkpoint["skill_binding_snapshot"] == skill_snapshot["binding_snapshot"]
     assert checkpoint["tool_results"] == []
     assert checkpoint["last_event_sequence"] == waiting.events[-1].sequence
 
@@ -5198,6 +5206,192 @@ def test_runtime_resume_approval_rebuilds_from_persisted_checkpoint_after_restar
 
     resumed = resumed_runtime.resume(
         session_id="checkpoint-resume-session",
+        approval_request_id=approval_request_id,
+        approval_decision="allow",
+    )
+
+    assert resumed.session.status == "completed"
+    assert resumed.output == "done"
+
+
+def test_runtime_resume_emits_skill_binding_mismatch_event_when_checkpoint_binding_differs(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(
+            approval_mode="ask",
+            skills=RuntimeSkillsConfig(enabled=True),
+        ),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    waiting = runtime.run(RuntimeRequest(prompt="go", session_id="checkpoint-binding-mismatch"))
+    approval_request_id = str(waiting.events[-1].payload["request_id"])
+
+    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    connection = sqlite3.connect(database_path)
+    try:
+        row = connection.execute(
+            "SELECT resume_checkpoint_json FROM sessions WHERE session_id = ?",
+            ("checkpoint-binding-mismatch",),
+        ).fetchone()
+        assert row is not None
+        checkpoint = json.loads(str(row[0]))
+        assert isinstance(checkpoint, dict)
+        checkpoint_dict = cast(dict[str, object], checkpoint)
+        checkpoint_dict["skill_binding_snapshot"] = {
+            "approval_mode": "deny",
+            "execution_engine": "deterministic",
+        }
+        _ = connection.execute(
+            "UPDATE sessions SET resume_checkpoint_json = ? WHERE session_id = ?",
+            (json.dumps(checkpoint_dict, sort_keys=True), "checkpoint-binding-mismatch"),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(
+            approval_mode="ask",
+            skills=RuntimeSkillsConfig(enabled=True),
+        ),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    resumed = resumed_runtime.resume(
+        session_id="checkpoint-binding-mismatch",
+        approval_request_id=approval_request_id,
+        approval_decision="allow",
+    )
+
+    mismatch_events = [
+        event for event in resumed.events if event.event_type == RUNTIME_SKILLS_BINDING_MISMATCH
+    ]
+    assert len(mismatch_events) == 1
+    mismatch_payload = mismatch_events[0].payload
+    assert mismatch_payload["mismatch"] is True
+    mismatch_keys = cast(list[object], mismatch_payload["mismatch_keys"])
+    assert "approval_mode" in mismatch_keys
+    assert mismatch_payload["resume"] is True
+    assert mismatch_payload["approval_request_id"] == approval_request_id
+    expected_binding = cast(dict[str, object], mismatch_payload["expected_binding"])
+    actual_binding = cast(dict[str, object], mismatch_payload["actual_binding"])
+    assert expected_binding["approval_mode"] == "deny"
+    assert actual_binding["approval_mode"] == "ask"
+
+
+def test_runtime_resume_does_not_emit_binding_mismatch_when_checkpoint_binding_missing(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(
+            approval_mode="ask",
+            skills=RuntimeSkillsConfig(enabled=True),
+        ),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    waiting = runtime.run(RuntimeRequest(prompt="go", session_id="checkpoint-binding-legacy"))
+    approval_request_id = str(waiting.events[-1].payload["request_id"])
+
+    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    connection = sqlite3.connect(database_path)
+    try:
+        row = connection.execute(
+            "SELECT resume_checkpoint_json FROM sessions WHERE session_id = ?",
+            ("checkpoint-binding-legacy",),
+        ).fetchone()
+        assert row is not None
+        checkpoint = json.loads(str(row[0]))
+        assert isinstance(checkpoint, dict)
+        checkpoint_dict = cast(dict[str, object], checkpoint)
+        checkpoint_dict.pop("skill_binding_snapshot", None)
+        _ = connection.execute(
+            "UPDATE sessions SET resume_checkpoint_json = ? WHERE session_id = ?",
+            (json.dumps(checkpoint_dict, sort_keys=True), "checkpoint-binding-legacy"),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(
+            approval_mode="ask",
+            skills=RuntimeSkillsConfig(enabled=True),
+        ),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    resumed = resumed_runtime.resume(
+        session_id="checkpoint-binding-legacy",
+        approval_request_id=approval_request_id,
+        approval_decision="allow",
+    )
+
+    mismatch_events = [
+        event for event in resumed.events if event.event_type == RUNTIME_SKILLS_BINDING_MISMATCH
+    ]
+    assert mismatch_events == []
+
+
+def test_runtime_resume_falls_back_when_skill_snapshot_hash_mismatches_checkpoint(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(
+            approval_mode="ask",
+            skills=RuntimeSkillsConfig(enabled=True),
+        ),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    waiting = runtime.run(RuntimeRequest(prompt="go", session_id="checkpoint-hash-mismatch"))
+    approval_request_id = str(waiting.events[-1].payload["request_id"])
+
+    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    connection = sqlite3.connect(database_path)
+    try:
+        row = connection.execute(
+            "SELECT metadata_json FROM sessions WHERE session_id = ?",
+            ("checkpoint-hash-mismatch",),
+        ).fetchone()
+        assert row is not None
+        metadata = json.loads(str(row[0]))
+        assert isinstance(metadata, dict)
+        metadata_dict = cast(dict[str, object], metadata)
+        skill_snapshot = cast(dict[str, object], metadata_dict["skill_snapshot"])
+        skill_snapshot["snapshot_hash"] = "tampered-hash"
+        _ = connection.execute(
+            "UPDATE sessions SET metadata_json = ? WHERE session_id = ?",
+            (json.dumps(metadata_dict, sort_keys=True), "checkpoint-hash-mismatch"),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(
+            approval_mode="ask",
+            skills=RuntimeSkillsConfig(enabled=True),
+        ),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    resumed = resumed_runtime.resume(
+        session_id="checkpoint-hash-mismatch",
         approval_request_id=approval_request_id,
         approval_decision="allow",
     )

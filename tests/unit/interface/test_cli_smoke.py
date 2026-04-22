@@ -315,6 +315,46 @@ def test_run_command_loads_config_and_forwards_it_to_runtime() -> None:
     runtime_class.return_value.resume.assert_not_called()
 
 
+def test_run_command_accepts_skills_max_steps_and_provider_stream_flags() -> None:
+    cli = importlib.import_module("voidcode.cli")
+    workspace = Path("/tmp/demo-workspace")
+    config = SimpleNamespace(approval_mode="allow")
+    chunks = (
+        _make_chunk(
+            session_id="demo-session",
+            status="completed",
+            event=_runtime_event("runtime.request_received", prompt="read README.md"),
+        ),
+        _make_chunk(session_id="demo-session", status="completed", output="done\n"),
+    )
+
+    with patch.object(cli, "load_runtime_config", autospec=True, return_value=config):
+        with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+            runtime_class.return_value.run_stream.return_value = iter(chunks)
+            result = cli.main(
+                [
+                    "run",
+                    "read README.md",
+                    "--workspace",
+                    str(workspace),
+                    "--skills",
+                    "demo",
+                    "review",
+                    "--max-steps",
+                    "7",
+                    "--provider-stream",
+                ]
+            )
+
+    assert result == 0
+    runtime_class.return_value.run_stream.assert_called_once()
+    request = runtime_class.return_value.run_stream.call_args.args[0]
+    assert request.prompt == "read README.md"
+    assert request.metadata["skills"] == ["demo", "review"]
+    assert request.metadata["max_steps"] == 7
+    assert request.metadata["provider_stream"] is True
+
+
 def test_run_command_interactively_allows_inline_approval(capsys: Any) -> None:
     cli = importlib.import_module("voidcode.cli")
     config = SimpleNamespace(approval_mode="ask")
