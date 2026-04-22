@@ -1,7 +1,7 @@
 # PROJECT KNOWLEDGE BASE
 
-**Generated:** 2026-04-09
-**Commit:** e6c0a98
+**Generated:** 2026-04-22
+**Commit:** 269eaf8
 **Branch:** master
 
 ## OVERVIEW
@@ -27,6 +27,7 @@ voidcode/
 | CLI behavior | `src/voidcode/cli.py` | `voidcode run`, `sessions list`, `sessions resume` |
 | Python entrypoint | `src/voidcode/__main__.py` | `python -m voidcode` delegates to CLI |
 | Runtime orchestration boundary | `src/voidcode/runtime/service.py` | CLI calls runtime, not graph directly |
+| Runtime implementation work | `src/voidcode/runtime/AGENTS.md` | read before touching runtime control-plane code |
 | Session persistence | `src/voidcode/runtime/storage.py` | SQLite-backed local session store |
 | Runtime contracts | `src/voidcode/runtime/contracts.py` | request/response boundary types |
 | Graph planning/finalization | `src/voidcode/graph/read_only_slice.py` | current deterministic slice |
@@ -66,6 +67,7 @@ voidcode/
 - Session recovery is local and SQLite-backed under `.voidcode/`.
 - The backend now exposes a broader tool surface including read/write/edit/search/web and patch workflows under `src/voidcode/tools/`.
 - Frontend source is intentionally small and flatter than the aspirational structure described in `frontend/README.md`.
+- Runtime-specific invariants and hotspot entry points live in `src/voidcode/runtime/AGENTS.md`.
 
 ## COMMANDS
 ```bash
@@ -82,4 +84,5 @@ mise run pre-commit
 ## NOTES
 - `src/voidcode/` uses src-layout; do not look for a top-level `voidcode/` package directory.
 - CI has two jobs: Python and frontend. Release workflow only publishes Python packages.
+- Read `src/voidcode/runtime/AGENTS.md` before changing runtime session/config/tool orchestration.
 - Read `frontend/AGENTS.md` before touching anything under `frontend/`.
