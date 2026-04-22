@@ -105,6 +105,7 @@ from .events import (
     RUNTIME_MCP_SERVER_STOPPED,
     RUNTIME_MEMORY_REFRESHED,
     RUNTIME_SKILLS_APPLIED,
+    RUNTIME_SKILLS_BINDING_MISMATCH,
     RUNTIME_SKILLS_LOADED,
     EventEnvelope,
 )
@@ -121,11 +122,14 @@ from .plan import PlanContributor, apply_plan_patch, build_plan_contributor
 from .session import SessionRef, SessionState, SessionStatus, StoredSessionSummary
 from .single_agent_provider import ProviderExecutionError
 from .skills import (
+    SkillExecutionSnapshot,
     SkillRuntimeContext,
     build_runtime_context,
     build_runtime_contexts,
-    build_skill_prompt_context,
+    build_skill_execution_snapshot,
     runtime_context_from_payload,
+    snapshot_from_payload,
+    snapshot_payload,
 )
 from .storage import SessionEventAppender, SessionStore, SqliteSessionStore
 from .task import (
@@ -165,6 +169,20 @@ _BUILTIN_TOOL_NAMES = frozenset(
         "web_search",
         "write_file",
     }
+)
+
+_SKILL_BINDING_SCOPE_KEYS = (
+    "approval_mode",
+    "execution_engine",
+    "max_steps",
+    "tool_timeout_seconds",
+    "model",
+    "provider_fallback",
+    "resolved_provider",
+    "plan",
+    "agent",
+    "lsp",
+    "mcp",
 )
 
 
@@ -964,13 +982,14 @@ class VoidCodeRuntime:
             yield startup_failed_chunk
             return
 
-        applied_skill_contexts = self._applied_skill_contexts(
+        skill_snapshot = self._build_skill_snapshot(
             skill_registry,
-            session.metadata,
-            effective_config.agent,
+            metadata=session.metadata,
+            agent=effective_config.agent,
+            source="run",
         )
-        frozen_applied_skills = self._frozen_applied_skill_payloads(applied_skill_contexts)
-        skill_prompt_context = build_skill_prompt_context(applied_skill_contexts)
+        frozen_applied_skills = skill_snapshot.applied_skill_payloads
+        skill_prompt_context = skill_snapshot.skill_prompt_context
         if skills_config is not None and skills_config.enabled is True:
             session = SessionState(
                 session=session.session,
@@ -978,12 +997,10 @@ class VoidCodeRuntime:
                 turn=session.turn,
                 metadata={
                     **session.metadata,
-                    "selected_skill_names": [skill.name for skill in applied_skill_contexts],
-                    "applied_skills": [skill.name for skill in applied_skill_contexts],
-                    "applied_skill_payloads": list(frozen_applied_skills),
+                    **self._snapshot_to_session_metadata(skill_snapshot),
                 },
             )
-        if applied_skill_contexts:
+        if skill_snapshot.applied_skill_payloads:
             sequence += 1
             yield RuntimeStreamChunk(
                 kind="event",
@@ -994,8 +1011,8 @@ class VoidCodeRuntime:
                     event_type=RUNTIME_SKILLS_APPLIED,
                     source="runtime",
                     payload={
-                        "skills": [skill.name for skill in applied_skill_contexts],
-                        "count": len(applied_skill_contexts),
+                        "skills": list(skill_snapshot.selected_skill_names),
+                        "count": len(skill_snapshot.applied_skill_payloads),
                         "prompt_context_built": bool(skill_prompt_context),
                         "prompt_context_length": len(skill_prompt_context),
                     },
@@ -2123,6 +2140,31 @@ class VoidCodeRuntime:
             pending=pending,
             stored_metadata=stored.session.metadata,
         )
+        binding_mismatch_payload: dict[str, object] | None = None
+        if checkpoint is not None:
+            checkpoint_binding = checkpoint.get("skill_binding_snapshot")
+            checkpoint_binding_payload = (
+                cast(dict[str, object], checkpoint_binding)
+                if isinstance(checkpoint_binding, dict)
+                else None
+            )
+            if checkpoint_binding_payload is not None:
+                stored_snapshot_payload = cast(
+                    dict[str, object] | None,
+                    stored.session.metadata.get("skill_snapshot"),
+                )
+                stored_binding_payload = (
+                    cast(dict[str, object], stored_snapshot_payload.get("binding_snapshot"))
+                    if isinstance(stored_snapshot_payload, dict)
+                    and isinstance(stored_snapshot_payload.get("binding_snapshot"), dict)
+                    else None
+                )
+                mismatch_payload = self._skill_binding_mismatch_payload(
+                    checkpoint_binding_payload,
+                    stored_binding_payload,
+                )
+                if cast(bool, mismatch_payload["mismatch"]):
+                    binding_mismatch_payload = mismatch_payload
         if checkpoint_state is not None:
             prompt = checkpoint_state.prompt
             session = SessionState(
@@ -2159,19 +2201,19 @@ class VoidCodeRuntime:
         tool_registry = self._tool_registry_for_effective_config(effective_config)
         skill_registry = self._skill_registry_for_effective_config(effective_config)
 
-        resumed_applied_skills = self._graph_applied_skills(
+        resumed_skill_snapshot = self._build_skill_snapshot(
             skill_registry,
-            session.metadata,
-            effective_config.agent,
+            metadata=session.metadata,
+            agent=effective_config.agent,
+            source="resume",
         )
+        resumed_applied_skills = resumed_skill_snapshot.applied_skill_payloads
         graph_request = GraphRunRequest(
             session=session,
             prompt=prompt,
             available_tools=tool_registry.definitions(),
             applied_skills=resumed_applied_skills,
-            skill_prompt_context=build_skill_prompt_context(
-                tuple(runtime_context_from_payload(payload) for payload in resumed_applied_skills)
-            ),
+            skill_prompt_context=resumed_skill_snapshot.skill_prompt_context,
             context_window=self._prepare_single_agent_context_window(
                 prompt=prompt,
                 tool_results=tuple(tool_results),
@@ -2225,6 +2267,21 @@ class VoidCodeRuntime:
             startup_chunks = ()
             startup_failed_chunk = None
         emitted_sequence = max_stored_sequence
+        if binding_mismatch_payload is not None:
+            emitted_sequence += 1
+            mismatch_event = EventEnvelope(
+                session_id=session.session.id,
+                sequence=emitted_sequence,
+                event_type=RUNTIME_SKILLS_BINDING_MISMATCH,
+                source="runtime",
+                payload={
+                    **binding_mismatch_payload,
+                    "resume": True,
+                    "approval_request_id": pending.request_id,
+                },
+            )
+            loop_events.append(mismatch_event)
+            yield RuntimeStreamChunk(kind="event", session=session, event=mismatch_event)
         for chunk in startup_chunks:
             emitted_sequence += 1
             resequenced_event = self._resequence_event(
@@ -2469,6 +2526,22 @@ class VoidCodeRuntime:
         if checkpoint.get("version") != 1:
             return None
         if checkpoint.get("pending_approval_request_id") != pending.request_id:
+            return None
+        checkpoint_snapshot_hash = checkpoint.get("skill_snapshot_hash")
+        stored_snapshot_payload = cast(
+            dict[str, object] | None,
+            stored_metadata.get("skill_snapshot"),
+        )
+        stored_snapshot_hash = (
+            stored_snapshot_payload.get("snapshot_hash")
+            if isinstance(stored_snapshot_payload, dict)
+            else None
+        )
+        if (
+            checkpoint_snapshot_hash is not None
+            and stored_snapshot_hash is not None
+            and checkpoint_snapshot_hash != stored_snapshot_hash
+        ):
             return None
         prompt = checkpoint.get("prompt")
         session_metadata = checkpoint.get("session_metadata")
@@ -2782,12 +2855,124 @@ class VoidCodeRuntime:
         persisted_selected_skill_names = (
             self._persisted_selected_skill_names(metadata) if metadata is not None else None
         )
+        legacy_applied_skill_names = (
+            self._legacy_applied_skill_names(metadata) if metadata is not None else None
+        )
+        if persisted_selected_skill_names is None and legacy_applied_skill_names is not None:
+            if not legacy_applied_skill_names:
+                return ()
+            return self._available_runtime_contexts(skill_registry, legacy_applied_skill_names)
         selected_skill_names = self._selected_skill_names_for_agent(
             agent,
             request_skill_names=request_skill_names,
             persisted_selected_skill_names=persisted_selected_skill_names,
         )
         return build_runtime_contexts(skill_registry, skill_names=selected_skill_names)
+
+    def _build_skill_snapshot(
+        self,
+        skill_registry: SkillRegistry,
+        *,
+        metadata: dict[str, object] | None,
+        agent: RuntimeAgentConfig | None,
+        source: Literal["run", "resume", "replay", "legacy"],
+    ) -> SkillExecutionSnapshot:
+        binding_snapshot = self._skill_binding_snapshot(metadata)
+        if metadata is not None:
+            persisted_snapshot = self._skill_snapshot_from_metadata(metadata)
+            if persisted_snapshot is not None:
+                normalized = persisted_snapshot
+                if (
+                    binding_snapshot is not None
+                    and persisted_snapshot.binding_snapshot != binding_snapshot
+                ):
+                    normalized = snapshot_from_payload(
+                        {
+                            **snapshot_payload(normalized),
+                            "binding_snapshot": binding_snapshot,
+                        }
+                    )
+                if source != normalized.source:
+                    return snapshot_from_payload(
+                        {
+                            **snapshot_payload(normalized),
+                            "source": source,
+                        }
+                    )
+                return normalized
+        contexts = self._applied_skill_contexts(skill_registry, metadata, agent)
+        return build_skill_execution_snapshot(
+            contexts,
+            source=source,
+            binding_snapshot=binding_snapshot,
+        )
+
+    def _skill_binding_snapshot(
+        self,
+        metadata: dict[str, object] | None,
+    ) -> dict[str, object] | None:
+        source_runtime_config = None
+        if metadata is not None:
+            raw_runtime_config = metadata.get("runtime_config")
+            if isinstance(raw_runtime_config, dict):
+                source_runtime_config = cast(dict[str, object], raw_runtime_config)
+        if source_runtime_config is None:
+            source_runtime_config = self._runtime_config_metadata(
+                self._effective_runtime_config_from_metadata(metadata)
+            )
+        snapshot: dict[str, object] = {}
+        for key in _SKILL_BINDING_SCOPE_KEYS:
+            if key in source_runtime_config:
+                snapshot[key] = source_runtime_config[key]
+        return snapshot
+
+    @staticmethod
+    def _skill_binding_mismatch_payload(
+        expected: dict[str, object] | None,
+        actual: dict[str, object] | None,
+    ) -> dict[str, object]:
+        expected_payload = expected if isinstance(expected, dict) else {}
+        actual_payload = actual if isinstance(actual, dict) else {}
+        keys = sorted(set(expected_payload.keys()) | set(actual_payload.keys()))
+        mismatches = [key for key in keys if expected_payload.get(key) != actual_payload.get(key)]
+        return {
+            "mismatch": bool(mismatches),
+            "mismatch_keys": mismatches,
+            "expected_binding": expected_payload,
+            "actual_binding": actual_payload,
+        }
+
+    @staticmethod
+    def _snapshot_to_session_metadata(snapshot: SkillExecutionSnapshot) -> dict[str, object]:
+        return {
+            "selected_skill_names": list(snapshot.selected_skill_names),
+            "applied_skills": list(snapshot.selected_skill_names),
+            "applied_skill_payloads": [
+                dict(payload) for payload in snapshot.applied_skill_payloads
+            ],
+            "skill_snapshot": snapshot_payload(snapshot),
+        }
+
+    def _skill_snapshot_from_metadata(
+        self,
+        metadata: dict[str, object],
+    ) -> SkillExecutionSnapshot | None:
+        raw_snapshot = metadata.get("skill_snapshot")
+        has_payload_keys = "applied_skill_payloads" in metadata
+        if isinstance(raw_snapshot, dict) and has_payload_keys:
+            return snapshot_from_payload(cast(dict[str, object], raw_snapshot))
+        persisted_payloads = self._persisted_applied_skill_payloads(metadata)
+        if persisted_payloads is not None:
+            contexts = tuple(
+                runtime_context_from_payload(payload) for payload in persisted_payloads
+            )
+            selected_names = self._persisted_selected_skill_names(metadata)
+            return build_skill_execution_snapshot(
+                contexts,
+                source="legacy",
+                selected_skill_names=selected_names if selected_names is not None else None,
+            )
+        return None
 
     @staticmethod
     def _selected_skill_names_for_agent(
@@ -2797,15 +2982,18 @@ class VoidCodeRuntime:
         persisted_selected_skill_names: tuple[str, ...] | None = None,
     ) -> tuple[str, ...] | None:
         manifest_skill_refs: tuple[str, ...] = ()
+        persisted_selected_explicit = persisted_selected_skill_names is not None
         if persisted_selected_skill_names is not None:
             manifest_skill_refs = persisted_selected_skill_names
         if agent is not None:
-            if not manifest_skill_refs:
+            if not persisted_selected_explicit and not manifest_skill_refs:
                 manifest = get_builtin_agent_manifest(agent.preset)
                 if manifest is not None:
                     manifest_skill_refs = manifest.skill_refs
 
         if request_skill_names is None:
+            if persisted_selected_explicit:
+                return manifest_skill_refs
             return manifest_skill_refs if manifest_skill_refs else None
 
         selected_names: list[str] = []
@@ -2820,23 +3008,16 @@ class VoidCodeRuntime:
         sanitized.pop("applied_skills", None)
         sanitized.pop("applied_skill_payloads", None)
         sanitized.pop("selected_skill_names", None)
+        sanitized.pop("skill_snapshot", None)
         return sanitized
 
     @staticmethod
-    def _frozen_applied_skill_payloads(
-        contexts: Iterable[SkillRuntimeContext],
-    ) -> tuple[dict[str, str], ...]:
-        return tuple(
-            {
-                "name": context.name,
-                "description": context.description,
-                "content": context.content,
-                "prompt_context": context.prompt_context,
-                "execution_notes": context.execution_notes,
-                "source_path": context.source_path,
-            }
-            for context in contexts
-        )
+    def _legacy_applied_skill_names(metadata: dict[str, object]) -> tuple[str, ...] | None:
+        raw_applied = metadata.get("applied_skills")
+        if not isinstance(raw_applied, list):
+            return None
+        names = [item for item in cast(list[object], raw_applied) if isinstance(item, str)]
+        return tuple(names)
 
     @staticmethod
     def _persisted_selected_skill_names(
@@ -2915,37 +3096,6 @@ class VoidCodeRuntime:
                 continue
             contexts.append(build_runtime_context(skill))
         return tuple(contexts)
-
-    def _graph_applied_skills(
-        self,
-        skill_registry: SkillRegistry,
-        metadata: dict[str, object] | None = None,
-        agent: RuntimeAgentConfig | None = None,
-    ) -> tuple[dict[str, str], ...]:
-        if metadata is not None:
-            persisted_payloads = self._persisted_applied_skill_payloads(metadata)
-            if persisted_payloads is not None:
-                return persisted_payloads
-            persisted_selected_skill_names = self._persisted_selected_skill_names(metadata)
-            if persisted_selected_skill_names is not None:
-                if not persisted_selected_skill_names:
-                    return ()
-                return self._frozen_applied_skill_payloads(
-                    self._available_runtime_contexts(skill_registry, persisted_selected_skill_names)
-                )
-            persisted = metadata.get("applied_skills")
-            if isinstance(persisted, list):
-                persisted_values = cast(list[object], persisted)
-                persisted_names = [item for item in persisted_values if isinstance(item, str)]
-                if not persisted_names:
-                    return ()
-                if persisted_names:
-                    return self._frozen_applied_skill_payloads(
-                        self._available_runtime_contexts(skill_registry, persisted_names)
-                    )
-        return self._frozen_applied_skill_payloads(
-            self._applied_skill_contexts(skill_registry, metadata, agent)
-        )
 
     def _runtime_config_metadata(
         self, config: EffectiveRuntimeConfig | None = None

@@ -20,7 +20,7 @@ from .doctor import (
 )
 from .provider.snapshot import resolved_provider_snapshot
 from .runtime.config import RuntimeConfig, load_runtime_config, serialize_provider_fallback_config
-from .runtime.contracts import RuntimeRequest, RuntimeStreamChunk
+from .runtime.contracts import RuntimeRequest, RuntimeStreamChunk, validate_runtime_request_metadata
 from .runtime.events import EventEnvelope
 from .runtime.permission import PermissionDecision, PermissionResolution
 from .runtime.service import VoidCodeRuntime
@@ -52,7 +52,18 @@ def _handle_run_command(args: argparse.Namespace) -> int:
     )
     runtime = VoidCodeRuntime(workspace=workspace, config=config)
     try:
-        request = RuntimeRequest(prompt=request_text, session_id=cast(str | None, args.session_id))
+        metadata: dict[str, object] = {}
+        if getattr(args, "skills", None):
+            metadata["skills"] = cast(list[str], args.skills)
+        if getattr(args, "max_steps", None) is not None:
+            metadata["max_steps"] = cast(int, args.max_steps)
+        if getattr(args, "provider_stream", None) is not None:
+            metadata["provider_stream"] = cast(bool, args.provider_stream)
+        request = RuntimeRequest(
+            prompt=request_text,
+            session_id=cast(str | None, args.session_id),
+            metadata=validate_runtime_request_metadata(metadata),
+        )
         interactive = sys.stdin.isatty() and sys.stderr.isatty()
         output = _run_with_inline_approval(
             runtime,
@@ -433,6 +444,30 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("allow", "deny", "ask"),
         help="Override the runtime approval mode for this invocation.",
     )
+    _ = run_parser.add_argument(
+        "--skills",
+        nargs="+",
+        help="Optional skill names applied for this run.",
+    )
+    _ = run_parser.add_argument(
+        "--max-steps",
+        type=int,
+        help="Optional max graph steps override for this run.",
+    )
+    stream_group = run_parser.add_mutually_exclusive_group()
+    _ = stream_group.add_argument(
+        "--provider-stream",
+        dest="provider_stream",
+        action="store_true",
+        help="Enable provider-level streaming for this run.",
+    )
+    _ = stream_group.add_argument(
+        "--no-provider-stream",
+        dest="provider_stream",
+        action="store_false",
+        help="Disable provider-level streaming for this run.",
+    )
+    run_parser.set_defaults(provider_stream=None)
     run_parser.set_defaults(handler=_handle_run_command)
 
     serve_parser = subparsers.add_parser(

@@ -641,12 +641,23 @@ class SqliteSessionStore:
         response: RuntimeResponse,
         pending_approval: PendingApproval,
     ) -> dict[str, object]:
+        snapshot_payload = response.session.metadata.get("skill_snapshot")
+        snapshot = (
+            cast(dict[str, object], snapshot_payload) if isinstance(snapshot_payload, dict) else {}
+        )
+        binding_payload = snapshot.get("binding_snapshot")
+        binding_snapshot = (
+            cast(dict[str, object], binding_payload) if isinstance(binding_payload, dict) else {}
+        )
         return {
             "version": 1,
             "kind": "approval_wait",
             "prompt": request.prompt,
             "session_status": response.session.status,
             "session_metadata": response.session.metadata,
+            "skill_snapshot_hash": snapshot.get("snapshot_hash"),
+            "skill_snapshot_version": snapshot.get("snapshot_version"),
+            "skill_binding_snapshot": binding_snapshot,
             "tool_results": SqliteSessionStore._tool_results_from_events(response.events),
             "last_event_sequence": response.events[-1].sequence if response.events else 0,
             "pending_approval_request_id": pending_approval.request_id,
@@ -657,12 +668,23 @@ class SqliteSessionStore:
     def _terminal_resume_checkpoint(
         *, request: RuntimeRequest, response: RuntimeResponse
     ) -> dict[str, object]:
+        snapshot_payload = response.session.metadata.get("skill_snapshot")
+        snapshot = (
+            cast(dict[str, object], snapshot_payload) if isinstance(snapshot_payload, dict) else {}
+        )
+        binding_payload = snapshot.get("binding_snapshot")
+        binding_snapshot = (
+            cast(dict[str, object], binding_payload) if isinstance(binding_payload, dict) else {}
+        )
         return {
             "version": 1,
             "kind": "terminal",
             "prompt": request.prompt,
             "session_status": response.session.status,
             "session_metadata": response.session.metadata,
+            "skill_snapshot_hash": snapshot.get("snapshot_hash"),
+            "skill_snapshot_version": snapshot.get("snapshot_version"),
+            "skill_binding_snapshot": binding_snapshot,
             "tool_results": SqliteSessionStore._tool_results_from_events(response.events),
             "last_event_sequence": response.events[-1].sequence if response.events else 0,
             "output": response.output,

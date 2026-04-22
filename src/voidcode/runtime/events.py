@@ -38,6 +38,7 @@ type PrototypeAdditiveEventType = Literal[
     "runtime.session_started",
     "runtime.session_ended",
     "runtime.session_idle",
+    "runtime.skills_binding_mismatch",
     "runtime.background_task_waiting_approval",
     "runtime.background_task_completed",
     "runtime.background_task_failed",
@@ -79,6 +80,9 @@ RUNTIME_MEMORY_REFRESHED: Final[PrototypeAdditiveEventType] = "runtime.memory_re
 RUNTIME_SESSION_STARTED: Final[PrototypeAdditiveEventType] = "runtime.session_started"
 RUNTIME_SESSION_ENDED: Final[PrototypeAdditiveEventType] = "runtime.session_ended"
 RUNTIME_SESSION_IDLE: Final[PrototypeAdditiveEventType] = "runtime.session_idle"
+RUNTIME_SKILLS_BINDING_MISMATCH: Final[PrototypeAdditiveEventType] = (
+    "runtime.skills_binding_mismatch"
+)
 RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL: Final[PrototypeAdditiveEventType] = (
     "runtime.background_task_waiting_approval"
 )
@@ -126,6 +130,7 @@ PROTOTYPE_ADDITIVE_EVENT_TYPES: Final[tuple[PrototypeAdditiveEventType, ...]] = 
     RUNTIME_SESSION_STARTED,
     RUNTIME_SESSION_ENDED,
     RUNTIME_SESSION_IDLE,
+    RUNTIME_SKILLS_BINDING_MISMATCH,
     RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL,
     RUNTIME_BACKGROUND_TASK_COMPLETED,
     RUNTIME_BACKGROUND_TASK_FAILED,
