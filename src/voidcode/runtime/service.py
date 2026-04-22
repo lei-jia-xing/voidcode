@@ -2278,12 +2278,10 @@ class VoidCodeRuntime:
 
         session = self._session_with_current_acp_metadata(session)
         preserved_continuity_state = self._continuity_state_from_session_metadata(session.metadata)
-        mcp_startup_chunks, session, _, mcp_failed_chunk = (
-            self._refresh_mcp_tools_for_session(
-                session=session,
-                sequence=max_stored_sequence,
-                failure_kind="mcp_startup_failed",
-            )
+        mcp_startup_chunks, session, _, mcp_failed_chunk = self._refresh_mcp_tools_for_session(
+            session=session,
+            sequence=max_stored_sequence,
+            failure_kind="mcp_startup_failed",
         )
         effective_config = self._effective_runtime_config_from_metadata(session.metadata)
         tool_registry = self._tool_registry_for_effective_config(effective_config)
@@ -2332,28 +2330,6 @@ class VoidCodeRuntime:
                     effective_config.max_steps,
                 )
 
-        deferred_startup_acp_events: tuple[object, ...] = ()
-        if self.current_acp_state().configuration.configured_enabled is True:
-            try:
-                deferred_startup_acp_events = self._acp_adapter.connect()
-            except Exception as exc:
-                startup_chunks, session, last_sequence = self._emit_current_acp_drain(
-                    session=session,
-                    start_sequence=max_stored_sequence + 1,
-                )
-                startup_failed_chunk = self._failed_chunk(
-                    session=self._session_with_current_acp_metadata(session),
-                    sequence=last_sequence + 1,
-                    error=str(exc),
-                    payload={"kind": "acp_startup_failed"},
-                )
-            else:
-                session = self._session_with_current_acp_metadata(session)
-                startup_chunks = ()
-                startup_failed_chunk = None
-        else:
-            startup_chunks = ()
-            startup_failed_chunk = None
         emitted_sequence = max_stored_sequence
         if binding_mismatch_payload is not None:
             emitted_sequence += 1
@@ -2404,6 +2380,29 @@ class VoidCodeRuntime:
             self._persist_response(request=request, response=response)
             yield failed_chunk
             return
+
+        deferred_startup_acp_events: tuple[object, ...] = ()
+        if self.current_acp_state().configuration.configured_enabled is True:
+            try:
+                deferred_startup_acp_events = self._acp_adapter.connect()
+            except Exception as exc:
+                startup_chunks, session, last_sequence = self._emit_current_acp_drain(
+                    session=session,
+                    start_sequence=max_stored_sequence + 1,
+                )
+                startup_failed_chunk = self._failed_chunk(
+                    session=self._session_with_current_acp_metadata(session),
+                    sequence=last_sequence + 1,
+                    error=str(exc),
+                    payload={"kind": "acp_startup_failed"},
+                )
+            else:
+                session = self._session_with_current_acp_metadata(session)
+                startup_chunks = ()
+                startup_failed_chunk = None
+        else:
+            startup_chunks = ()
+            startup_failed_chunk = None
         for chunk in startup_chunks:
             emitted_sequence += 1
             resequenced_event = self._resequence_event(
