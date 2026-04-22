@@ -1,0 +1,5 @@
+Use this read/search family before writing when you need workspace facts.
+
+Choose read_file when the exact file path is known and full UTF-8 text is needed. Choose list for directory shape, glob for filename patterns, and grep only for literal search inside one known file.
+
+Do not use these tools for edits, broad shell-style discovery, or scanning generated directories. Prefer structured return data such as data.matches, data.count, data.line_count, and data.truncated when deciding the next step.

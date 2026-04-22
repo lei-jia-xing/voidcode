@@ -1,0 +1,5 @@
+Use lsp for language-server facts such as definition, references, hover, document symbols, workspace symbols, implementation, and call hierarchy.
+
+Use format_file only when the intended operation is formatting a single file. Do not use lsp for literal text search, and do not use format_file to make semantic content changes.
+
+lsp is read-only. format_file is not read-only and may require approval. For lsp, treat data.lsp_response as the source of truth. For format_file, use data.path, data.language, data.command, stdout, and stderr for follow-up decisions.

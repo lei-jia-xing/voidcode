@@ -51,6 +51,7 @@ from ..tools.contracts import (
     ToolResult,
     ToolResultStatus,
 )
+from ..tools.guidance import definition_with_guidance
 from .acp import AcpAdapter, AcpAdapterState, build_acp_adapter
 from .config import (
     ExecutionEngineName,
@@ -265,7 +266,7 @@ class ToolRegistry:
         )
 
     def definitions(self) -> tuple[ToolDefinition, ...]:
-        return tuple(tool.definition for tool in self.tools.values())
+        return tuple(definition_with_guidance(tool.definition) for tool in self.tools.values())
 
     def resolve(self, tool_name: str) -> Tool:
         try:

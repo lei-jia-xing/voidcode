@@ -1,0 +1,5 @@
+Use web_search when you do not know the exact URL and need to discover external web sources.
+
+Do not use it when the URL is already known; use web_fetch for page contents. Do not treat external search snippets as workspace truth.
+
+This tool is read-only. Use result URLs, snippets, data.query, data.num_results, and data.source to decide what to fetch or cite next.

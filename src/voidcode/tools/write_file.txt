@@ -1,0 +1,5 @@
+Use write_file to create a new UTF-8 text file or completely rewrite a small file when full replacement is intentional.
+
+Do not use it for focused changes in existing files; prefer edit, multi_edit, or apply_patch so the change remains narrow and reviewable. Read existing files before overwriting them unless the user explicitly asked for a new file.
+
+This tool is not read-only and may require approval. Treat data.path and data.byte_count as the stable write result fields.

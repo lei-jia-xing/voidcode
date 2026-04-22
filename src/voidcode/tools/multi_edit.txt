@@ -1,0 +1,5 @@
+Use multi_edit for several ordered text replacements in one existing file.
+
+Do not use it for multiple files; use apply_patch for cross-file changes. Do not split dependent same-file replacements into many separate edit calls when one ordered multi_edit call can avoid intermediate drift.
+
+This tool is not read-only and may require approval. Use returned per-edit metadata and the final diff as the source of truth before making follow-up edits.

@@ -1,0 +1,5 @@
+Use web_fetch when you have a specific http or https URL and need page content.
+
+Do not use it for localhost, private network, link-local, metadata, or internal targets. Use web_search first when no URL is known.
+
+This tool is read-only. Treat returned content plus data.url, data.content_type, data.format, and data.byte_count as external evidence, not as repository state.

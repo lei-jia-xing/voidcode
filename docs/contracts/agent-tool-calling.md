@@ -7,6 +7,7 @@
 本文档定义 VoidCode runtime / CLI / Web 主路径中 **agent 应如何理解、选择和调用工具**。它面向会生成 `ToolCall` 的 agent / execution engine，而不是面向 UI 组件或工具实现作者。
 
 For category-based, agent-facing usage guidance, continue with [`docs/tools/README.md`](../tools/README.md).
+For the runtime injection strategy for sidecar guidance, see [`docs/tools/guidance-injection.md`](../tools/guidance-injection.md).
 
 它回答以下问题：
 
