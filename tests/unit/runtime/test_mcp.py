@@ -405,6 +405,15 @@ while True:
     else:
         raise AssertionError("expected MCP manager to time out waiting for a silent server")
 
+    failure_events = manager.drain_events()
+    assert [event.event_type for event in failure_events] == [
+        "runtime.mcp_server_started",
+        "runtime.mcp_server_failed",
+        "runtime.mcp_server_stopped",
+    ]
+    assert failure_events[1].payload["stage"] == "startup"
+    assert failure_events[1].payload["method"] == "initialize"
+
 
 def test_mcp_manager_restarts_server_after_timeout(tmp_path: Path) -> None:
     server_script = tmp_path / "retryable_mcp_server.py"
@@ -492,6 +501,13 @@ for raw_line in sys.stdin:
         assert "timed out" in str(exc)
     else:
         raise AssertionError("expected first MCP attempt to time out")
+
+    failure_events = manager.drain_events()
+    assert [event.event_type for event in failure_events] == [
+        "runtime.mcp_server_started",
+        "runtime.mcp_server_failed",
+        "runtime.mcp_server_stopped",
+    ]
 
     discovered = manager.list_tools(workspace=tmp_path)
 
