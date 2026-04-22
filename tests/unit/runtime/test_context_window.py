@@ -58,6 +58,7 @@ def test_prepare_single_agent_context_compacts_old_results_and_reports_metadata(
         "dropped_tool_result_count": 2,
         "retained_tool_result_count": 2,
         "source": "tool_result_window",
+        "version": 1,
     }
 
 

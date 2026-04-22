@@ -2883,6 +2883,7 @@ def test_runtime_approval_resume_preserves_canonical_continuity_state(tmp_path: 
         "dropped_tool_result_count": 1,
         "retained_tool_result_count": 1,
         "source": "tool_result_window",
+        "version": 1,
     }
 
     assert waiting.session.status == "waiting"
@@ -2898,13 +2899,13 @@ def test_runtime_approval_resume_preserves_canonical_continuity_state(tmp_path: 
 
     expected_resumed_continuity = {
         "summary_text": (
-            "Compacted 2 earlier tool results:\n"
-            '1. read_file ok path=sample.txt content_preview="alpha"\n'
-            '2. read_file ok path=sample.txt content_preview="alpha"'
+            "Compacted 1 earlier tool results:\n"
+            '1. read_file ok path=sample.txt content_preview="alpha"'
         ),
-        "dropped_tool_result_count": 2,
+        "dropped_tool_result_count": 1,
         "retained_tool_result_count": 1,
         "source": "tool_result_window",
+        "version": 1,
     }
     resumed_runtime_state = cast(dict[str, object], resumed.session.metadata["runtime_state"])
     assert resumed_runtime_state["continuity"] == expected_resumed_continuity
@@ -3643,6 +3644,7 @@ def test_runtime_single_agent_compaction_emits_continuity_state_and_persists_met
         "dropped_tool_result_count": 1,
         "retained_tool_result_count": 1,
         "source": "tool_result_window",
+        "version": 1,
     }
     memory_events = [
         event for event in response.events if event.event_type == RUNTIME_MEMORY_REFRESHED
