@@ -2899,10 +2899,11 @@ def test_runtime_approval_resume_preserves_canonical_continuity_state(tmp_path: 
 
     expected_resumed_continuity = {
         "summary_text": (
-            "Compacted 1 earlier tool results:\n"
-            '1. read_file ok path=sample.txt content_preview="alpha"'
+            "Compacted 2 earlier tool results:\n"
+            '1. read_file ok path=sample.txt content_preview="alpha"\n'
+            '2. read_file ok path=sample.txt content_preview="alpha"'
         ),
-        "dropped_tool_result_count": 1,
+        "dropped_tool_result_count": 2,
         "retained_tool_result_count": 1,
         "source": "tool_result_window",
         "version": 1,

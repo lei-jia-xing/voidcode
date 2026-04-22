@@ -1108,7 +1108,6 @@ class VoidCodeRuntime:
         continuity_to_reinject: RuntimeContinuityState | None = preserved_continuity_state
         raw_provider_attempt = graph_request.metadata.get("provider_attempt", 0)
         provider_attempt = raw_provider_attempt if isinstance(raw_provider_attempt, int) else 0
-        active_preserved_continuity_state = preserved_continuity_state
         while True:
             base_context = self._prepare_single_agent_context_window(
                 prompt=graph_request.prompt,
@@ -1128,19 +1127,9 @@ class VoidCodeRuntime:
                     max_tool_result_count=base_context.max_tool_result_count,
                     continuity_state=continuity_to_reinject,
                 )
-            elif active_preserved_continuity_state is not None:
-                context_window = RuntimeContextWindow(
-                    prompt=base_context.prompt,
-                    tool_results=base_context.tool_results,
-                    compacted=base_context.compacted,
-                    compaction_reason=base_context.compaction_reason,
-                    original_tool_result_count=base_context.original_tool_result_count,
-                    retained_tool_result_count=base_context.retained_tool_result_count,
-                    max_tool_result_count=base_context.max_tool_result_count,
-                    continuity_state=active_preserved_continuity_state,
-                )
             else:
                 context_window = base_context
+            continuity_to_reinject = None
             session = self._session_with_context_window_metadata(session, context_window)
             graph_request = GraphRunRequest(
                 session=session,
@@ -1578,7 +1567,6 @@ class VoidCodeRuntime:
                 raise RuntimeError(post_hook_outcome.failed_error)
 
             tool_results.append(tool_result)
-            active_preserved_continuity_state = None
 
     def _run_lifecycle_hooks(
         self,
