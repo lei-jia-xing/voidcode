@@ -18,6 +18,7 @@ from voidcode.runtime.events import (
     RUNTIME_LSP_SERVER_STOPPED,
     RUNTIME_MCP_SERVER_FAILED,
     RUNTIME_MEMORY_REFRESHED,
+    RUNTIME_PLAN_CREATED,
     RUNTIME_SESSION_ENDED,
     RUNTIME_SESSION_IDLE,
     RUNTIME_SESSION_STARTED,
@@ -26,7 +27,7 @@ from voidcode.runtime.events import (
 )
 
 
-def test_emitted_event_types_include_stable_graph_protocol_events() -> None:
+def test_plan_created_is_in_stable_emitted_event_types() -> None:
     assert GRAPH_LOOP_STEP in EMITTED_EVENT_TYPES
     assert GRAPH_MODEL_TURN in EMITTED_EVENT_TYPES
     assert RUNTIME_SKILLS_APPLIED in EMITTED_EVENT_TYPES
@@ -37,6 +38,7 @@ def test_emitted_event_types_include_stable_graph_protocol_events() -> None:
     assert RUNTIME_LSP_SERVER_STOPPED in EMITTED_EVENT_TYPES
     assert RUNTIME_LSP_SERVER_FAILED in EMITTED_EVENT_TYPES
     assert RUNTIME_MCP_SERVER_FAILED in EMITTED_EVENT_TYPES
+    assert RUNTIME_PLAN_CREATED in EMITTED_EVENT_TYPES
 
 
 def test_future_additive_event_types_cover_async_lifecycle_surfaces() -> None:

@@ -934,6 +934,7 @@ def test_runtime_agent_payload_round_trips_through_serialization() -> None:
         {
             "preset": "leader",
             "model": "opencode/gpt-5.4",
+            "leader_mode": "plan_first",
             "tools": {
                 "builtin": {"enabled": True},
                 "paths": [".voidcode/tools"],
@@ -951,6 +952,7 @@ def test_runtime_agent_payload_round_trips_through_serialization() -> None:
         "prompt_profile": "leader",
         "model": "opencode/gpt-5.4",
         "execution_engine": "single_agent",
+        "leader_mode": "plan_first",
         "tools": {
             "builtin": {"enabled": True},
             "paths": [".voidcode/tools"],
@@ -958,6 +960,26 @@ def test_runtime_agent_payload_round_trips_through_serialization() -> None:
             "default": ["read_file"],
         },
         "skills": {"enabled": False, "paths": [".voidcode/skills"]},
+    }
+
+
+def test_runtime_agent_payload_round_trips_leader_mode() -> None:
+    agent = parse_runtime_agent_payload(
+        {"preset": "leader", "leader_mode": "direct_execute"},
+        source="test payload",
+    )
+
+    assert agent == RuntimeAgentConfig(
+        preset="leader",
+        prompt_profile="leader",
+        execution_engine="single_agent",
+        leader_mode="direct_execute",
+    )
+    assert serialize_runtime_agent_config(agent) == {
+        "preset": "leader",
+        "prompt_profile": "leader",
+        "execution_engine": "single_agent",
+        "leader_mode": "direct_execute",
     }
 
 
@@ -999,6 +1021,17 @@ def test_runtime_agent_payload_resolves_through_builtin_agent_manifest() -> None
         prompt_profile=LEADER_AGENT_MANIFEST.prompt_profile,
         execution_engine=LEADER_AGENT_MANIFEST.execution_engine,
     )
+
+
+def test_runtime_agent_payload_rejects_unknown_leader_mode() -> None:
+    with pytest.raises(
+        ValueError,
+        match="runtime config field 'agent.leader_mode' must be one of: direct_execute, plan_first",
+    ):
+        _ = parse_runtime_agent_payload(
+            {"preset": "leader", "leader_mode": "delegate_first"},
+            source="test payload",
+        )
 
 
 def test_runtime_agent_payload_accepts_future_role_presets_without_execution_mapping() -> None:
@@ -1260,7 +1293,7 @@ def test_runtime_config_rejects_invalid_explicit_tool_timeout(
     tmp_path: Path, raw_value: object
 ) -> None:
     with pytest.raises(ValueError, match="explicit runtime config override 'tool_timeout_seconds'"):
-        _ = load_runtime_config(tmp_path, tool_timeout_seconds=raw_value, env={})
+        _ = load_runtime_config(tmp_path, tool_timeout_seconds=cast(int | None, raw_value), env={})
 
 
 def test_runtime_config_rejects_empty_model_environment(tmp_path: Path) -> None:
