@@ -183,6 +183,20 @@ class _UnknownToolGraph:
         return _StubStep(tool_call=ToolCall(tool_name="missing_tool", arguments={}))
 
 
+class _McpToolGraph:
+    def step(
+        self,
+        request: GraphRunRequest,
+        tool_results: tuple[object, ...],
+        *,
+        session: SessionState,
+    ) -> _StubStep:
+        _ = request, session
+        if not tool_results:
+            return _StubStep(tool_call=ToolCall(tool_name="mcp/echo/echo", arguments={}))
+        return _StubStep(output="done", is_finished=True)
+
+
 class _TwoApprovalThenDoneGraph:
     def step(
         self,
@@ -1968,14 +1982,94 @@ def test_runtime_resume_emits_mcp_failed_before_terminal_failure_on_startup_refr
     )
 
     resumed_suffix = [
-        event.event_type for event in resumed.events if event.sequence > waiting.events[-1].sequence
+        event for event in resumed.events if event.sequence > waiting.events[-1].sequence
     ]
     assert resumed.session.status == "failed"
-    assert resumed_suffix == [RUNTIME_MCP_SERVER_FAILED, "runtime.failed"]
+    assert [event.sequence for event in resumed_suffix] == list(
+        range(waiting.events[-1].sequence + 1, resumed.events[-1].sequence + 1)
+    )
+    assert [event.event_type for event in resumed_suffix] == [
+        RUNTIME_MCP_SERVER_FAILED,
+        "runtime.failed",
+    ]
     assert resumed.events[-1].payload == {
         "error": _FailingMcpManager.startup_error,
         "kind": "mcp_startup_failed",
     }
+
+
+def test_runtime_persists_mcp_failed_before_terminal_failure_on_tool_call_abort(
+    tmp_path: Path,
+) -> None:
+    class _FailingMcpManager:
+        def __init__(self) -> None:
+            self._drained = False
+
+        call_error = "MCP call transport failed"
+
+        @property
+        def configuration(self) -> McpConfigState:
+            return McpConfigState(configured_enabled=True)
+
+        def current_state(self) -> McpManagerState:
+            return McpManagerState(mode="managed", configuration=self.configuration)
+
+        def list_tools(self, *, workspace: Path):
+            _ = workspace
+            return (
+                McpToolDescriptor(
+                    server_name="echo",
+                    tool_name="echo",
+                    description="Echo input",
+                    input_schema={"type": "object"},
+                ),
+            )
+
+        def call_tool(
+            self, *, server_name: str, tool_name: str, arguments: dict[str, object], workspace: Path
+        ) -> McpToolCallResult:
+            _ = server_name, tool_name, arguments, workspace
+            raise ValueError(self.call_error)
+
+        def shutdown(self) -> tuple[McpRuntimeEvent, ...]:
+            return ()
+
+        def drain_events(self) -> tuple[McpRuntimeEvent, ...]:
+            if self._drained:
+                return ()
+            self._drained = True
+            return (
+                McpRuntimeEvent(
+                    event_type=RUNTIME_MCP_SERVER_FAILED,
+                    payload={
+                        "server": "echo",
+                        "workspace_root": str(tmp_path),
+                        "state": "failed",
+                        "stage": "call",
+                        "error": self.call_error,
+                        "method": "tools/call",
+                    },
+                ),
+            )
+
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_McpToolGraph(),
+        mcp_manager=_FailingMcpManager(),
+        permission_policy=PermissionPolicy(mode="allow"),
+    )
+
+    with pytest.raises(ValueError, match=_FailingMcpManager.call_error):
+        _ = list(runtime.run_stream(RuntimeRequest(prompt="go", session_id="mcp-call-failed")))
+
+    replay = runtime.resume("mcp-call-failed")
+
+    assert replay.session.status == "failed"
+    assert [event.event_type for event in replay.events[-2:]] == [
+        RUNTIME_MCP_SERVER_FAILED,
+        "runtime.failed",
+    ]
+    assert replay.events[-1].payload == {"error": _FailingMcpManager.call_error}
 
 
 def test_runtime_metadata_includes_mcp_state_when_configured(tmp_path: Path) -> None:
