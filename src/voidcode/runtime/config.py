@@ -38,6 +38,7 @@ _VALID_APPROVAL_MODES = ("allow", "deny", "ask")
 _VALID_TUI_COMMANDS = ("command_palette", "session_new", "session_resume")
 type ExecutionEngineName = Literal["deterministic", "single_agent"]
 type RuntimeAgentPresetId = AgentManifestId
+type RuntimeAgentLeaderMode = Literal["direct_execute", "plan_first"]
 
 _VALID_EXECUTION_ENGINES: tuple[ExecutionEngineName, ...] = ("deterministic", "single_agent")
 _TOP_LEVEL_ENV_VARS = (
@@ -203,6 +204,7 @@ class RuntimeAgentConfig:
     prompt_profile: str | None = None
     model: str | None = None
     execution_engine: ExecutionEngineName | None = None
+    leader_mode: RuntimeAgentLeaderMode | None = None
     tools: RuntimeToolsConfig | None = None
     skills: RuntimeSkillsConfig | None = None
     provider_fallback: RuntimeProviderFallbackConfig | None = None
@@ -1240,6 +1242,10 @@ def _parse_agent_config(raw_agent: object) -> RuntimeAgentConfig | None:
         source="runtime config field 'agent.execution_engine'",
         allow_none=True,
     )
+    leader_mode = _parse_runtime_agent_leader_mode(
+        payload.get("leader_mode"),
+        field_path="agent.leader_mode",
+    )
 
     provider_fallback = _parse_provider_fallback_config(payload.get("provider_fallback"))
 
@@ -1248,6 +1254,7 @@ def _parse_agent_config(raw_agent: object) -> RuntimeAgentConfig | None:
         prompt_profile=prompt_profile.strip() if isinstance(prompt_profile, str) else None,
         model=model.strip() if isinstance(model, str) else None,
         execution_engine=execution_engine,
+        leader_mode=leader_mode,
         tools=_parse_tools_config(payload.get("tools")),
         skills=_parse_skills_config(payload.get("skills")),
         provider_fallback=provider_fallback,
@@ -1264,6 +1271,7 @@ def _resolve_agent_config(agent: RuntimeAgentConfig | None) -> RuntimeAgentConfi
             prompt_profile=agent.prompt_profile or manifest.prompt_profile,
             model=agent.model or manifest.model_preference,
             execution_engine=agent.execution_engine or manifest.execution_engine,
+            leader_mode=agent.leader_mode,
             tools=agent.tools,
             skills=agent.skills,
             provider_fallback=agent.provider_fallback,
@@ -1310,6 +1318,8 @@ def serialize_runtime_agent_config(agent: RuntimeAgentConfig | None) -> dict[str
         payload["model"] = agent.model
     if agent.execution_engine is not None:
         payload["execution_engine"] = agent.execution_engine
+    if agent.leader_mode is not None:
+        payload["leader_mode"] = agent.leader_mode
     if agent.tools is not None:
         tools_payload: dict[str, object | None] = {
             "builtin": None
@@ -1345,6 +1355,23 @@ def _parse_runtime_config_section[TModel: BaseModel](
 
     validated_model = _validate_runtime_config_model(model_type, cast(dict[str, object], raw_value))
     return cast(_RuntimeConfigOutput, validated_model).to_runtime_config()
+
+
+def _parse_runtime_agent_leader_mode(
+    raw_value: object,
+    *,
+    field_path: str,
+) -> RuntimeAgentLeaderMode | None:
+    if raw_value is None:
+        return None
+    if raw_value == "direct_execute":
+        return "direct_execute"
+    if raw_value == "plan_first":
+        return "plan_first"
+    raise ValueError(
+        f"{_format_runtime_config_field_error(field_path)} must be one of: "
+        "direct_execute, plan_first"
+    )
 
 
 def _resolve_tui_config(

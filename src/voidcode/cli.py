@@ -43,9 +43,21 @@ def _close_runtime(runtime: object) -> None:
         exit_method(None, None, None)
 
 
+def _format_run_command_error(exc: ValueError, *, leader_mode: str | None) -> str:
+    if leader_mode is None:
+        return str(exc)
+    if str(exc) != "single_agent execution engine requires a configured model":
+        return str(exc)
+    return (
+        f"--leader-mode {leader_mode} requires a configured single-agent model. "
+        "Set VOIDCODE_MODEL or configure model in runtime config before running."
+    )
+
+
 def _handle_run_command(args: argparse.Namespace) -> int:
     workspace = cast(Path, args.workspace)
     request_text = cast(str, args.request)
+    leader_mode = cast(str | None, getattr(args, "leader_mode", None))
     config = load_runtime_config(
         workspace,
         approval_mode=cast(PermissionDecision | None, getattr(args, "approval_mode", None)),
@@ -55,6 +67,8 @@ def _handle_run_command(args: argparse.Namespace) -> int:
         metadata: dict[str, object] = {}
         if getattr(args, "skills", None):
             metadata["skills"] = cast(list[str], args.skills)
+        if leader_mode is not None:
+            metadata["agent"] = {"preset": "leader", "leader_mode": leader_mode}
         if getattr(args, "max_steps", None) is not None:
             metadata["max_steps"] = cast(int, args.max_steps)
         if getattr(args, "provider_stream", None) is not None:
@@ -65,11 +79,16 @@ def _handle_run_command(args: argparse.Namespace) -> int:
             metadata=validate_runtime_request_metadata(metadata),
         )
         interactive = sys.stdin.isatty() and sys.stderr.isatty()
-        output = _run_with_inline_approval(
-            runtime,
-            request,
-            interactive=interactive,
-        )
+        try:
+            output = _run_with_inline_approval(
+                runtime,
+                request,
+                interactive=interactive,
+            )
+        except ValueError as exc:
+            raise SystemExit(
+                f"error: {_format_run_command_error(exc, leader_mode=leader_mode)}"
+            ) from None
 
         if not interactive:
             _print_runtime_output(output)
@@ -448,6 +467,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--skills",
         nargs="+",
         help="Optional skill names applied for this run.",
+    )
+    _ = run_parser.add_argument(
+        "--leader-mode",
+        choices=("direct_execute", "plan_first"),
+        help=(
+            "Select the leader-owned execution mode for this run: direct_execute skips "
+            "plan creation, while plan_first emits a runtime plan before normal execution."
+        ),
     )
     _ = run_parser.add_argument(
         "--max-steps",

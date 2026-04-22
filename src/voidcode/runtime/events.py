@@ -7,6 +7,7 @@ type EventSource = Literal["runtime", "graph", "tool"]
 
 type ExistingEventType = Literal[
     "runtime.request_received",
+    "runtime.plan_created",
     "runtime.skills_loaded",
     "runtime.skills_applied",
     "runtime.provider_fallback",
@@ -49,6 +50,7 @@ type PrototypeAdditiveEventType = Literal[
 type KnownEventType = ExistingEventType | PrototypeAdditiveEventType
 
 RUNTIME_REQUEST_RECEIVED: Final[ExistingEventType] = "runtime.request_received"
+RUNTIME_PLAN_CREATED: Final[ExistingEventType] = "runtime.plan_created"
 RUNTIME_SKILLS_LOADED: Final[ExistingEventType] = "runtime.skills_loaded"
 RUNTIME_SKILLS_APPLIED: Final[ExistingEventType] = "runtime.skills_applied"
 RUNTIME_PROVIDER_FALLBACK: Final[ExistingEventType] = "runtime.provider_fallback"
@@ -101,6 +103,7 @@ RUNTIME_DELEGATED_RESULT_AVAILABLE: Final[PrototypeAdditiveEventType] = (
 
 EMITTED_EVENT_TYPES: Final[tuple[ExistingEventType, ...]] = (
     RUNTIME_REQUEST_RECEIVED,
+    RUNTIME_PLAN_CREATED,
     RUNTIME_SKILLS_LOADED,
     RUNTIME_SKILLS_APPLIED,
     RUNTIME_PROVIDER_FALLBACK,

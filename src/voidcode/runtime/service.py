@@ -109,6 +109,7 @@ from .events import (
     RUNTIME_MCP_SERVER_STARTED,
     RUNTIME_MCP_SERVER_STOPPED,
     RUNTIME_MEMORY_REFRESHED,
+    RUNTIME_PLAN_CREATED,
     RUNTIME_SKILLS_APPLIED,
     RUNTIME_SKILLS_BINDING_MISMATCH,
     RUNTIME_SKILLS_LOADED,
@@ -123,7 +124,14 @@ from .permission import (
     PermissionResolution,
     resolve_permission,
 )
-from .plan import PlanContributor, apply_plan_patch, build_plan_contributor
+from .plan import (
+    PlanContributor,
+    apply_plan_patch,
+    build_plan_artifact,
+    build_plan_contributor,
+    serialize_plan_artifact,
+    validate_plan_artifact,
+)
 from .session import SessionRef, SessionState, SessionStatus, StoredSessionSummary
 from .single_agent_provider import ProviderExecutionError
 from .skills import (
@@ -484,6 +492,99 @@ class VoidCodeRuntime:
                 session.metadata,
                 self._acp_adapter.current_state(),
             ),
+        )
+
+    @staticmethod
+    def _plan_state_from_metadata(
+        metadata: dict[str, object],
+        *,
+        status: str | None = None,
+        approval_request_id: str | None = None,
+        blocked_tool: str | None = None,
+        error: str | None = None,
+    ) -> dict[str, object] | None:
+        existing_plan_state = metadata.get("plan_state")
+        if isinstance(existing_plan_state, dict):
+            plan_state: dict[str, object] = dict(cast(dict[str, object], existing_plan_state))
+        else:
+            serialized_plan_artifact_obj = metadata.get("plan_artifact")
+            if not isinstance(serialized_plan_artifact_obj, dict):
+                return None
+            serialized_plan_artifact = cast(dict[str, object], serialized_plan_artifact_obj)
+            raw_steps_obj = serialized_plan_artifact.get("steps")
+            raw_steps = (
+                cast(list[object], raw_steps_obj) if isinstance(raw_steps_obj, list) else None
+            )
+            first_step = (
+                cast(dict[str, object], raw_steps[0])
+                if raw_steps is not None and bool(raw_steps) and isinstance(raw_steps[0], dict)
+                else None
+            )
+            step_count = len(raw_steps) if raw_steps is not None else 0
+            current_step_order = (
+                first_step.get("order")
+                if first_step is not None and isinstance(first_step.get("order"), int)
+                else 1
+            )
+            current_step_title = (
+                cast(str, first_step.get("title"))
+                if first_step is not None and isinstance(first_step.get("title"), str)
+                else None
+            )
+            plan_state = {
+                "mode": "plan_first",
+                "status": "planned",
+                "step_count": step_count,
+                "current_step_index": 0,
+                "current_step_order": current_step_order,
+            }
+            if current_step_title is not None:
+                plan_state["current_step_title"] = current_step_title
+
+        if status is not None:
+            plan_state["status"] = status
+
+        if approval_request_id is not None:
+            plan_state["approval_request_id"] = approval_request_id
+        else:
+            plan_state.pop("approval_request_id", None)
+
+        if blocked_tool is not None:
+            plan_state["blocked_tool"] = blocked_tool
+        else:
+            plan_state.pop("blocked_tool", None)
+
+        if error is not None:
+            plan_state["last_error"] = error
+        else:
+            plan_state.pop("last_error", None)
+
+        return plan_state
+
+    def _session_with_plan_state(
+        self,
+        session: SessionState,
+        *,
+        status: str | None = None,
+        approval_request_id: str | None = None,
+        blocked_tool: str | None = None,
+        error: str | None = None,
+    ) -> SessionState:
+        plan_state = self._plan_state_from_metadata(
+            session.metadata,
+            status=status,
+            approval_request_id=approval_request_id,
+            blocked_tool=blocked_tool,
+            error=error,
+        )
+        if plan_state is None:
+            return session
+        return self._session_with_metadata(
+            session,
+            {
+                **session.metadata,
+                "plan_state": plan_state,
+            },
         )
 
     def _disconnect_acp_for_session_state(self, session: SessionState) -> SessionState:
@@ -969,7 +1070,19 @@ class VoidCodeRuntime:
                 sequence=sequence,
                 event_type="runtime.request_received",
                 source="runtime",
-                payload={"prompt": request.prompt},
+                payload={
+                    "prompt": request.prompt,
+                    **(
+                        {"agent_preset": active_agent.preset}
+                        if (active_agent := effective_config.agent) is not None
+                        else {}
+                    ),
+                    **(
+                        {"leader_mode": active_agent.leader_mode}
+                        if active_agent is not None and active_agent.leader_mode is not None
+                        else {}
+                    ),
+                },
             ),
         )
 
@@ -1069,6 +1182,64 @@ class VoidCodeRuntime:
                     },
                 ),
             )
+
+        active_agent = effective_config.agent
+        if active_agent is not None and active_agent.leader_mode == "plan_first":
+            try:
+                serialized_plan_artifact = serialize_plan_artifact(
+                    validate_plan_artifact(
+                        build_plan_artifact(
+                            prompt=request.prompt,
+                            metadata=request_metadata,
+                            agent_preset=active_agent.preset,
+                        )
+                    )
+                )
+            except ValueError as exc:
+                yield self._failed_chunk(
+                    session=session,
+                    sequence=sequence + 1,
+                    error=str(exc),
+                    payload={"kind": "plan_validation_failed"},
+                )
+                return
+            session = self._session_with_metadata(
+                session,
+                {
+                    **session.metadata,
+                    "plan_artifact": serialized_plan_artifact,
+                    "plan_state": self._plan_state_from_metadata(
+                        {**session.metadata, "plan_artifact": serialized_plan_artifact},
+                        status="planned",
+                    ),
+                },
+            )
+            sequence += 1
+            yield RuntimeStreamChunk(
+                kind="event",
+                session=session,
+                event=EventEnvelope(
+                    session_id=session.session.id,
+                    sequence=sequence,
+                    event_type=RUNTIME_PLAN_CREATED,
+                    source="runtime",
+                    payload={
+                        "kind": cast(str, serialized_plan_artifact["kind"]),
+                        "version": cast(int, serialized_plan_artifact["version"]),
+                        "step_count": len(cast(list[object], serialized_plan_artifact["steps"])),
+                        "acceptance_criteria_count": len(
+                            cast(list[object], serialized_plan_artifact["acceptance_criteria"])
+                        ),
+                        "execution_hint_count": len(
+                            cast(list[object], serialized_plan_artifact["execution_hints"])
+                        ),
+                    },
+                ),
+            )
+            request_metadata = {
+                **request_metadata,
+                "plan_artifact": serialized_plan_artifact,
+            }
 
         planned_prompt, planned_metadata = apply_plan_patch(
             contributor=self._plan_contributor,
@@ -1391,11 +1562,14 @@ class VoidCodeRuntime:
             )
             current_chunk_session = session
             if is_final_step:
-                current_chunk_session = SessionState(
-                    session=session.session,
+                current_chunk_session = self._session_with_plan_state(
+                    SessionState(
+                        session=session.session,
+                        status="completed",
+                        turn=session.turn,
+                        metadata=session.metadata,
+                    ),
                     status="completed",
-                    turn=session.turn,
-                    metadata=session.metadata,
                 )
 
             for event in self._renumber_events(
@@ -1495,6 +1669,8 @@ class VoidCodeRuntime:
                     permission_policy=active_permission_policy,
                 )
             yield from permission_chunks.chunks
+            if permission_chunks.chunks:
+                session = permission_chunks.chunks[-1].session
             if permission_chunks.pending_approval is not None:
                 return
             if permission_chunks.denied:
@@ -1726,11 +1902,15 @@ class VoidCodeRuntime:
         error: str,
         payload: dict[str, object] | None = None,
     ) -> RuntimeStreamChunk:
-        failed_session = SessionState(
-            session=session.session,
+        failed_session = self._session_with_plan_state(
+            SessionState(
+                session=session.session,
+                status="failed",
+                turn=session.turn,
+                metadata=session.metadata,
+            ),
             status="failed",
-            turn=session.turn,
-            metadata=session.metadata,
+            error=error,
         )
         failure_payload = {"error": error, **(payload or {})}
         return RuntimeStreamChunk(
@@ -1797,11 +1977,16 @@ class VoidCodeRuntime:
             )
 
         pending = pending_approval
-        waiting_session = SessionState(
-            session=session.session,
-            status="waiting",
-            turn=session.turn,
-            metadata=session.metadata,
+        waiting_session = self._session_with_plan_state(
+            SessionState(
+                session=session.session,
+                status="waiting",
+                turn=session.turn,
+                metadata=session.metadata,
+            ),
+            status="waiting_approval",
+            approval_request_id=pending.request_id,
+            blocked_tool=pending.tool_name,
         )
         request_event = EventEnvelope(
             session_id=session.session.id,
@@ -1842,11 +2027,15 @@ class VoidCodeRuntime:
             payload={"request_id": pending.request_id, "decision": decision},
         )
         if decision == "deny":
-            failed_session = SessionState(
-                session=session.session,
+            failed_session = self._session_with_plan_state(
+                SessionState(
+                    session=session.session,
+                    status="failed",
+                    turn=session.turn,
+                    metadata=session.metadata,
+                ),
                 status="failed",
-                turn=session.turn,
-                metadata=session.metadata,
+                error=f"permission denied for tool: {pending.tool_name}",
             )
             failed_event = EventEnvelope(
                 session_id=session.session.id,
@@ -1864,7 +2053,13 @@ class VoidCodeRuntime:
                 denied=True,
             )
         return _PermissionOutcome(
-            chunks=(RuntimeStreamChunk(kind="event", session=session, event=resolution_event),),
+            chunks=(
+                RuntimeStreamChunk(
+                    kind="event",
+                    session=self._session_with_plan_state(session, status="in_progress"),
+                    event=resolution_event,
+                ),
+            ),
             last_sequence=sequence,
         )
 
@@ -3288,6 +3483,13 @@ class VoidCodeRuntime:
             ),
             model=model,
             execution_engine=execution_engine,
+            leader_mode=(
+                agent.leader_mode
+                if agent.leader_mode is not None
+                else resolved.agent.leader_mode
+                if resolved.agent is not None
+                else None
+            ),
             tools=(
                 agent.tools
                 if agent.tools is not None
