@@ -43,6 +43,7 @@ uv run voidcode sessions resume <session-id> --workspace .
 - `mise run format` → `uv run ruff format .`
 - `mise run typecheck` → `uv run basedpyright --warnings src`
 - `mise run test` → `uv run pytest`
+- `mise run build` → `uv build`
 
 Python 测试现在同时包含示例型测试和一小批基于 Hypothesis 的 property tests。当前这类覆盖刻意保持在 helper 层，主要用于验证像 `apply_patch`、`edit`、`todo_write`、`glob` 这类确定性字符串/patch/summary/路径规范化逻辑，而不是直接对 runtime 主循环做随机化测试。为了让 CI 行为稳定，这批测试使用有界 strategy，并通过 Hypothesis 设置保持可重复的 deterministic 运行。
 
@@ -58,6 +59,7 @@ Python 测试现在同时包含示例型测试和一小批基于 Hypothesis 的 
 ### 全局 任务
 
 - `mise run check` → 运行所有 Python 和前端检查
+- `mise run ci` → 运行 `mise run check`，随后构建 Python 包和前端生产包，用于合并前的 CI parity 验证
 - `mise run pre-commit` → `uv run pre-commit run --all-files`
 
 当前 pre-commit 会直接执行仓库约定的 Python 质量门禁：`ruff check --fix` 会自动修复可安全修复的问题，`ruff format` 会直接格式化文件，随后再运行 `basedpyright` 做类型检查。
@@ -66,7 +68,7 @@ Python 测试现在同时包含示例型测试和一小批基于 Hypothesis 的 
 
 关于规范的端到端演示流程和完整的验证阶梯（单元测试、集成测试、客户端冒烟测试），请参阅 [`docs/mvp-demo-guide.md`](./mvp-demo-guide.md)。使用该指南验证稳定的确定性运行时循环、内联审批和会话持久化。
 
-`mise.toml` 不直接管理 Python 安装；它加载仓库现有的 `.venv` 并将 Python 依赖/环境管理委托给 `uv`。
+`mise.toml` 不直接管理 Python 安装；它加载仓库现有的 `.venv` 并将 Python 依赖/环境管理委托给 `uv`。Release workflow 与本地支持政策保持一致，使用 Python 3.13 构建 Python 包；如果需要在本地复现合并前门禁，优先运行 `mise run ci`。
 
 ## 前端开发
 
