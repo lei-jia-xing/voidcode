@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from voidcode.runtime.context_window import ContextWindowPolicy, prepare_single_agent_context
 from voidcode.tools.contracts import ToolResult
 
@@ -80,3 +82,34 @@ def test_prepare_single_agent_context_uses_explicit_continuity_preview_policy() 
         '1. read_file ok content_preview="conte..."\n'
         "... and 2 more"
     )
+
+
+def _continuity_tool_result(
+    status: Literal["ok", "error"], content: str | None = None
+) -> ToolResult:
+    return ToolResult(
+        tool_name="fake_tool",
+        status=status,
+        content=content,
+        data={},
+        error=None,
+    )
+
+
+def test_prepare_single_agent_context_continuity_metadata_includes_version() -> None:
+    context = prepare_single_agent_context(
+        prompt="read sample.txt",
+        tool_results=(
+            _continuity_tool_result("ok", content="dropped"),
+            _continuity_tool_result("ok", content="retained"),
+        ),
+        session_metadata={},
+        policy=ContextWindowPolicy(max_tool_results=1),
+    )
+
+    assert context.continuity_state is not None
+    payload = context.continuity_state.metadata_payload()
+    assert payload.get("version") == 1
+    assert payload.get("source") == "tool_result_window"
+    assert payload.get("dropped_tool_result_count") == 1
+    assert payload.get("retained_tool_result_count") == 1
