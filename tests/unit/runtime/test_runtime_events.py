@@ -16,6 +16,7 @@ from voidcode.runtime.events import (
     RUNTIME_LSP_SERVER_FAILED,
     RUNTIME_LSP_SERVER_STARTED,
     RUNTIME_LSP_SERVER_STOPPED,
+    RUNTIME_MCP_SERVER_FAILED,
     RUNTIME_MEMORY_REFRESHED,
     RUNTIME_SESSION_ENDED,
     RUNTIME_SESSION_IDLE,
@@ -35,6 +36,7 @@ def test_emitted_event_types_include_stable_graph_protocol_events() -> None:
     assert RUNTIME_LSP_SERVER_STARTED in EMITTED_EVENT_TYPES
     assert RUNTIME_LSP_SERVER_STOPPED in EMITTED_EVENT_TYPES
     assert RUNTIME_LSP_SERVER_FAILED in EMITTED_EVENT_TYPES
+    assert RUNTIME_MCP_SERVER_FAILED in EMITTED_EVENT_TYPES
 
 
 def test_future_additive_event_types_cover_async_lifecycle_surfaces() -> None:

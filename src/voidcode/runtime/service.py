@@ -105,6 +105,7 @@ from .events import (
     RUNTIME_LSP_SERVER_STARTED,
     RUNTIME_LSP_SERVER_STARTUP_REJECTED,
     RUNTIME_LSP_SERVER_STOPPED,
+    RUNTIME_MCP_SERVER_FAILED,
     RUNTIME_MCP_SERVER_STARTED,
     RUNTIME_MCP_SERVER_STOPPED,
     RUNTIME_MEMORY_REFRESHED,
@@ -722,6 +723,35 @@ class VoidCodeRuntime:
             merged_tools[tool.definition.name] = tool
         self._tool_registry = ToolRegistry(tools=merged_tools)
 
+    def _refresh_mcp_tools_for_session(
+        self,
+        *,
+        session: SessionState,
+        sequence: int,
+        failure_kind: str,
+    ) -> tuple[tuple[RuntimeStreamChunk, ...], SessionState, int, RuntimeStreamChunk | None]:
+        try:
+            self._refresh_mcp_tools()
+        except Exception as exc:
+            emitted_events = self._envelopes_for_mcp_events(
+                session_id=session.session.id,
+                start_sequence=sequence + 1,
+                mcp_events=self._mcp_manager.drain_events(),
+            )
+            emitted = tuple(
+                RuntimeStreamChunk(kind="event", session=session, event=event)
+                for event in emitted_events
+            )
+            last_sequence = emitted_events[-1].sequence if emitted_events else sequence
+            failed_chunk = self._failed_chunk(
+                session=session,
+                sequence=last_sequence + 1,
+                error=str(exc),
+                payload={"kind": failure_kind},
+            )
+            return emitted, session, last_sequence, failed_chunk
+        return (), session, sequence, None
+
     def _tool_registry_for_effective_config(
         self,
         effective_config: EffectiveRuntimeConfig,
@@ -918,10 +948,6 @@ class VoidCodeRuntime:
         resolved_session_id = session_id or self._resolve_session_id(request)
         effective_config = self._runtime_config_for_request(request)
         request_metadata = self._fresh_request_metadata(request.metadata)
-        self._refresh_mcp_tools()
-        tool_registry = self._tool_registry_for_effective_config(effective_config)
-        skill_registry = self._skill_registry_for_effective_config(effective_config)
-        skills_config = self._skills_config_for_effective_config(effective_config)
         session = SessionState(
             session=SessionRef(id=resolved_session_id, parent_id=request.parent_session_id),
             status="running",
@@ -946,6 +972,27 @@ class VoidCodeRuntime:
                 payload={"prompt": request.prompt},
             ),
         )
+
+        (
+            mcp_startup_chunks,
+            session,
+            sequence,
+            mcp_failed_chunk,
+        ) = self._refresh_mcp_tools_for_session(
+            session=session,
+            sequence=sequence,
+            failure_kind="mcp_startup_failed",
+        )
+        for chunk in mcp_startup_chunks:
+            sequence = cast(EventEnvelope, chunk.event).sequence
+            yield chunk
+        if mcp_failed_chunk is not None:
+            yield mcp_failed_chunk
+            return
+
+        tool_registry = self._tool_registry_for_effective_config(effective_config)
+        skill_registry = self._skill_registry_for_effective_config(effective_config)
+        skills_config = self._skills_config_for_effective_config(effective_config)
 
         start_hook_outcome = self._run_lifecycle_hooks(
             session=session,
@@ -2231,7 +2278,13 @@ class VoidCodeRuntime:
 
         session = self._session_with_current_acp_metadata(session)
         preserved_continuity_state = self._continuity_state_from_session_metadata(session.metadata)
-        self._refresh_mcp_tools()
+        mcp_startup_chunks, session, _, mcp_failed_chunk = (
+            self._refresh_mcp_tools_for_session(
+                session=session,
+                sequence=max_stored_sequence,
+                failure_kind="mcp_startup_failed",
+            )
+        )
         effective_config = self._effective_runtime_config_from_metadata(session.metadata)
         tool_registry = self._tool_registry_for_effective_config(effective_config)
         skill_registry = self._skill_registry_for_effective_config(effective_config)
@@ -2317,6 +2370,40 @@ class VoidCodeRuntime:
             )
             loop_events.append(mismatch_event)
             yield RuntimeStreamChunk(kind="event", session=session, event=mismatch_event)
+        for chunk in mcp_startup_chunks:
+            emitted_sequence += 1
+            resequenced_event = self._resequence_event(
+                cast(EventEnvelope, chunk.event), sequence=emitted_sequence
+            )
+            resequenced_chunk = RuntimeStreamChunk(
+                kind="event", session=chunk.session, event=resequenced_event
+            )
+            loop_events.append(resequenced_event)
+            yield resequenced_chunk
+        if mcp_failed_chunk is not None:
+            emitted_sequence += 1
+            resequenced_failed = self._resequence_event(
+                cast(EventEnvelope, mcp_failed_chunk.event), sequence=emitted_sequence
+            )
+            failed_chunk = RuntimeStreamChunk(
+                kind="event",
+                session=mcp_failed_chunk.session,
+                event=resequenced_failed,
+            )
+            loop_events.append(resequenced_failed)
+            response = RuntimeResponse(
+                session=mcp_failed_chunk.session,
+                events=stored.events + tuple(loop_events),
+                output=output,
+            )
+            request = RuntimeRequest(
+                prompt=prompt,
+                session_id=stored.session.session.id,
+                parent_session_id=stored.session.session.parent_id,
+            )
+            self._persist_response(request=request, response=response)
+            yield failed_chunk
+            return
         for chunk in startup_chunks:
             emitted_sequence += 1
             resequenced_event = self._resequence_event(
@@ -3343,6 +3430,7 @@ class VoidCodeRuntime:
         mcp_events: tuple[object, ...],
     ) -> tuple[EventEnvelope, ...]:
         known_event_types = {
+            RUNTIME_MCP_SERVER_FAILED,
             RUNTIME_MCP_SERVER_STARTED,
             RUNTIME_MCP_SERVER_STOPPED,
         }
