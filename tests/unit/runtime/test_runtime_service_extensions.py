@@ -1115,6 +1115,62 @@ def test_runtime_reconciles_persisted_child_terminal_truth_and_backfills_parent_
     )
 
 
+def test_runtime_resume_does_not_fail_unrelated_background_tasks(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    store = _private_attr(runtime, "_session_store")
+    store.save_run(
+        workspace=tmp_path,
+        request=RuntimeRequest(prompt="leader", session_id="leader-session"),
+        response=RuntimeResponse(
+            session=SessionState(
+                session=runtime_service_module.SessionRef(id="leader-session"),
+                status="completed",
+                turn=1,
+            ),
+            events=(
+                EventEnvelope(
+                    session_id="leader-session",
+                    sequence=1,
+                    event_type="runtime.request_received",
+                    source="runtime",
+                    payload={"prompt": "leader"},
+                ),
+                EventEnvelope(
+                    session_id="leader-session",
+                    sequence=2,
+                    event_type="graph.response_ready",
+                    source="graph",
+                    payload={},
+                ),
+            ),
+            output="leader",
+        ),
+    )
+    task_module = importlib.import_module("voidcode.runtime.task")
+    store.create_background_task(
+        workspace=tmp_path,
+        task=task_module.BackgroundTaskState(
+            task=task_module.BackgroundTaskRef(id="task-unrelated"),
+            request=task_module.BackgroundTaskRequestSnapshot(
+                prompt="background child",
+                parent_session_id="other-parent",
+            ),
+            created_at=1,
+            updated_at=1,
+        ),
+    )
+
+    response = runtime.resume("leader-session")
+    unrelated = store.load_background_task(
+        workspace=tmp_path,
+        task_id="task-unrelated",
+    )
+
+    assert response.session.session.id == "leader-session"
+    assert unrelated.status == "queued"
+    assert unrelated.error is None
+
+
 def test_runtime_background_task_waiting_approval_emits_parent_session_event_once(
     tmp_path: Path,
 ) -> None:

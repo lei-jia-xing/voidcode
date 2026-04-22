@@ -1869,6 +1869,11 @@ class VoidCodeRuntime:
 
     def session_result(self, *, session_id: str) -> RuntimeSessionResult:
         validate_session_id(session_id)
+        result = self._session_store.load_session_result(
+            workspace=self._workspace,
+            session_id=session_id,
+        )
+        self._validate_session_workspace(result.session, session_id=session_id)
         self._reconcile_parent_background_task_events_for_session(parent_session_id=session_id)
         result = self._session_store.load_session_result(
             workspace=self._workspace,
@@ -1941,10 +1946,16 @@ class VoidCodeRuntime:
     ) -> RuntimeResponse:
         validate_session_id(session_id)
         if approval_request_id is None and approval_decision is None:
-            self._reconcile_parent_background_task_events_for_session(parent_session_id=session_id)
-            return self._session_store.load_session(
+            response = self._session_store.load_session(
                 workspace=self._workspace, session_id=session_id
             )
+            self._validate_session_workspace(response.session, session_id=session_id)
+            self._reconcile_parent_background_task_events_for_session(parent_session_id=session_id)
+            response = self._session_store.load_session(
+                workspace=self._workspace, session_id=session_id
+            )
+            self._validate_session_workspace(response.session, session_id=session_id)
+            return response
         if approval_request_id is None or approval_decision is None:
             raise ValueError("approval resume requires request id and decision")
         _, response = self._resume_pending_approval_response(
@@ -1964,10 +1975,15 @@ class VoidCodeRuntime:
     ) -> Iterator[RuntimeStreamChunk]:
         validate_session_id(session_id)
         if approval_request_id is None and approval_decision is None:
+            response = self._session_store.load_session(
+                workspace=self._workspace, session_id=session_id
+            )
+            self._validate_session_workspace(response.session, session_id=session_id)
             self._reconcile_parent_background_task_events_for_session(parent_session_id=session_id)
             response = self._session_store.load_session(
                 workspace=self._workspace, session_id=session_id
             )
+            self._validate_session_workspace(response.session, session_id=session_id)
             yield from self._replay_response(response)
             return
         if approval_request_id is None or approval_decision is None:
@@ -3340,7 +3356,6 @@ class VoidCodeRuntime:
         *,
         parent_session_id: str,
     ) -> None:
-        self._reconcile_background_tasks_if_needed()
         task_summaries = self._session_store.list_background_tasks_by_parent_session(
             workspace=self._workspace,
             parent_session_id=parent_session_id,
@@ -3350,6 +3365,17 @@ class VoidCodeRuntime:
                 workspace=self._workspace,
                 task_id=task_summary.task.id,
             )
+            if task.status == "running" and task.session_id is not None:
+                child_response = self._load_background_task_child_response(task=task)
+                if child_response is not None and child_response.session.status in (
+                    "waiting",
+                    "completed",
+                    "failed",
+                ):
+                    self._finalize_background_task_from_session_response(
+                        session_response=child_response
+                    )
+                    continue
             self._backfill_parent_background_task_event(task=task)
 
     def _emit_background_task_waiting_approval(
