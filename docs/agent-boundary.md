@@ -117,7 +117,7 @@
 
 让 runtime 在现有 execution path 中能够解析和应用 agent preset，同时继续保持 runtime 对 approval、permission、event、persistence 的控制。
 
-当前实现已经完成 `leader` preset 的第一阶段 runtime-managed slice：`leader` 可以映射到 provider-backed single-agent 主路径，向 provider 注入 `prompt_profile`，应用 agent-scoped model / execution engine / provider fallback，收窄可见与可调用工具，并让 manifest `skill_refs` / agent-scoped skills 进入本次运行的 runtime-managed skill application。相关可执行配置会持久化到 session runtime config，以便 resume 保持同一 agent truth。其他内置角色仍是 declaration-only preset；runtime 可以解析它们的声明 shape，但不会把它们作为 active execution agent 运行。
+当前实现已经完成 `leader` preset 的第一阶段 runtime-managed slice：`leader` 可以映射到 provider-backed single-agent 主路径，向 provider 注入 `prompt_profile`，应用 agent-scoped model / execution engine / provider fallback，收窄可见与可调用工具，并让 manifest `skill_refs` / agent-scoped skills 进入本次运行的 runtime-managed skill application。相关可执行配置会持久化到 session runtime config，以便 resume 保持同一 agent truth。其他内置角色仍是 declaration-only preset；runtime 可以解析它们的声明 shape，但不会把它们作为 active execution agent 运行。其中 `product` 在 v1 中仅作为同步规划与对齐语义存在，由 `leader` 在同一执行路径内调用，不产生独立 session 或 background task。
 
 ### Phase 3：再评估 multi-agent orchestration
 
