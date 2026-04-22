@@ -1,331 +1,387 @@
-# VoidCode Agent 架构草案
+# VoidCode 多智能体架构规范（草案）
 
 ## 文档状态
 
-**状态：proposed**
+- 状态：proposed
+- 范围：design-only
+- 目标仓库：`voidcode`
 
-本文档定义 VoidCode 后续的 agent 架构方向，但它不是当前仓库已经实现的功能说明。当前仓库仍然以 **runtime-centric 的单 agent 执行路径** 为现实基线；真正的 multi-agent execution semantics 仍未落地。
+本文档是当前仓库关于 post-MVP 多智能体软件开发架构的**规范性参考**。后续涉及 multi-agent、delegation、runtime-managed orchestration、phase governance、artifact gate、rollback 的 issue 和 PR，都应先与本文档对齐，而不是各自重新定义术语。
 
-## 目标
+## 为什么需要这份文档
 
-本文档的目标不是给系统增加“更多 agent 名字”，而是为 VoidCode 定义一个**现代、可治理、可分阶段落地**的 agent 架构。它需要满足三个前提：
+当前仓库已经有不少与 agent、runtime、ACP、delegation 相关的设计讨论，但如果只有零散 issue，而没有一份统一的架构规范，不同人和不同模型很容易读出不同结论：
 
-1. 不破坏 `runtime/` 作为系统控制面的现实边界；
-2. 不夸大当前单 agent 路径，明确哪些角色只是未来 preset；
-3. 为 skill、hook、MCP、LSP、ACP 等能力面预留清晰的 agent 组合层，避免未来把 agent preset、运行时治理和客户端表现层重新混在一起。
+- 有人会把目标理解成开放式通用 agent 平台
+- 有人会把目标理解成自由分裂 subagent 的实验系统
+- 有人会把 ACP 误读成当前已经成型的 agent bus
+- 有人会把 `agent/` 误读成新的 runtime
+
+这些理解都不利于后续 issue 的稳定推进。
+
+本文档的目标，就是先把系统级真相收口成一句清楚的话：
+
+> VoidCode 的 post-MVP 多智能体方向，是一套运行在 `voidcode` 内部、面向软件开发全流程、遵循瀑布式阶段门控与强审计/强回滚原则的三层执行架构：`leader -> manager -> worker`。
 
 ## 当前现实
 
-在定义 agent 架构之前，必须先明确今天仓库已经实现了什么。
+在定义目标架构之前，必须先明确仓库今天已经实现了什么。
 
-- `runtime/` 仍是产品级控制面；
-- `graph/` 仍负责执行步骤推进与编排，而不是产品治理；
-- provider-backed 的单 agent 执行路径已经存在；
-- `src/voidcode/agent/` 目录现在已经存在，但当前只是文档化的声明层；
-- ACP 已进入最小的 runtime-managed transport / lifecycle 路径，但仍然不是当前可用的 agent-to-agent 控制面；
-- 真正的 multi-agent delegation、handoff、shared execution topology 仍未实现。
+- `runtime/` 仍是系统控制面，拥有 session、approval、permission、persistence、event、transport 与 capability lifecycle truth。
+- `graph/` 仍负责 execution loop / step orchestration，而不是产品级治理边界。
+- provider-backed single-agent path 已存在；deterministic engine 也已存在。
+- `src/voidcode/agent/` 当前仍是声明层，不是独立执行 runtime。
+- 真正的 multi-agent execution semantics 仍未落地。
+- runtime 还没有完整的 manager/worker child-session substrate、可靠通知路径、完整的阶段治理状态机，以及面向三层架构的 artifact/gate contract。
+- ACP 仍然只是 runtime-managed control-plane boundary 的早期基础，不是当前现成可用的 agent-to-agent messaging bus。
 
-另外，还必须补一句更容易被忽略的现实：
+因此，本文档描述的是**目标架构与约束**，不是“仓库已经实现的现状说明”。
 
-- 当前 runtime 还没有 first-class background task / child-session / async notification substrate；
-- 当前 hooks 也仍然只覆盖 runtime-owned 的 `pre_tool` / `post_tool`；
-- 因此，“leader 异步调用其他 agent 并被通知回来”现在仍然不能被当成已经接近落地的执行语义。
+## 目标
 
-因此，新的 agent 架构文档必须建立在这个现实之上，而不能写成“我们已经是一个成熟的多 agent 系统”。
+本文档约束的目标架构，应满足以下前提：
 
-## 设计原则
+1. 多智能体编排发生在 `voidcode` 内部，而不是依赖一个外部 orchestrator 仓库。
+2. 架构服务于软件开发全流程，而不是面向开放式一般任务。
+3. 流程遵循瀑布式阶段治理，而不是完全自由的自治协作。
+4. 系统必须有明确的阶段门禁、结构化工件、可追踪审计和显式回滚路径。
+5. runtime 仍然保持系统控制面地位，agent preset/template 不能反客为主。
 
-### 1. `agent/` 是声明层，不是新的 runtime
-
-`voidcode.agent` 的职责应当是声明“一个 agent 是什么”，而不是接管执行、治理或恢复逻辑。
-
-### 2. `runtime/` 继续拥有执行与治理真相
-
-会话、审批、权限、工具执行、事件发射、持久化、恢复、transport、以及 MCP/LSP/ACP lifecycle 仍然必须由 `runtime/` 持有。
-
-### 3. 小角色集优于角色泛滥
-
-在当前阶段，VoidCode 不需要十几个 agent 名称。更好的方案是先定义一组**职责边界清楚、未来可扩展**的现代角色。
-
-### 4. 先对齐单 agent 主路径，再演进到协作
-
-新的 agent 架构必须先能映射到今天的 provider-backed 单 agent 路径；只有当 skill execution、managed LSP、ACP 等能力面变得真实可用时，才应向 delegated / multi-role execution 扩展。
-
-### 5. 异步 agent 需要 capability substrate，不只是 hook surface
-
-如果未来要支持：
-
-- `leader` 异步调用 `worker` / `explore` / `researcher`
-- 主会话继续推进或等待
-- 子 agent 完成后再可靠通知主 agent
-
-那么至少需要先补齐这些底层能力：
-
-- background task 对象与状态机
-- parent / child session truth
-- 结果读取与 transcript 回收路径
-- 主 agent 的通知注入路径
-- 完成、失败、取消、超时等生命周期语义
-- approval / permission 的继承边界
-- restart 后的持久化与 resume 语义
-
-hook 在这里很重要，但它更多是通知与干预层，而不是异步 agent 本身的执行模型。
-
-这也意味着：如果为了敏捷开发而“借用 LangGraph”，它最适合借来加速 workflow / branching / supervisor-worker orchestration 的实验，而不是拿来替代 background task substrate。本质上，LangGraph 可以帮助我们更快搭建**编排层**，但不能单独补出 task truth、child-session、notification、result retrieval 或 approval/resume governance。
-
-## 建议的角色集
-
-### 1. `leader`
-
-`leader` 是主用户入口，也是当前阶段唯一应当映射到真实执行路径的 agent 角色。
-
-职责：
-
-- 理解用户意图；
-- 决定是直接执行、先分析还是先收集上下文；
-- 为当前任务提出希望启用的 tool / skill / capability 组合；
-- 负责输出面向用户的进度与结论；
-- 在未来 delegation 落地后，负责把任务拆给其他角色。
-
-在当前实现阶段，`leader` 实际上就是对现有单 agent provider path 的**命名和 preset 化**，而不是新的执行引擎。
-
-### 2. `worker`
-
-`worker` 是未来的 focused executor，用于承担更窄、更具体的执行任务。
-
-职责：
-
-- 接收一个更小的原子任务；
-- 在受限工具集内完成实现或修改；
-- 返回结构化执行结果；
-- 不拥有产品级治理权。
-
-`worker` 在当前阶段应被视为**未来 preset**，而不是当前仓库已经支持的 delegation runtime。
-
-### 3. `advisor`
-
-`advisor` 是只读或近只读的判断型角色，负责提供：
-
-- 架构建议；
-- 风险判断；
-- 设计 review；
-- 计划 review；
-- 失败后的方向修正。
-
-这个角色对标的是“咨询型 agent”，而不是执行型 agent。它的关键价值是**工具权限更窄、输出责任更清楚**。
-
-### 4. `explore`
-
-`explore` 是仓库内部探索角色，负责在本地 workspace 边界内收集代码结构与实现上下文。
-
-职责：
-
-- 仓库内部搜索；
-- 文件与目录定位；
-- 代码模式与调用链探索；
-- 为 `leader`、未来的 `worker` 或 `advisor` 返回精炼的仓库内上下文。
-
-这个角色应当保持只读，并尽量绑定本地探索类能力，而不是承担外部资料研究。
-
-### 5. `researcher`
-
-`researcher` 是收集上下文的只读角色，负责：
-
-- 外部文档/示例检索；
-- 外部仓库与公开实现调研；
-- 上下文材料整理；
-- 将调查结果返回给 `leader`、未来的 `worker`、`advisor` 或 `product`。
-
-它和 `explore` 的区别在于：`explore` 面向**本地代码库内部结构理解**，`researcher` 面向**外部资料与公开实现研究**。
-
-### 6. `product`
-
-`product` 是需求对齐与验收口径角色，用于补上“实现正确，但不一定做的是对的东西”这一层空缺。
-
-职责：
-
-- 把用户原始需求收敛成更稳定的问题定义；
-- 识别需求中的隐含验收标准、边界与非目标；
-- 评估当前方案是否偏离产品目标；
-- 在实现前或实现后，从需求一致性角度提出修正意见。
-
-`product` 不应成为新的 orchestrator，也不应替代 `leader`；它更像是一个偏只读/近只读的产品判断角色，负责确保任务没有在技术实现中偏离用户真正想要的结果。
-
-## 为什么保留这六类角色
-
-这六类角色已经足够覆盖当前和 post-MVP 的主要协作语义：
-
-- `leader`：面向用户的主编排者；
-- `worker`：受限执行者；
-- `advisor`：高价值判断者；
-- `explore`：仓库内部探索者；
-- `researcher`：外部资料研究者；
-- `product`：需求对齐与验收口径把关者。
-
-如果后续真的出现新的稳定任务类别，再在这个基础上增加更多角色才更合理。当前不宜一开始就引入过多角色，否则容易让文档先于系统真实能力膨胀。
-
-## `agent/` 层应该承载什么
-
-根据当前 `docs/agent-boundary.md` 的边界约束，`agent/` 最适合承载**声明式 agent preset / manifest**。建议包括：
-
-- agent id / name
-- role / mode metadata
-- prompt / profile
-- tool allowlist 或默认 tool set
-- skill 引用
-- hook preset 引用
-- MCP profile 引用
-- provider / model preference metadata
-- 可选 routing hints（仅元数据，不是执行逻辑）
-
-这些内容应当被 runtime 解析和消费，而不是由 `agent/` 自己执行。
-
-当前建议的文档化落点是：
-
-- `src/voidcode/agent/README.md`：角色层总览
-- `src/voidcode/agent/<role>/README.md`：每个角色自己的职责、权限、建议 skills / hooks 与当前状态
-
-这里还要明确一个边界：这些 README 里写的“建议 hook / 建议能力”是 preset intent，不代表 runtime 今天已经支持对应 lifecycle phase。
-
-## 哪些能力必须继续留在 `runtime/`
-
-新的 agent 架构不能削弱 runtime 的控制面职责。以下内容仍然必须留在 `runtime/`：
-
-- session 真相与持久化
-- approval / permission 决策
-- runtime event emission / routing
-- transport 与 client-facing truth
-- tool registry 与 tool invocation
-- hook 实际执行时机
-- config resolution
-- persistence / resume / replay correctness
-- provider fallback 与 execution governance
-- MCP / LSP / ACP lifecycle truth
-
-这意味着 `agent/` 能描述“一个 agent 默认要带什么配置”，但不能拥有“系统最终如何执行、如何治理、如何恢复”的权力。
-
-## 与 `graph/` 的关系
-
-`graph/` 继续负责步骤推进和执行编排，但不应被当作 agent 配置层。
-
-更准确地说：
-
-- `agent/` 负责声明角色 preset；
-- `runtime/` 负责解析 preset、治理能力面、发射事件；
-- `graph/` 负责执行步骤推进与 orchestration path。
-
-未来即使 multi-agent workflow 真的扩展了 graph 编排范围，也不应改变这三层的分工。
-
-## ACP 在这套架构中的位置
-
-当前 `src/voidcode/runtime/acp.py` 只暴露了：
-
-- disabled / managed adapter state
-- connect / disconnect / fail / request envelope
-- 少量 runtime 事件
-
-这说明 ACP 当前的合理定位仍然是：
-
-> 一个保留中的、runtime-managed 的控制面能力边界。
-
-它现在还不是：
-
-- agent-to-agent messaging bus
-- multi-agent routing plane
-- 可恢复 delegated execution infrastructure
-- 产品级 supervisor / worker transport
-
-因此，在新的 agent 架构文档中，ACP 应被写成**未来可承载协作控制面的受管能力边界**，而不是当前现成可用的多 agent 基础设施。
-
-同时，对 async agent 设计来说，ACP 也不应该被误写成唯一前提。真正更靠前的阻塞项通常是：
-
-- runtime 是否已有 background task truth
-- session 是否支持 parent / child 关系
-- leader 是否能被可靠通知
-- background result 是否可检索 / 可恢复
-
-只有这些运行时能力先成立，ACP 才更像是协作控制面的放大器，而不是空中楼阁。
-
-## 分阶段推进建议
-
-### Phase 0：先定义角色与边界
-
-在文档层面明确：
-
-- 角色集只有 `leader` / `worker` / `advisor` / `explore` / `researcher` / `product`
-- `leader` 对应今天的真实路径
-- 其余角色是未来 preset
-- `agent/` 只负责声明层
-
-### Phase 1：让 runtime 支持 `leader` preset
-
-第一步不是多 agent，而是让 runtime 能够解析并应用 `leader` 的 preset 到现有 provider-backed 单 agent 路径中。
-
-这一步的意义是：先把 agent 从“概念”变成“可被 runtime 消费的结构”。当前实现已经把 `leader` preset 接入 runtime config / request metadata / provider-backed single-agent path；`prompt_profile`、`model`、`execution_engine`、`tools`、manifest `skill_refs`、`skills` 与 `provider_fallback` 都会影响当前 single-agent runtime truth 并随 session 持久化。同时，runtime 会显式拒绝把 future role preset 当作 active execution agent。
-
-### Phase 2：引入只读辅助角色
-
-当 skill execution、事件语义和基础能力面更稳定后，再优先引入：
-
-- `advisor`
-- `explore`
-- `researcher`
-- `product`
-
-原因是它们的工具权限更窄、风险更低，也更容易先在 runtime 内形成受控的辅助调用路径。其中：
-
-- `explore` 先承接仓库内只读探索；
-- `researcher` 承接外部资料与公开实现调研；
-- `product` 承接需求澄清、验收标准与范围对齐。
-
-在这一阶段，比较现实的目标仍应是**同步或受限的辅助调用语义**，而不是直接许诺可靠的异步 subagent orchestration。
-
-### Phase 3：再评估 `worker` delegation
-
-只有当：
-
-- runtime-managed skill execution 已真实可用；
-- managed LSP 更成熟；
-- ACP 或等价控制面能力开始变得有意义；
-- 恢复 / replay / approval 语义能覆盖 delegated work；
-- background task / child-session / leader notification / result retrieval substrate 已经成立；
-
-才适合引入 `worker` 这类真正执行型的 delegated role。
-
-如果这些能力还没有成立，那么文档里最多只能把 async delegation 写成明确的 post-MVP 研究方向，而不能写成一个只差几个 hook 的短期落地点。
-
-## 明确非目标
+## 非目标
 
 本文档明确**不**主张：
 
-- 当前已经实现多 agent 协作
-- 当前已经有 category routing runtime
-- 当前 ACP 已经能承载 agent handoff
-- 让 `agent/` 吞掉 runtime 的治理职责
-- 在当前阶段就定义十几个角色 preset
+- 把 VoidCode 定义成开放式通用 agent 平台
+- 默认允许 agent 自由、无限制地继续创建更多 agent
+- 把多智能体编排外包给另一个仓库或另一个长期驻留 orchestrator
+- 让 `agent/` 接管 runtime 的治理职责
+- 把 ACP 写成当前已经成熟可用的多智能体通信总线
+- 把 issue 文本、prompt 文本或 PR 说明当成比本文档更高一级的架构真相
 
-## 为什么 `product` 值得单独存在
+## 核心术语
 
-在当前阶段，最容易出现的问题并不总是“代码写不出来”，而是：
+### `phase`
 
-- 需求被技术实现稀释；
-- 任务被不自觉扩大；
-- 验收标准没有被提前收敛；
-- 做出了技术上正确但产品上不够对齐的方案。
+软件开发流程中的阶段。本文档的规范性阶段集合为：
 
-因此，`product` 角色是有必要的，但它不应该是一个“会写代码的 PM 替身”，而应是一个**以需求对齐和验收口径为中心的判断角色**。这类角色最适合在实现前做范围收敛、在实现后做结果对齐，而不是直接进入主执行链路。
+- `requirements`
+- `architecture`
+- `design`
+- `implementation`
+- `testing`
+- `review`
+
+第一轮实现如果因为范围控制需要合并 `architecture` 与 `design`，必须由上层治理逻辑显式声明，而不能在不同 issue 中隐式各自处理。
+
+### `artifact`
+
+阶段产物。包括需求文档、架构决策、设计说明、代码变更、测试报告、评审结论等。阶段是否完成，不由“写了很多自然语言”决定，而由工件是否满足约束决定。
+
+### `gate`
+
+阶段门禁。某一阶段必须通过的检查集合。未通过 gate，不能进入下一阶段。
+
+### `stage report`
+
+阶段报告。阶段执行结束时提交给上层治理逻辑的结构化报告，不是普通聊天总结。
+
+### `rollback`
+
+阶段失败后回到更早阶段重新工作的显式治理动作。rollback 必须带有原因、目标阶段和工件处理规则。
+
+### `leader`
+
+全局治理者。更像显式 phase-state-machine，而不是开放式人格化 agent。
+
+### `manager`
+
+阶段内编排者。负责将阶段目标拆解为 worker 任务，组织并行、汇总结果并提交阶段完成候选包。
+
+### `worker`
+
+受约束的、产物导向的、阶段专用的执行单元。worker 不是“给一段 prompt 就自由发挥”的通用代理。
+
+### `worker_type`
+
+worker 的类型定义，描述一个 worker 是什么、能做什么、必须产出什么。
+
+### `task_instance`
+
+某个具体 worker 这一次被分配的任务实例，包含输入材料、约束与目标产物。
+
+## 规范性拓扑
+
+本架构的规范性三层拓扑是：
+
+```text
+leader -> manager -> worker
+```
+
+进一步约束如下：
+
+- `leader` 负责全局阶段治理
+- `manager` 负责阶段内任务编排
+- `worker` 负责受约束的任务执行与产物生成
+- 默认不允许 `worker -> subworker`
+- 人工确认是 leader phase governance 的一部分，而不是完全脱离系统的外部偶发事件
+
+这意味着 VoidCode 未来如果支持 delegated execution，也应首先服务于这条拓扑，而不是先做一个开放式 agent spawning playground。
+
+## 角色职责边界
+
+### `leader`
+
+`leader` 的核心职责是阶段治理，而不是深入执行细节。它应当是整个系统的全局决策者和状态机持有者。
+
+`leader` 负责：
+
+- 接收初始需求报告
+- 判断当前是否可进入下一阶段
+- 判断是否必须停机等待人工确认
+- 审核阶段门禁是否通过
+- 决定失败后是否回滚，以及回滚到哪一阶段
+- 输出阶段总结与全局执行报告
+
+`leader` 不负责：
+
+- 直接执行大量细粒度任务
+- 直接管理大量底层 worker 交互
+- 决定某个具体文件如何修改
+- 跳过 gate 直接宣布阶段完成
+
+`leader` 的输入应是阶段完成候选包，输出应至少覆盖：
+
+```yaml
+phase_status: passed|blocked|failed|rollback_required
+next_phase:
+required_artifacts:
+review_findings:
+rollback_phase:
+rollback_reason:
+stage_summary:
+stage_report:
+```
+
+### `manager`
+
+`manager` 是阶段内项目经理 / 编排器。它接受 `leader` 的阶段任务，并在该阶段内部组织工作。
+
+`manager` 负责：
+
+- 将阶段目标拆解成多个 worker 任务
+- 判断哪些任务可以并行
+- 选择合适的 worker type 并实例化任务
+- 汇总 worker 结果
+- 处理 worker 结果之间的冲突
+- 执行本阶段的强制质量检查
+- 向 `leader` 提交阶段完成候选包
+
+`manager` 不负责：
+
+- 宣布全局进入下一阶段
+- 自己修改阶段治理规则
+- 任意创造新的顶层角色
+- 绕过强制 gate 直接提交通过
+
+`manager` 的结构化输出应至少覆盖：
+
+```yaml
+phase:
+status: success|blocked|failed
+artifacts:
+quality_gates:
+worker_results:
+risks:
+open_questions:
+recommended_next_action:
+```
+
+### `worker`
+
+`worker` 是受约束的执行单元，不是通用自由代理。
+
+规范性原则是：
+
+```text
+worker = worker_type + task_instance
+```
+
+这意味着：
+
+- worker 的能力边界来自 `worker_type`
+- manager 只能实例化任务，不能任意重写 worker 的本质能力
+- worker 的输入输出必须结构化
+- 默认不允许 worker 再创建 worker
+
+`worker` 的输出应至少覆盖：
+
+```yaml
+task_id:
+worker_type:
+status: success|blocked|failed
+summary:
+artifacts:
+findings:
+risks:
+open_questions:
+self_check:
+confidence:
+recommended_next_action:
+```
+
+## Worker 类型化约束
+
+为了避免输出不可预测、审查困难、并行冲突和回滚失控，worker 必须以类型化目录的方式定义，而不是直接等于一段 prompt。
+
+每个 `worker_type` 至少应定义：
+
+- `name`
+- `purpose`
+- `phase`
+- `allowed_tools`
+- `disallowed_tools`
+- `input_schema`
+- `output_schema`
+- `artifact_template`
+- `quality_checklist`
+- `max_turns`
+- `can_write_code`
+- `can_modify_docs`
+- `can_call_subworkers`（默认 `false`）
+- `memory_scope`
+- `retry_policy`
+- `failure_mode`
+- `handoff_rules`
+
+这类设计可以借鉴外部成熟系统的 agent type 结构，但不能照搬其开放式自由度。对 VoidCode 而言，更合理的 worker 形态是：
+
+> 预定义类型 + 有限工具 + 固定产物格式 + 明确验收标准 + 默认不继续分裂子代理
+
+## 阶段治理模型
+
+### 阶段推进
+
+规范性推进路径为：
+
+```text
+requirements -> architecture -> design -> implementation -> testing -> review
+```
+
+阶段推进规则如下：
+
+- 只有 `leader` 可以决定进入下一阶段
+- `manager` 只能提交“阶段完成候选包”
+- `worker` 不能自行宣布阶段完成
+- gate 未通过时，阶段状态必须是 `blocked`、`failed` 或 `rollback_required`，不能伪装为通过
+
+### 人工确认
+
+人工确认点是治理的一部分，而不是例外情况。系统至少要支持：
+
+- 进入高成本阶段前的人类确认
+- 关键风险未消除时的人类确认
+- rollback 前的人类确认
+- review 阶段后的最终人类确认
+
+### 回滚
+
+回滚不是“重新做一遍”这么模糊，而应是显式矩阵：
+
+- 哪类失败回滚到哪一阶段
+- 哪类工件可以保留
+- 哪类工件必须作废
+- 哪类失败不能自动推进，必须等待人工确认
+
+如果这层规则没有被写清楚，系统就无法形成真正可治理的多智能体开发流程。
+
+## 工件、门禁与报告契约
+
+这套架构的稳定性，最终取决于工件和 gate，而不是 role 名称本身。
+
+规范性要求如下：
+
+- 每个 phase 必须有明确的 artifact catalog
+- 每个 phase 必须有明确的 mandatory quality gates
+- manager 提交给 leader 的必须是结构化 stage candidate package
+- leader 输出的必须是结构化 stage report
+- rollback 时必须说明哪些 artifacts 复用、哪些作废、哪些重建
+
+因此，未来 issue 不应只写“支持 manager”和“支持 worker”，而必须同时写清楚：
+
+- 本阶段要交什么工件
+- 哪些 gate 是必过项
+- 哪些输出字段是稳定 contract
+
+## Ownership 边界
+
+### `runtime/`
+
+以下内容必须继续由 `runtime/` 持有：
+
+- session truth
+- parent / child session relationship
+- delegated task lifecycle
+- approval / permission governance
+- persistence / replay / resume correctness
+- event emission 与 notification routing
+- tool registry 与 tool invocation
+- capability lifecycle truth（含 MCP / LSP / ACP）
+
+### `graph/`
+
+`graph/` 继续负责 execution loop 和 orchestration path，但不应成为产品级治理真相层。
+
+### `agent/`
+
+`agent/` 更适合承载：
+
+- `leader` preset
+- `manager` preset
+- `worker_type` catalog / template
+- prompt / profile metadata
+- tool allowlist metadata
+- skill / hook / provider / model references
+
+但 `agent/` 不能取代 runtime 的真相职责。
+
+## ACP 在这套架构中的位置
+
+ACP 可以成为后续的 typed control-plane contract 载体，但它不是当前三层架构成立的前提。
+
+更靠前的前提是：
+
+- runtime 是否拥有 delegated task truth
+- session 是否拥有 parent / child relationship
+- leader 是否能被可靠通知
+- manager / worker 结果是否能被恢复、回放和审计
+
+因此，ACP 的合理定位是：
+
+> 后续用于表达 typed control-plane request/response 的受管能力边界，而不是当前最先要补的系统基础设施
+
+## 后续 issue / PR 的使用规则
+
+为了减少不同模型对同一方向的自由解释空间，后续相关 issue 和 PR 应遵守以下规则：
+
+1. 必须把本文档作为规范性参考之一
+2. 不得在 issue 文本中重新定义 `leader`、`manager`、`worker` 的职责边界
+3. 必须显式写出本次工作是：
+   - 架构定义
+   - 阶段治理
+   - manager 编排
+   - worker type
+   - artifact / gate contract
+   - runtime substrate
+   - ACP contract
+   中的哪一层
+4. 必须写明 `In scope` / `Out of scope`
+5. 必须写明结构化 acceptance criteria，而不是只写愿景
+6. 如果某条 issue 与本文档冲突，应优先更新本文档，再改 issue，而不是让 issue 各自漂移
 
 ## 结论
 
-VoidCode 最合理的 agent 架构，不是照搬外部项目的命名或角色数量，而是在当前 runtime-centric 架构上，先建立一个**薄的、声明式的 agent preset 层**。
+VoidCode 的 post-MVP 多智能体方向，不应是“更多 agent 名字”或“更自由的 agent 自治”，而应是：
 
-当前建议的现代角色集是：
+> 一个运行在 `voidcode` 内部、以 `leader -> manager -> worker` 为规范性拓扑、以 phase governance / artifact contract / mandatory gate / rollback matrix 为核心的三层瀑布式软件开发架构
 
-- `leader`
-- `worker`
-- `advisor`
-- `explore`
-- `researcher`
-- `product`
-
-其中只有 `leader` 应当映射到今天真实可运行的单 agent 主路径，其余角色是 post-MVP 阶段为了 delegation、review、仓库内探索、外部研究、需求对齐和协作而预留的 preset。这样做既能吸收外部成熟系统的结构经验，又不会脱离 VoidCode 现在的真实边界与实现状态。
+这份文档的价值，不在于替未来实现写更多愿景，而在于先把术语、边界、职责和非目标钉死。只有这样，后续 issue 才能被不同的人和不同模型以更接近的方式理解与实现。

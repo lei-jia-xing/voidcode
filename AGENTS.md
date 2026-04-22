@@ -30,6 +30,8 @@ voidcode/
 | Runtime implementation work | `src/voidcode/runtime/AGENTS.md` | read before touching runtime control-plane code |
 | Session persistence | `src/voidcode/runtime/storage.py` | SQLite-backed local session store |
 | Runtime contracts | `src/voidcode/runtime/contracts.py` | request/response boundary types |
+| Post-MVP multi-agent architecture | `docs/agent-architecture.md` | normative reference for `leader -> manager -> worker` design work |
+| `voidcode.agent` boundary | `docs/agent-boundary.md` | what belongs in declaration layer vs runtime truth |
 | Graph planning/finalization | `src/voidcode/graph/read_only_slice.py` | current deterministic slice |
 | Tool behavior | `src/voidcode/tools/` | builtin tools include read/write/edit/glob/grep/list/web_fetch/web_search/apply_patch/code_search/multi_edit/todo_write/lsp |
 | Unit tests | `tests/unit/` | contracts, metadata, import, CLI smoke |
@@ -86,3 +88,5 @@ mise run pre-commit
 - CI has two jobs: Python and frontend. Release workflow only publishes Python packages.
 - Read `src/voidcode/runtime/AGENTS.md` before changing runtime session/config/tool orchestration.
 - Read `frontend/AGENTS.md` before touching anything under `frontend/`.
+- For multi-agent, delegation, orchestration, artifact-gate, or ACP design work, read `docs/agent-architecture.md` first and treat it as the normative architecture reference.
+- For `src/voidcode/agent/` changes, also read `docs/agent-boundary.md`; declaration-layer docs must not redefine runtime ownership.

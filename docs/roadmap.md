@@ -150,7 +150,23 @@ VoidCode 仍处于 pre-MVP 开发阶段。路线图从基础工作贯穿至 MVP 
 
 ## Post-MVP 明确方向：预定义 agent 与 multi-agent
 
-multi-agent 支持已经是明确的 post-MVP 方向。当前推荐的进入方式不是让 runtime 失去控制面地位，而是在既有边界之上继续使用已经存在的 `src/voidcode/agent/` 作为预定义 agent 的声明式配置边界，并在其之上补齐真正的执行语义，例如：
+multi-agent 支持已经是明确的 post-MVP 方向。当前推荐的进入方式不是让 runtime 失去控制面地位，而是在既有边界之上继续使用已经存在的 `src/voidcode/agent/` 作为预定义 agent 的声明式配置边界，并在其之上补齐真正的执行语义。
+
+规范性目标架构见 [`docs/agent-architecture.md`](./agent-architecture.md)。该文档将 post-MVP 方向收口为一套运行在 `voidcode` 内部、服务于软件开发全流程的三层拓扑：
+
+```text
+leader -> manager -> worker
+```
+
+其中：
+
+- `leader` 负责阶段治理与状态机决策
+- `manager` 负责阶段内任务拆解、并行与汇总
+- `worker` 负责受约束的类型化任务执行
+
+这套方向要求系统逐步补齐阶段治理、工件契约、强制门禁、回滚矩阵与 runtime-managed delegated substrate，而不是直接把目标写成开放式通用 agent 平台。
+
+在这一方向下，`src/voidcode/agent/` 更适合承载：
 
 - prompt / profile
 - hook 绑定
