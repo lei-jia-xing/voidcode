@@ -39,6 +39,8 @@ function getPendingApprovalEvent(events: EventEnvelope[]): EventEnvelope | null 
 function App() {
   const {
     language, setLanguage,
+    agentPreset, leaderMode, providerModel,
+    setLeaderMode, setProviderModel,
     sessions, currentSessionId, currentSessionEvents, currentSessionOutput,
     currentSessionState,
     loadSessions, sessionsStatus, sessionsError, selectSession, runTask, resolveApproval, replayStatus, replayError, runStatus, runError,
@@ -279,6 +281,52 @@ function App() {
                 <div className="flex items-center justify-between mb-4">
                   <h2 className="text-lg font-medium text-slate-200">{t('task.submitHeading')}</h2>
                 </div>
+
+                <div className="flex flex-wrap gap-4 mb-4 pb-4 border-b border-slate-700/50">
+                  <div className="flex flex-col gap-1 flex-1 min-w-[120px] max-w-[200px]">
+                    <label htmlFor="agentPreset" className="text-xs font-medium text-slate-400">{t('config.agentPreset')}</label>
+                    <select
+                      id="agentPreset"
+                      disabled
+                      value={agentPreset}
+                      className="bg-slate-900 border border-slate-700 rounded-md px-3 py-1.5 text-sm text-slate-300 focus:outline-none cursor-not-allowed opacity-70"
+                    >
+                      <option value="leader">Leader</option>
+                    </select>
+                  </div>
+
+                  <div className="flex flex-col gap-1 flex-1 min-w-[140px] max-w-[200px]">
+                    <label htmlFor="leaderMode" className="text-xs font-medium text-slate-400">{t('config.leaderMode')}</label>
+                    <select
+                      id="leaderMode"
+                      value={leaderMode}
+                      onChange={(e) => setLeaderMode(e.target.value as 'direct_execute' | 'plan_first')}
+                      disabled={isRunning || isReplayLoading || isWaitingApproval || isApprovalSubmitting}
+                      className="bg-slate-900 border border-slate-700 rounded-md px-3 py-1.5 text-sm text-slate-300 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <option value="direct_execute">{t('config.leaderMode.direct')}</option>
+                      <option value="plan_first">{t('config.leaderMode.plan')}</option>
+                    </select>
+                  </div>
+
+                  <div className="flex flex-col gap-1 flex-[2] min-w-[200px]">
+                    <label htmlFor="providerModel" className="text-xs font-medium text-slate-400">{t('config.providerModel')}</label>
+                    <input
+                      id="providerModel"
+                      type="text"
+                      value={providerModel}
+                      onChange={(e) => setProviderModel(e.target.value)}
+                      disabled={isRunning || isReplayLoading || isWaitingApproval || isApprovalSubmitting}
+                      placeholder="e.g. opencode-go/glm-5"
+                      className="bg-slate-900 border border-slate-700 rounded-md px-3 py-1.5 text-sm text-slate-300 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-colors w-full disabled:opacity-50 disabled:cursor-not-allowed"
+                    />
+                  </div>
+                  <div className="w-full text-xs text-slate-500 flex items-start gap-1.5 mt-1">
+                    <AlertCircle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+                    <span>{t('config.helpText')}</span>
+                  </div>
+                </div>
+
                 <div className="flex space-x-3">
                   <input
                     type="text"

@@ -1,4 +1,11 @@
 {
+  "config.heading": "代理配置",
+  "config.agentPreset": "代理预设",
+  "config.leaderMode": "领导者模式",
+  "config.providerModel": "模型",
+  "config.leaderMode.direct": "直接执行",
+  "config.leaderMode.plan": "先计划",
+  "config.helpText": "必须通过环境变量配置API密钥 (例如 VOIDCODE_MODEL, OPENCODE_GO_API_KEY)。",
   "app.title": "VoidCode",
   "app.tagline": "AI编程助手",
   "nav.workspace": "工作区",

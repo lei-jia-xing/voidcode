@@ -1,4 +1,11 @@
 {
+  "config.heading": "Agent Configuration",
+  "config.agentPreset": "Agent Preset",
+  "config.leaderMode": "Leader Mode",
+  "config.providerModel": "Model",
+  "config.leaderMode.direct": "Direct Execute",
+  "config.leaderMode.plan": "Plan First",
+  "config.helpText": "API keys must be configured via environment variables (e.g., VOIDCODE_MODEL, OPENCODE_GO_API_KEY).",
   "app.title": "VoidCode",
   "app.tagline": "AI Coding Agent",
   "nav.workspace": "Workspace",
