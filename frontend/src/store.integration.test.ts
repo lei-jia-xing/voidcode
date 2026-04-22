@@ -13,6 +13,9 @@ type PersistedState = {
   state: {
     language: 'en' | 'zh-CN';
     currentSessionId: string | null;
+    agentPreset?: 'leader';
+    leaderMode?: 'direct_execute' | 'plan_first';
+    providerModel?: string;
   };
   version: number;
 };
@@ -300,7 +303,7 @@ describe('useAppStore integration flow', () => {
     expect(useAppStore.getState().currentSessionEvents).toEqual(failedResponse.events);
   });
 
-  it('hydrates currentSessionId and replays the persisted session on load', async () => {
+  it('hydrates currentSessionId and replays the persisted session on load, and preserves configuration state', async () => {
     const sessionId = 'persisted-session';
     const replay = makeRuntimeResponse(
       sessionId,
@@ -310,7 +313,13 @@ describe('useAppStore integration flow', () => {
     );
 
     const persisted: PersistedState = {
-      state: { language: 'zh-CN', currentSessionId: sessionId },
+      state: {
+        language: 'zh-CN',
+        currentSessionId: sessionId,
+        agentPreset: 'leader',
+        leaderMode: 'plan_first',
+        providerModel: 'test-model/v1'
+      },
       version: 0,
     };
     localStorage.setItem('app-storage', JSON.stringify(persisted));
@@ -327,11 +336,49 @@ describe('useAppStore integration flow', () => {
     const state = useAppStore.getState();
     expect(state.language).toBe('zh-CN');
     expect(state.currentSessionId).toBe(sessionId);
+    expect(state.agentPreset).toBe('leader');
+    expect(state.leaderMode).toBe('plan_first');
+    expect(state.providerModel).toBe('test-model/v1');
     expect(state.currentSessionState?.status).toBe('completed');
     expect(state.currentSessionOutput).toBe('note body');
     expect(runtimeClientMocks.getSessionReplayMock).toHaveBeenCalledWith(sessionId);
   });
 
+  it('falls back to no active session if persisted session is stale', async () => {
+    const sessionId = 'stale-session';
+
+    const persisted: PersistedState = {
+      state: {
+        language: 'zh-CN',
+        currentSessionId: sessionId,
+        agentPreset: 'leader',
+        leaderMode: 'plan_first',
+        providerModel: 'test-model/v1'
+      },
+      version: 0,
+    };
+    localStorage.setItem('app-storage', JSON.stringify(persisted));
+
+    runtimeClientMocks.listSessionsMock.mockResolvedValue([]);
+    runtimeClientMocks.getSessionReplayMock.mockRejectedValue(new Error('Not Found'));
+
+    await useAppStore.persist.rehydrate();
+
+    let state = useAppStore.getState();
+    expect(state.currentSessionId).toBe(sessionId);
+
+    await useAppStore.getState().loadSessions();
+
+    state = useAppStore.getState();
+    expect(state.currentSessionId).toBeNull();
+    expect(state.replayError).toBeNull();
+
+    await useAppStore.getState().selectSession(sessionId);
+
+    state = useAppStore.getState();
+    expect(state.currentSessionId).toBeNull();
+    expect(state.replayError).toBeNull();
+  });
   it('surfaces approval lookup failure when no pending request exists', async () => {
     const sessionId = 'broken-session';
     const requestReceived = makeEvent(1, 'runtime.request_received', { prompt: 'write later' }, 'runtime', sessionId);
@@ -341,6 +388,9 @@ describe('useAppStore integration flow', () => {
     }
 
     runtimeClientMocks.runStreamMock.mockReturnValue(stream());
+    runtimeClientMocks.listSessionsMock.mockResolvedValue([
+      makeStoredSessionSummary(sessionId, 'running', 'write later'),
+    ]);
 
     await useAppStore.getState().runTask('write later');
     await useAppStore.getState().resolveApproval('allow');
@@ -375,7 +425,7 @@ describe('useAppStore integration flow', () => {
     expect(useAppStore.getState().runStatus).toBe('success');
   });
 
-  it('passes runtime metadata through runTask options', async () => {
+  it('passes runtime metadata through runTask options including store config defaults', async () => {
     const sessionId = 'session-meta';
     const requestReceived = makeEvent(1, 'runtime.request_received', { prompt: 'analyze repo' }, 'runtime', sessionId);
 
@@ -404,6 +454,11 @@ describe('useAppStore integration flow', () => {
         skills: ['demo'],
         max_steps: 5,
         provider_stream: true,
+        agent: {
+          preset: 'leader',
+          leader_mode: 'direct_execute',
+          model: 'opencode-go/glm-5'
+        }
       },
     });
   });
@@ -419,13 +474,22 @@ describe('useAppStore integration flow', () => {
     }
 
     runtimeClientMocks.runStreamMock.mockReturnValue(stream());
+    runtimeClientMocks.listSessionsMock.mockResolvedValue([
+      makeStoredSessionSummary('fresh-session', 'completed', 'new run'),
+    ]);
 
     await useAppStore.getState().runTask('new run', { sessionId: null });
 
     expect(runtimeClientMocks.runStreamMock).toHaveBeenCalledWith({
       prompt: 'new run',
       session_id: null,
-      metadata: undefined,
+      metadata: {
+        agent: {
+          preset: 'leader',
+          leader_mode: 'direct_execute',
+          model: 'opencode-go/glm-5'
+        }
+      },
     });
     expect(useAppStore.getState().currentSessionId).toBe('fresh-session');
   });
@@ -440,7 +504,9 @@ describe('useAppStore integration flow', () => {
     }
 
     runtimeClientMocks.runStreamMock.mockReturnValue(stream());
-    runtimeClientMocks.listSessionsMock.mockResolvedValue([]);
+    runtimeClientMocks.listSessionsMock.mockResolvedValue([
+      makeStoredSessionSummary(sessionId, 'completed', 'start new'),
+    ]);
 
     useAppStore.setState({ currentSessionId: 'previous-session' });
 
@@ -451,7 +517,13 @@ describe('useAppStore integration flow', () => {
     expect(runtimeClientMocks.runStreamMock).toHaveBeenCalledWith({
       prompt: 'start new',
       session_id: null,
-      metadata: undefined,
+      metadata: {
+        agent: {
+          preset: 'leader',
+          leader_mode: 'direct_execute',
+          model: 'opencode-go/glm-5'
+        }
+      },
     });
   });
 });

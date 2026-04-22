@@ -16,6 +16,12 @@ describe('App', () => {
   const mockStore = {
     language: 'en',
     setLanguage: vi.fn(),
+    agentPreset: 'leader',
+    leaderMode: 'direct_execute',
+    providerModel: 'opencode-go/glm-5',
+    setAgentPreset: vi.fn(),
+    setLeaderMode: vi.fn(),
+    setProviderModel: vi.fn(),
     sessions: [],
     currentSessionId: null,
     currentSessionState: null,
@@ -56,6 +62,23 @@ describe('App', () => {
     fireEvent.click(langBtn);
 
     expect(mockStore.setLanguage).toHaveBeenCalledWith('zh-CN');
+  });
+
+  it('renders configuration controls and updates store on change', () => {
+    render(<App />);
+
+    const modeSelect = screen.getByLabelText('Leader Mode');
+    expect(modeSelect).toBeInTheDocument();
+
+    const modelInput = screen.getByLabelText('Model');
+    expect(modelInput).toBeInTheDocument();
+    expect(modelInput).toHaveValue('opencode-go/glm-5');
+
+    fireEvent.change(modeSelect, { target: { value: 'plan_first' } });
+    expect(mockStore.setLeaderMode).toHaveBeenCalledWith('plan_first');
+
+    fireEvent.change(modelInput, { target: { value: 'new-model/v1' } });
+    expect(mockStore.setProviderModel).toHaveBeenCalledWith('new-model/v1');
   });
 
   it('renders tasks and events when current session has events', () => {
