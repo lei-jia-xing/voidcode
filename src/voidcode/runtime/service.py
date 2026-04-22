@@ -1114,9 +1114,10 @@ class VoidCodeRuntime:
                 tool_results=tuple(tool_results),
                 session_metadata=session.metadata,
             )
+            reinjected_continuity = continuity_to_reinject
             # Apply reinjected continuity state if present, giving reinjection
             # semantics after a compaction boundary.
-            if continuity_to_reinject is not None:
+            if reinjected_continuity is not None:
                 context_window = RuntimeContextWindow(
                     prompt=base_context.prompt,
                     tool_results=base_context.tool_results,
@@ -1125,7 +1126,7 @@ class VoidCodeRuntime:
                     original_tool_result_count=base_context.original_tool_result_count,
                     retained_tool_result_count=base_context.retained_tool_result_count,
                     max_tool_result_count=base_context.max_tool_result_count,
-                    continuity_state=continuity_to_reinject,
+                    continuity_state=reinjected_continuity,
                 )
             else:
                 context_window = base_context
@@ -1140,7 +1141,7 @@ class VoidCodeRuntime:
                 context_window=context_window,
                 metadata=graph_request.metadata,
             )
-            if context_window.compacted and continuity_to_reinject is None:
+            if context_window.compacted and reinjected_continuity is None:
                 sequence += 1
                 yield RuntimeStreamChunk(
                     kind="event",
@@ -2708,12 +2709,14 @@ class VoidCodeRuntime:
         if not isinstance(source, str):
             return None
         version = continuity_payload.get("version")
+        if version is not None and (not isinstance(version, int) or isinstance(version, bool)):
+            return None
         return RuntimeContinuityState(
             summary_text=summary_text,
             dropped_tool_result_count=dropped,
             retained_tool_result_count=retained,
             source=source,
-            version=version if isinstance(version, int) else 1,
+            version=version if version is not None else 1,
         )
 
     @staticmethod

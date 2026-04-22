@@ -2922,6 +2922,8 @@ def test_runtime_approval_resume_preserves_canonical_continuity_state(tmp_path: 
     memory_refreshed_events = [
         event for event in resumed.events if event.event_type == RUNTIME_MEMORY_REFRESHED
     ]
+    assert len(memory_refreshed_events) == 2
+    assert memory_refreshed_events[0].payload["continuity_state"] == initial_continuity
     assert memory_refreshed_events[-1].payload["continuity_state"] == expected_resumed_continuity
     tool_completed_events = [
         event for event in resumed.events if event.event_type == "runtime.tool_completed"
@@ -2984,6 +2986,27 @@ def test_runtime_resume_falls_back_to_fresh_policy_for_legacy_sessions_without_r
     assert resumed.events[-2].payload["decision"] == "deny"
     assert resumed.events[-1].event_type == "runtime.failed"
     assert resumed.events[-1].payload == {"error": "permission denied for tool: write_file"}
+
+
+def test_runtime_rejects_boolean_continuity_version_in_session_metadata() -> None:
+    continuity_from_metadata = _private_attr(
+        VoidCodeRuntime, "_continuity_state_from_session_metadata"
+    )
+    continuity = continuity_from_metadata(
+        {
+            "runtime_state": {
+                "continuity": {
+                    "summary_text": "summary",
+                    "dropped_tool_result_count": 1,
+                    "retained_tool_result_count": 1,
+                    "source": "tool_result_window",
+                    "version": True,
+                }
+            }
+        }
+    )
+
+    assert continuity is None
 
 
 def test_runtime_effective_runtime_config_prefers_persisted_session_values(tmp_path: Path) -> None:
