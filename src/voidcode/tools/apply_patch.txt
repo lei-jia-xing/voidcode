@@ -1,0 +1,5 @@
+Use apply_patch for patch-level work: multi-file edits, file creation, deletion, rename, or changes that are clearest as a unified diff.
+
+Do not make it the default for small local replacements; edit or multi_edit is usually safer. Read the relevant files first so patch context is grounded.
+
+This tool is not read-only and may require approval. Use returned change summaries and affected paths as the source of truth for follow-up verification.

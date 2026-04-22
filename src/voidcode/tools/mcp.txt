@@ -1,0 +1,5 @@
+Use mcp/<server>/<tool> only when a configured MCP server exposes a capability that built-in tools cannot express.
+
+Dynamic MCP tools are runtime-discovered, so rely on each ToolDefinition name and input_schema exactly as exposed for this session. Do not assume an MCP tool is always available, read-only, idempotent, or safe just because its name sounds harmless.
+
+The current runtime marks MCP tools as not read-only, so they may require approval. Treat returned data.server, data.tool, and data.content as server-provided external results.

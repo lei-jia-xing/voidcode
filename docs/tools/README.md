@@ -15,6 +15,19 @@ These pages do not redefine runtime or tool-layer types. Instead, they answer th
 - [`src/voidcode/tools/contracts.py`](../../src/voidcode/tools/contracts.py): the code-level source of truth for `ToolDefinition`, `ToolCall`, and `ToolResult`.
 - [`src/voidcode/tools/README.md`](../../src/voidcode/tools/README.md): the capability-layer boundary for tools, not an agent usage guide.
 
+## Relationship to injected guidance
+
+Runtime-injected agent guidance lives next to tool implementations as sidecar `.txt` files in [`src/voidcode/tools/`](../../src/voidcode/tools/). Those sidecars are the source of truth for text that may be appended to agent-visible `ToolDefinition.description` values.
+
+This directory remains the human-readable guide:
+
+- it groups related tools,
+- it gives examples and longer explanations,
+- it links contract docs and implementation boundaries,
+- it should stay consistent with the sidecar guidance without becoming a second injected source of truth.
+
+See [`guidance-injection.md`](./guidance-injection.md) for the current injection strategy.
+
 ## Recommended reading order
 
 ### 1. Start with the global rules
@@ -33,20 +46,46 @@ These pages do not redefine runtime or tool-layer types. Instead, they answer th
   - `list`
   - `glob`
   - `grep`
+- [`ast-grep.md`](./ast-grep.md)
+  - `ast_grep_search`
+  - `ast_grep_preview`
+  - `ast_grep_replace`
+- [`lsp-format.md`](./lsp-format.md)
+  - `lsp`
 
 #### Editing / writing
 
 - [`edit.md`](./edit.md)
 - [`multi-edit.md`](./multi-edit.md)
 - [`apply-patch.md`](./apply-patch.md)
+- [`write-file.md`](./write-file.md)
+- [`lsp-format.md`](./lsp-format.md)
+  - `format_file`
 
 #### Execution / external commands
 
 - [`shell-exec.md`](./shell-exec.md)
 
-## Why the first wave only documents these tools
+#### External research
 
-The first priority is the tools that are easiest to misuse and most likely to affect correctness:
+- [`external-research.md`](./external-research.md)
+  - `web_search`
+  - `web_fetch`
+  - `code_search`
+
+#### Agent work state
+
+- [`todo-write.md`](./todo-write.md)
+  - `todo_write`
+
+#### Dynamic tools
+
+- [`mcp-dynamic.md`](./mcp-dynamic.md)
+  - `mcp/<server>/<tool>`
+
+## Coverage waves
+
+The first wave documented the tools that are easiest to misuse and most likely to affect correctness:
 
 - `edit`
 - `multi_edit`
@@ -61,14 +100,14 @@ These tools directly affect:
 - whether post-edit follow-up actions still rely on the real file state,
 - whether command execution becomes an overused escape hatch.
 
-After these pages settle, the next candidates are:
+The second wave adds guidance for the remaining built-in and runtime-managed tool surface:
 
 - `write_file`
 - `ast_grep_*`
 - `lsp` / `format_file`
 - `web_fetch` / `web_search` / `code_search`
 - `todo_write`
-- `mcp/*` (better documented as one dynamic-tool policy page than one page per MCP tool)
+- `mcp/*` as one dynamic-tool policy page rather than one page per MCP tool
 
 ## Hard usage rules for agents
 

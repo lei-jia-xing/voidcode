@@ -44,6 +44,7 @@ from voidcode.tools import (
     WriteFileTool,
 )
 from voidcode.tools.contracts import ToolDefinition, ToolResult
+from voidcode.tools.guidance import guidance_filename_for_tool, guidance_for_tool
 
 
 @dataclass(slots=True)
@@ -275,6 +276,95 @@ def test_tool_registry_accepts_tools_from_provider_output() -> None:
     for tool_name in optional_tools:
         if tool_name in registry.tools:
             assert registry.resolve(tool_name).definition.name == tool_name
+
+
+def test_builtin_tool_definitions_include_sidecar_guidance() -> None:
+    registry = ToolRegistry.from_tools(BuiltinToolProvider().provide_tools())
+    definitions = {definition.name: definition for definition in registry.definitions()}
+
+    assert "Agent usage guidance:" in definitions["write_file"].description
+    assert "focused changes in existing files" in definitions["write_file"].description
+    assert "Agent usage guidance:" in definitions["ast_grep_search"].description
+    assert "structural code search" in definitions["ast_grep_search"].description
+    assert "Agent usage guidance:" in definitions["web_fetch"].description
+    assert "specific http or https URL" in definitions["web_fetch"].description
+
+
+def test_sidecar_guidance_mapping_covers_builtin_runtime_tool_names() -> None:
+    runtime_tool_names = {
+        "apply_patch",
+        "ast_grep_preview",
+        "ast_grep_replace",
+        "ast_grep_search",
+        "code_search",
+        "edit",
+        "format_file",
+        "glob",
+        "grep",
+        "list",
+        "lsp",
+        "multi_edit",
+        "read_file",
+        "shell_exec",
+        "todo_write",
+        "web_fetch",
+        "web_search",
+        "write_file",
+    }
+
+    for tool_name in runtime_tool_names:
+        filename = guidance_filename_for_tool(tool_name)
+        assert filename is not None, f"Missing guidance mapping for {tool_name}"
+        assert guidance_for_tool(tool_name), f"Missing sidecar content for {tool_name}"
+
+
+def test_agent_tool_docs_cover_runtime_tool_families() -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    docs_dir = repo_root / "docs" / "tools"
+    expected_pages = {
+        "read-search.md",
+        "edit.md",
+        "multi-edit.md",
+        "apply-patch.md",
+        "shell-exec.md",
+        "write-file.md",
+        "ast-grep.md",
+        "lsp-format.md",
+        "external-research.md",
+        "todo-write.md",
+        "mcp-dynamic.md",
+        "guidance-injection.md",
+    }
+
+    for page in expected_pages:
+        assert (docs_dir / page).is_file(), f"Missing docs/tools/{page}"
+
+
+def test_dynamic_mcp_tool_definitions_include_shared_policy_guidance() -> None:
+    def _requester(
+        *,
+        server_name: str,
+        tool_name: str,
+        arguments: dict[str, object],
+        workspace: Path,
+    ) -> McpToolCallResult:
+        _ = server_name, tool_name, arguments, workspace
+        return McpToolCallResult(content=[{"type": "text", "text": "ok"}], is_error=False)
+
+    mcp_tool = McpTool(
+        server_name="echo",
+        tool_name="echo",
+        description="Echo input",
+        input_schema={"type": "object"},
+        requester=_requester,
+    )
+    registry = ToolRegistry.from_tools((mcp_tool,))
+
+    definition = registry.definitions()[0]
+
+    assert definition.name == "mcp/echo/echo"
+    assert "Agent usage guidance:" in definition.description
+    assert "Dynamic MCP tools are runtime-discovered" in definition.description
 
 
 def test_tool_registry_with_defaults_delegates_through_builtin_provider() -> None:

@@ -1,0 +1,5 @@
+Use code_search for external programming examples and implementation references.
+
+Do not use it for local repository search; use glob, grep, ast_grep_search, read_file, or lsp for workspace facts. Do not copy external code without checking fit, license expectations, and local style.
+
+This tool is read-only. Treat data.sources, data.snippet_count, and data.source as external research metadata, not project truth.

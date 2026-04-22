@@ -1,0 +1,5 @@
+Use todo_write to update runtime-visible agent work state for the current task.
+
+Do not use it as project documentation, persistent memory, or a substitute for explaining progress to the user. Keep items concrete and current.
+
+This tool is not read-only and may require approval. Treat data.summary and data.path as the stable result fields.
