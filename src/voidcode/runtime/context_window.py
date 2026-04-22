@@ -11,6 +11,11 @@ class RuntimeContinuityState:
     dropped_tool_result_count: int = 0
     retained_tool_result_count: int = 0
     source: str = "tool_result_window"
+    # Lightweight versioning for continuity state to aid reinjection/refresh
+    # semantics. This is incremented when the shape evolves and is included
+    # in the serialized payload so consumers can decide how to handle newer
+    # fields.
+    version: int = 1
 
     def metadata_payload(self) -> dict[str, object]:
         return {
@@ -18,6 +23,7 @@ class RuntimeContinuityState:
             "dropped_tool_result_count": self.dropped_tool_result_count,
             "retained_tool_result_count": self.retained_tool_result_count,
             "source": self.source,
+            "version": self.version,
         }
 
 
