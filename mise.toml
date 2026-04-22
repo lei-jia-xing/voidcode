@@ -49,8 +49,14 @@ run = "uv run basedpyright --warnings src"
 [tasks.test]
 run = "uv run pytest"
 
+[tasks.build]
+run = "uv build"
+
 [tasks.check]
 run = "mise run lint && mise run typecheck && mise run test && mise run frontend:check"
+
+[tasks.ci]
+run = "mise run check && mise run build && mise run frontend:build"
 
 [tasks.pre-commit]
 run = "uv run pre-commit run --all-files"

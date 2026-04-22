@@ -106,6 +106,7 @@ mise run lint
 mise run format
 mise run typecheck
 mise run test
+mise run build
 
 # 前端任务 (Bun)
 mise run frontend:install
@@ -115,6 +116,9 @@ mise run frontend:typecheck
 
 # 联合检查 (Python + 前端)
 mise run check
+
+# CI parity 检查（含 Python 包和前端生产构建）
+mise run ci
 
 # Pre-commit 检查
 mise run pre-commit
