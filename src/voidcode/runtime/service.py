@@ -75,6 +75,7 @@ from .context_window import (
     prepare_single_agent_context,
 )
 from .contracts import (
+    BackgroundTaskResult,
     InternalRuntimeRequestMetadata,
     RuntimeNotification,
     RuntimeRequest,
@@ -93,6 +94,9 @@ from .events import (
     RUNTIME_ACP_DISCONNECTED,
     RUNTIME_ACP_FAILED,
     RUNTIME_APPROVAL_REQUESTED,
+    RUNTIME_BACKGROUND_TASK_CANCELLED,
+    RUNTIME_BACKGROUND_TASK_COMPLETED,
+    RUNTIME_BACKGROUND_TASK_FAILED,
     RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL,
     RUNTIME_FAILED,
     RUNTIME_LSP_SERVER_FAILED,
@@ -1826,6 +1830,11 @@ class VoidCodeRuntime:
         validate_background_task_id(task_id)
         return self._session_store.load_background_task(workspace=self._workspace, task_id=task_id)
 
+    def load_background_task_result(self, task_id: str) -> BackgroundTaskResult:
+        task = self.load_background_task(task_id)
+        self._backfill_parent_background_task_event(task=task)
+        return self._background_task_result(task=task)
+
     def list_background_tasks(self) -> tuple[StoredBackgroundTaskSummary, ...]:
         self._reconcile_background_tasks_if_needed()
         return self._session_store.list_background_tasks(workspace=self._workspace)
@@ -1860,6 +1869,7 @@ class VoidCodeRuntime:
 
     def session_result(self, *, session_id: str) -> RuntimeSessionResult:
         validate_session_id(session_id)
+        self._reconcile_parent_background_task_events_for_session(parent_session_id=session_id)
         result = self._session_store.load_session_result(
             workspace=self._workspace,
             session_id=session_id,
@@ -1931,6 +1941,7 @@ class VoidCodeRuntime:
     ) -> RuntimeResponse:
         validate_session_id(session_id)
         if approval_request_id is None and approval_decision is None:
+            self._reconcile_parent_background_task_events_for_session(parent_session_id=session_id)
             return self._session_store.load_session(
                 workspace=self._workspace, session_id=session_id
             )
@@ -1953,6 +1964,7 @@ class VoidCodeRuntime:
     ) -> Iterator[RuntimeStreamChunk]:
         validate_session_id(session_id)
         if approval_request_id is None and approval_decision is None:
+            self._reconcile_parent_background_task_events_for_session(parent_session_id=session_id)
             response = self._session_store.load_session(
                 workspace=self._workspace, session_id=session_id
             )
@@ -3204,6 +3216,142 @@ class VoidCodeRuntime:
             return str(request_id) if request_id is not None else None
         return None
 
+    def _load_background_task_child_response(
+        self,
+        *,
+        task: BackgroundTaskState,
+    ) -> RuntimeResponse | None:
+        child_session_id = task.session_id
+        if child_session_id is None:
+            return None
+        try:
+            response = self._session_store.load_session(
+                workspace=self._workspace,
+                session_id=child_session_id,
+            )
+        except UnknownSessionError:
+            return None
+        self._validate_session_workspace(response.session, session_id=child_session_id)
+        return response
+
+    def _load_background_task_child_result(
+        self,
+        *,
+        task: BackgroundTaskState,
+    ) -> RuntimeSessionResult | None:
+        child_session_id = task.session_id
+        if child_session_id is None:
+            return None
+        try:
+            result = self._session_store.load_session_result(
+                workspace=self._workspace,
+                session_id=child_session_id,
+            )
+        except UnknownSessionError:
+            return None
+        self._validate_session_workspace(result.session, session_id=child_session_id)
+        return result
+
+    def _background_task_result(self, *, task: BackgroundTaskState) -> BackgroundTaskResult:
+        child_result = self._load_background_task_child_result(task=task)
+        approval_blocked = child_result is not None and child_result.status == "waiting"
+        summary_output = child_result.summary if child_result is not None else None
+        error = (
+            child_result.error if child_result is not None and child_result.error else task.error
+        )
+        result_available = False
+        if task.status in ("completed", "failed"):
+            result_available = True
+        elif task.status != "cancelled" and child_result is not None:
+            result_available = True
+        return BackgroundTaskResult(
+            task_id=task.task.id,
+            parent_session_id=task.parent_session_id,
+            child_session_id=task.session_id,
+            status=task.status,
+            approval_blocked=approval_blocked,
+            summary_output=summary_output,
+            error=error,
+            result_available=result_available,
+        )
+
+    def _emit_background_task_parent_terminal_event(self, *, task: BackgroundTaskState) -> None:
+        parent_session_id = task.parent_session_id
+        if parent_session_id is None or task.status not in ("completed", "failed", "cancelled"):
+            return
+        session_event_appender = self._session_store
+        if not isinstance(session_event_appender, SessionEventAppender):
+            logger.debug(
+                "skipping background terminal parent event for session store without append support"
+            )
+            return
+        result = self._background_task_result(task=task)
+        event_type_by_status: dict[BackgroundTaskStatus, str] = {
+            "completed": RUNTIME_BACKGROUND_TASK_COMPLETED,
+            "failed": RUNTIME_BACKGROUND_TASK_FAILED,
+            "cancelled": RUNTIME_BACKGROUND_TASK_CANCELLED,
+        }
+        event_type = event_type_by_status[task.status]
+        payload: dict[str, object] = {
+            "task_id": task.task.id,
+            "parent_session_id": parent_session_id,
+            "status": task.status,
+            "result_available": result.result_available,
+        }
+        if result.child_session_id is not None:
+            payload["child_session_id"] = result.child_session_id
+        if task.status == "completed" and result.summary_output is not None:
+            payload["summary_output"] = result.summary_output
+        if task.status in ("failed", "cancelled") and result.error is not None:
+            payload["error"] = result.error
+        try:
+            _ = session_event_appender.append_session_event(
+                workspace=self._workspace,
+                session_id=parent_session_id,
+                event_type=event_type,
+                source="runtime",
+                payload=payload,
+                dedupe_key=f"{event_type}:{task.task.id}",
+            )
+        except UnknownSessionError:
+            logger.debug(
+                "skipping background terminal event for unavailable parent session: %s",
+                parent_session_id,
+            )
+
+    def _backfill_parent_background_task_event(self, *, task: BackgroundTaskState) -> None:
+        if task.parent_session_id is None:
+            return
+        if task.status in ("completed", "failed", "cancelled"):
+            self._emit_background_task_parent_terminal_event(task=task)
+            return
+        if task.status != "running":
+            return
+        child_response = self._load_background_task_child_response(task=task)
+        if child_response is None or child_response.session.status != "waiting":
+            return
+        self._emit_background_task_waiting_approval(
+            task=task,
+            child_response=child_response,
+        )
+
+    def _reconcile_parent_background_task_events_for_session(
+        self,
+        *,
+        parent_session_id: str,
+    ) -> None:
+        self._reconcile_background_tasks_if_needed()
+        task_summaries = self._session_store.list_background_tasks_by_parent_session(
+            workspace=self._workspace,
+            parent_session_id=parent_session_id,
+        )
+        for task_summary in task_summaries:
+            task = self._session_store.load_background_task(
+                workspace=self._workspace,
+                task_id=task_summary.task.id,
+            )
+            self._backfill_parent_background_task_event(task=task)
+
     def _emit_background_task_waiting_approval(
         self,
         *,
@@ -3301,6 +3449,7 @@ class VoidCodeRuntime:
             surface=surface,
             session_id=task.session_id or task.request.session_id or "runtime",
         )
+        self._emit_background_task_parent_terminal_event(task=task)
         if task.status == "completed" and task.parent_session_id is not None:
             self._run_background_task_lifecycle_surface(
                 task=task,
@@ -3343,6 +3492,21 @@ class VoidCodeRuntime:
     def _reconcile_background_tasks_if_needed(self) -> None:
         if self._background_tasks_reconciled:
             return
+        task_summaries = self._session_store.list_background_tasks(workspace=self._workspace)
+        for task_summary in task_summaries:
+            if task_summary.status != "running" or task_summary.session_id is None:
+                continue
+            task = self._session_store.load_background_task(
+                workspace=self._workspace,
+                task_id=task_summary.task.id,
+            )
+            child_response = self._load_background_task_child_response(task=task)
+            if child_response is None:
+                continue
+            if child_response.session.status in ("waiting", "completed", "failed"):
+                self._finalize_background_task_from_session_response(
+                    session_response=child_response
+                )
         fail_incomplete = getattr(self._session_store, "fail_incomplete_background_tasks", None)
         if callable(fail_incomplete):
             failed_tasks = cast(
@@ -3354,6 +3518,13 @@ class VoidCodeRuntime:
             )
             for failed_task in failed_tasks:
                 self._run_background_task_lifecycle_hook(failed_task)
+        task_summaries = self._session_store.list_background_tasks(workspace=self._workspace)
+        for task_summary in task_summaries:
+            task = self._session_store.load_background_task(
+                workspace=self._workspace,
+                task_id=task_summary.task.id,
+            )
+            self._backfill_parent_background_task_event(task=task)
         self._background_tasks_reconciled = True
 
     def _run_background_task_worker(self, task_id: str) -> None:

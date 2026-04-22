@@ -6,7 +6,7 @@ from typing import Literal, Protocol, TypedDict, cast, runtime_checkable
 
 from .events import EventEnvelope
 from .session import SessionRef, SessionState
-from .task import BackgroundTaskState, StoredBackgroundTaskSummary
+from .task import BackgroundTaskState, BackgroundTaskStatus, StoredBackgroundTaskSummary
 
 
 class RuntimeRequestError(ValueError):
@@ -176,6 +176,18 @@ class RuntimeSessionResult:
 
 
 @dataclass(frozen=True, slots=True)
+class BackgroundTaskResult:
+    task_id: str
+    parent_session_id: str | None
+    child_session_id: str | None
+    status: BackgroundTaskStatus
+    approval_blocked: bool = False
+    summary_output: str | None = None
+    error: str | None = None
+    result_available: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class RuntimeNotification:
     id: str
     session: SessionRef
@@ -220,6 +232,8 @@ class BackgroundTaskRuntimeEntrypoint(Protocol):
     def start_background_task(self, request: RuntimeRequest) -> BackgroundTaskState: ...
 
     def load_background_task(self, task_id: str) -> BackgroundTaskState: ...
+
+    def load_background_task_result(self, task_id: str) -> BackgroundTaskResult: ...
 
     def list_background_tasks(self) -> tuple[StoredBackgroundTaskSummary, ...]: ...
 

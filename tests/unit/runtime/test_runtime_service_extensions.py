@@ -42,6 +42,9 @@ from voidcode.runtime.config import (
 )
 from voidcode.runtime.context_window import ContextWindowPolicy, RuntimeContinuityState
 from voidcode.runtime.events import (
+    RUNTIME_BACKGROUND_TASK_CANCELLED,
+    RUNTIME_BACKGROUND_TASK_COMPLETED,
+    RUNTIME_BACKGROUND_TASK_FAILED,
     RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL,
     RUNTIME_MCP_SERVER_STARTED,
     RUNTIME_MCP_SERVER_STOPPED,
@@ -819,6 +822,297 @@ def test_runtime_validates_parent_session_id_when_listing_background_tasks(tmp_p
 
     with pytest.raises(ValueError, match="parent_session_id must not contain '/'"):
         _ = runtime.list_background_tasks_by_parent_session(parent_session_id="leader/session")
+
+
+def test_runtime_load_background_task_result_exposes_completed_child_summary(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+
+    started = runtime.start_background_task(
+        RuntimeRequest(prompt="background child", parent_session_id="leader-session")
+    )
+    completed = _wait_for_background_task(runtime, started.task.id)
+    result = runtime.load_background_task_result(started.task.id)
+
+    assert completed.status == "completed"
+    assert result.task_id == started.task.id
+    assert result.parent_session_id == "leader-session"
+    assert result.child_session_id == completed.session_id
+    assert result.status == "completed"
+    assert result.approval_blocked is False
+    assert result.summary_output == "Completed: background child"
+    assert result.error is None
+    assert result.result_available is True
+
+
+def test_runtime_load_background_task_result_marks_waiting_child_as_approval_blocked(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+
+    started = runtime.start_background_task(
+        RuntimeRequest(prompt="background child", parent_session_id="leader-session")
+    )
+    running = _wait_for_background_task_session(runtime, started.task.id)
+    child_session_id = cast(str, running.session_id)
+    _ = _wait_for_session_event(
+        runtime,
+        child_session_id,
+        "runtime.approval_requested",
+    )
+    result = runtime.load_background_task_result(started.task.id)
+
+    assert result.task_id == started.task.id
+    assert result.parent_session_id == "leader-session"
+    assert result.child_session_id == child_session_id
+    assert result.status == "running"
+    assert result.approval_blocked is True
+    assert result.summary_output == "Approval blocked on write_file: write_file alpha.txt"
+    assert result.error is None
+    assert result.result_available is True
+
+
+def test_runtime_background_task_completion_emits_parent_session_event_once(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+
+    started = runtime.start_background_task(
+        RuntimeRequest(prompt="background child", parent_session_id="leader-session")
+    )
+    completed = _wait_for_background_task(runtime, started.task.id)
+    leader_response = _wait_for_session_event(
+        runtime,
+        "leader-session",
+        RUNTIME_BACKGROUND_TASK_COMPLETED,
+    )
+
+    completed_events = [
+        event
+        for event in leader_response.events
+        if event.event_type == RUNTIME_BACKGROUND_TASK_COMPLETED
+    ]
+
+    assert completed.status == "completed"
+    assert len(completed_events) == 1
+    assert completed_events[0].payload == {
+        "task_id": started.task.id,
+        "parent_session_id": "leader-session",
+        "child_session_id": cast(str, completed.session_id),
+        "status": "completed",
+        "summary_output": "Completed: background child",
+        "result_available": True,
+    }
+
+    deduped_response = runtime.resume("leader-session")
+
+    assert (
+        sum(
+            event.event_type == RUNTIME_BACKGROUND_TASK_COMPLETED
+            for event in deduped_response.events
+        )
+        == 1
+    )
+
+
+def test_runtime_background_task_failure_emits_parent_session_event_once(
+    tmp_path: Path,
+) -> None:
+    setup_runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    _ = setup_runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskFailureGraph())
+
+    started = runtime.start_background_task(
+        RuntimeRequest(prompt="background child", parent_session_id="leader-session")
+    )
+    failed = _wait_for_background_task(runtime, started.task.id)
+    leader_response = _wait_for_session_event(
+        runtime,
+        "leader-session",
+        RUNTIME_BACKGROUND_TASK_FAILED,
+    )
+
+    failed_events = [
+        event
+        for event in leader_response.events
+        if event.event_type == RUNTIME_BACKGROUND_TASK_FAILED
+    ]
+
+    assert failed.status == "failed"
+    assert len(failed_events) == 1
+    assert failed_events[0].payload == {
+        "task_id": started.task.id,
+        "parent_session_id": "leader-session",
+        "child_session_id": cast(str, failed.session_id),
+        "status": "failed",
+        "error": cast(str, failed.error),
+        "result_available": True,
+    }
+
+    deduped_response = runtime.resume("leader-session")
+
+    assert (
+        sum(event.event_type == RUNTIME_BACKGROUND_TASK_FAILED for event in deduped_response.events)
+        == 1
+    )
+
+
+def test_runtime_background_task_cancellation_emits_parent_session_event_once(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+    runtime._background_tasks_reconciled = True  # pyright: ignore[reportPrivateUsage]
+    store = _private_attr(runtime, "_session_store")
+    task_module = importlib.import_module("voidcode.runtime.task")
+    store.create_background_task(
+        workspace=tmp_path,
+        task=task_module.BackgroundTaskState(
+            task=task_module.BackgroundTaskRef(id="task-parent-cancel"),
+            request=task_module.BackgroundTaskRequestSnapshot(
+                prompt="background child",
+                parent_session_id="leader-session",
+            ),
+            created_at=1,
+            updated_at=1,
+        ),
+    )
+
+    cancelled = runtime.cancel_background_task("task-parent-cancel")
+    leader_response = _wait_for_session_event(
+        runtime,
+        "leader-session",
+        RUNTIME_BACKGROUND_TASK_CANCELLED,
+    )
+
+    cancelled_events = [
+        event
+        for event in leader_response.events
+        if event.event_type == RUNTIME_BACKGROUND_TASK_CANCELLED
+    ]
+
+    assert cancelled.status == "cancelled"
+    assert len(cancelled_events) == 1
+    assert cancelled_events[0].payload == {
+        "task_id": "task-parent-cancel",
+        "parent_session_id": "leader-session",
+        "status": "cancelled",
+        "error": "cancelled before start",
+        "result_available": False,
+    }
+
+    deduped_response = runtime.resume("leader-session")
+
+    assert (
+        sum(
+            event.event_type == RUNTIME_BACKGROUND_TASK_CANCELLED
+            for event in deduped_response.events
+        )
+        == 1
+    )
+
+
+def test_runtime_reconciles_persisted_child_terminal_truth_and_backfills_parent_event(
+    tmp_path: Path,
+) -> None:
+    initial_runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    _ = initial_runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+    store = _private_attr(initial_runtime, "_session_store")
+    task_module = importlib.import_module("voidcode.runtime.task")
+    store.create_background_task(
+        workspace=tmp_path,
+        task=task_module.BackgroundTaskState(
+            task=task_module.BackgroundTaskRef(id="task-recover"),
+            status="running",
+            request=task_module.BackgroundTaskRequestSnapshot(
+                prompt="background child",
+                parent_session_id="leader-session",
+            ),
+            session_id="child-session",
+            created_at=1,
+            updated_at=1,
+            started_at=1,
+        ),
+    )
+    store.save_run(
+        workspace=tmp_path,
+        request=RuntimeRequest(
+            prompt="background child",
+            session_id="child-session",
+            parent_session_id="leader-session",
+            metadata={
+                "background_run": True,
+                "background_task_id": "task-recover",
+            },
+        ),
+        response=RuntimeResponse(
+            session=SessionState(
+                session=runtime_service_module.SessionRef(
+                    id="child-session",
+                    parent_id="leader-session",
+                ),
+                status="completed",
+                turn=1,
+                metadata={
+                    "background_run": True,
+                    "background_task_id": "task-recover",
+                },
+            ),
+            events=(
+                EventEnvelope(
+                    session_id="child-session",
+                    sequence=1,
+                    event_type="runtime.request_received",
+                    source="runtime",
+                    payload={"prompt": "background child"},
+                ),
+                EventEnvelope(
+                    session_id="child-session",
+                    sequence=2,
+                    event_type="graph.response_ready",
+                    source="graph",
+                    payload={},
+                ),
+            ),
+            output="background child",
+        ),
+    )
+
+    resumed_runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    reconciled = resumed_runtime.load_background_task("task-recover")
+    leader_response = resumed_runtime.resume("leader-session")
+    replayed = resumed_runtime.resume("leader-session")
+
+    recovered_events = [
+        event
+        for event in leader_response.events
+        if event.event_type == RUNTIME_BACKGROUND_TASK_COMPLETED
+    ]
+
+    assert reconciled.status == "completed"
+    assert reconciled.session_id == "child-session"
+    assert len(recovered_events) == 1
+    assert recovered_events[0].payload == {
+        "task_id": "task-recover",
+        "parent_session_id": "leader-session",
+        "child_session_id": "child-session",
+        "status": "completed",
+        "summary_output": "Completed: background child",
+        "result_available": True,
+    }
+    assert (
+        sum(event.event_type == RUNTIME_BACKGROUND_TASK_COMPLETED for event in replayed.events) == 1
+    )
 
 
 def test_runtime_background_task_waiting_approval_emits_parent_session_event_once(

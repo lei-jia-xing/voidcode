@@ -4,6 +4,7 @@ from importlib import import_module
 from typing import TYPE_CHECKING, Any
 
 from .contracts import (
+    BackgroundTaskResult,
     BackgroundTaskRuntimeEntrypoint,
     RuntimeEntrypoint,
     RuntimeNotification,
@@ -38,6 +39,7 @@ __all__ = [
     "EventSource",
     "BackgroundTaskRef",
     "BackgroundTaskRequestSnapshot",
+    "BackgroundTaskResult",
     "BackgroundTaskRuntimeEntrypoint",
     "BackgroundTaskState",
     "BackgroundTaskStatus",

@@ -57,6 +57,12 @@ def test_contract_modules_export_expected_symbols() -> None:
         created_at=1,
         updated_at=1,
     )
+    background_task_result = runtime.BackgroundTaskResult(
+        task_id=background_task.task.id,
+        parent_session_id=background_task.parent_session_id,
+        child_session_id=background_task.session_id,
+        status=background_task.status,
+    )
     session_summary = runtime.StoredSessionSummary(
         session=session.session,
         status="completed",
@@ -80,6 +86,8 @@ def test_contract_modules_export_expected_symbols() -> None:
     assert background_task.task.id == "task-1"
     assert background_task.request.prompt == runtime_request.prompt
     assert background_task.parent_session_id == "session-parent"
+    assert background_task_result.task_id == "task-1"
+    assert background_task_result.result_available is False
     assert session_summary.session.id == "session-1"
     assert graph_request.available_tools == ()
     assert graph_result.tool_results == (result,)
@@ -203,11 +211,14 @@ def test_contract_types_expose_explicit_annotations() -> None:
     tools = _tools_module()
 
     runtime_request_hints = get_type_hints(runtime.RuntimeRequest)
+    background_task_result_hints = get_type_hints(runtime.BackgroundTaskResult)
     background_task_hints = get_type_hints(runtime.BackgroundTaskState)
     tool_result_hints = get_type_hints(tools.ToolResult)
     graph_runner_hints = get_type_hints(graph.GraphRunner.run)
 
     assert runtime_request_hints["prompt"] is str
+    assert background_task_result_hints["task_id"] is str
+    assert str(background_task_result_hints["status"]) == "BackgroundTaskStatus"
     assert str(runtime_request_hints["parent_session_id"]) == "str | None"
     assert str(background_task_hints["status"]) == "BackgroundTaskStatus"
     assert tool_result_hints["tool_name"] is str
