@@ -162,7 +162,7 @@ export const useAppStore = create<AppState>()(
           approvalStatus: 'idle',
           approvalError: null
         });
-        const effectiveSessionId = options?.sessionId ?? get().currentSessionId;
+        const effectiveSessionId = options?.sessionId !== undefined ? options.sessionId : get().currentSessionId;
         set({
           replayStatus: 'idle',
           replayError: null,
