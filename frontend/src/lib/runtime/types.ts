@@ -32,7 +32,13 @@ export interface EventEnvelope {
 export interface RuntimeRequest {
   prompt: string;
   session_id?: string | null;
-  metadata?: Record<string, unknown>;
+  parent_session_id?: string | null;
+  metadata?: {
+    skills?: string[];
+    max_steps?: number;
+    provider_stream?: boolean;
+    [key: string]: unknown;
+  };
 }
 
 export interface RuntimeResponse {

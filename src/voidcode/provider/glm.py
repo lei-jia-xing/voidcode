@@ -16,12 +16,14 @@ class GLMModelProvider:
     Usage:
         providers:
           glm:
-            api_key: "your-api-key"  # or set GLM_API_KEY env var
+            api_key: "your-api-key"  # or set ZAI_API_KEY / ZHIPU_API_KEY env vars
             model_map:
               glm-4: glm-4-flash  # optional model alias
 
     Environment Variables:
-        GLM_API_KEY: API key for GLM authentication
+        ZAI_API_KEY: API key for GLM authentication via ZAI port
+        ZHIPU_API_KEY: API key for GLM authentication via ZHIPU port
+        GLM_API_KEY: optional fallback API key for compatibility
     """
 
     name: str = "glm"

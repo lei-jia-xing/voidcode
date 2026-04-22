@@ -374,4 +374,37 @@ describe('useAppStore integration flow', () => {
 
     expect(useAppStore.getState().runStatus).toBe('success');
   });
+
+  it('passes runtime metadata through runTask options', async () => {
+    const sessionId = 'session-meta';
+    const requestReceived = makeEvent(1, 'runtime.request_received', { prompt: 'analyze repo' }, 'runtime', sessionId);
+
+    async function* stream() {
+      yield makeStreamChunk(sessionId, 'completed', requestReceived);
+      yield makeStreamChunk(sessionId, 'completed', null, 'ok');
+    }
+
+    runtimeClientMocks.runStreamMock.mockReturnValue(stream());
+    runtimeClientMocks.listSessionsMock.mockResolvedValue([
+      makeStoredSessionSummary(sessionId, 'completed', 'analyze repo'),
+    ]);
+
+    await useAppStore.getState().runTask('analyze repo', {
+      metadata: {
+        skills: ['demo'],
+        max_steps: 5,
+        provider_stream: true,
+      },
+    });
+
+    expect(runtimeClientMocks.runStreamMock).toHaveBeenCalledWith({
+      prompt: 'analyze repo',
+      session_id: null,
+      metadata: {
+        skills: ['demo'],
+        max_steps: 5,
+        provider_stream: true,
+      },
+    });
+  });
 });

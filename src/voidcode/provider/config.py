@@ -133,6 +133,8 @@ def simplified_config_to_litellm(
 # =============================================================================
 
 _GLM_API_KEY_ENV_VAR = "GLM_API_KEY"
+_GLM_ZAI_API_KEY_ENV_VAR = "ZAI_API_KEY"
+_GLM_ZHIPU_API_KEY_ENV_VAR = "ZHIPU_API_KEY"
 _MINIMAX_API_KEY_ENV_VAR = "MINIMAX_API_KEY"
 _KIMI_API_KEY_ENV_VAR = "KIMI_API_KEY"
 _OPENCODE_GO_API_KEY_ENV_VAR = "OPENCODE_GO_API_KEY"
@@ -306,7 +308,12 @@ def provider_configs_from_env(env: Mapping[str, str]) -> ProviderConfigs | None:
             else None
         ),
         litellm=_litellm_provider_config_from_env(env),
-        glm=_simplified_provider_config_from_env(env, _GLM_API_KEY_ENV_VAR),
+        glm=_simplified_provider_config_from_env(
+            env,
+            _GLM_ZAI_API_KEY_ENV_VAR,
+            _GLM_ZHIPU_API_KEY_ENV_VAR,
+            _GLM_API_KEY_ENV_VAR,
+        ),
         minimax=_simplified_provider_config_from_env(env, _MINIMAX_API_KEY_ENV_VAR),
         kimi=_simplified_provider_config_from_env(env, _KIMI_API_KEY_ENV_VAR),
         opencode_go=_simplified_provider_config_from_env(env, _OPENCODE_GO_API_KEY_ENV_VAR),
@@ -351,12 +358,13 @@ def _litellm_provider_config_from_env(env: Mapping[str, str]) -> LiteLLMProvider
 
 def _simplified_provider_config_from_env(
     env: Mapping[str, str],
-    api_key_env_var: str,
+    *api_key_env_vars: str,
 ) -> SimplifiedProviderConfig | None:
-    api_key = env.get(api_key_env_var)
-    if api_key is None:
-        return None
-    return SimplifiedProviderConfig(api_key=api_key)
+    for api_key_env_var in api_key_env_vars:
+        api_key = env.get(api_key_env_var)
+        if api_key is not None:
+            return SimplifiedProviderConfig(api_key=api_key)
+    return None
 
 
 def _provider_configs_has_entries(providers: ProviderConfigs) -> bool:

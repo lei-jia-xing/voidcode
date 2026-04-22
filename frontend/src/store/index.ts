@@ -25,7 +25,18 @@ interface AppState {
   setLanguage: (lang: 'en' | 'zh-CN') => void;
   loadSessions: () => Promise<void>;
   selectSession: (sessionId: string) => Promise<void>;
-  runTask: (prompt: string) => Promise<void>;
+  runTask: (
+    prompt: string,
+    options?: {
+      sessionId?: string | null;
+      metadata?: {
+        skills?: string[];
+        max_steps?: number;
+        provider_stream?: boolean;
+        [key: string]: unknown;
+      };
+    }
+  ) => Promise<void>;
   resolveApproval: (decision: ApprovalDecision) => Promise<void>;
 }
 
@@ -138,7 +149,7 @@ export const useAppStore = create<AppState>()(
         }
       },
 
-      runTask: async (prompt: string) => {
+      runTask: async (prompt: string, options) => {
         if (get().replayStatus === 'loading') {
           return;
         }
@@ -151,7 +162,7 @@ export const useAppStore = create<AppState>()(
           approvalStatus: 'idle',
           approvalError: null
         });
-        const { currentSessionId } = get();
+        const effectiveSessionId = options?.sessionId ?? get().currentSessionId;
         set({
           replayStatus: 'idle',
           replayError: null,
@@ -161,7 +172,8 @@ export const useAppStore = create<AppState>()(
         try {
           const stream = RuntimeClient.runStream({
             prompt,
-            session_id: currentSessionId
+            session_id: effectiveSessionId,
+            metadata: options?.metadata,
           });
 
           for await (const chunk of stream) {

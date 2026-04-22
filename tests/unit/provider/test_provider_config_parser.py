@@ -476,6 +476,20 @@ def test_provider_configs_from_env_builds_opencode_go_without_repo_provider_bloc
     assert parsed.opencode_go == SimplifiedProviderConfig(api_key="opencode-go-env-key")
 
 
+def test_provider_configs_from_env_builds_glm_with_zai_api_key() -> None:
+    parsed = provider_configs_from_env({"ZAI_API_KEY": "glm-env-key"})
+
+    assert parsed is not None
+    assert parsed.glm == SimplifiedProviderConfig(api_key="glm-env-key")
+
+
+def test_provider_configs_from_env_builds_glm_with_zhipu_api_key() -> None:
+    parsed = provider_configs_from_env({"ZHIPU_API_KEY": "glm-env-key"})
+
+    assert parsed is not None
+    assert parsed.glm == SimplifiedProviderConfig(api_key="glm-env-key")
+
+
 def test_merge_provider_configs_keeps_repo_provider_over_environment_fallback() -> None:
     merged = merge_provider_configs(
         ProviderConfigs(opencode_go=SimplifiedProviderConfig(api_key="repo-key")),
