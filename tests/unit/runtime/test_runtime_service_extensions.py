@@ -204,6 +204,44 @@ class _QuestionThenDoneGraph:
         return _StubStep(output="done", is_finished=True)
 
 
+class _QuestionThenApprovalGraph:
+    def step(
+        self,
+        request: GraphRunRequest,
+        tool_results: tuple[object, ...],
+        *,
+        session: SessionState,
+    ) -> _StubStep:
+        _ = request, session
+        if not tool_results:
+            return _StubStep(
+                tool_call=ToolCall(
+                    tool_name="question",
+                    arguments={
+                        "questions": [
+                            {
+                                "question": "Which runtime path should we use?",
+                                "header": "Runtime path",
+                                "options": [
+                                    {"label": "Reuse existing", "description": ""},
+                                    {"label": "Add new path", "description": ""},
+                                ],
+                                "multiple": False,
+                            }
+                        ]
+                    },
+                )
+            )
+        if len(tool_results) == 1:
+            return _StubStep(
+                tool_call=ToolCall(
+                    tool_name="write_file",
+                    arguments={"path": "alpha.txt", "content": "1"},
+                )
+            )
+        return _StubStep(output="done", is_finished=True)
+
+
 class _UnknownToolGraph:
     def step(
         self,
@@ -5939,6 +5977,69 @@ def test_runtime_notifications_track_question_blocked_and_completion(tmp_path: P
     ]
     assert notifications[0].status == "unread"
     assert notifications[1].status == "acknowledged"
+
+
+def test_answer_question_emits_single_question_tool_completed_event(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_QuestionThenDoneGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    waiting = runtime.run(RuntimeRequest(prompt="go", session_id="question-single-tool-event"))
+    question_request_id = str(waiting.events[-1].payload["request_id"])
+
+    resumed = runtime.answer_question(
+        session_id="question-single-tool-event",
+        question_request_id=question_request_id,
+        responses=(QuestionResponse(header="Runtime path", answers=("Reuse existing",)),),
+    )
+
+    question_tool_events = [
+        event
+        for event in resumed.events
+        if event.event_type == "runtime.tool_completed" and event.payload.get("tool") == "question"
+    ]
+
+    assert len(question_tool_events) == 1
+    assert len({event.sequence for event in question_tool_events}) == 1
+
+
+def test_answered_question_does_not_override_later_pending_approval(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_QuestionThenApprovalGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    waiting = runtime.run(RuntimeRequest(prompt="go", session_id="question-then-approval"))
+    question_request_id = str(waiting.events[-1].payload["request_id"])
+
+    resumed = runtime.answer_question(
+        session_id="question-then-approval",
+        question_request_id=question_request_id,
+        responses=(QuestionResponse(header="Runtime path", answers=("Reuse existing",)),),
+    )
+
+    assert resumed.session.status == "waiting"
+    assert resumed.events[-1].event_type == "runtime.approval_requested"
+    session_store = _private_attr(runtime, "_session_store")
+
+    assert (
+        session_store.load_pending_question(
+            workspace=tmp_path,
+            session_id="question-then-approval",
+        )
+        is None
+    )
+    pending_approval = session_store.load_pending_approval(
+        workspace=tmp_path,
+        session_id="question-then-approval",
+    )
+    assert pending_approval is not None
+    assert pending_approval.tool_name == "write_file"
 
 
 def test_runtime_notifications_generate_distinct_terminal_ids_per_run(tmp_path: Path) -> None:

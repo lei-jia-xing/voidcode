@@ -2453,26 +2453,30 @@ class VoidCodeRuntime:
         )
 
     def _pending_question_from_response(self, response: RuntimeResponse) -> PendingQuestion | None:
-        question_event = next(
-            (
-                event
-                for event in reversed(response.events)
-                if event.event_type == RUNTIME_QUESTION_REQUESTED
-            ),
-            None,
-        )
-        if question_event is None:
-            return None
-        payload = question_event.payload
-        raw_questions = payload.get("questions")
-        if not isinstance(raw_questions, list):
-            raise ValueError("waiting runtime response must include question prompts")
-        return PendingQuestion(
-            request_id=str(payload["request_id"]),
-            tool_name=str(payload.get("tool", QuestionTool.definition.name)),
-            arguments={},
-            prompts=QuestionTool.parse_prompts({"questions": cast(list[object], raw_questions)}),
-        )
+        answered_request_ids = {
+            str(event.payload.get("request_id"))
+            for event in response.events
+            if event.event_type == RUNTIME_QUESTION_ANSWERED and event.payload.get("request_id")
+        }
+        for event in reversed(response.events):
+            if event.event_type != RUNTIME_QUESTION_REQUESTED:
+                continue
+            payload = event.payload
+            request_id = str(payload["request_id"])
+            if request_id in answered_request_ids:
+                continue
+            raw_questions = payload.get("questions")
+            if not isinstance(raw_questions, list):
+                raise ValueError("waiting runtime response must include question prompts")
+            return PendingQuestion(
+                request_id=request_id,
+                tool_name=str(payload.get("tool", QuestionTool.definition.name)),
+                arguments={},
+                prompts=QuestionTool.parse_prompts(
+                    {"questions": cast(list[object], raw_questions)}
+                ),
+            )
+        return None
 
     def _resume_pending_approval_stream(
         self,
@@ -2719,24 +2723,6 @@ class VoidCodeRuntime:
         )
         yield RuntimeStreamChunk(kind="event", session=session, event=answered_event)
         sequence += 1
-        yield RuntimeStreamChunk(
-            kind="event",
-            session=session,
-            event=EventEnvelope(
-                session_id=session.session.id,
-                sequence=sequence,
-                event_type="runtime.tool_completed",
-                source="tool",
-                payload={
-                    "tool": question_answer_result.tool_name,
-                    "status": question_answer_result.status,
-                    "content": question_answer_result.content,
-                    "error": question_answer_result.error,
-                    **question_answer_result.data,
-                },
-            ),
-        )
-
         loop_events = [answered_event]
         tool_completed_event = EventEnvelope(
             session_id=session.session.id,
