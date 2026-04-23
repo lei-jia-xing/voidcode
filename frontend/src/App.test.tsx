@@ -183,6 +183,77 @@ describe('App', () => {
     expect(screen.getByText('streamed answer')).toBeInTheDocument();
   });
 
+  it('avoids duplicate React keys when replayed events reuse sequence numbers across sessions', () => {
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      ...mockStore,
+      currentSessionId: 'session-2',
+      currentSessionEvents: [
+        {
+          session_id: 'session-1',
+          sequence: 1,
+          event_type: 'runtime.request_received',
+          source: 'runtime',
+          payload: { prompt: 'first prompt' }
+        },
+        {
+          session_id: 'session-2',
+          sequence: 1,
+          event_type: 'runtime.request_received',
+          source: 'runtime',
+          payload: { prompt: 'second prompt' }
+        }
+      ]
+    });
+
+    render(<App />);
+
+    expect(screen.getAllByText('first prompt').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText('second prompt').length).toBeGreaterThanOrEqual(1);
+    expect(consoleErrorSpy).not.toHaveBeenCalledWith(expect.stringContaining('Encountered two children with the same key'));
+
+    consoleErrorSpy.mockRestore();
+  });
+
+  it('avoids duplicate React keys when later turns in the same session reuse sequence numbers', () => {
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      ...mockStore,
+      currentSessionId: 'session-1',
+      currentSessionEvents: [
+        {
+          session_id: 'session-1',
+          sequence: 1,
+          event_type: 'runtime.request_received',
+          source: 'runtime',
+          payload: { prompt: 'first turn' }
+        },
+        {
+          session_id: 'session-1',
+          sequence: 2,
+          event_type: 'graph.response_ready',
+          source: 'graph',
+          payload: { output: 'first answer' }
+        },
+        {
+          session_id: 'session-1',
+          sequence: 1,
+          event_type: 'runtime.request_received',
+          source: 'runtime',
+          payload: { prompt: 'second turn' }
+        }
+      ]
+    });
+
+    render(<App />);
+
+    expect(screen.getAllByText('first turn').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText('second turn').length).toBeGreaterThanOrEqual(1);
+    expect(consoleErrorSpy).not.toHaveBeenCalledWith(expect.stringContaining('Encountered two children with the same key'));
+
+    consoleErrorSpy.mockRestore();
+  });
+
   it('does not render thinking block when no reasoning events exist', () => {
     (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
       ...mockStore,

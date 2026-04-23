@@ -166,12 +166,21 @@ export function deriveActivitiesFromEvents(events: EventEnvelope[]) {
   });
 }
 
-export function deriveChatMessages(events: EventEnvelope[], currentOutput: string | null): ChatMessage[] {
+export function deriveChatMessages(
+  events: EventEnvelope[],
+  currentOutput: string | null,
+  fallbackSessionId: string | null = null,
+): ChatMessage[] {
   const messages: ChatMessage[] = [];
   let currentAssistant: ChatMessage | null = null;
+  let requestOrdinal = 0;
 
   for (const event of events) {
+    const messageSessionId = event.session_id || fallbackSessionId || 'session';
+
     if (event.event_type === 'runtime.request_received') {
+      requestOrdinal += 1;
+
       if (currentAssistant) {
         if (currentAssistant.status === 'in_progress') {
           currentAssistant.status = 'completed';
@@ -181,7 +190,7 @@ export function deriveChatMessages(events: EventEnvelope[], currentOutput: strin
 
       const prompt = typeof event.payload?.prompt === 'string' ? event.payload.prompt : '';
       messages.push({
-        id: `user-${event.sequence}`,
+        id: `user-${messageSessionId}-${requestOrdinal}-${event.sequence}`,
         role: 'user',
         content: prompt,
         thinking: [],
@@ -192,7 +201,7 @@ export function deriveChatMessages(events: EventEnvelope[], currentOutput: strin
       });
 
       currentAssistant = {
-        id: `assistant-${event.sequence}`,
+        id: `assistant-${messageSessionId}-${requestOrdinal}-${event.sequence}`,
         role: 'assistant',
         content: '',
         thinking: [],

@@ -34,8 +34,8 @@ function App() {
   const isWaitingApproval = currentSessionState?.status === 'waiting';
 
   const chatMessages = useMemo(
-    () => deriveChatMessages(currentSessionEvents, currentSessionOutput),
-    [currentSessionEvents, currentSessionOutput]
+    () => deriveChatMessages(currentSessionEvents, currentSessionOutput, currentSessionId),
+    [currentSessionEvents, currentSessionId, currentSessionOutput]
   );
 
   useEffect(() => {
