@@ -242,6 +242,46 @@ class _QuestionThenApprovalGraph:
         return _StubStep(output="done", is_finished=True)
 
 
+class _TwoQuestionThenDoneGraph:
+    def step(
+        self,
+        request: GraphRunRequest,
+        tool_results: tuple[object, ...],
+        *,
+        session: SessionState,
+    ) -> _StubStep:
+        _ = request, session
+        if not tool_results:
+            return _StubStep(
+                tool_call=ToolCall(
+                    tool_name="question",
+                    arguments={
+                        "questions": [
+                            {
+                                "question": "Which runtime path should we use?",
+                                "header": "Runtime path",
+                                "options": [
+                                    {"label": "Reuse existing", "description": ""},
+                                    {"label": "Add new path", "description": ""},
+                                ],
+                                "multiple": False,
+                            },
+                            {
+                                "question": "Which review mode should we use?",
+                                "header": "Review mode",
+                                "options": [
+                                    {"label": "Fast", "description": ""},
+                                    {"label": "Thorough", "description": ""},
+                                ],
+                                "multiple": False,
+                            },
+                        ]
+                    },
+                )
+            )
+        return _StubStep(output="done", is_finished=True)
+
+
 class _UnknownToolGraph:
     def step(
         self,
@@ -6040,6 +6080,69 @@ def test_answered_question_does_not_override_later_pending_approval(tmp_path: Pa
     )
     assert pending_approval is not None
     assert pending_approval.tool_name == "write_file"
+
+
+def test_answer_question_rejects_duplicate_headers(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_TwoQuestionThenDoneGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    waiting = runtime.run(RuntimeRequest(prompt="go", session_id="question-duplicate-header"))
+    question_request_id = str(waiting.events[-1].payload["request_id"])
+
+    with pytest.raises(ValueError, match="duplicate question header"):
+        runtime.answer_question(
+            session_id="question-duplicate-header",
+            question_request_id=question_request_id,
+            responses=(
+                QuestionResponse(header="Runtime path", answers=("Reuse existing",)),
+                QuestionResponse(header="Runtime path", answers=("Reuse existing",)),
+            ),
+        )
+
+
+def test_answer_question_normalizes_multi_question_response_order(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_TwoQuestionThenDoneGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    waiting = runtime.run(RuntimeRequest(prompt="go", session_id="question-response-order"))
+    question_request_id = str(waiting.events[-1].payload["request_id"])
+
+    resumed = runtime.answer_question(
+        session_id="question-response-order",
+        question_request_id=question_request_id,
+        responses=(
+            QuestionResponse(header="Review mode", answers=("Fast",)),
+            QuestionResponse(header="Runtime path", answers=("Reuse existing",)),
+        ),
+    )
+
+    assert resumed.session.status == "completed"
+
+    answered_event = next(
+        event for event in resumed.events if event.event_type == "runtime.question_answered"
+    )
+    tool_completed_event = next(
+        event
+        for event in resumed.events
+        if event.event_type == "runtime.tool_completed" and event.payload.get("tool") == "question"
+    )
+
+    assert answered_event.payload["responses"] == [
+        {"header": "Runtime path", "answers": ["Reuse existing"]},
+        {"header": "Review mode", "answers": ["Fast"]},
+    ]
+    assert tool_completed_event.payload["responses"] == [
+        {"header": "Runtime path", "answers": ["Reuse existing"]},
+        {"header": "Review mode", "answers": ["Fast"]},
+    ]
 
 
 def test_runtime_notifications_generate_distinct_terminal_ids_per_run(tmp_path: Path) -> None:
