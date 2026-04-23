@@ -1771,7 +1771,7 @@ def test_runtime_migrates_legacy_session_schema_for_pending_approval(tmp_path: P
     assert "resume_checkpoint_json" in columns
     assert "request_parent_session_id" in background_task_columns
     assert delivery_tables == [("session_event_deliveries",)]
-    assert user_version == 6
+    assert user_version == 7
 
 
 def test_runtime_replay_is_unchanged_when_resume_checkpoint_exists(tmp_path: Path) -> None:
