@@ -239,9 +239,7 @@ export const useAppStore = create<AppState>()(
           ),
         );
         const forwardAgentMetadata = Object.fromEntries(
-          Object.entries(rawAgentMetadata).filter(
-            ([key]) => key !== "leader_mode",
-          ),
+          Object.entries(rawAgentMetadata),
         );
 
         const metadata = {
