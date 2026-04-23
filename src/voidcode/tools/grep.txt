@@ -1,0 +1,8 @@
+Search for a literal pattern in a UTF-8 text file inside the local workspace.
+
+Usage:
+- The pattern parameter is required and must be a non-empty string.
+- The path parameter is required and must point to a workspace-relative file.
+- This tool performs literal matching inside one file. It does not do repository-wide regex search.
+- Use glob or list first if you do not yet know the target path.
+- The returned match_count and matches data are the source of truth for follow-up decisions.

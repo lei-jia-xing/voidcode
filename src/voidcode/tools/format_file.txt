@@ -1,0 +1,7 @@
+Format a single file inside the local workspace using the runtime-managed formatter configuration.
+
+Usage:
+- The path parameter is required and must be a workspace-relative file path.
+- Use this tool only when the intended operation is formatting a file, not changing its meaning.
+- Do not use format_file as a substitute for semantic edits.
+- Treat data.path, data.language, data.command, stdout, and stderr as the source of truth for follow-up decisions.
