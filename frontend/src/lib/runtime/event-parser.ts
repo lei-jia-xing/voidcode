@@ -209,9 +209,25 @@ export function deriveChatMessages(events: EventEnvelope[], currentOutput: strin
           ? event.payload.delta
           : typeof event.payload?.content === 'string'
             ? event.payload.content
-            : '';
+            : typeof event.payload?.text === 'string'
+              ? event.payload.text
+              : '';
         if (delta) {
           currentAssistant.thinking.push(delta);
+        }
+      }
+
+    } else if (event.event_type === 'graph.provider_stream' && event.payload?.channel === 'text') {
+      if (currentAssistant) {
+        const delta = typeof event.payload?.text === 'string'
+          ? event.payload.text
+          : typeof event.payload?.delta === 'string'
+            ? event.payload.delta
+            : typeof event.payload?.content === 'string'
+              ? event.payload.content
+              : '';
+        if (delta) {
+          currentAssistant.content += delta;
         }
       }
 

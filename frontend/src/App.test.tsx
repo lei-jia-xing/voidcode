@@ -95,11 +95,18 @@ describe('App', () => {
           sequence: 2,
           event_type: 'graph.provider_stream',
           source: 'graph',
-          payload: { channel: 'reasoning', delta: 'Let me read the file...' }
+          payload: { channel: 'reasoning', text: 'Let me read the file...' }
         },
         {
           session_id: 'session-1',
           sequence: 3,
+          event_type: 'graph.provider_stream',
+          source: 'graph',
+          payload: { channel: 'text', text: 'Here is the README content.' }
+        },
+        {
+          session_id: 'session-1',
+          sequence: 4,
           event_type: 'graph.response_ready',
           source: 'graph',
           payload: { output: 'Here is the README content.' }
@@ -130,7 +137,7 @@ describe('App', () => {
           sequence: 2,
           event_type: 'graph.provider_stream',
           source: 'graph',
-          payload: { channel: 'reasoning', delta: 'Analyzing...' }
+          payload: { channel: 'reasoning', text: 'Analyzing...' }
         }
       ],
       currentSessionOutput: null
@@ -139,6 +146,41 @@ describe('App', () => {
     render(<App />);
 
     expect(screen.getByText('Thinking')).toBeInTheDocument();
+  });
+
+  it('renders streamed assistant text before the final response event', () => {
+    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      ...mockStore,
+      currentSessionEvents: [
+        {
+          session_id: 'session-1',
+          sequence: 1,
+          event_type: 'runtime.request_received',
+          source: 'runtime',
+          payload: { prompt: 'stream this' }
+        },
+        {
+          session_id: 'session-1',
+          sequence: 2,
+          event_type: 'graph.provider_stream',
+          source: 'graph',
+          payload: { channel: 'text', text: 'streamed ' }
+        },
+        {
+          session_id: 'session-1',
+          sequence: 3,
+          event_type: 'graph.provider_stream',
+          source: 'graph',
+          payload: { channel: 'text', text: 'answer' }
+        }
+      ],
+      currentSessionOutput: null,
+      runStatus: 'running'
+    });
+
+    render(<App />);
+
+    expect(screen.getByText('streamed answer')).toBeInTheDocument();
   });
 
   it('does not render thinking block when no reasoning events exist', () => {
