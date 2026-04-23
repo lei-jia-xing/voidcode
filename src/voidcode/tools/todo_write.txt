@@ -1,5 +1,20 @@
-Use todo_write to update runtime-visible agent work state for the current task.
+Use this tool to create and manage a structured task list for the current coding session. This helps track progress, organize complex tasks, and make work state explicit.
 
-Do not use it as project documentation, persistent memory, or a substitute for explaining progress to the user. Keep items concrete and current.
+When to use this tool:
+- Complex multistep tasks
+- Non-trivial implementation work
+- When the user explicitly asks for a todo list
+- When the user gives multiple tasks or expands scope
 
-This tool is not read-only and may require approval. Treat data.summary and data.path as the stable result fields.
+When not to use this tool:
+- A single straightforward task
+- A trivial change that can be completed immediately
+- Purely conversational or informational requests
+
+Task states:
+- pending
+- in_progress
+- completed
+- cancelled
+
+Keep items concrete and current. Treat data.summary and data.path as the stable result fields.

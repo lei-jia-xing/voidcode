@@ -1,5 +1,12 @@
-Use web_fetch when you have a specific http or https URL and need page content.
+- Fetches content from a specified URL
+- Takes a URL and optional format as input
+- Fetches the URL content and converts it to the requested format
+- Returns the content in text, markdown, or html format
+- Use this tool when you need to retrieve and analyze web content from a known URL
 
-Do not use it for localhost, private network, link-local, metadata, or internal targets. Use web_search first when no URL is known.
-
-This tool is read-only. Treat returned content plus data.url, data.content_type, data.format, and data.byte_count as external evidence, not as repository state.
+Usage notes:
+  - The URL must be a fully-formed valid http or https URL
+  - localhost, private-network, metadata, and other blocked internal targets are rejected
+  - Format options: "markdown" (default), "text", or "html"
+  - This tool is read-only and does not modify any files
+  - Use web_search first when you do not yet know the URL
