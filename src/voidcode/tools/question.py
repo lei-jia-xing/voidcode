@@ -92,11 +92,15 @@ class QuestionTool:
         prompts: tuple[PendingQuestionPrompt, ...],
         responses: tuple[QuestionResponse, ...],
     ) -> tuple[QuestionResponse, ...]:
-        if len(prompts) != len(responses):
-            raise ValueError("question answers must match the number of requested questions")
-        prompt_by_header = {prompt.header: prompt for prompt in prompts}
-        normalized: list[QuestionResponse] = []
+        prompt_by_header: dict[str, PendingQuestionPrompt] = {}
+        for prompt in prompts:
+            if prompt.header in prompt_by_header:
+                raise ValueError(f"duplicate question header: {prompt.header}")
+            prompt_by_header[prompt.header] = prompt
+        response_by_header: dict[str, QuestionResponse] = {}
         for response in responses:
+            if response.header in response_by_header:
+                raise ValueError(f"duplicate question header: {response.header}")
             prompt = prompt_by_header.get(response.header)
             if prompt is None:
                 raise ValueError(f"unknown question header: {response.header}")
@@ -108,10 +112,16 @@ class QuestionTool:
             for answer in response.answers:
                 if answer not in option_labels:
                     raise ValueError(
-                        f"question '{response.header}' answer must match one of the declared option labels"  # noqa: E501
+                        "question "
+                        f"'{response.header}' answer must match one of the declared option labels"
                     )
-            normalized.append(response)
-        return tuple(normalized)
+            response_by_header[response.header] = response
+        missing_headers = [
+            prompt.header for prompt in prompts if prompt.header not in response_by_header
+        ]
+        if missing_headers:
+            raise ValueError("missing answers for question headers: " + ", ".join(missing_headers))
+        return tuple(response_by_header[prompt.header] for prompt in prompts)
 
     @staticmethod
     def answer_tool_result(responses: tuple[QuestionResponse, ...]) -> ToolResult:
