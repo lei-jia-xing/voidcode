@@ -68,6 +68,8 @@ _SIMPLIFIED_DEFAULTS: dict[str, tuple[str, str | None, dict[str, str]]] = {
             "kimi-k2.6": "kimi-k2.6",
             "mimo-v2-omni": "mimo-v2-omni",
             "mimo-v2-pro": "mimo-v2-pro",
+            "mimo-v2.5": "mimo-v2.5",
+            "mimo-v2.5-pro": "mimo-v2.5-pro",
             "minimax-m2.5": "minimax-m2.5",
             "minimax-m2.7": "minimax-m2.7",
             "qwen3.5-plus": "qwen3.5-plus",

@@ -16,6 +16,7 @@ type PersistedState = {
     agentPreset?: 'leader';
     leaderMode?: 'direct_execute' | 'plan_first';
     providerModel?: string;
+    maxSteps?: number;
   };
   version: number;
 };
@@ -318,7 +319,8 @@ describe('useAppStore integration flow', () => {
         currentSessionId: sessionId,
         agentPreset: 'leader',
         leaderMode: 'plan_first',
-        providerModel: 'test-model/v1'
+        providerModel: 'test-model/v1',
+        maxSteps: 24
       },
       version: 0,
     };
@@ -339,6 +341,7 @@ describe('useAppStore integration flow', () => {
     expect(state.agentPreset).toBe('leader');
     expect(state.leaderMode).toBe('plan_first');
     expect(state.providerModel).toBe('test-model/v1');
+    expect(state.maxSteps).toBe(24);
     expect(state.currentSessionState?.status).toBe('completed');
     expect(state.currentSessionOutput).toBe('note body');
     expect(runtimeClientMocks.getSessionReplayMock).toHaveBeenCalledWith(sessionId);
@@ -353,7 +356,8 @@ describe('useAppStore integration flow', () => {
         currentSessionId: sessionId,
         agentPreset: 'leader',
         leaderMode: 'plan_first',
-        providerModel: 'test-model/v1'
+        providerModel: 'test-model/v1',
+        maxSteps: 24
       },
       version: 0,
     };
@@ -457,7 +461,7 @@ describe('useAppStore integration flow', () => {
         agent: {
           preset: 'leader',
           leader_mode: 'direct_execute',
-          model: 'opencode-go/glm-5'
+          model: 'opencode-go/glm-5.1'
         }
       },
     });
@@ -484,10 +488,11 @@ describe('useAppStore integration flow', () => {
       prompt: 'new run',
       session_id: null,
       metadata: {
+        max_steps: 16,
         agent: {
           preset: 'leader',
           leader_mode: 'direct_execute',
-          model: 'opencode-go/glm-5'
+          model: 'opencode-go/glm-5.1'
         }
       },
     });
@@ -518,10 +523,11 @@ describe('useAppStore integration flow', () => {
       prompt: 'start new',
       session_id: null,
       metadata: {
+        max_steps: 16,
         agent: {
           preset: 'leader',
           leader_mode: 'direct_execute',
-          model: 'opencode-go/glm-5'
+          model: 'opencode-go/glm-5.1'
         }
       },
     });

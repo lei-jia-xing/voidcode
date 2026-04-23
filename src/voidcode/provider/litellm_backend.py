@@ -36,6 +36,7 @@ class LiteLLMBackendSingleAgentProvider:
     name: str
     config: LiteLLMProviderConfig | None
     completion_kwargs: dict[str, object] | None = None
+    use_raw_model_name: bool = False
 
     _LEADER_PROFILE_PROMPT = (
         "You are the VoidCode leader agent, the primary user-facing runtime agent. "
@@ -82,8 +83,14 @@ class LiteLLMBackendSingleAgentProvider:
                 message="provider requires model name",
             )
         if self.config is not None and request.model_name in self.config.model_map:
-            return self.config.model_map[request.model_name]
-        return f"{self.name}/{request.model_name}"
+            model_name = self.config.model_map[request.model_name]
+        else:
+            model_name = request.model_name
+        if self.use_raw_model_name:
+            return model_name
+        if "/" in model_name:
+            return model_name
+        return f"{self.name}/{model_name}"
 
     def _api_base(self) -> str:
         base_url = None if self.config is None else self.config.base_url
@@ -93,6 +100,10 @@ class LiteLLMBackendSingleAgentProvider:
         if re.search(r"/v[0-9]+(?:beta|alpha)?$", stripped, re.IGNORECASE):
             return stripped
         return f"{stripped}/v1"
+
+    def _completion_kwargs_for_request(self, request: SingleAgentTurnRequest) -> dict[str, object]:
+        _ = request
+        return dict(self.completion_kwargs or {})
 
     @staticmethod
     def _skill_system_message(request: SingleAgentTurnRequest) -> str | None:
@@ -260,8 +271,7 @@ class LiteLLMBackendSingleAgentProvider:
             "num_retries": 0,
             **self._auth_kwargs(),
         }
-        if self.completion_kwargs:
-            payload.update(self.completion_kwargs)
+        payload.update(self._completion_kwargs_for_request(request))
         if request.available_tools:
             payload["tools"] = [self._to_tool_schema(tool) for tool in request.available_tools]
             payload["tool_choice"] = "auto"
@@ -312,8 +322,7 @@ class LiteLLMBackendSingleAgentProvider:
             "num_retries": 0,
             **self._auth_kwargs(),
         }
-        if self.completion_kwargs:
-            payload.update(self.completion_kwargs)
+        payload.update(self._completion_kwargs_for_request(request))
         if request.available_tools:
             payload["tools"] = [self._to_tool_schema(tool) for tool in request.available_tools]
             payload["tool_choice"] = "auto"

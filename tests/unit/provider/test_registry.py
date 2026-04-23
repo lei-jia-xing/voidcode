@@ -267,6 +267,8 @@ def test_registry_registers_opencode_go_provider() -> None:
     assert config.discovery_base_url == ""
     assert "kimi-k2.5" in config.model_map.values()
     assert "kimi-k2.6" in config.model_map.values()
+    assert "mimo-v2.5" in config.model_map.values()
+    assert "mimo-v2.5-pro" in config.model_map.values()
     assert "qwen-plus" not in config.model_map
     assert "qwen-max" not in config.model_map
     assert "qwen-flash" not in config.model_map
@@ -347,6 +349,8 @@ def test_registry_simplified_provider_uses_default_base_url_when_not_set() -> No
     assert opencode_go_config.model_map.get("kimi-k2.5") == "kimi-k2.5"
     assert opencode_go_config.model_map.get("kimi-k2.6") == "kimi-k2.6"
     assert opencode_go_config.model_map.get("glm-5") == "glm-5"
+    assert opencode_go_config.model_map.get("glm-5.1") == "glm-5.1"
+    assert opencode_go_config.model_map.get("mimo-v2.5") == "mimo-v2.5"
 
     qwen_config = registry.provider_config("qwen")
     assert qwen_config is not None

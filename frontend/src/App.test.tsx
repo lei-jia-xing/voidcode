@@ -18,10 +18,12 @@ describe('App', () => {
     setLanguage: vi.fn(),
     agentPreset: 'leader',
     leaderMode: 'direct_execute',
-    providerModel: 'opencode-go/glm-5',
+    providerModel: 'opencode-go/glm-5.1',
+    maxSteps: 16,
     setAgentPreset: vi.fn(),
     setLeaderMode: vi.fn(),
     setProviderModel: vi.fn(),
+    setMaxSteps: vi.fn(),
     sessions: [],
     currentSessionId: null,
     currentSessionState: null,
@@ -72,13 +74,20 @@ describe('App', () => {
 
     const modelInput = screen.getByLabelText('Model');
     expect(modelInput).toBeInTheDocument();
-    expect(modelInput).toHaveValue('opencode-go/glm-5');
+    expect(modelInput).toHaveValue('opencode-go/glm-5.1');
+
+    const maxStepsInput = screen.getByLabelText('Max Steps');
+    expect(maxStepsInput).toBeInTheDocument();
+    expect(maxStepsInput).toHaveValue(16);
 
     fireEvent.change(modeSelect, { target: { value: 'plan_first' } });
     expect(mockStore.setLeaderMode).toHaveBeenCalledWith('plan_first');
 
     fireEvent.change(modelInput, { target: { value: 'new-model/v1' } });
     expect(mockStore.setProviderModel).toHaveBeenCalledWith('new-model/v1');
+
+    fireEvent.change(maxStepsInput, { target: { value: '24' } });
+    expect(mockStore.setMaxSteps).toHaveBeenCalledWith(24);
   });
 
   it('renders tasks and events when current session has events', () => {

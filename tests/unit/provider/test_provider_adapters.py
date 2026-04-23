@@ -19,6 +19,7 @@ from voidcode.provider.errors import (
 from voidcode.provider.google import GoogleModelProvider
 from voidcode.provider.litellm import LiteLLMModelProvider
 from voidcode.provider.openai import OpenAIModelProvider
+from voidcode.provider.opencode_go import OpenCodeGoModelProvider
 from voidcode.provider.protocol import (
     ModelProvider,
     ProviderExecutionError,
@@ -553,6 +554,63 @@ def test_provider_adapter_propose_turn_uses_model_map_for_litellm_alias(
     assert isinstance(payload_obj, dict)
     payload = cast(dict[str, object], payload_obj)
     assert payload["model"] == "openrouter/openai/gpt-4o"
+
+
+@pytest.mark.parametrize(
+    ("model_name", "custom_provider"),
+    [
+        ("glm-5.1", "openai"),
+        ("kimi-k2.6", "openai"),
+        ("mimo-v2.5-pro", "openai"),
+        ("minimax-m2.7", "anthropic"),
+        ("minimax-m2.5", "anthropic"),
+        ("qwen3.6-plus", "dashscope"),
+        ("qwen3.5-plus", "dashscope"),
+    ],
+)
+def test_opencode_go_provider_routes_model_families_to_required_sdk_adapter(
+    monkeypatch: pytest.MonkeyPatch,
+    model_name: str,
+    custom_provider: str,
+) -> None:
+    from voidcode.provider.config import SimplifiedProviderConfig
+
+    provider = OpenCodeGoModelProvider(config=SimplifiedProviderConfig(api_key="opencode-go-key"))
+    single_agent = provider.single_agent_provider()
+
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        completion_content="ok",
+    )
+
+    result = single_agent.propose_turn(
+        SingleAgentTurnRequest(
+            prompt="read sample.txt",
+            available_tools=(
+                ToolDefinition(name="read_file", description="read file", read_only=True),
+            ),
+            tool_results=(),
+            context_window=_StubContextWindow(prompt="read sample.txt", tool_results=()),
+            applied_skills=(),
+            raw_model=f"opencode-go/{model_name}",
+            provider_name="opencode-go",
+            model_name=model_name,
+            attempt=0,
+            abort_signal=None,
+        )
+    )
+
+    assert result.output == "ok"
+    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+    assert isinstance(payload_obj, dict)
+    payload = cast(dict[str, object], payload_obj)
+    assert payload["model"] == model_name
+    assert payload["custom_llm_provider"] == custom_provider
+    assert payload["api_base"] == "https://opencode.ai/zen/go/v1"
+    assert payload["api_key"] == "opencode-go-key"
+    assert payload.get("tools")
+    assert payload.get("tool_choice") == "auto"
 
 
 def test_glm_provider_does_not_append_v1_to_base_url(monkeypatch: pytest.MonkeyPatch) -> None:

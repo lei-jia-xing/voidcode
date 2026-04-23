@@ -9,6 +9,7 @@ interface AppState {
   agentPreset: 'leader';
   leaderMode: 'direct_execute' | 'plan_first';
   providerModel: string;
+  maxSteps: number;
 
   sessions: StoredSessionSummary[];
   currentSessionId: string | null;
@@ -30,6 +31,7 @@ interface AppState {
   setAgentPreset: (preset: 'leader') => void;
   setLeaderMode: (mode: 'direct_execute' | 'plan_first') => void;
   setProviderModel: (model: string) => void;
+  setMaxSteps: (maxSteps: number) => void;
   loadSessions: () => Promise<void>;
   selectSession: (sessionId: string) => Promise<void>;
   runTask: (
@@ -69,7 +71,8 @@ export const useAppStore = create<AppState>()(
       language: 'en',
       agentPreset: 'leader',
       leaderMode: 'direct_execute',
-      providerModel: 'opencode-go/glm-5',
+      providerModel: 'opencode-go/glm-5.1',
+      maxSteps: 16,
 
       sessions: [],
       currentSessionId: null,
@@ -91,6 +94,12 @@ export const useAppStore = create<AppState>()(
       setAgentPreset: (agentPreset) => set({ agentPreset }),
       setLeaderMode: (leaderMode) => set({ leaderMode }),
       setProviderModel: (providerModel) => set({ providerModel }),
+      setMaxSteps: (maxSteps) => {
+        const normalizedMaxSteps = Number.isFinite(maxSteps)
+          ? Math.max(1, Math.floor(maxSteps))
+          : 1;
+        set({ maxSteps: normalizedMaxSteps });
+      },
 
       loadSessions: async () => {
         set({ sessionsStatus: 'loading', sessionsError: null });
@@ -202,6 +211,7 @@ export const useAppStore = create<AppState>()(
         });
 
         const metadata = {
+          max_steps: get().maxSteps,
           ...options?.metadata,
           agent: {
             preset: get().agentPreset,
@@ -295,6 +305,7 @@ export const useAppStore = create<AppState>()(
         agentPreset: state.agentPreset,
         leaderMode: state.leaderMode,
         providerModel: state.providerModel,
+        maxSteps: state.maxSteps,
         currentSessionId: state.currentSessionId
       })
     }

@@ -39,8 +39,8 @@ function getPendingApprovalEvent(events: EventEnvelope[]): EventEnvelope | null 
 function App() {
   const {
     language, setLanguage,
-    agentPreset, leaderMode, providerModel,
-    setLeaderMode, setProviderModel,
+    agentPreset, leaderMode, providerModel, maxSteps,
+    setLeaderMode, setProviderModel, setMaxSteps,
     sessions, currentSessionId, currentSessionEvents, currentSessionOutput,
     currentSessionState,
     loadSessions, sessionsStatus, sessionsError, selectSession, runTask, resolveApproval, replayStatus, replayError, runStatus, runError,
@@ -317,7 +317,20 @@ function App() {
                       value={providerModel}
                       onChange={(e) => setProviderModel(e.target.value)}
                       disabled={isRunning || isReplayLoading || isWaitingApproval || isApprovalSubmitting}
-                      placeholder="e.g. opencode-go/glm-5"
+                      placeholder="e.g. opencode-go/glm-5.1"
+                      className="bg-slate-900 border border-slate-700 rounded-md px-3 py-1.5 text-sm text-slate-300 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-colors w-full disabled:opacity-50 disabled:cursor-not-allowed"
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1 flex-1 min-w-[120px] max-w-[160px]">
+                    <label htmlFor="maxSteps" className="text-xs font-medium text-slate-400">{t('config.maxSteps')}</label>
+                    <input
+                      id="maxSteps"
+                      type="number"
+                      min={1}
+                      max={64}
+                      value={maxSteps}
+                      onChange={(e) => setMaxSteps(Number(e.target.value))}
+                      disabled={isRunning || isReplayLoading || isWaitingApproval || isApprovalSubmitting}
                       className="bg-slate-900 border border-slate-700 rounded-md px-3 py-1.5 text-sm text-slate-300 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-colors w-full disabled:opacity-50 disabled:cursor-not-allowed"
                     />
                   </div>
