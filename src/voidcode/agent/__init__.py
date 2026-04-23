@@ -8,6 +8,7 @@ from .builtin import (
     get_builtin_agent_manifest,
     list_builtin_agent_manifests,
 )
+from .leader import render_leader_prompt
 from .models import AgentExecutionEngineName, AgentManifest, AgentManifestId, AgentMode
 
 __all__ = [
@@ -23,4 +24,5 @@ __all__ = [
     "WORKER_AGENT_MANIFEST",
     "get_builtin_agent_manifest",
     "list_builtin_agent_manifests",
+    "render_leader_prompt",
 ]

@@ -1,5 +1,10 @@
-Use edit for one focused text replacement in one existing file after reading enough context.
+Performs exact string replacements in files.
 
-Prefer multi_edit when several ordered replacements are needed in the same file. Prefer apply_patch for cross-file changes, add/delete/rename operations, or patch-shaped work. Prefer write_file only for new files or complete rewrites.
-
-This tool is not read-only and may require approval. On success, treat the final on-disk file state and returned data.diff, data.additions, data.deletions, and data.match_count as the next source of truth.
+Usage:
+- You should read the file first before editing so the replacement is grounded in real context.
+- The path parameter must be a workspace-relative file path.
+- oldString and newString must be strings. oldString must match the existing file content.
+- ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required.
+- The edit will fail if oldString is not found in the file.
+- The edit will fail if oldString matches multiple locations and replaceAll is not true.
+- Use replaceAll for replacing every occurrence in the file, such as a local rename.

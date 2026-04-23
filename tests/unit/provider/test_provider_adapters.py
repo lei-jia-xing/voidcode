@@ -536,7 +536,8 @@ def test_provider_adapter_injects_leader_prompt_profile_system_message(
     assert isinstance(messages_obj, list)
     messages = cast(list[dict[str, str]], messages_obj)
     assert messages[0]["role"] == "system"
-    assert "VoidCode leader agent" in messages[0]["content"]
+    assert "VoidCode's leader agent" in messages[0]["content"]
+    assert "single active execution agent path" in messages[0]["content"]
     assert messages[1] == {"role": "user", "content": "read sample.txt"}
 
 

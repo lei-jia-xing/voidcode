@@ -355,7 +355,7 @@ def test_run_command_accepts_skills_max_steps_and_provider_stream_flags() -> Non
     assert request.metadata["provider_stream"] is True
 
 
-def test_run_command_accepts_explicit_leader_mode_override() -> None:
+def test_run_command_prints_request_observability_event(capsys: Any) -> None:
     cli = importlib.import_module("voidcode.cli")
     workspace = Path("/tmp/demo-workspace")
     config = SimpleNamespace(approval_mode="allow")
@@ -367,7 +367,6 @@ def test_run_command_accepts_explicit_leader_mode_override() -> None:
                 "runtime.request_received",
                 prompt="read README.md",
                 agent_preset="leader",
-                leader_mode="plan_first",
             ),
         ),
         _make_chunk(session_id="demo-session", status="completed", output="done\n"),
@@ -382,56 +381,6 @@ def test_run_command_accepts_explicit_leader_mode_override() -> None:
                     "read README.md",
                     "--workspace",
                     str(workspace),
-                    "--leader-mode",
-                    "plan_first",
-                ]
-            )
-
-    assert result == 0
-    runtime_class.return_value.run_stream.assert_called_once()
-    request = runtime_class.return_value.run_stream.call_args.args[0]
-    assert request.metadata["agent"] == {"preset": "leader", "leader_mode": "plan_first"}
-
-
-def test_run_command_prints_leader_mode_observability_event(capsys: Any) -> None:
-    cli = importlib.import_module("voidcode.cli")
-    workspace = Path("/tmp/demo-workspace")
-    config = SimpleNamespace(approval_mode="allow")
-    chunks = (
-        _make_chunk(
-            session_id="demo-session",
-            status="completed",
-            event=_runtime_event(
-                "runtime.request_received",
-                prompt="read README.md",
-                agent_preset="leader",
-                leader_mode="plan_first",
-            ),
-        ),
-        _make_chunk(
-            session_id="demo-session",
-            status="completed",
-            event=_runtime_event(
-                "runtime.plan_created",
-                kind="leader.plan_first",
-                version=1,
-                step_count=1,
-            ),
-        ),
-        _make_chunk(session_id="demo-session", status="completed", output="done\n"),
-    )
-
-    with patch.object(cli, "load_runtime_config", autospec=True, return_value=config):
-        with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
-            runtime_class.return_value.run_stream.return_value = iter(chunks)
-            result = cli.main(
-                [
-                    "run",
-                    "read README.md",
-                    "--workspace",
-                    str(workspace),
-                    "--leader-mode",
-                    "plan_first",
                 ]
             )
 
@@ -440,15 +389,11 @@ def test_run_command_prints_leader_mode_observability_event(capsys: Any) -> None
     assert result == 0
     assert (
         "EVENT runtime.request_received source=runtime "
-        "agent_preset=leader leader_mode=plan_first prompt=read README.md" in captured.out
-    )
-    assert (
-        "EVENT runtime.plan_created source=runtime "
-        "kind=leader.plan_first step_count=1 version=1" in captured.out
+        "agent_preset=leader prompt=read README.md" in captured.out
     )
 
 
-def test_run_command_real_cli_plan_first_without_model_is_truthful() -> None:
+def test_run_command_real_cli_reports_current_request_truth_without_agent_preset() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         workspace = Path(tmp)
         env = with_src_pythonpath(os.environ.copy())
@@ -458,45 +403,14 @@ def test_run_command_real_cli_plan_first_without_model_is_truthful() -> None:
             "read README.md",
             "--workspace",
             str(workspace),
-            "--leader-mode",
-            "plan_first",
             env=env,
         )
 
     assert result.returncode != 0
-    assert (
-        "EVENT runtime.request_received source=runtime "
-        "agent_preset=leader leader_mode=plan_first prompt=read README.md" in result.stdout
-    )
-    assert "EVENT runtime.plan_created source=runtime" in result.stdout
-    assert "configured single-agent model" in result.stderr
-    assert "VOIDCODE_MODEL" in result.stderr
-    assert "Traceback" not in result.stderr
-
-
-def test_run_command_real_cli_direct_execute_without_model_is_truthful() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        workspace = Path(tmp)
-        env = with_src_pythonpath(os.environ.copy())
-
-        result = _run_module_cli(
-            "run",
-            "read README.md",
-            "--workspace",
-            str(workspace),
-            "--leader-mode",
-            "direct_execute",
-            env=env,
-        )
-
-    assert result.returncode != 0
-    assert (
-        "EVENT runtime.request_received source=runtime "
-        "agent_preset=leader leader_mode=direct_execute prompt=read README.md" in result.stdout
-    )
+    assert "EVENT runtime.request_received source=runtime prompt=read README.md" in result.stdout
     assert "EVENT runtime.plan_created source=runtime" not in result.stdout
-    assert "configured single-agent model" in result.stderr
-    assert "VOIDCODE_MODEL" in result.stderr
+    assert "read_file target does not exist: README.md" in result.stdout
+    assert "read_file target does not exist: README.md" in result.stderr
     assert "Traceback" not in result.stderr
 
 

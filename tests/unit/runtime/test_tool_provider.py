@@ -282,12 +282,17 @@ def test_builtin_tool_definitions_include_sidecar_guidance() -> None:
     registry = ToolRegistry.from_tools(BuiltinToolProvider().provide_tools())
     definitions = {definition.name: definition for definition in registry.definitions()}
 
-    assert "Agent usage guidance:" in definitions["write_file"].description
-    assert "focused changes in existing files" in definitions["write_file"].description
-    assert "Agent usage guidance:" in definitions["ast_grep_search"].description
-    assert "structural code search" in definitions["ast_grep_search"].description
-    assert "Agent usage guidance:" in definitions["web_fetch"].description
-    assert "specific http or https URL" in definitions["web_fetch"].description
+    assert definitions["write_file"].description.startswith("Writes a file to the local workspace.")
+    assert "ALWAYS prefer editing existing files" in definitions["write_file"].description
+    assert definitions["ast_grep_search"].description.startswith(
+        "Use ast-grep tools for structural code matching"
+    )
+    assert (
+        "ast_grep_replace applies a structural rewrite"
+        in definitions["ast_grep_search"].description
+    )
+    assert definitions["web_fetch"].description.startswith("- Fetches content from a specified URL")
+    assert "http or https URL" in definitions["web_fetch"].description
 
 
 def test_sidecar_guidance_mapping_covers_builtin_runtime_tool_names() -> None:

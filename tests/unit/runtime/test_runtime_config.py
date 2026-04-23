@@ -32,7 +32,6 @@ from voidcode.runtime.config import (
     RuntimeLspServerConfig,
     RuntimePlanConfig,
     RuntimeProviderFallbackConfig,
-    RuntimeProvidersConfig,
     RuntimeSkillsConfig,
     RuntimeToolsBuiltinConfig,
     RuntimeToolsConfig,
@@ -517,49 +516,48 @@ def test_runtime_config_parses_extension_domains(tmp_path: Path) -> None:
         preferred_model="opencode/gpt-5.4",
         fallback_models=("opencode/gpt-5.3", "custom/demo"),
     )
-    assert config.providers == RuntimeProvidersConfig(
-        openai=OpenAIProviderConfig(
-            api_key="openai-inline-key",
-            base_url="https://api.openai.test/v1",
-            organization="org_123",
-            project="proj_123",
-            timeout_seconds=30.0,
-        ),
-        anthropic=AnthropicProviderConfig(
-            api_key="anthropic-inline-key",
-            base_url="https://api.anthropic.test",
-            version="2023-06-01",
-            beta_headers=("prompt-caching-2024-07-31",),
-            timeout_seconds=45.0,
-        ),
-        google=GoogleProviderConfig(
-            auth=GoogleProviderAuthConfig(method="api_key", api_key="google-inline-key"),
-            base_url="https://generativelanguage.googleapis.com",
-            project="project-123",
-            region="us-central1",
-            timeout_seconds=20.0,
-        ),
-        copilot=CopilotProviderConfig(
-            auth=CopilotProviderAuthConfig(method="token", token="copilot-inline-token"),
-            base_url="https://api.githubcopilot.test",
-            timeout_seconds=15.0,
-        ),
-        litellm=LiteLLMProviderConfig(
-            api_key="litellm-inline-key",
-            base_url="http://127.0.0.1:4000",
-            auth_scheme="token",
-            auth_header="X-LiteLLM-Key",
-            timeout_seconds=10.0,
-            model_map={"gpt-4o": "openrouter/openai/gpt-4o"},
-        ),
-        custom={
-            "llama-local": LiteLLMProviderConfig(
-                base_url="http://localhost:11434/v1",
-                auth_scheme="none",
-                model_map={"coder": "ollama/qwen2.5-coder:latest"},
-            )
-        },
+    assert config.providers is not None
+    assert config.providers.openai == OpenAIProviderConfig(
+        api_key="openai-inline-key",
+        base_url="https://api.openai.test/v1",
+        organization="org_123",
+        project="proj_123",
+        timeout_seconds=30.0,
     )
+    assert config.providers.anthropic == AnthropicProviderConfig(
+        api_key="anthropic-inline-key",
+        base_url="https://api.anthropic.test",
+        version="2023-06-01",
+        beta_headers=("prompt-caching-2024-07-31",),
+        timeout_seconds=45.0,
+    )
+    assert config.providers.google == GoogleProviderConfig(
+        auth=GoogleProviderAuthConfig(method="api_key", api_key="google-inline-key"),
+        base_url="https://generativelanguage.googleapis.com",
+        project="project-123",
+        region="us-central1",
+        timeout_seconds=20.0,
+    )
+    assert config.providers.copilot == CopilotProviderConfig(
+        auth=CopilotProviderAuthConfig(method="token", token="copilot-inline-token"),
+        base_url="https://api.githubcopilot.test",
+        timeout_seconds=15.0,
+    )
+    assert config.providers.litellm == LiteLLMProviderConfig(
+        api_key="litellm-inline-key",
+        base_url="http://127.0.0.1:4000",
+        auth_scheme="token",
+        auth_header="X-LiteLLM-Key",
+        timeout_seconds=10.0,
+        model_map={"gpt-4o": "openrouter/openai/gpt-4o"},
+    )
+    assert config.providers.custom == {
+        "llama-local": LiteLLMProviderConfig(
+            base_url="http://localhost:11434/v1",
+            auth_scheme="none",
+            model_map={"coder": "ollama/qwen2.5-coder:latest"},
+        )
+    }
     assert config.plan == RuntimePlanConfig(
         provider="custom",
         module="./.voidcode/plan_extension.py",
@@ -595,20 +593,19 @@ def test_runtime_config_providers_use_environment_secrets_when_omitted(tmp_path:
         },
     )
 
-    assert config.providers == RuntimeProvidersConfig(
-        openai=OpenAIProviderConfig(api_key="openai-env-key"),
-        anthropic=AnthropicProviderConfig(api_key="anthropic-env-key"),
-        google=GoogleProviderConfig(
-            auth=GoogleProviderAuthConfig(method="api_key", api_key="google-env-key")
-        ),
-        copilot=CopilotProviderConfig(
-            auth=CopilotProviderAuthConfig(method="token", token_env_var="COPILOT_TOKEN")
-        ),
-        litellm=LiteLLMProviderConfig(
-            api_key="litellm-env-key",
-            base_url="http://localhost:4000",
-            auth_scheme="bearer",
-        ),
+    assert config.providers is not None
+    assert config.providers.openai == OpenAIProviderConfig(api_key="openai-env-key")
+    assert config.providers.anthropic == AnthropicProviderConfig(api_key="anthropic-env-key")
+    assert config.providers.google == GoogleProviderConfig(
+        auth=GoogleProviderAuthConfig(method="api_key", api_key="google-env-key")
+    )
+    assert config.providers.copilot == CopilotProviderConfig(
+        auth=CopilotProviderAuthConfig(method="token", token_env_var="COPILOT_TOKEN")
+    )
+    assert config.providers.litellm == LiteLLMProviderConfig(
+        api_key="litellm-env-key",
+        base_url="http://localhost:4000",
+        auth_scheme="bearer",
     )
 
 
@@ -643,19 +640,18 @@ def test_runtime_config_providers_prefer_repo_config_over_environment(tmp_path: 
         },
     )
 
-    assert config.providers == RuntimeProvidersConfig(
-        openai=OpenAIProviderConfig(api_key="openai-repo-key"),
-        anthropic=AnthropicProviderConfig(api_key="anthropic-repo-key"),
-        google=GoogleProviderConfig(
-            auth=GoogleProviderAuthConfig(method="api_key", api_key="google-repo-key")
-        ),
-        copilot=CopilotProviderConfig(
-            auth=CopilotProviderAuthConfig(method="token", token="copilot-repo-token")
-        ),
-        litellm=LiteLLMProviderConfig(
-            api_key="litellm-repo-key",
-            auth_scheme="bearer",
-        ),
+    assert config.providers is not None
+    assert config.providers.openai == OpenAIProviderConfig(api_key="openai-repo-key")
+    assert config.providers.anthropic == AnthropicProviderConfig(api_key="anthropic-repo-key")
+    assert config.providers.google == GoogleProviderConfig(
+        auth=GoogleProviderAuthConfig(method="api_key", api_key="google-repo-key")
+    )
+    assert config.providers.copilot == CopilotProviderConfig(
+        auth=CopilotProviderAuthConfig(method="token", token="copilot-repo-token")
+    )
+    assert config.providers.litellm == LiteLLMProviderConfig(
+        api_key="litellm-repo-key",
+        auth_scheme="bearer",
     )
 
 
@@ -934,7 +930,6 @@ def test_runtime_agent_payload_round_trips_through_serialization() -> None:
         {
             "preset": "leader",
             "model": "opencode/gpt-5.4",
-            "leader_mode": "plan_first",
             "tools": {
                 "builtin": {"enabled": True},
                 "paths": [".voidcode/tools"],
@@ -952,7 +947,6 @@ def test_runtime_agent_payload_round_trips_through_serialization() -> None:
         "prompt_profile": "leader",
         "model": "opencode/gpt-5.4",
         "execution_engine": "single_agent",
-        "leader_mode": "plan_first",
         "tools": {
             "builtin": {"enabled": True},
             "paths": [".voidcode/tools"],
@@ -960,26 +954,6 @@ def test_runtime_agent_payload_round_trips_through_serialization() -> None:
             "default": ["read_file"],
         },
         "skills": {"enabled": False, "paths": [".voidcode/skills"]},
-    }
-
-
-def test_runtime_agent_payload_round_trips_leader_mode() -> None:
-    agent = parse_runtime_agent_payload(
-        {"preset": "leader", "leader_mode": "direct_execute"},
-        source="test payload",
-    )
-
-    assert agent == RuntimeAgentConfig(
-        preset="leader",
-        prompt_profile="leader",
-        execution_engine="single_agent",
-        leader_mode="direct_execute",
-    )
-    assert serialize_runtime_agent_config(agent) == {
-        "preset": "leader",
-        "prompt_profile": "leader",
-        "execution_engine": "single_agent",
-        "leader_mode": "direct_execute",
     }
 
 
@@ -1023,13 +997,13 @@ def test_runtime_agent_payload_resolves_through_builtin_agent_manifest() -> None
     )
 
 
-def test_runtime_agent_payload_rejects_unknown_leader_mode() -> None:
+def test_runtime_agent_payload_rejects_removed_leader_mode() -> None:
     with pytest.raises(
         ValueError,
-        match="runtime config field 'agent.leader_mode' must be one of: direct_execute, plan_first",
+        match="runtime config field 'agent.leader_mode' has been removed",
     ):
         _ = parse_runtime_agent_payload(
-            {"preset": "leader", "leader_mode": "delegate_first"},
+            {"preset": "leader", "leader_mode": "plan_first"},
             source="test payload",
         )
 
@@ -2122,6 +2096,8 @@ def test_runtime_config_uses_opencode_go_environment_credentials_without_provide
             MODEL_ENV_VAR: "opencode-go/glm-5",
             EXECUTION_ENGINE_ENV_VAR: "single_agent",
             "OPENCODE_API_KEY": "opencode-go-env-key",
+            "XDG_CONFIG_HOME": str(tmp_path / "xdg-config"),
+            "HOME": str(tmp_path / "home"),
         },
     )
 
@@ -2139,7 +2115,14 @@ def test_runtime_config_repo_provider_overrides_environment_provider_credentials
         encoding="utf-8",
     )
 
-    config = load_runtime_config(tmp_path, env={"OPENCODE_API_KEY": "env-key"})
+    config = load_runtime_config(
+        tmp_path,
+        env={
+            "OPENCODE_API_KEY": "env-key",
+            "XDG_CONFIG_HOME": str(tmp_path / "xdg-config"),
+            "HOME": str(tmp_path / "home"),
+        },
+    )
 
     assert config.providers is not None
     assert config.providers.opencode_go == SimplifiedProviderConfig(api_key="repo-key")

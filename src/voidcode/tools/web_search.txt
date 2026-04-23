@@ -1,5 +1,9 @@
-Use web_search when you do not know the exact URL and need to discover external web sources.
+- Search the web for external information and current references
+- Returns ranked result titles, URLs, and snippets
+- Use this tool when you need information beyond the local repository or do not yet know the exact URL
 
-Do not use it when the URL is already known; use web_fetch for page contents. Do not treat external search snippets as workspace truth.
-
-This tool is read-only. Use result URLs, snippets, data.query, data.num_results, and data.source to decide what to fetch or cite next.
+Usage notes:
+  - The query parameter is required
+  - numResults is optional and defaults to a small result set
+  - Use web_fetch when the exact URL is already known
+  - Treat external search results as research leads, not repository truth

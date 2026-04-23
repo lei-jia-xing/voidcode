@@ -1,5 +1,19 @@
-Use lsp for language-server facts such as definition, references, hover, document symbols, workspace symbols, implementation, and call hierarchy.
+Interact with Language Server Protocol (LSP) servers to get code intelligence features.
 
-Use format_file only when the intended operation is formatting a single file. Do not use lsp for literal text search, and do not use format_file to make semantic content changes.
+Supported operations:
+- goToDefinition: Find where a symbol is defined
+- findReferences: Find all references to a symbol
+- hover: Get hover information for a symbol
+- documentSymbol: Get all symbols in a document
+- workspaceSymbol: Search for symbols across the workspace
+- goToImplementation: Find implementations of an interface or abstract method
+- prepareCallHierarchy: Get call hierarchy item at a position
+- incomingCalls: Find callers of the symbol at a position
+- outgoingCalls: Find calls made by the symbol at a position
 
-lsp is read-only. format_file is not read-only and may require approval. For lsp, treat data.lsp_response as the source of truth. For format_file, use data.path, data.language, data.command, stdout, and stderr for follow-up decisions.
+All operations require:
+- filePath: The workspace-relative file to operate on
+- line: The line number (1-based)
+- character: The character offset (1-based)
+
+Note: LSP servers must be configured for the file type. If no server is available, an error will be returned.

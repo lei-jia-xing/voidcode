@@ -1,5 +1,8 @@
-Use apply_patch for patch-level work: multi-file edits, file creation, deletion, rename, or changes that are clearest as a unified diff.
+Apply unified diff patches to files inside the local workspace.
 
-Do not make it the default for small local replacements; edit or multi_edit is usually safer. Read the relevant files first so patch context is grounded.
-
-This tool is not read-only and may require approval. Use returned change summaries and affected paths as the source of truth for follow-up verification.
+Usage:
+- The patch parameter is required and must be a unified diff string that git apply can validate.
+- Use this tool for multi-file edits, renames, deletions, or patch-shaped changes that are clearer as a diff.
+- Prefer edit or multi_edit for small local replacements in a single file.
+- Read the relevant files first so the patch is grounded in real context.
+- Use the returned changes and affected paths as the source of truth for follow-up verification.

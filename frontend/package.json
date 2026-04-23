@@ -7,7 +7,7 @@
     "dev": "bun run vite",
     "build": "bun run tsc && bun run vite build",
     "preview": "bun run vite preview",
-    "lint": "bun run eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
+    "lint": "bun run eslint . --report-unused-disable-directives --max-warnings 0",
     "format": "bun run prettier --write \"src/**/*.{ts,tsx,css}\"",
     "format:check": "bun run prettier --check \"src/**/*.{ts,tsx,css}\"",
     "typecheck": "bun run tsc --noEmit",

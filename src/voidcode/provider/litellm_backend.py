@@ -20,6 +20,7 @@ else:
             pass
 
 
+from ..agent import render_leader_prompt
 from ..tools.contracts import ToolCall, ToolDefinition
 from .config import LiteLLMProviderConfig
 from .errors import provider_execution_error_from_api_payload
@@ -37,14 +38,6 @@ class LiteLLMBackendSingleAgentProvider:
     config: LiteLLMProviderConfig | None
     completion_kwargs: dict[str, object] | None = None
     use_raw_model_name: bool = False
-
-    _LEADER_PROFILE_PROMPT = (
-        "You are the VoidCode leader agent, the primary user-facing runtime agent. "
-        "Understand the user's intent, choose the smallest safe tool-backed step, "
-        "respect the runtime-provided tool boundary, and report concise progress and "
-        "results. This is still a single-agent backend path; do not assume multi-agent "
-        "delegation exists unless the runtime exposes it explicitly."
-    )
 
     @staticmethod
     def _to_tool_schema(tool: ToolDefinition) -> dict[str, object]:
@@ -144,7 +137,7 @@ class LiteLLMBackendSingleAgentProvider:
             return None
         normalized_prompt_profile = prompt_profile.strip()
         if normalized_prompt_profile == "leader":
-            return cls._LEADER_PROFILE_PROMPT
+            return render_leader_prompt(agent_preset)
         return (
             "Runtime-selected VoidCode agent prompt profile: "
             f"{normalized_prompt_profile}. Treat this as the active agent role profile "

@@ -1,0 +1,6 @@
+- Fast file pattern matching tool for the current workspace
+- Supports glob patterns like "**/*.js" or "src/**/*.ts"
+- Returns matching file paths sorted by modification time
+- Use this tool when you need to find files by name patterns
+- Use the optional path parameter to narrow the search to a workspace-relative directory
+- You can call multiple tools in a single response. It is better to batch potentially useful searches than to explore one path at a time.

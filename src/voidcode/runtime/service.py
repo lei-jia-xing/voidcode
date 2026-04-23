@@ -113,7 +113,6 @@ from .events import (
     RUNTIME_MCP_SERVER_STARTED,
     RUNTIME_MCP_SERVER_STOPPED,
     RUNTIME_MEMORY_REFRESHED,
-    RUNTIME_PLAN_CREATED,
     RUNTIME_SKILLS_APPLIED,
     RUNTIME_SKILLS_BINDING_MISMATCH,
     RUNTIME_SKILLS_LOADED,
@@ -131,10 +130,7 @@ from .permission import (
 from .plan import (
     PlanContributor,
     apply_plan_patch,
-    build_plan_artifact,
     build_plan_contributor,
-    serialize_plan_artifact,
-    validate_plan_artifact,
 )
 from .session import SessionRef, SessionState, SessionStatus, StoredSessionSummary
 from .single_agent_provider import ProviderExecutionError
@@ -1081,11 +1077,6 @@ class VoidCodeRuntime:
                         if (active_agent := effective_config.agent) is not None
                         else {}
                     ),
-                    **(
-                        {"leader_mode": active_agent.leader_mode}
-                        if active_agent is not None and active_agent.leader_mode is not None
-                        else {}
-                    ),
                 },
             ),
         )
@@ -1188,62 +1179,6 @@ class VoidCodeRuntime:
             )
 
         active_agent = effective_config.agent
-        if active_agent is not None and active_agent.leader_mode == "plan_first":
-            try:
-                serialized_plan_artifact = serialize_plan_artifact(
-                    validate_plan_artifact(
-                        build_plan_artifact(
-                            prompt=request.prompt,
-                            metadata=request_metadata,
-                            agent_preset=active_agent.preset,
-                        )
-                    )
-                )
-            except ValueError as exc:
-                yield self._failed_chunk(
-                    session=session,
-                    sequence=sequence + 1,
-                    error=str(exc),
-                    payload={"kind": "plan_validation_failed"},
-                )
-                return
-            session = self._session_with_metadata(
-                session,
-                {
-                    **session.metadata,
-                    "plan_artifact": serialized_plan_artifact,
-                    "plan_state": self._plan_state_from_metadata(
-                        {**session.metadata, "plan_artifact": serialized_plan_artifact},
-                        status="planned",
-                    ),
-                },
-            )
-            sequence += 1
-            yield RuntimeStreamChunk(
-                kind="event",
-                session=session,
-                event=EventEnvelope(
-                    session_id=session.session.id,
-                    sequence=sequence,
-                    event_type=RUNTIME_PLAN_CREATED,
-                    source="runtime",
-                    payload={
-                        "kind": cast(str, serialized_plan_artifact["kind"]),
-                        "version": cast(int, serialized_plan_artifact["version"]),
-                        "step_count": len(cast(list[object], serialized_plan_artifact["steps"])),
-                        "acceptance_criteria_count": len(
-                            cast(list[object], serialized_plan_artifact["acceptance_criteria"])
-                        ),
-                        "execution_hint_count": len(
-                            cast(list[object], serialized_plan_artifact["execution_hints"])
-                        ),
-                    },
-                ),
-            )
-            request_metadata = {
-                **request_metadata,
-                "plan_artifact": serialized_plan_artifact,
-            }
 
         planned_prompt, planned_metadata = apply_plan_patch(
             contributor=self._plan_contributor,
@@ -3584,13 +3519,6 @@ class VoidCodeRuntime:
             ),
             model=model,
             execution_engine=execution_engine,
-            leader_mode=(
-                agent.leader_mode
-                if agent.leader_mode is not None
-                else resolved.agent.leader_mode
-                if resolved.agent is not None
-                else None
-            ),
             tools=(
                 agent.tools
                 if agent.tools is not None
