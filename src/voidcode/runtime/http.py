@@ -11,6 +11,7 @@ from typing import Protocol, cast, final
 
 from .config import RuntimeConfig
 from .contracts import (
+    NoPendingQuestionError,
     RuntimeNotification,
     RuntimeRequest,
     RuntimeRequestError,
@@ -23,6 +24,7 @@ from .contracts import (
 )
 from .events import EventEnvelope
 from .permission import PermissionResolution
+from .question import QuestionResponse
 from .service import VoidCodeRuntime
 from .session import SessionRef, SessionState, StoredSessionSummary
 
@@ -56,6 +58,14 @@ class RuntimeTransport(Protocol):
         *,
         approval_request_id: str | None = None,
         approval_decision: PermissionResolution | None = None,
+    ) -> RuntimeResponse: ...
+
+    def answer_question(
+        self,
+        session_id: str,
+        *,
+        question_request_id: str,
+        responses: tuple[QuestionResponse, ...],
     ) -> RuntimeResponse: ...
 
 
@@ -170,10 +180,13 @@ class RuntimeTransportApp:
         if path.startswith(session_prefix):
             session_path = path.removeprefix(session_prefix)
             is_approval_route = session_path.endswith("/approval")
+            is_question_route = session_path.endswith("/question")
             is_result_route = session_path.endswith("/result")
             session_id = (
                 session_path.removesuffix("/approval")
                 if is_approval_route
+                else session_path.removesuffix("/question")
+                if is_question_route
                 else session_path.removesuffix("/result")
                 if is_result_route
                 else session_path
@@ -196,6 +209,20 @@ class RuntimeTransportApp:
                     )
                     return
                 await self._handle_approval_resolution(
+                    session_id=session_id,
+                    receive=receive,
+                    send=send,
+                )
+                return
+            if is_question_route:
+                if method != "POST":
+                    await self._json_response(
+                        send,
+                        status=405,
+                        payload={"error": "method not allowed"},
+                    )
+                    return
+                await self._handle_question_answer(
                     session_id=session_id,
                     receive=receive,
                     send=send,
@@ -415,6 +442,38 @@ class RuntimeTransportApp:
             payload=self._serialize_runtime_response(response),
         )
 
+    async def _handle_question_answer(
+        self,
+        *,
+        session_id: str,
+        receive: Receive,
+        send: Send,
+    ) -> None:
+        try:
+            body = await self._read_body(receive)
+            question_request_id, responses = self._parse_question_answer_request(body)
+        except ValueError as exc:
+            await self._json_response(send, status=400, payload={"error": str(exc)})
+            return
+
+        runtime = self._runtime_factory()
+        try:
+            response = runtime.answer_question(
+                session_id,
+                question_request_id=question_request_id,
+                responses=responses,
+            )
+        except (ValueError, NoPendingQuestionError) as exc:
+            await self._json_response(send, status=404, payload={"error": str(exc)})
+            return
+        finally:
+            self._close_runtime(runtime)
+        await self._json_response(
+            send,
+            status=200,
+            payload=self._serialize_runtime_response(response),
+        )
+
     async def _handle_acknowledge_notification(
         self,
         *,
@@ -554,6 +613,50 @@ class RuntimeTransportApp:
             "provider_api_key": _optional_string("provider_api_key"),
             "model": _optional_string("model"),
         }
+
+    def _parse_question_answer_request(
+        self,
+        body: bytes,
+    ) -> tuple[str, tuple[QuestionResponse, ...]]:
+        try:
+            raw_payload = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("request body must be valid JSON") from exc
+
+        if not isinstance(raw_payload, dict):
+            raise ValueError("request body must be a JSON object")
+        payload = cast(dict[str, object], raw_payload)
+
+        request_id = payload.get("request_id")
+        if not isinstance(request_id, str) or not request_id:
+            raise ValueError("request_id must be a non-empty string")
+
+        raw_responses = payload.get("responses")
+        if not isinstance(raw_responses, list) or not raw_responses:
+            raise ValueError("responses must be a non-empty array")
+
+        response_items = cast(list[object], raw_responses)
+        parsed: list[QuestionResponse] = []
+        for index, raw_response in enumerate(response_items):
+            if not isinstance(raw_response, dict):
+                raise ValueError(f"responses[{index}] must be an object")
+            response_payload = cast(dict[str, object], raw_response)
+            header = response_payload.get("header")
+            if not isinstance(header, str) or not header.strip():
+                raise ValueError(f"responses[{index}].header must be a non-empty string")
+            raw_answers = response_payload.get("answers")
+            if not isinstance(raw_answers, list) or not raw_answers:
+                raise ValueError(f"responses[{index}].answers must be a non-empty array")
+            answer_items = cast(list[object], raw_answers)
+            answers: list[str] = []
+            for answer_index, raw_answer in enumerate(answer_items):
+                if not isinstance(raw_answer, str) or not raw_answer.strip():
+                    raise ValueError(
+                        f"responses[{index}].answers[{answer_index}] must be a non-empty string"
+                    )
+                answers.append(raw_answer)
+            parsed.append(QuestionResponse(header=header, answers=tuple(answers)))
+        return request_id, tuple(parsed)
 
     @staticmethod
     def _serialize_runtime_stream_chunk(chunk: RuntimeStreamChunk) -> dict[str, object]:

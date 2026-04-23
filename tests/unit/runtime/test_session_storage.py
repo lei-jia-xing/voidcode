@@ -8,6 +8,7 @@ from typing import Any
 
 from voidcode.runtime.contracts import RuntimeRequest, RuntimeResponse
 from voidcode.runtime.events import EventEnvelope
+from voidcode.runtime.question import PendingQuestion, PendingQuestionOption, PendingQuestionPrompt
 from voidcode.runtime.session import SessionRef, SessionState
 from voidcode.runtime.storage import SqliteSessionStore
 from voidcode.runtime.task import (
@@ -194,7 +195,7 @@ def test_session_storage_migrates_legacy_schema_for_parent_lineage(tmp_path: Pat
     assert "request_parent_session_id" in background_task_columns
     assert "session_event_deliveries" in delivery_tables
     assert loaded_task.request.parent_session_id == "leader-session"
-    assert user_version == 6
+    assert user_version == 7
 
 
 def test_tool_results_from_events_keeps_success_payloads_with_null_error() -> None:
@@ -394,3 +395,152 @@ def test_session_storage_append_session_event_allocates_sequences_atomically(
     assert len(events) == 2
     assert {event.sequence for event in events} == {2, 3}
     assert [event.sequence for event in loaded.events[-2:]] == [2, 3]
+
+
+def test_session_storage_persists_pending_question_and_question_notification(
+    tmp_path: Path,
+) -> None:
+    store = SqliteSessionStore()
+    request = RuntimeRequest(prompt="need input", session_id="question-session")
+    response = RuntimeResponse(
+        session=SessionState(
+            session=SessionRef(id="question-session"),
+            status="waiting",
+            turn=1,
+            metadata={},
+        ),
+        events=(
+            EventEnvelope(
+                session_id="question-session",
+                sequence=1,
+                event_type="runtime.question_requested",
+                source="runtime",
+                payload={
+                    "request_id": "question-1",
+                    "tool": "question",
+                    "question_count": 1,
+                    "questions": [
+                        {
+                            "header": "Runtime path",
+                            "question": "Which runtime path should we use?",
+                            "multiple": False,
+                            "options": [
+                                {"label": "Reuse existing", "description": "Keep current path"},
+                                {"label": "Add new path", "description": "Create a new route"},
+                            ],
+                        }
+                    ],
+                },
+            ),
+        ),
+    )
+    pending_question = PendingQuestion(
+        request_id="question-1",
+        tool_name="question",
+        arguments={},
+        prompts=(
+            PendingQuestionPrompt(
+                question="Which runtime path should we use?",
+                header="Runtime path",
+                options=(
+                    PendingQuestionOption(label="Reuse existing", description="Keep current path"),
+                    PendingQuestionOption(label="Add new path", description="Create a new route"),
+                ),
+                multiple=False,
+            ),
+        ),
+    )
+
+    store.save_pending_question(
+        workspace=tmp_path,
+        request=request,
+        response=response,
+        pending_question=pending_question,
+    )
+
+    loaded_question = store.load_pending_question(workspace=tmp_path, session_id="question-session")
+    notifications = store.list_notifications(workspace=tmp_path)
+
+    assert loaded_question == pending_question
+    assert len(notifications) == 1
+    assert notifications[0].kind == "question_blocked"
+    assert notifications[0].status == "unread"
+    assert notifications[0].payload["request_id"] == "question-1"
+
+
+def test_session_storage_fail_incomplete_background_tasks_keeps_question_waiting_children(
+    tmp_path: Path,
+) -> None:
+    store = SqliteSessionStore()
+    child_request = RuntimeRequest(prompt="need input", session_id="child-question-session")
+    child_response = RuntimeResponse(
+        session=SessionState(
+            session=SessionRef(id="child-question-session", parent_id="leader-session"),
+            status="waiting",
+            turn=1,
+            metadata={"background_run": True, "background_task_id": "task-question"},
+        ),
+        events=(
+            EventEnvelope(
+                session_id="child-question-session",
+                sequence=1,
+                event_type="runtime.question_requested",
+                source="runtime",
+                payload={
+                    "request_id": "question-1",
+                    "tool": "question",
+                    "question_count": 1,
+                    "questions": [
+                        {
+                            "header": "Runtime path",
+                            "question": "Which runtime path should we use?",
+                            "multiple": False,
+                            "options": [{"label": "Reuse existing", "description": ""}],
+                        }
+                    ],
+                },
+            ),
+        ),
+    )
+    store.save_pending_question(
+        workspace=tmp_path,
+        request=child_request,
+        response=child_response,
+        pending_question=PendingQuestion(
+            request_id="question-1",
+            tool_name="question",
+            arguments={},
+            prompts=(
+                PendingQuestionPrompt(
+                    question="Which runtime path should we use?",
+                    header="Runtime path",
+                    options=(PendingQuestionOption(label="Reuse existing"),),
+                    multiple=False,
+                ),
+            ),
+        ),
+    )
+    store.create_background_task(
+        workspace=tmp_path,
+        task=BackgroundTaskState(
+            task=BackgroundTaskRef(id="task-question"),
+            status="running",
+            request=BackgroundTaskRequestSnapshot(
+                prompt="need input",
+                parent_session_id="leader-session",
+            ),
+            session_id="child-question-session",
+            created_at=1,
+            updated_at=1,
+            started_at=1,
+        ),
+    )
+
+    failed = store.fail_incomplete_background_tasks(
+        workspace=tmp_path,
+        message="background task interrupted before completion",
+    )
+    loaded = store.load_background_task(workspace=tmp_path, task_id="task-question")
+
+    assert failed == ()
+    assert loaded.status == "running"

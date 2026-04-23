@@ -19,6 +19,7 @@ from .contracts import (
 )
 from .events import EventEnvelope, EventSource
 from .permission import PendingApproval
+from .question import PendingQuestion, PendingQuestionOption, PendingQuestionPrompt
 from .session import SessionRef, SessionState, SessionStatus, StoredSessionSummary
 from .task import (
     BackgroundTaskRef,
@@ -69,6 +70,21 @@ class SessionStore(Protocol):
     ) -> PendingApproval | None: ...
 
     def clear_pending_approval(self, *, workspace: Path, session_id: str) -> None: ...
+
+    def save_pending_question(
+        self,
+        *,
+        workspace: Path,
+        request: RuntimeRequest,
+        response: RuntimeResponse,
+        pending_question: PendingQuestion,
+    ) -> None: ...
+
+    def load_pending_question(
+        self, *, workspace: Path, session_id: str
+    ) -> PendingQuestion | None: ...
+
+    def clear_pending_question(self, *, workspace: Path, session_id: str) -> None: ...
 
     def load_resume_checkpoint(
         self, *, workspace: Path, session_id: str
@@ -174,6 +190,7 @@ class SqliteSessionStore:
                 output TEXT,
                 metadata_json TEXT NOT NULL,
                 pending_approval_json TEXT,
+                pending_question_json TEXT,
                 resume_checkpoint_json TEXT,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
@@ -264,6 +281,9 @@ class SqliteSessionStore:
         if "pending_approval_json" not in columns:
             _ = connection.execute("ALTER TABLE sessions ADD COLUMN pending_approval_json TEXT")
             target_user_version = max(target_user_version, 1)
+        if "pending_question_json" not in columns:
+            _ = connection.execute("ALTER TABLE sessions ADD COLUMN pending_question_json TEXT")
+            target_user_version = max(target_user_version, 7)
         if "resume_checkpoint_json" not in columns:
             _ = connection.execute("ALTER TABLE sessions ADD COLUMN resume_checkpoint_json TEXT")
             target_user_version = max(target_user_version, 3)
@@ -282,6 +302,8 @@ class SqliteSessionStore:
             target_user_version = max(target_user_version, 5)
         if user_version < 6:
             target_user_version = max(target_user_version, 6)
+        if user_version < 7:
+            target_user_version = max(target_user_version, 7)
         if target_user_version != user_version:
             _ = connection.execute(f"PRAGMA user_version = {target_user_version}")
         connection.commit()
@@ -329,8 +351,10 @@ class SqliteSessionStore:
                 """
                 INSERT OR REPLACE INTO sessions (
                     session_id, parent_session_id, workspace, status, turn, prompt, output,
-                    metadata_json, pending_approval_json, resume_checkpoint_json, created_at, updated_at, last_event_sequence
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    metadata_json, pending_approval_json, pending_question_json,
+                    resume_checkpoint_json, created_at, updated_at,
+                    last_event_sequence
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,  # noqa: E501
                 (
                     session_id,
@@ -346,6 +370,7 @@ class SqliteSessionStore:
                     else self._read_pending_approval_json(
                         connection=connection, session_id=session_id
                     ),
+                    None,
                     json.dumps(
                         self._terminal_resume_checkpoint(
                             request=request,
@@ -429,8 +454,10 @@ class SqliteSessionStore:
                 """
                 INSERT OR REPLACE INTO sessions (
                     session_id, parent_session_id, workspace, status, turn, prompt, output,
-                    metadata_json, pending_approval_json, resume_checkpoint_json, created_at, updated_at, last_event_sequence
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    metadata_json, pending_approval_json, pending_question_json,
+                    resume_checkpoint_json, created_at, updated_at,
+                    last_event_sequence
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,  # noqa: E501
                 (
                     session_id,
@@ -442,6 +469,7 @@ class SqliteSessionStore:
                     response.output,
                     json.dumps(response.session.metadata, sort_keys=True),
                     json.dumps(asdict(pending_approval), sort_keys=True),
+                    None,
                     json.dumps(
                         self._approval_wait_resume_checkpoint(
                             request=request,
@@ -517,6 +545,153 @@ class SqliteSessionStore:
         with self._connect(workspace) as connection:
             _ = connection.execute(
                 "UPDATE sessions SET pending_approval_json = NULL WHERE workspace = ? AND session_id = ?",  # noqa: E501
+                (str(workspace), session_id),
+            )
+            connection.commit()
+
+    def save_pending_question(
+        self,
+        *,
+        workspace: Path,
+        request: RuntimeRequest,
+        response: RuntimeResponse,
+        pending_question: PendingQuestion,
+    ) -> None:
+        session_id = response.session.session.id
+        with self._connect(workspace) as connection:
+            created_at = self._read_created_at(connection=connection, session_id=session_id)
+            updated_at = self._next_timestamp(connection=connection)
+            payload = {
+                "request_id": pending_question.request_id,
+                "tool_name": pending_question.tool_name,
+                "arguments": pending_question.arguments,
+                "prompts": [
+                    {
+                        "question": prompt.question,
+                        "header": prompt.header,
+                        "multiple": prompt.multiple,
+                        "options": [
+                            {"label": option.label, "description": option.description}
+                            for option in prompt.options
+                        ],
+                    }
+                    for prompt in pending_question.prompts
+                ],
+            }
+            _ = connection.execute(
+                """
+                INSERT OR REPLACE INTO sessions (
+                    session_id, parent_session_id, workspace, status, turn, prompt, output,
+                    metadata_json, pending_approval_json, pending_question_json,
+                    resume_checkpoint_json, created_at, updated_at,
+                    last_event_sequence
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    session_id,
+                    response.session.session.parent_id,
+                    str(workspace),
+                    response.session.status,
+                    response.session.turn,
+                    request.prompt,
+                    response.output,
+                    json.dumps(response.session.metadata, sort_keys=True),
+                    None,
+                    json.dumps(payload, sort_keys=True),
+                    json.dumps(
+                        self._question_wait_resume_checkpoint(
+                            request=request,
+                            response=response,
+                            pending_question=pending_question,
+                        ),
+                        sort_keys=True,
+                    ),
+                    created_at,
+                    updated_at,
+                    response.events[-1].sequence if response.events else 0,
+                ),
+            )
+            _ = connection.execute("DELETE FROM session_events WHERE session_id = ?", (session_id,))
+            _ = connection.executemany(
+                """
+                INSERT INTO session_events (session_id, sequence, event_type, source, payload_json)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        event.session_id,
+                        event.sequence,
+                        event.event_type,
+                        event.source,
+                        json.dumps(event.payload, sort_keys=True),
+                    )
+                    for event in response.events
+                ],
+            )
+            self._sync_notifications(
+                connection=connection,
+                workspace=workspace,
+                request=request,
+                response=response,
+                pending_approval=None,
+                pending_question=pending_question,
+                notification_run_id=updated_at,
+            )
+            connection.commit()
+
+    def load_pending_question(self, *, workspace: Path, session_id: str) -> PendingQuestion | None:
+        with self._connect(workspace) as connection:
+            row = cast(
+                sqlite3.Row | None,
+                connection.execute(
+                    """
+                    SELECT pending_question_json
+                    FROM sessions
+                    WHERE workspace = ? AND session_id = ?
+                    """,
+                    (str(workspace), session_id),
+                ).fetchone(),
+            )
+        if row is None:
+            raise UnknownSessionError(f"unknown session: {session_id}")
+        payload = cast(str | None, row["pending_question_json"])
+        if payload is None:
+            return None
+        data = cast(dict[str, object], json.loads(payload))
+        raw_prompts = cast(list[object], data.get("prompts", []))
+        prompts: list[PendingQuestionPrompt] = []
+        for raw_prompt in raw_prompts:
+            prompt_payload = cast(dict[str, object], raw_prompt)
+            raw_options = cast(list[object], prompt_payload.get("options", []))
+            options = tuple(
+                PendingQuestionOption(
+                    label=cast(str, cast(dict[str, object], option)["label"]),
+                    description=cast(str, cast(dict[str, object], option).get("description", "")),
+                )
+                for option in raw_options
+            )
+            prompts.append(
+                PendingQuestionPrompt(
+                    question=cast(str, prompt_payload["question"]),
+                    header=cast(str, prompt_payload["header"]),
+                    options=options,
+                    multiple=bool(prompt_payload.get("multiple", False)),
+                )
+            )
+        return PendingQuestion(
+            request_id=cast(str, data["request_id"]),
+            tool_name=cast(str, data.get("tool_name", "question")),
+            arguments=cast(dict[str, object], data.get("arguments", {})),
+            prompts=tuple(prompts),
+        )
+
+    def clear_pending_question(self, *, workspace: Path, session_id: str) -> None:
+        with self._connect(workspace) as connection:
+            _ = connection.execute(
+                (
+                    "UPDATE sessions SET pending_question_json = NULL "
+                    "WHERE workspace = ? AND session_id = ?"
+                ),
                 (str(workspace), session_id),
             )
             connection.commit()
@@ -661,6 +836,33 @@ class SqliteSessionStore:
             "tool_results": SqliteSessionStore._tool_results_from_events(response.events),
             "last_event_sequence": response.events[-1].sequence if response.events else 0,
             "pending_approval_request_id": pending_approval.request_id,
+            "output": response.output,
+        }
+
+    @staticmethod
+    def _question_wait_resume_checkpoint(
+        *, request: RuntimeRequest, response: RuntimeResponse, pending_question: PendingQuestion
+    ) -> dict[str, object]:
+        snapshot_payload = response.session.metadata.get("skill_snapshot")
+        snapshot = (
+            cast(dict[str, object], snapshot_payload) if isinstance(snapshot_payload, dict) else {}
+        )
+        binding_payload = snapshot.get("binding_snapshot")
+        binding_snapshot = (
+            cast(dict[str, object], binding_payload) if isinstance(binding_payload, dict) else {}
+        )
+        return {
+            "version": 1,
+            "kind": "question_wait",
+            "prompt": request.prompt,
+            "session_status": response.session.status,
+            "session_metadata": response.session.metadata,
+            "skill_snapshot_hash": snapshot.get("snapshot_hash"),
+            "skill_snapshot_version": snapshot.get("snapshot_version"),
+            "skill_binding_snapshot": binding_snapshot,
+            "tool_results": SqliteSessionStore._tool_results_from_events(response.events),
+            "last_event_sequence": response.events[-1].sequence if response.events else 0,
+            "pending_question_request_id": pending_question.request_id,
             "output": response.output,
         }
 
@@ -1059,7 +1261,10 @@ class SqliteSessionStore:
                           background_tasks.status = 'running'
                           AND background_tasks.session_id IS NOT NULL
                           AND sessions.status = 'waiting'
-                          AND sessions.pending_approval_json IS NOT NULL
+                          AND (
+                              sessions.pending_approval_json IS NOT NULL
+                              OR sessions.pending_question_json IS NOT NULL
+                          )
                       )
                     ORDER BY background_tasks.updated_at ASC, background_tasks.task_id ASC
                     """,
@@ -1181,6 +1386,12 @@ class SqliteSessionStore:
                     if target:
                         return f"Approval blocked on {tool}: {target[:100]}", None
                     return f"Approval blocked on {tool}", None
+                if event.event_type == "runtime.question_requested":
+                    question_count = event.payload.get("question_count")
+                    if isinstance(question_count, int) and question_count > 0:
+                        label = "question" if question_count == 1 else "questions"
+                        return f"Question blocked on {question_count} {label}", None
+                    return "Question blocked", None
             return "Approval blocked", None
         if response.session.status == "failed":
             for event in reversed(response.events):
@@ -1198,6 +1409,7 @@ class SqliteSessionStore:
         request: RuntimeRequest,
         response: RuntimeResponse,
         pending_approval: PendingApproval | None,
+        pending_question: PendingQuestion | None = None,
         notification_run_id: int,
     ) -> None:
         session_id = response.session.session.id
@@ -1205,6 +1417,7 @@ class SqliteSessionStore:
             request=request,
             response=response,
             pending_approval=pending_approval,
+            pending_question=pending_question,
             notification_run_id=notification_run_id,
         )
         if pending_approval is None:
@@ -1233,6 +1446,42 @@ class SqliteSessionStore:
                 WHERE workspace = ?
                   AND session_id = ?
                   AND kind = 'approval_blocked'
+                  AND status = 'unread'
+                  AND notification_id != ?
+                """,
+                (
+                    self._next_timestamp(connection=connection),
+                    str(workspace),
+                    session_id,
+                    notification["notification_id"],
+                ),
+            )
+        if pending_question is None:
+            _ = connection.execute(
+                """
+                UPDATE session_notifications
+                SET status = 'acknowledged',
+                    acknowledged_at = COALESCE(acknowledged_at, ?)
+                WHERE workspace = ?
+                  AND session_id = ?
+                  AND kind = 'question_blocked'
+                  AND status = 'unread'
+                """,
+                (
+                    self._next_timestamp(connection=connection),
+                    str(workspace),
+                    session_id,
+                ),
+            )
+        elif notification is not None:
+            _ = connection.execute(
+                """
+                UPDATE session_notifications
+                SET status = 'acknowledged',
+                    acknowledged_at = COALESCE(acknowledged_at, ?)
+                WHERE workspace = ?
+                  AND session_id = ?
+                  AND kind = 'question_blocked'
                   AND status = 'unread'
                   AND notification_id != ?
                 """,
@@ -1273,6 +1522,7 @@ class SqliteSessionStore:
         request: RuntimeRequest,
         response: RuntimeResponse,
         pending_approval: PendingApproval | None,
+        pending_question: PendingQuestion | None,
         notification_run_id: int,
     ) -> dict[str, object] | None:
         session_id = response.session.session.id
@@ -1292,6 +1542,32 @@ class SqliteSessionStore:
                     "arguments": pending_approval.arguments,
                     "target_summary": pending_approval.target_summary,
                     "reason": pending_approval.reason,
+                },
+            }
+        if pending_question is not None:
+            summary, _ = self._result_summary(response=response, prompt=request.prompt)
+            event_sequence = response.events[-1].sequence if response.events else 0
+            dedupe_key = f"{session_id}:question_blocked:{pending_question.request_id}"
+            return {
+                "notification_id": dedupe_key,
+                "dedupe_key": dedupe_key,
+                "kind": "question_blocked",
+                "summary": summary,
+                "event_sequence": event_sequence,
+                "payload": {
+                    "request_id": pending_question.request_id,
+                    "questions": [
+                        {
+                            "header": prompt.header,
+                            "question": prompt.question,
+                            "multiple": prompt.multiple,
+                            "options": [
+                                {"label": option.label, "description": option.description}
+                                for option in prompt.options
+                            ],
+                        }
+                        for prompt in pending_question.prompts
+                    ],
                 },
             }
         if response.session.status == "completed":

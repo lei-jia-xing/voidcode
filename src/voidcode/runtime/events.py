@@ -33,6 +33,8 @@ type ExistingEventType = Literal[
     "graph.response_ready",
     "runtime.approval_requested",
     "runtime.approval_resolved",
+    "runtime.question_requested",
+    "runtime.question_answered",
     "runtime.failed",
 ]
 type PrototypeAdditiveEventType = Literal[
@@ -78,6 +80,8 @@ RUNTIME_TOOL_COMPLETED: Final[ExistingEventType] = "runtime.tool_completed"
 GRAPH_RESPONSE_READY: Final[ExistingEventType] = "graph.response_ready"
 RUNTIME_APPROVAL_REQUESTED: Final[ExistingEventType] = "runtime.approval_requested"
 RUNTIME_APPROVAL_RESOLVED: Final[ExistingEventType] = "runtime.approval_resolved"
+RUNTIME_QUESTION_REQUESTED: Final[ExistingEventType] = "runtime.question_requested"
+RUNTIME_QUESTION_ANSWERED: Final[ExistingEventType] = "runtime.question_answered"
 RUNTIME_FAILED: Final[ExistingEventType] = "runtime.failed"
 
 RUNTIME_MEMORY_REFRESHED: Final[PrototypeAdditiveEventType] = "runtime.memory_refreshed"
@@ -129,6 +133,8 @@ EMITTED_EVENT_TYPES: Final[tuple[ExistingEventType, ...]] = (
     GRAPH_RESPONSE_READY,
     RUNTIME_APPROVAL_REQUESTED,
     RUNTIME_APPROVAL_RESOLVED,
+    RUNTIME_QUESTION_REQUESTED,
+    RUNTIME_QUESTION_ANSWERED,
     RUNTIME_FAILED,
 )
 PROTOTYPE_ADDITIVE_EVENT_TYPES: Final[tuple[PrototypeAdditiveEventType, ...]] = (

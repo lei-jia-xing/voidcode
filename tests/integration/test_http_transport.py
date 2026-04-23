@@ -88,6 +88,14 @@ class RuntimeRunner(Protocol):
         approval_decision: str | None = None,
     ) -> RuntimeResponseLike: ...
 
+    def answer_question(
+        self,
+        session_id: str,
+        *,
+        question_request_id: str,
+        responses: tuple[object, ...],
+    ) -> RuntimeResponseLike: ...
+
 
 class RuntimeFactory(Protocol):
     def __call__(
@@ -1269,6 +1277,178 @@ def test_transport_rejects_non_post_method_for_approval_resolution_route(tmp_pat
 
     assert response.status == 405
     assert response.json() == {"error": "method not allowed"}
+
+
+def test_transport_rejects_invalid_question_answer_payload(tmp_path: Path) -> None:
+    create_runtime_app = _load_transport_app_factory()
+    app = create_runtime_app(workspace=tmp_path)
+
+    response = _run_app(
+        app,
+        method="POST",
+        path="/api/sessions/question-session/question",
+        body=json.dumps({"request_id": "question-1", "responses": []}).encode("utf-8"),
+    )
+
+    assert response.status == 400
+    assert response.json() == {"error": "responses must be a non-empty array"}
+
+
+def test_transport_rejects_non_post_method_for_question_route(tmp_path: Path) -> None:
+    create_runtime_app = _load_transport_app_factory()
+    app = create_runtime_app(workspace=tmp_path)
+
+    response = _run_app(app, method="GET", path="/api/sessions/question-session/question")
+
+    assert response.status == 405
+    assert response.json() == {"error": "method not allowed"}
+
+
+def test_transport_answers_pending_question_over_http(tmp_path: Path) -> None:
+    runtime_module = importlib.import_module("voidcode.runtime")
+    create_runtime_app = _load_transport_app_factory()
+
+    class StubRuntime:
+        def run_stream(self, request: RuntimeRequestLike) -> Iterator[StreamChunkLike]:
+            raise AssertionError(f"run_stream should not be called: {request}")
+
+        def list_sessions(self) -> tuple[StoredSessionSummaryLike, ...]:
+            raise AssertionError("list_sessions should not be called")
+
+        def web_settings(self) -> dict[str, object]:
+            raise AssertionError("web_settings should not be called")
+
+        def update_web_settings(self, **_: object) -> dict[str, object]:
+            raise AssertionError("update_web_settings should not be called")
+
+        def session_result(self, *, session_id: str) -> object:
+            raise AssertionError(f"session_result should not be called: {session_id}")
+
+        def list_notifications(self) -> tuple[object, ...]:
+            raise AssertionError("list_notifications should not be called")
+
+        def acknowledge_notification(self, *, notification_id: str) -> object:
+            raise AssertionError(
+                f"acknowledge_notification should not be called: {notification_id}"
+            )
+
+        def resume(self, session_id: str, **_: object) -> RuntimeResponseLike:
+            raise AssertionError(f"resume should not be called: {session_id}")
+
+        def answer_question(
+            self,
+            session_id: str,
+            *,
+            question_request_id: str,
+            responses: tuple[object, ...],
+        ) -> RuntimeResponseLike:
+            assert session_id == "question-session"
+            assert question_request_id == "question-1"
+            assert len(responses) == 1
+            response = cast(object, responses[0])
+            assert response.header == "Runtime path"
+            assert response.answers == ("Reuse existing",)
+            return runtime_module.RuntimeResponse(
+                session=runtime_module.SessionState(
+                    session=runtime_module.SessionRef(id="question-session"),
+                    status="completed",
+                    turn=1,
+                    metadata={"workspace": str(tmp_path)},
+                ),
+                events=(
+                    runtime_module.EventEnvelope(
+                        session_id="question-session",
+                        sequence=1,
+                        event_type="runtime.question_answered",
+                        source="runtime",
+                        payload={"request_id": "question-1"},
+                    ),
+                ),
+                output="done",
+            )
+
+    app = create_runtime_app(workspace=tmp_path, runtime_factory=lambda: StubRuntime())
+    response = _run_app(
+        app,
+        method="POST",
+        path="/api/sessions/question-session/question",
+        body=json.dumps(
+            {
+                "request_id": "question-1",
+                "responses": [
+                    {"header": "Runtime path", "answers": ["Reuse existing"]},
+                ],
+            }
+        ).encode("utf-8"),
+    )
+    payload = cast(dict[str, object], response.json())
+
+    assert response.status == 200
+    assert cast(dict[str, object], payload["session"])["session"] == {"id": "question-session"}
+    assert cast(dict[str, object], payload["session"])["status"] == "completed"
+    assert payload["output"] == "done"
+
+
+def test_transport_returns_not_found_for_missing_pending_question(tmp_path: Path) -> None:
+    create_runtime_app = _load_transport_app_factory()
+    contracts_module = importlib.import_module("voidcode.runtime.contracts")
+
+    class StubRuntime:
+        def run_stream(self, request: RuntimeRequestLike) -> Iterator[StreamChunkLike]:
+            raise AssertionError(f"run_stream should not be called: {request}")
+
+        def list_sessions(self) -> tuple[StoredSessionSummaryLike, ...]:
+            raise AssertionError("list_sessions should not be called")
+
+        def web_settings(self) -> dict[str, object]:
+            raise AssertionError("web_settings should not be called")
+
+        def update_web_settings(self, **_: object) -> dict[str, object]:
+            raise AssertionError("update_web_settings should not be called")
+
+        def session_result(self, *, session_id: str) -> object:
+            raise AssertionError(f"session_result should not be called: {session_id}")
+
+        def list_notifications(self) -> tuple[object, ...]:
+            raise AssertionError("list_notifications should not be called")
+
+        def acknowledge_notification(self, *, notification_id: str) -> object:
+            raise AssertionError(
+                f"acknowledge_notification should not be called: {notification_id}"
+            )
+
+        def resume(self, session_id: str, **_: object) -> RuntimeResponseLike:
+            raise AssertionError(f"resume should not be called: {session_id}")
+
+        def answer_question(
+            self,
+            session_id: str,
+            *,
+            question_request_id: str,
+            responses: tuple[object, ...],
+        ) -> RuntimeResponseLike:
+            _ = session_id, question_request_id, responses
+            raise contracts_module.NoPendingQuestionError(
+                "no pending question for session: question-session"
+            )
+
+    app = create_runtime_app(workspace=tmp_path, runtime_factory=lambda: StubRuntime())
+    response = _run_app(
+        app,
+        method="POST",
+        path="/api/sessions/question-session/question",
+        body=json.dumps(
+            {
+                "request_id": "question-1",
+                "responses": [
+                    {"header": "Runtime path", "answers": ["Reuse existing"]},
+                ],
+            }
+        ).encode("utf-8"),
+    )
+
+    assert response.status == 404
+    assert response.json() == {"error": "no pending question for session: question-session"}
 
 
 def test_transport_streams_runtime_chunks_in_sse_order() -> None:

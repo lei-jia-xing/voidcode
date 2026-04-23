@@ -66,6 +66,7 @@ from voidcode.runtime.mcp import (
     McpToolDescriptor,
 )
 from voidcode.runtime.permission import PermissionPolicy
+from voidcode.runtime.question import QuestionResponse
 from voidcode.runtime.service import (
     GraphRunRequest,
     RuntimeRequest,
@@ -167,6 +168,37 @@ class _ApprovalThenCaptureSkillGraph:
             return _StubStep(
                 tool_call=ToolCall(
                     tool_name="write_file", arguments={"path": "alpha.txt", "content": "1"}
+                )
+            )
+        return _StubStep(output="done", is_finished=True)
+
+
+class _QuestionThenDoneGraph:
+    def step(
+        self,
+        request: GraphRunRequest,
+        tool_results: tuple[object, ...],
+        *,
+        session: SessionState,
+    ) -> _StubStep:
+        _ = request, session
+        if not tool_results:
+            return _StubStep(
+                tool_call=ToolCall(
+                    tool_name="question",
+                    arguments={
+                        "questions": [
+                            {
+                                "question": "Which runtime path should we use?",
+                                "header": "Runtime path",
+                                "options": [
+                                    {"label": "Reuse existing", "description": ""},
+                                    {"label": "Add new path", "description": ""},
+                                ],
+                                "multiple": False,
+                            }
+                        ]
+                    },
                 )
             )
         return _StubStep(output="done", is_finished=True)
@@ -380,6 +412,30 @@ class _BackgroundTaskSuccessGraph:
         return _StubStep(output=request.prompt, is_finished=True)
 
 
+class _TaskToolGraph:
+    def step(
+        self,
+        request: GraphRunRequest,
+        tool_results: tuple[object, ...],
+        *,
+        session: SessionState,
+    ) -> _StubStep:
+        _ = request, session
+        if not tool_results:
+            return _StubStep(
+                tool_call=ToolCall(
+                    tool_name="task",
+                    arguments={
+                        "prompt": "delegated child prompt",
+                        "run_in_background": True,
+                        "load_skills": ["demo"],
+                        "category": "quick",
+                    },
+                )
+            )
+        return _StubStep(output="delegation started", is_finished=True)
+
+
 class _BackgroundTaskFailureGraph:
     def step(
         self,
@@ -545,6 +601,25 @@ def test_runtime_background_task_executes_through_existing_runtime_path(tmp_path
     assert resumed.session.metadata["background_run"] is True
     assert resumed.output == "background hello"
     assert completed == loaded
+
+
+def test_runtime_task_tool_starts_background_task_with_skill_metadata(tmp_path: Path) -> None:
+    skill_dir = tmp_path / ".voidcode" / "skills" / "demo"
+    _write_demo_skill(skill_dir, content="# Demo\nUse delegated skill.")
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_TaskToolGraph(),
+        config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=True)),
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="delegate this", session_id="leader-session"))
+    tasks = runtime.list_background_tasks_by_parent_session(parent_session_id="leader-session")
+    assert response.output == "delegation started"
+    assert len(tasks) == 1
+    task = runtime.load_background_task(tasks[0].task.id)
+    assert task.request.parent_session_id == "leader-session"
+    assert task.request.metadata == {"skills": ["demo"]}
+    assert task.request.prompt.startswith("Delegated runtime task.")
 
 
 def test_runtime_background_task_worker_uses_local_cli_session_when_no_session_id_and_allocate_session_id_is_false(  # noqa: E501
@@ -5830,6 +5905,40 @@ def test_runtime_notifications_track_approval_blocked_and_completion(tmp_path: P
         notifications[0].id,
         notifications[1].id,
     ]
+
+
+def test_runtime_notifications_track_question_blocked_and_completion(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_QuestionThenDoneGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    waiting = runtime.run(RuntimeRequest(prompt="go", session_id="question-notify-session"))
+    question_request_id = str(waiting.events[-1].payload["request_id"])
+    waiting_notifications = runtime.list_notifications()
+
+    assert len(waiting_notifications) == 1
+    assert waiting_notifications[0].kind == "question_blocked"
+    assert waiting_notifications[0].status == "unread"
+    assert waiting_notifications[0].session.id == "question-notify-session"
+
+    resumed = runtime.answer_question(
+        session_id="question-notify-session",
+        question_request_id=question_request_id,
+        responses=(QuestionResponse(header="Runtime path", answers=("Reuse existing",)),),
+    )
+    notifications = runtime.list_notifications()
+
+    assert resumed.session.status == "completed"
+    assert len(notifications) == 2
+    assert [notification.kind for notification in notifications] == [
+        "completion",
+        "question_blocked",
+    ]
+    assert notifications[0].status == "unread"
+    assert notifications[1].status == "acknowledged"
 
 
 def test_runtime_notifications_generate_distinct_terminal_ids_per_run(tmp_path: Path) -> None:

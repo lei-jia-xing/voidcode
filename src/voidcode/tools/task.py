@@ -5,14 +5,19 @@ from typing import Protocol
 
 from pydantic import BaseModel, ValidationError, field_validator, model_validator
 
-from ..runtime.contracts import BackgroundTaskResult, RuntimeRequest, RuntimeSessionResult
+from ..runtime.contracts import (
+    BackgroundTaskResult,
+    RuntimeRequest,
+    RuntimeResponse,
+    RuntimeSessionResult,
+)
 from ..runtime.task import BackgroundTaskState, StoredBackgroundTaskSummary
 from .contracts import ToolCall, ToolDefinition, ToolResult
 from .runtime_context import require_runtime_tool_context
 
 
 class TaskRuntime(Protocol):
-    def run(self, request: RuntimeRequest) -> RuntimeSessionResult: ...
+    def run(self, request: RuntimeRequest) -> RuntimeResponse: ...
 
     def start_background_task(self, request: RuntimeRequest) -> BackgroundTaskState: ...
 

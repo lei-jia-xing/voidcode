@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Literal, Protocol, TypedDict, cast, runtime_checkable
 
 from .events import EventEnvelope
+from .question import QuestionResponse
 from .session import SessionRef, SessionState
 from .task import BackgroundTaskState, BackgroundTaskStatus, StoredBackgroundTaskSummary
 
@@ -15,6 +16,10 @@ class RuntimeRequestError(ValueError):
 
 class UnknownSessionError(ValueError):
     """Raised when a referenced session does not exist in storage."""
+
+
+class NoPendingQuestionError(ValueError):
+    """Raised when a session has no pending question to answer."""
 
 
 class RuntimeRequestMetadata(TypedDict, total=False):
@@ -159,6 +164,7 @@ type RuntimeNotificationKind = Literal[
     "failure",
     "cancellation",
     "approval_blocked",
+    "question_blocked",
 ]
 type RuntimeNotificationStatus = Literal["unread", "acknowledged"]
 
@@ -225,6 +231,25 @@ class RuntimeEntrypoint(Protocol):
 @runtime_checkable
 class StreamingRuntimeEntrypoint(Protocol):
     def run_stream(self, request: RuntimeRequest) -> Iterator[RuntimeStreamChunk]: ...
+
+
+@runtime_checkable
+class QuestionRuntimeEntrypoint(Protocol):
+    def answer_question(
+        self,
+        session_id: str,
+        *,
+        question_request_id: str,
+        responses: tuple[QuestionResponse, ...],
+    ) -> RuntimeResponse: ...
+
+    def answer_question_stream(
+        self,
+        session_id: str,
+        *,
+        question_request_id: str,
+        responses: tuple[QuestionResponse, ...],
+    ) -> Iterator[RuntimeStreamChunk]: ...
 
 
 @runtime_checkable
