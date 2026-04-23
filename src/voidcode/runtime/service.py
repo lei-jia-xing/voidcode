@@ -125,6 +125,7 @@ from .events import (
     RUNTIME_SKILLS_APPLIED,
     RUNTIME_SKILLS_BINDING_MISMATCH,
     RUNTIME_SKILLS_LOADED,
+    RUNTIME_TOOL_STARTED,
     EventEnvelope,
 )
 from .lsp import LspManager, LspManagerState, LspRequest, LspRequestResult, build_lsp_manager
@@ -1669,6 +1670,18 @@ class VoidCodeRuntime:
             _tool_timeout = self._effective_runtime_config_from_metadata(
                 session.metadata
             ).tool_timeout_seconds
+            sequence += 1
+            yield RuntimeStreamChunk(
+                kind="event",
+                session=session,
+                event=EventEnvelope(
+                    session_id=session.session.id,
+                    sequence=sequence,
+                    event_type=RUNTIME_TOOL_STARTED,
+                    source="runtime",
+                    payload={"tool": plan_tool_call.tool_name},
+                ),
+            )
             try:
                 with bind_runtime_tool_context(
                     RuntimeToolInvocationContext(

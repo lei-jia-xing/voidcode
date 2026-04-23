@@ -24,6 +24,7 @@ from voidcode.runtime.events import (
     RUNTIME_SESSION_STARTED,
     RUNTIME_SKILLS_APPLIED,
     RUNTIME_SKILLS_BINDING_MISMATCH,
+    RUNTIME_TOOL_STARTED,
 )
 
 
@@ -39,6 +40,7 @@ def test_plan_created_is_in_stable_emitted_event_types() -> None:
     assert RUNTIME_LSP_SERVER_FAILED in EMITTED_EVENT_TYPES
     assert RUNTIME_MCP_SERVER_FAILED in EMITTED_EVENT_TYPES
     assert RUNTIME_PLAN_CREATED in EMITTED_EVENT_TYPES
+    assert RUNTIME_TOOL_STARTED in EMITTED_EVENT_TYPES
 
 
 def test_future_additive_event_types_cover_async_lifecycle_surfaces() -> None:

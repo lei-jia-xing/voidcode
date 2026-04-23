@@ -26,6 +26,7 @@ type ExistingEventType = Literal[
     "graph.model_turn",
     "graph.tool_request_created",
     "runtime.tool_lookup_succeeded",
+    "runtime.tool_started",
     "runtime.permission_resolved",
     "runtime.tool_hook_pre",
     "runtime.tool_hook_post",
@@ -73,6 +74,7 @@ GRAPH_LOOP_STEP: Final[ExistingEventType] = "graph.loop_step"
 GRAPH_MODEL_TURN: Final[ExistingEventType] = "graph.model_turn"
 GRAPH_TOOL_REQUEST_CREATED: Final[ExistingEventType] = "graph.tool_request_created"
 RUNTIME_TOOL_LOOKUP_SUCCEEDED: Final[ExistingEventType] = "runtime.tool_lookup_succeeded"
+RUNTIME_TOOL_STARTED: Final[ExistingEventType] = "runtime.tool_started"
 RUNTIME_PERMISSION_RESOLVED: Final[ExistingEventType] = "runtime.permission_resolved"
 RUNTIME_TOOL_HOOK_PRE: Final[ExistingEventType] = "runtime.tool_hook_pre"
 RUNTIME_TOOL_HOOK_POST: Final[ExistingEventType] = "runtime.tool_hook_post"
@@ -126,6 +128,7 @@ EMITTED_EVENT_TYPES: Final[tuple[ExistingEventType, ...]] = (
     GRAPH_MODEL_TURN,
     GRAPH_TOOL_REQUEST_CREATED,
     RUNTIME_TOOL_LOOKUP_SUCCEEDED,
+    RUNTIME_TOOL_STARTED,
     RUNTIME_PERMISSION_RESOLVED,
     RUNTIME_TOOL_HOOK_PRE,
     RUNTIME_TOOL_HOOK_POST,

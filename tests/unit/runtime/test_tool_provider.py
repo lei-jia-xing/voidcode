@@ -563,8 +563,10 @@ def test_runtime_default_registry_behavior_remains_unchanged(tmp_path: Path) -> 
     assert response.events[1].payload == {"skills": []}
     assert response.events[3].event_type == "runtime.tool_lookup_succeeded"
     assert response.events[3].payload == {"tool": "grep"}
-    assert response.events[5].event_type == "runtime.tool_completed"
-    assert response.events[5].payload["pattern"] == "alpha"
+    assert response.events[4].event_type == "runtime.permission_resolved"
+    assert response.events[5].event_type == "runtime.tool_started"
+    assert response.events[6].event_type == "runtime.tool_completed"
+    assert response.events[6].payload["pattern"] == "alpha"
 
 
 def test_runtime_default_registry_includes_runtime_backed_agent_tools(tmp_path: Path) -> None:

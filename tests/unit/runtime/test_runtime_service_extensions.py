@@ -2424,7 +2424,9 @@ def test_runtime_default_extension_construction_preserves_public_run_path(
     assert response.events[3].event_type == "runtime.skills_applied"
     assert response.events[4].event_type == "graph.tool_request_created"
     assert response.events[5].event_type == "runtime.tool_lookup_succeeded"
-    assert response.events[7].event_type == "runtime.tool_completed"
+    assert response.events[6].event_type == "runtime.permission_resolved"
+    assert response.events[7].event_type == "runtime.tool_started"
+    assert response.events[8].event_type == "runtime.tool_completed"
     assert response.events[-1].event_type == "runtime.acp_disconnected"
     runtime_state_metadata = cast(dict[str, object], response.session.metadata["runtime_state"])
     assert runtime_state_metadata["acp"] == {
@@ -2616,8 +2618,9 @@ def test_runtime_resume_stream_replays_graph_suffix_before_acp_connect_when_enab
         "runtime.tool_lookup_succeeded",
     ]
     assert event_types[2] == "runtime.acp_connected"
-    assert event_types[3:5] == [
+    assert event_types[3:6] == [
         "runtime.approval_resolved",
+        "runtime.tool_started",
         "runtime.tool_completed",
     ]
     assert event_types[-1] == "runtime.acp_disconnected"
