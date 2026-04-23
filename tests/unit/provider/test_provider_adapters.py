@@ -127,14 +127,23 @@ class _StubStreamChunk:
         finish_reason: str | None = None,
         *,
         tool_calls: list[dict[str, object]] | None = None,
+        reasoning_content: str | None = None,
+        thinking_blocks: list[dict[str, object]] | None = None,
     ) -> None:
         self._text = text
         self._finish_reason = finish_reason
         self._tool_calls = tool_calls
+        self._reasoning_content = reasoning_content
+        self._thinking_blocks = thinking_blocks
 
     def model_dump(self) -> dict[str, object]:
         choice: dict[str, object] = {
-            "delta": {"content": self._text, "tool_calls": self._tool_calls},
+            "delta": {
+                "content": self._text,
+                "tool_calls": self._tool_calls,
+                "reasoning_content": self._reasoning_content,
+                "thinking_blocks": self._thinking_blocks,
+            },
             "finish_reason": self._finish_reason,
         }
         return {"choices": [choice]}
@@ -733,6 +742,90 @@ def test_provider_adapter_stream_turn_emits_tool_event_when_model_streams_tool_r
             channel="tool",
             text='{"tool_name": "read_file", "arguments": {"path": "sample.txt"}}',
         ),
+        ProviderStreamEvent(kind="done", done_reason="completed"),
+    ]
+
+
+def test_provider_adapter_stream_turn_emits_reasoning_events_from_reasoning_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = OpenAIModelProvider()
+    single_agent = provider.single_agent_provider()
+    assert isinstance(single_agent, StreamableSingleAgentProvider)
+
+    import voidcode.provider.litellm_backend as backend_module
+
+    def _completion(*args: Any, **kwargs: Any):
+        _ = args, kwargs
+        return iter(
+            [
+                _StubStreamChunk(
+                    text=None,
+                    finish_reason=None,
+                    reasoning_content="Thinking step.",
+                ),
+                _StubStreamChunk(text="Done.", finish_reason=None),
+                _StubStreamChunk(text=None, finish_reason="stop"),
+            ]
+        )
+
+    if backend_module.litellm_module is None:
+
+        class _FakeLiteLLM:
+            def completion(self, *args: Any, **kwargs: Any):
+                return _completion(*args, **kwargs)
+
+        monkeypatch.setattr(backend_module, "litellm_module", _FakeLiteLLM())
+    else:
+        monkeypatch.setattr(backend_module.litellm_module, "completion", _completion)
+
+    events = list(single_agent.stream_turn(_build_turn_request(model_name="openai")))
+
+    assert events == [
+        ProviderStreamEvent(kind="delta", channel="reasoning", text="Thinking step."),
+        ProviderStreamEvent(kind="delta", channel="text", text="Done."),
+        ProviderStreamEvent(kind="done", done_reason="completed"),
+    ]
+
+
+def test_provider_adapter_stream_turn_emits_reasoning_events_from_thinking_blocks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = AnthropicModelProvider()
+    single_agent = provider.single_agent_provider()
+    assert isinstance(single_agent, StreamableSingleAgentProvider)
+
+    import voidcode.provider.litellm_backend as backend_module
+
+    def _completion(*args: Any, **kwargs: Any):
+        _ = args, kwargs
+        return iter(
+            [
+                _StubStreamChunk(
+                    text=None,
+                    finish_reason=None,
+                    thinking_blocks=[{"type": "thinking", "thinking": "Private chain."}],
+                ),
+                _StubStreamChunk(text="Visible answer", finish_reason=None),
+                _StubStreamChunk(text=None, finish_reason="stop"),
+            ]
+        )
+
+    if backend_module.litellm_module is None:
+
+        class _FakeLiteLLM:
+            def completion(self, *args: Any, **kwargs: Any):
+                return _completion(*args, **kwargs)
+
+        monkeypatch.setattr(backend_module, "litellm_module", _FakeLiteLLM())
+    else:
+        monkeypatch.setattr(backend_module.litellm_module, "completion", _completion)
+
+    events = list(single_agent.stream_turn(_build_turn_request(model_name="anthropic")))
+
+    assert events == [
+        ProviderStreamEvent(kind="delta", channel="reasoning", text="Private chain."),
+        ProviderStreamEvent(kind="delta", channel="text", text="Visible answer"),
         ProviderStreamEvent(kind="done", done_reason="completed"),
     ]
 

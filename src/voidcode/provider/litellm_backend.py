@@ -355,6 +355,25 @@ class LiteLLMBackendSingleAgentProvider:
                 delta_obj = first_choice.get("delta")
                 if isinstance(delta_obj, dict):
                     delta = cast(dict[str, object], delta_obj)
+                    reasoning_obj = delta.get("reasoning_content")
+                    if isinstance(reasoning_obj, str) and reasoning_obj:
+                        yield ProviderStreamEvent(
+                            kind="delta", channel="reasoning", text=reasoning_obj
+                        )
+                    raw_thinking_blocks = delta.get("thinking_blocks")
+                    if isinstance(raw_thinking_blocks, list):
+                        thinking_blocks = cast(list[object], raw_thinking_blocks)
+                        for block_obj in thinking_blocks:
+                            if not isinstance(block_obj, dict):
+                                continue
+                            block = cast(dict[str, object], block_obj)
+                            if block.get("type") != "thinking":
+                                continue
+                            thinking_text = block.get("thinking")
+                            if isinstance(thinking_text, str) and thinking_text:
+                                yield ProviderStreamEvent(
+                                    kind="delta", channel="reasoning", text=thinking_text
+                                )
                     text_obj = delta.get("content")
                     if isinstance(text_obj, str) and text_obj:
                         yield ProviderStreamEvent(kind="delta", channel="text", text=text_obj)
