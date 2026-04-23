@@ -1,15 +1,13 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { RuntimeClient } from '../lib/runtime/client';
-import { ApprovalDecision, StoredSessionSummary, SessionState, EventEnvelope } from '../lib/runtime/types';
+import { ApprovalDecision, StoredSessionSummary, SessionState, EventEnvelope, RuntimeSettings, RuntimeSettingsUpdate } from '../lib/runtime/types';
 
 interface AppState {
   language: 'en' | 'zh-CN';
 
   agentPreset: 'leader';
-  leaderMode: 'direct_execute' | 'plan_first';
   providerModel: string;
-  maxSteps: number;
 
   sessions: StoredSessionSummary[];
   currentSessionId: string | null;
@@ -27,11 +25,13 @@ interface AppState {
   approvalError: string | null;
   replayRequestId: number;
 
+  settings: RuntimeSettings | null;
+  settingsStatus: 'idle' | 'loading' | 'success' | 'error';
+  settingsError: string | null;
+
   setLanguage: (lang: 'en' | 'zh-CN') => void;
   setAgentPreset: (preset: 'leader') => void;
-  setLeaderMode: (mode: 'direct_execute' | 'plan_first') => void;
   setProviderModel: (model: string) => void;
-  setMaxSteps: (maxSteps: number) => void;
   loadSessions: () => Promise<void>;
   selectSession: (sessionId: string) => Promise<void>;
   runTask: (
@@ -40,13 +40,14 @@ interface AppState {
       sessionId?: string | null;
       metadata?: {
         skills?: string[];
-        max_steps?: number;
         provider_stream?: boolean;
         [key: string]: unknown;
       };
     }
   ) => Promise<void>;
   resolveApproval: (decision: ApprovalDecision) => Promise<void>;
+  loadSettings: () => Promise<void>;
+  updateSettings: (settings: RuntimeSettingsUpdate) => Promise<void>;
 }
 
 function getPendingApprovalRequestId(events: EventEnvelope[]): string | null {
@@ -70,9 +71,7 @@ export const useAppStore = create<AppState>()(
     (set, get) => ({
       language: 'en',
       agentPreset: 'leader',
-      leaderMode: 'direct_execute',
       providerModel: 'opencode-go/glm-5.1',
-      maxSteps: 16,
 
       sessions: [],
       currentSessionId: null,
@@ -90,16 +89,13 @@ export const useAppStore = create<AppState>()(
       approvalError: null,
       replayRequestId: 0,
 
+      settings: null,
+      settingsStatus: 'idle',
+      settingsError: null,
+
       setLanguage: (language) => set({ language }),
       setAgentPreset: (agentPreset) => set({ agentPreset }),
-      setLeaderMode: (leaderMode) => set({ leaderMode }),
       setProviderModel: (providerModel) => set({ providerModel }),
-      setMaxSteps: (maxSteps) => {
-        const normalizedMaxSteps = Number.isFinite(maxSteps)
-          ? Math.max(1, Math.floor(maxSteps))
-          : 1;
-        set({ maxSteps: normalizedMaxSteps });
-      },
 
       loadSessions: async () => {
         set({ sessionsStatus: 'loading', sessionsError: null });
@@ -210,14 +206,20 @@ export const useAppStore = create<AppState>()(
           replayRequestId: nextReplayRequestId
         });
 
+        const rawMetadata = options?.metadata ?? {};
+        const rawAgentMetadata =
+          rawMetadata.agent && typeof rawMetadata.agent === 'object'
+            ? (rawMetadata.agent as Record<string, unknown>)
+            : {};
+        const { max_steps: _ignoredMaxSteps, agent: _ignoredAgent, ...forwardMetadata } = rawMetadata;
+        const { leader_mode: _ignoredLeaderMode, ...forwardAgentMetadata } = rawAgentMetadata;
+
         const metadata = {
-          max_steps: get().maxSteps,
-          ...options?.metadata,
+          ...forwardMetadata,
           agent: {
             preset: get().agentPreset,
-            leader_mode: get().leaderMode,
             model: get().providerModel,
-            ...((options?.metadata?.agent as object) || {})
+            ...forwardAgentMetadata
           }
         };
 
@@ -296,6 +298,32 @@ export const useAppStore = create<AppState>()(
             approvalError: (err as Error).message
           });
         }
+      },
+
+      loadSettings: async () => {
+        set({ settingsStatus: 'loading', settingsError: null });
+        try {
+          const settings = await RuntimeClient.getSettings();
+          set({ settings, settingsStatus: 'success' });
+          if (settings.model) {
+            set({ providerModel: settings.model });
+          }
+        } catch (err) {
+          set({ settingsStatus: 'error', settingsError: (err as Error).message });
+        }
+      },
+
+      updateSettings: async (settings) => {
+        set({ settingsStatus: 'loading', settingsError: null });
+        try {
+          const updated = await RuntimeClient.updateSettings(settings);
+          set({ settings: updated, settingsStatus: 'success' });
+          if (updated.model) {
+            set({ providerModel: updated.model });
+          }
+        } catch (err) {
+          set({ settingsStatus: 'error', settingsError: (err as Error).message });
+        }
       }
     }),
     {
@@ -303,9 +331,7 @@ export const useAppStore = create<AppState>()(
       partialize: (state) => ({
         language: state.language,
         agentPreset: state.agentPreset,
-        leaderMode: state.leaderMode,
         providerModel: state.providerModel,
-        maxSteps: state.maxSteps,
         currentSessionId: state.currentSessionId
       })
     }

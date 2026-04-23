@@ -3,7 +3,9 @@ import {
   StoredSessionSummary,
   RuntimeResponse,
   RuntimeStreamChunk,
-  ApprovalDecision
+  ApprovalDecision,
+  RuntimeSettings,
+  RuntimeSettingsUpdate,
 } from './types';
 
 export class RuntimeClient {
@@ -31,6 +33,22 @@ export class RuntimeClient {
     });
 
     if (!res.ok) throw new Error(`Failed to resolve approval: ${res.statusText}`);
+    return res.json();
+  }
+
+  static async getSettings(): Promise<RuntimeSettings> {
+    const res = await fetch(`/api/settings`);
+    if (!res.ok) throw new Error(`Failed to load settings: ${res.statusText}`);
+    return res.json();
+  }
+
+  static async updateSettings(settings: RuntimeSettingsUpdate): Promise<RuntimeSettings> {
+    const res = await fetch(`/api/settings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(settings)
+    });
+    if (!res.ok) throw new Error(`Failed to save settings: ${res.statusText}`);
     return res.json();
   }
 

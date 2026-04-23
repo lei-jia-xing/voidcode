@@ -5,6 +5,7 @@ import type {
   EventEnvelope,
   RuntimeResponse,
   RuntimeStreamChunk,
+  RuntimeSettings,
   SessionState,
   StoredSessionSummary,
 } from './lib/runtime/types';
@@ -14,9 +15,7 @@ type PersistedState = {
     language: 'en' | 'zh-CN';
     currentSessionId: string | null;
     agentPreset?: 'leader';
-    leaderMode?: 'direct_execute' | 'plan_first';
     providerModel?: string;
-    maxSteps?: number;
   };
   version: number;
 };
@@ -131,6 +130,8 @@ const runtimeClientMocks = vi.hoisted(() => ({
   resolveApprovalMock: vi.fn<
     (sessionId: string, requestId: string, decision: ApprovalDecision) => Promise<RuntimeResponse>
   >(),
+  getSettingsMock: vi.fn<() => Promise<RuntimeSettings>>(),
+  updateSettingsMock: vi.fn<(settings: Record<string, unknown>) => Promise<RuntimeSettings>>(),
   runStreamMock: vi.fn<
     (request: { prompt: string; session_id?: string | null; metadata?: Record<string, unknown> }) => AsyncGenerator<RuntimeStreamChunk, void, unknown>
   >(),
@@ -141,6 +142,8 @@ vi.mock('./lib/runtime/client', () => ({
     listSessions: runtimeClientMocks.listSessionsMock,
     getSessionReplay: runtimeClientMocks.getSessionReplayMock,
     resolveApproval: runtimeClientMocks.resolveApprovalMock,
+    getSettings: runtimeClientMocks.getSettingsMock,
+    updateSettings: runtimeClientMocks.updateSettingsMock,
     runStream: runtimeClientMocks.runStreamMock,
   },
 }));
@@ -167,8 +170,13 @@ describe('useAppStore integration flow', () => {
       approvalStatus: 'idle',
       approvalError: null,
       replayRequestId: 0,
+      settings: null,
+      settingsStatus: 'idle',
+      settingsError: null,
     });
     runtimeClientMocks.listSessionsMock.mockResolvedValue([]);
+    runtimeClientMocks.getSettingsMock.mockResolvedValue({});
+    runtimeClientMocks.updateSettingsMock.mockResolvedValue({});
   });
 
   it('handles run -> waiting approval -> allow -> replay through the real store', async () => {
@@ -318,9 +326,7 @@ describe('useAppStore integration flow', () => {
         language: 'zh-CN',
         currentSessionId: sessionId,
         agentPreset: 'leader',
-        leaderMode: 'plan_first',
-        providerModel: 'test-model/v1',
-        maxSteps: 24
+        providerModel: 'test-model/v1'
       },
       version: 0,
     };
@@ -339,9 +345,7 @@ describe('useAppStore integration flow', () => {
     expect(state.language).toBe('zh-CN');
     expect(state.currentSessionId).toBe(sessionId);
     expect(state.agentPreset).toBe('leader');
-    expect(state.leaderMode).toBe('plan_first');
     expect(state.providerModel).toBe('test-model/v1');
-    expect(state.maxSteps).toBe(24);
     expect(state.currentSessionState?.status).toBe('completed');
     expect(state.currentSessionOutput).toBe('note body');
     expect(runtimeClientMocks.getSessionReplayMock).toHaveBeenCalledWith(sessionId);
@@ -355,9 +359,7 @@ describe('useAppStore integration flow', () => {
         language: 'zh-CN',
         currentSessionId: sessionId,
         agentPreset: 'leader',
-        leaderMode: 'plan_first',
-        providerModel: 'test-model/v1',
-        maxSteps: 24
+        providerModel: 'test-model/v1'
       },
       version: 0,
     };
@@ -456,11 +458,9 @@ describe('useAppStore integration flow', () => {
       session_id: null,
       metadata: {
         skills: ['demo'],
-        max_steps: 5,
         provider_stream: true,
         agent: {
           preset: 'leader',
-          leader_mode: 'direct_execute',
           model: 'opencode-go/glm-5.1'
         }
       },
@@ -488,10 +488,8 @@ describe('useAppStore integration flow', () => {
       prompt: 'new run',
       session_id: null,
       metadata: {
-        max_steps: 16,
         agent: {
           preset: 'leader',
-          leader_mode: 'direct_execute',
           model: 'opencode-go/glm-5.1'
         }
       },
@@ -523,13 +521,57 @@ describe('useAppStore integration flow', () => {
       prompt: 'start new',
       session_id: null,
       metadata: {
-        max_steps: 16,
         agent: {
           preset: 'leader',
-          leader_mode: 'direct_execute',
           model: 'opencode-go/glm-5.1'
         }
       },
     });
+  });
+
+  it('loads runtime-owned settings and syncs providerModel from returned model', async () => {
+    runtimeClientMocks.getSettingsMock.mockResolvedValue({
+      provider: 'glm',
+      provider_api_key_present: true,
+      model: 'glm/glm-5'
+    });
+
+    await useAppStore.getState().loadSettings();
+
+    const state = useAppStore.getState();
+    expect(runtimeClientMocks.getSettingsMock).toHaveBeenCalledOnce();
+    expect(state.settings).toEqual({
+      provider: 'glm',
+      provider_api_key_present: true,
+      model: 'glm/glm-5'
+    });
+    expect(state.providerModel).toBe('glm/glm-5');
+  });
+
+  it('updates runtime-owned settings without expecting provider_api_key in the response', async () => {
+    runtimeClientMocks.updateSettingsMock.mockResolvedValue({
+      provider: 'opencode-go',
+      provider_api_key_present: true,
+      model: 'opencode-go/glm-5.1'
+    });
+
+    await useAppStore.getState().updateSettings({
+      provider: 'opencode-go',
+      provider_api_key: 'secret-key',
+      model: 'opencode-go/glm-5.1'
+    });
+
+    const state = useAppStore.getState();
+    expect(runtimeClientMocks.updateSettingsMock).toHaveBeenCalledWith({
+      provider: 'opencode-go',
+      provider_api_key: 'secret-key',
+      model: 'opencode-go/glm-5.1'
+    });
+    expect(state.settings).toEqual({
+      provider: 'opencode-go',
+      provider_api_key_present: true,
+      model: 'opencode-go/glm-5.1'
+    });
+    expect(state.providerModel).toBe('opencode-go/glm-5.1');
   });
 });

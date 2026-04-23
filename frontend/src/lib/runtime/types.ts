@@ -35,7 +35,6 @@ export interface RuntimeRequest {
   parent_session_id?: string | null;
   metadata?: {
     skills?: string[];
-    max_steps?: number;
     provider_stream?: boolean;
     [key: string]: unknown;
   };
@@ -54,4 +53,16 @@ export interface RuntimeStreamChunk {
   session: SessionState;
   event: EventEnvelope | null;
   output: string | null;
+}
+
+export interface RuntimeSettings {
+  provider?: string;
+  provider_api_key_present?: boolean;
+  model?: string;
+}
+
+export interface RuntimeSettingsUpdate {
+  provider?: string;
+  provider_api_key?: string;
+  model?: string;
 }
