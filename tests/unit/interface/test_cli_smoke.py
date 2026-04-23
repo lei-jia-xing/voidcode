@@ -1032,7 +1032,7 @@ def test_config_show_uses_opencode_go_environment_without_leaking_key() -> None:
             {
                 "VOIDCODE_MODEL": "opencode-go/glm-5",
                 "VOIDCODE_EXECUTION_ENGINE": "single_agent",
-                "OPENCODE_GO_API_KEY": "opencode-go-secret",
+                "OPENCODE_API_KEY": "opencode-go-secret",
             }
         )
 

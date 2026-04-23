@@ -6,7 +6,7 @@
   "config.maxSteps": "最大步骤",
   "config.leaderMode.direct": "直接执行",
   "config.leaderMode.plan": "先计划",
-  "config.helpText": "启动后端时设置 OPENCODE_GO_API_KEY；Web 客户端只发送运行时元数据，不传递密钥。",
+  "config.helpText": "启动后端时设置 OPENCODE_API_KEY；Web 客户端只发送运行时元数据，不传递密钥。",
   "app.title": "VoidCode",
   "app.tagline": "AI编程助手",
   "nav.workspace": "工作区",

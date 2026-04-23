@@ -2121,7 +2121,7 @@ def test_runtime_config_uses_opencode_go_environment_credentials_without_provide
         env={
             MODEL_ENV_VAR: "opencode-go/glm-5",
             EXECUTION_ENGINE_ENV_VAR: "single_agent",
-            "OPENCODE_GO_API_KEY": "opencode-go-env-key",
+            "OPENCODE_API_KEY": "opencode-go-env-key",
         },
     )
 
@@ -2139,7 +2139,7 @@ def test_runtime_config_repo_provider_overrides_environment_provider_credentials
         encoding="utf-8",
     )
 
-    config = load_runtime_config(tmp_path, env={"OPENCODE_GO_API_KEY": "env-key"})
+    config = load_runtime_config(tmp_path, env={"OPENCODE_API_KEY": "env-key"})
 
     assert config.providers is not None
     assert config.providers.opencode_go == SimplifiedProviderConfig(api_key="repo-key")

@@ -607,8 +607,18 @@ def test_opencode_go_provider_routes_model_families_to_required_sdk_adapter(
     payload = cast(dict[str, object], payload_obj)
     assert payload["model"] == model_name
     assert payload["custom_llm_provider"] == custom_provider
-    assert payload["api_base"] == "https://opencode.ai/zen/go/v1"
+    expected_api_base = (
+        "https://opencode.ai/zen/go"
+        if model_name in {"minimax-m2.7", "minimax-m2.5"}
+        else "https://opencode.ai/zen/go/v1"
+    )
+    assert payload["api_base"] == expected_api_base
     assert payload["api_key"] == "opencode-go-key"
+    if model_name in {"minimax-m2.7", "minimax-m2.5"}:
+        assert payload["extra_headers"] == {
+            "anthropic-version": "2023-06-01",
+            "user-agent": "@ai-sdk/anthropic",
+        }
     assert payload.get("tools")
     assert payload.get("tool_choice") == "auto"
 

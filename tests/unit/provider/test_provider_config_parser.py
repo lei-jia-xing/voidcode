@@ -350,7 +350,7 @@ def test_parse_opencode_go_provider_config_from_env() -> None:
     parsed = parse_provider_configs_payload(
         {"opencode-go": {}},
         source="runtime config field 'providers'",
-        env={"OPENCODE_GO_API_KEY": "opencode-go-env-key"},
+        env={"OPENCODE_API_KEY": "opencode-go-env-key"},
     )
 
     assert parsed is not None
@@ -470,7 +470,7 @@ def test_simplified_provider_not_allowed_in_custom_block(provider_name: str) -> 
 
 
 def test_provider_configs_from_env_builds_opencode_go_without_repo_provider_block() -> None:
-    parsed = provider_configs_from_env({"OPENCODE_GO_API_KEY": "opencode-go-env-key"})
+    parsed = provider_configs_from_env({"OPENCODE_API_KEY": "opencode-go-env-key"})
 
     assert parsed is not None
     assert parsed.opencode_go == SimplifiedProviderConfig(api_key="opencode-go-env-key")

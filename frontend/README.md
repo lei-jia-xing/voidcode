@@ -81,7 +81,7 @@ frontend/
 默认 Web 提交会使用 `leader` 单 agent 路径、`opencode-go/glm-5.1` 模型和 16 步工具循环预算。API Key 不会进入浏览器状态或请求体；启动后端时通过环境变量提供：
 
 ```bash
-OPENCODE_GO_API_KEY=<your-key> uv run voidcode serve --workspace . --port 8000
+OPENCODE_API_KEY=<your-key> uv run voidcode serve --workspace . --port 8000
 ```
 
 ## 贡献

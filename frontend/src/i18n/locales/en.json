@@ -6,7 +6,7 @@
   "config.maxSteps": "Max Steps",
   "config.leaderMode.direct": "Direct Execute",
   "config.leaderMode.plan": "Plan First",
-  "config.helpText": "Start the backend with OPENCODE_GO_API_KEY set; the web client sends only runtime metadata, never secrets.",
+  "config.helpText": "Start the backend with OPENCODE_API_KEY set; the web client sends only runtime metadata, never secrets.",
   "app.title": "VoidCode",
   "app.tagline": "AI Coding Agent",
   "nav.workspace": "Workspace",

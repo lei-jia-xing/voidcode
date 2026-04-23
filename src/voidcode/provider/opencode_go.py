@@ -19,6 +19,11 @@ class OpenCodeGoSingleAgentProvider(LiteLLMBackendSingleAgentProvider):
         model_name = request.model_name or ""
         if model_name in _ANTHROPIC_COMPATIBLE_MODELS:
             kwargs["custom_llm_provider"] = "anthropic"
+            kwargs["api_base"] = "https://opencode.ai/zen/go"
+            kwargs["extra_headers"] = {
+                "anthropic-version": "2023-06-01",
+                "user-agent": "@ai-sdk/anthropic",
+            }
             return kwargs
         if model_name in _ALIBABA_COMPATIBLE_MODELS:
             kwargs["custom_llm_provider"] = "dashscope"
@@ -40,12 +45,12 @@ class OpenCodeGoModelProvider:
     Usage:
         providers:
           opencode-go:
-            api_key: "your-api-key"  # or set OPENCODE_GO_API_KEY env var
+            api_key: "your-api-key"  # or set OPENCODE_API_KEY env var
             model_map:
               glm-5: glm-5  # optional model alias
 
     Environment Variables:
-        OPENCODE_GO_API_KEY: API key for OpenCode Go authentication
+        OPENCODE_API_KEY: API key shared by OpenCode Zen and OpenCode Go
 
     Note:
         OpenCode Go uses different endpoints for different model families:
