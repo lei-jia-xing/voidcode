@@ -10,6 +10,21 @@ export interface DerivedTask {
   events: EventEnvelope[];
 }
 
+export interface ChatMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  thinking: string[];
+  tools: { name: string; status: 'pending' | 'running' | 'completed' | 'failed' }[];
+  approval: {
+    requestId: string;
+    tool: string;
+    targetSummary: string;
+  } | null;
+  status: 'in_progress' | 'completed' | 'failed' | 'waiting';
+  sequence: number;
+}
+
 export function deriveTasksFromEvents(events: EventEnvelope[]): DerivedTask[] {
   const tasks: DerivedTask[] = [];
   let currentToolTask: DerivedTask | null = null;
@@ -111,7 +126,6 @@ export function deriveTasksFromEvents(events: EventEnvelope[]): DerivedTask[] {
       }
 
     } else {
-      // Any other intermediate event (like tool_lookup_succeeded)
       if (currentToolTask) {
         currentToolTask.events.push(event);
       } else {
@@ -150,4 +164,114 @@ export function deriveActivitiesFromEvents(events: EventEnvelope[]) {
       payloadStr
     };
   });
+}
+
+export function deriveChatMessages(events: EventEnvelope[], currentOutput: string | null): ChatMessage[] {
+  const messages: ChatMessage[] = [];
+  let currentAssistant: ChatMessage | null = null;
+
+  for (const event of events) {
+    if (event.event_type === 'runtime.request_received') {
+      if (currentAssistant) {
+        if (currentAssistant.status === 'in_progress') {
+          currentAssistant.status = 'completed';
+        }
+        currentAssistant = null;
+      }
+
+      const prompt = typeof event.payload?.prompt === 'string' ? event.payload.prompt : '';
+      messages.push({
+        id: `user-${event.sequence}`,
+        role: 'user',
+        content: prompt,
+        thinking: [],
+        tools: [],
+        approval: null,
+        status: 'completed',
+        sequence: event.sequence
+      });
+
+      currentAssistant = {
+        id: `assistant-${event.sequence}`,
+        role: 'assistant',
+        content: '',
+        thinking: [],
+        tools: [],
+        approval: null,
+        status: 'in_progress',
+        sequence: event.sequence
+      };
+      messages.push(currentAssistant);
+
+    } else if (event.event_type === 'graph.provider_stream' && event.payload?.channel === 'reasoning') {
+      if (currentAssistant) {
+        const delta = typeof event.payload?.delta === 'string'
+          ? event.payload.delta
+          : typeof event.payload?.content === 'string'
+            ? event.payload.content
+            : '';
+        if (delta) {
+          currentAssistant.thinking.push(delta);
+        }
+      }
+
+    } else if (event.event_type === 'graph.tool_request_created') {
+      if (currentAssistant) {
+        const toolName = typeof event.payload?.tool === 'string' ? event.payload.tool : 'unknown';
+        currentAssistant.tools.push({ name: toolName, status: 'running' });
+      }
+
+    } else if (event.event_type === 'runtime.tool_completed') {
+      if (currentAssistant) {
+        const toolName = typeof event.payload?.tool === 'string' ? event.payload.tool : null;
+        if (toolName) {
+          const tool = currentAssistant.tools.find(t => t.name === toolName && t.status === 'running');
+          if (tool) tool.status = 'completed';
+        }
+      }
+
+    } else if (event.event_type === 'runtime.approval_requested') {
+      if (currentAssistant) {
+        currentAssistant.status = 'waiting';
+        currentAssistant.approval = {
+          requestId: String(event.payload?.request_id || ''),
+          tool: String(event.payload?.tool || ''),
+          targetSummary: String(event.payload?.target_summary || '')
+        };
+      }
+
+    } else if (event.event_type === 'runtime.approval_resolved') {
+      if (currentAssistant) {
+        const decision = event.payload?.decision;
+        if (decision === 'deny') {
+          currentAssistant.status = 'failed';
+        } else if (currentAssistant.status === 'waiting') {
+          currentAssistant.status = 'in_progress';
+        }
+        currentAssistant.approval = null;
+      }
+
+    } else if (event.event_type === 'graph.response_ready') {
+      if (currentAssistant) {
+        const output = typeof event.payload?.output === 'string'
+          ? event.payload.output
+          : typeof event.payload?.output_preview === 'string'
+            ? event.payload.output_preview
+            : '';
+        if (output) currentAssistant.content = output;
+        currentAssistant.status = 'completed';
+      }
+
+    } else if (event.event_type === 'runtime.failed') {
+      if (currentAssistant) {
+        currentAssistant.status = 'failed';
+      }
+    }
+  }
+
+  if (currentAssistant && currentAssistant.status === 'in_progress' && currentOutput !== null) {
+    currentAssistant.content = currentOutput;
+  }
+
+  return messages;
 }

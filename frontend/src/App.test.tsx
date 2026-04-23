@@ -8,8 +8,8 @@ vi.mock('./store', () => ({
   useAppStore: vi.fn(),
 }));
 
-vi.mock('./components/RuntimeDebug', () => ({
-  RuntimeDebug: () => <div data-testid="runtime-debug-mock" />
+vi.mock('./components/SettingsPanel', () => ({
+  SettingsPanel: () => <div data-testid="settings-panel-mock" />
 }));
 
 describe('App', () => {
@@ -17,13 +17,9 @@ describe('App', () => {
     language: 'en',
     setLanguage: vi.fn(),
     agentPreset: 'leader',
-    leaderMode: 'direct_execute',
     providerModel: 'opencode-go/glm-5.1',
-    maxSteps: 16,
     setAgentPreset: vi.fn(),
-    setLeaderMode: vi.fn(),
     setProviderModel: vi.fn(),
-    setMaxSteps: vi.fn(),
     sessions: [],
     currentSessionId: null,
     currentSessionState: null,
@@ -41,6 +37,11 @@ describe('App', () => {
     runError: null,
     approvalStatus: 'idle',
     approvalError: null,
+    settings: null,
+    settingsStatus: 'idle',
+    settingsError: null,
+    loadSettings: vi.fn(),
+    updateSettings: vi.fn(),
   };
 
   beforeEach(() => {
@@ -66,104 +67,98 @@ describe('App', () => {
     expect(mockStore.setLanguage).toHaveBeenCalledWith('zh-CN');
   });
 
-  it('renders configuration controls and updates store on change', () => {
+  it('renders composer and triggers runTask on submit', () => {
     render(<App />);
 
-    const modeSelect = screen.getByLabelText('Leader Mode');
-    expect(modeSelect).toBeInTheDocument();
+    const textarea = screen.getByPlaceholderText('Ask VoidCode to do something...');
+    expect(textarea).toBeInTheDocument();
 
-    const modelInput = screen.getByLabelText('Model');
-    expect(modelInput).toBeInTheDocument();
-    expect(modelInput).toHaveValue('opencode-go/glm-5.1');
+    fireEvent.change(textarea, { target: { value: 'read README.md' } });
+    fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
 
-    const maxStepsInput = screen.getByLabelText('Max Steps');
-    expect(maxStepsInput).toBeInTheDocument();
-    expect(maxStepsInput).toHaveValue(16);
-
-    fireEvent.change(modeSelect, { target: { value: 'plan_first' } });
-    expect(mockStore.setLeaderMode).toHaveBeenCalledWith('plan_first');
-
-    fireEvent.change(modelInput, { target: { value: 'new-model/v1' } });
-    expect(mockStore.setProviderModel).toHaveBeenCalledWith('new-model/v1');
-
-    fireEvent.change(maxStepsInput, { target: { value: '24' } });
-    expect(mockStore.setMaxSteps).toHaveBeenCalledWith(24);
+    expect(mockStore.runTask).toHaveBeenCalledWith('read README.md');
   });
 
-  it('renders tasks and events when current session has events', () => {
+  it('renders chat messages when current session has events', () => {
     (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
       ...mockStore,
       currentSessionEvents: [
         {
           session_id: 'session-1',
           sequence: 1,
-          event_type: 'graph.tool_request_created',
-          source: 'graph',
-          payload: { tool: 'test_tool' }
+          event_type: 'runtime.request_received',
+          source: 'runtime',
+          payload: { prompt: 'read README.md' }
         },
         {
           session_id: 'session-1',
           sequence: 2,
-          event_type: 'runtime.tool_completed',
-          source: 'tool',
-          payload: { tool: 'test_tool', result: 'success' }
+          event_type: 'graph.provider_stream',
+          source: 'graph',
+          payload: { channel: 'reasoning', delta: 'Let me read the file...' }
+        },
+        {
+          session_id: 'session-1',
+          sequence: 3,
+          event_type: 'graph.response_ready',
+          source: 'graph',
+          payload: { output: 'Here is the README content.' }
         }
-      ]
+      ],
+      currentSessionOutput: 'Here is the README content.'
     });
 
     render(<App />);
 
-    const emptyStates = screen.queryAllByText('activity.empty');
-    expect(emptyStates).toHaveLength(0);
-    expect(screen.getByText(/Current Session/i)).toBeInTheDocument();
+    expect(screen.getByText('read README.md')).toBeInTheDocument();
+    expect(screen.getByText('Here is the README content.')).toBeInTheDocument();
   });
 
-  it('renders output panel when currentSessionOutput exists', () => {
-    const testOutput = 'This is the final output from the agent.';
+  it('renders thinking block only when reasoning events exist', () => {
     (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
       ...mockStore,
-      currentSessionOutput: testOutput
+      currentSessionEvents: [
+        {
+          session_id: 'session-1',
+          sequence: 1,
+          event_type: 'runtime.request_received',
+          source: 'runtime',
+          payload: { prompt: 'analyze code' }
+        },
+        {
+          session_id: 'session-1',
+          sequence: 2,
+          event_type: 'graph.provider_stream',
+          source: 'graph',
+          payload: { channel: 'reasoning', delta: 'Analyzing...' }
+        }
+      ],
+      currentSessionOutput: null
     });
 
     render(<App />);
 
-    expect(screen.getByText('Final Output')).toBeInTheDocument();
-    expect(screen.getByText(testOutput)).toBeInTheDocument();
+    expect(screen.getByText('Thinking')).toBeInTheDocument();
   });
 
-  it('hides stale output when a new run clears the current turn output', () => {
-    const { rerender } = render(<App />);
-
+  it('does not render thinking block when no reasoning events exist', () => {
     (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
       ...mockStore,
-      currentSessionOutput: 'previous output',
-      runStatus: 'success'
-    });
-    rerender(<App />);
-
-    expect(screen.getByText('Final Output')).toBeInTheDocument();
-    expect(screen.getByText('previous output')).toBeInTheDocument();
-
-    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
-      ...mockStore,
-      currentSessionOutput: null,
-      runStatus: 'running'
-    });
-    rerender(<App />);
-
-    expect(screen.queryByText('Final Output')).not.toBeInTheDocument();
-    expect(screen.queryByText('previous output')).not.toBeInTheDocument();
-  });
-
-  it('renders the output panel for empty string output', () => {
-    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
-      ...mockStore,
-      currentSessionOutput: ''
+      currentSessionEvents: [
+        {
+          session_id: 'session-1',
+          sequence: 1,
+          event_type: 'runtime.request_received',
+          source: 'runtime',
+          payload: { prompt: 'hello' }
+        }
+      ],
+      currentSessionOutput: 'Hello!'
     });
 
     render(<App />);
 
-    expect(screen.getByText('Final Output')).toBeInTheDocument();
+    expect(screen.queryByText('Thinking')).not.toBeInTheDocument();
   });
 
   it('renders approval controls for waiting sessions and triggers allow', () => {
@@ -181,12 +176,19 @@ describe('App', () => {
         {
           session_id: 'session-1',
           sequence: 1,
+          event_type: 'runtime.request_received',
+          source: 'runtime',
+          payload: { prompt: 'write note.txt hello' }
+        },
+        {
+          session_id: 'session-1',
+          sequence: 2,
           event_type: 'runtime.approval_requested',
           source: 'runtime',
           payload: {
             request_id: 'approval-1',
             tool: 'write_file',
-            target_summary: 'write README.md'
+            target_summary: 'write note.txt'
           }
         }
       ],
@@ -216,12 +218,19 @@ describe('App', () => {
         {
           session_id: 'session-1',
           sequence: 1,
+          event_type: 'runtime.request_received',
+          source: 'runtime',
+          payload: { prompt: 'write note.txt hello' }
+        },
+        {
+          session_id: 'session-1',
+          sequence: 2,
           event_type: 'runtime.approval_requested',
           source: 'runtime',
           payload: {
             request_id: 'approval-1',
             tool: 'write_file',
-            target_summary: 'write README.md'
+            target_summary: 'write note.txt'
           }
         }
       ],
@@ -265,12 +274,19 @@ describe('App', () => {
         {
           session_id: 'session-1',
           sequence: 1,
+          event_type: 'runtime.request_received',
+          source: 'runtime',
+          payload: { prompt: 'write note.txt hello' }
+        },
+        {
+          session_id: 'session-1',
+          sequence: 2,
           event_type: 'runtime.approval_requested',
           source: 'runtime',
           payload: {
             request_id: 'approval-1',
             tool: 'write_file',
-            target_summary: 'write README.md'
+            target_summary: 'write note.txt'
           }
         }
       ],
@@ -301,7 +317,6 @@ describe('App', () => {
     render(<App />);
 
     expect(screen.getByText('test prompt subtitle')).toBeInTheDocument();
-    expect(screen.getAllByText('session-').length).toBeGreaterThan(0);
     expect(screen.getByText('T5')).toBeInTheDocument();
     expect(screen.getByText('Completed')).toBeInTheDocument();
     expect(screen.getByText('2m ago')).toBeInTheDocument();
@@ -326,7 +341,7 @@ describe('App', () => {
     expect(screen.getByText('Pending')).toBeInTheDocument();
   });
 
-  it('renders the header subtitle with current session prompt', () => {
+  it('renders the header with current session prompt', () => {
     (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
       ...mockStore,
       currentSessionId: 'session-123456789',
@@ -343,8 +358,8 @@ describe('App', () => {
 
     render(<App />);
 
-    const headers = screen.getAllByText('test prompt subtitle');
-    expect(headers.length).toBeGreaterThan(0);
+    const promptElements = screen.getAllByText('test prompt subtitle');
+    expect(promptElements.length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText('session-123456789')).toBeInTheDocument();
   });
 
@@ -365,7 +380,8 @@ describe('App', () => {
 
     render(<App />);
 
-    expect(screen.getByText('prompt from replay')).toBeInTheDocument();
+    const promptElements = screen.getAllByText('prompt from replay');
+    expect(promptElements.length).toBeGreaterThanOrEqual(1);
   });
 
   it('prefers the latest replayed request prompt in the header fallback', () => {
@@ -392,7 +408,55 @@ describe('App', () => {
 
     render(<App />);
 
-    expect(screen.getByText('latest prompt')).toBeInTheDocument();
-    expect(screen.queryByText('old prompt')).not.toBeInTheDocument();
+    const latestElements = screen.getAllByText('latest prompt');
+    expect(latestElements.length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText('old prompt')).toBeInTheDocument();
+  });
+
+  it('renders model controls and updates provider model', () => {
+    render(<App />);
+
+    const modelButton = screen.getByText('opencode-go/glm-5.1');
+    expect(modelButton).toBeInTheDocument();
+
+    fireEvent.click(modelButton);
+
+    const modelInput = screen.getByLabelText('Model');
+    expect(modelInput).toBeInTheDocument();
+
+    fireEvent.change(modelInput, { target: { value: 'new-model/v1' } });
+    expect(mockStore.setProviderModel).toHaveBeenCalledWith('new-model/v1');
+  });
+
+  it('renders settings panel when settings button is clicked', () => {
+    render(<App />);
+
+    const settingsButton = screen.getByText('Settings');
+    fireEvent.click(settingsButton);
+
+    expect(screen.getByTestId('settings-panel-mock')).toBeInTheDocument();
+  });
+
+  it('disables composer while running', () => {
+    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      ...mockStore,
+      runStatus: 'running'
+    });
+
+    render(<App />);
+
+    const textarea = screen.getByPlaceholderText('Ask VoidCode to do something...');
+    expect(textarea).toBeDisabled();
+  });
+
+  it('renders run error banner when run fails', () => {
+    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      ...mockStore,
+      runError: 'connection timeout'
+    });
+
+    render(<App />);
+
+    expect(screen.getByText('Error: connection timeout')).toBeInTheDocument();
   });
 });
