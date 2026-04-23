@@ -62,6 +62,8 @@
 
 当前 `leader` 是第一阶段 runtime-managed agent slice：active agent 的 manifest allowlist 会收窄 provider 可见的 `available_tools`，并且同一边界也会约束实际 tool lookup / invocation。`leader` 的 `prompt_profile` 会进入 provider system message，`model` / `execution_engine` / `provider_fallback` 会决定 provider-backed single-agent 主路径，manifest `skill_refs` 会作为默认 skill selection 进入 runtime skill application，`agent.skills` 会覆盖本次运行使用的 runtime-managed skill discovery / application policy。
 
+此外，`leader` 的 prompt 文本 ownership 现在明确归属 `src/voidcode/agent/leader/`：agent 层负责 prompt 内容与角色约束，provider 层只负责 message assembly 和模型调用，不再持有 leader persona 的源码副本。
+
 ## 与 runtime 的边界
 
 `voidcode.agent` 可以描述“这个角色默认希望带哪些工具/skills/hooks/MCP profile”。其中 `leader` 的 prompt profile、工具边界、skills、model、execution engine 与 provider fallback 已进入 runtime enforcement / persistence；其他 preset 的能力绑定仍不能决定系统最终如何执行、治理、审批、恢复和持久化它。
