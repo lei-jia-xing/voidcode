@@ -9,6 +9,7 @@
     "preview": "bun run vite preview",
     "lint": "bun run eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "format": "bun run prettier --write \"src/**/*.{ts,tsx,css}\"",
+    "format:check": "bun run prettier --check \"src/**/*.{ts,tsx,css}\"",
     "typecheck": "bun run tsc --noEmit",
     "test": "bun run vitest",
     "test:run": "bun run vitest run",

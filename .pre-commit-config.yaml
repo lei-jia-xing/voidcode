@@ -29,3 +29,17 @@ repos:
         language: system
         pass_filenames: false
         types_or: [python, pyi]
+
+      - id: frontend-lint
+        name: frontend lint
+        entry: bash -lc 'cd frontend && bun run lint'
+        language: system
+        pass_filenames: false
+        files: ^frontend/src/.*\.(ts|tsx)$
+
+      - id: frontend-format-check
+        name: frontend format check
+        entry: bash -lc 'cd frontend && bun run format:check'
+        language: system
+        pass_filenames: false
+        files: ^frontend/src/.*\.(ts|tsx|css)$

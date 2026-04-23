@@ -1,23 +1,23 @@
-import { render, screen, fireEvent } from '@testing-library/react';
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import App from './App';
-import { useAppStore } from './store';
-import './i18n';
+import { render, screen, fireEvent } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import App from "./App";
+import { useAppStore } from "./store";
+import "./i18n";
 
-vi.mock('./store', () => ({
+vi.mock("./store", () => ({
   useAppStore: vi.fn(),
 }));
 
-vi.mock('./components/SettingsPanel', () => ({
-  SettingsPanel: () => <div data-testid="settings-panel-mock" />
+vi.mock("./components/SettingsPanel", () => ({
+  SettingsPanel: () => <div data-testid="settings-panel-mock" />,
 }));
 
-describe('App', () => {
+describe("App", () => {
   const mockStore = {
-    language: 'en',
+    language: "en",
     setLanguage: vi.fn(),
-    agentPreset: 'leader',
-    providerModel: 'opencode-go/glm-5.1',
+    agentPreset: "leader",
+    providerModel: "opencode-go/glm-5.1",
     setAgentPreset: vi.fn(),
     setProviderModel: vi.fn(),
     sessions: [],
@@ -26,19 +26,19 @@ describe('App', () => {
     currentSessionEvents: [],
     currentSessionOutput: null,
     loadSessions: vi.fn(),
-    sessionsStatus: 'success',
+    sessionsStatus: "success",
     sessionsError: null,
     selectSession: vi.fn(),
     runTask: vi.fn(),
     resolveApproval: vi.fn(),
-    replayStatus: 'idle',
+    replayStatus: "idle",
     replayError: null,
-    runStatus: 'idle',
+    runStatus: "idle",
     runError: null,
-    approvalStatus: 'idle',
+    approvalStatus: "idle",
     approvalError: null,
     settings: null,
-    settingsStatus: 'idle',
+    settingsStatus: "idle",
     settingsError: null,
     loadSettings: vi.fn(),
     updateSettings: vi.fn(),
@@ -47,529 +47,554 @@ describe('App', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.useFakeTimers();
-    vi.setSystemTime(new Date('2026-04-16T06:00:00Z'));
-    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue(mockStore);
-    (useAppStore as unknown as { getState: () => typeof mockStore }).getState = () => mockStore;
+    vi.setSystemTime(new Date("2026-04-16T06:00:00Z"));
+    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue(
+      mockStore,
+    );
+    (useAppStore as unknown as { getState: () => typeof mockStore }).getState =
+      () => mockStore;
   });
 
   afterEach(() => {
     vi.useRealTimers();
   });
 
-  it('toggles language when language button is clicked', () => {
+  it("toggles language when language button is clicked", () => {
     render(<App />);
 
-    const langBtn = screen.getByText('中文');
+    const langBtn = screen.getByText("中文");
     expect(langBtn).toBeInTheDocument();
 
     fireEvent.click(langBtn);
 
-    expect(mockStore.setLanguage).toHaveBeenCalledWith('zh-CN');
+    expect(mockStore.setLanguage).toHaveBeenCalledWith("zh-CN");
   });
 
-  it('renders composer and triggers runTask on submit', () => {
+  it("renders composer and triggers runTask on submit", () => {
     render(<App />);
 
-    const textarea = screen.getByPlaceholderText('Ask VoidCode to do something...');
+    const textarea = screen.getByPlaceholderText(
+      "Ask VoidCode to do something...",
+    );
     expect(textarea).toBeInTheDocument();
 
-    fireEvent.change(textarea, { target: { value: 'read README.md' } });
-    fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    fireEvent.change(textarea, { target: { value: "read README.md" } });
+    fireEvent.keyDown(textarea, { key: "Enter", shiftKey: false });
 
-    expect(mockStore.runTask).toHaveBeenCalledWith('read README.md');
+    expect(mockStore.runTask).toHaveBeenCalledWith("read README.md");
   });
 
-  it('renders chat messages when current session has events', () => {
+  it("renders chat messages when current session has events", () => {
     (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
       ...mockStore,
       currentSessionEvents: [
         {
-          session_id: 'session-1',
+          session_id: "session-1",
           sequence: 1,
-          event_type: 'runtime.request_received',
-          source: 'runtime',
-          payload: { prompt: 'read README.md' }
+          event_type: "runtime.request_received",
+          source: "runtime",
+          payload: { prompt: "read README.md" },
         },
         {
-          session_id: 'session-1',
+          session_id: "session-1",
           sequence: 2,
-          event_type: 'graph.provider_stream',
-          source: 'graph',
-          payload: { channel: 'reasoning', text: 'Let me read the file...' }
+          event_type: "graph.provider_stream",
+          source: "graph",
+          payload: { channel: "reasoning", text: "Let me read the file..." },
         },
         {
-          session_id: 'session-1',
+          session_id: "session-1",
           sequence: 3,
-          event_type: 'graph.provider_stream',
-          source: 'graph',
-          payload: { channel: 'text', text: 'Here is the README content.' }
+          event_type: "graph.provider_stream",
+          source: "graph",
+          payload: { channel: "text", text: "Here is the README content." },
         },
         {
-          session_id: 'session-1',
+          session_id: "session-1",
           sequence: 4,
-          event_type: 'graph.response_ready',
-          source: 'graph',
-          payload: { output: 'Here is the README content.' }
-        }
+          event_type: "graph.response_ready",
+          source: "graph",
+          payload: { output: "Here is the README content." },
+        },
       ],
-      currentSessionOutput: 'Here is the README content.'
+      currentSessionOutput: "Here is the README content.",
     });
 
     render(<App />);
 
-    expect(screen.getByText('read README.md')).toBeInTheDocument();
-    expect(screen.getByText('Here is the README content.')).toBeInTheDocument();
+    expect(screen.getByText("read README.md")).toBeInTheDocument();
+    expect(screen.getByText("Here is the README content.")).toBeInTheDocument();
   });
 
-  it('renders thinking block only when reasoning events exist', () => {
+  it("renders thinking block only when reasoning events exist", () => {
     (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
       ...mockStore,
       currentSessionEvents: [
         {
-          session_id: 'session-1',
+          session_id: "session-1",
           sequence: 1,
-          event_type: 'runtime.request_received',
-          source: 'runtime',
-          payload: { prompt: 'analyze code' }
+          event_type: "runtime.request_received",
+          source: "runtime",
+          payload: { prompt: "analyze code" },
         },
         {
-          session_id: 'session-1',
+          session_id: "session-1",
           sequence: 2,
-          event_type: 'graph.provider_stream',
-          source: 'graph',
-          payload: { channel: 'reasoning', text: 'Analyzing...' }
-        }
-      ],
-      currentSessionOutput: null
-    });
-
-    render(<App />);
-
-    expect(screen.getByText('Thinking')).toBeInTheDocument();
-  });
-
-  it('renders streamed assistant text before the final response event', () => {
-    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
-      ...mockStore,
-      currentSessionEvents: [
-        {
-          session_id: 'session-1',
-          sequence: 1,
-          event_type: 'runtime.request_received',
-          source: 'runtime',
-          payload: { prompt: 'stream this' }
+          event_type: "graph.provider_stream",
+          source: "graph",
+          payload: { channel: "reasoning", text: "Analyzing..." },
         },
-        {
-          session_id: 'session-1',
-          sequence: 2,
-          event_type: 'graph.provider_stream',
-          source: 'graph',
-          payload: { channel: 'text', text: 'streamed ' }
-        },
-        {
-          session_id: 'session-1',
-          sequence: 3,
-          event_type: 'graph.provider_stream',
-          source: 'graph',
-          payload: { channel: 'text', text: 'answer' }
-        }
       ],
       currentSessionOutput: null,
-      runStatus: 'running'
     });
 
     render(<App />);
 
-    expect(screen.getByText('streamed answer')).toBeInTheDocument();
+    expect(screen.getByText("Thinking")).toBeInTheDocument();
   });
 
-  it('avoids duplicate React keys when replayed events reuse sequence numbers across sessions', () => {
-    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+  it("renders streamed assistant text before the final response event", () => {
     (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
       ...mockStore,
-      currentSessionId: 'session-2',
       currentSessionEvents: [
         {
-          session_id: 'session-1',
+          session_id: "session-1",
           sequence: 1,
-          event_type: 'runtime.request_received',
-          source: 'runtime',
-          payload: { prompt: 'first prompt' }
+          event_type: "runtime.request_received",
+          source: "runtime",
+          payload: { prompt: "stream this" },
         },
         {
-          session_id: 'session-2',
-          sequence: 1,
-          event_type: 'runtime.request_received',
-          source: 'runtime',
-          payload: { prompt: 'second prompt' }
-        }
-      ]
+          session_id: "session-1",
+          sequence: 2,
+          event_type: "graph.provider_stream",
+          source: "graph",
+          payload: { channel: "text", text: "streamed " },
+        },
+        {
+          session_id: "session-1",
+          sequence: 3,
+          event_type: "graph.provider_stream",
+          source: "graph",
+          payload: { channel: "text", text: "answer" },
+        },
+      ],
+      currentSessionOutput: null,
+      runStatus: "running",
     });
 
     render(<App />);
 
-    expect(screen.getAllByText('first prompt').length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText('second prompt').length).toBeGreaterThanOrEqual(1);
-    expect(consoleErrorSpy).not.toHaveBeenCalledWith(expect.stringContaining('Encountered two children with the same key'));
+    expect(screen.getByText("streamed answer")).toBeInTheDocument();
+  });
+
+  it("avoids duplicate React keys when replayed events reuse sequence numbers across sessions", () => {
+    const consoleErrorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      ...mockStore,
+      currentSessionId: "session-2",
+      currentSessionEvents: [
+        {
+          session_id: "session-1",
+          sequence: 1,
+          event_type: "runtime.request_received",
+          source: "runtime",
+          payload: { prompt: "first prompt" },
+        },
+        {
+          session_id: "session-2",
+          sequence: 1,
+          event_type: "runtime.request_received",
+          source: "runtime",
+          payload: { prompt: "second prompt" },
+        },
+      ],
+    });
+
+    render(<App />);
+
+    expect(screen.getAllByText("first prompt").length).toBeGreaterThanOrEqual(
+      1,
+    );
+    expect(screen.getAllByText("second prompt").length).toBeGreaterThanOrEqual(
+      1,
+    );
+    expect(consoleErrorSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining("Encountered two children with the same key"),
+    );
 
     consoleErrorSpy.mockRestore();
   });
 
-  it('avoids duplicate React keys when later turns in the same session reuse sequence numbers', () => {
-    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+  it("avoids duplicate React keys when later turns in the same session reuse sequence numbers", () => {
+    const consoleErrorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
     (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
       ...mockStore,
-      currentSessionId: 'session-1',
+      currentSessionId: "session-1",
       currentSessionEvents: [
         {
-          session_id: 'session-1',
+          session_id: "session-1",
           sequence: 1,
-          event_type: 'runtime.request_received',
-          source: 'runtime',
-          payload: { prompt: 'first turn' }
+          event_type: "runtime.request_received",
+          source: "runtime",
+          payload: { prompt: "first turn" },
         },
         {
-          session_id: 'session-1',
+          session_id: "session-1",
           sequence: 2,
-          event_type: 'graph.response_ready',
-          source: 'graph',
-          payload: { output: 'first answer' }
+          event_type: "graph.response_ready",
+          source: "graph",
+          payload: { output: "first answer" },
         },
         {
-          session_id: 'session-1',
+          session_id: "session-1",
           sequence: 1,
-          event_type: 'runtime.request_received',
-          source: 'runtime',
-          payload: { prompt: 'second turn' }
-        }
-      ]
+          event_type: "runtime.request_received",
+          source: "runtime",
+          payload: { prompt: "second turn" },
+        },
+      ],
     });
 
     render(<App />);
 
-    expect(screen.getAllByText('first turn').length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText('second turn').length).toBeGreaterThanOrEqual(1);
-    expect(consoleErrorSpy).not.toHaveBeenCalledWith(expect.stringContaining('Encountered two children with the same key'));
+    expect(screen.getAllByText("first turn").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText("second turn").length).toBeGreaterThanOrEqual(1);
+    expect(consoleErrorSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining("Encountered two children with the same key"),
+    );
 
     consoleErrorSpy.mockRestore();
   });
 
-  it('does not render thinking block when no reasoning events exist', () => {
+  it("does not render thinking block when no reasoning events exist", () => {
     (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
       ...mockStore,
       currentSessionEvents: [
         {
-          session_id: 'session-1',
+          session_id: "session-1",
           sequence: 1,
-          event_type: 'runtime.request_received',
-          source: 'runtime',
-          payload: { prompt: 'hello' }
-        }
+          event_type: "runtime.request_received",
+          source: "runtime",
+          payload: { prompt: "hello" },
+        },
       ],
-      currentSessionOutput: 'Hello!'
+      currentSessionOutput: "Hello!",
     });
 
     render(<App />);
 
-    expect(screen.queryByText('Thinking')).not.toBeInTheDocument();
+    expect(screen.queryByText("Thinking")).not.toBeInTheDocument();
   });
 
-  it('renders approval controls for waiting sessions and triggers allow', () => {
+  it("renders approval controls for waiting sessions and triggers allow", () => {
     const resolveApproval = vi.fn();
     (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
       ...mockStore,
-      currentSessionId: 'session-1',
+      currentSessionId: "session-1",
       currentSessionState: {
-        session: { id: 'session-1' },
-        status: 'waiting',
+        session: { id: "session-1" },
+        status: "waiting",
         turn: 1,
-        metadata: {}
+        metadata: {},
       },
       currentSessionEvents: [
         {
-          session_id: 'session-1',
+          session_id: "session-1",
           sequence: 1,
-          event_type: 'runtime.request_received',
-          source: 'runtime',
-          payload: { prompt: 'write note.txt hello' }
+          event_type: "runtime.request_received",
+          source: "runtime",
+          payload: { prompt: "write note.txt hello" },
         },
         {
-          session_id: 'session-1',
+          session_id: "session-1",
           sequence: 2,
-          event_type: 'runtime.approval_requested',
-          source: 'runtime',
+          event_type: "runtime.approval_requested",
+          source: "runtime",
           payload: {
-            request_id: 'approval-1',
-            tool: 'write_file',
-            target_summary: 'write note.txt'
-          }
-        }
+            request_id: "approval-1",
+            tool: "write_file",
+            target_summary: "write note.txt",
+          },
+        },
       ],
-      resolveApproval
+      resolveApproval,
     });
 
     render(<App />);
 
-    expect(screen.getByText('Approval Required')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Allow' }));
+    expect(screen.getByText("Approval Required")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Allow" }));
 
-    expect(resolveApproval).toHaveBeenCalledWith('allow');
+    expect(resolveApproval).toHaveBeenCalledWith("allow");
   });
 
-  it('triggers deny for waiting sessions', () => {
+  it("triggers deny for waiting sessions", () => {
     const resolveApproval = vi.fn();
     (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
       ...mockStore,
-      currentSessionId: 'session-1',
+      currentSessionId: "session-1",
       currentSessionState: {
-        session: { id: 'session-1' },
-        status: 'waiting',
+        session: { id: "session-1" },
+        status: "waiting",
         turn: 1,
-        metadata: {}
+        metadata: {},
       },
       currentSessionEvents: [
         {
-          session_id: 'session-1',
+          session_id: "session-1",
           sequence: 1,
-          event_type: 'runtime.request_received',
-          source: 'runtime',
-          payload: { prompt: 'write note.txt hello' }
+          event_type: "runtime.request_received",
+          source: "runtime",
+          payload: { prompt: "write note.txt hello" },
         },
         {
-          session_id: 'session-1',
+          session_id: "session-1",
           sequence: 2,
-          event_type: 'runtime.approval_requested',
-          source: 'runtime',
+          event_type: "runtime.approval_requested",
+          source: "runtime",
           payload: {
-            request_id: 'approval-1',
-            tool: 'write_file',
-            target_summary: 'write note.txt'
-          }
-        }
+            request_id: "approval-1",
+            tool: "write_file",
+            target_summary: "write note.txt",
+          },
+        },
       ],
-      resolveApproval
+      resolveApproval,
     });
 
     render(<App />);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Deny' }));
+    fireEvent.click(screen.getByRole("button", { name: "Deny" }));
 
-    expect(resolveApproval).toHaveBeenCalledWith('deny');
+    expect(resolveApproval).toHaveBeenCalledWith("deny");
   });
 
-  it('hides approval controls when session is not waiting', () => {
+  it("hides approval controls when session is not waiting", () => {
     (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
       ...mockStore,
       currentSessionState: {
-        session: { id: 'session-1' },
-        status: 'completed',
+        session: { id: "session-1" },
+        status: "completed",
         turn: 1,
-        metadata: {}
-      }
+        metadata: {},
+      },
     });
 
     render(<App />);
 
-    expect(screen.queryByText('Approval Required')).not.toBeInTheDocument();
+    expect(screen.queryByText("Approval Required")).not.toBeInTheDocument();
   });
 
-  it('renders approval error and disables controls while submitting', () => {
+  it("renders approval error and disables controls while submitting", () => {
     (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
       ...mockStore,
-      currentSessionId: 'session-1',
+      currentSessionId: "session-1",
       currentSessionState: {
-        session: { id: 'session-1' },
-        status: 'waiting',
+        session: { id: "session-1" },
+        status: "waiting",
         turn: 1,
-        metadata: {}
+        metadata: {},
       },
       currentSessionEvents: [
         {
-          session_id: 'session-1',
+          session_id: "session-1",
           sequence: 1,
-          event_type: 'runtime.request_received',
-          source: 'runtime',
-          payload: { prompt: 'write note.txt hello' }
+          event_type: "runtime.request_received",
+          source: "runtime",
+          payload: { prompt: "write note.txt hello" },
         },
         {
-          session_id: 'session-1',
+          session_id: "session-1",
           sequence: 2,
-          event_type: 'runtime.approval_requested',
-          source: 'runtime',
+          event_type: "runtime.approval_requested",
+          source: "runtime",
           payload: {
-            request_id: 'approval-1',
-            tool: 'write_file',
-            target_summary: 'write note.txt'
-          }
-        }
+            request_id: "approval-1",
+            tool: "write_file",
+            target_summary: "write note.txt",
+          },
+        },
       ],
-      approvalStatus: 'submitting',
-      approvalError: 'boom'
+      approvalStatus: "submitting",
+      approvalError: "boom",
     });
 
     render(<App />);
 
-    expect(screen.getByText('Approval failed: boom')).toBeInTheDocument();
-    expect(screen.getAllByRole('button', { name: 'Submitting...' })).toHaveLength(2);
+    expect(screen.getByText("Approval failed: boom")).toBeInTheDocument();
+    expect(
+      screen.getAllByRole("button", { name: "Submitting..." }),
+    ).toHaveLength(2);
   });
 
-  it('renders the session list item with prompt-first title, status, and updated time', () => {
+  it("renders the session list item with prompt-first title, status, and updated time", () => {
     (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
       ...mockStore,
       sessions: [
         {
-          session: { id: 'session-123456789' },
-          status: 'completed',
+          session: { id: "session-123456789" },
+          status: "completed",
           turn: 5,
-          prompt: 'test prompt subtitle',
-          updated_at: Math.floor(new Date('2026-04-16T05:58:00Z').getTime() / 1000)
-        }
-      ]
+          prompt: "test prompt subtitle",
+          updated_at: Math.floor(
+            new Date("2026-04-16T05:58:00Z").getTime() / 1000,
+          ),
+        },
+      ],
     });
 
     render(<App />);
 
-    expect(screen.getByText('test prompt subtitle')).toBeInTheDocument();
-    expect(screen.getByText('T5')).toBeInTheDocument();
-    expect(screen.getByText('Completed')).toBeInTheDocument();
-    expect(screen.getByText('2m ago')).toBeInTheDocument();
+    expect(screen.getByText("test prompt subtitle")).toBeInTheDocument();
+    expect(screen.getByText("T5")).toBeInTheDocument();
+    expect(screen.getByText("Completed")).toBeInTheDocument();
+    expect(screen.getByText("2m ago")).toBeInTheDocument();
   });
 
-  it('renders idle session status labels from contract-valid summaries', () => {
+  it("renders idle session status labels from contract-valid summaries", () => {
     (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
       ...mockStore,
       sessions: [
         {
-          session: { id: 'session-idle-123' },
-          status: 'idle',
+          session: { id: "session-idle-123" },
+          status: "idle",
           turn: 1,
-          prompt: 'Resume existing session',
-          updated_at: Math.floor(new Date('2026-04-16T05:59:30Z').getTime() / 1000)
-        }
-      ]
+          prompt: "Resume existing session",
+          updated_at: Math.floor(
+            new Date("2026-04-16T05:59:30Z").getTime() / 1000,
+          ),
+        },
+      ],
     });
 
     render(<App />);
 
-    expect(screen.getByText('Pending')).toBeInTheDocument();
+    expect(screen.getByText("Pending")).toBeInTheDocument();
   });
 
-  it('renders the header with current session prompt', () => {
+  it("renders the header with current session prompt", () => {
     (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
       ...mockStore,
-      currentSessionId: 'session-123456789',
+      currentSessionId: "session-123456789",
       sessions: [
         {
-          session: { id: 'session-123456789' },
-          status: 'completed',
+          session: { id: "session-123456789" },
+          status: "completed",
           turn: 5,
-          prompt: 'test prompt subtitle',
-          updated_at: 1000
-        }
-      ]
+          prompt: "test prompt subtitle",
+          updated_at: 1000,
+        },
+      ],
     });
 
     render(<App />);
 
-    const promptElements = screen.getAllByText('test prompt subtitle');
+    const promptElements = screen.getAllByText("test prompt subtitle");
     expect(promptElements.length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText('session-123456789')).toBeInTheDocument();
+    expect(screen.getByText("session-123456789")).toBeInTheDocument();
   });
 
-  it('falls back to the replayed request prompt in the header when summary prompt is unavailable', () => {
+  it("falls back to the replayed request prompt in the header when summary prompt is unavailable", () => {
     (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
       ...mockStore,
-      currentSessionId: 'session-123456789',
+      currentSessionId: "session-123456789",
       currentSessionEvents: [
         {
-          session_id: 'session-123456789',
+          session_id: "session-123456789",
           sequence: 1,
-          event_type: 'runtime.request_received',
-          source: 'runtime',
-          payload: { prompt: 'prompt from replay' }
-        }
-      ]
+          event_type: "runtime.request_received",
+          source: "runtime",
+          payload: { prompt: "prompt from replay" },
+        },
+      ],
     });
 
     render(<App />);
 
-    const promptElements = screen.getAllByText('prompt from replay');
+    const promptElements = screen.getAllByText("prompt from replay");
     expect(promptElements.length).toBeGreaterThanOrEqual(1);
   });
 
-  it('prefers the latest replayed request prompt in the header fallback', () => {
+  it("prefers the latest replayed request prompt in the header fallback", () => {
     (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
       ...mockStore,
-      currentSessionId: 'session-123456789',
+      currentSessionId: "session-123456789",
       currentSessionEvents: [
         {
-          session_id: 'session-123456789',
+          session_id: "session-123456789",
           sequence: 1,
-          event_type: 'runtime.request_received',
-          source: 'runtime',
-          payload: { prompt: 'old prompt' }
+          event_type: "runtime.request_received",
+          source: "runtime",
+          payload: { prompt: "old prompt" },
         },
         {
-          session_id: 'session-123456789',
+          session_id: "session-123456789",
           sequence: 4,
-          event_type: 'runtime.request_received',
-          source: 'runtime',
-          payload: { prompt: 'latest prompt' }
-        }
-      ]
+          event_type: "runtime.request_received",
+          source: "runtime",
+          payload: { prompt: "latest prompt" },
+        },
+      ],
     });
 
     render(<App />);
 
-    const latestElements = screen.getAllByText('latest prompt');
+    const latestElements = screen.getAllByText("latest prompt");
     expect(latestElements.length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText('old prompt')).toBeInTheDocument();
+    expect(screen.getByText("old prompt")).toBeInTheDocument();
   });
 
-  it('renders model controls and updates provider model', () => {
+  it("renders model controls and updates provider model", () => {
     render(<App />);
 
-    const modelButton = screen.getByText('opencode-go/glm-5.1');
+    const modelButton = screen.getByText("opencode-go/glm-5.1");
     expect(modelButton).toBeInTheDocument();
 
     fireEvent.click(modelButton);
 
-    const modelInput = screen.getByLabelText('Model');
+    const modelInput = screen.getByLabelText("Model");
     expect(modelInput).toBeInTheDocument();
 
-    fireEvent.change(modelInput, { target: { value: 'new-model/v1' } });
-    expect(mockStore.setProviderModel).toHaveBeenCalledWith('new-model/v1');
+    fireEvent.change(modelInput, { target: { value: "new-model/v1" } });
+    expect(mockStore.setProviderModel).toHaveBeenCalledWith("new-model/v1");
   });
 
-  it('renders settings panel when settings button is clicked', () => {
+  it("renders settings panel when settings button is clicked", () => {
     render(<App />);
 
-    const settingsButton = screen.getByText('Settings');
+    const settingsButton = screen.getByText("Settings");
     fireEvent.click(settingsButton);
 
-    expect(screen.getByTestId('settings-panel-mock')).toBeInTheDocument();
+    expect(screen.getByTestId("settings-panel-mock")).toBeInTheDocument();
   });
 
-  it('disables composer while running', () => {
+  it("disables composer while running", () => {
     (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
       ...mockStore,
-      runStatus: 'running'
+      runStatus: "running",
     });
 
     render(<App />);
 
-    const textarea = screen.getByPlaceholderText('Ask VoidCode to do something...');
+    const textarea = screen.getByPlaceholderText(
+      "Ask VoidCode to do something...",
+    );
     expect(textarea).toBeDisabled();
   });
 
-  it('renders run error banner when run fails', () => {
+  it("renders run error banner when run fails", () => {
     (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
       ...mockStore,
-      runError: 'connection timeout'
+      runError: "connection timeout",
     });
 
     render(<App />);
 
-    expect(screen.getByText('Error: connection timeout')).toBeInTheDocument();
+    expect(screen.getByText("Error: connection timeout")).toBeInTheDocument();
   });
 });

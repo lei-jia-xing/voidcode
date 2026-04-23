@@ -1,12 +1,19 @@
-import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
-import { RuntimeClient } from '../lib/runtime/client';
-import { ApprovalDecision, StoredSessionSummary, SessionState, EventEnvelope, RuntimeSettings, RuntimeSettingsUpdate } from '../lib/runtime/types';
+import { create } from "zustand";
+import { persist } from "zustand/middleware";
+import { RuntimeClient } from "../lib/runtime/client";
+import {
+  ApprovalDecision,
+  StoredSessionSummary,
+  SessionState,
+  EventEnvelope,
+  RuntimeSettings,
+  RuntimeSettingsUpdate,
+} from "../lib/runtime/types";
 
 interface AppState {
-  language: 'en' | 'zh-CN';
+  language: "en" | "zh-CN";
 
-  agentPreset: 'leader';
+  agentPreset: "leader";
   providerModel: string;
 
   sessions: StoredSessionSummary[];
@@ -15,22 +22,22 @@ interface AppState {
   currentSessionEvents: EventEnvelope[];
   currentSessionOutput: string | null;
 
-  sessionsStatus: 'idle' | 'loading' | 'success' | 'error';
+  sessionsStatus: "idle" | "loading" | "success" | "error";
   sessionsError: string | null;
-  replayStatus: 'idle' | 'loading' | 'success' | 'error';
+  replayStatus: "idle" | "loading" | "success" | "error";
   replayError: string | null;
-  runStatus: 'idle' | 'running' | 'success' | 'error';
+  runStatus: "idle" | "running" | "success" | "error";
   runError: string | null;
-  approvalStatus: 'idle' | 'submitting' | 'success' | 'error';
+  approvalStatus: "idle" | "submitting" | "success" | "error";
   approvalError: string | null;
   replayRequestId: number;
 
   settings: RuntimeSettings | null;
-  settingsStatus: 'idle' | 'loading' | 'success' | 'error';
+  settingsStatus: "idle" | "loading" | "success" | "error";
   settingsError: string | null;
 
-  setLanguage: (lang: 'en' | 'zh-CN') => void;
-  setAgentPreset: (preset: 'leader') => void;
+  setLanguage: (lang: "en" | "zh-CN") => void;
+  setAgentPreset: (preset: "leader") => void;
   setProviderModel: (model: string) => void;
   loadSessions: () => Promise<void>;
   selectSession: (sessionId: string) => Promise<void>;
@@ -43,7 +50,7 @@ interface AppState {
         provider_stream?: boolean;
         [key: string]: unknown;
       };
-    }
+    },
   ) => Promise<void>;
   resolveApproval: (decision: ApprovalDecision) => Promise<void>;
   loadSettings: () => Promise<void>;
@@ -53,12 +60,12 @@ interface AppState {
 function getPendingApprovalRequestId(events: EventEnvelope[]): string | null {
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index];
-    if (event.event_type !== 'runtime.approval_requested') {
+    if (event.event_type !== "runtime.approval_requested") {
       continue;
     }
 
     const requestId = event.payload.request_id;
-    if (typeof requestId === 'string' && requestId.length > 0) {
+    if (typeof requestId === "string" && requestId.length > 0) {
       return requestId;
     }
   }
@@ -69,9 +76,9 @@ function getPendingApprovalRequestId(events: EventEnvelope[]): string | null {
 export const useAppStore = create<AppState>()(
   persist(
     (set, get) => ({
-      language: 'en',
-      agentPreset: 'leader',
-      providerModel: 'opencode-go/glm-5.1',
+      language: "en",
+      agentPreset: "leader",
+      providerModel: "opencode-go/glm-5.1",
 
       sessions: [],
       currentSessionId: null,
@@ -79,18 +86,18 @@ export const useAppStore = create<AppState>()(
       currentSessionEvents: [],
       currentSessionOutput: null,
 
-      sessionsStatus: 'idle',
+      sessionsStatus: "idle",
       sessionsError: null,
-      replayStatus: 'idle',
+      replayStatus: "idle",
       replayError: null,
-      runStatus: 'idle',
+      runStatus: "idle",
       runError: null,
-      approvalStatus: 'idle',
+      approvalStatus: "idle",
       approvalError: null,
       replayRequestId: 0,
 
       settings: null,
-      settingsStatus: 'idle',
+      settingsStatus: "idle",
       settingsError: null,
 
       setLanguage: (language) => set({ language }),
@@ -98,32 +105,38 @@ export const useAppStore = create<AppState>()(
       setProviderModel: (providerModel) => set({ providerModel }),
 
       loadSessions: async () => {
-        set({ sessionsStatus: 'loading', sessionsError: null });
+        set({ sessionsStatus: "loading", sessionsError: null });
         try {
           const sessions = await RuntimeClient.listSessions();
           const { currentSessionId } = get();
 
-          if (currentSessionId && !sessions.some(s => s.session.id === currentSessionId)) {
+          if (
+            currentSessionId &&
+            !sessions.some((s) => s.session.id === currentSessionId)
+          ) {
             set({
               sessions,
-              sessionsStatus: 'success',
+              sessionsStatus: "success",
               currentSessionId: null,
               currentSessionState: null,
               currentSessionEvents: [],
               currentSessionOutput: null,
-              replayStatus: 'idle',
-              replayError: null
+              replayStatus: "idle",
+              replayError: null,
             });
           } else {
-            set({ sessions, sessionsStatus: 'success' });
+            set({ sessions, sessionsStatus: "success" });
           }
         } catch (err) {
-          set({ sessionsStatus: 'error', sessionsError: (err as Error).message });
+          set({
+            sessionsStatus: "error",
+            sessionsError: (err as Error).message,
+          });
         }
       },
 
       selectSession: async (sessionId: string) => {
-        if (get().runStatus === 'running') {
+        if (get().runStatus === "running") {
           return;
         }
 
@@ -133,12 +146,12 @@ export const useAppStore = create<AppState>()(
             currentSessionState: null,
             currentSessionEvents: [],
             currentSessionOutput: null,
-            replayStatus: 'idle',
+            replayStatus: "idle",
             replayError: null,
-            runStatus: 'idle',
+            runStatus: "idle",
             runError: null,
-            approvalStatus: 'idle',
-            approvalError: null
+            approvalStatus: "idle",
+            approvalError: null,
           });
           return;
         }
@@ -149,18 +162,21 @@ export const useAppStore = create<AppState>()(
           currentSessionState: null,
           currentSessionEvents: [],
           currentSessionOutput: null,
-          replayStatus: 'loading',
+          replayStatus: "loading",
           replayError: null,
           replayRequestId: requestId,
-          runStatus: 'idle',
+          runStatus: "idle",
           runError: null,
-          approvalStatus: 'idle',
-          approvalError: null
+          approvalStatus: "idle",
+          approvalError: null,
         });
 
         try {
           const replay = await RuntimeClient.getSessionReplay(sessionId);
-          if (get().replayRequestId !== requestId || get().currentSessionId !== sessionId) {
+          if (
+            get().replayRequestId !== requestId ||
+            get().currentSessionId !== sessionId
+          ) {
             return;
           }
 
@@ -168,10 +184,13 @@ export const useAppStore = create<AppState>()(
             currentSessionState: replay.session,
             currentSessionEvents: replay.events,
             currentSessionOutput: replay.output,
-            replayStatus: 'success'
+            replayStatus: "success",
           });
         } catch (err) {
-          if (get().replayRequestId !== requestId || get().currentSessionId !== sessionId) {
+          if (
+            get().replayRequestId !== requestId ||
+            get().currentSessionId !== sessionId
+          ) {
             return;
           }
 
@@ -180,42 +199,49 @@ export const useAppStore = create<AppState>()(
             currentSessionState: null,
             currentSessionEvents: [],
             currentSessionOutput: null,
-            replayStatus: 'idle',
-            replayError: null
+            replayStatus: "idle",
+            replayError: null,
           });
         }
       },
 
       runTask: async (prompt: string, options) => {
-        if (get().replayStatus === 'loading') {
+        if (get().replayStatus === "loading") {
           return;
         }
 
         const nextReplayRequestId = get().replayRequestId + 1;
         set({
-          runStatus: 'running',
+          runStatus: "running",
           runError: null,
           currentSessionOutput: null,
-          approvalStatus: 'idle',
-          approvalError: null
+          approvalStatus: "idle",
+          approvalError: null,
         });
-        const effectiveSessionId = options?.sessionId !== undefined ? options.sessionId : get().currentSessionId;
+        const effectiveSessionId =
+          options?.sessionId !== undefined
+            ? options.sessionId
+            : get().currentSessionId;
         set({
-          replayStatus: 'idle',
+          replayStatus: "idle",
           replayError: null,
-          replayRequestId: nextReplayRequestId
+          replayRequestId: nextReplayRequestId,
         });
 
         const rawMetadata = options?.metadata ?? {};
         const rawAgentMetadata =
-          rawMetadata.agent && typeof rawMetadata.agent === 'object'
+          rawMetadata.agent && typeof rawMetadata.agent === "object"
             ? (rawMetadata.agent as Record<string, unknown>)
             : {};
         const forwardMetadata = Object.fromEntries(
-          Object.entries(rawMetadata).filter(([key]) => key !== 'max_steps' && key !== 'agent')
+          Object.entries(rawMetadata).filter(
+            ([key]) => key !== "max_steps" && key !== "agent",
+          ),
         );
         const forwardAgentMetadata = Object.fromEntries(
-          Object.entries(rawAgentMetadata).filter(([key]) => key !== 'leader_mode')
+          Object.entries(rawAgentMetadata).filter(
+            ([key]) => key !== "leader_mode",
+          ),
         );
 
         const metadata = {
@@ -223,8 +249,8 @@ export const useAppStore = create<AppState>()(
           agent: {
             preset: get().agentPreset,
             model: get().providerModel,
-            ...forwardAgentMetadata
-          }
+            ...forwardAgentMetadata,
+          },
         };
 
         try {
@@ -236,20 +262,27 @@ export const useAppStore = create<AppState>()(
 
           for await (const chunk of stream) {
             set((state) => {
-              const newEvents = chunk.event ? [...state.currentSessionEvents, chunk.event] : state.currentSessionEvents;
+              const newEvents = chunk.event
+                ? [...state.currentSessionEvents, chunk.event]
+                : state.currentSessionEvents;
               return {
                 currentSessionState: chunk.session,
                 currentSessionEvents: newEvents,
-                currentSessionId: chunk.session.session ? chunk.session.session.id : state.currentSessionId,
-                currentSessionOutput: chunk.output !== null ? chunk.output : state.currentSessionOutput
+                currentSessionId: chunk.session.session
+                  ? chunk.session.session.id
+                  : state.currentSessionId,
+                currentSessionOutput:
+                  chunk.output !== null
+                    ? chunk.output
+                    : state.currentSessionOutput,
               };
             });
           }
 
-          set({ runStatus: 'success' });
+          set({ runStatus: "success" });
           get().loadSessions();
         } catch (err) {
-          set({ runStatus: 'error', runError: (err as Error).message });
+          set({ runStatus: "error", runError: (err as Error).message });
         }
       },
 
@@ -260,84 +293,97 @@ export const useAppStore = create<AppState>()(
           replayStatus,
           runStatus,
           approvalStatus,
-          loadSessions
+          loadSessions,
         } = get();
 
         if (
           !currentSessionId ||
-          replayStatus === 'loading' ||
-          runStatus === 'running' ||
-          approvalStatus === 'submitting'
+          replayStatus === "loading" ||
+          runStatus === "running" ||
+          approvalStatus === "submitting"
         ) {
           return;
         }
 
         const requestId = getPendingApprovalRequestId(currentSessionEvents);
         if (!requestId) {
-          set({ approvalStatus: 'error', approvalError: 'No pending approval request found.' });
+          set({
+            approvalStatus: "error",
+            approvalError: "No pending approval request found.",
+          });
           return;
         }
 
-        set({ approvalStatus: 'submitting', approvalError: null });
+        set({ approvalStatus: "submitting", approvalError: null });
 
         try {
-          const response = await RuntimeClient.resolveApproval(currentSessionId, requestId, decision);
+          const response = await RuntimeClient.resolveApproval(
+            currentSessionId,
+            requestId,
+            decision,
+          );
           set({
             currentSessionId: response.session.session.id,
             currentSessionState: response.session,
             currentSessionEvents: response.events,
             currentSessionOutput: response.output,
-            replayStatus: 'success',
+            replayStatus: "success",
             replayError: null,
-            runStatus: 'idle',
+            runStatus: "idle",
             runError: null,
-            approvalStatus: 'success',
-            approvalError: null
+            approvalStatus: "success",
+            approvalError: null,
           });
           await loadSessions();
-          set({ approvalStatus: 'idle' });
+          set({ approvalStatus: "idle" });
         } catch (err) {
           set({
-            approvalStatus: 'error',
-            approvalError: (err as Error).message
+            approvalStatus: "error",
+            approvalError: (err as Error).message,
           });
         }
       },
 
       loadSettings: async () => {
-        set({ settingsStatus: 'loading', settingsError: null });
+        set({ settingsStatus: "loading", settingsError: null });
         try {
           const settings = await RuntimeClient.getSettings();
-          set({ settings, settingsStatus: 'success' });
+          set({ settings, settingsStatus: "success" });
           if (settings.model) {
             set({ providerModel: settings.model });
           }
         } catch (err) {
-          set({ settingsStatus: 'error', settingsError: (err as Error).message });
+          set({
+            settingsStatus: "error",
+            settingsError: (err as Error).message,
+          });
         }
       },
 
       updateSettings: async (settings) => {
-        set({ settingsStatus: 'loading', settingsError: null });
+        set({ settingsStatus: "loading", settingsError: null });
         try {
           const updated = await RuntimeClient.updateSettings(settings);
-          set({ settings: updated, settingsStatus: 'success' });
+          set({ settings: updated, settingsStatus: "success" });
           if (updated.model) {
             set({ providerModel: updated.model });
           }
         } catch (err) {
-          set({ settingsStatus: 'error', settingsError: (err as Error).message });
+          set({
+            settingsStatus: "error",
+            settingsError: (err as Error).message,
+          });
         }
-      }
+      },
     }),
     {
-      name: 'app-storage',
+      name: "app-storage",
       partialize: (state) => ({
         language: state.language,
         agentPreset: state.agentPreset,
         providerModel: state.providerModel,
-        currentSessionId: state.currentSessionId
-      })
-    }
-  )
+        currentSessionId: state.currentSessionId,
+      }),
+    },
+  ),
 );
