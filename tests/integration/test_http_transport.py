@@ -57,6 +57,11 @@ class RuntimeRequestLike(Protocol):
     metadata: dict[str, object]
 
 
+class QuestionResponseLike(Protocol):
+    header: str
+    answers: tuple[object, ...]
+
+
 class StoredSessionSummaryLike(Protocol):
     session: SessionRefLike
     status: str
@@ -645,6 +650,7 @@ def test_transport_replays_session_as_json_runtime_response(tmp_path: Path) -> N
         "graph.tool_request_created",
         "runtime.tool_lookup_succeeded",
         "runtime.permission_resolved",
+        "runtime.tool_started",
         "runtime.tool_completed",
         "graph.loop_step",
         "graph.response_ready",
@@ -730,6 +736,7 @@ def test_transport_resolves_pending_approval_allow_over_http(tmp_path: Path) -> 
         "graph.tool_request_created",
         "runtime.tool_lookup_succeeded",
         "runtime.approval_resolved",
+        "runtime.tool_started",
         "runtime.tool_completed",
         "graph.loop_step",
         "graph.response_ready",
@@ -1011,7 +1018,7 @@ def test_transport_resumes_multi_step_loop_and_persists_replay_over_http(tmp_pat
     replay_payload = cast(dict[str, object], replay_response.json())
 
     assert waiting_response.status == 200
-    assert [payload["kind"] for payload in waiting_payloads] == ["event"] * 13
+    assert [payload["kind"] for payload in waiting_payloads] == ["event"] * 14
     assert [
         cast(dict[str, object], payload["event"])["event_type"] for payload in waiting_payloads
     ] == [
@@ -1022,6 +1029,7 @@ def test_transport_resumes_multi_step_loop_and_persists_replay_over_http(tmp_pat
         "graph.tool_request_created",
         "runtime.tool_lookup_succeeded",
         "runtime.permission_resolved",
+        "runtime.tool_started",
         "runtime.tool_completed",
         "graph.loop_step",
         "graph.model_turn",
@@ -1063,6 +1071,7 @@ def test_transport_resumes_multi_step_loop_and_persists_replay_over_http(tmp_pat
         "graph.tool_request_created",
         "runtime.tool_lookup_succeeded",
         "runtime.permission_resolved",
+        "runtime.tool_started",
         "runtime.tool_completed",
         "graph.loop_step",
         "graph.model_turn",
@@ -1074,19 +1083,21 @@ def test_transport_resumes_multi_step_loop_and_persists_replay_over_http(tmp_pat
         "graph.tool_request_created",
         "runtime.tool_lookup_succeeded",
         "runtime.approval_resolved",
+        "runtime.tool_started",
         "runtime.tool_completed",
         "graph.loop_step",
         "graph.model_turn",
         "graph.tool_request_created",
         "runtime.tool_lookup_succeeded",
         "runtime.permission_resolved",
+        "runtime.tool_started",
         "runtime.tool_completed",
         "graph.loop_step",
         "graph.response_ready",
     ]
     assert [
         event["sequence"] for event in cast(list[dict[str, object]], approve_payload["events"])
-    ] == list(range(1, 28))
+    ] == list(range(1, 31))
     assert list_response.status == 200
     assert list_response.json() == [
         {
@@ -1141,7 +1152,7 @@ def test_transport_denied_multi_step_loop_preserves_failed_replay_over_http(tmp_
     replay_payload = cast(dict[str, object], replay_response.json())
 
     assert waiting_response.status == 200
-    assert [payload["kind"] for payload in waiting_payloads] == ["event"] * 13
+    assert [payload["kind"] for payload in waiting_payloads] == ["event"] * 14
     assert cast(dict[str, object], waiting_payloads[-1]["event"])["event_type"] == (
         "runtime.approval_requested"
     )
@@ -1176,6 +1187,7 @@ def test_transport_denied_multi_step_loop_preserves_failed_replay_over_http(tmp_
         "graph.tool_request_created",
         "runtime.tool_lookup_succeeded",
         "runtime.permission_resolved",
+        "runtime.tool_started",
         "runtime.tool_completed",
         "graph.loop_step",
         "graph.model_turn",
@@ -1191,7 +1203,7 @@ def test_transport_denied_multi_step_loop_preserves_failed_replay_over_http(tmp_
     ]
     assert [
         event["sequence"] for event in cast(list[dict[str, object]], deny_payload["events"])
-    ] == list(range(1, 20))
+    ] == list(range(1, 21))
     assert list_response.status == 200
     assert list_response.json() == [
         {
@@ -1345,7 +1357,7 @@ def test_transport_answers_pending_question_over_http(tmp_path: Path) -> None:
             assert session_id == "question-session"
             assert question_request_id == "question-1"
             assert len(responses) == 1
-            response = cast(object, responses[0])
+            response = cast(QuestionResponseLike, responses[0])
             assert response.header == "Runtime path"
             assert response.answers == ("Reuse existing",)
             return runtime_module.RuntimeResponse(
@@ -1697,6 +1709,7 @@ def test_transport_persists_streamed_run_for_session_listing_and_replay(tmp_path
         "event",
         "event",
         "event",
+        "event",
         "output",
     ]
     assert list_response.status == 200
@@ -1730,6 +1743,7 @@ def test_transport_persists_streamed_run_for_session_listing_and_replay(tmp_path
         "graph.tool_request_created",
         "runtime.tool_lookup_succeeded",
         "runtime.permission_resolved",
+        "runtime.tool_started",
         "runtime.tool_completed",
         "graph.loop_step",
         "graph.response_ready",
@@ -1915,7 +1929,7 @@ def test_transport_persists_failed_stream_for_replay(tmp_path: Path) -> None:
     assert stream_response.status == 200
     assert payloads[-1]["event"] == {
         "session_id": "failed-stream-session",
-        "sequence": 8,
+        "sequence": 9,
         "event_type": "runtime.failed",
         "source": "runtime",
         "payload": {"error": "boom from transport stream"},
@@ -1950,6 +1964,7 @@ def test_transport_persists_failed_stream_for_replay(tmp_path: Path) -> None:
         "graph.tool_request_created",
         "runtime.tool_lookup_succeeded",
         "runtime.permission_resolved",
+        "runtime.tool_started",
         "runtime.failed",
     ]
 
