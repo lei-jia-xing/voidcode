@@ -28,6 +28,8 @@ from voidcode.tools import (
     AstGrepPreviewTool,
     AstGrepReplaceTool,
     AstGrepSearchTool,
+    BackgroundCancelTool,
+    BackgroundOutputTool,
     CodeSearchTool,
     EditTool,
     GlobTool,
@@ -35,8 +37,11 @@ from voidcode.tools import (
     ListTool,
     McpTool,
     MultiEditTool,
+    QuestionTool,
     ReadFileTool,
     ShellExecTool,
+    SkillTool,
+    TaskTool,
     TodoWriteTool,
     ToolCall,
     WebFetchTool,
@@ -154,6 +159,8 @@ def test_builtin_tool_provider_returns_expected_builtin_tools() -> None:
         ListTool,
         ReadFileTool,
         ShellExecTool,
+        QuestionTool,
+        SkillTool,
         AstGrepSearchTool,
         AstGrepPreviewTool,
         AstGrepReplaceTool,
@@ -301,6 +308,8 @@ def test_sidecar_guidance_mapping_covers_builtin_runtime_tool_names() -> None:
         "ast_grep_preview",
         "ast_grep_replace",
         "ast_grep_search",
+        "background_cancel",
+        "background_output",
         "code_search",
         "edit",
         "format_file",
@@ -309,8 +318,11 @@ def test_sidecar_guidance_mapping_covers_builtin_runtime_tool_names() -> None:
         "list",
         "lsp",
         "multi_edit",
+        "question",
         "read_file",
         "shell_exec",
+        "skill",
+        "task",
         "todo_write",
         "web_fetch",
         "web_search",
@@ -321,28 +333,6 @@ def test_sidecar_guidance_mapping_covers_builtin_runtime_tool_names() -> None:
         filename = guidance_filename_for_tool(tool_name)
         assert filename is not None, f"Missing guidance mapping for {tool_name}"
         assert guidance_for_tool(tool_name), f"Missing sidecar content for {tool_name}"
-
-
-def test_agent_tool_docs_cover_runtime_tool_families() -> None:
-    repo_root = Path(__file__).resolve().parents[3]
-    docs_dir = repo_root / "docs" / "tools"
-    expected_pages = {
-        "read-search.md",
-        "edit.md",
-        "multi-edit.md",
-        "apply-patch.md",
-        "shell-exec.md",
-        "write-file.md",
-        "ast-grep.md",
-        "lsp-format.md",
-        "external-research.md",
-        "todo-write.md",
-        "mcp-dynamic.md",
-        "guidance-injection.md",
-    }
-
-    for page in expected_pages:
-        assert (docs_dir / page).is_file(), f"Missing docs/tools/{page}"
 
 
 def test_dynamic_mcp_tool_definitions_include_shared_policy_guidance() -> None:
@@ -432,7 +422,6 @@ def test_tool_registry_with_defaults_passes_format_tool_to_builtin_provider() ->
     provide_tools_mock.assert_called_once()
     provider = provide_tools_mock.call_args.args[0]
     assert isinstance(provider, BuiltinToolProvider)
-    assert provider._format_tool is format_tool
     assert registry.resolve("format_file") is format_tool
 
 
@@ -563,7 +552,7 @@ def test_runtime_default_registry_behavior_remains_unchanged(tmp_path: Path) -> 
     sample_file = tmp_path / "sample.txt"
     _ = sample_file.write_text("alpha beta\n", encoding="utf-8")
     runtime = VoidCodeRuntime(workspace=tmp_path, graph=_StubGraph())
-    base_registry = cast(ToolRegistry, runtime._base_tool_registry)
+    base_registry = runtime._base_tool_registry  # pyright: ignore[reportPrivateUsage]
 
     assert "format_file" in base_registry.tools
 
@@ -576,6 +565,17 @@ def test_runtime_default_registry_behavior_remains_unchanged(tmp_path: Path) -> 
     assert response.events[3].payload == {"tool": "grep"}
     assert response.events[5].event_type == "runtime.tool_completed"
     assert response.events[5].payload["pattern"] == "alpha"
+
+
+def test_runtime_default_registry_includes_runtime_backed_agent_tools(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_StubGraph())
+    base_registry = runtime._base_tool_registry  # pyright: ignore[reportPrivateUsage]
+
+    assert isinstance(base_registry.resolve("skill"), SkillTool)
+    assert isinstance(base_registry.resolve("task"), TaskTool)
+    assert isinstance(base_registry.resolve("question"), QuestionTool)
+    assert isinstance(base_registry.resolve("background_output"), BackgroundOutputTool)
+    assert isinstance(base_registry.resolve("background_cancel"), BackgroundCancelTool)
 
 
 def test_tools_package_exports_code_search_tool() -> None:

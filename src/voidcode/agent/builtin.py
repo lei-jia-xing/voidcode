@@ -9,6 +9,9 @@ _READ_ONLY_WORKSPACE_TOOLS = (
     "grep",
     "ast_grep_search",
     "lsp",
+    "question",
+    "skill",
+    "background_output",
 )
 
 _LEADER_TOOL_ALLOWLIST = (
@@ -20,6 +23,8 @@ _LEADER_TOOL_ALLOWLIST = (
     "shell_exec",
     "format_file",
     "todo_write",
+    "task",
+    "background_cancel",
     "ast_grep_preview",
     "ast_grep_replace",
     "web_search",

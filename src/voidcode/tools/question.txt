@@ -1,0 +1,22 @@
+Ask the user clarifying questions and wait for an answer.
+
+Usage:
+- Use this tool when you need a structured user decision before continuing.
+- Provide a non-empty `questions` array.
+- Each question must include `question`, `header`, `options`, and optional `multiple`.
+- `header` should be short and stable because the runtime uses it to match answers.
+- Each option needs a non-empty `label`; `description` is optional.
+
+Important:
+- This tool pauses the current session until the user answers.
+- Do not call this for information you can determine from the repo or existing context.
+- Keep options concise and mutually distinct.
+- Use `multiple=true` only when more than one answer is genuinely allowed.
+
+Answer format:
+- The runtime returns the selected labels back into the session.
+- Follow-up answers must use the same `header` values and option labels you declared.
+
+Example shape:
+- One question with single choice: header `Runtime path`, options `Reuse existing` and `Add new path`.
+- One question with multiple choice: header `Checks`, options `Tests`, `Typecheck`, `Build`, and `multiple=true`.

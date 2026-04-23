@@ -1,0 +1,9 @@
+Load a runtime-discovered skill into the current conversation context.
+
+Usage:
+- Use this tool when the task clearly matches a discovered local `SKILL.md` workflow.
+- The `name` argument is required and must match one of the available skills listed in the tool description.
+- The tool returns the resolved skill body, description, and source path so you can follow it in the current turn.
+- `user_message` is optional extra context when the skill behaves like a command wrapper.
+- This tool does not create, edit, or install skills. It only loads skills that are already discoverable in the current workspace/runtime.
+- If the skill name is unknown, the tool fails instead of guessing.

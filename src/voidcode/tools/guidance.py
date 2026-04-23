@@ -9,6 +9,8 @@ _GUIDANCE_DIR = Path(__file__).resolve().parent
 _GUIDANCE_SEPARATOR = "\n\nAgent usage guidance:\n"
 
 _TOOL_GUIDANCE_FILES = {
+    "background_cancel": "background_cancel.txt",
+    "background_output": "background_output.txt",
     "apply_patch": "apply_patch.txt",
     "ast_grep_preview": "ast_grep.txt",
     "ast_grep_replace": "ast_grep.txt",
@@ -21,8 +23,11 @@ _TOOL_GUIDANCE_FILES = {
     "list": "list.txt",
     "lsp": "lsp.txt",
     "multi_edit": "multi_edit.txt",
+    "question": "question.txt",
     "read_file": "read_file.txt",
     "shell_exec": "shell_exec.txt",
+    "skill": "skill.txt",
+    "task": "task.txt",
     "todo_write": "todo_write.txt",
     "web_fetch": "web_fetch.txt",
     "web_search": "web_search.txt",

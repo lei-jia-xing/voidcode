@@ -1,0 +1,9 @@
+Read background task status and optionally child session results.
+
+Usage:
+- Use this tool after `task` with `run_in_background=true`.
+- The `task_id` argument is required.
+- Set `block=true` to wait for a terminal result up to the provided timeout in milliseconds.
+- Set `full_session=true` to include the child session summary and transcript preview when a child session exists.
+- This tool is read-only. It never modifies background task state.
+- If the task is still running, rely on the returned `status`, `approval_blocked`, and `result_available` fields instead of guessing.

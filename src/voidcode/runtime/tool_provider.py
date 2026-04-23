@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Protocol
 
 from ..hook.config import RuntimeHooksConfig
+from ..skills.models import SkillMetadata
 from ..tools.contracts import Tool
 from ..tools.edit import EditTool
 from ..tools.glob import GlobTool
@@ -40,6 +41,16 @@ except ImportError:
     _MultiEditTool = None
 
 try:
+    from ..tools.question import QuestionTool as _QuestionTool
+except ImportError:
+    _QuestionTool = None
+
+try:
+    from ..tools.skill import SkillTool as _SkillTool
+except ImportError:
+    _SkillTool = None
+
+try:
     from ..tools.todo_write import TodoWriteTool as _TodoWriteTool
 except ImportError:
     _TodoWriteTool = None
@@ -54,6 +65,11 @@ class BuiltinToolProvider:
     _format_tool: Tool | None
     _mcp_tools: tuple[Tool, ...]
     _hooks_config: RuntimeHooksConfig | None
+    _skill_tool: Tool | None
+    _task_tool: Tool | None
+    _question_tool: Tool | None
+    _background_output_tool: Tool | None
+    _background_cancel_tool: Tool | None
 
     def __init__(
         self,
@@ -62,11 +78,21 @@ class BuiltinToolProvider:
         format_tool: Tool | None = None,
         mcp_tools: tuple[Tool, ...] = (),
         hooks_config: RuntimeHooksConfig | None = None,
+        skill_tool: Tool | None = None,
+        task_tool: Tool | None = None,
+        question_tool: Tool | None = None,
+        background_output_tool: Tool | None = None,
+        background_cancel_tool: Tool | None = None,
     ) -> None:
         self._lsp_tool = lsp_tool
         self._format_tool = format_tool
         self._mcp_tools = mcp_tools
         self._hooks_config = hooks_config
+        self._skill_tool = skill_tool
+        self._task_tool = task_tool
+        self._question_tool = question_tool
+        self._background_output_tool = background_output_tool
+        self._background_cancel_tool = background_cancel_tool
 
     def provide_tools(self) -> tuple[Tool, ...]:
         edit_tool = EditTool(hooks_config=self._hooks_config)
@@ -87,6 +113,25 @@ class BuiltinToolProvider:
         if self._format_tool is not None:
             tools.append(self._format_tool)
 
+        if self._skill_tool is not None:
+            tools.append(self._skill_tool)
+        elif _SkillTool is not None:
+            tools.append(_SkillTool(list_skills=lambda: (), resolve_skill=self._unknown_skill))
+
+        if self._task_tool is not None:
+            tools.append(self._task_tool)
+
+        if self._question_tool is not None:
+            tools.append(self._question_tool)
+        elif _QuestionTool is not None:
+            tools.append(_QuestionTool())
+
+        if self._background_output_tool is not None:
+            tools.append(self._background_output_tool)
+
+        if self._background_cancel_tool is not None:
+            tools.append(self._background_cancel_tool)
+
         tools.extend(self._mcp_tools)
 
         # Add optional tools if available.
@@ -106,3 +151,7 @@ class BuiltinToolProvider:
             tools.append(_TodoWriteTool())
 
         return tuple(tools)
+
+    @staticmethod
+    def _unknown_skill(name: str) -> SkillMetadata:
+        raise ValueError(f"unknown skill: {name}")
