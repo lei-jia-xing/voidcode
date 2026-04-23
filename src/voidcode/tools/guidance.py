@@ -15,13 +15,13 @@ _TOOL_GUIDANCE_FILES = {
     "ast_grep_search": "ast_grep.txt",
     "code_search": "code_search.txt",
     "edit": "edit.txt",
-    "format_file": "lsp.txt",
-    "glob": "read_search.txt",
-    "grep": "read_search.txt",
-    "list": "read_search.txt",
+    "format_file": "format_file.txt",
+    "glob": "glob.txt",
+    "grep": "grep.txt",
+    "list": "list.txt",
     "lsp": "lsp.txt",
     "multi_edit": "multi_edit.txt",
-    "read_file": "read_search.txt",
+    "read_file": "read_file.txt",
     "shell_exec": "shell_exec.txt",
     "todo_write": "todo_write.txt",
     "web_fetch": "web_fetch.txt",
@@ -54,11 +54,17 @@ def guidance_for_tool(tool_name: str) -> str:
 
 def definition_with_guidance(definition: ToolDefinition) -> ToolDefinition:
     guidance = guidance_for_tool(definition.name)
-    if not guidance or guidance in definition.description:
+    if not guidance:
         return definition
+    if definition.name.startswith("mcp/"):
+        if guidance in definition.description:
+            return definition
+        description = f"{definition.description.rstrip()}{_GUIDANCE_SEPARATOR}{guidance}"
+    else:
+        description = guidance
     return ToolDefinition(
         name=definition.name,
-        description=f"{definition.description.rstrip()}{_GUIDANCE_SEPARATOR}{guidance}",
+        description=description,
         input_schema=definition.input_schema,
         read_only=definition.read_only,
     )
