@@ -1,5 +1,10 @@
-Use shell_exec for tests, builds, diagnostics, and local commands that cannot be expressed through narrower workspace tools.
+Execute a command inside the local workspace.
 
-Do not use it as the default way to read files, list directories, search text, or edit files. Prefer read_file, list, glob, grep, edit, multi_edit, apply_patch, or format_file when they fit.
-
-This tool is not read-only and may require approval. Treat exit_code, stdout, stderr, timeout, and truncated as the stable result fields.
+Usage:
+- The command parameter is required.
+- The timeout parameter is optional and is expressed in seconds. The maximum timeout is 120 seconds.
+- Commands run from the workspace root.
+- This tool parses the command into argv and executes it without an interactive shell. Shell operators like pipes, redirects, wildcard expansion, and command chaining are not interpreted unless you explicitly invoke a shell program yourself.
+- Use this tool for tests, builds, diagnostics, and local commands that cannot be expressed through narrower tools.
+- DO NOT use it for file reads, file writes, text search, or directory listing when dedicated tools already fit.
+- Treat exit_code, stdout, stderr, timeout, and truncated as the source of truth.
