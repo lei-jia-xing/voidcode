@@ -5,15 +5,14 @@ Agent-facing tool guidance has two surfaces:
 - sidecar `.txt` files next to tool implementations under `src/voidcode/tools/`
 - human-readable grouping pages under `docs/tools/`
 
-The sidecar files are the source of truth for text that can be injected into agent-visible tool descriptions. The Markdown pages are reading and navigation entry points for humans.
+The sidecar files are the source of truth for agent-visible tool descriptions. The Markdown pages are reading and navigation entry points for humans.
 
 ## Source of truth
-
-Use `ToolDefinition.description` for the short capability summary.
 
 Use sidecar guidance for:
 
 - when to choose the tool,
+- exact argument names and syntax expectations when the agent needs them,
 - neighboring-tool boundaries,
 - common misuse,
 - approval and read-only expectations,
@@ -30,11 +29,11 @@ Use `docs/tools/*.md` for:
 
 Static built-in tools map to sidecar files by tool name.
 
-Tool families can share a sidecar when separate files would duplicate policy:
+Prefer one sidecar per tool when behavior or syntax differs. Shared sidecars are acceptable only when the tools are intentionally documented as one family.
 
-- `read_file`, `list`, `glob`, `grep` share `read_search.txt`
+Current shared families:
+
 - `ast_grep_search`, `ast_grep_preview`, `ast_grep_replace` share `ast_grep.txt`
-- `lsp` and `format_file` share `lsp.txt`
 
 Dynamic MCP tools share `mcp.txt` through the `mcp/*` name prefix.
 
@@ -45,9 +44,9 @@ The runtime keeps tool implementations and execution unchanged. It decorates age
 This means:
 
 - `ToolRegistry.resolve()` still returns the original tool object,
-- `ToolRegistry.definitions()` returns descriptions with sidecar guidance appended when available,
+- `ToolRegistry.definitions()` returns sidecar-owned descriptions for mapped built-in tools,
 - missing sidecar files are ignored rather than breaking runtime startup,
-- dynamic MCP tools receive the shared MCP policy without duplicating long descriptions per server tool.
+- dynamic MCP tools receive the shared MCP policy appended to the tool-specific description.
 
 ## Maintenance rule
 
