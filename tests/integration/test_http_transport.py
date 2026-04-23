@@ -70,6 +70,16 @@ class RuntimeRunner(Protocol):
 
     def list_sessions(self) -> tuple[StoredSessionSummaryLike, ...]: ...
 
+    def web_settings(self) -> dict[str, object]: ...
+
+    def update_web_settings(
+        self,
+        *,
+        provider: str | None = None,
+        provider_api_key: str | None = None,
+        model: str | None = None,
+    ) -> dict[str, object]: ...
+
     def resume(
         self,
         session_id: str,
@@ -353,6 +363,89 @@ def test_transport_lists_sessions_as_json(tmp_path: Path) -> None:
     ]
 
 
+def test_transport_reads_runtime_web_settings_as_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "global-config"))
+    create_runtime_app = _load_transport_app_factory()
+    app = create_runtime_app(workspace=tmp_path)
+
+    response = _run_app(app, method="GET", path="/api/settings")
+    payload = cast(dict[str, object], response.json())
+
+    assert response.status == 200
+    assert response.headers["content-type"] == "application/json; charset=utf-8"
+    assert payload == {
+        "provider": None,
+        "provider_api_key_present": False,
+        "model": None,
+    }
+
+
+def test_transport_updates_runtime_web_settings_and_hides_api_key_on_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "global-config"))
+    create_runtime_app = _load_transport_app_factory()
+    app = create_runtime_app(workspace=tmp_path)
+
+    update_response = _run_app(
+        app,
+        method="POST",
+        path="/api/settings",
+        body=json.dumps(
+            {
+                "provider": "opencode-go",
+                "provider_api_key": "secret-key",
+                "model": "opencode-go/glm-5.1",
+            }
+        ).encode("utf-8"),
+    )
+    update_payload = cast(dict[str, object], update_response.json())
+    read_response = _run_app(app, method="GET", path="/api/settings")
+    read_payload = cast(dict[str, object], read_response.json())
+
+    assert update_response.status == 200
+    assert update_payload == {
+        "provider": "opencode-go",
+        "provider_api_key_present": True,
+        "model": "opencode-go/glm-5.1",
+    }
+    assert read_response.status == 200
+    assert read_payload == update_payload
+
+
+@pytest.mark.parametrize(
+    ("body", "expected_error"),
+    [
+        (b"not json", "request body must be valid JSON"),
+        (json.dumps(["glm"]).encode("utf-8"), "request body must be a JSON object"),
+        (
+            json.dumps({"provider": 1}).encode("utf-8"),
+            "provider must be a string when provided",
+        ),
+        (
+            json.dumps({"extra": True}).encode("utf-8"),
+            "unsupported settings field(s): extra",
+        ),
+    ],
+)
+def test_transport_rejects_invalid_settings_payload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    body: bytes,
+    expected_error: str,
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "global-config"))
+    create_runtime_app = _load_transport_app_factory()
+    app = create_runtime_app(workspace=tmp_path)
+
+    response = _run_app(app, method="POST", path="/api/settings", body=body)
+
+    assert response.status == 400
+    assert response.json() == {"error": expected_error}
+
+
 def test_create_runtime_app_forwards_config_to_default_runtime_factory(tmp_path: Path) -> None:
     runtime_module = importlib.import_module("voidcode.runtime.http")
     config = object()
@@ -367,6 +460,12 @@ def test_create_runtime_app_forwards_config_to_default_runtime_factory(tmp_path:
 
         def list_sessions(self) -> tuple[StoredSessionSummaryLike, ...]:
             return ()
+
+        def web_settings(self) -> dict[str, object]:
+            return {"provider": None, "provider_api_key_present": False, "model": None}
+
+        def update_web_settings(self, **_: object) -> dict[str, object]:
+            return {"provider": None, "provider_api_key_present": False, "model": None}
 
         def resume(self, session_id: str, **_: object) -> RuntimeResponseLike:
             raise AssertionError(f"resume should not be called: {session_id}")
@@ -400,6 +499,12 @@ def test_transport_closes_request_scoped_runtime_after_list_sessions(tmp_path: P
 
         def list_sessions(self) -> tuple[StoredSessionSummaryLike, ...]:
             return ()
+
+        def web_settings(self) -> dict[str, object]:
+            raise AssertionError("web_settings should not be called")
+
+        def update_web_settings(self, **_: object) -> dict[str, object]:
+            raise AssertionError("update_web_settings should not be called")
 
         def session_result(self, *, session_id: str) -> object:
             raise AssertionError(f"session_result should not be called: {session_id}")
@@ -467,6 +572,12 @@ def test_transport_closes_request_scoped_runtime_after_stream_run(tmp_path: Path
 
         def list_sessions(self) -> tuple[StoredSessionSummaryLike, ...]:
             raise AssertionError("list_sessions should not be called")
+
+        def web_settings(self) -> dict[str, object]:
+            raise AssertionError("web_settings should not be called")
+
+        def update_web_settings(self, **_: object) -> dict[str, object]:
+            raise AssertionError("update_web_settings should not be called")
 
         def resume(self, session_id: str) -> RuntimeResponseLike:
             raise AssertionError(f"resume should not be called: {session_id}")
@@ -679,6 +790,12 @@ def test_transport_round_trips_parent_session_lineage(tmp_path: Path) -> None:
         def list_sessions(self) -> tuple[StoredSessionSummaryLike, ...]:
             raise AssertionError("list_sessions should not be called")
 
+        def web_settings(self) -> dict[str, object]:
+            raise AssertionError("web_settings should not be called")
+
+        def update_web_settings(self, **_: object) -> dict[str, object]:
+            raise AssertionError("update_web_settings should not be called")
+
         def resume(self, session_id: str) -> RuntimeResponseLike:
             raise AssertionError(f"resume should not be called: {session_id}")
 
@@ -761,6 +878,12 @@ def test_transport_serializes_hook_events_from_runtime_stream(tmp_path: Path) ->
 
         def list_sessions(self) -> tuple[StoredSessionSummaryLike, ...]:
             raise AssertionError("list_sessions should not be called")
+
+        def web_settings(self) -> dict[str, object]:
+            raise AssertionError("web_settings should not be called")
+
+        def update_web_settings(self, **_: object) -> dict[str, object]:
+            raise AssertionError("update_web_settings should not be called")
 
         def resume(self, session_id: str) -> RuntimeResponseLike:
             raise AssertionError(f"resume should not be called: {session_id}")
@@ -1200,6 +1323,12 @@ def test_transport_streams_runtime_chunks_in_sse_order() -> None:
         def list_sessions(self) -> tuple[StoredSessionSummaryLike, ...]:
             raise AssertionError("list_sessions should not be called")
 
+        def web_settings(self) -> dict[str, object]:
+            raise AssertionError("web_settings should not be called")
+
+        def update_web_settings(self, **_: object) -> dict[str, object]:
+            raise AssertionError("update_web_settings should not be called")
+
         def resume(self, session_id: str) -> RuntimeResponseLike:
             raise AssertionError(f"resume should not be called: {session_id}")
 
@@ -1267,6 +1396,12 @@ def test_transport_run_stream_accepts_metadata_passthrough_for_skills_and_max_st
         def list_sessions(self) -> tuple[StoredSessionSummaryLike, ...]:
             raise AssertionError("list_sessions should not be called")
 
+        def web_settings(self) -> dict[str, object]:
+            raise AssertionError("web_settings should not be called")
+
+        def update_web_settings(self, **_: object) -> dict[str, object]:
+            raise AssertionError("update_web_settings should not be called")
+
         def resume(self, session_id: str) -> RuntimeResponseLike:
             raise AssertionError(f"resume should not be called: {session_id}")
 
@@ -1319,6 +1454,12 @@ def test_transport_serializes_additive_future_event_type_unchanged() -> None:
 
         def list_sessions(self) -> tuple[StoredSessionSummaryLike, ...]:
             raise AssertionError("list_sessions should not be called")
+
+        def web_settings(self) -> dict[str, object]:
+            raise AssertionError("web_settings should not be called")
+
+        def update_web_settings(self, **_: object) -> dict[str, object]:
+            raise AssertionError("update_web_settings should not be called")
 
         def resume(self, session_id: str) -> RuntimeResponseLike:
             raise AssertionError(f"resume should not be called: {session_id}")

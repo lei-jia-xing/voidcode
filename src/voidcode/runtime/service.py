@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 import threading
@@ -61,10 +62,13 @@ from .config import (
     RuntimePlanConfig,
     RuntimeProviderFallbackConfig,
     RuntimeSkillsConfig,
+    RuntimeWebSettings,
+    load_global_web_settings,
     load_runtime_config,
     parse_provider_fallback_payload,
     parse_runtime_agent_payload,
     parse_runtime_plan_payload,
+    save_global_web_settings,
     serialize_provider_fallback_config,
     serialize_runtime_agent_config,
     serialize_runtime_plan_config,
@@ -2203,6 +2207,103 @@ class VoidCodeRuntime:
             "last_refresh_status": catalog.last_refresh_status,
             "last_error": catalog.last_error,
         }
+
+    def web_settings(self) -> dict[str, object]:
+        settings = load_global_web_settings()
+        effective_config = self._effective_runtime_config_from_metadata(None)
+        return {
+            "provider": settings.provider,
+            "provider_api_key_present": settings.provider_api_key_present,
+            "model": effective_config.model,
+        }
+
+    def update_web_settings(
+        self,
+        *,
+        provider: str | None = None,
+        provider_api_key: str | None = None,
+        model: str | None = None,
+    ) -> dict[str, object]:
+        save_global_web_settings(
+            RuntimeWebSettings(
+                provider=provider,
+                provider_api_key=provider_api_key,
+            )
+        )
+        if model is not None:
+            config_path = self._workspace / ".voidcode.json"
+            payload = self._read_json_object(config_path)
+            payload["model"] = model
+            config_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        self._reload_runtime_config_state()
+        return self.web_settings()
+
+    @staticmethod
+    def _read_json_object(config_path: Path) -> dict[str, object]:
+        if not config_path.exists():
+            return {}
+        raw_payload = json.loads(config_path.read_text(encoding="utf-8"))
+        if not isinstance(raw_payload, dict):
+            raise ValueError(f"runtime config file must contain a JSON object: {config_path}")
+        return cast(dict[str, object], raw_payload)
+
+    def _reload_runtime_config_state(self) -> None:
+        self._config = load_runtime_config(self._workspace)
+        self._model_provider_registry = ModelProviderRegistry.with_defaults(
+            provider_configs=self._config.providers
+        )
+        self._provider_auth_resolver = ProviderAuthResolver(
+            providers=self._config.providers,
+            env=os.environ,
+        )
+        initial_agent = self._config.agent
+        if initial_agent is not None:
+            initial_agent = parse_runtime_agent_payload(
+                serialize_runtime_agent_config(initial_agent),
+                source="runtime config agent",
+            )
+            assert initial_agent is not None
+            self._validate_runtime_agent_for_execution(
+                initial_agent,
+                source="runtime config agent",
+            )
+        initial_model = (
+            initial_agent.model
+            if initial_agent is not None and initial_agent.model is not None
+            else self._config.model
+        )
+        initial_execution_engine = (
+            initial_agent.execution_engine
+            if initial_agent is not None and initial_agent.execution_engine is not None
+            else self._config.execution_engine
+        )
+        initial_provider_fallback = (
+            initial_agent.provider_fallback
+            if initial_agent is not None and initial_agent.provider_fallback is not None
+            else self._config.provider_fallback
+        )
+        self._resolved_provider_config = resolve_provider_config(
+            initial_model,
+            initial_provider_fallback,
+            registry=self._model_provider_registry,
+        )
+        self._provider_model = self._resolved_provider_config.active_target
+        self._provider_chain = self._resolved_provider_config.target_chain
+        self._initial_effective_config = EffectiveRuntimeConfig(
+            approval_mode=self._config.approval_mode,
+            model=initial_model,
+            execution_engine=initial_execution_engine,
+            max_steps=self._config.max_steps,
+            tool_timeout_seconds=self._config.tool_timeout_seconds,
+            provider_fallback=initial_provider_fallback,
+            plan=self._config.plan,
+            resolved_provider=self._resolved_provider_config,
+            agent=initial_agent,
+        )
+        self._graph_cache = {}
+        self._graph = self._graph_override or self._build_graph_for_engine_from_config(
+            self._initial_effective_config
+        )
 
     def resume(
         self,

@@ -34,6 +34,16 @@ class RuntimeTransport(Protocol):
 
     def list_sessions(self) -> tuple[StoredSessionSummary, ...]: ...
 
+    def web_settings(self) -> dict[str, object]: ...
+
+    def update_web_settings(
+        self,
+        *,
+        provider: str | None = None,
+        provider_api_key: str | None = None,
+        model: str | None = None,
+    ) -> dict[str, object]: ...
+
     def session_result(self, *, session_id: str) -> RuntimeSessionResult: ...
 
     def list_notifications(self) -> tuple[RuntimeNotification, ...]: ...
@@ -117,6 +127,20 @@ class RuntimeTransportApp:
                 )
                 return
             await self._handle_list_notifications(send)
+            return
+
+        if path == "/api/settings":
+            if method == "GET":
+                await self._handle_get_settings(send)
+                return
+            if method == "POST":
+                await self._handle_update_settings(receive, send)
+                return
+            await self._json_response(
+                send,
+                status=405,
+                payload={"error": "method not allowed"},
+            )
             return
 
         notification_prefix = "/api/notifications/"
@@ -303,6 +327,32 @@ class RuntimeTransportApp:
             self._close_runtime(runtime)
         await self._json_response(send, status=200, payload=payload)
 
+    async def _handle_get_settings(self, send: Send) -> None:
+        runtime = self._runtime_factory()
+        try:
+            payload = runtime.web_settings()
+        finally:
+            self._close_runtime(runtime)
+        await self._json_response(send, status=200, payload=payload)
+
+    async def _handle_update_settings(self, receive: Receive, send: Send) -> None:
+        try:
+            body = await self._read_body(receive)
+            payload = self._parse_settings_request(body)
+        except ValueError as exc:
+            await self._json_response(send, status=400, payload={"error": str(exc)})
+            return
+
+        runtime = self._runtime_factory()
+        try:
+            result = runtime.update_web_settings(**payload)
+        except ValueError as exc:
+            await self._json_response(send, status=400, payload={"error": str(exc)})
+            return
+        finally:
+            self._close_runtime(runtime)
+        await self._json_response(send, status=200, payload=result)
+
     async def _handle_resume(self, *, session_id: str, send: Send) -> None:
         runtime = self._runtime_factory()
         try:
@@ -474,6 +524,36 @@ class RuntimeTransportApp:
             raise ValueError("decision must be 'allow' or 'deny'")
 
         return request_id, decision
+
+    def _parse_settings_request(self, body: bytes) -> dict[str, str | None]:
+        try:
+            raw_payload = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("request body must be valid JSON") from exc
+
+        if not isinstance(raw_payload, dict):
+            raise ValueError("request body must be a JSON object")
+
+        payload = cast(dict[str, object], raw_payload)
+        allowed_keys = {"provider", "provider_api_key", "model"}
+        unknown_keys = sorted(key for key in payload if key not in allowed_keys)
+        if unknown_keys:
+            raise ValueError(f"unsupported settings field(s): {', '.join(unknown_keys)}")
+
+        def _optional_string(name: str) -> str | None:
+            value = payload.get(name)
+            if value is None:
+                return None
+            if not isinstance(value, str):
+                raise ValueError(f"{name} must be a string when provided")
+            stripped = value.strip()
+            return stripped or None
+
+        return {
+            "provider": _optional_string("provider"),
+            "provider_api_key": _optional_string("provider_api_key"),
+            "model": _optional_string("model"),
+        }
 
     @staticmethod
     def _serialize_runtime_stream_chunk(chunk: RuntimeStreamChunk) -> dict[str, object]:

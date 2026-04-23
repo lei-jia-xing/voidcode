@@ -251,6 +251,13 @@ class RuntimeConfigOverrides:
     agent: RuntimeAgentConfig | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class RuntimeWebSettings:
+    provider: str | None = None
+    provider_api_key: str | None = None
+    provider_api_key_present: bool = False
+
+
 _VALID_TUI_THEME_MODES: tuple[RuntimeTuiThemeMode, ...] = ("auto", "light", "dark")
 _BUILTIN_TUI_THEME_DEFAULTS: dict[RuntimeTuiThemeMode, str] = {
     "auto": "textual-dark",
@@ -295,6 +302,23 @@ def load_global_tui_preferences(
     return global_config.tui.preferences
 
 
+def load_global_web_settings(env: Mapping[str, str] | None = None) -> RuntimeWebSettings:
+    environment: Mapping[str, str] = os.environ if env is None else env
+    global_config = _load_user_config(environment)
+    payload = _read_json_object(_user_runtime_config_path_from_env(environment))
+    raw_web = payload.get("web")
+    configured_provider: str | None = None
+    if isinstance(raw_web, dict):
+        raw_provider = cast(dict[str, object], raw_web).get("provider")
+        if isinstance(raw_provider, str):
+            configured_provider = raw_provider
+    provider = configured_provider or _first_configured_provider_name(global_config.providers)
+    return RuntimeWebSettings(
+        provider=provider,
+        provider_api_key_present=_provider_api_key_present(global_config.providers, provider),
+    )
+
+
 def load_workspace_tui_preferences(
     workspace: Path, env: Mapping[str, str] | None = None
 ) -> RuntimeTuiPreferences | None:
@@ -325,7 +349,8 @@ def load_runtime_config(
     resolved_agent = _resolve_agent_config(repo_local.agent)
 
     resolved_providers = merge_provider_configs(
-        repo_local.providers, provider_configs_from_env(environment)
+        repo_local.providers,
+        merge_provider_configs(global_config.providers, provider_configs_from_env(environment)),
     )
 
     return RuntimeConfig(
@@ -490,7 +515,9 @@ def _load_user_config(env: Mapping[str, str]) -> RuntimeConfigOverrides:
     payload = cast(dict[str, object], raw_payload)
     raw_tui = payload.get("tui")
     tui = _parse_tui_config(raw_tui)
-    return RuntimeConfigOverrides(tui=tui)
+    raw_providers = payload.get("providers")
+    providers = _parse_providers_config(raw_providers, env=env)
+    return RuntimeConfigOverrides(tui=tui, providers=providers)
 
 
 def _user_runtime_config_path_from_env(env: Mapping[str, str]) -> Path:
@@ -1475,6 +1502,28 @@ def save_global_tui_preferences(preferences: RuntimeTuiPreferences) -> None:
     _save_tui_preferences(user_runtime_config_path(), preferences)
 
 
+def save_global_web_settings(settings: RuntimeWebSettings) -> None:
+    provider = settings.provider.strip() if isinstance(settings.provider, str) else ""
+    if settings.provider_api_key is not None and not provider:
+        raise ValueError("provider is required when saving a provider API key")
+    config_path = user_runtime_config_path()
+    payload = _read_json_object(config_path)
+    if provider:
+        _validate_runtime_web_provider(provider)
+        raw_web = payload.get("web")
+        web_payload = dict(cast(dict[str, object], raw_web)) if isinstance(raw_web, dict) else {}
+        web_payload["provider"] = provider
+        payload["web"] = web_payload
+        if settings.provider_api_key is not None:
+            payload["providers"] = _set_provider_api_key_payload(
+                raw_providers=payload.get("providers"),
+                provider=provider,
+                api_key=settings.provider_api_key,
+            )
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
+
 def _save_tui_preferences(config_path: Path, preferences: RuntimeTuiPreferences) -> None:
     payload = _read_json_object(config_path)
     tui_payload = cast(
@@ -1485,6 +1534,119 @@ def _save_tui_preferences(config_path: Path, preferences: RuntimeTuiPreferences)
     payload["tui"] = updated_tui_payload
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def _validate_runtime_web_provider(provider: str) -> None:
+    if not provider or provider != provider.strip() or "/" in provider:
+        raise ValueError("provider must be a non-empty provider id without '/'")
+
+
+def _first_configured_provider_name(providers: RuntimeProvidersConfig | None) -> str | None:
+    if providers is None:
+        return None
+    ordered_candidates: tuple[tuple[str, object | None], ...] = (
+        ("openai", providers.openai),
+        ("anthropic", providers.anthropic),
+        ("google", providers.google),
+        ("copilot", providers.copilot),
+        ("litellm", providers.litellm),
+        ("glm", providers.glm),
+        ("minimax", providers.minimax),
+        ("kimi", providers.kimi),
+        ("opencode-go", providers.opencode_go),
+        ("qwen", providers.qwen),
+    )
+    for provider_name, configured_provider in ordered_candidates:
+        if configured_provider is not None:
+            return provider_name
+    if providers.custom:
+        return next(iter(providers.custom))
+    return None
+
+
+def _provider_api_key_present(
+    providers: RuntimeProvidersConfig | None, provider: str | None
+) -> bool:
+    if providers is None or provider is None:
+        return False
+    if provider == "openai":
+        return bool(providers.openai and providers.openai.api_key)
+    if provider == "anthropic":
+        return bool(providers.anthropic and providers.anthropic.api_key)
+    if provider == "google":
+        return bool(providers.google and providers.google.auth and providers.google.auth.api_key)
+    if provider == "copilot":
+        return bool(providers.copilot and providers.copilot.auth and providers.copilot.auth.token)
+    if provider == "litellm":
+        return bool(providers.litellm and providers.litellm.api_key)
+    if provider == "glm":
+        return bool(providers.glm and providers.glm.api_key)
+    if provider == "minimax":
+        return bool(providers.minimax and providers.minimax.api_key)
+    if provider == "kimi":
+        return bool(providers.kimi and providers.kimi.api_key)
+    if provider == "opencode-go":
+        return bool(providers.opencode_go and providers.opencode_go.api_key)
+    if provider == "qwen":
+        return bool(providers.qwen and providers.qwen.api_key)
+    custom_provider = providers.custom.get(provider)
+    return bool(custom_provider and custom_provider.api_key)
+
+
+def _set_provider_api_key_payload(
+    *, raw_providers: object, provider: str, api_key: str
+) -> dict[str, object]:
+    providers_payload = (
+        dict(cast(dict[str, object], raw_providers)) if isinstance(raw_providers, dict) else {}
+    )
+    if provider in {"glm", "minimax", "kimi", "opencode-go", "qwen"}:
+        nested = providers_payload.get(provider)
+        nested_payload = dict(cast(dict[str, object], nested)) if isinstance(nested, dict) else {}
+        nested_payload["api_key"] = api_key
+        providers_payload[provider] = nested_payload
+        return providers_payload
+    if provider in {"openai", "anthropic", "litellm"}:
+        nested = providers_payload.get(provider)
+        nested_payload = dict(cast(dict[str, object], nested)) if isinstance(nested, dict) else {}
+        nested_payload["api_key"] = api_key
+        providers_payload[provider] = nested_payload
+        return providers_payload
+    if provider == "google":
+        nested = providers_payload.get(provider)
+        nested_payload = dict(cast(dict[str, object], nested)) if isinstance(nested, dict) else {}
+        auth = nested_payload.get("auth")
+        auth_payload = (
+            dict(cast(dict[str, object], auth)) if isinstance(auth, dict) else {"method": "api_key"}
+        )
+        raw_method = auth_payload.get("method")
+        method = raw_method if isinstance(raw_method, str) and raw_method else "api_key"
+        auth_payload["method"] = method
+        auth_payload["api_key"] = api_key
+        nested_payload["auth"] = auth_payload
+        providers_payload[provider] = nested_payload
+        return providers_payload
+    if provider == "copilot":
+        nested = providers_payload.get(provider)
+        nested_payload = dict(cast(dict[str, object], nested)) if isinstance(nested, dict) else {}
+        auth = nested_payload.get("auth")
+        auth_payload = (
+            dict(cast(dict[str, object], auth)) if isinstance(auth, dict) else {"method": "token"}
+        )
+        raw_method = auth_payload.get("method")
+        method = raw_method if isinstance(raw_method, str) and raw_method else "token"
+        auth_payload["method"] = method
+        auth_payload["token"] = api_key
+        nested_payload["auth"] = auth_payload
+        providers_payload[provider] = nested_payload
+        return providers_payload
+    custom = providers_payload.get("custom")
+    custom_payload = dict(cast(dict[str, object], custom)) if isinstance(custom, dict) else {}
+    nested = custom_payload.get(provider)
+    nested_payload = dict(cast(dict[str, object], nested)) if isinstance(nested, dict) else {}
+    nested_payload["api_key"] = api_key
+    custom_payload[provider] = nested_payload
+    providers_payload["custom"] = custom_payload
+    return providers_payload
 
 
 def _read_json_object(config_path: Path) -> dict[str, object]:
