@@ -1,5 +1,9 @@
-Use ast_grep_search for structural code search when syntax shape matters more than literal text.
+Use ast-grep tools for structural code matching when syntax shape matters more than literal text.
 
-Use ast_grep_preview before any structural rewrite to inspect impact without changing files. Use ast_grep_replace only after the preview makes the replacement scope clear and the rewrite is truly structural.
-
-ast_grep_search and ast_grep_preview are read-only. ast_grep_replace is not read-only and may require approval. Prefer returned match and replacement counts over prose summaries when planning the next step.
+Usage:
+- ast_grep_search performs structural search and returns AST matches.
+- ast_grep_preview previews a rewrite without modifying files.
+- ast_grep_replace applies a structural rewrite and requires apply=true.
+- pattern is required. path must be workspace-relative. lang is optional but often improves correctness.
+- Use preview before replace when the rewrite scope is not already obvious.
+- Prefer returned match and replacement counts over prose summaries when planning the next step.
