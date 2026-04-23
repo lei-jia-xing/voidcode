@@ -211,8 +211,12 @@ export const useAppStore = create<AppState>()(
           rawMetadata.agent && typeof rawMetadata.agent === 'object'
             ? (rawMetadata.agent as Record<string, unknown>)
             : {};
-        const { max_steps: _ignoredMaxSteps, agent: _ignoredAgent, ...forwardMetadata } = rawMetadata;
-        const { leader_mode: _ignoredLeaderMode, ...forwardAgentMetadata } = rawAgentMetadata;
+        const forwardMetadata = Object.fromEntries(
+          Object.entries(rawMetadata).filter(([key]) => key !== 'max_steps' && key !== 'agent')
+        );
+        const forwardAgentMetadata = Object.fromEntries(
+          Object.entries(rawAgentMetadata).filter(([key]) => key !== 'leader_mode')
+        );
 
         const metadata = {
           ...forwardMetadata,
