@@ -70,6 +70,31 @@ Python 测试现在同时包含示例型测试和一小批基于 Hypothesis 的 
 
 `mise.toml` 不直接管理 Python 安装；它加载仓库现有的 `.venv` 并将 Python 依赖/环境管理委托给 `uv`。Release workflow 与本地支持政策保持一致，使用 Python 3.13 构建 Python 包；如果需要在本地复现合并前门禁，优先运行 `mise run ci`。
 
+## 运行时可观测性与调试
+
+当前仓库的主观测面不是单独的日志系统，而是 runtime 统一发出的事件流，以及会话持久化后可重放的 transcript。
+
+排查 agent / runtime 行为时，优先看以下几层：
+
+1. `docs/contracts/runtime-events.md`：稳定事件词汇表与顺序语义的权威来源。
+2. CLI / HTTP / replay 输出：验证某次 run 实际暴露给客户端的事件序列。
+3. `.voidcode/sessions.sqlite3` 中持久化的 session transcript：验证恢复 / 重放是否与首次运行保持一致。
+
+对于工具调用，当前稳定契约建议按下面四个阶段理解：
+
+- `graph.tool_request_created`：graph 计划调用某个工具。
+- `runtime.tool_lookup_succeeded`：runtime 已经成功解析该工具。
+- `runtime.tool_started`：权限与 pre-hook 已经通过，真实工具执行开始。
+- `runtime.tool_completed`：工具结果已经返回并写入 transcript。
+
+这能帮助你区分：
+
+- 卡在审批前，还是卡在真正执行前；
+- 时间消耗发生在 hook / permission，还是发生在工具本身；
+- replay 缺口是事件持久化问题，还是执行路径本身没有发出事件。
+
+当前不建议为这类分析优先新增第二套结构化日志。只要问题属于 session truth、审批、hook、tool execution 或 replay，一般都应先扩展或使用现有 `EventEnvelope` transcript，而不是并行维护另一套不可重放的日志面。
+
 ## 前端开发
 
 前端是一个基于 Bun 的 React 应用，位于 `frontend/` 目录中。

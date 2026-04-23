@@ -56,6 +56,7 @@ EventEnvelope(
 - `graph.model_turn`
 - `graph.tool_request_created`
 - `runtime.tool_lookup_succeeded`
+- `runtime.tool_started`
 - `runtime.approval_requested`
 - `runtime.approval_resolved`
 - `runtime.permission_resolved`
@@ -91,14 +92,16 @@ EventEnvelope(
 8. `runtime.tool_lookup_succeeded`
 9. 对于 `ask` 策略发出 `runtime.approval_requested`；或者对于 `allow`/`deny` 策略发出 `runtime.approval_resolved`；或者对于只读操作发出 `runtime.permission_resolved`
 10. `runtime.approval_resolved`（仅在 `ask` 后恢复运行时）
-11. `runtime.tool_completed`
-12. `graph.loop_step`
-13. `graph.response_ready`
-14. `runtime.acp_disconnected`（仅在 ACP 已启用且本次 run 结束时出现）
+11. `runtime.tool_started`
+12. `runtime.tool_completed`
+13. `graph.loop_step`
+14. `graph.response_ready`
+15. `runtime.acp_disconnected`（仅在 ACP 已启用且本次 run 结束时出现）
 
 当前已实现的最小 hooks 路径会在非只读工具的成功执行周围插入：
 
 - `runtime.tool_hook_pre`
+- `runtime.tool_started`
 - `runtime.tool_completed`
 - `runtime.tool_hook_post`
 
@@ -178,6 +181,19 @@ EventEnvelope(
 - 当前 payload:
   - `tool: str`
 
+### `runtime.tool_started`
+- source: `runtime`
+- 当前 payload:
+  - `tool: str`
+- 该事件只在 runtime 真正跨入工具执行边界时发出：
+  - 权限已经被 resolve
+  - pre-hook（如果启用）已经成功
+  - 紧接着会进入真实 `tool.invoke(...)` / `invoke_with_runtime_timeout(...)`
+- 该事件不会出现在以下路径：
+  - 审批仍在等待中
+  - 权限被拒绝
+  - pre-hook 失败导致工具未启动
+
 ### `runtime.permission_resolved`
 - source: `runtime`
 - 当前 payload:
@@ -188,6 +204,17 @@ EventEnvelope(
 - source: `tool`
 - 当前 payload:
   - 工具定义的结果数据
+
+## 工具执行阶段区分
+
+当前稳定契约中，工具相关阶段的语义边界如下：
+
+1. `graph.tool_request_created`：graph 已经决定要请求哪个工具，以及请求参数是什么。
+2. `runtime.tool_lookup_succeeded`：runtime 已经把该工具名称解析到真实的 tool definition / implementation。
+3. `runtime.tool_started`：runtime 已经通过 permission 与 pre-hook 边界，真实工具执行现在开始。
+4. `runtime.tool_completed`：工具执行已经返回结果（成功或失败结果都通过该事件 payload 暴露）。
+
+这四个阶段允许 transcript 消费方区分“计划了工具”、“找到了工具”、“真正开始执行”与“工具已经返回”，避免把审批等待、hook 开销与实际工具执行混在同一个阶段里。
 
 ### `runtime.tool_hook_pre`
 ### `runtime.tool_hook_post`
