@@ -3,6 +3,44 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from mcp.types import LATEST_PROTOCOL_VERSION
+
+
+@dataclass(frozen=True, slots=True)
+class McpToolSafety:
+    """Governance metadata derived from MCP tool annotations.
+
+    MCP servers may publish advisory safety hints for tools. VoidCode keeps
+    those hints in the capability layer so the runtime can map them onto its
+    own approval model without treating every discovered MCP tool as the same
+    mutating capability.
+    """
+
+    read_only: bool = False
+    destructive: bool | None = None
+    idempotent: bool | None = None
+    open_world: bool | None = None
+    source: str = "default-deny"
+
+    @classmethod
+    def from_hints(
+        cls,
+        *,
+        read_only_hint: bool | None = None,
+        destructive_hint: bool | None = None,
+        idempotent_hint: bool | None = None,
+        open_world_hint: bool | None = None,
+    ) -> McpToolSafety:
+        """Create safety metadata from MCP tool annotation hints."""
+
+        return cls(
+            read_only=read_only_hint is True and destructive_hint is not True,
+            destructive=destructive_hint,
+            idempotent=idempotent_hint,
+            open_world=open_world_hint,
+            source="server-annotations",
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class McpToolDescriptor:
@@ -12,6 +50,7 @@ class McpToolDescriptor:
     tool_name: str
     description: str
     input_schema: dict[str, Any]
+    safety: McpToolSafety = field(default_factory=McpToolSafety)
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +123,6 @@ class McpManager(Protocol):
 
 # Constants
 
-MCP_PROTOCOL_VERSION = "2026-04-15"
+MCP_PROTOCOL_VERSION = LATEST_PROTOCOL_VERSION
 MCP_CLIENT_NAME = "voidcode-runtime"
 MCP_CLIENT_VERSION = "0.1.0"

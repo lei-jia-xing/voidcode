@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Protocol
 
+from ..mcp import McpToolSafety
 from .contracts import ToolCall, ToolDefinition, ToolResult
 
 
@@ -33,16 +34,18 @@ class McpTool:
         tool_name: str,
         description: str,
         input_schema: dict[str, object],
+        safety: McpToolSafety | None = None,
         requester: McpRequester,
     ) -> None:
         self._server_name = server_name
         self._tool_name = tool_name
         self._requester = requester
+        self._safety = safety or McpToolSafety()
         self.definition = ToolDefinition(
             name=f"mcp/{server_name}/{tool_name}",
             description=description,
             input_schema=input_schema,
-            read_only=False,
+            read_only=self._safety.read_only,
         )
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
@@ -62,6 +65,13 @@ class McpTool:
             "server": self._server_name,
             "tool": self._tool_name,
             "content": result.content,
+            "safety": {
+                "read_only": self._safety.read_only,
+                "destructive": self._safety.destructive,
+                "idempotent": self._safety.idempotent,
+                "open_world": self._safety.open_world,
+                "source": self._safety.source,
+            },
         }
         if result.is_error:
             return ToolResult(

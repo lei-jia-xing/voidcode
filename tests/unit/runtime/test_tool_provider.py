@@ -8,6 +8,7 @@ from typing import cast
 from unittest.mock import patch
 
 from voidcode.hook.config import RuntimeFormatterPresetConfig, RuntimeHooksConfig
+from voidcode.mcp import McpToolSafety
 from voidcode.runtime.events import EventEnvelope
 from voidcode.runtime.mcp import (
     McpConfigState,
@@ -360,6 +361,38 @@ def test_dynamic_mcp_tool_definitions_include_shared_policy_guidance() -> None:
     assert definition.name == "mcp/echo/echo"
     assert "Agent usage guidance:" in definition.description
     assert "Dynamic MCP tools are runtime-discovered" in definition.description
+
+
+def test_dynamic_mcp_tool_definitions_apply_server_safety_hints() -> None:
+    def _requester(
+        *,
+        server_name: str,
+        tool_name: str,
+        arguments: dict[str, object],
+        workspace: Path,
+    ) -> McpToolCallResult:
+        _ = server_name, tool_name, arguments, workspace
+        return McpToolCallResult(content=[{"type": "text", "text": "ok"}], is_error=False)
+
+    read_only_tool = McpTool(
+        server_name="echo",
+        tool_name="inspect",
+        description="Inspect input",
+        input_schema={"type": "object"},
+        safety=McpToolSafety.from_hints(read_only_hint=True, destructive_hint=False),
+        requester=_requester,
+    )
+    mutating_tool = McpTool(
+        server_name="echo",
+        tool_name="write",
+        description="Write input",
+        input_schema={"type": "object"},
+        safety=McpToolSafety.from_hints(read_only_hint=True, destructive_hint=True),
+        requester=_requester,
+    )
+
+    assert read_only_tool.definition.read_only is True
+    assert mutating_tool.definition.read_only is False
 
 
 def test_tool_registry_with_defaults_delegates_through_builtin_provider() -> None:

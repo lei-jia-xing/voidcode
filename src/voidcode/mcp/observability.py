@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any
+from typing import Any, Protocol
 
 
 class McpEventType(StrEnum):
@@ -47,11 +47,24 @@ class McpDiagnostic:
     details: dict[str, Any] | None = None
 
 
-class McpDiagnosticsCollector:
+class McpDiagnosticsCollector(Protocol):
     """Protocol for collecting MCP diagnostics."""
 
     def record_diagnostic(self, diagnostic: McpDiagnostic) -> None: ...
     def get_diagnostics(self) -> list[McpDiagnostic]: ...
+
+
+class InMemoryMcpDiagnosticsCollector:
+    """Simple diagnostics collector suitable for runtime state and tests."""
+
+    def __init__(self) -> None:
+        self._diagnostics: list[McpDiagnostic] = []
+
+    def record_diagnostic(self, diagnostic: McpDiagnostic) -> None:
+        self._diagnostics.append(diagnostic)
+
+    def get_diagnostics(self) -> list[McpDiagnostic]:
+        return list(self._diagnostics)
 
 
 # Standard diagnostic messages

@@ -1,37 +1,42 @@
 """
 MCP Runtime Implementation
 
-This module provides the runtime-owned MCP lifecycle management, including
-subprocess spawning, stdio communication, and tool discovery.
+This module provides the runtime-owned MCP lifecycle management layer.
+VoidCode owns configuration, diagnostics, events, and tool governance while the
+official Python MCP SDK owns protocol framing, initialize negotiation,
+request/response correlation, and stdio process teardown.
 
-IMPORTANT: Static types and contracts are now in src/voidcode/mcp/.
+IMPORTANT: Static types and contracts are in src/voidcode/mcp/.
 This module imports from there and adds runtime-specific implementation.
-
-Issue: https://github.com/lei-jia-xing/voidcode/issues/107
 """
 
 from __future__ import annotations
 
-import json
 import os
-import queue
-import subprocess
-import threading
-from dataclasses import dataclass
+from contextlib import AbstractContextManager
+from datetime import timedelta
 from pathlib import Path
-from typing import Any, cast
+from typing import IO, Any, cast
+
+from anyio.from_thread import BlockingPortal, start_blocking_portal
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
+from mcp.shared.exceptions import McpError
+from mcp.types import CallToolResult, Implementation, InitializeResult, ListToolsResult, Tool
 
 from ..mcp import (
     MCP_CLIENT_NAME,
     MCP_CLIENT_VERSION,
-    MCP_PROTOCOL_VERSION,
     McpConfigState,
+    McpDiagnostic,
+    McpDiagnosticsCollector,
     McpDiagnosticSeverity,
     McpManager,
     McpManagerState,
     McpRuntimeEvent,
     McpToolCallResult,
     McpToolDescriptor,
+    McpToolSafety,
     create_diagnostic,
 )
 from .config import RuntimeMcpConfig
@@ -40,6 +45,9 @@ from .events import (
     RUNTIME_MCP_SERVER_STARTED,
     RUNTIME_MCP_SERVER_STOPPED,
 )
+
+DEFAULT_MCP_REQUEST_TIMEOUT_SECONDS = 2.0
+
 
 # =============================================================================
 # Disabled MCP Manager
@@ -80,17 +88,31 @@ class DisabledMcpManager:
 
 
 # =============================================================================
-# Runtime MCP Server (process lifecycle)
+# Runtime MCP Server (SDK session lifecycle)
 # =============================================================================
 
 
-@dataclass(slots=True)
 class _RunningMcpServer:
-    """Runtime-specific: process handle and state."""
+    """Runtime-specific SDK session and context-manager handles."""
 
-    process: subprocess.Popen[str]
-    workspace_root: Path
-    initialized: bool = False
+    def __init__(
+        self,
+        *,
+        server_name: str,
+        workspace_root: Path,
+        transport_context: AbstractContextManager[tuple[object, object]],
+        session_context: AbstractContextManager[ClientSession],
+        session: ClientSession,
+        stderr_log: IO[str],
+        initialize_result: InitializeResult,
+    ) -> None:
+        self.server_name = server_name
+        self.workspace_root = workspace_root
+        self.transport_context = transport_context
+        self.session_context = session_context
+        self.session = session
+        self.stderr_log = stderr_log
+        self.initialize_result = initialize_result
 
 
 # =============================================================================
@@ -99,15 +121,23 @@ class _RunningMcpServer:
 
 
 class ManagedMcpManager:
-    """Runtime-owned MCP lifecycle management."""
+    """Runtime-owned MCP lifecycle management backed by the official SDK."""
 
-    _request_timeout_seconds = 2.0
-
-    def __init__(self, config: RuntimeMcpConfig) -> None:
+    def __init__(
+        self,
+        config: RuntimeMcpConfig,
+        *,
+        diagnostics_collector: McpDiagnosticsCollector | None = None,
+    ) -> None:
         self._configuration = McpConfigState.from_runtime_config(config)
         self._running_servers: dict[str, _RunningMcpServer] = {}
         self._pending_events: list[McpRuntimeEvent] = []
-        self._next_id = 0
+        self._diagnostics_collector = diagnostics_collector
+        self._request_timeout_seconds = (
+            config.request_timeout_seconds or DEFAULT_MCP_REQUEST_TIMEOUT_SECONDS
+        )
+        self._portal_context: AbstractContextManager[BlockingPortal] | None = None
+        self._portal: BlockingPortal | None = None
 
     @property
     def configuration(self) -> McpConfigState:
@@ -120,28 +150,15 @@ class ManagedMcpManager:
         tools: list[McpToolDescriptor] = []
         for server_name in self._configuration.servers:
             running = self._ensure_running(server_name=server_name, workspace=workspace)
-            result = self._send_request(running, method="tools/list")
-            for tool_obj in cast(list[object], result.get("tools", [])):
-                if not isinstance(tool_obj, dict):
-                    continue
-                tool_payload = cast(dict[str, object], tool_obj)
-                tool_name = tool_payload.get("name")
-                if not isinstance(tool_name, str):
-                    continue
-                description = tool_payload.get("description")
-                input_schema = tool_payload.get("inputSchema")
-                tools.append(
-                    McpToolDescriptor(
-                        server_name=server_name,
-                        tool_name=tool_name,
-                        description=description if isinstance(description, str) else "",
-                        input_schema=(
-                            cast(dict[str, Any], input_schema)
-                            if isinstance(input_schema, dict)
-                            else {}
-                        ),
-                    )
-                )
+            result = self._call_sdk(
+                running,
+                stage="discovery",
+                method="tools/list",
+                operation=lambda session=running.session: session.list_tools(),
+            )
+            list_result = cast(ListToolsResult, result)
+            for tool in list_result.tools:
+                tools.append(self._descriptor_from_sdk_tool(server_name=server_name, tool=tool))
         return tuple(tools)
 
     def call_tool(
@@ -153,21 +170,32 @@ class ManagedMcpManager:
         workspace: Path,
     ) -> McpToolCallResult:
         running = self._ensure_running(server_name=server_name, workspace=workspace)
-        result = self._send_request(
+        result = self._call_sdk(
             running,
+            stage="call",
             method="tools/call",
-            params={"name": tool_name, "arguments": arguments},
+            tool_name=tool_name,
+            operation=lambda session=running.session: session.call_tool(
+                tool_name,
+                dict(arguments),
+                read_timeout_seconds=self._request_timeout,
+            ),
         )
-        content = result.get("content")
-        is_error = result.get("isError")
+        call_result = cast(CallToolResult, result)
         return McpToolCallResult(
-            content=cast(list[dict[str, Any]], content if isinstance(content, list) else []),
-            is_error=bool(is_error),
+            content=[
+                item.model_dump(by_alias=True, exclude_none=True) for item in call_result.content
+            ],
+            is_error=bool(call_result.isError),
         )
 
     def shutdown(self) -> tuple[McpRuntimeEvent, ...]:
         for server_name in tuple(self._running_servers):
             self._stop_running_server(server_name)
+        if self._portal_context is not None:
+            self._portal_context.__exit__(None, None, None)
+            self._portal_context = None
+            self._portal = None
         return self.drain_events()
 
     def drain_events(self) -> tuple[McpRuntimeEvent, ...]:
@@ -175,22 +203,25 @@ class ManagedMcpManager:
         self._pending_events.clear()
         return events
 
+    @property
+    def _request_timeout(self) -> timedelta:
+        return timedelta(seconds=self._request_timeout_seconds)
+
     def _ensure_running(self, *, server_name: str, workspace: Path) -> _RunningMcpServer:
         """Ensure MCP server is running, start if needed."""
         running = self._running_servers.get(server_name)
-        if running is not None and running.process.poll() is None:
-            if not running.initialized:
-                self._initialize_server(running)
+        if running is not None:
             return running
 
         server_config = self._configuration.servers.get(server_name)
         if server_config is None:
-            _ = create_diagnostic(
+            diagnostic = create_diagnostic(
                 severity=McpDiagnosticSeverity.ERROR,
                 category="startup",
                 code="server_not_found",
                 server_name=server_name,
             )
+            self._record_diagnostic(diagnostic)
             message = (
                 f"MCP[{server_name}]: server not found in configuration. "
                 f"Available servers: {list(self._configuration.servers.keys())}"
@@ -200,16 +231,18 @@ class ManagedMcpManager:
                 workspace_root=workspace.resolve(),
                 stage="startup",
                 error=message,
+                diagnostic=diagnostic,
             )
             raise ValueError(message)
 
         if not server_config.command:
-            _ = create_diagnostic(
+            diagnostic = create_diagnostic(
                 severity=McpDiagnosticSeverity.ERROR,
                 category="startup",
                 code="server_command_missing",
                 server_name=server_name,
             )
+            self._record_diagnostic(diagnostic)
             message = (
                 f"MCP[{server_name}]: command is empty. "
                 "Please configure mcp.servers.{server_name}.command in .voidcode.json"
@@ -219,333 +252,215 @@ class ManagedMcpManager:
                 workspace_root=workspace.resolve(),
                 stage="startup",
                 error=message,
+                diagnostic=diagnostic,
             )
             raise ValueError(message)
 
+        portal = self._ensure_portal()
+        workspace_root = workspace.resolve()
+        stderr_log = open(os.devnull, "w", encoding="utf-8")  # noqa: SIM115 - closed in shutdown
+        transport_context: AbstractContextManager[tuple[object, object]] | None = None
+        session_context: AbstractContextManager[ClientSession] | None = None
         try:
-            process = subprocess.Popen(
-                list(server_config.command),
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                text=True,
-                cwd=workspace.resolve(),
+            params = StdioServerParameters(
+                command=server_config.command[0],
+                args=list(server_config.command[1:]),
                 env={**os.environ, **server_config.env},
-                bufsize=1,
+                cwd=workspace_root,
+            )
+            pending_transport_context = portal.wrap_async_context_manager(
+                cast(Any, stdio_client(params, errlog=stderr_log))
+            )
+            read_stream, write_stream = pending_transport_context.__enter__()
+            transport_context = pending_transport_context
+            pending_session_context = portal.wrap_async_context_manager(
+                ClientSession(
+                    read_stream,
+                    write_stream,
+                    read_timeout_seconds=self._request_timeout,
+                    client_info=Implementation(
+                        name=MCP_CLIENT_NAME,
+                        version=MCP_CLIENT_VERSION,
+                    ),
+                )
+            )
+            session = pending_session_context.__enter__()
+            session_context = pending_session_context
+            self._record_server_started(
+                server_name=server_name,
+                workspace_root=workspace_root,
+            )
+            initialize_result = cast(
+                InitializeResult,
+                self._call_sdk_session(
+                    session,
+                    stage="startup",
+                    method="initialize",
+                    server_name=server_name,
+                    workspace_root=workspace_root,
+                    operation=lambda session=session: session.initialize(),
+                ),
             )
         except FileNotFoundError as exc:
-            _ = create_diagnostic(
+            self._close_partial_server(
+                session_context=session_context,
+                transport_context=transport_context,
+                stderr_log=stderr_log,
+            )
+            diagnostic = create_diagnostic(
                 severity=McpDiagnosticSeverity.ERROR,
                 category="startup",
                 code="server_startup_failed",
                 server_name=server_name,
-                command=server_config.command[0] if server_config.command else "unknown",
+                command=server_config.command[0],
             )
+            self._record_diagnostic(diagnostic)
             message = (
-                f"MCP[{server_name}]: failed to start server - command not found: "
+                f"MCP[{server_name}]: failed to start server - cmd not found "
+                f"(command not found): "
                 f"{server_config.command[0]}"
             )
             self._record_failure_event(
                 server_name=server_name,
-                workspace_root=workspace.resolve(),
+                workspace_root=workspace_root,
                 stage="startup",
                 error=message,
                 command=list(server_config.command),
+                diagnostic=diagnostic,
             )
             raise ValueError(message) from exc
-        except OSError as exc:
-            _ = create_diagnostic(
-                severity=McpDiagnosticSeverity.ERROR,
-                category="startup",
-                code="server_startup_failed",
-                server_name=server_name,
-                error=str(exc),
+        except Exception as exc:
+            self._close_partial_server(
+                session_context=session_context,
+                transport_context=transport_context,
+                stderr_log=stderr_log,
             )
-            message = f"MCP[{server_name}]: failed to start server: {exc}"
-            self._record_failure_event(
+            diagnostic = self._diagnostic_for_exception(
+                exc,
                 server_name=server_name,
-                workspace_root=workspace.resolve(),
                 stage="startup",
-                error=message,
-                command=list(server_config.command),
+                method="initialize",
             )
-            raise ValueError(message) from exc
-
-        if process.stdin is None or process.stdout is None:
-            process.kill()
-            process.wait(timeout=1)
-            _ = create_diagnostic(
-                severity=McpDiagnosticSeverity.ERROR,
-                category="startup",
-                code="stdio_pipe_failed",
-                server_name=server_name,
-            )
-            message = (
-                f"MCP[{server_name}]: failed to start server - stdio pipe unavailable. "
-                "The server command may not be a valid executable."
+            self._record_diagnostic(diagnostic)
+            message = self._message_for_exception(
+                exc,
+                fallback=f"MCP[{server_name}]: failed to initialize server",
             )
             self._record_failure_event(
                 server_name=server_name,
-                workspace_root=workspace.resolve(),
+                workspace_root=workspace_root,
                 stage="startup",
                 error=message,
+                method="initialize",
                 command=list(server_config.command),
+                diagnostic=diagnostic,
             )
-            raise ValueError(message)
+            if transport_context is not None:
+                self._record_server_stopped(
+                    server_name=server_name,
+                    workspace_root=workspace_root,
+                )
+            raise ValueError(message) from exc
 
-        running = _RunningMcpServer(process=process, workspace_root=workspace.resolve())
-        self._running_servers[server_name] = running
-        self._record_event(
-            McpRuntimeEvent(
-                event_type=RUNTIME_MCP_SERVER_STARTED,
-                payload={"server": server_name, "workspace_root": str(workspace.resolve())},
-            )
+        running = _RunningMcpServer(
+            server_name=server_name,
+            workspace_root=workspace_root,
+            transport_context=transport_context,
+            session_context=session_context,
+            session=session,
+            stderr_log=stderr_log,
+            initialize_result=initialize_result,
         )
-        self._initialize_server(running)
+        self._running_servers[server_name] = running
+        _ = initialize_result
         return running
 
-    def _initialize_server(self, running: _RunningMcpServer) -> None:
-        """Initialize MCP server with protocol handshake."""
-        initialize_payload = {
-            "protocolVersion": MCP_PROTOCOL_VERSION,
-            "capabilities": {},
-            "clientInfo": {"name": MCP_CLIENT_NAME, "version": MCP_CLIENT_VERSION},
-        }
-        self._send_request(
-            running,
-            method="initialize",
-            params=cast(dict[str, object], initialize_payload),
-        )
-        self._send_notification(running, method="notifications/initialized")
-        running.initialized = True
+    def _ensure_portal(self) -> BlockingPortal:
+        if self._portal is not None:
+            return self._portal
+        portal_context = start_blocking_portal()
+        portal = portal_context.__enter__()
+        self._portal_context = portal_context
+        self._portal = portal
+        return portal
 
-    def _send_notification(
+    def _call_sdk(
         self,
         running: _RunningMcpServer,
         *,
+        stage: str,
         method: str,
-        params: dict[str, object] | None = None,
-    ) -> None:
-        if running.process.stdin is None:
-            raise ValueError("MCP server stdin is unavailable")
-        payload: dict[str, object] = {"jsonrpc": "2.0", "method": method}
-        if params is not None:
-            payload["params"] = params
-        running.process.stdin.write(json.dumps(payload) + "\n")
-        running.process.stdin.flush()
-
-    def _send_request(
-        self,
-        running: _RunningMcpServer,
-        *,
-        method: str,
-        params: dict[str, object] | None = None,
-    ) -> dict[str, object]:
-        """Send JSON-RPC request and wait for response."""
-        if running.process.stdin is None or running.process.stdout is None:
-            server_name = next(
-                (n for n, r in self._running_servers.items() if r is running),
-                "unknown",
+        operation: Any,
+        tool_name: str | None = None,
+    ) -> object:
+        try:
+            return self._ensure_portal().call(operation)
+        except Exception as exc:
+            diagnostic = self._diagnostic_for_exception(
+                exc,
+                server_name=running.server_name,
+                stage=stage,
+                method=method,
+                tool_name=tool_name,
             )
-            _ = create_diagnostic(
-                severity=McpDiagnosticSeverity.ERROR,
-                category="communication",
-                code="stdio_unavailable",
-                server_name=server_name,
+            self._record_diagnostic(diagnostic)
+            message = self._message_for_exception(
+                exc,
+                fallback=f"MCP[{running.server_name}]: {method} failed",
             )
-            message = "MCP server stdio is unavailable. The server process may have crashed."
             self._record_failure_event(
-                server_name=server_name,
+                server_name=running.server_name,
                 workspace_root=running.workspace_root,
-                stage=self._stage_for_method(method),
+                stage=stage,
                 error=message,
                 method=method,
+                diagnostic=diagnostic,
             )
-            raise ValueError(
-                "MCP server stdio is unavailable. The server process may have crashed."
+            self._stop_running_server_by_name(running.server_name)
+            raise ValueError(message) from exc
+
+    def _call_sdk_session(
+        self,
+        session: ClientSession,
+        *,
+        stage: str,
+        method: str,
+        server_name: str,
+        workspace_root: Path,
+        operation: Any,
+    ) -> object:
+        _ = session, stage, method, server_name, workspace_root
+        return self._ensure_portal().call(operation)
+
+    def _descriptor_from_sdk_tool(self, *, server_name: str, tool: Tool) -> McpToolDescriptor:
+        annotations = tool.annotations
+        safety = (
+            McpToolSafety.from_hints(
+                read_only_hint=annotations.readOnlyHint,
+                destructive_hint=annotations.destructiveHint,
+                idempotent_hint=annotations.idempotentHint,
+                open_world_hint=annotations.openWorldHint,
             )
-
-        self._next_id += 1
-        request_id = self._next_id
-        payload: dict[str, object] = {"jsonrpc": "2.0", "id": request_id, "method": method}
-        if params is not None:
-            payload["params"] = params
-        running.process.stdin.write(json.dumps(payload) + "\n")
-        running.process.stdin.flush()
-
-        while True:
-            response_queue: queue.Queue[str] = queue.Queue(maxsize=1)
-
-            def _readline(target_queue: queue.Queue[str]) -> None:
-                assert running.process.stdout is not None
-                target_queue.put(running.process.stdout.readline())
-
-            reader = threading.Thread(target=_readline, args=(response_queue,), daemon=True)
-            reader.start()
-
-            try:
-                line = response_queue.get(timeout=self._request_timeout_seconds)
-            except queue.Empty as exc:
-                server_name = next(
-                    (n for n, r in self._running_servers.items() if r is running),
-                    "unknown",
-                )
-                _ = create_diagnostic(
-                    severity=McpDiagnosticSeverity.ERROR,
-                    category="timeout",
-                    code="request_timeout",
-                    method=method,
-                    timeout_seconds=self._request_timeout_seconds,
-                )
-                message = (
-                    f"MCP server timed out waiting for response to {method} after "
-                    f"{self._request_timeout_seconds:.1f}s. The server may be unresponsive."
-                )
-                self._record_failure_event(
-                    server_name=server_name,
-                    workspace_root=running.workspace_root,
-                    stage=self._stage_for_method(method),
-                    error=message,
-                    method=method,
-                )
-                self._stop_running_server_by_process(running)
-                raise ValueError(message) from exc
-
-            if not line:
-                server_name = next(
-                    (n for n, r in self._running_servers.items() if r is running),
-                    "unknown",
-                )
-                _ = create_diagnostic(
-                    severity=McpDiagnosticSeverity.ERROR,
-                    category="communication",
-                    code="stdio_closed",
-                    server_name=server_name,
-                )
-                message = (
-                    "MCP server closed stdout before responding. "
-                    "The server may have crashed or produced invalid output."
-                )
-                self._record_failure_event(
-                    server_name=server_name,
-                    workspace_root=running.workspace_root,
-                    stage=self._stage_for_method(method),
-                    error=message,
-                    method=method,
-                )
-                raise ValueError(message)
-
-            try:
-                response = json.loads(line)
-            except json.JSONDecodeError as exc:
-                server_name = next(
-                    (n for n, r in self._running_servers.items() if r is running),
-                    "unknown",
-                )
-                _ = create_diagnostic(
-                    severity=McpDiagnosticSeverity.ERROR,
-                    category="communication",
-                    code="json_decode_failed",
-                    server_name=server_name,
-                    error=str(exc),
-                    raw_line=line[:200] if len(line) > 200 else line,
-                )
-                message = f"MCP server returned invalid JSON: {exc}. Server output: {line[:100]}..."
-                self._record_failure_event(
-                    server_name=server_name,
-                    workspace_root=running.workspace_root,
-                    stage=self._stage_for_method(method),
-                    error=message,
-                    method=method,
-                )
-                raise ValueError(
-                    f"MCP server returned invalid JSON: {exc}. Server output: {line[:100]}..."
-                ) from exc
-
-            if not isinstance(response, dict):
-                server_name = next(
-                    (n for n, r in self._running_servers.items() if r is running),
-                    "unknown",
-                )
-                _ = create_diagnostic(
-                    severity=McpDiagnosticSeverity.ERROR,
-                    category="communication",
-                    code="unexpected_response_type",
-                    server_name=server_name,
-                    response_type=type(response).__name__,
-                )
-                message = f"MCP server returned non-object response: {type(response).__name__}"
-                self._record_failure_event(
-                    server_name=server_name,
-                    workspace_root=running.workspace_root,
-                    stage=self._stage_for_method(method),
-                    error=message,
-                    method=method,
-                )
-                raise ValueError(
-                    f"MCP server returned non-object response: {type(response).__name__}"
-                )
-
-            response_payload = cast(dict[str, object], response)
-            if response_payload.get("id") != request_id:
-                continue
-            error_obj = response_payload.get("error")
-            if isinstance(error_obj, dict):
-                server_name = next(
-                    (n for n, r in self._running_servers.items() if r is running),
-                    "unknown",
-                )
-                error_payload = cast(dict[str, object], error_obj)
-                message = error_payload.get("message")
-                _ = create_diagnostic(
-                    severity=McpDiagnosticSeverity.ERROR,
-                    category="communication",
-                    code="server_error",
-                    server_name=server_name,
-                    method=method,
-                    error=error_payload,
-                )
-                error_message = (
-                    f"MCP server error: {str(message) if isinstance(message, str) else error_obj}"
-                )
-                self._record_failure_event(
-                    server_name=server_name,
-                    workspace_root=running.workspace_root,
-                    stage=self._stage_for_method(method),
-                    error=error_message,
-                    method=method,
-                )
-                raise ValueError(error_message)
-            result = response_payload.get("result")
-            return cast(dict[str, object], result if isinstance(result, dict) else {})
+            if annotations is not None
+            else McpToolSafety()
+        )
+        return McpToolDescriptor(
+            server_name=server_name,
+            tool_name=tool.name,
+            description=tool.description or "",
+            input_schema=dict(tool.inputSchema),
+            safety=safety,
+        )
 
     def _stop_running_server(self, server_name: str) -> None:
         running = self._running_servers.pop(server_name, None)
         if running is None:
             return
         self._terminate_running_server(running)
-        self._record_event(
-            McpRuntimeEvent(
-                event_type=RUNTIME_MCP_SERVER_STOPPED,
-                payload={"server": server_name, "workspace_root": str(running.workspace_root)},
-            )
-        )
+        self._record_server_stopped(server_name=server_name, workspace_root=running.workspace_root)
 
-    def _stop_running_server_by_process(self, running: _RunningMcpServer) -> None:
-        server_name = next(
-            (name for name, active in self._running_servers.items() if active is running),
-            None,
-        )
-        if server_name is None:
-            return
-        self._running_servers.pop(server_name, None)
-        self._terminate_running_server(running)
-        self._record_event(
-            McpRuntimeEvent(
-                event_type=RUNTIME_MCP_SERVER_STOPPED,
-                payload={"server": server_name, "workspace_root": str(running.workspace_root)},
-            )
-        )
+    def _stop_running_server_by_name(self, server_name: str) -> None:
+        self._stop_running_server(server_name)
 
     def _record_failure_event(
         self,
@@ -556,6 +471,7 @@ class ManagedMcpManager:
         error: str,
         method: str | None = None,
         command: list[str] | None = None,
+        diagnostic: McpDiagnostic | None = None,
     ) -> None:
         payload: dict[str, object] = {
             "server": server_name,
@@ -568,28 +484,119 @@ class ManagedMcpManager:
             payload["method"] = method
         if command is not None:
             payload["command"] = command
+            payload["cmd"] = command
+        if diagnostic is not None:
+            payload["diagnostic"] = {
+                "severity": diagnostic.severity,
+                "category": diagnostic.category,
+                "message": diagnostic.message,
+                "details": diagnostic.details or {},
+            }
         self._record_event(McpRuntimeEvent(event_type=RUNTIME_MCP_SERVER_FAILED, payload=payload))
 
+    def _record_server_started(self, *, server_name: str, workspace_root: Path) -> None:
+        self._record_event(
+            McpRuntimeEvent(
+                event_type=RUNTIME_MCP_SERVER_STARTED,
+                payload={
+                    "server": server_name,
+                    "workspace_root": str(workspace_root),
+                    "state": "starting",
+                    "client_foundation": "python-mcp-sdk",
+                },
+            )
+        )
+
+    def _record_server_stopped(self, *, server_name: str, workspace_root: Path) -> None:
+        self._record_event(
+            McpRuntimeEvent(
+                event_type=RUNTIME_MCP_SERVER_STOPPED,
+                payload={"server": server_name, "workspace_root": str(workspace_root)},
+            )
+        )
+
+    def _record_diagnostic(self, diagnostic: McpDiagnostic) -> None:
+        if self._diagnostics_collector is not None:
+            self._diagnostics_collector.record_diagnostic(diagnostic)
+
+    def _diagnostic_for_exception(
+        self,
+        exc: Exception,
+        *,
+        server_name: str,
+        stage: str,
+        method: str,
+        tool_name: str | None = None,
+    ) -> McpDiagnostic:
+        if self._is_timeout_error(exc):
+            return create_diagnostic(
+                severity=McpDiagnosticSeverity.ERROR,
+                category="timeout",
+                code="request_timeout",
+                server_name=server_name,
+                tool_name=tool_name,
+                method=method,
+                timeout_seconds=self._request_timeout_seconds,
+            )
+        if isinstance(exc, McpError):
+            return create_diagnostic(
+                severity=McpDiagnosticSeverity.ERROR,
+                category="communication",
+                code="server_error",
+                server_name=server_name,
+                tool_name=tool_name,
+                stage=stage,
+                method=method,
+                error=str(exc),
+            )
+        return create_diagnostic(
+            severity=McpDiagnosticSeverity.ERROR,
+            category="communication" if stage != "startup" else "startup",
+            code="unexpected_response",
+            server_name=server_name,
+            tool_name=tool_name,
+            stage=stage,
+            method=method,
+            error=str(exc),
+        )
+
+    def _message_for_exception(self, exc: Exception, *, fallback: str) -> str:
+        if self._is_timeout_error(exc):
+            return (
+                f"MCP server timed out after {self._request_timeout_seconds:.1f}s. "
+                "The server may be unresponsive."
+            )
+        if isinstance(exc, McpError):
+            return f"MCP server error: {exc}"
+        return f"{fallback}: {exc}"
+
     @staticmethod
-    def _stage_for_method(method: str) -> str:
-        if method == "initialize":
-            return "startup"
-        if method == "tools/list":
-            return "discovery"
-        if method == "tools/call":
-            return "call"
-        return "protocol"
+    def _is_timeout_error(exc: Exception) -> bool:
+        if isinstance(exc, TimeoutError):
+            return True
+        if isinstance(exc, McpError):
+            code = getattr(exc.error, "code", None)
+            return code == 408 or "timed out" in str(exc).lower()
+        return False
+
+    @staticmethod
+    def _close_partial_server(
+        *,
+        session_context: AbstractContextManager[ClientSession] | None,
+        transport_context: AbstractContextManager[tuple[object, object]] | None,
+        stderr_log: IO[str],
+    ) -> None:
+        if session_context is not None:
+            session_context.__exit__(None, None, None)
+        if transport_context is not None:
+            transport_context.__exit__(None, None, None)
+        stderr_log.close()
 
     @staticmethod
     def _terminate_running_server(running: _RunningMcpServer) -> None:
-        if running.process.stdin is not None:
-            running.process.stdin.close()
-        try:
-            running.process.terminate()
-            running.process.wait(timeout=1)
-        except subprocess.TimeoutExpired:
-            running.process.kill()
-            running.process.wait(timeout=1)
+        running.session_context.__exit__(None, None, None)
+        running.transport_context.__exit__(None, None, None)
+        running.stderr_log.close()
 
     def _record_event(self, event: McpRuntimeEvent) -> None:
         self._pending_events.append(event)
@@ -600,9 +607,16 @@ class ManagedMcpManager:
 # =============================================================================
 
 
-def build_mcp_manager(config: RuntimeMcpConfig | None) -> McpManager:
+def build_mcp_manager(
+    config: RuntimeMcpConfig | None,
+    *,
+    diagnostics_collector: McpDiagnosticsCollector | None = None,
+) -> McpManager:
     """Build an MCP manager based on configuration."""
     configuration = McpConfigState.from_runtime_config(config)
     if configuration.configured_enabled is not True:
         return DisabledMcpManager(config)
-    return ManagedMcpManager(config or RuntimeMcpConfig())
+    return ManagedMcpManager(
+        config or RuntimeMcpConfig(),
+        diagnostics_collector=diagnostics_collector,
+    )

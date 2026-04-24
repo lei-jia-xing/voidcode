@@ -4,7 +4,13 @@ import sys
 import time
 from pathlib import Path
 
-from voidcode.mcp import McpManagerState as CanonicalMcpManagerState
+from voidcode.mcp import (
+    MCP_PROTOCOL_VERSION,
+    InMemoryMcpDiagnosticsCollector,
+)
+from voidcode.mcp import (
+    McpManagerState as CanonicalMcpManagerState,
+)
 from voidcode.runtime.config import RuntimeMcpConfig, RuntimeMcpServerConfig
 from voidcode.runtime.mcp import McpConfigState, McpManagerState, build_mcp_manager
 
@@ -51,6 +57,12 @@ for raw_line in sys.stdin:
                         {
                             "name": "echo",
                             "description": "Echo the text argument.",
+                            "annotations": {
+                                "readOnlyHint": True,
+                                "destructiveHint": False,
+                                "idempotentHint": True,
+                                "openWorldHint": False,
+                            },
                             "inputSchema": {
                                 "type": "object",
                                 "properties": {"text": {"type": "string"}},
@@ -107,6 +119,8 @@ def test_mcp_manager_discovers_stdio_tools_and_invokes_calls(tmp_path: Path) -> 
     assert len(discovered) == 1
     assert discovered[0].server_name == "echo"
     assert discovered[0].tool_name == "echo"
+    assert discovered[0].safety.read_only is True
+    assert discovered[0].safety.destructive is False
     assert discovered[0].input_schema == {
         "type": "object",
         "properties": {"text": {"type": "string"}},
@@ -126,6 +140,131 @@ def test_mcp_manager_discovers_stdio_tools_and_invokes_calls(tmp_path: Path) -> 
     shutdown_events = manager.shutdown()
     assert shutdown_events
     assert any(event.event_type == "runtime.mcp_server_stopped" for event in shutdown_events)
+
+
+def test_mcp_manager_initializes_with_authoritative_protocol_version(tmp_path: Path) -> None:
+    protocol_path = tmp_path / "protocol.txt"
+    server_script = tmp_path / "protocol_mcp_server.py"
+    server_script.write_text(
+        rf"""
+from __future__ import annotations
+
+import json
+import pathlib
+import sys
+
+protocol_path = pathlib.Path(r"{protocol_path}")
+
+
+def send(message: dict[str, object]) -> None:
+    sys.stdout.write(json.dumps(message) + "\n")
+    sys.stdout.flush()
+
+
+for raw_line in sys.stdin:
+    message = json.loads(raw_line)
+    method = message.get("method")
+    if method == "initialize":
+        params = message.get("params", {{}})
+        protocol_path.write_text(str(params.get("protocolVersion")), encoding="utf-8")
+        send(
+            {{
+                "jsonrpc": "2.0",
+                "id": message["id"],
+                "result": {{
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {{"tools": {{}}}},
+                    "serverInfo": {{"name": "protocol-mcp", "version": "0.1.0"}},
+                }},
+            }}
+        )
+        continue
+    if method == "notifications/initialized":
+        continue
+    if method == "tools/list":
+        send({{"jsonrpc": "2.0", "id": message["id"], "result": {{"tools": []}}}})
+        continue
+""",
+        encoding="utf-8",
+    )
+    manager = build_mcp_manager(
+        RuntimeMcpConfig(
+            enabled=True,
+            servers={
+                "protocol": RuntimeMcpServerConfig(
+                    transport="stdio",
+                    command=(sys.executable, str(server_script)),
+                )
+            },
+        )
+    )
+
+    assert manager.list_tools(workspace=tmp_path) == ()
+    assert protocol_path.read_text(encoding="utf-8") == MCP_PROTOCOL_VERSION
+
+
+def test_mcp_manager_gracefully_closes_server_stdin_on_shutdown(tmp_path: Path) -> None:
+    marker_path = tmp_path / "shutdown-marker"
+    server_script = tmp_path / "shutdown_mcp_server.py"
+    server_script.write_text(
+        rf"""
+from __future__ import annotations
+
+import json
+import pathlib
+import sys
+
+marker = pathlib.Path(r"{marker_path}")
+
+
+def send(message: dict[str, object]) -> None:
+    sys.stdout.write(json.dumps(message) + "\n")
+    sys.stdout.flush()
+
+
+for raw_line in sys.stdin:
+    message = json.loads(raw_line)
+    method = message.get("method")
+    if method == "initialize":
+        send(
+            {{
+                "jsonrpc": "2.0",
+                "id": message["id"],
+                "result": {{
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {{"tools": {{}}}},
+                    "serverInfo": {{"name": "shutdown-mcp", "version": "0.1.0"}},
+                }},
+            }}
+        )
+        continue
+    if method == "notifications/initialized":
+        continue
+    if method == "tools/list":
+        send({{"jsonrpc": "2.0", "id": message["id"], "result": {{"tools": []}}}})
+        continue
+
+marker.write_text("closed", encoding="utf-8")
+""",
+        encoding="utf-8",
+    )
+    manager = build_mcp_manager(
+        RuntimeMcpConfig(
+            enabled=True,
+            servers={
+                "shutdown": RuntimeMcpServerConfig(
+                    transport="stdio",
+                    command=(sys.executable, str(server_script)),
+                )
+            },
+        )
+    )
+
+    assert manager.list_tools(workspace=tmp_path) == ()
+
+    _ = manager.shutdown()
+
+    assert marker_path.read_text(encoding="utf-8") == "closed"
 
 
 def test_disabled_mcp_manager_rejects_tool_listing(tmp_path: Path) -> None:
@@ -413,6 +552,48 @@ while True:
     ]
     assert failure_events[1].payload["stage"] == "startup"
     assert failure_events[1].payload["method"] == "initialize"
+
+
+def test_mcp_manager_records_diagnostics_for_runtime_failures(tmp_path: Path) -> None:
+    server_script = tmp_path / "silent_mcp_server.py"
+    server_script.write_text(
+        r"""
+from __future__ import annotations
+
+import time
+
+while True:
+    time.sleep(10)
+""",
+        encoding="utf-8",
+    )
+    collector = InMemoryMcpDiagnosticsCollector()
+    manager = build_mcp_manager(
+        RuntimeMcpConfig(
+            enabled=True,
+            request_timeout_seconds=0.2,
+            servers={
+                "silent": RuntimeMcpServerConfig(
+                    transport="stdio",
+                    command=(sys.executable, str(server_script)),
+                )
+            },
+        ),
+        diagnostics_collector=collector,
+    )
+
+    try:
+        manager.list_tools(workspace=tmp_path)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected MCP manager to time out waiting for a silent server")
+
+    diagnostics = collector.get_diagnostics()
+    assert diagnostics
+    assert diagnostics[-1].category == "timeout"
+    assert diagnostics[-1].details is not None
+    assert diagnostics[-1].details["timeout_seconds"] == 0.2
 
 
 def test_mcp_manager_restarts_server_after_timeout(tmp_path: Path) -> None:

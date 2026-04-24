@@ -27,11 +27,13 @@ from .contract import (
     DIAGNOSTIC_CATEGORIES,
     NOT_SUPPORTED,
     SUPPORTED_CAPABILITIES,
+    SUPPORTED_PROTOCOL_VERSIONS,
     McpErrorCode,
 )
 
 # Observability - diagnostics interfaces
 from .observability import (
+    InMemoryMcpDiagnosticsCollector,
     McpDiagnostic,
     McpDiagnosticsCollector,
     McpDiagnosticSeverity,
@@ -51,6 +53,7 @@ from .types import (
     McpRuntimeEvent,
     McpToolCallResult,
     McpToolDescriptor,
+    McpToolSafety,
 )
 
 __all__ = [
@@ -61,6 +64,7 @@ __all__ = [
     "McpRuntimeEvent",
     "McpToolCallResult",
     "McpToolDescriptor",
+    "McpToolSafety",
     "MCP_CLIENT_NAME",
     "MCP_CLIENT_VERSION",
     "MCP_PROTOCOL_VERSION",
@@ -78,7 +82,9 @@ __all__ = [
     "McpErrorCode",
     "NOT_SUPPORTED",
     "SUPPORTED_CAPABILITIES",
+    "SUPPORTED_PROTOCOL_VERSIONS",
     # Observability
+    "InMemoryMcpDiagnosticsCollector",
     "McpDiagnostic",
     "McpDiagnosticSeverity",
     "McpDiagnosticsCollector",

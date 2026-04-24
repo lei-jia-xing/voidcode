@@ -862,6 +862,7 @@ class VoidCodeRuntime:
                 tool_name=tool.tool_name,
                 description=tool.description,
                 input_schema=tool.input_schema,
+                safety=tool.safety,
                 requester=self.request_mcp_tool,
             )
             for tool in self._mcp_manager.list_tools(workspace=self._workspace)

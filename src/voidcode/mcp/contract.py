@@ -23,9 +23,11 @@ SUPPORTED_CAPABILITIES = {
     # Operations
     "operations": ["tools/list", "tools/call"],
     # Lifecycle
-    "lifecycle": ["runtime-owned"],  # Runtime manages subprocess lifecycle
+    "lifecycle": ["runtime-owned", "sdk-managed-client"],  # Runtime owns SDK client sessions
     # Security
-    "security": ["trusted-local-only"],  # Only local, trusted servers
+    "security": ["trusted-local-only", "tool-annotation-governance"],
+    # Observability
+    "observability": ["runtime-events", "diagnostics-collector"],
 }
 
 # =============================================================================
@@ -48,6 +50,11 @@ NOT_SUPPORTED = {
 CONTRACT_VERSION = "1.0.0"
 CONTRACT_VERSION_DATE = "2026-04-14"
 
+# Protocol/version semantics are intentionally centralized here and re-exported
+# through voidcode.mcp.types. Runtime implementations must not hardcode a
+# divergent MCP protocol version for initialize handshakes.
+SUPPORTED_PROTOCOL_VERSIONS = ("2025-11-25",)
+
 # =============================================================================
 # ERROR CODES
 # =============================================================================
@@ -63,6 +70,7 @@ class McpErrorCode:
     STDIO_CLOSED = "stdio_closed"
     TOOL_NOT_FOUND = "tool_not_found"
     INVALID_REQUEST = "invalid_request"
+    PROTOCOL_NEGOTIATION_FAILED = "protocol_negotiation_failed"
 
 
 # =============================================================================
@@ -80,6 +88,7 @@ DIAGNOSTIC_CATEGORIES = {
         "json_decode_failed",
         "response_id_mismatch",
         "unexpected_response_type",
+        "protocol_negotiation_failed",
     ],
     "timeout": [
         "request_timeout",
@@ -98,9 +107,11 @@ DIAGNOSTIC_CATEGORIES = {
 """
 BOUNDARY NOTES:
 
-1. Runtime Ownership: The runtime (src/voidcode/runtime/mcp.py) owns the full
-   subprocess lifecycle. This includes process creation, stdio communication,
-   timeout management, and graceful/teardown.
+1. Runtime Ownership: The runtime (src/voidcode/runtime/mcp.py) owns MCP server
+   session lifecycle through the official Python MCP SDK. VoidCode keeps the
+   product-specific policy layer while delegating protocol framing, initialize
+   negotiation, request/response correlation, and stdio process teardown to the
+   SDK client foundation.
 
 2. Deferred Discovery: MCP servers are started lazily on first list_tools or
    call_tool invocation. There is no pre-initialization.
@@ -109,12 +120,18 @@ BOUNDARY NOTES:
    mcp/{server_name}/{tool_name}
 
 4. Error Handling: All MCP errors are converted to ValueError with descriptive
-   messages. JSON-RPC error responses are propagated.
+   messages. Runtime events and diagnostics are emitted for startup,
+   discovery/call, timeout, protocol, and shutdown failures.
 
 5. Events: The runtime emits events for:
    - runtime.mcp_server_started
    - runtime.mcp_server_stopped
 
-6. Protocol Version: Currently using "2025-11-25" as the MCP protocol version.
-   This is sent during server initialization.
+6. Protocol Version: Runtime initialize handshakes use the official Python SDK's
+   latest supported protocol version. The capability layer exposes supported
+   protocol versions for contract review and test fixtures.
+
+7. Tool Governance: MCP tool annotations are mapped into McpToolSafety. Tools
+   default to mutating unless the server explicitly marks them read-only and
+   non-destructive.
 """

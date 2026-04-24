@@ -153,6 +153,7 @@ class RuntimeMcpServerConfig:
 class RuntimeMcpConfig:
     enabled: bool | None = None
     servers: Mapping[str, RuntimeMcpServerConfig] | None = None
+    request_timeout_seconds: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -823,6 +824,7 @@ class _RuntimeMcpServerValidationModel(BaseModel):
 class _RuntimeMcpValidationModel(BaseModel):
     enabled: bool | None = None
     servers: dict[str, _RuntimeMcpServerValidationModel] | None = None
+    request_timeout_seconds: float | None = None
 
     @field_validator("enabled", mode="before")
     @classmethod
@@ -853,6 +855,20 @@ class _RuntimeMcpValidationModel(BaseModel):
             )
         return parsed_servers
 
+    @field_validator("request_timeout_seconds", mode="before")
+    @classmethod
+    def _validate_request_timeout_seconds(cls, value: object) -> float | None:
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, int | float):
+            raise ValueError("runtime config field 'mcp.request_timeout_seconds' must be a number")
+        parsed = float(value)
+        if parsed <= 0:
+            raise ValueError(
+                "runtime config field 'mcp.request_timeout_seconds' must be greater than 0"
+            )
+        return parsed
+
     def to_runtime_config(self) -> RuntimeMcpConfig:
         return RuntimeMcpConfig(
             enabled=self.enabled,
@@ -862,6 +878,7 @@ class _RuntimeMcpValidationModel(BaseModel):
             }
             if self.servers is not None
             else None,
+            request_timeout_seconds=self.request_timeout_seconds,
         )
 
 
