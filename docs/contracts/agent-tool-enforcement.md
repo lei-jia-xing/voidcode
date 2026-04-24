@@ -53,8 +53,10 @@
 
 当前实际进入 execution path 的 agent preset。对于当前仓库，这意味着：
 
-- `leader` 可以进入真实执行路径
-- 其余 preset 当前仍是 declaration-only
+- 顶层 active run 只接受 `leader`
+- runtime-owned delegated child run 还可执行 `advisor`、`explore`、`product`、`researcher`、`worker`
+
+这份契约不定义 delegation routing 本身，但一旦 child preset 已经被 runtime 选中进入真实执行路径，它与顶层 `leader` 一样要服从同一套 tool boundary enforcement。
 
 ### Tool Registry
 

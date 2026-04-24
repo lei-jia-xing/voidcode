@@ -2,9 +2,9 @@
 
 ## 状态
 
-**状态：目录已存在，能力仍处于规划中**
+**状态：目录已存在；声明层与 runtime-owned delegated execution 基线都已落地，但仍不是任意多 agent 平台**
 
-本文档描述 `voidcode.agent` 边界的定位与约束。`src/voidcode/agent/` 目录现在已经存在，但当前仍只是一个文档化的声明层；仓库**尚未实现真实的 multi-agent 执行语义**。
+本文档描述 `voidcode.agent` 边界的定位与约束。`src/voidcode/agent/` 目录现在已经存在；仓库已经具备 runtime-owned 的 delegated child-session/background-task 基线，但 `agent/` 本身仍主要承担声明层职责，而不是独立 runtime。
 
 ## 为什么需要这份文档
 
@@ -22,9 +22,9 @@
 
 1. `VoidCodeRuntime` 仍是系统控制面，负责 session、approval、permission、persistence、event、transport、tool execution 与 capability lifecycle。
 2. `graph/` 仍是 orchestration / execution layer，而不是产品级治理边界。
-3. LangGraph 当前只用于 deterministic/read-only slice。
-4. provider-backed execution path 当前由 runtime 直接驱动，并不依赖 LangGraph。
-5. multi-agent 当前尚未实现。
+3. graph 层继续承载 deterministic/reference orchestration；provider-backed 与 delegated child execution 由 runtime 统一治理。
+4. 顶层 active run 当前只接受 `leader`；runtime-owned delegation path 上的 child run 还可执行 `advisor`、`explore`、`product`、`researcher`、`worker`。
+5. 仓库已经具备 background task、parent/child session linkage、task notification/result retrieval 等 delegated substrate，但仍未扩展成任意拓扑的成熟 multi-agent 平台。
 
 因此，`voidcode.agent` 的设计目标不是引入第二套 runtime，而是补上“agent 定义层”。
 
@@ -117,7 +117,7 @@
 
 让 runtime 在现有 execution path 中能够解析和应用 agent preset，同时继续保持 runtime 对 approval、permission、event、persistence 的控制。
 
-当前实现已经完成 `leader` preset 的第一阶段 runtime-managed slice：`leader` 可以映射到 provider-backed single-agent 主路径，向 provider 注入 `prompt_profile`，应用 agent-scoped model / execution engine / provider fallback，收窄可见与可调用工具，并让 manifest `skill_refs` / agent-scoped skills 进入本次运行的 runtime-managed skill application。相关可执行配置会持久化到 session runtime config，以便 resume 保持同一 agent truth。其他内置角色仍是 declaration-only preset；runtime 可以解析它们的声明 shape，但不会把它们作为 active execution agent 运行。其中 `product` 在 v1 中仅作为同步规划与对齐语义存在，由 `leader` 在同一执行路径内调用，不产生独立 session 或 background task。
+当前实现已经完成 runtime 对 agent preset 的第一阶段落地：`leader` 作为顶层 active preset 进入 provider-backed 主路径，向 provider 注入 `prompt_profile`，应用 agent-scoped model / execution engine / provider fallback，收窄可见与可调用工具，并让 manifest `skill_refs` / agent-scoped skills 进入本次运行的 runtime-managed skill application。相关可执行配置会持久化到 session runtime config，以便 resume 保持同一 agent truth。`advisor`、`explore`、`product`、`researcher`、`worker` 现在也可以作为 delegated child preset 进入 runtime-owned child execution，但它们仍不能被当作任意顶层 active agent 直接启动。
 
 ### Phase 3：再评估 multi-agent orchestration
 

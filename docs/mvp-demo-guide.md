@@ -56,9 +56,9 @@
 - **命令**：`uv run pytest tests/unit/`
 
 ### 2. 集成层
-- **运行时循环**：验证完整的 `CLI -> 运行时 -> 图 -> 工具` 路径，包含审批中断。
+- **运行时循环**：验证完整的运行时执行、delegated lifecycle 与审批中断路径。
 - **持久化**：确保 SQLite 状态在进程重启后依然存在。
-- **命令**：`uv run pytest tests/integration/test_read_only_slice.py`
+- **命令**：`uv run pytest tests/integration/test_http_transport.py tests/integration/test_http_delegated_parity.py`
 
 ### 3. 客户端冒烟测试
 - **CLI TTY 审批**：验证在 TTY 模式下能否正确触发并响应内联审批提示。
@@ -116,14 +116,13 @@
 - 冒烟测试应当使用最小化请求（例如单轮对话、简单 prompt），仅验证 provider 连接路径和响应解析是否正确。
 - 冒烟测试失败不影响主验收门的判定。
 
-### v1 是领导者拥有的单代理流
+### v1 是 leader-owned runtime，带已交付 delegated child execution
 
-当前版本（v1）的执行模型是**领导者拥有的单代理流**，不是多代理编排。明确说明：
+当前版本（v1）的执行模型仍然是 **leader-owned runtime**，而不是任意拓扑的多代理编排。明确说明：
 
-- 只有 `leader` 角色映射到真实执行路径。`src/voidcode/agent/` 中声明的其他角色（`worker`、`advisor`、`explore`、`researcher`、`product`）均为 post-MVP 的 future preset，不代表今天已有独立运行时。
-- 不存在 manager/subagent 分发机制。所有工具调用、审批决策、事件发射均由单一 leader agent 路径处理。
-- 文档中不得将当前状态描述为"已交付多代理编排"或"supervisor/worker 协作"。
-- 如果未来引入异步 leader 到其他 agent 的协作语义，相关能力（background task 状态机、parent/child session 关系、task completion notification 等）必须首先成为 runtime truth，而非悬空挂在 agent 声明层上。
+- 顶层 active run 只接受 `leader`。
+- runtime-owned delegation path 已经可以启动 `worker`、`advisor`、`explore`、`researcher`、`product` 这些 child preset，并通过 background task / child session / notification / result retrieval surfaces 暴露生命周期真相。
+- 文档中不得把当前状态描述成“任意多代理平台”或“ACP 已经接管完整协作控制面”；但也不得再把 delegated child execution 描述成完全不存在。
 
 ### 凭证处理原则
 

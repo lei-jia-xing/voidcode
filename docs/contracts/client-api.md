@@ -8,7 +8,7 @@
 
 ## 状态
 
-当前的契约已经通过 CLI、运行时方法以及极简 HTTP 层落地。HTTP 路径目前覆盖会话列表、会话重放、流式运行和审批处理，但客户端体验仍在继续完善。
+当前的契约已经通过 CLI、运行时方法以及本地 HTTP 层落地。除会话列表、会话重放、流式运行和审批处理外，当前还已经交付 delegated/background-task 的 status/output/cancel/list surfaces。
 
 ## 当前运行时请求/响应形状
 
@@ -18,6 +18,7 @@
 RuntimeRequest(
     prompt: str,
     session_id: str | None = None,
+    parent_session_id: str | None = None,
     metadata: dict[str, object] = {},
 )
 
@@ -34,7 +35,7 @@ RuntimeResponse(
 
 ```python
 SessionState(
-    session: SessionRef(id: str),
+    session: SessionRef(id: str, parent_id: str | None = None),
     status: Literal["idle", "running", "waiting", "completed", "failed"],
     turn: int,
     metadata: dict[str, object],
@@ -56,6 +57,7 @@ StoredSessionSummary(
 输入：
 - `prompt`
 - 可选的 `session_id`
+- 可选的 `parent_session_id`（delegated child run / background task lineage）
 - 可选的客户端/运行时元数据
 
 输出：
@@ -66,6 +68,29 @@ StoredSessionSummary(
 当前实现层面：
 - 运行时：`VoidCodeRuntime.run(request)`
 - CLI：`voidcode run <request> [--workspace] [--session-id]`
+- HTTP：`POST /api/runtime/run/stream`
+
+### Delegated / background task 操作
+
+当前实现已经暴露 runtime-owned background-task lifecycle surfaces：
+
+- 创建 background task：`VoidCodeRuntime.start_background_task(request)` / `POST /api/tasks`
+- 查看 task status：`VoidCodeRuntime.load_background_task(task_id)` / `voidcode tasks status <id>` / `GET /api/tasks/{id}`
+- 查看 task output：`VoidCodeRuntime.load_background_task_result(task_id)` / `voidcode tasks output <id>` / `GET /api/tasks/{id}/output`
+- 取消 task：`VoidCodeRuntime.cancel_background_task(task_id)` / `voidcode tasks cancel <id>` / `POST /api/tasks/{id}/cancel`
+- 列出 tasks：`VoidCodeRuntime.list_background_tasks()` / `voidcode tasks list` / `GET /api/tasks`
+- 按 parent session 列出 tasks：`VoidCodeRuntime.list_background_tasks_by_parent_session(parent_session_id)` / `voidcode tasks list --parent-session <id>` / `GET /api/sessions/{parent}/tasks`
+
+这些结果当前会暴露 runtime-owned delegated correlation 字段，包括：
+
+- `parent_session_id`
+- `requested_child_session_id`
+- `child_session_id`
+- `approval_request_id`
+- `question_request_id`
+- `routing`
+- `delegation`
+- `message`
 
 ### 列出持久化会话 (List persisted sessions)
 
@@ -125,8 +150,24 @@ MVP 生命周期：
 - 列出会话
 - 加载/恢复会话
 - 订阅或接收运行时的有序事件
+- delegated/background-task create/status/output/cancel/list
 
-本文档有意地将契约定义与具体的 FastAPI/Starlette 路由细节解耦。当前的确定性事件序列仍然是规范基线；未来的图模式可以在现有阶段之间增加有序事件，但不应改变这些 API 边界。
+当前已交付的本地 HTTP routes 包括：
+
+- `POST /api/runtime/run/stream`
+- `GET /api/sessions`
+- `GET /api/sessions/{id}`
+- `GET /api/sessions/{id}/result`
+- `POST /api/sessions/{id}/approval`
+- `POST /api/sessions/{id}/question`
+- `GET /api/tasks`
+- `POST /api/tasks`
+- `GET /api/tasks/{id}`
+- `GET /api/tasks/{id}/output`
+- `POST /api/tasks/{id}/cancel`
+- `GET /api/sessions/{parent}/tasks`
+
+本文档仍然有意地将契约定义与具体框架实现细节解耦；但这些路由边界与 delegated/task surfaces 本身已经属于当前 shipped API，而不是 future work。
 
 ## 非目标
 
