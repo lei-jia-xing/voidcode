@@ -48,6 +48,18 @@ class DeterministicReadOnlyStep:
     output: str | None = None
     is_finished: bool = False
 
+    def __post_init__(self) -> None:
+        if self.is_finished:
+            if self.tool_call is not None:
+                raise ValueError("finished graph steps must not include a tool call")
+            if self.output is None:
+                raise ValueError("finished graph steps must include output")
+            return
+        if self.tool_call is None:
+            raise ValueError("non-finished graph steps must include a tool call")
+        if self.output is not None:
+            raise ValueError("non-finished graph steps must not include output")
+
 
 class DeterministicGraph:
     def __init__(self, *, max_steps: int = 4) -> None:
