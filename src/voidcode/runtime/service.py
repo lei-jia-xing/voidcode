@@ -289,10 +289,40 @@ class ToolRegistry:
     """Small in-memory registry used by the runtime boundary."""
 
     tools: dict[str, Tool] = field(default_factory=dict)
+    aliases: dict[str, str] = field(default_factory=dict)
+
+    @staticmethod
+    def _default_aliases() -> dict[str, str]:
+        return {
+            "cat": "read_file",
+            "fetch": "web_fetch",
+            "find": "glob",
+            "ls": "list",
+            "read": "read_file",
+            "run": "shell_exec",
+            "search": "grep",
+            "shell": "shell_exec",
+            "write": "write_file",
+        }
+
+    def _normalize_name(self, tool_name: str) -> str:
+        lower = tool_name.lower()
+        return self.aliases.get(lower, self.aliases.get(tool_name, lower))
+
+    def resolve_name(self, tool_name: str) -> str:
+        canonical_name = self._normalize_name(tool_name)
+        if canonical_name in self.tools:
+            return canonical_name
+        if tool_name in self.tools:
+            return tool_name
+        raise ValueError(f"unknown tool: {tool_name}")
 
     @classmethod
     def from_tools(cls, tools: Iterable[Tool]) -> ToolRegistry:
-        return cls(tools={tool.definition.name: tool for tool in tools})
+        return cls(
+            tools={tool.definition.name: tool for tool in tools},
+            aliases=cls._default_aliases(),
+        )
 
     @classmethod
     def with_defaults(
@@ -327,7 +357,7 @@ class ToolRegistry:
 
     def resolve(self, tool_name: str) -> Tool:
         try:
-            return self.tools[tool_name]
+            return self.tools[self.resolve_name(tool_name)]
         except KeyError as exc:
             raise ValueError(f"unknown tool: {tool_name}") from exc
 
@@ -1593,7 +1623,8 @@ class VoidCodeRuntime:
             )
 
             try:
-                tool = tool_registry.resolve(plan_tool_call.tool_name)
+                tool_name = tool_registry.resolve_name(plan_tool_call.tool_name)
+                tool = tool_registry.resolve(tool_name)
             except Exception as exc:
                 yield self._failed_chunk(session=session, sequence=sequence + 1, error=str(exc))
                 raise
@@ -1607,7 +1638,7 @@ class VoidCodeRuntime:
                     sequence=sequence,
                     event_type="runtime.tool_lookup_succeeded",
                     source="runtime",
-                    payload={"tool": plan_tool_call.tool_name},
+                    payload={"tool": tool_name},
                 ),
             )
 
@@ -1679,7 +1710,7 @@ class VoidCodeRuntime:
                     sequence=sequence,
                     event_type=RUNTIME_TOOL_STARTED,
                     source="runtime",
-                    payload={"tool": plan_tool_call.tool_name},
+                    payload={"tool": tool_name},
                 ),
             )
             try:
