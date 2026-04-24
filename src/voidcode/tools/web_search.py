@@ -15,7 +15,11 @@ DEFAULT_NUM_RESULTS = 8
 DEFAULT_TIMEOUT = 30
 
 
-def _search_exa(query: str, num_results: int = DEFAULT_NUM_RESULTS) -> str | None:
+def _search_exa(
+    query: str,
+    num_results: int = DEFAULT_NUM_RESULTS,
+    timeout: int = DEFAULT_TIMEOUT,
+) -> str | None:
     api_key = os.environ.get("EXA_API_KEY")
     if not api_key:
         return None
@@ -27,7 +31,7 @@ def _search_exa(query: str, num_results: int = DEFAULT_NUM_RESULTS) -> str | Non
             "type": "neural",
         }
 
-        with httpx.Client(timeout=DEFAULT_TIMEOUT) as client:
+        with httpx.Client(timeout=timeout) as client:
             response = client.post(
                 "https://api.exa.ai/search",
                 json=request_data,
@@ -62,11 +66,15 @@ def _search_exa(query: str, num_results: int = DEFAULT_NUM_RESULTS) -> str | Non
     return None
 
 
-def _search_fallback(query: str, num_results: int = DEFAULT_NUM_RESULTS) -> str:
+def _search_fallback(
+    query: str,
+    num_results: int = DEFAULT_NUM_RESULTS,
+    timeout: int = DEFAULT_TIMEOUT,
+) -> str:
     url = "https://html.duckduckgo.com/html/"
 
     try:
-        with httpx.Client(timeout=DEFAULT_TIMEOUT) as client:
+        with httpx.Client(timeout=timeout) as client:
             response = client.get(
                 url,
                 params={"q": query, "kl": "wt-wt"},
@@ -127,6 +135,20 @@ class WebSearchTool:
     )
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
+        return self._invoke(call, workspace=workspace, runtime_timeout_seconds=None)
+
+    def invoke_with_runtime_timeout(
+        self, call: ToolCall, *, workspace: Path, timeout_seconds: int
+    ) -> ToolResult:
+        return self._invoke(call, workspace=workspace, runtime_timeout_seconds=timeout_seconds)
+
+    def _invoke(
+        self,
+        call: ToolCall,
+        *,
+        workspace: Path,
+        runtime_timeout_seconds: int | None,
+    ) -> ToolResult:
         try:
             args = WebSearchArgs.model_validate({"query": call.arguments.get("query")})
         except ValidationError as exc:
@@ -141,13 +163,22 @@ class WebSearchTool:
         else:
             num_results = DEFAULT_NUM_RESULTS
 
-        exa_results = _search_exa(args.query, num_results)
+        timeout = (
+            DEFAULT_TIMEOUT
+            if runtime_timeout_seconds is None
+            else min(
+                DEFAULT_TIMEOUT,
+                runtime_timeout_seconds,
+            )
+        )
+
+        exa_results = _search_exa(args.query, num_results, timeout)
 
         if exa_results:
             output = exa_results
             source = "exa"
         else:
-            output = _search_fallback(args.query, num_results)
+            output = _search_fallback(args.query, num_results, timeout)
             source = "duckduckgo"
 
         return ToolResult(
@@ -158,5 +189,9 @@ class WebSearchTool:
                 "query": args.query,
                 "num_results": num_results,
                 "source": source,
+                "timeout_seconds": timeout,
             },
+            timeout_seconds=timeout,
+            source=source,
+            fallback_reason=None if source == "exa" else "duckduckgo fallback",
         )

@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import ClassVar
 
+from ._workspace import resolve_workspace_path
 from .contracts import ToolCall, ToolDefinition, ToolResult
 
 DEFAULT_IGNORE_PATTERNS = frozenset(
@@ -89,12 +90,7 @@ class GlobTool:
         path_value = call.arguments.get("path")
         search_path: Path | None = None
         if isinstance(path_value, str):
-            relative_path = Path(path_value)
-            workspace_root = workspace.resolve()
-            search_path = (workspace_root / relative_path).resolve()
-
-            if not search_path.is_relative_to(workspace_root):
-                raise ValueError("glob path must be inside the workspace")
+            search_path, _ = resolve_workspace_path(workspace=workspace, raw_path=path_value)
 
             if not search_path.exists():
                 raise ValueError(f"glob path does not exist: {path_value}")
@@ -132,4 +128,6 @@ class GlobTool:
                 "truncated": truncated,
                 "matches": relative_matches,
             },
+            truncated=truncated,
+            partial=truncated,
         )

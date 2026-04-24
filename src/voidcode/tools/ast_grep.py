@@ -8,17 +8,15 @@ from typing import Any, ClassVar, cast
 from pydantic import ValidationError
 
 from ._pydantic_args import AstGrepReplaceArgs, AstGrepSearchArgs
+from ._workspace import resolve_workspace_path
 from .contracts import ToolCall, ToolDefinition, ToolResult
 
 
 def _resolve_candidate(*, workspace: Path, path_text: str) -> tuple[Path, str]:
-    workspace_root = workspace.resolve()
-    candidate = (workspace_root / Path(path_text)).resolve()
-    if not candidate.is_relative_to(workspace_root):
-        raise ValueError("ast_grep only allows paths inside the workspace")
+    candidate, relative_path = resolve_workspace_path(workspace=workspace, raw_path=path_text)
     if not candidate.exists():
         raise ValueError(f"ast_grep target does not exist: {path_text}")
-    return candidate, candidate.relative_to(workspace_root).as_posix()
+    return candidate, relative_path
 
 
 def _parse_stream_output(stdout: str) -> list[dict[str, Any]]:
@@ -37,7 +35,7 @@ def _parse_stream_output(stdout: str) -> list[dict[str, Any]]:
 
 
 def _run_ast_grep(
-    *, cmd: list[str], workspace: Path
+    *, cmd: list[str], workspace: Path, timeout_seconds: int = 30
 ) -> ToolResult | subprocess.CompletedProcess[str]:
     try:
         completed = subprocess.run(
@@ -45,13 +43,13 @@ def _run_ast_grep(
             cwd=workspace.resolve(),
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=timeout_seconds,
         )
     except subprocess.TimeoutExpired:
         return ToolResult(
             tool_name=cmd[0].replace("-", "_"),
             status="error",
-            error="ast-grep timed out after 30s",
+            error=f"ast-grep timed out after {timeout_seconds}s",
         )
     except OSError as exc:
         return ToolResult(
@@ -124,7 +122,7 @@ def _validate_replace_call(call: ToolCall) -> AstGrepReplaceArgs:
 
 
 def _run_preview_replace(
-    *, args: AstGrepReplaceArgs, workspace: Path
+    *, args: AstGrepReplaceArgs, workspace: Path, timeout_seconds: int = 30
 ) -> ToolResult | tuple[str, list[dict[str, Any]], int]:
     _, relative_path = _resolve_candidate(workspace=workspace, path_text=args.path)
     preview_cmd = ["ast-grep", "run", "--json=stream", "-p", args.pattern, "-r", args.rewrite]
@@ -132,7 +130,7 @@ def _run_preview_replace(
         preview_cmd.extend(["--lang", args.lang])
     preview_cmd.append(relative_path)
 
-    completed = _run_ast_grep(cmd=preview_cmd, workspace=workspace)
+    completed = _run_ast_grep(cmd=preview_cmd, workspace=workspace, timeout_seconds=timeout_seconds)
     if isinstance(completed, ToolResult):
         return completed
 
@@ -159,6 +157,14 @@ class AstGrepSearchTool:
     )
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
+        return self._invoke(call, workspace=workspace, timeout_seconds=30)
+
+    def invoke_with_runtime_timeout(
+        self, call: ToolCall, *, workspace: Path, timeout_seconds: int
+    ) -> ToolResult:
+        return self._invoke(call, workspace=workspace, timeout_seconds=timeout_seconds)
+
+    def _invoke(self, call: ToolCall, *, workspace: Path, timeout_seconds: int) -> ToolResult:
         args = _validate_search_call(call)
         _, relative_path = _resolve_candidate(workspace=workspace, path_text=args.path)
         cmd = ["ast-grep", "run", "--json=stream", "-p", args.pattern]
@@ -166,7 +172,7 @@ class AstGrepSearchTool:
             cmd.extend(["--lang", args.lang])
         cmd.append(relative_path)
 
-        completed = _run_ast_grep(cmd=cmd, workspace=workspace)
+        completed = _run_ast_grep(cmd=cmd, workspace=workspace, timeout_seconds=timeout_seconds)
         if isinstance(completed, ToolResult):
             return ToolResult(
                 tool_name=self.definition.name,
@@ -194,6 +200,7 @@ class AstGrepSearchTool:
                 "lang": args.lang,
                 "match_count": match_count,
                 "matches": matches,
+                "timeout_seconds": timeout_seconds,
             },
         )
 
@@ -212,10 +219,22 @@ class AstGrepPreviewTool:
     )
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
+        return self._invoke(call, workspace=workspace, timeout_seconds=30)
+
+    def invoke_with_runtime_timeout(
+        self, call: ToolCall, *, workspace: Path, timeout_seconds: int
+    ) -> ToolResult:
+        return self._invoke(call, workspace=workspace, timeout_seconds=timeout_seconds)
+
+    def _invoke(self, call: ToolCall, *, workspace: Path, timeout_seconds: int) -> ToolResult:
         args = _validate_replace_call(call)
         args = args.model_copy(update={"apply": False})
 
-        preview = _run_preview_replace(args=args, workspace=workspace)
+        preview = _run_preview_replace(
+            args=args,
+            workspace=workspace,
+            timeout_seconds=timeout_seconds,
+        )
         if isinstance(preview, ToolResult):
             return ToolResult(
                 tool_name=self.definition.name,
@@ -236,6 +255,7 @@ class AstGrepPreviewTool:
                 "replacement_count": replacement_count,
                 "matches": matches,
                 "applied": False,
+                "timeout_seconds": timeout_seconds,
             },
         )
 
@@ -255,11 +275,23 @@ class AstGrepReplaceTool:
     )
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
+        return self._invoke(call, workspace=workspace, timeout_seconds=30)
+
+    def invoke_with_runtime_timeout(
+        self, call: ToolCall, *, workspace: Path, timeout_seconds: int
+    ) -> ToolResult:
+        return self._invoke(call, workspace=workspace, timeout_seconds=timeout_seconds)
+
+    def _invoke(self, call: ToolCall, *, workspace: Path, timeout_seconds: int) -> ToolResult:
         args = _validate_replace_call(call)
         if not args.apply:
             raise ValueError("ast_grep_replace requires apply=True")
 
-        preview = _run_preview_replace(args=args, workspace=workspace)
+        preview = _run_preview_replace(
+            args=args,
+            workspace=workspace,
+            timeout_seconds=timeout_seconds,
+        )
         if isinstance(preview, ToolResult):
             return ToolResult(
                 tool_name=self.definition.name,
@@ -272,7 +304,11 @@ class AstGrepReplaceTool:
         if args.lang:
             apply_cmd.extend(["--lang", args.lang])
         apply_cmd.extend(["-U", relative_path])
-        completed = _run_ast_grep(cmd=apply_cmd, workspace=workspace)
+        completed = _run_ast_grep(
+            cmd=apply_cmd,
+            workspace=workspace,
+            timeout_seconds=timeout_seconds,
+        )
         if isinstance(completed, ToolResult):
             return ToolResult(
                 tool_name=self.definition.name,
@@ -296,5 +332,6 @@ class AstGrepReplaceTool:
                 "replacement_count": replacement_count,
                 "matches": matches,
                 "applied": True,
+                "timeout_seconds": timeout_seconds,
             },
         )

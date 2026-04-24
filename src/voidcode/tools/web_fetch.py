@@ -136,6 +136,20 @@ class WebFetchTool:
     )
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
+        return self._invoke(call, workspace=workspace, runtime_timeout_seconds=None)
+
+    def invoke_with_runtime_timeout(
+        self, call: ToolCall, *, workspace: Path, timeout_seconds: int
+    ) -> ToolResult:
+        return self._invoke(call, workspace=workspace, runtime_timeout_seconds=timeout_seconds)
+
+    def _invoke(
+        self,
+        call: ToolCall,
+        *,
+        workspace: Path,
+        runtime_timeout_seconds: int | None,
+    ) -> ToolResult:
         _ = workspace
         url_value = call.arguments.get("url")
         if not isinstance(url_value, str):
@@ -152,6 +166,8 @@ class WebFetchTool:
             timeout = min(int(timeout_value), 120)
         else:
             timeout = DEFAULT_TIMEOUT
+        if runtime_timeout_seconds is not None:
+            timeout = min(timeout, runtime_timeout_seconds)
 
         content: str = ""
         data: bytes = b""
@@ -258,8 +274,13 @@ class WebFetchTool:
                         "content_type": mime,
                         "format": format_value,
                         "byte_count": len(data),
+                        "timeout_seconds": timeout,
                         "attachment": {"mime": mime, "data_uri": data_uri},
                     },
+                    truncated=False,
+                    partial=False,
+                    attachment={"mime": mime, "data_uri": data_uri},
+                    timeout_seconds=timeout,
                 )
             if "text/html" in mime:
                 output = _convert_html_to_markdown(content)
@@ -279,8 +300,13 @@ class WebFetchTool:
                         "content_type": mime,
                         "format": format_value,
                         "byte_count": len(data),
+                        "timeout_seconds": timeout,
                         "attachment": {"mime": mime, "data_uri": data_uri},
                     },
+                    truncated=False,
+                    partial=False,
+                    attachment={"mime": mime, "data_uri": data_uri},
+                    timeout_seconds=timeout,
                 )
             if "text/html" in mime:
                 output = _convert_html_to_markdown(content)
@@ -296,5 +322,9 @@ class WebFetchTool:
                 "content_type": mime,
                 "format": format_value,
                 "byte_count": len(data),
+                "timeout_seconds": timeout,
             },
+            truncated=False,
+            partial=False,
+            timeout_seconds=timeout,
         )

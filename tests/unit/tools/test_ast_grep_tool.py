@@ -133,6 +133,7 @@ def test_ast_grep_search_returns_zero_matches_for_empty_cli_result(tmp_path: Pat
         "lang": "python",
         "match_count": 0,
         "matches": [],
+        "timeout_seconds": 30,
     }
 
 
@@ -388,6 +389,7 @@ def test_ast_grep_preview_returns_zero_matches_for_empty_cli_result(tmp_path: Pa
         "replacement_count": 0,
         "matches": [],
         "applied": False,
+        "timeout_seconds": 30,
     }
 
 
@@ -422,6 +424,7 @@ def test_ast_grep_replace_apply_returns_zero_changes_for_empty_cli_result(tmp_pa
         "replacement_count": 0,
         "matches": [],
         "applied": True,
+        "timeout_seconds": 30,
     }
 
 

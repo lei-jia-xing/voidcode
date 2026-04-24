@@ -14,7 +14,7 @@ DEFAULT_NUM_RESULTS = 5
 DEFAULT_CONTEXT_MAX_CHARACTERS = 10000
 
 
-def _fallback_search(query: str, num_results: int) -> str:
+def _fallback_search(query: str, num_results: int, timeout: int = 30) -> str:
     encoded_query = urllib.parse.quote(query)
     url = f"https://html.duckduckgo.com/html/?q={encoded_query}&kl=wt-wt"
 
@@ -26,7 +26,7 @@ def _fallback_search(query: str, num_results: int) -> str:
             },
         )
 
-        with urllib.request.urlopen(req, timeout=30) as response:
+        with urllib.request.urlopen(req, timeout=timeout) as response:
             html = response.read().decode("utf-8", errors="replace")
 
             results: list[tuple[str, str, str]] = []
@@ -92,6 +92,20 @@ class CodeSearchTool:
     )
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
+        return self._invoke(call, workspace=workspace, runtime_timeout_seconds=None)
+
+    def invoke_with_runtime_timeout(
+        self, call: ToolCall, *, workspace: Path, timeout_seconds: int
+    ) -> ToolResult:
+        return self._invoke(call, workspace=workspace, runtime_timeout_seconds=timeout_seconds)
+
+    def _invoke(
+        self,
+        call: ToolCall,
+        *,
+        workspace: Path,
+        runtime_timeout_seconds: int | None,
+    ) -> ToolResult:
         query = call.arguments.get("query")
         if not isinstance(query, str):
             raise ValueError("code_search requires a string query argument")
@@ -147,12 +161,14 @@ class CodeSearchTool:
             method="POST",
         )
 
+        timeout = 30 if runtime_timeout_seconds is None else min(30, runtime_timeout_seconds)
+
         try:
-            with urllib.request.urlopen(request, timeout=30) as response:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
                 text = response.read().decode("utf-8", errors="replace")
         except urllib.error.HTTPError as exc:
             if exc.code == 429:
-                fallback = _fallback_search(query, num_results)
+                fallback = _fallback_search(query, num_results, timeout)
                 return ToolResult(
                     tool_name=self.definition.name,
                     status="ok",
@@ -167,11 +183,15 @@ class CodeSearchTool:
                         "snippet_count": 0,
                         "sources": [],
                         "fallback_reason": f"HTTP 429 from Exa MCP: {exc.reason}",
+                        "timeout_seconds": timeout,
                     },
+                    timeout_seconds=timeout,
+                    source="duckduckgo_fallback",
+                    fallback_reason=f"HTTP 429 from Exa MCP: {exc.reason}",
                 )
             raise ValueError(f"code_search HTTP error {exc.code}: {exc.reason}") from exc
-        except urllib.error.URLError as exc:
-            fallback = _fallback_search(query, num_results)
+        except (urllib.error.URLError, OSError) as exc:
+            fallback = _fallback_search(query, num_results, timeout)
             return ToolResult(
                 tool_name=self.definition.name,
                 status="ok",
@@ -185,8 +205,12 @@ class CodeSearchTool:
                     "source": "duckduckgo_fallback",
                     "snippet_count": 0,
                     "sources": [],
-                    "fallback_reason": f"code_search request failed: {exc.reason}",
+                    "fallback_reason": f"code_search request failed: {getattr(exc, 'reason', exc)}",
+                    "timeout_seconds": timeout,
                 },
+                timeout_seconds=timeout,
+                source="duckduckgo_fallback",
+                fallback_reason=f"code_search request failed: {getattr(exc, 'reason', exc)}",
             )
 
         snippets: list[str] = []
@@ -248,7 +272,7 @@ class CodeSearchTool:
             deduped_snippets.append(snippet)
 
         if not deduped_snippets:
-            fallback = _fallback_search(query, num_results)
+            fallback = _fallback_search(query, num_results, timeout)
             urls = re.findall(r"https?://\S+", fallback)
             fallback_sources: list[str] = []
             seen_urls: set[str] = set()
@@ -273,7 +297,11 @@ class CodeSearchTool:
                     "snippet_count": 0,
                     "sources": fallback_sources,
                     "fallback_reason": "No usable snippets returned by web_search_exa",
+                    "timeout_seconds": timeout,
                 },
+                timeout_seconds=timeout,
+                source="duckduckgo_fallback",
+                fallback_reason="No usable snippets returned by web_search_exa",
             )
 
         output_parts: list[str] = []
@@ -304,5 +332,8 @@ class CodeSearchTool:
                 "source": "exa_mcp_web_search_exa",
                 "snippet_count": len(deduped_snippets),
                 "sources": unique_sources,
+                "timeout_seconds": timeout,
             },
+            timeout_seconds=timeout,
+            source="exa_mcp_web_search_exa",
         )
