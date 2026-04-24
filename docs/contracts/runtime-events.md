@@ -44,7 +44,7 @@ EventEnvelope(
 
 ## 当前稳定事件词汇表
 
-以下事件当前属于稳定的运行时事件契约，源自 `src/voidcode/runtime/service.py`、`src/voidcode/graph/read_only_slice.py` 与 `src/voidcode/graph/single_agent_slice.py`。它们覆盖当前 deterministic 与 provider-backed 两条 execution engine 路径：
+以下事件当前属于稳定的运行时事件契约，源自 `src/voidcode/runtime/service.py`、`src/voidcode/graph/deterministic_graph.py` 与 `src/voidcode/graph/provider_graph.py`。它们覆盖当前 deterministic 与 provider 两条 execution engine 路径：
 
 - `runtime.request_received`
 - `runtime.skills_loaded`
@@ -69,12 +69,23 @@ EventEnvelope(
 在轮次中发出的所有事件（包括来自图端的事件）都会由运行时重新编号，变为每次响应或重放中单一的、单调递增的序列。
 这确保了图端局部（graph-local）的序列值在跨审批恢复运行时，不会与运行时插入的事件发生冲突。
 
-## 未来补充 / prototype-additive 词汇表
+## 已交付的 delegated/background-task 事件
 
-这些共享事件名称在 `src/voidcode/runtime/events.py` 中定义，但当前不属于稳定的 MVP 事件契约：
+以下事件名称当前已经是 shipped delegated execution surface 的一部分：
+
+- `runtime.background_task_waiting_approval`
+- `runtime.background_task_completed`
+- `runtime.background_task_failed`
+- `runtime.background_task_cancelled`
+- `runtime.delegated_result_available`
+
+它们在 `src/voidcode/runtime/events.py` 中仍被归类在 `PrototypeAdditiveEventType`，这是代码内兼容性分组，而不是“尚未支持”的意思。CLI、HTTP、会话重放与 background-task result/output surfaces 都已经消费这些事件。
+
+## 未来补充 / additive 词汇表
+
+当前真正仍保持 additive/prototype 语义的共享事件名称至少包括：
 
 - `runtime.memory_refreshed`
-- `runtime.background_task_waiting_approval`
 
 未来版本可以追加新的事件类型或为现有 payload 增加新字段；客户端必须继续容忍未知事件类型，并将 payload 视为可扩展结构。
 
@@ -140,6 +151,41 @@ EventEnvelope(
   - `error: str`（仅 `runtime.acp_failed` 时出现）
 - 这些事件由 runtime-owned ACP lifecycle 发出，并在响应/重放中按会话序列重新编号
 - 相关 ACP 运行态会写入 session metadata 的 `runtime_state.acp`，而不是用户主配置快照 `runtime_config`
+
+### `runtime.acp_delegated_lifecycle`
+### `runtime.background_task_waiting_approval`
+### `runtime.background_task_completed`
+### `runtime.background_task_failed`
+### `runtime.background_task_cancelled`
+### `runtime.delegated_result_available`
+- source: `runtime`
+- 当前 payload 同时保留：
+  - 旧的顶层关联字段（如 `task_id`、`parent_session_id`、`child_session_id`、`approval_request_id`、`question_request_id`、routing fields、`status`、`summary_output`、`error`）
+  - 新的嵌套类型化字段：
+    - `delegation: {...}`
+    - `message: {...}`
+- `delegation` 当前至少可携带：
+  - `parent_session_id`
+  - `requested_child_session_id`
+  - `child_session_id`
+  - `delegated_task_id`
+  - `approval_request_id`
+  - `question_request_id`
+  - `routing`
+  - `selected_preset`
+  - `selected_execution_engine`
+  - `lifecycle_status`
+  - `approval_blocked`
+  - `result_available`
+  - `cancellation_cause`
+- `message` 当前至少可携带：
+  - `kind`
+  - `status`
+  - `summary_output`
+  - `error`
+  - `approval_blocked`
+  - `result_available`
+- `runtime.acp_delegated_lifecycle` 用于对齐 ACP 侧 delegated observability；background-task 事件用于父会话/任务结果/重放等 runtime-owned delegated lifecycle surfaces。
 
 ### `graph.loop_step`
 - source: `graph`

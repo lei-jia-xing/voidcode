@@ -283,7 +283,7 @@ scheduler 应 dispatch 到 runtime boundary 中，并且对最终由 resolved ru
 
 换句话说：
 
-- scheduler 不应在 ownership model 上对 `deterministic` 和 `single_agent` 做特殊分支
+- scheduler 不应在 ownership model 上对 `deterministic` 和 provider-backed/delegated execution path 做特殊分支
 - engine selection 仍然属于 runtime config 行为
 - scheduled execution 仍然走 runtime 治理下的 tool、permission、hook 与 persistence path
 
