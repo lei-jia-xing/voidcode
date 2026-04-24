@@ -26,6 +26,7 @@ from voidcode.provider.protocol import (
     ProviderStreamEvent,
     ProviderTurnRequest,
     StreamableTurnProvider,
+    TurnProvider,
 )
 from voidcode.tools.contracts import ToolDefinition, ToolResult
 
@@ -243,8 +244,8 @@ def test_provider_adapter_stream_turn_emits_happy_path_chunks(
     provider_name: str,
     provider: ModelProvider,
 ) -> None:
-    provider = provider.turn_provider()
-    assert isinstance(provider, StreamableTurnProvider)
+    turn_provider = provider.turn_provider()
+    assert isinstance(turn_provider, StreamableTurnProvider)
 
     _patch_litellm_completion(
         monkeypatch,
@@ -256,7 +257,7 @@ def test_provider_adapter_stream_turn_emits_happy_path_chunks(
         ),
     )
 
-    events = list(provider.stream_turn(_build_turn_request(model_name=provider_name)))
+    events = list(turn_provider.stream_turn(_build_turn_request(model_name=provider_name)))
 
     payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
     assert isinstance(payload_obj, dict)
@@ -284,8 +285,8 @@ def test_provider_adapter_stream_turn_maps_http_error_to_provider_execution_erro
     provider_name: str,
     provider: ModelProvider,
 ) -> None:
-    provider = provider.turn_provider()
-    assert isinstance(provider, StreamableTurnProvider)
+    turn_provider = provider.turn_provider()
+    assert isinstance(turn_provider, StreamableTurnProvider)
 
     _patch_litellm_completion(
         monkeypatch,
@@ -294,7 +295,7 @@ def test_provider_adapter_stream_turn_maps_http_error_to_provider_execution_erro
     )
 
     with pytest.raises(ProviderExecutionError, match="Too many requests") as exc_info:
-        _ = list(provider.stream_turn(_build_turn_request(model_name=provider_name)))
+        _ = list(turn_provider.stream_turn(_build_turn_request(model_name=provider_name)))
 
     assert exc_info.value.kind == "rate_limit"
 
@@ -313,7 +314,7 @@ def test_provider_adapter_propose_turn_returns_text_output(
     provider_name: str,
     provider: ModelProvider,
 ) -> None:
-    provider = provider.turn_provider()
+    turn_provider: TurnProvider = provider.turn_provider()
 
     _patch_litellm_completion(
         monkeypatch,
@@ -321,7 +322,7 @@ def test_provider_adapter_propose_turn_returns_text_output(
         completion_content="hello world",
     )
 
-    result = provider.propose_turn(_build_turn_request(model_name=provider_name))
+    result = turn_provider.propose_turn(_build_turn_request(model_name=provider_name))
 
     assert result.output == "hello world"
 
@@ -340,7 +341,7 @@ def test_provider_adapter_injects_applied_skills_into_system_messages(
     provider_name: str,
     provider: ModelProvider,
 ) -> None:
-    provider = provider.turn_provider()
+    turn_provider: TurnProvider = provider.turn_provider()
 
     _patch_litellm_completion(
         monkeypatch,
@@ -348,7 +349,7 @@ def test_provider_adapter_injects_applied_skills_into_system_messages(
         completion_content="hello world",
     )
 
-    result = provider.propose_turn(_build_turn_request_with_skill(model_name=provider_name))
+    result = turn_provider.propose_turn(_build_turn_request_with_skill(model_name=provider_name))
 
     assert result.output == "hello world"
     payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
@@ -425,7 +426,7 @@ def test_provider_adapter_injects_continuity_summary_into_system_messages(
     provider_name: str,
     provider: ModelProvider,
 ) -> None:
-    provider = provider.turn_provider()
+    turn_provider: TurnProvider = provider.turn_provider()
 
     _patch_litellm_completion(
         monkeypatch,
@@ -433,7 +434,9 @@ def test_provider_adapter_injects_continuity_summary_into_system_messages(
         completion_content="hello world",
     )
 
-    result = provider.propose_turn(_build_turn_request_with_continuity(model_name=provider_name))
+    result = turn_provider.propose_turn(
+        _build_turn_request_with_continuity(model_name=provider_name)
+    )
 
     assert result.output == "hello world"
     payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
@@ -495,7 +498,70 @@ def test_provider_adapter_omits_continuity_message_without_summary_text(
     assert messages == [{"role": "user", "content": "read sample.txt"}]
 
 
-def test_provider_adapter_injects_leader_prompt_profile_system_message(
+@pytest.mark.parametrize(
+    ("agent_preset", "expected_fragment"),
+    [
+        (
+            {
+                "preset": "leader",
+                "prompt_profile": "leader",
+                "model": "openai/demo",
+                "execution_engine": "provider",
+            },
+            "VoidCode's leader agent",
+        ),
+        (
+            {
+                "preset": "worker",
+                "prompt_profile": "worker",
+                "model": "openai/demo",
+                "execution_engine": "provider",
+            },
+            "VoidCode's worker agent",
+        ),
+    ],
+)
+def test_provider_adapter_materializes_builtin_agent_prompt_profiles(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_preset: dict[str, object],
+    expected_fragment: str,
+) -> None:
+    provider = OpenAIModelProvider()
+    provider = provider.turn_provider()
+    request = _build_turn_request(model_name="openai")
+    request = ProviderTurnRequest(
+        prompt=request.prompt,
+        available_tools=request.available_tools,
+        tool_results=request.tool_results,
+        context_window=request.context_window,
+        applied_skills=request.applied_skills,
+        raw_model=request.raw_model,
+        provider_name=request.provider_name,
+        model_name=request.model_name,
+        agent_preset=agent_preset,
+        attempt=request.attempt,
+        abort_signal=request.abort_signal,
+    )
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        completion_content="hello world",
+    )
+
+    _ = provider.propose_turn(request)
+
+    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+    assert isinstance(payload_obj, dict)
+    payload = cast(dict[str, object], payload_obj)
+    messages_obj = payload.get("messages")
+    assert isinstance(messages_obj, list)
+    messages = cast(list[dict[str, str]], messages_obj)
+    assert messages[0]["role"] == "system"
+    assert expected_fragment in messages[0]["content"]
+    assert messages[1] == {"role": "user", "content": "read sample.txt"}
+
+
+def test_provider_adapter_falls_back_for_unknown_agent_prompt_profile(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     provider = OpenAIModelProvider()
@@ -512,7 +578,7 @@ def test_provider_adapter_injects_leader_prompt_profile_system_message(
         model_name=request.model_name,
         agent_preset={
             "preset": "leader",
-            "prompt_profile": "leader",
+            "prompt_profile": "custom-review",
             "model": "openai/demo",
             "execution_engine": "provider",
         },
@@ -533,10 +599,14 @@ def test_provider_adapter_injects_leader_prompt_profile_system_message(
     messages_obj = payload.get("messages")
     assert isinstance(messages_obj, list)
     messages = cast(list[dict[str, str]], messages_obj)
-    assert messages[0]["role"] == "system"
-    assert "VoidCode's leader agent" in messages[0]["content"]
-    assert "single active execution agent path" in messages[0]["content"]
-    assert messages[1] == {"role": "user", "content": "read sample.txt"}
+    assert messages[0] == {
+        "role": "system",
+        "content": (
+            "Runtime-selected VoidCode agent prompt profile: custom-review. "
+            "Treat this as the active agent role profile for this single-agent turn while "
+            "still following the runtime-provided tool and skill boundaries."
+        ),
+    }
 
 
 def test_provider_adapter_propose_turn_uses_model_map_for_litellm_alias(
@@ -843,7 +913,7 @@ def test_provider_adapters_call_litellm_directly_without_internal_bridge(
     provider_name: str,
     provider: ModelProvider,
 ) -> None:
-    provider = provider.turn_provider()
+    turn_provider: TurnProvider = provider.turn_provider()
 
     _patch_litellm_completion(
         monkeypatch,
@@ -851,7 +921,7 @@ def test_provider_adapters_call_litellm_directly_without_internal_bridge(
         completion_content="ok",
     )
 
-    result = provider.propose_turn(_build_turn_request(model_name=provider_name))
+    result = turn_provider.propose_turn(_build_turn_request(model_name=provider_name))
 
     assert result.output == "ok"
     payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")

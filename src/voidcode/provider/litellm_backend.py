@@ -20,7 +20,7 @@ else:
             pass
 
 
-from ..agent import render_leader_prompt
+from ..agent import render_agent_prompt
 from ..tools.contracts import ToolCall, ToolDefinition
 from .config import LiteLLMProviderConfig
 from .errors import provider_execution_error_from_api_payload
@@ -129,21 +129,7 @@ class LiteLLMBackendSingleAgentProvider:
 
     @classmethod
     def _agent_profile_system_message(cls, request: ProviderTurnRequest) -> str | None:
-        agent_preset = request.agent_preset
-        if agent_preset is None:
-            return None
-        prompt_profile = agent_preset.get("prompt_profile")
-        if not isinstance(prompt_profile, str) or not prompt_profile.strip():
-            return None
-        normalized_prompt_profile = prompt_profile.strip()
-        if normalized_prompt_profile == "leader":
-            return render_leader_prompt(agent_preset)
-        return (
-            "Runtime-selected VoidCode agent prompt profile: "
-            f"{normalized_prompt_profile}. Treat this as the active agent role profile "
-            "for this single-agent turn while still following the runtime-provided tool "
-            "and skill boundaries."
-        )
+        return render_agent_prompt(request.agent_preset)
 
     @staticmethod
     def _continuity_system_message(request: ProviderTurnRequest) -> str | None:
