@@ -20,16 +20,67 @@ def test_grep_tool_searches_utf8_file_inside_workspace(tmp_path: Path) -> None:
 
     assert result.tool_name == "grep"
     assert result.status == "ok"
-    assert result.content == "Found 2 match(es) for 'alpha' in sample.txt\n1: alpha beta\n3: alpha"
+    assert result.content == (
+        "Found 2 match(es) for 'alpha' in sample.txt\nsample.txt:1: alpha beta\nsample.txt:3: alpha"
+    )
     assert result.data == {
         "path": "sample.txt",
         "pattern": "alpha",
+        "regex": False,
+        "context": 0,
         "match_count": 2,
+        "truncated": False,
+        "partial": False,
         "matches": [
-            {"line": 1, "text": "alpha beta", "columns": [1]},
-            {"line": 3, "text": "alpha", "columns": [1]},
+            {
+                "file": "sample.txt",
+                "line": 1,
+                "text": "alpha beta",
+                "columns": [1],
+                "before": [],
+                "after": [],
+            },
+            {
+                "file": "sample.txt",
+                "line": 3,
+                "text": "alpha",
+                "columns": [1],
+                "before": [],
+                "after": [],
+            },
         ],
     }
+
+
+def test_grep_tool_supports_regex_context_and_include_exclude(tmp_path: Path) -> None:
+    src = tmp_path / "src"
+    src.mkdir()
+    sample = src / "sample.py"
+    _ = sample.write_text("alpha\nbeta\nalpha\n", encoding="utf-8")
+    ignored = src / "ignored.txt"
+    _ = ignored.write_text("alpha\n", encoding="utf-8")
+    tool = GrepTool()
+
+    result = tool.invoke(
+        ToolCall(
+            tool_name="grep",
+            arguments={
+                "pattern": "^alpha$",
+                "path": "src",
+                "regex": True,
+                "context": 1,
+                "include": ["**/*.py"],
+                "exclude": ["**/ignored.*"],
+            },
+        ),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert result.data["regex"] is True
+    assert result.data["context"] == 1
+    assert result.data["match_count"] == 0
+    assert "ignored.txt" not in (result.content or "")
 
 
 def test_grep_tool_returns_zero_matches_summary(tmp_path: Path) -> None:
@@ -46,7 +97,11 @@ def test_grep_tool_returns_zero_matches_summary(tmp_path: Path) -> None:
     assert result.data == {
         "path": "sample.txt",
         "pattern": "missing",
+        "regex": False,
+        "context": 0,
         "match_count": 0,
+        "truncated": False,
+        "partial": False,
         "matches": [],
     }
 
@@ -80,11 +135,12 @@ def test_grep_tool_rejects_invalid_arguments_and_non_utf8_files(tmp_path: Path) 
             workspace=tmp_path,
         )
 
-    with pytest.raises(ValueError, match="UTF-8 text files"):
-        tool.invoke(
-            ToolCall(tool_name="grep", arguments={"pattern": "x", "path": "sample.bin"}),
-            workspace=tmp_path,
-        )
+    result = tool.invoke(
+        ToolCall(tool_name="grep", arguments={"pattern": "x", "path": "sample.bin"}),
+        workspace=tmp_path,
+    )
+    assert result.status == "ok"
+    assert result.data["match_count"] == 0
 
 
 def test_tools_package_and_default_registry_export_grep_tool() -> None:
