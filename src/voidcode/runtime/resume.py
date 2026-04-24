@@ -633,39 +633,6 @@ class RuntimeResumeCoordinator:
             )
             return
 
-        resume_start_hook_outcome = runtime._run_lifecycle_hooks(
-            session=session,
-            sequence=emitted_sequence,
-            surface="session_start",
-            payload={"resume": True, "approval_request_id": pending.request_id},
-        )
-        for hook_chunk in resume_start_hook_outcome.chunks:
-            hook_event = cast(EventEnvelope, hook_chunk.event)
-            emitted_sequence = hook_event.sequence
-            loop_events.append(hook_event)
-            yield hook_chunk
-        if resume_start_hook_outcome.failed_error is not None:
-            failed_chunk = runtime._failed_chunk(
-                session=session,
-                sequence=resume_start_hook_outcome.last_sequence + 1,
-                error=resume_start_hook_outcome.failed_error,
-            )
-            failed_event = cast(EventEnvelope, failed_chunk.event)
-            loop_events.append(failed_event)
-            response = RuntimeResponse(
-                session=failed_chunk.session,
-                events=stored.events + tuple(loop_events),
-                output=output,
-            )
-            request = RuntimeRequest(
-                prompt=prompt,
-                session_id=stored.session.session.id,
-                parent_session_id=stored.session.session.parent_id,
-            )
-            runtime._persist_response(request=request, response=response)
-            yield failed_chunk
-            return
-
         sequence = max_stored_sequence
         try:
             for chunk in runtime._execute_graph_loop(
