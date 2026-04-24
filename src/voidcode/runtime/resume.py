@@ -286,6 +286,7 @@ class RuntimeResumeCoordinator:
         graph = runtime._graph_for_session_metadata(session.metadata)
         output: str | None = None
         final_session = session
+        last_sequence = sequence
         try:
             for chunk in runtime._execute_graph_loop(
                 graph=graph,
@@ -301,6 +302,7 @@ class RuntimeResumeCoordinator:
             ):
                 final_session = chunk.session
                 if chunk.event is not None:
+                    last_sequence = chunk.event.sequence
                     loop_events.append(chunk.event)
                 if chunk.kind == "output":
                     output = chunk.output
@@ -320,6 +322,72 @@ class RuntimeResumeCoordinator:
                 runtime._persist_response(request=request, response=response)
                 return
             raise
+
+        if final_session.status == "waiting":
+            final_session = runtime._disconnect_acp_for_session_state(final_session)
+            waiting_response = RuntimeResponse(
+                session=final_session,
+                events=stored.events + tuple(loop_events),
+                output=output,
+            )
+            idle_reason = runtime._resume_waiting_reason(waiting_response)
+            idle_hook_outcome = runtime._run_lifecycle_hooks(
+                session=final_session,
+                sequence=last_sequence,
+                surface="session_idle",
+                payload={"reason": idle_reason, "resume": True},
+            )
+            for hook_chunk in idle_hook_outcome.chunks:
+                hook_event = cast(EventEnvelope, hook_chunk.event)
+                last_sequence = hook_event.sequence
+                loop_events.append(hook_event)
+                yield hook_chunk
+            if idle_hook_outcome.failed_error is not None:
+                failed_chunk = runtime._failed_chunk(
+                    session=final_session,
+                    sequence=idle_hook_outcome.last_sequence + 1,
+                    error=idle_hook_outcome.failed_error,
+                )
+                failed_event = cast(EventEnvelope, failed_chunk.event)
+                loop_events.append(failed_event)
+                final_session = failed_chunk.session
+                yield failed_chunk
+        else:
+            final_chunks, final_session, final_sequence = runtime._finalize_run_acp(
+                session=final_session,
+                sequence=last_sequence,
+            )
+            for chunk in final_chunks:
+                if chunk.event is not None:
+                    last_sequence += 1
+                    resequenced_event = runtime._resequence_event(
+                        chunk.event, sequence=last_sequence
+                    )
+                    loop_events.append(resequenced_event)
+                    yield RuntimeStreamChunk(
+                        kind="event", session=chunk.session, event=resequenced_event
+                    )
+            end_hook_outcome = runtime._run_lifecycle_hooks(
+                session=final_session,
+                sequence=max(last_sequence, final_sequence),
+                surface="session_end",
+                payload={"session_status": final_session.status, "resume": True},
+            )
+            for hook_chunk in end_hook_outcome.chunks:
+                hook_event = cast(EventEnvelope, hook_chunk.event)
+                last_sequence = hook_event.sequence
+                loop_events.append(hook_event)
+                yield hook_chunk
+            if end_hook_outcome.failed_error is not None:
+                failed_chunk = runtime._failed_chunk(
+                    session=final_session,
+                    sequence=end_hook_outcome.last_sequence + 1,
+                    error=end_hook_outcome.failed_error,
+                )
+                failed_event = cast(EventEnvelope, failed_chunk.event)
+                loop_events.append(failed_event)
+                final_session = failed_chunk.session
+                yield failed_chunk
 
         response = RuntimeResponse(
             session=final_session,
