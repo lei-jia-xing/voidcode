@@ -454,7 +454,7 @@ def test_http_session_replay_persists_across_runtime_reinstantiation(tmp_path: P
     assert status == 200
     payload = cast(dict[str, object], json.loads(body.decode("utf-8")))
     assert cast(dict[str, object], payload["session"])["status"] == "completed"
-    assert payload["output"] == "persist me\n"
+    assert payload["output"] == "persist me"
 
 
 def test_http_notifications_surface_approval_blocked_for_child_session(tmp_path: Path) -> None:
@@ -839,7 +839,7 @@ def test_http_background_task_output_endpoint_exposes_typed_delegated_payload_fo
         "approval_blocked": False,
         "result_available": True,
     }
-    assert payload["output"] == "hello\n"
+    assert payload["output"] == "hello"
 
 
 def test_http_tasks_endpoints_cover_real_runtime_completed_lifecycle(tmp_path: Path) -> None:
@@ -888,7 +888,7 @@ def test_http_tasks_endpoints_cover_real_runtime_completed_lifecycle(tmp_path: P
     assert task_payload["task_id"] == started.task.id
     assert task_payload["status"] == "completed"
     assert task_payload["approval_blocked"] is False
-    assert output_payload["output"] == "hello\n"
+    assert output_payload["output"] == "hello"
     assert any(item["task"] == {"id": started.task.id} for item in list_payload)
     assert any(item["task"] == {"id": started.task.id} for item in parent_payload)
 
