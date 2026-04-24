@@ -4085,6 +4085,19 @@ class VoidCodeRuntime:
     def _loaded_skill_names(skill_registry: SkillRegistry) -> list[str]:
         return sorted(skill_registry.skills)
 
+    @staticmethod
+    def _validated_runtime_context_from_payload(payload: dict[str, str]) -> SkillRuntimeContext:
+        try:
+            return runtime_context_from_payload(payload)
+        except ValueError as exc:
+            source_path = payload.get("source_path", "")
+            prefix = (
+                f"persisted skill payload {source_path}"
+                if source_path
+                else "persisted skill payload"
+            )
+            raise ValueError(f"{prefix}: {exc}") from exc
+
     def _applied_skill_contexts(
         self,
         skill_registry: SkillRegistry,
@@ -4217,7 +4230,8 @@ class VoidCodeRuntime:
         persisted_payloads = self._persisted_applied_skill_payloads(metadata)
         if persisted_payloads is not None:
             contexts = tuple(
-                runtime_context_from_payload(payload) for payload in persisted_payloads
+                self._validated_runtime_context_from_payload(payload)
+                for payload in persisted_payloads
             )
             selected_names = self._persisted_selected_skill_names(metadata)
             return build_skill_execution_snapshot(
@@ -4317,17 +4331,27 @@ class VoidCodeRuntime:
                 or not isinstance(content, str)
             ):
                 raise ValueError("persisted applied skill payloads must include string fields")
+            if not name.strip() or not description.strip() or not content.strip():
+                raise ValueError("persisted applied skill payload string fields must not be empty")
             normalized_payload = {"name": name, "description": description, "content": content}
             if prompt_context is not None:
                 if not isinstance(prompt_context, str):
                     raise ValueError(
                         "persisted applied skill payload prompt_context must be a string"
                     )
+                if not prompt_context.strip():
+                    raise ValueError(
+                        "persisted applied skill payload prompt_context must not be empty"
+                    )
                 normalized_payload["prompt_context"] = prompt_context
             if execution_notes is not None:
                 if not isinstance(execution_notes, str):
                     raise ValueError(
                         "persisted applied skill payload execution_notes must be a string"
+                    )
+                if not execution_notes.strip():
+                    raise ValueError(
+                        "persisted applied skill payload execution_notes must not be empty"
                     )
                 normalized_payload["execution_notes"] = execution_notes
             if source_path is not None:

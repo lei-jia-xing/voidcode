@@ -33,6 +33,7 @@ class SkillExecutionSnapshot:
 
 
 _WHITESPACE_PATTERN = re.compile(r"[ \t]+")
+_REQUIRED_SKILL_PAYLOAD_FIELDS = ("name", "description", "content")
 
 
 def _normalize_text(value: str) -> str:
@@ -84,11 +85,26 @@ def build_skill_prompt_context(contexts: Iterable[SkillRuntimeContext]) -> str:
 
 
 def runtime_context_from_payload(payload: dict[str, str]) -> SkillRuntimeContext:
-    name = payload["name"]
-    description = payload["description"]
-    content = payload["content"]
+    missing_fields = [
+        field_name for field_name in _REQUIRED_SKILL_PAYLOAD_FIELDS if field_name not in payload
+    ]
+    if missing_fields:
+        raise ValueError(
+            "persisted skill payload missing required fields: " + ", ".join(missing_fields)
+        )
+    name = payload["name"].strip()
+    description = payload["description"].strip()
+    content = payload["content"].strip()
+    if not name:
+        raise ValueError("persisted skill payload field 'name' must be a non-empty string")
+    if not description:
+        raise ValueError("persisted skill payload field 'description' must be a non-empty string")
+    if not content:
+        raise ValueError("persisted skill payload field 'content' must be a non-empty string")
     prompt_context = payload.get("prompt_context")
-    execution_notes = payload.get("execution_notes", content)
+    execution_notes = payload.get("execution_notes", content).strip()
+    if not execution_notes:
+        execution_notes = content
     if prompt_context is None:
         prompt_parts = [f"Skill: {name}"]
         if description:
@@ -96,13 +112,17 @@ def runtime_context_from_payload(payload: dict[str, str]) -> SkillRuntimeContext
         if execution_notes:
             prompt_parts.append(f"Instructions:\n{execution_notes}")
         prompt_context = "\n".join(prompt_parts).strip()
+    else:
+        prompt_context = prompt_context.strip()
+        if not prompt_context:
+            raise ValueError("persisted skill payload field 'prompt_context' must not be empty")
     return SkillRuntimeContext(
         name=name,
         description=description,
         content=content,
         prompt_context=prompt_context,
         execution_notes=execution_notes,
-        source_path=payload.get("source_path", ""),
+        source_path=payload.get("source_path", "").strip(),
     )
 
 
@@ -201,6 +221,7 @@ def snapshot_from_payload(payload: dict[str, object]) -> SkillExecutionSnapshot:
             if not isinstance(value, str):
                 raise ValueError("persisted skill snapshot payload values must be strings")
             normalized[key] = value
+        _ = runtime_context_from_payload(normalized)
         applied_payloads.append(normalized)
     source = payload.get("source", "legacy")
     if source not in {"run", "resume", "replay", "legacy"}:

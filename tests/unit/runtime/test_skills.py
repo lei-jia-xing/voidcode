@@ -9,12 +9,15 @@ from voidcode.runtime.skills import (
     build_runtime_contexts,
     build_skill_execution_snapshot,
     build_skill_prompt_context,
+    runtime_context_from_payload,
     snapshot_from_payload,
     snapshot_payload,
 )
 from voidcode.skills import (
     DEFAULT_SKILL_SEARCH_PATHS,
     LocalSkillMetadataLoader,
+    SkillManifestFrontmatter,
+    SkillManifestParseError,
     SkillRegistry,
     parse_skill_frontmatter,
 )
@@ -25,14 +28,14 @@ def test_parse_skill_frontmatter_returns_required_metadata() -> None:
         "---\nname: summarize\ndescription: Summarize selected files.\n---\n# Summarize\n"
     )
 
-    assert metadata == {
-        "name": "summarize",
-        "description": "Summarize selected files.",
-    }
+    assert metadata == SkillManifestFrontmatter(
+        name="summarize",
+        description="Summarize selected files.",
+    )
 
 
 def test_parse_skill_frontmatter_rejects_missing_required_fields() -> None:
-    with pytest.raises(ValueError, match="missing required fields: description"):
+    with pytest.raises(SkillManifestParseError, match="missing required fields: description"):
         _ = parse_skill_frontmatter("---\nname: summarize\n---\n")
 
 
@@ -146,6 +149,17 @@ def test_skill_runtime_context_builds_execution_prompt_context(tmp_path: Path) -
 def test_skill_loader_rejects_workspace_escape_search_paths(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="escapes workspace"):
         _ = LocalSkillMetadataLoader().discover(workspace=tmp_path, search_paths=("../skills",))
+
+
+def test_runtime_context_from_payload_rejects_empty_required_fields() -> None:
+    with pytest.raises(ValueError, match="field 'content' must be a non-empty string"):
+        _ = runtime_context_from_payload(
+            {
+                "name": "demo",
+                "description": "Demo",
+                "content": "   ",
+            }
+        )
 
 
 def test_build_skill_execution_snapshot_stable_payload() -> None:
