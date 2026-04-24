@@ -31,6 +31,7 @@ from ..mcp import (
     McpDiagnostic,
     McpDiagnosticsCollector,
     McpDiagnosticSeverity,
+    McpErrorCode,
     McpManager,
     McpManagerState,
     McpRuntimeEvent,
@@ -47,6 +48,15 @@ from .events import (
 )
 
 DEFAULT_MCP_REQUEST_TIMEOUT_SECONDS = 2.0
+_RECOVERABLE_MCP_CALL_ERROR_CODES = frozenset(
+    {
+        McpErrorCode.TOOL_NOT_FOUND,
+        McpErrorCode.INVALID_REQUEST,
+        -32602,  # JSON-RPC invalid params
+        -32601,  # JSON-RPC method not found
+        -32600,  # JSON-RPC invalid request
+    }
+)
 
 
 # =============================================================================
@@ -416,8 +426,18 @@ class ManagedMcpManager:
                 method=method,
                 diagnostic=diagnostic,
             )
-            self._stop_running_server_by_name(running.server_name)
+            if self._should_stop_running_server(exc, stage=stage):
+                self._stop_running_server_by_name(running.server_name)
             raise ValueError(message) from exc
+
+    def _should_stop_running_server(self, exc: Exception, *, stage: str) -> bool:
+        return not self._is_recoverable_call_error(exc, stage=stage)
+
+    def _is_recoverable_call_error(self, exc: Exception, *, stage: str) -> bool:
+        if stage != "call" or not isinstance(exc, McpError) or self._is_timeout_error(exc):
+            return False
+        code = getattr(exc.error, "code", None)
+        return code in _RECOVERABLE_MCP_CALL_ERROR_CODES
 
     def _call_sdk_session(
         self,
