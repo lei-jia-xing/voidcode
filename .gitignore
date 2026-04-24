@@ -24,7 +24,7 @@ htmlcov/
 .opencode/
 .sisyphus/
 .test_venv/
-agent/
+/agent/
 .omx/
 .codex
 .voidcode.json
