@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -144,6 +145,63 @@ def test_run_lifecycle_hooks_exposes_context_as_environment(tmp_path: Path) -> N
     assert output_path.read_text() == "background_task_completed:task-1"
 
 
+def test_run_lifecycle_hooks_exposes_canonical_payload_json_environment(tmp_path: Path) -> None:
+    output_path = tmp_path / "hook-payload.json"
+    hooks = RuntimeHooksConfig(
+        enabled=True,
+        on_session_start=(
+            (
+                sys.executable,
+                "-c",
+                "import os, pathlib; "
+                "pathlib.Path('hook-payload.json').write_text("
+                "os.environ['VOIDCODE_HOOK_PAYLOAD_JSON'])",
+            ),
+        ),
+    )
+
+    outcome = run_lifecycle_hooks(
+        LifecycleHookExecutionRequest(
+            hooks=hooks,
+            workspace=tmp_path,
+            session_id="hook-session",
+            surface="session_start",
+            recursion_env_var="VOIDCODE_RUNNING_TOOL_HOOK",
+            environment={},
+            sequence_start=0,
+            payload={"prompt": "hello", "resume": True},
+        )
+    )
+
+    assert outcome.failed_error is None
+    assert json.loads(output_path.read_text()) == {"prompt": "hello", "resume": True}
+
+
+def test_run_lifecycle_hooks_times_out_long_running_command(tmp_path: Path) -> None:
+    hooks = RuntimeHooksConfig(
+        enabled=True,
+        timeout_seconds=0.01,
+        on_session_start=((sys.executable, "-c", "import time; time.sleep(1)"),),
+    )
+
+    outcome = run_lifecycle_hooks(
+        LifecycleHookExecutionRequest(
+            hooks=hooks,
+            workspace=tmp_path,
+            session_id="hook-session",
+            surface="session_start",
+            recursion_env_var="VOIDCODE_RUNNING_TOOL_HOOK",
+            environment={},
+            sequence_start=2,
+        )
+    )
+
+    assert outcome.failed_error is not None
+    assert "lifecycle hook failed for session_start" in outcome.failed_error
+    assert "timed out" in outcome.failed_error
+    assert outcome.events[0].payload["hook_status"] == "error"
+
+
 def test_run_lifecycle_hooks_reports_failed_command(tmp_path: Path) -> None:
     hooks = RuntimeHooksConfig(
         enabled=True,
@@ -169,3 +227,56 @@ def test_run_lifecycle_hooks_reports_failed_command(tmp_path: Path) -> None:
     assert event.event_type == "runtime.session_ended"
     assert event.payload["hook_status"] == "error"
     assert "lifecycle hook failed for session_end" in str(event.payload["error"])
+
+
+def test_run_lifecycle_hooks_preserves_success_events_before_later_failure(tmp_path: Path) -> None:
+    hooks = RuntimeHooksConfig(
+        enabled=True,
+        on_session_end=(
+            (sys.executable, "-c", ""),
+            (sys.executable, "-c", "raise SystemExit(7)"),
+        ),
+    )
+
+    outcome = run_lifecycle_hooks(
+        LifecycleHookExecutionRequest(
+            hooks=hooks,
+            workspace=tmp_path,
+            session_id="hook-session",
+            surface="session_end",
+            recursion_env_var="VOIDCODE_RUNNING_TOOL_HOOK",
+            environment={},
+            sequence_start=4,
+        )
+    )
+
+    assert outcome.failed_error is not None
+    assert len(outcome.events) == 2
+    assert outcome.events[0].payload["hook_status"] == "ok"
+    assert outcome.events[1].payload["hook_status"] == "error"
+
+
+def test_run_tool_hooks_times_out_long_running_command(tmp_path: Path) -> None:
+    hooks = RuntimeHooksConfig(
+        enabled=True,
+        timeout_seconds=0.01,
+        pre_tool=((sys.executable, "-c", "import time; time.sleep(1)"),),
+    )
+
+    outcome = run_tool_hooks(
+        HookExecutionRequest(
+            hooks=hooks,
+            workspace=tmp_path,
+            session_id="hook-session",
+            tool_name="write_file",
+            phase="pre",
+            recursion_env_var="VOIDCODE_RUNNING_TOOL_HOOK",
+            environment={},
+            sequence_start=1,
+        )
+    )
+
+    assert outcome.failed_error is not None
+    assert "tool pre-hook failed for write_file" in outcome.failed_error
+    assert "timed out" in outcome.failed_error
+    assert outcome.events[0].payload["status"] == "error"

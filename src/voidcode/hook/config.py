@@ -163,6 +163,7 @@ class RuntimeFormatterPresetConfig:
 @dataclass(frozen=True, slots=True)
 class RuntimeHooksConfig:
     enabled: bool | None = None
+    timeout_seconds: float | None = 30.0
     pre_tool: tuple[tuple[str, ...], ...] = ()
     post_tool: tuple[tuple[str, ...], ...] = ()
     on_session_start: tuple[tuple[str, ...], ...] = ()

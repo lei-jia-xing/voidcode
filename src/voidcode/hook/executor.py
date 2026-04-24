@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -77,18 +78,17 @@ def run_tool_hooks(request: HookExecutionRequest) -> HookExecutionOutcome:
     for command in commands:
         last_sequence += 1
         try:
-            subprocess.run(
-                list(command),
-                cwd=request.workspace,
-                capture_output=True,
-                text=True,
-                check=True,
-                env={**os.environ, **request.environment, request.recursion_env_var: "1"},
+            _run_hook_command(
+                command=command,
+                workspace=request.workspace,
+                environment={**request.environment, request.recursion_env_var: "1"},
+                timeout_seconds=hooks.timeout_seconds,
             )
-        except (OSError, subprocess.CalledProcessError) as exc:
+        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
             error_text = f"tool {request.phase}-hook failed for {request.tool_name}: {exc}"
             return HookExecutionOutcome(
                 events=(
+                    *events,
                     HookExecutionEvent(
                         sequence=last_sequence,
                         event_type=_event_type_for_phase(request.phase),
@@ -142,23 +142,21 @@ def run_lifecycle_hooks(request: LifecycleHookExecutionRequest) -> HookExecution
     for command in commands:
         last_sequence += 1
         try:
-            subprocess.run(
-                list(command),
-                cwd=request.workspace,
-                capture_output=True,
-                text=True,
-                check=True,
-                env={
-                    **os.environ,
+            _run_hook_command(
+                command=command,
+                workspace=request.workspace,
+                environment={
                     **request.environment,
                     **_lifecycle_hook_environment(request),
                     request.recursion_env_var: "1",
                 },
+                timeout_seconds=hooks.timeout_seconds,
             )
-        except (OSError, subprocess.CalledProcessError) as exc:
+        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
             error_text = f"lifecycle hook failed for {request.surface}: {exc}"
             return HookExecutionOutcome(
                 events=(
+                    *events,
                     HookExecutionEvent(
                         sequence=last_sequence,
                         event_type=_event_type_for_surface(request.surface),
@@ -204,6 +202,7 @@ def _lifecycle_hook_environment(request: LifecycleHookExecutionRequest) -> dict[
     environment = {
         "VOIDCODE_HOOK_SURFACE": request.surface,
         "VOIDCODE_SESSION_ID": request.session_id,
+        "VOIDCODE_HOOK_PAYLOAD_JSON": json.dumps(dict(request.payload), sort_keys=True),
     }
     for key, value in request.payload.items():
         if value is None:
@@ -213,3 +212,21 @@ def _lifecycle_hook_environment(request: LifecycleHookExecutionRequest) -> dict[
             continue
         environment[env_key] = str(value)
     return environment
+
+
+def _run_hook_command(
+    *,
+    command: tuple[str, ...],
+    workspace: Path,
+    environment: Mapping[str, str],
+    timeout_seconds: float | None,
+) -> None:
+    subprocess.run(
+        list(command),
+        cwd=workspace,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=timeout_seconds,
+        env={**os.environ, **environment},
+    )
