@@ -3143,7 +3143,12 @@ class VoidCodeRuntime:
 
         if final_session.status == "waiting":
             final_session = self._disconnect_acp_for_session_state(final_session)
-            idle_reason = self._resume_waiting_reason(session_id=final_session.session.id)
+            waiting_response = RuntimeResponse(
+                session=final_session,
+                events=stored.events + tuple(loop_events),
+                output=output,
+            )
+            idle_reason = self._resume_waiting_reason(waiting_response)
             idle_hook_outcome = self._run_lifecycle_hooks(
                 session=final_session,
                 sequence=last_sequence,
@@ -3208,14 +3213,14 @@ class VoidCodeRuntime:
         )
         self._persist_response(request=request, response=response)
 
-    def _resume_waiting_reason(self, *, session_id: str) -> str:
-        if self._session_store.load_pending_approval(
-            workspace=self._workspace, session_id=session_id
-        ):
+    def _resume_waiting_reason(self, response: RuntimeResponse) -> str:
+        try:
+            self._pending_approval_from_response(response)
+        except ValueError:
+            pass
+        else:
             return "waiting_for_approval"
-        if self._session_store.load_pending_question(
-            workspace=self._workspace, session_id=session_id
-        ):
+        if self._pending_question_from_response(response) is not None:
             return "waiting_for_question"
         return "waiting"
 
