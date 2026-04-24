@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import ClassVar, cast
 
 from .contracts import ToolCall, ToolDefinition, ToolResult
+from .workspace import resolve_workspace_path
 
 IGNORE_PATTERNS = frozenset(
     [
@@ -108,18 +109,12 @@ class ListTool:
         search_path: Path
 
         if isinstance(path_value, str):
-            relative_path = Path(path_value)
-            workspace_root = workspace.resolve()
-            search_path = (workspace_root / relative_path).resolve()
-
-            if not search_path.is_relative_to(workspace_root):
-                raise ValueError("list path must be inside the workspace")
-
-            if not search_path.exists():
-                raise ValueError(f"list path does not exist: {path_value}")
-
-            if not search_path.is_dir():
-                raise ValueError(f"list path is not a directory: {path_value}")
+            search_path, _ = resolve_workspace_path(
+                workspace=workspace,
+                path_text=path_value,
+                tool_name=self.definition.name,
+                must_be_dir=True,
+            )
         else:
             search_path = workspace.resolve()
 

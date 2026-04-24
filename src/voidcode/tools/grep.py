@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 from ._pydantic_args import GrepArgs
 from .contracts import ToolCall, ToolDefinition, ToolResult
+from .workspace import resolve_workspace_path
 
 
 @final
@@ -37,15 +38,12 @@ class GrepTool:
                 raise ValueError("grep pattern must not be empty") from exc
             raise ValueError("grep requires a string pattern argument") from exc
 
-        relative_path = Path(args.path)
-        workspace_root = workspace.resolve()
-        candidate = (workspace_root / relative_path).resolve()
-
-        if not candidate.is_relative_to(workspace_root):
-            raise ValueError("grep only allows paths inside the workspace")
-
-        if not candidate.is_file():
-            raise ValueError(f"grep target does not exist: {args.path}")
+        candidate, relative_result_path = resolve_workspace_path(
+            workspace=workspace,
+            path_text=args.path,
+            tool_name=self.definition.name,
+            must_be_file=True,
+        )
 
         try:
             content = candidate.read_text(encoding="utf-8")
@@ -79,7 +77,6 @@ class GrepTool:
                     }
                 )
 
-        relative_result_path = candidate.relative_to(workspace_root).as_posix()
         if matches:
             preview_lines = [f"{match['line']}: {match['text']}" for match in matches[:10]]
             summary = (

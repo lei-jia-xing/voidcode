@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import ClassVar
 
 from .contracts import ToolCall, ToolDefinition, ToolResult
+from .workspace import resolve_workspace_path
 
 DEFAULT_IGNORE_PATTERNS = frozenset(
     [
@@ -89,15 +90,11 @@ class GlobTool:
         path_value = call.arguments.get("path")
         search_path: Path | None = None
         if isinstance(path_value, str):
-            relative_path = Path(path_value)
-            workspace_root = workspace.resolve()
-            search_path = (workspace_root / relative_path).resolve()
-
-            if not search_path.is_relative_to(workspace_root):
-                raise ValueError("glob path must be inside the workspace")
-
-            if not search_path.exists():
-                raise ValueError(f"glob path does not exist: {path_value}")
+            search_path, _ = resolve_workspace_path(
+                workspace=workspace,
+                path_text=path_value,
+                tool_name=self.definition.name,
+            )
 
         workspace_root = workspace.resolve()
         matched, truncated = self._find_files(workspace_root, pattern_value, search_path)

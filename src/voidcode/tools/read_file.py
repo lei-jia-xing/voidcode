@@ -9,6 +9,7 @@ from pydantic import ValidationError
 
 from ._pydantic_args import ReadFileArgs
 from .contracts import ToolCall, ToolDefinition, ToolResult
+from .workspace import resolve_workspace_path
 
 
 @final
@@ -28,15 +29,12 @@ class ReadFileTool:
         except ValidationError as exc:
             raise ValueError("read_file requires a string path argument") from exc
 
-        relative_path = Path(args.path)
-        workspace_root = workspace.resolve()
-        candidate = (workspace_root / relative_path).resolve()
-
-        if not candidate.is_relative_to(workspace_root):
-            raise ValueError("read_file only allows paths inside the workspace")
-
-        if not candidate.is_file():
-            raise ValueError(f"read_file target does not exist: {args.path}")
+        candidate, relative_path = resolve_workspace_path(
+            workspace=workspace,
+            path_text=args.path,
+            tool_name=self.definition.name,
+            must_be_file=True,
+        )
 
         content = candidate.read_text(encoding="utf-8")
         return ToolResult(
@@ -44,7 +42,7 @@ class ReadFileTool:
             status="ok",
             content=content,
             data={
-                "path": candidate.relative_to(workspace_root).as_posix(),
+                "path": relative_path,
                 "line_count": len(content.splitlines()),
             },
         )

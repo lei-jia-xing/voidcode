@@ -16,6 +16,7 @@ from .edit import (
     read_utf8_text,
     summarize_diff,
 )
+from .workspace import resolve_workspace_path
 
 
 class MultiEditTool:
@@ -78,14 +79,13 @@ class MultiEditTool:
                     raise ValueError(f"multi_edit edit #{idx} replaceAll must be boolean") from exc
             raise ValueError("multi_edit requires an array edits argument") from exc
 
+        target, relative_target = resolve_workspace_path(
+            workspace=workspace,
+            path_text=args.path,
+            tool_name=self.definition.name,
+            must_be_file=True,
+        )
         workspace_root = workspace.resolve()
-        target = (workspace_root / Path(args.path)).resolve()
-        if not target.is_relative_to(workspace_root):
-            raise ValueError("multi_edit only allows paths inside the workspace")
-        if not target.exists() or not target.is_file():
-            raise ValueError(f"multi_edit target does not exist: {args.path}")
-
-        relative_target = target.relative_to(workspace_root).as_posix()
         content_before = read_utf8_text(target)
 
         applied = 0

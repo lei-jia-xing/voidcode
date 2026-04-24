@@ -9,16 +9,16 @@ from pydantic import ValidationError
 
 from ._pydantic_args import AstGrepReplaceArgs, AstGrepSearchArgs
 from .contracts import ToolCall, ToolDefinition, ToolResult
+from .workspace import resolve_workspace_path
 
 
 def _resolve_candidate(*, workspace: Path, path_text: str) -> tuple[Path, str]:
-    workspace_root = workspace.resolve()
-    candidate = (workspace_root / Path(path_text)).resolve()
-    if not candidate.is_relative_to(workspace_root):
-        raise ValueError("ast_grep only allows paths inside the workspace")
-    if not candidate.exists():
-        raise ValueError(f"ast_grep target does not exist: {path_text}")
-    return candidate, candidate.relative_to(workspace_root).as_posix()
+    return resolve_workspace_path(
+        workspace=workspace,
+        path_text=path_text,
+        tool_name="ast_grep",
+        must_be_file=True,
+    )
 
 
 def _parse_stream_output(stdout: str) -> list[dict[str, Any]]:

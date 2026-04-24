@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 from ._pydantic_args import WriteFileArgs
 from .contracts import ToolCall, ToolDefinition, ToolResult
+from .workspace import resolve_workspace_path
 
 
 @final
@@ -33,12 +34,11 @@ class WriteFileTool:
                 raise ValueError("write_file requires a string content argument") from exc
             raise ValueError("write_file requires a string path argument") from exc
 
-        relative_path = Path(args.path)
-        workspace_root = workspace.resolve()
-        candidate = (workspace_root / relative_path).resolve()
-
-        if not candidate.is_relative_to(workspace_root):
-            raise ValueError("write_file only allows paths inside the workspace")
+        candidate, relative_path = resolve_workspace_path(
+            workspace=workspace,
+            path_text=args.path,
+            tool_name=self.definition.name,
+        )
 
         candidate.parent.mkdir(parents=True, exist_ok=True)
         candidate.write_text(args.content, encoding="utf-8")
@@ -48,7 +48,7 @@ class WriteFileTool:
             status="ok",
             content=args.content,
             data={
-                "path": candidate.relative_to(workspace_root).as_posix(),
+                "path": relative_path,
                 "byte_count": len(args.content.encode("utf-8")),
             },
         )

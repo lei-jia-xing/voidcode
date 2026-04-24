@@ -10,6 +10,7 @@ from rapidfuzz.distance import Levenshtein
 from ..hook.config import RuntimeHooksConfig
 from ._formatter import FormatterExecutionResult, FormatterExecutor
 from .contracts import ToolCall, ToolDefinition, ToolResult
+from .workspace import resolve_workspace_path
 
 
 def _normalize_line_endings(text: str) -> str:
@@ -500,18 +501,13 @@ class EditTool:
         if not isinstance(replace_all, bool):
             raise ValueError("edit replaceAll must be a boolean")
 
-        relative_path = Path(path_value)
+        candidate, relative_path = resolve_workspace_path(
+            workspace=workspace,
+            path_text=path_value,
+            tool_name=self.definition.name,
+            must_be_file=True,
+        )
         workspace_root = workspace.resolve()
-        candidate = (workspace_root / relative_path).resolve()
-
-        if not candidate.is_relative_to(workspace_root):
-            raise ValueError("edit only allows paths inside the workspace")
-
-        if not candidate.exists():
-            raise ValueError(f"edit target does not exist: {path_value}")
-
-        if not candidate.is_file():
-            raise ValueError(f"edit target is not a file: {path_value}")
 
         content_old = read_utf8_text(candidate)
 
@@ -551,7 +547,7 @@ class EditTool:
             output += f" Formatter warning: {diagnostics[0]['message']}"
 
         data: dict[str, object] = {
-            "path": candidate.relative_to(workspace_root).as_posix(),
+            "path": relative_path,
             "additions": additions,
             "deletions": deletions,
             "match_count": match_count,
