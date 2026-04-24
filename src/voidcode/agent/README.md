@@ -4,7 +4,7 @@
 
 ## 定位
 
-`voidcode.agent` 不负责执行，它负责描述**每一种 agent preset 是什么**，包括角色定位、默认权限、建议 skills、建议 hooks 与能力绑定方向。
+`voidcode.agent` 不负责执行，它负责描述**每一种 agent preset 是什么**，包括角色定位、builtin manifest、builtin prompt materialization、默认权限、建议 skills、建议 hooks 与能力绑定方向。
 
 它的目标不是替代 `runtime/`，而是把“agent 是什么、默认带什么组合”从运行时治理逻辑里拆出来，形成一个薄的、声明式的组合层。
 
@@ -13,6 +13,8 @@
 ## 负责什么
 
 - agent 角色说明
+- builtin manifest 校验
+- builtin prompt/profile 文本与 materialization
 - preset 级别的职责边界
 - 默认权限倾向
 - 建议 skill 绑定
@@ -47,30 +49,35 @@
 - `researcher`
 - `product`
 
-其中只有 `leader` 对应今天真实存在的单 agent 主路径，其余角色都仍然是 post-MVP 的 future preset。Runtime 当前会解析这些 future preset 以验证声明层 shape，但会拒绝把它们作为 active execution agent 运行。
+其中 `leader` 是今天真实存在的顶层 active execution preset；`worker`、`advisor`、`explore`、`researcher`、`product` 已可作为 runtime-owned delegated child preset 执行。它们仍然不是任意可选的顶层 active agent。
 
 ## Preset intent vs runtime truth
 
 本目录描述的是“一个角色默认希望带什么组合”，不是“runtime 今天已经能怎样执行它”。
 
 - `leader`：当前唯一映射到真实执行路径的角色；`preset` / `prompt_profile` / `model` / `execution_engine` / `tools` / `skills` / `provider_fallback` 会进入 runtime config truth 并随 session 持久化
-- `worker`：future focused executor preset，不代表今天已经有 delegated runtime
-- `advisor`：future advisory preset，不代表今天已有独立审查/判断 runtime
-- `explore`：future local-code exploration preset，不代表今天已有独立 explore session model
-- `researcher`：future external research preset，不代表今天已有独立 researcher orchestration
-- `product`：future scope/alignment preset，不代表今天已有需求对齐 gate runtime
+- `worker`：delegated focused executor preset；可进入 child execution，但不作为任意顶层 active agent 直接运行
+- `advisor`：delegated advisory preset；可进入 child execution，但不作为任意顶层 active agent 直接运行
+- `explore`：delegated local-code exploration preset；可进入 child execution，但不作为任意顶层 active agent 直接运行
+- `researcher`：delegated external research preset；可进入 child execution，但不作为任意顶层 active agent 直接运行
+- `product`：delegated scope/alignment preset；可进入 child execution，但不作为任意顶层 active agent 直接运行
 
-当前 `leader` 是第一阶段 runtime-managed agent slice：active agent 的 manifest allowlist 会收窄 provider 可见的 `available_tools`，并且同一边界也会约束实际 tool lookup / invocation。`leader` 的 `prompt_profile` 会进入 provider system message，`model` / `execution_engine` / `provider_fallback` 会决定 provider-backed single-agent 主路径，manifest `skill_refs` 会作为默认 skill selection 进入 runtime skill application，`agent.skills` 会覆盖本次运行使用的 runtime-managed skill discovery / application policy。
+当前 builtin preset 都有 agent-owned prompt profile；active / delegated agent 的 manifest allowlist 会收窄 provider 可见的 `available_tools`，并且同一边界也会约束实际 tool lookup / invocation。builtin `prompt_profile` 由 `src/voidcode/agent/` 统一 materialize 后进入 provider system message，`model_preference` / `execution_engine` 会作为 manifest live defaults 被 runtime 解析，manifest `skill_refs` 会作为默认 skill selection 进入 runtime skill application，`agent.skills` 会覆盖本次运行使用的 runtime-managed skill discovery / application policy。
 
-此外，`leader` 的 prompt 文本 ownership 现在明确归属 `src/voidcode/agent/leader/`：agent 层负责 prompt 内容与角色约束，provider 层只负责 message assembly 和模型调用，不再持有 leader persona 的源码副本。
+此外，builtin prompt 文本 ownership 现在明确归属 `src/voidcode/agent/`：agent 层负责 builtin prompt 内容、profile materialization 与 manifest 校验，provider 层只负责 message assembly 和模型调用，不再持有 role-specific persona 源码副本。
 
 ## 与 runtime 的边界
 
-`voidcode.agent` 可以描述“这个角色默认希望带哪些工具/skills/hooks/MCP profile”。其中 `leader` 的 prompt profile、工具边界、skills、model、execution engine 与 provider fallback 已进入 runtime enforcement / persistence；其他 preset 的能力绑定仍不能决定系统最终如何执行、治理、审批、恢复和持久化它。
+`voidcode.agent` 可以描述“这个角色默认希望带哪些工具/skills/hooks/MCP profile”。其中 builtin preset 的 prompt profile、工具边界、skills、model、execution engine 与 provider fallback 都会被 runtime 按当前执行边界消费；但这些声明仍不能决定系统最终如何执行、治理、审批、恢复和持久化它。
+
+当前 agent manifest 内部也区分了两类语义：
+
+- **live defaults**：`prompt_profile`、`execution_engine`、`model_preference`、`tool_allowlist`、`skill_refs`。这些字段要么已经被 runtime 直接消费，要么作为 active agent 的默认值进入 runtime config truth。
+- **intent metadata**：`routing_hints`。它仍属于声明层元数据，不是 runtime execution governance truth。
 
 最终的执行真相仍然由 `voidcode.runtime` 持有。
 
-这也意味着：本目录中出现的“建议 hooks / 建议能力”只是在描述未来 preset 希望依赖什么，不代表 runtime 今天已经支持对应的 lifecycle phase。以当前现实看，hooks 仍然只覆盖 runtime-owned 的 `pre_tool` / `post_tool`；background task、child-session、leader notification、result retrieval 等 async agent substrate 仍未落地。
+这也意味着：本目录中出现的“建议 hooks / 建议能力”只是在描述 preset intent，不代表 runtime 会把治理权让渡给 agent 层。当前现实里，background task、child-session、notification、result retrieval、tool enforcement、approval 与持久化仍全部由 runtime 持有。
 
 从 OMO/OMOA 的经验看，更值得借鉴的是以下结构判断，而不是直接照搬执行语义：
 
