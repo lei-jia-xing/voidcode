@@ -28,14 +28,18 @@ def has_builtin_prompt_profile(prompt_profile: str) -> bool:
 
 
 @cache
+def _render_known_builtin_prompt_profile(prompt_profile: str) -> str | None:
+    path = _prompt_path(prompt_profile)
+    if not path.is_file():
+        return None
+    return path.read_text(encoding="utf-8").strip()
+
+
 def render_builtin_prompt_profile(prompt_profile: str) -> str | None:
     normalized_prompt_profile = prompt_profile.strip()
     if not is_builtin_prompt_profile(normalized_prompt_profile):
         return None
-    path = _prompt_path(normalized_prompt_profile)
-    if not path.is_file():
-        return None
-    return path.read_text(encoding="utf-8").strip()
+    return _render_known_builtin_prompt_profile(normalized_prompt_profile)
 
 
 def render_agent_prompt(agent_preset: Mapping[str, object] | None = None) -> str | None:

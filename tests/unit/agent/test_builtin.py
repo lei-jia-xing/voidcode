@@ -8,6 +8,7 @@ from voidcode.agent import (
     render_agent_prompt,
     render_builtin_prompt_profile,
 )
+from voidcode.agent import prompts as prompt_module
 from voidcode.agent.builtin import validate_builtin_agent_manifests
 from voidcode.agent.models import AgentManifest
 
@@ -59,6 +60,20 @@ def test_builtin_prompt_lookup_rejects_non_builtin_profile_before_file_access() 
     assert is_builtin_prompt_profile("custom-review") is False
     assert is_builtin_prompt_profile("../leader") is False
     assert render_builtin_prompt_profile("../leader") is None
+
+
+def test_non_builtin_prompt_profiles_do_not_grow_builtin_prompt_cache() -> None:
+    prompt_module._render_known_builtin_prompt_profile.cache_clear()
+
+    assert render_builtin_prompt_profile("leader") is not None
+    cache_info = prompt_module._render_known_builtin_prompt_profile.cache_info()
+    assert cache_info.currsize == 1
+
+    assert render_builtin_prompt_profile("custom-review") is None
+    assert render_builtin_prompt_profile("another-custom-profile") is None
+
+    cache_info = prompt_module._render_known_builtin_prompt_profile.cache_info()
+    assert cache_info.currsize == 1
 
 
 def test_agent_manifest_exposes_live_default_vs_intent_field_semantics() -> None:
