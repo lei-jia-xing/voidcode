@@ -44,7 +44,7 @@ runtime/
 ## HOTSPOTS
 - `service.py` is the central monolith. Read the surrounding methods before changing `_build_graph_for_engine_from_config`, `_tool_registry_for_effective_config`, `_execute_graph_loop`, `start_background_task`, or resume helpers.
 - `config.py` is dense because it resolves many nested config sections. Prefer extending existing parse/serialize helpers over inventing a parallel path.
-- `storage.py` owns schema evolution and terminal-state bookkeeping. Migration changes must preserve old sessions, pending approvals, and background tasks.
+- `storage.py` owns schema evolution and terminal-state bookkeeping. Runtime SQLite persistence is still pre-MVP and does not guarantee backward compatibility across schema changes; prefer explicit schema updates and fail-fast behavior unless a task explicitly requires migration support.
 
 ## ANTI-PATTERNS
 - Do not move product governance into `graph/`; runtime chooses and configures graphs.

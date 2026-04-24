@@ -1,6 +1,7 @@
 # pyright: reportPrivateUsage=false
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
@@ -17,6 +18,9 @@ from .session import SessionState
 
 if TYPE_CHECKING:
     from .service import VoidCodeRuntime
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -379,15 +383,11 @@ class RuntimeResumeCoordinator:
                 loop_events.append(hook_event)
                 yield hook_chunk
             if end_hook_outcome.failed_error is not None:
-                failed_chunk = runtime._failed_chunk(
-                    session=final_session,
-                    sequence=end_hook_outcome.last_sequence + 1,
-                    error=end_hook_outcome.failed_error,
+                logger.warning(
+                    "session_end hook failed for %s during question resume: %s",
+                    final_session.session.id,
+                    end_hook_outcome.failed_error,
                 )
-                failed_event = cast(EventEnvelope, failed_chunk.event)
-                loop_events.append(failed_event)
-                final_session = failed_chunk.session
-                yield failed_chunk
 
         response = RuntimeResponse(
             session=final_session,
@@ -769,15 +769,11 @@ class RuntimeResumeCoordinator:
                 loop_events.append(hook_event)
                 yield hook_chunk
             if end_hook_outcome.failed_error is not None:
-                failed_chunk = runtime._failed_chunk(
-                    session=session,
-                    sequence=end_hook_outcome.last_sequence + 1,
-                    error=end_hook_outcome.failed_error,
+                logger.warning(
+                    "session_end hook failed for %s during approval resume: %s",
+                    session.session.id,
+                    end_hook_outcome.failed_error,
                 )
-                failed_event = cast(EventEnvelope, failed_chunk.event)
-                loop_events.append(failed_event)
-                session = failed_chunk.session
-                yield failed_chunk
 
         response = RuntimeResponse(
             session=session,

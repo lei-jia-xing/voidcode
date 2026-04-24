@@ -9599,6 +9599,38 @@ def test_runtime_session_end_hook_failure_does_not_override_terminal_truth(tmp_p
     assert all(event.event_type != "runtime.failed" for event in response.events)
 
 
+def test_runtime_resume_session_end_hook_failure_does_not_override_terminal_truth(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(
+            approval_mode="ask",
+            hooks=RuntimeHooksConfig(
+                enabled=True,
+                on_session_end=((sys.executable, "-c", "raise SystemExit(7)"),),
+            ),
+        ),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    waiting = runtime.run(RuntimeRequest(prompt="go", session_id="resume-end-hook-session"))
+    approval_request_id = str(waiting.events[-1].payload["request_id"])
+
+    resumed = runtime.resume(
+        session_id="resume-end-hook-session",
+        approval_request_id=approval_request_id,
+        approval_decision="allow",
+    )
+
+    assert resumed.session.status == "completed"
+    assert resumed.output == "done"
+    assert resumed.events[-1].event_type == RUNTIME_SESSION_ENDED
+    assert resumed.events[-1].payload["hook_status"] == "error"
+    assert all(event.event_type != "runtime.failed" for event in resumed.events)
+
+
 def test_runtime_executes_session_idle_hook_without_losing_pending_approval(
     tmp_path: Path,
 ) -> None:
@@ -9654,6 +9686,38 @@ def test_runtime_resume_does_not_retrigger_session_start_hook(tmp_path: Path) ->
     assert sum(event.event_type == RUNTIME_SESSION_STARTED for event in waiting.events) == 1
     assert sum(event.event_type == RUNTIME_SESSION_STARTED for event in resumed.events) == 1
     assert any(event.event_type == RUNTIME_SESSION_ENDED for event in resumed.events)
+
+
+def test_answer_question_resume_session_end_hook_failure_does_not_override_terminal_truth(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_QuestionThenDoneGraph(),
+        config=RuntimeConfig(
+            approval_mode="ask",
+            hooks=RuntimeHooksConfig(
+                enabled=True,
+                on_session_end=((sys.executable, "-c", "raise SystemExit(7)"),),
+            ),
+        ),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    waiting = runtime.run(RuntimeRequest(prompt="go", session_id="question-end-hook-session"))
+    question_request_id = str(waiting.events[-1].payload["request_id"])
+
+    resumed = runtime.answer_question(
+        session_id="question-end-hook-session",
+        question_request_id=question_request_id,
+        responses=(QuestionResponse(header="Runtime path", answers=("Reuse existing",)),),
+    )
+
+    assert resumed.session.status == "completed"
+    assert resumed.output == "done"
+    assert resumed.events[-1].event_type == RUNTIME_SESSION_ENDED
+    assert resumed.events[-1].payload["hook_status"] == "error"
+    assert all(event.event_type != "runtime.failed" for event in resumed.events)
 
 
 def test_runtime_disconnects_acp_before_failing_on_session_idle_hook_error(
