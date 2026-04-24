@@ -35,6 +35,7 @@ def test_discover_available_models_combines_alias_discovery_and_targets() -> Non
         "provider/model-b",
     )
     assert models.source in {"remote", "mixed"}
+    assert models.discovery_mode == "configured_endpoint"
 
 
 def test_discover_available_models_for_openai_uses_endpoint_fetcher() -> None:
@@ -56,6 +57,7 @@ def test_discover_available_models_for_openai_uses_endpoint_fetcher() -> None:
     assert captured[0].base_url == "https://api.openai.com"
     assert captured[0].headers == {"Authorization": "Bearer sk-test"}
     assert captured[0].timeout_seconds == 10.0
+    assert models.discovery_mode == "configured_endpoint"
 
 
 def test_discover_available_models_for_anthropic_uses_provider_specific_headers() -> None:
@@ -79,6 +81,7 @@ def test_discover_available_models_for_anthropic_uses_provider_specific_headers(
         "anthropic-version": "2023-06-01",
         "x-api-key": "sk-ant-test",
     }
+    assert models.discovery_mode == "configured_endpoint"
 
 
 def test_discover_available_models_for_google_uses_google_base_url() -> None:
@@ -100,6 +103,7 @@ def test_discover_available_models_for_google_uses_google_base_url() -> None:
     assert captured[0].base_url == "https://generativelanguage.googleapis.com"
     assert captured[0].api_key == "AIza-test"
     assert captured[0].headers == {"x-goog-api-key": "AIza-test"}
+    assert models.discovery_mode == "configured_endpoint"
 
 
 def test_discover_available_models_for_google_with_api_key_header_does_not_append_key_query_param(
@@ -195,6 +199,7 @@ def test_discover_available_models_skips_when_no_discovery_base_url_or_base_url(
     assert result.source == "fallback"
     assert result.last_refresh_status == "skipped"
     assert result.last_error == "provider has no model discovery endpoint"
+    assert result.discovery_mode == "unavailable"
 
 
 def test_discover_available_models_marks_fallback_on_fetch_failure() -> None:
@@ -214,6 +219,7 @@ def test_discover_available_models_marks_fallback_on_fetch_failure() -> None:
     assert result.source == "fallback"
     assert result.last_refresh_status == "failed"
     assert result.last_error == "remote model discovery failed"
+    assert result.discovery_mode == "configured_endpoint"
 
 
 def test_discover_available_models_custom_provider_builds_url_from_plain_base_url(
@@ -254,6 +260,7 @@ def test_discover_available_models_custom_provider_builds_url_from_plain_base_ur
     assert result.models == ("provider/model-a",)
     assert captured["url"] == "https://gateway.example.com/v1/models"
     assert captured["timeout"] == 10.0
+    assert result.discovery_mode == "configured_base_url"
 
 
 def test_discover_available_models_custom_provider_keeps_existing_v1_models_path(
@@ -293,6 +300,7 @@ def test_discover_available_models_custom_provider_keeps_existing_v1_models_path
 
     assert result.models == ("provider/model-b",)
     assert captured["url"] == "https://gateway.example.com/v1/models"
+    assert result.discovery_mode == "configured_base_url"
 
 
 def test_discover_available_models_glm_base_url_uses_v4_models_path(
@@ -329,6 +337,7 @@ def test_discover_available_models_glm_base_url_uses_v4_models_path(
 
     assert result.models == ("glm/glm-4-flash",)
     assert captured["url"] == "https://open.bigmodel.cn/api/paas/v4/models"
+    assert result.discovery_mode == "configured_base_url"
 
 
 def test_discover_available_models_respects_discovery_base_url_when_set(
@@ -369,6 +378,7 @@ def test_discover_available_models_respects_discovery_base_url_when_set(
 
     assert result.models == ("openai/gpt-4o",)
     assert captured["url"] == "https://opencode.ai/zen/v1/models"
+    assert result.discovery_mode == "configured_endpoint"
 
 
 def test_discover_available_models_skips_remote_when_discovery_base_url_is_empty() -> None:
@@ -383,7 +393,8 @@ def test_discover_available_models_skips_remote_when_discovery_base_url_is_empty
     assert result.models == ("alias", "MiniMax-M2.7")
     assert result.source == "fallback"
     assert result.last_refresh_status == "skipped"
-    assert result.last_error == "provider has no model discovery endpoint"
+    assert result.last_error == "provider model discovery disabled by config"
+    assert result.discovery_mode == "disabled"
 
 
 def test_discover_available_models_custom_provider_uses_token_auth_header_without_bearer_prefix(
@@ -432,3 +443,4 @@ def test_discover_available_models_custom_provider_uses_token_auth_header_withou
         str(k).lower(): str(v) for k, v in dict(cast(dict[str, str], captured["headers"])).items()
     }
     assert headers.get("x-api-key") == "token-raw"
+    assert result.discovery_mode == "configured_base_url"

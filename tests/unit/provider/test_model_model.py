@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from voidcode.provider.config import LiteLLMProviderConfig, ProviderConfigs
 from voidcode.provider.litellm import LiteLLMModelProvider
 from voidcode.provider.models import ResolvedProviderConfig
 from voidcode.provider.registry import ModelProviderRegistry
@@ -41,6 +42,8 @@ def test_resolve_provider_model_parses_known_provider_reference() -> None:
     assert resolved.selection.model == "gpt-5.4"
     assert resolved.provider is not None
     assert resolved.provider.name == "opencode"
+    assert resolved.resolution.source == "builtin"
+    assert resolved.resolution.configured is True
 
 
 def test_resolve_provider_model_creates_generic_provider_for_unknown_name() -> None:
@@ -54,6 +57,23 @@ def test_resolve_provider_model_creates_generic_provider_for_unknown_name() -> N
     assert resolved.provider is not None
     assert resolved.provider.name == "custom"
     assert isinstance(resolved.provider, LiteLLMModelProvider)
+    assert resolved.resolution.source == "default_litellm"
+    assert resolved.resolution.configured is False
+
+
+def test_resolve_provider_model_marks_custom_configured_provider_resolution() -> None:
+    registry = ModelProviderRegistry.with_defaults(
+        provider_configs=ProviderConfigs(
+            custom={"llama-local": LiteLLMProviderConfig(base_url="http://localhost:11434/v1")}
+        )
+    )
+
+    resolved = resolve_provider_model("llama-local/coder", registry=registry)
+
+    assert resolved.provider is not None
+    assert resolved.provider.name == "llama-local"
+    assert resolved.resolution.source == "custom"
+    assert resolved.resolution.configured is True
 
 
 def test_resolve_provider_chain_preserves_ordered_fallback_targets() -> None:
@@ -121,6 +141,17 @@ def test_resolve_provider_config_rejects_mismatched_model_and_preferred_fallback
             provider_fallback=RuntimeProviderFallbackConfig(
                 preferred_model="custom/demo",
                 fallback_models=("backup/model",),
+            ),
+            registry=ModelProviderRegistry.with_defaults(),
+        )
+
+
+def test_resolve_provider_chain_rejects_duplicate_targets_even_without_parser() -> None:
+    with pytest.raises(ValueError, match="duplicate models"):
+        _ = resolve_provider_chain(
+            RuntimeProviderFallbackConfig(
+                preferred_model="opencode/gpt-5.4",
+                fallback_models=("opencode/gpt-5.4",),
             ),
             registry=ModelProviderRegistry.with_defaults(),
         )

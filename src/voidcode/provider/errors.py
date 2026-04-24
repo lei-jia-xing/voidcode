@@ -46,6 +46,20 @@ class ParsedProviderError:
     kind: Literal["rate_limit", "context_limit", "invalid_model", "transient_failure"]
     message: str
     details: dict[str, object]
+    retryable: bool
+    fallback_allowed: bool
+
+
+def _recovery_policy_for_kind(
+    kind: Literal["rate_limit", "context_limit", "invalid_model", "transient_failure"],
+) -> tuple[bool, bool]:
+    if kind == "context_limit":
+        return False, False
+    if kind == "invalid_model":
+        return False, True
+    if kind == "rate_limit":
+        return True, True
+    return True, True
 
 
 def _extract_error_message(payload: dict[str, Any]) -> str | None:
@@ -135,6 +149,7 @@ def parse_provider_api_error(payload: dict[str, Any]) -> ParsedProviderError:
     status_code = _extract_status_code(payload)
     code = _extract_error_code(payload)
     kind = _classify_api_error_kind(message=message, status_code=status_code, code=code)
+    retryable, fallback_allowed = _recovery_policy_for_kind(kind)
     details: dict[str, object] = dict(payload)
     details.update(
         {
@@ -143,7 +158,13 @@ def parse_provider_api_error(payload: dict[str, Any]) -> ParsedProviderError:
             "error_code": code,
         }
     )
-    return ParsedProviderError(kind=kind, message=message, details=details)
+    return ParsedProviderError(
+        kind=kind,
+        message=message,
+        details=details,
+        retryable=retryable,
+        fallback_allowed=fallback_allowed,
+    )
 
 
 def parse_provider_stream_error(payload: dict[str, Any]) -> ParsedProviderError:
@@ -151,6 +172,7 @@ def parse_provider_stream_error(payload: dict[str, Any]) -> ParsedProviderError:
     status_code = _extract_status_code(payload)
     code = _extract_error_code(payload)
     kind = _classify_api_error_kind(message=message, status_code=status_code, code=code)
+    retryable, fallback_allowed = _recovery_policy_for_kind(kind)
     details: dict[str, object] = dict(payload)
     details.update(
         {
@@ -159,7 +181,13 @@ def parse_provider_stream_error(payload: dict[str, Any]) -> ParsedProviderError:
             "error_code": code,
         }
     )
-    return ParsedProviderError(kind=kind, message=message, details=details)
+    return ParsedProviderError(
+        kind=kind,
+        message=message,
+        details=details,
+        retryable=retryable,
+        fallback_allowed=fallback_allowed,
+    )
 
 
 def provider_execution_error_from_api_payload(
@@ -174,6 +202,7 @@ def provider_execution_error_from_api_payload(
         provider_name=provider_name,
         model_name=model_name,
         message=parsed.message,
+        retryable=parsed.retryable,
         details=parsed.details,
     )
 
@@ -190,6 +219,7 @@ def provider_execution_error_from_stream_payload(
         provider_name=provider_name,
         model_name=model_name,
         message=parsed.message,
+        retryable=parsed.retryable,
         details=parsed.details,
     )
 

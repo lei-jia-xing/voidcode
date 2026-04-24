@@ -55,12 +55,16 @@ def test_parse_provider_api_error_maps_429_to_rate_limit() -> None:
     assert parsed.kind == "rate_limit"
     assert parsed.message == "Too many requests"
     assert parsed.details["source"] == "api"
+    assert parsed.retryable is True
+    assert parsed.fallback_allowed is True
 
 
 def test_parse_provider_api_error_maps_401_to_invalid_model() -> None:
     parsed = parse_provider_api_error({"status_code": 401, "message": "Unauthorized"})
 
     assert parsed.kind == "invalid_model"
+    assert parsed.retryable is False
+    assert parsed.fallback_allowed is True
 
 
 def test_parse_provider_api_error_maps_context_overflow_patterns() -> None:
@@ -72,6 +76,8 @@ def test_parse_provider_api_error_maps_context_overflow_patterns() -> None:
     )
 
     assert parsed.kind == "context_limit"
+    assert parsed.retryable is False
+    assert parsed.fallback_allowed is False
 
 
 def test_parse_provider_stream_error_maps_context_length_exceeded_code() -> None:
@@ -87,6 +93,8 @@ def test_parse_provider_stream_error_maps_context_length_exceeded_code() -> None
 
     assert parsed.kind == "context_limit"
     assert parsed.details["source"] == "stream"
+    assert parsed.retryable is False
+    assert parsed.fallback_allowed is False
 
 
 def test_provider_execution_error_from_api_payload_preserves_details() -> None:
@@ -97,6 +105,7 @@ def test_provider_execution_error_from_api_payload_preserves_details() -> None:
     )
 
     assert exc.kind == "transient_failure"
+    assert exc.retryable is True
     assert exc.details is not None
     assert exc.details["status_code"] == 503
     assert exc.details["source"] == "api"
@@ -110,6 +119,7 @@ def test_provider_execution_error_from_stream_payload_preserves_details() -> Non
     )
 
     assert exc.kind == "invalid_model"
+    assert exc.retryable is False
     assert exc.details is not None
     assert exc.details["status_code"] == 403
     assert exc.details["source"] == "stream"

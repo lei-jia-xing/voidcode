@@ -88,6 +88,16 @@ def parse_resolved_provider_snapshot(
         raise ValueError(
             format_invalid_provider_config_error(f"{source}.targets", "must not be empty")
         )
+    resolved_target_raw_models = [
+        target.selection.raw_model for target in resolved_targets_list if target.selection.raw_model
+    ]
+    if len(set(resolved_target_raw_models)) != len(resolved_target_raw_models):
+        raise ValueError(
+            format_invalid_provider_config_error(
+                f"{source}.targets",
+                "must not contain duplicate provider targets",
+            )
+        )
     first_target = resolved_targets_list[0]
     resolved_targets: tuple[ResolvedProviderModel, ...] = tuple(resolved_targets_list)
 
@@ -96,12 +106,12 @@ def parse_resolved_provider_snapshot(
         source=f"{source}.active_target",
         registry=registry,
     )
-    resolved_target_raw_models = {
+    resolved_target_raw_model_set = {
         target.selection.raw_model
         for target in resolved_targets
         if target.selection.raw_model is not None
     }
-    if resolved_active_target.selection.raw_model not in resolved_target_raw_models:
+    if resolved_active_target.selection.raw_model not in resolved_target_raw_model_set:
         raise ValueError(
             format_invalid_provider_config_error(
                 f"{source}.active_target",

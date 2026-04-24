@@ -139,3 +139,37 @@ def test_parse_resolved_provider_snapshot_rejects_empty_targets() -> None:
             source="persisted runtime_config.resolved_provider",
             registry=ModelProviderRegistry.with_defaults(),
         )
+
+
+def test_parse_resolved_provider_snapshot_rejects_duplicate_targets() -> None:
+    with pytest.raises(
+        ValueError,
+        match=(
+            "invalid provider config: "
+            "persisted runtime_config.resolved_provider.targets "
+            "must not contain duplicate provider targets"
+        ),
+    ):
+        _ = parse_resolved_provider_snapshot(
+            {
+                "active_target": {
+                    "raw_model": "opencode/gpt-5.4",
+                    "provider": "opencode",
+                    "model": "gpt-5.4",
+                },
+                "targets": [
+                    {
+                        "raw_model": "opencode/gpt-5.4",
+                        "provider": "opencode",
+                        "model": "gpt-5.4",
+                    },
+                    {
+                        "raw_model": "opencode/gpt-5.4",
+                        "provider": "opencode",
+                        "model": "gpt-5.4",
+                    },
+                ],
+            },
+            source="persisted runtime_config.resolved_provider",
+            registry=ModelProviderRegistry.with_defaults(),
+        )

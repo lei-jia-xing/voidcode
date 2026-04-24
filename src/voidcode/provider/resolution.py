@@ -4,6 +4,7 @@ from .config import ProviderFallbackConfig
 from .errors import format_invalid_provider_config_error
 from .models import (
     ProviderModelSelection,
+    ProviderResolutionMetadata,
     ResolvedProviderChain,
     ResolvedProviderConfig,
     ResolvedProviderModel,
@@ -20,14 +21,18 @@ def resolve_provider_model(
         return ResolvedProviderModel()
 
     provider_name, model_name = _parse_model_reference(raw_model)
-    provider = registry.resolve(provider_name)
+    provider_resolution = registry.resolve_with_metadata(provider_name)
     return ResolvedProviderModel(
         selection=ProviderModelSelection(
             raw_model=raw_model,
             provider=provider_name,
             model=model_name,
         ),
-        provider=provider,
+        provider=provider_resolution.provider,
+        resolution=ProviderResolutionMetadata(
+            source=provider_resolution.source,
+            configured=provider_resolution.configured,
+        ),
     )
 
 
@@ -39,6 +44,9 @@ def resolve_provider_chain(
     if provider_fallback is None:
         return ResolvedProviderChain()
 
+    _validate_unique_model_references(
+        (provider_fallback.preferred_model, *provider_fallback.fallback_models)
+    )
     preferred = resolve_provider_model(provider_fallback.preferred_model, registry=registry)
     fallbacks = tuple(
         resolve_provider_model(raw_model, registry=registry)
@@ -94,3 +102,8 @@ def _parse_model_reference(raw_model: str) -> tuple[str, str]:
     if separator != "/" or "/" in model_name or not provider_name or not model_name:
         raise ValueError("model must use provider/model format")
     return provider_name, model_name
+
+
+def _validate_unique_model_references(raw_models: tuple[str, ...]) -> None:
+    if len(set(raw_models)) != len(raw_models):
+        raise ValueError("provider fallback chain must not contain duplicate models")

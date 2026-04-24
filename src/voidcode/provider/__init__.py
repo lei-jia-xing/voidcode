@@ -39,6 +39,7 @@ from .minimax import MiniMaxModelProvider
 from .model_catalog import ProviderModelCatalog, discover_available_models
 from .models import (
     ProviderModelSelection,
+    ProviderResolutionMetadata,
     ResolvedProviderChain,
     ResolvedProviderConfig,
     ResolvedProviderModel,
@@ -87,6 +88,7 @@ __all__ = [
     "ProviderExecutionError",
     "ProviderFallbackConfig",
     "ProviderModelSelection",
+    "ProviderResolutionMetadata",
     "ResolvedProviderChain",
     "ResolvedProviderConfig",
     "ResolvedProviderModel",

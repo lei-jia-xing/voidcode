@@ -1,9 +1,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 from .config import ProviderFallbackConfig
 from .protocol import ModelTurnProvider
+
+type ProviderResolutionSource = Literal["builtin", "custom", "default_litellm"]
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderResolutionMetadata:
+    source: ProviderResolutionSource | None = None
+    configured: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -17,6 +26,7 @@ class ProviderModelSelection:
 class ResolvedProviderModel:
     selection: ProviderModelSelection = ProviderModelSelection()
     provider: ModelTurnProvider | None = None
+    resolution: ProviderResolutionMetadata = ProviderResolutionMetadata()
 
 
 @dataclass(frozen=True, slots=True)

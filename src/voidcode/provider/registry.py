@@ -18,6 +18,7 @@ from .kimi import KimiModelProvider
 from .litellm import LiteLLMModelProvider
 from .minimax import MiniMaxModelProvider
 from .model_catalog import ProviderModelCatalog, discover_available_models
+from .models import ProviderResolutionSource
 from .openai import OpenAIModelProvider
 from .opencode_go import OpenCodeGoModelProvider
 from .protocol import ModelTurnProvider, StubTurnProvider, TurnProvider
@@ -61,6 +62,14 @@ class StaticModelProvider:
         return StubTurnProvider(name=self.name)
 
 
+@dataclass(frozen=True, slots=True)
+class ProviderResolution:
+    provider_name: str
+    provider: ModelTurnProvider
+    source: ProviderResolutionSource
+    configured: bool
+
+
 @dataclass(slots=True)
 class ModelProviderRegistry:
     providers: dict[str, ModelTurnProvider]
@@ -92,15 +101,33 @@ class ModelProviderRegistry:
             model_catalog={},
         )
 
-    def resolve(self, provider_name: str) -> ModelTurnProvider:
+    def resolve_with_metadata(self, provider_name: str) -> ProviderResolution:
         provider = self.providers.get(provider_name)
         if provider is not None:
-            return provider
+            return ProviderResolution(
+                provider_name=provider_name,
+                provider=provider,
+                source="builtin",
+                configured=True,
+            )
         if self.custom_provider_configs is not None:
             custom_config = self.custom_provider_configs.get(provider_name)
             if custom_config is not None:
-                return LiteLLMModelProvider(name=provider_name, config=custom_config)
-        return LiteLLMModelProvider(name=provider_name, config=self.default_litellm_config)
+                return ProviderResolution(
+                    provider_name=provider_name,
+                    provider=LiteLLMModelProvider(name=provider_name, config=custom_config),
+                    source="custom",
+                    configured=True,
+                )
+        return ProviderResolution(
+            provider_name=provider_name,
+            provider=LiteLLMModelProvider(name=provider_name, config=self.default_litellm_config),
+            source="default_litellm",
+            configured=self.default_litellm_config is not None,
+        )
+
+    def resolve(self, provider_name: str) -> ModelTurnProvider:
+        return self.resolve_with_metadata(provider_name).provider
 
     def provider_config(self, provider_name: str) -> LiteLLMProviderConfig | None:
         if provider_name == "openai":
@@ -251,6 +278,7 @@ class ModelProviderRegistry:
                 source=discovery.source,
                 last_refresh_status=discovery.last_refresh_status,
                 last_error=discovery.last_error,
+                discovery_mode=discovery.discovery_mode,
             )
         return discovery.models
 

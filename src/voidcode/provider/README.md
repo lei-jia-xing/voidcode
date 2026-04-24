@@ -257,3 +257,18 @@ VoidCode 的 Provider 抽象层输出标准化的流式事件包。
 - `registry.py`: 维护已实现的 Provider 实例。
 - `resolution.py`: 负责将原始请求解析为具体的 Provider 配置。
 - `snapshot.py`: 提供安全的快照导出逻辑，确保不泄露机密。
+
+## 模块内约束（production hardening）
+
+- `ResolvedProviderModel` 会显式记录 provider resolution 来源：
+  - `builtin`：内置 provider adapter
+  - `custom`：`providers.custom.<name>` 显式配置的 LiteLLM-compatible provider
+  - `default_litellm`：未声明 provider 时回退到默认 LiteLLM 语义
+- fallback chain 不允许重复 target；即使绕过原始 config parser，`resolution.py` / `snapshot.py`
+  仍会在 provider 模块内拒绝重复链路。
+- model discovery 会显式区分：
+  - `configured_endpoint`：使用 `discovery_base_url`
+  - `configured_base_url`：从 `base_url` 推导探测端点
+  - `disabled`：`discovery_base_url` 被显式置空，表示禁用远端发现
+  - `unavailable`：provider 本身没有可用 discovery endpoint
+- provider error 解析会同时给出 `kind` 与恢复语义（`retryable` / `fallback_allowed`），减少调用侧对启发式字符串的重复判断。

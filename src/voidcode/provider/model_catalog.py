@@ -4,7 +4,7 @@ import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import cast
+from typing import Literal, cast
 from urllib.error import URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
@@ -32,6 +32,12 @@ class ProviderModelCatalog:
     source: str = "remote"
     last_refresh_status: str = "ok"
     last_error: str | None = None
+    discovery_mode: Literal[
+        "configured_endpoint",
+        "configured_base_url",
+        "disabled",
+        "unavailable",
+    ] = "unavailable"
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,6 +46,24 @@ class ModelDiscoveryResult:
     source: str
     last_refresh_status: str
     last_error: str | None
+    discovery_mode: Literal[
+        "configured_endpoint",
+        "configured_base_url",
+        "disabled",
+        "unavailable",
+    ]
+
+
+@dataclass(frozen=True, slots=True)
+class ModelDiscoveryPlan:
+    discovery_mode: Literal[
+        "configured_endpoint",
+        "configured_base_url",
+        "disabled",
+        "unavailable",
+    ]
+    request: DiscoveryRequest | None
+    skip_reason: str | None = None
 
 
 def discover_available_models(
@@ -52,11 +76,11 @@ def discover_available_models(
     error_message: str | None = None
     source = "remote"
     refresh_status = "ok"
-    request = _build_discovery_request(provider_name=provider_name, config=config)
-    if request is not None:
+    discovery_plan = _build_discovery_plan(provider_name=provider_name, config=config)
+    if discovery_plan.request is not None:
         active_fetcher = _fetch_models if fetcher is None else fetcher
         try:
-            discovered = active_fetcher(request)
+            discovered = active_fetcher(discovery_plan.request)
         except (ValueError, OSError, TimeoutError, URLError):
             discovered = ()
             source = "fallback"
@@ -65,7 +89,7 @@ def discover_available_models(
     else:
         source = "fallback"
         refresh_status = "skipped"
-        error_message = "provider has no model discovery endpoint"
+        error_message = discovery_plan.skip_reason
 
     mapped_aliases = tuple(config.model_map.keys()) if config is not None else ()
     mapped_targets = tuple(config.model_map.values()) if config is not None else ()
@@ -85,19 +109,8 @@ def discover_available_models(
         source=source,
         last_refresh_status=refresh_status,
         last_error=error_message,
+        discovery_mode=discovery_plan.discovery_mode,
     )
-
-
-def _base_url_for_discovery(*, config: LiteLLMProviderConfig | None) -> str | None:
-    if config is not None:
-        if config.discovery_base_url is not None:
-            candidate = config.discovery_base_url.strip()
-            if not candidate:
-                return None
-            return candidate.rstrip("/")
-        if config.base_url:
-            return config.base_url.rstrip("/")
-    return None
 
 
 def _timeout_for_discovery(config: LiteLLMProviderConfig | None) -> float:
@@ -117,12 +130,44 @@ def _headers_for_discovery(config: LiteLLMProviderConfig | None) -> dict[str, st
     return {header_name: f"Bearer {config.api_key}"}
 
 
-def _build_discovery_request(
+def _build_discovery_plan(
     *, provider_name: str, config: LiteLLMProviderConfig | None
-) -> DiscoveryRequest | None:
-    base_url = _base_url_for_discovery(config=config)
-    if base_url is None:
-        return None
+) -> ModelDiscoveryPlan:
+    if config is not None and config.discovery_base_url is not None:
+        candidate = config.discovery_base_url.strip()
+        if not candidate:
+            return ModelDiscoveryPlan(
+                discovery_mode="disabled",
+                request=None,
+                skip_reason="provider model discovery disabled by config",
+            )
+        return _discovery_plan_from_base_url(
+            provider_name=provider_name,
+            config=config,
+            base_url=candidate.rstrip("/"),
+            discovery_mode="configured_endpoint",
+        )
+    if config is not None and config.base_url:
+        return _discovery_plan_from_base_url(
+            provider_name=provider_name,
+            config=config,
+            base_url=config.base_url.rstrip("/"),
+            discovery_mode="configured_base_url",
+        )
+    return ModelDiscoveryPlan(
+        discovery_mode="unavailable",
+        request=None,
+        skip_reason="provider has no model discovery endpoint",
+    )
+
+
+def _discovery_plan_from_base_url(
+    *,
+    provider_name: str,
+    config: LiteLLMProviderConfig | None,
+    base_url: str,
+    discovery_mode: Literal["configured_endpoint", "configured_base_url"],
+) -> ModelDiscoveryPlan:
 
     provider = provider_name.strip().lower()
     timeout_seconds = _timeout_for_discovery(config)
@@ -142,12 +187,15 @@ def _build_discovery_request(
             anthropic_headers["x-api-key"] = api_key
         headers = anthropic_headers
 
-    return DiscoveryRequest(
-        provider=provider,
-        base_url=base_url,
-        headers=headers,
-        timeout_seconds=timeout_seconds,
-        api_key=None if config is None else config.api_key,
+    return ModelDiscoveryPlan(
+        discovery_mode=discovery_mode,
+        request=DiscoveryRequest(
+            provider=provider,
+            base_url=base_url,
+            headers=headers,
+            timeout_seconds=timeout_seconds,
+            api_key=None if config is None else config.api_key,
+        ),
     )
 
 

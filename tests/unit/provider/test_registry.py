@@ -73,6 +73,30 @@ def test_registry_unknown_provider_prefers_custom_provider_config() -> None:
     assert resolved.config == custom_config
 
 
+def test_registry_resolve_with_metadata_distinguishes_builtin_custom_and_default_sources() -> None:
+    default_config = LiteLLMProviderConfig(api_key="default")
+    custom_config = LiteLLMProviderConfig(api_key="custom", base_url="http://localhost:11434/v1")
+    registry = ModelProviderRegistry.with_defaults(
+        provider_configs=ProviderConfigs(
+            litellm=default_config,
+            custom={"llama-local": custom_config},
+        )
+    )
+
+    builtin = registry.resolve_with_metadata("openai")
+    custom = registry.resolve_with_metadata("llama-local")
+    fallback = registry.resolve_with_metadata("typo-provider")
+
+    assert builtin.source == "builtin"
+    assert builtin.configured is True
+    assert custom.source == "custom"
+    assert custom.configured is True
+    assert custom.provider.name == "llama-local"
+    assert fallback.source == "default_litellm"
+    assert fallback.configured is True
+    assert fallback.provider.name == "typo-provider"
+
+
 def test_registry_keeps_existing_opencode_static_provider_behavior() -> None:
     registry = ModelProviderRegistry.with_defaults()
 
@@ -104,6 +128,7 @@ def test_registry_refresh_available_models_prefers_model_map_aliases() -> None:
     catalog = registry.provider_catalog("litellm")
     assert catalog is not None
     assert catalog.last_refresh_status in {"ok", "failed", "skipped"}
+    assert catalog.discovery_mode in {"configured_endpoint", "configured_base_url", "disabled"}
 
 
 def test_registry_refresh_custom_provider_uses_custom_config() -> None:
@@ -124,6 +149,7 @@ def test_registry_refresh_custom_provider_uses_custom_config() -> None:
     catalog = registry.provider_catalog("llama-local")
     assert catalog is not None
     assert catalog.provider == "llama-local"
+    assert catalog.discovery_mode == "configured_base_url"
 
 
 def test_registry_google_provider_config_uses_google_api_key_header_for_api_key_auth() -> None:
