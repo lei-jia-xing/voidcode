@@ -2560,7 +2560,7 @@ def test_runtime_initializes_extension_state_from_config_when_enabled(tmp_path: 
     skill_dir = tmp_path / ".voidcode" / "skills" / "demo"
     skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text(
-        "---\nname: demo\ndescription: Demo skill\n---\n",
+        "---\nname: demo\ndescription: Demo skill\n---\n# Demo\nUse the demo skill.\n",
         encoding="utf-8",
     )
 
@@ -2607,13 +2607,34 @@ def test_runtime_initializes_extension_state_from_config_when_enabled(tmp_path: 
     assert acp_state.available is False
 
 
+def test_runtime_rejects_duplicate_discovered_skill_names(tmp_path: Path) -> None:
+    first = tmp_path / ".voidcode" / "skills" / "first"
+    second = tmp_path / ".voidcode" / "skills" / "nested" / "second"
+    first.mkdir(parents=True)
+    second.mkdir(parents=True)
+    (first / "SKILL.md").write_text(
+        "---\nname: demo\ndescription: First demo skill\n---\n# First\n",
+        encoding="utf-8",
+    )
+    (second / "SKILL.md").write_text(
+        "---\nname: demo\ndescription: Second demo skill\n---\n# Second\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="duplicate skill name 'demo' discovered"):
+        _ = VoidCodeRuntime(
+            workspace=tmp_path,
+            config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=True)),
+        )
+
+
 def test_runtime_keeps_skill_registry_empty_when_skills_not_explicitly_enabled(
     tmp_path: Path,
 ) -> None:
     skill_dir = tmp_path / "custom-skills" / "demo"
     skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text(
-        "---\nname: demo\ndescription: Demo skill\n---\n",
+        "---\nname: demo\ndescription: Demo skill\n---\n# Demo\nUse the demo skill.\n",
         encoding="utf-8",
     )
 
@@ -3319,11 +3340,11 @@ def test_runtime_default_extension_construction_preserves_public_run_path(
     alpha_skill_dir.mkdir(parents=True)
     zeta_skill_dir.mkdir(parents=True)
     (alpha_skill_dir / "SKILL.md").write_text(
-        "---\nname: alpha\ndescription: Alpha skill\n---\n",
+        "---\nname: alpha\ndescription: Alpha skill\n---\n# Alpha\nUse alpha.\n",
         encoding="utf-8",
     )
     (zeta_skill_dir / "SKILL.md").write_text(
-        "---\nname: zeta\ndescription: Zeta skill\n---\n",
+        "---\nname: zeta\ndescription: Zeta skill\n---\n# Zeta\nUse zeta.\n",
         encoding="utf-8",
     )
 
@@ -4088,6 +4109,68 @@ def test_runtime_resume_reuses_frozen_skill_payloads_for_execution_semantics(
     )
 
 
+def test_runtime_resume_rejects_invalid_persisted_skill_payload_with_source_path(
+    tmp_path: Path,
+) -> None:
+    skill_dir = tmp_path / ".voidcode" / "skills" / "demo"
+    _write_demo_skill(
+        skill_dir,
+        content="# Demo\nUse concise bullet points.",
+    )
+
+    initial_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=True), approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    waiting = initial_runtime.run(RuntimeRequest(prompt="go", session_id="invalid-skill-payload"))
+    approval_request_id = str(waiting.events[-1].payload["request_id"])
+
+    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    connection = sqlite3.connect(database_path)
+    try:
+        row = connection.execute(
+            "SELECT metadata_json FROM sessions WHERE session_id = ?",
+            ("invalid-skill-payload",),
+        ).fetchone()
+        assert row is not None
+        metadata = json.loads(str(row[0]))
+        assert isinstance(metadata, dict)
+        metadata_dict = cast(dict[str, object], metadata)
+        applied_payloads = cast(list[dict[str, object]], metadata_dict["applied_skill_payloads"])
+        applied_payloads[0]["content"] = "   "
+        metadata_dict["skill_snapshot"] = {
+            **cast(dict[str, object], metadata_dict["skill_snapshot"]),
+            "applied_skill_payloads": applied_payloads,
+        }
+        _ = connection.execute(
+            "UPDATE sessions SET metadata_json = ? WHERE session_id = ?",
+            (json.dumps(metadata_dict, sort_keys=True), "invalid-skill-payload"),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=True), approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"persisted skill payload field 'content' must be a non-empty string",
+    ):
+        _ = resumed_runtime.resume(
+            session_id="invalid-skill-payload",
+            approval_request_id=approval_request_id,
+            approval_decision="allow",
+        )
+
+
 class _MultiStepStubGraph:
     def step(
         self,
@@ -4331,6 +4414,66 @@ def test_runtime_resume_preserves_legacy_name_only_empty_applied_skills_snapshot
     assert resumed.session.status == "completed"
     assert _ApprovalThenCaptureSkillGraph.last_request is not None
     assert _ApprovalThenCaptureSkillGraph.last_request.applied_skills == ()
+
+
+def test_runtime_resume_rejects_invalid_legacy_persisted_skill_payload_with_source_path(
+    tmp_path: Path,
+) -> None:
+    skill_dir = tmp_path / ".voidcode" / "skills" / "demo"
+    _write_demo_skill(
+        skill_dir,
+        description="Demo skill",
+        content="# Demo\nOriginal instructions.",
+    )
+
+    initial_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=True), approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    waiting = initial_runtime.run(RuntimeRequest(prompt="go", session_id="legacy-invalid-skill"))
+    approval_request_id = str(waiting.events[-1].payload["request_id"])
+
+    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    connection = sqlite3.connect(database_path)
+    try:
+        row = connection.execute(
+            "SELECT metadata_json FROM sessions WHERE session_id = ?",
+            ("legacy-invalid-skill",),
+        ).fetchone()
+        assert row is not None
+        metadata = json.loads(str(row[0]))
+        assert isinstance(metadata, dict)
+        metadata_dict = cast(dict[str, object], metadata)
+        metadata_dict.pop("skill_snapshot", None)
+        applied_payloads = cast(list[dict[str, object]], metadata_dict["applied_skill_payloads"])
+        applied_payloads[0]["execution_notes"] = "   "
+        _ = connection.execute(
+            "UPDATE sessions SET metadata_json = ? WHERE session_id = ?",
+            (json.dumps(metadata_dict, sort_keys=True), "legacy-invalid-skill"),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=True), approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"persisted applied skill payload execution_notes must not be empty",
+    ):
+        _ = resumed_runtime.resume(
+            session_id="legacy-invalid-skill",
+            approval_request_id=approval_request_id,
+            approval_decision="allow",
+        )
 
 
 def test_runtime_resume_reconstructs_legacy_applied_skill_names_from_live_registry(
