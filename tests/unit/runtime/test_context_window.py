@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from voidcode.runtime.context_window import ContextWindowPolicy, prepare_single_agent_context
+from voidcode.runtime.context_window import ContextWindowPolicy, prepare_provider_context
 from voidcode.tools.contracts import ToolResult
 
 
@@ -15,8 +15,8 @@ def _tool_result(index: int) -> ToolResult:
     )
 
 
-def test_prepare_single_agent_context_keeps_results_within_limit() -> None:
-    context = prepare_single_agent_context(
+def test_prepare_provider_context_keeps_results_within_limit() -> None:
+    context = prepare_provider_context(
         prompt="read sample.txt",
         tool_results=(_tool_result(1), _tool_result(2)),
         session_metadata={},
@@ -33,8 +33,8 @@ def test_prepare_single_agent_context_keeps_results_within_limit() -> None:
     assert context.continuity_state is None
 
 
-def test_prepare_single_agent_context_compacts_old_results_and_reports_metadata() -> None:
-    context = prepare_single_agent_context(
+def test_prepare_provider_context_compacts_old_results_and_reports_metadata() -> None:
+    context = prepare_provider_context(
         prompt="read sample.txt",
         tool_results=(_tool_result(1), _tool_result(2), _tool_result(3), _tool_result(4)),
         session_metadata={},
@@ -64,8 +64,8 @@ def test_prepare_single_agent_context_compacts_old_results_and_reports_metadata(
     }
 
 
-def test_prepare_single_agent_context_uses_explicit_continuity_preview_policy() -> None:
-    context = prepare_single_agent_context(
+def test_prepare_provider_context_uses_explicit_continuity_preview_policy() -> None:
+    context = prepare_provider_context(
         prompt="read sample.txt",
         tool_results=(_tool_result(1), _tool_result(2), _tool_result(3), _tool_result(4)),
         session_metadata={},
@@ -96,8 +96,8 @@ def _continuity_tool_result(
     )
 
 
-def test_prepare_single_agent_context_continuity_metadata_includes_version() -> None:
-    context = prepare_single_agent_context(
+def test_prepare_provider_context_continuity_metadata_includes_version() -> None:
+    context = prepare_provider_context(
         prompt="read sample.txt",
         tool_results=(
             _continuity_tool_result("ok", content="dropped"),

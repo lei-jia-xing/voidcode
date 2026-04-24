@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
-from voidcode.runtime.contracts import BackgroundTaskResult, RuntimeRequest
+from voidcode.runtime.contracts import BackgroundTaskResult, RuntimeRequest, RuntimeResponse
 from voidcode.runtime.session import SessionRef, SessionState
 from voidcode.runtime.task import (
     BackgroundTaskRef,
@@ -16,24 +15,20 @@ from voidcode.tools import TaskTool, ToolCall
 from voidcode.tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
 
 
-@dataclass
-class _RunResponse:
-    session: SessionState
-    output: str | None = None
-
-
 class _StubTaskRuntime:
     def __init__(self) -> None:
         self.requests: list[RuntimeRequest] = []
 
-    def run(self, request: RuntimeRequest) -> _RunResponse:
+    def run(self, request: RuntimeRequest) -> RuntimeResponse:
         self.requests.append(request)
-        return _RunResponse(
+        child_session_id = request.session_id or "child-session"
+        return RuntimeResponse(
             session=SessionState(
-                session=SessionRef(id="child-session", parent_id=request.parent_session_id),
+                session=SessionRef(id=child_session_id, parent_id=request.parent_session_id),
                 status="completed",
                 turn=1,
             ),
+            events=(),
             output="child done",
         )
 
@@ -85,7 +80,10 @@ def test_task_tool_starts_background_task_with_parent_context(tmp_path: Path) ->
     assert result.status == "ok"
     assert result.data["task_id"] == "task-123"
     assert runtime.requests[0].parent_session_id == "leader-session"
-    assert runtime.requests[0].metadata == {"skills": ["demo"]}
+    assert runtime.requests[0].metadata == {
+        "skills": ["demo"],
+        "delegation": {"mode": "background", "category": "quick"},
+    }
 
 
 def test_task_tool_runs_sync_child_session(tmp_path: Path) -> None:
@@ -109,6 +107,50 @@ def test_task_tool_runs_sync_child_session(tmp_path: Path) -> None:
     assert result.status == "ok"
     assert result.content == "child done"
     assert result.data["session_id"] == "child-session"
+    assert result.data["parent_session_id"] == "leader-session"
+    assert result.data["status"] == "completed"
+    assert result.data["requested_subagent_type"] == "explore"
+    assert result.data["load_skills"] == []
+    assert result.data["output"] == "child done"
+    assert runtime.requests[0].parent_session_id == "leader-session"
+    assert runtime.requests[0].session_id is None
+    assert runtime.requests[0].allocate_session_id is True
+    assert runtime.requests[0].metadata == {
+        "skills": [],
+        "delegation": {"mode": "sync", "subagent_type": "explore"},
+    }
+    assert runtime.requests[0].prompt.startswith("Delegated runtime task.\nRequested mode: sync")
+    assert "Requested subagent_type: explore" in runtime.requests[0].prompt
+
+
+def test_task_tool_sync_path_preserves_explicit_child_session_id(tmp_path: Path) -> None:
+    runtime = _StubTaskRuntime()
+    tool = TaskTool(runtime=runtime)
+
+    with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="leader-session")):
+        result = tool.invoke(
+            ToolCall(
+                tool_name="task",
+                arguments={
+                    "prompt": "Do it now",
+                    "run_in_background": False,
+                    "load_skills": ["demo"],
+                    "subagent_type": "explore",
+                    "session_id": "child-existing",
+                },
+            ),
+            workspace=tmp_path,
+        )
+
+    assert result.status == "ok"
+    assert result.data["session_id"] == "child-existing"
+    assert result.data["parent_session_id"] == "leader-session"
+    assert runtime.requests[0].session_id == "child-existing"
+    assert runtime.requests[0].allocate_session_id is False
+    assert runtime.requests[0].metadata == {
+        "skills": ["demo"],
+        "delegation": {"mode": "sync", "subagent_type": "explore"},
+    }
 
 
 def test_task_tool_requires_runtime_context(tmp_path: Path) -> None:

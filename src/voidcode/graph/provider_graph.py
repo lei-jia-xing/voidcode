@@ -7,12 +7,12 @@ from typing import cast
 from ..provider.errors import parse_provider_stream_error
 from ..provider.models import ResolvedProviderModel
 from ..provider.protocol import (
+    ProviderAbortSignal,
     ProviderExecutionError,
     ProviderStreamEvent,
-    SingleAgentAbortSignal,
-    SingleAgentProvider,
-    SingleAgentTurnRequest,
-    StreamableSingleAgentProvider,
+    ProviderTurnRequest,
+    StreamableTurnProvider,
+    TurnProvider,
 )
 from ..runtime.context_window import RuntimeContextWindow
 from ..runtime.events import GRAPH_LOOP_STEP, GRAPH_MODEL_TURN, GRAPH_RESPONSE_READY
@@ -22,7 +22,7 @@ from .contracts import GraphEvent, GraphRunRequest
 
 
 @dataclass(frozen=True, slots=True)
-class SingleAgentStep:
+class ProviderStep:
     events: tuple[GraphEvent, ...] = ()
     tool_call: ToolCall | None = None
     output: str | None = None
@@ -41,11 +41,11 @@ class _GraphAbortSignal:
         self._cancelled = value
 
 
-class ProviderSingleAgentGraph:
+class ProviderGraph:
     def __init__(
         self,
         *,
-        provider: SingleAgentProvider,
+        provider: TurnProvider,
         provider_model: ResolvedProviderModel,
         max_steps: int = 4,
     ) -> None:
@@ -65,7 +65,7 @@ class ProviderSingleAgentGraph:
         tool_results: tuple[ToolResult, ...],
         *,
         session: SessionState,
-    ) -> SingleAgentStep:
+    ) -> ProviderStep:
         _ = session
         current_turn = len(tool_results) + 1
         if current_turn > self._max_steps:
@@ -92,7 +92,7 @@ class ProviderSingleAgentGraph:
                 GRAPH_MODEL_TURN,
                 {
                     "turn": current_turn,
-                    "mode": "single_agent",
+                    "mode": "provider",
                     "provider": self._provider.name,
                     "model": self._provider_model.selection.model,
                     "attempt": request.metadata.get("provider_attempt", 0),
@@ -109,7 +109,7 @@ class ProviderSingleAgentGraph:
             self._abort_signal.set_cancelled(
                 str(abort_requested).strip().lower() not in {"false", "0", "no", "off", ""}
             )
-        turn_request = SingleAgentTurnRequest(
+        turn_request = ProviderTurnRequest(
             prompt=request.prompt,
             available_tools=request.available_tools,
             tool_results=tool_results,
@@ -121,10 +121,10 @@ class ProviderSingleAgentGraph:
             skill_prompt_context=request.skill_prompt_context,
             agent_preset=cast(dict[str, object] | None, request.metadata.get("agent_preset")),
             attempt=cast(int, request.metadata.get("provider_attempt", 0)),
-            abort_signal=cast(SingleAgentAbortSignal, self._abort_signal),
+            abort_signal=cast(ProviderAbortSignal, self._abort_signal),
         )
 
-        if streaming_enabled and isinstance(self._provider, StreamableSingleAgentProvider):
+        if streaming_enabled and isinstance(self._provider, StreamableTurnProvider):
             return self._step_streaming(
                 planning_events=planning_events,
                 turn_request=turn_request,
@@ -141,22 +141,22 @@ class ProviderSingleAgentGraph:
                 ),
                 self._graph_event(GRAPH_RESPONSE_READY, {"output_preview": turn_result.output}),
             )
-            return SingleAgentStep(
+            return ProviderStep(
                 events=finalize_events,
                 output=turn_result.output,
                 is_finished=True,
             )
 
-        return SingleAgentStep(events=planning_events, tool_call=turn_result.tool_call)
+        return ProviderStep(events=planning_events, tool_call=turn_result.tool_call)
 
     def _step_streaming(
         self,
         *,
         planning_events: tuple[GraphEvent, ...],
-        turn_request: SingleAgentTurnRequest,
+        turn_request: ProviderTurnRequest,
         current_turn: int,
-    ) -> SingleAgentStep:
-        stream_provider = cast(StreamableSingleAgentProvider, self._provider)
+    ) -> ProviderStep:
+        stream_provider = cast(StreamableTurnProvider, self._provider)
         stream_events: list[GraphEvent] = []
         output_parts: list[str] = []
         streamed_tool_call: ToolCall | None = None
@@ -241,7 +241,7 @@ class ProviderSingleAgentGraph:
                         message="provider stream ended with error",
                     )
                 if streamed_tool_call is not None:
-                    return SingleAgentStep(
+                    return ProviderStep(
                         events=planning_events + tuple(stream_events),
                         tool_call=streamed_tool_call,
                     )
@@ -261,9 +261,9 @@ class ProviderSingleAgentGraph:
                         self._graph_event(GRAPH_RESPONSE_READY, {"output_preview": output}),
                     )
                 )
-                return SingleAgentStep(events=finalize_events, output=output, is_finished=True)
+                return ProviderStep(events=finalize_events, output=output, is_finished=True)
 
-        return SingleAgentStep(
+        return ProviderStep(
             events=planning_events + tuple(stream_events), output="", is_finished=True
         )
 

@@ -76,6 +76,12 @@ def test_background_output_tool_returns_task_summary(tmp_path: Path) -> None:
     assert result.status == "ok"
     assert result.content == "done"
     assert result.data["task_id"] == "task-1"
+    delegation_payload = result.data["delegation"]
+    assert isinstance(delegation_payload, dict)
+    assert delegation_payload["delegated_task_id"] == "task-1"
+    message_payload = result.data["message"]
+    assert isinstance(message_payload, dict)
+    assert message_payload["status"] == "completed"
     session_payload = result.data["session"]
     assert isinstance(session_payload, dict)
     assert session_payload["session_id"] == "child-session"

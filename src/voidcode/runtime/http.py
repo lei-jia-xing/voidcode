@@ -11,6 +11,7 @@ from typing import Protocol, cast, final
 
 from .config import RuntimeConfig
 from .contracts import (
+    BackgroundTaskResult,
     NoPendingQuestionError,
     RuntimeNotification,
     RuntimeRequest,
@@ -22,17 +23,38 @@ from .contracts import (
     validate_session_id,
     validate_session_reference_id,
 )
-from .events import EventEnvelope
+from .events import DelegatedLifecycleEventPayload, EventEnvelope
 from .permission import PermissionResolution
 from .question import QuestionResponse
 from .service import VoidCodeRuntime
 from .session import SessionRef, SessionState, StoredSessionSummary
+from .task import (
+    BackgroundTaskRequestSnapshot,
+    BackgroundTaskState,
+    StoredBackgroundTaskSummary,
+    SubagentRoutingIdentity,
+    validate_background_task_id,
+)
 
 logger = logging.getLogger(__name__)
 
 
 class RuntimeTransport(Protocol):
     def run_stream(self, request: RuntimeRequest) -> Iterator[RuntimeStreamChunk]: ...
+
+    def start_background_task(self, request: RuntimeRequest) -> BackgroundTaskState: ...
+
+    def load_background_task(self, task_id: str) -> BackgroundTaskState: ...
+
+    def load_background_task_result(self, task_id: str) -> BackgroundTaskResult: ...
+
+    def list_background_tasks(self) -> tuple[StoredBackgroundTaskSummary, ...]: ...
+
+    def list_background_tasks_by_parent_session(
+        self, *, parent_session_id: str
+    ) -> tuple[StoredBackgroundTaskSummary, ...]: ...
+
+    def cancel_background_task(self, task_id: str) -> BackgroundTaskState: ...
 
     def list_sessions(self) -> tuple[StoredSessionSummary, ...]: ...
 
@@ -128,6 +150,20 @@ class RuntimeTransportApp:
             await self._handle_list_sessions(send)
             return
 
+        if path == "/api/tasks":
+            if method == "GET":
+                await self._handle_list_background_tasks(send)
+                return
+            if method == "POST":
+                await self._handle_start_background_task(receive, send)
+                return
+            await self._json_response(
+                send,
+                status=405,
+                payload={"error": "method not allowed"},
+            )
+            return
+
         if path == "/api/notifications":
             if method != "GET":
                 await self._json_response(
@@ -176,14 +212,68 @@ class RuntimeTransportApp:
             )
             return
 
+        task_prefix = "/api/tasks/"
+        if path.startswith(task_prefix):
+            task_path = path.removeprefix(task_prefix)
+            is_cancel_route = task_path.endswith("/cancel")
+            is_output_route = task_path.endswith("/output")
+            task_id = (
+                task_path.removesuffix("/cancel")
+                if is_cancel_route
+                else task_path.removesuffix("/output")
+                if is_output_route
+                else task_path
+            )
+            try:
+                validate_background_task_id(task_id)
+            except ValueError:
+                await self._json_response(
+                    send,
+                    status=404,
+                    payload={"error": "not found"},
+                )
+                return
+            if is_cancel_route:
+                if method != "POST":
+                    await self._json_response(
+                        send,
+                        status=405,
+                        payload={"error": "method not allowed"},
+                    )
+                    return
+                await self._handle_cancel_background_task(task_id=task_id, send=send)
+                return
+            if is_output_route:
+                if method != "GET":
+                    await self._json_response(
+                        send,
+                        status=405,
+                        payload={"error": "method not allowed"},
+                    )
+                    return
+                await self._handle_background_task_output(task_id=task_id, send=send)
+                return
+            if method != "GET":
+                await self._json_response(
+                    send,
+                    status=405,
+                    payload={"error": "method not allowed"},
+                )
+                return
+            await self._handle_background_task_status(task_id=task_id, send=send)
+            return
+
         session_prefix = "/api/sessions/"
         if path.startswith(session_prefix):
             session_path = path.removeprefix(session_prefix)
+            is_task_list_route = session_path.endswith("/tasks")
             is_approval_route = session_path.endswith("/approval")
             is_question_route = session_path.endswith("/question")
             is_result_route = session_path.endswith("/result")
             session_id = (
-                session_path.removesuffix("/approval")
+                session_path.removesuffix("/tasks")
+                if is_task_list_route
+                else session_path.removesuffix("/approval")
                 if is_approval_route
                 else session_path.removesuffix("/question")
                 if is_question_route
@@ -200,6 +290,28 @@ class RuntimeTransportApp:
                     payload={"error": "not found"},
                 )
                 return
+            if is_task_list_route:
+                if method != "GET":
+                    await self._json_response(
+                        send,
+                        status=405,
+                        payload={"error": "method not allowed"},
+                    )
+                    return
+                await self._handle_list_background_tasks_by_parent_session(
+                    parent_session_id=session_id,
+                    send=send,
+                )
+                return
+            session_id = (
+                session_path.removesuffix("/approval")
+                if is_approval_route
+                else session_path.removesuffix("/question")
+                if is_question_route
+                else session_path.removesuffix("/result")
+                if is_result_route
+                else session_path
+            )
             if is_approval_route:
                 if method != "POST":
                     await self._json_response(
@@ -345,6 +457,123 @@ class RuntimeTransportApp:
         finally:
             self._close_runtime(runtime)
         await self._json_response(send, status=200, payload=payload)
+
+    async def _handle_start_background_task(self, receive: Receive, send: Send) -> None:
+        try:
+            body = await self._read_body(receive)
+            request = self._parse_runtime_request(body)
+        except ValueError as exc:
+            await self._json_response(send, status=400, payload={"error": str(exc)})
+            return
+
+        runtime = self._runtime_factory()
+        try:
+            task = runtime.start_background_task(request)
+        except RuntimeRequestError as exc:
+            await self._json_response(send, status=400, payload={"error": str(exc)})
+            return
+        finally:
+            self._close_runtime(runtime)
+        await self._json_response(
+            send,
+            status=201,
+            payload=self._serialize_background_task_state(task),
+        )
+
+    async def _handle_list_background_tasks(self, send: Send) -> None:
+        runtime = self._runtime_factory()
+        try:
+            payload = [
+                self._serialize_background_task_summary(item)
+                for item in runtime.list_background_tasks()
+            ]
+        finally:
+            self._close_runtime(runtime)
+        await self._json_response(send, status=200, payload=payload)
+
+    async def _handle_list_background_tasks_by_parent_session(
+        self,
+        *,
+        parent_session_id: str,
+        send: Send,
+    ) -> None:
+        runtime = self._runtime_factory()
+        try:
+            payload = [
+                self._serialize_background_task_summary(item)
+                for item in runtime.list_background_tasks_by_parent_session(
+                    parent_session_id=parent_session_id
+                )
+            ]
+        finally:
+            self._close_runtime(runtime)
+        await self._json_response(send, status=200, payload=payload)
+
+    async def _handle_background_task_status(self, *, task_id: str, send: Send) -> None:
+        runtime = self._runtime_factory()
+        try:
+            task = runtime.load_background_task(task_id)
+        except ValueError as exc:
+            await self._json_response(send, status=404, payload={"error": str(exc)})
+            return
+        finally:
+            self._close_runtime(runtime)
+        await self._json_response(
+            send,
+            status=200,
+            payload=self._serialize_background_task_state(task),
+        )
+
+    async def _handle_background_task_output(self, *, task_id: str, send: Send) -> None:
+        runtime = self._runtime_factory()
+        try:
+            task_result = runtime.load_background_task_result(task_id)
+            child_session_result: RuntimeSessionResult | None = None
+            if task_result.child_session_id is not None:
+                try:
+                    child_session_result = runtime.session_result(
+                        session_id=task_result.child_session_id
+                    )
+                except ValueError:
+                    child_session_result = None
+        except ValueError as exc:
+            await self._json_response(send, status=404, payload={"error": str(exc)})
+            return
+        finally:
+            self._close_runtime(runtime)
+        resolved_output = (
+            child_session_result.output
+            if child_session_result is not None and child_session_result.output is not None
+            else task_result.summary_output
+            if task_result.summary_output is not None
+            else task_result.error
+        )
+        await self._json_response(
+            send,
+            status=200,
+            payload={
+                "task": self._serialize_background_task_result(task_result),
+                "session_result": self._serialize_session_result(child_session_result)
+                if child_session_result is not None
+                else None,
+                "output": resolved_output,
+            },
+        )
+
+    async def _handle_cancel_background_task(self, *, task_id: str, send: Send) -> None:
+        runtime = self._runtime_factory()
+        try:
+            task = runtime.cancel_background_task(task_id)
+        except ValueError as exc:
+            await self._json_response(send, status=404, payload={"error": str(exc)})
+            return
+        finally:
+            self._close_runtime(runtime)
+        await self._json_response(
+            send,
+            status=200,
+            payload=self._serialize_background_task_state(task),
+        )
 
     async def _handle_list_notifications(self, send: Send) -> None:
         runtime = self._runtime_factory()
@@ -686,6 +915,71 @@ class RuntimeTransportApp:
         }
 
     @staticmethod
+    def _serialize_background_task_request_snapshot(
+        request: BackgroundTaskRequestSnapshot,
+    ) -> dict[str, object]:
+        return {
+            "prompt": request.prompt,
+            "session_id": request.session_id,
+            "parent_session_id": request.parent_session_id,
+            "metadata": request.metadata,
+            "allocate_session_id": request.allocate_session_id,
+        }
+
+    @staticmethod
+    def _serialize_subagent_routing(
+        routing: SubagentRoutingIdentity | None,
+    ) -> dict[str, object] | None:
+        if routing is None:
+            return None
+        payload: dict[str, object] = {"mode": routing.mode}
+        if routing.category is not None:
+            payload["category"] = routing.category
+        if routing.subagent_type is not None:
+            payload["subagent_type"] = routing.subagent_type
+        if routing.description is not None:
+            payload["description"] = routing.description
+        if routing.command is not None:
+            payload["command"] = routing.command
+        return payload
+
+    @staticmethod
+    def _serialize_background_task_state(task: BackgroundTaskState) -> dict[str, object]:
+        return {
+            "task": {"id": task.task.id},
+            "status": task.status,
+            "request": RuntimeTransportApp._serialize_background_task_request_snapshot(
+                task.request
+            ),
+            "parent_session_id": task.parent_session_id,
+            "requested_child_session_id": task.request.session_id,
+            "child_session_id": task.child_session_id,
+            "approval_request_id": task.approval_request_id,
+            "question_request_id": task.question_request_id,
+            "result_available": task.result_available,
+            "cancellation_cause": task.cancellation_cause,
+            "error": task.error,
+            "created_at": task.created_at,
+            "updated_at": task.updated_at,
+            "started_at": task.started_at,
+            "finished_at": task.finished_at,
+            "cancel_requested_at": task.cancel_requested_at,
+            "routing": RuntimeTransportApp._serialize_subagent_routing(task.routing_identity),
+        }
+
+    @staticmethod
+    def _serialize_background_task_summary(task: StoredBackgroundTaskSummary) -> dict[str, object]:
+        return {
+            "task": {"id": task.task.id},
+            "status": task.status,
+            "prompt": task.prompt,
+            "session_id": task.session_id,
+            "error": task.error,
+            "created_at": task.created_at,
+            "updated_at": task.updated_at,
+        }
+
+    @staticmethod
     def _serialize_session_result(result: RuntimeSessionResult) -> dict[str, object]:
         return {
             "session": RuntimeTransportApp._serialize_session_state(result.session),
@@ -698,6 +992,26 @@ class RuntimeTransportApp:
             "transcript": [
                 RuntimeTransportApp._serialize_event(event) for event in result.transcript
             ],
+        }
+
+    @staticmethod
+    def _serialize_background_task_result(result: BackgroundTaskResult) -> dict[str, object]:
+        return {
+            "task_id": result.task_id,
+            "status": result.status,
+            "parent_session_id": result.parent_session_id,
+            "requested_child_session_id": result.requested_child_session_id,
+            "child_session_id": result.child_session_id,
+            "approval_request_id": result.approval_request_id,
+            "question_request_id": result.question_request_id,
+            "approval_blocked": result.approval_blocked,
+            "summary_output": result.summary_output,
+            "error": result.error,
+            "result_available": result.result_available,
+            "cancellation_cause": result.cancellation_cause,
+            "routing": RuntimeTransportApp._serialize_subagent_routing(result.routing),
+            "delegation": result.delegated_execution.as_payload(),
+            "message": result.delegated_message.as_payload(),
         }
 
     @staticmethod
@@ -734,13 +1048,25 @@ class RuntimeTransportApp:
     def _serialize_event(event: EventEnvelope | None) -> dict[str, object] | None:
         if event is None:
             return None
-        return {
+        delegated = event.delegated_lifecycle
+        payload: dict[str, object] = {
             "session_id": event.session_id,
             "sequence": event.sequence,
             "event_type": event.event_type,
             "source": event.source,
             "payload": event.payload,
         }
+        if delegated is not None:
+            payload["delegated_lifecycle"] = (
+                RuntimeTransportApp._serialize_delegated_lifecycle_event(delegated)
+            )
+        return payload
+
+    @staticmethod
+    def _serialize_delegated_lifecycle_event(
+        delegated: DelegatedLifecycleEventPayload,
+    ) -> dict[str, object]:
+        return delegated.as_payload()
 
     async def _stream_runtime_chunks(
         self,

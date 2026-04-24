@@ -18,7 +18,7 @@ def test_builtin_agent_registry_exposes_leader_manifest() -> None:
     assert leader.name == "Leader"
     assert leader.mode == "primary"
     assert leader.prompt_profile == "leader"
-    assert leader.execution_engine == "single_agent"
+    assert leader.execution_engine == "provider"
     assert "read_file" in leader.tool_allowlist
     assert "write_file" in leader.tool_allowlist
     assert "mcp/*" in leader.tool_allowlist

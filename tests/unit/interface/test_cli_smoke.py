@@ -945,7 +945,7 @@ def test_config_show_uses_opencode_go_environment_without_leaking_key() -> None:
         env.update(
             {
                 "VOIDCODE_MODEL": "opencode-go/glm-5",
-                "VOIDCODE_EXECUTION_ENGINE": "single_agent",
+                "VOIDCODE_EXECUTION_ENGINE": "provider",
                 "OPENCODE_API_KEY": "opencode-go-secret",
             }
         )
@@ -961,7 +961,7 @@ def test_config_show_uses_opencode_go_environment_without_leaking_key() -> None:
     payload = json.loads(result.stdout)
     assert result.returncode == 0
     assert payload["model"] == "opencode-go/glm-5"
-    assert payload["execution_engine"] == "single_agent"
+    assert payload["execution_engine"] == "provider"
     assert payload["resolved_provider"] == {
         "active_target": {
             "raw_model": "opencode-go/glm-5",

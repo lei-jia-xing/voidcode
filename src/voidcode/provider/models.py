@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .config import ProviderFallbackConfig
-from .protocol import ModelProvider
+from .protocol import ModelTurnProvider
 
 
 @dataclass(frozen=True, slots=True)
@@ -16,7 +16,7 @@ class ProviderModelSelection:
 @dataclass(frozen=True, slots=True)
 class ResolvedProviderModel:
     selection: ProviderModelSelection = ProviderModelSelection()
-    provider: ModelProvider | None = None
+    provider: ModelTurnProvider | None = None
 
 
 @dataclass(frozen=True, slots=True)

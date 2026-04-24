@@ -5,7 +5,13 @@ from typing import Any
 
 import pytest
 
-from voidcode.acp import AcpConfigState, AcpRequestEnvelope, AcpResponseEnvelope
+from voidcode.acp import (
+    AcpConfigState,
+    AcpDelegatedExecution,
+    AcpEventEnvelope,
+    AcpRequestEnvelope,
+    AcpResponseEnvelope,
+)
 from voidcode.runtime.config import RuntimeAcpConfig
 
 
@@ -83,6 +89,7 @@ def test_managed_acp_adapter_connects_and_disconnects() -> None:
     response = adapter.request(AcpRequestEnvelope(request_type="ping", payload={"x": 1}))
     assert response.status == "ok"
     assert response.payload == {"request_type": "ping", "accepted": True, "x": 1}
+    assert adapter.current_state().last_request_type == "ping"
 
     disconnect_events = adapter.disconnect()
     assert [event.event_type for event in disconnect_events] == ["runtime.acp_disconnected"]
@@ -111,6 +118,7 @@ def test_managed_acp_adapter_request_before_connect_returns_error_without_failin
 
     assert response == AcpResponseEnvelope(
         status="error",
+        request_type="ping",
         error="ACP adapter is not connected",
         payload={"request_type": "ping"},
     )
@@ -123,6 +131,103 @@ def test_managed_acp_adapter_request_before_connect_returns_error_without_failin
     connect_events = adapter.connect()
     assert [event.event_type for event in connect_events] == ["runtime.acp_connected"]
     assert adapter.current_state().status == "connected"
+
+
+def test_managed_acp_adapter_tracks_delegated_request_correlation() -> None:
+    adapter = ManagedAcpAdapter(RuntimeAcpConfig(enabled=True))
+    _ = adapter.connect()
+
+    delegation = AcpDelegatedExecution(
+        parent_session_id="parent-1",
+        requested_child_session_id="child-request-1",
+        child_session_id="child-1",
+        delegated_task_id="task-1",
+        routing_mode="background",
+        routing_category="deep",
+        selected_preset="worker",
+        selected_execution_engine="provider",
+        lifecycle_status="running",
+    )
+    response = adapter.request(
+        AcpRequestEnvelope(
+            request_type="delegated_status",
+            request_id="task-1",
+            session_id="child-1",
+            parent_session_id="parent-1",
+            delegation=delegation,
+            payload={"status": "running"},
+        )
+    )
+
+    assert response.status == "ok"
+    assert response.request_id == "task-1"
+    assert response.parent_session_id == "parent-1"
+    assert response.delegation == delegation
+    assert response.payload["delegation"] == delegation.as_payload()
+    state = adapter.current_state()
+    assert state.last_request_type == "delegated_status"
+    assert state.last_request_id == "task-1"
+    assert state.last_delegation == delegation
+
+
+def test_managed_acp_adapter_publishes_delegated_lifecycle_events() -> None:
+    adapter = ManagedAcpAdapter(RuntimeAcpConfig(enabled=True))
+    _ = adapter.connect()
+    delegation = AcpDelegatedExecution(
+        parent_session_id="parent-1",
+        requested_child_session_id="child-request-1",
+        child_session_id="child-1",
+        delegated_task_id="task-1",
+        approval_request_id="approval-1",
+        routing_mode="background",
+        routing_category="deep",
+        selected_preset="worker",
+        selected_execution_engine="provider",
+        lifecycle_status="waiting_approval",
+        approval_blocked=True,
+    )
+
+    response = adapter.publish(
+        AcpEventEnvelope(
+            event_type="runtime.acp_delegated_lifecycle",
+            session_id="child-1",
+            parent_session_id="parent-1",
+            delegation=delegation,
+            payload={"approval_blocked": True},
+        )
+    )
+
+    assert response.status == "ok"
+    assert response.payload == {
+        "event_type": "runtime.acp_delegated_lifecycle",
+        "accepted": True,
+        "delegation": delegation.as_payload(),
+        "approval_blocked": True,
+    }
+    state = adapter.current_state()
+    assert state.last_event_type == "runtime.acp_delegated_lifecycle"
+    assert state.last_delegation == delegation
+
+
+def test_managed_acp_adapter_disconnect_preserves_last_delegated_correlation() -> None:
+    adapter = ManagedAcpAdapter(RuntimeAcpConfig(enabled=True))
+    _ = adapter.connect()
+    delegation = AcpDelegatedExecution(delegated_task_id="task-1", lifecycle_status="completed")
+    _ = adapter.publish(
+        AcpEventEnvelope(
+            event_type="runtime.acp_delegated_lifecycle",
+            session_id="child-1",
+            parent_session_id="parent-1",
+            delegation=delegation,
+            payload={"result_available": True},
+        )
+    )
+
+    events = adapter.disconnect()
+
+    assert [event.event_type for event in events] == ["runtime.acp_disconnected"]
+    assert events[0].delegation == delegation
+    assert adapter.current_state().last_delegation == delegation
 
 
 def test_managed_acp_adapter_exposes_explicit_failure_hook() -> None:

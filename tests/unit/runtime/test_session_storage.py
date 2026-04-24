@@ -195,7 +195,7 @@ def test_session_storage_migrates_legacy_schema_for_parent_lineage(tmp_path: Pat
     assert "request_parent_session_id" in background_task_columns
     assert "session_event_deliveries" in delivery_tables
     assert loaded_task.request.parent_session_id == "leader-session"
-    assert user_version == 7
+    assert user_version == 8
 
 
 def test_tool_results_from_events_keeps_success_payloads_with_null_error() -> None:

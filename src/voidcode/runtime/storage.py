@@ -17,7 +17,13 @@ from .contracts import (
     RuntimeSessionResult,
     UnknownSessionError,
 )
-from .events import EventEnvelope, EventSource
+from .events import (
+    DELEGATED_BACKGROUND_TASK_EVENT_TYPES,
+    RUNTIME_APPROVAL_REQUESTED,
+    RUNTIME_QUESTION_REQUESTED,
+    EventEnvelope,
+    EventSource,
+)
 from .permission import PendingApproval
 from .question import PendingQuestion, PendingQuestionOption, PendingQuestionPrompt
 from .session import SessionRef, SessionState, SessionStatus, StoredSessionSummary
@@ -220,6 +226,16 @@ class SqliteSessionStore:
                 request_session_id TEXT,
                 request_parent_session_id TEXT,
                 request_metadata_json TEXT NOT NULL,
+                requested_child_session_id TEXT,
+                routing_mode TEXT,
+                routing_category TEXT,
+                routing_subagent_type TEXT,
+                routing_description TEXT,
+                routing_command TEXT,
+                approval_request_id TEXT,
+                question_request_id TEXT,
+                cancellation_cause TEXT,
+                result_available INTEGER NOT NULL DEFAULT 0,
                 allocate_session_id INTEGER NOT NULL,
                 session_id TEXT,
                 error TEXT,
@@ -292,6 +308,50 @@ class SqliteSessionStore:
                 "ALTER TABLE background_tasks ADD COLUMN request_parent_session_id TEXT"
             )
             target_user_version = max(target_user_version, 6)
+        if "requested_child_session_id" not in background_task_columns:
+            _ = connection.execute(
+                "ALTER TABLE background_tasks ADD COLUMN requested_child_session_id TEXT"
+            )
+            target_user_version = max(target_user_version, 8)
+        if "routing_mode" not in background_task_columns:
+            _ = connection.execute("ALTER TABLE background_tasks ADD COLUMN routing_mode TEXT")
+            target_user_version = max(target_user_version, 8)
+        if "routing_category" not in background_task_columns:
+            _ = connection.execute("ALTER TABLE background_tasks ADD COLUMN routing_category TEXT")
+            target_user_version = max(target_user_version, 8)
+        if "routing_subagent_type" not in background_task_columns:
+            _ = connection.execute(
+                "ALTER TABLE background_tasks ADD COLUMN routing_subagent_type TEXT"
+            )
+            target_user_version = max(target_user_version, 8)
+        if "routing_description" not in background_task_columns:
+            _ = connection.execute(
+                "ALTER TABLE background_tasks ADD COLUMN routing_description TEXT"
+            )
+            target_user_version = max(target_user_version, 8)
+        if "routing_command" not in background_task_columns:
+            _ = connection.execute("ALTER TABLE background_tasks ADD COLUMN routing_command TEXT")
+            target_user_version = max(target_user_version, 8)
+        if "approval_request_id" not in background_task_columns:
+            _ = connection.execute(
+                "ALTER TABLE background_tasks ADD COLUMN approval_request_id TEXT"
+            )
+            target_user_version = max(target_user_version, 8)
+        if "question_request_id" not in background_task_columns:
+            _ = connection.execute(
+                "ALTER TABLE background_tasks ADD COLUMN question_request_id TEXT"
+            )
+            target_user_version = max(target_user_version, 8)
+        if "cancellation_cause" not in background_task_columns:
+            _ = connection.execute(
+                "ALTER TABLE background_tasks ADD COLUMN cancellation_cause TEXT"
+            )
+            target_user_version = max(target_user_version, 8)
+        if "result_available" not in background_task_columns:
+            _ = connection.execute(
+                "ALTER TABLE background_tasks ADD COLUMN result_available INTEGER NOT NULL DEFAULT 0"  # noqa: E501
+            )
+            target_user_version = max(target_user_version, 8)
         if user_version < 2:
             target_user_version = max(target_user_version, 2)
         if user_version < 3:
@@ -304,6 +364,8 @@ class SqliteSessionStore:
             target_user_version = max(target_user_version, 6)
         if user_version < 7:
             target_user_version = max(target_user_version, 7)
+        if user_version < 8:
+            target_user_version = max(target_user_version, 8)
         if target_user_version != user_version:
             _ = connection.execute(f"PRAGMA user_version = {target_user_version}")
         connection.commit()
@@ -399,6 +461,12 @@ class SqliteSessionStore:
                     )
                     for event in response.events
                 ],
+            )
+            self._sync_background_task_durable_state(
+                connection=connection,
+                workspace=workspace,
+                request=request,
+                response=response,
             )
             self._sync_notifications(
                 connection=connection,
@@ -500,6 +568,13 @@ class SqliteSessionStore:
                     for event in response.events
                 ],
             )
+            self._sync_background_task_durable_state(
+                connection=connection,
+                workspace=workspace,
+                request=request,
+                response=response,
+                approval_request_id=pending_approval.request_id,
+            )
             self._sync_notifications(
                 connection=connection,
                 workspace=workspace,
@@ -539,6 +614,21 @@ class SqliteSessionStore:
             target_summary=cast(str, data.get("target_summary", "")),
             reason=cast(str, data.get("reason", "")),
             policy_mode=raw_policy_mode,
+            owner_session_id=(
+                cast(str, data["owner_session_id"])
+                if isinstance(data.get("owner_session_id"), str)
+                else None
+            ),
+            owner_parent_session_id=(
+                cast(str, data["owner_parent_session_id"])
+                if isinstance(data.get("owner_parent_session_id"), str)
+                else None
+            ),
+            delegated_task_id=(
+                cast(str, data["delegated_task_id"])
+                if isinstance(data.get("delegated_task_id"), str)
+                else None
+            ),
         )
 
     def clear_pending_approval(self, *, workspace: Path, session_id: str) -> None:
@@ -627,6 +717,13 @@ class SqliteSessionStore:
                     )
                     for event in response.events
                 ],
+            )
+            self._sync_background_task_durable_state(
+                connection=connection,
+                workspace=workspace,
+                request=request,
+                response=response,
+                question_request_id=pending_question.request_id,
             )
             self._sync_notifications(
                 connection=connection,
@@ -735,6 +832,12 @@ class SqliteSessionStore:
         dedupe_key: str | None = None,
     ) -> EventEnvelope | None:
         with self._connect(workspace) as connection:
+            payload = self._enriched_background_task_event_payload(
+                connection=connection,
+                workspace=workspace,
+                event_type=event_type,
+                payload=payload,
+            )
             updated_at = self._next_timestamp(connection=connection)
             sequence_row = cast(
                 sqlite3.Row | None,
@@ -794,6 +897,119 @@ class SqliteSessionStore:
             )
             connection.commit()
             return event
+
+    def _sync_background_task_durable_state(
+        self,
+        *,
+        connection: sqlite3.Connection,
+        workspace: Path,
+        request: RuntimeRequest,
+        response: RuntimeResponse,
+        approval_request_id: str | None = None,
+        question_request_id: str | None = None,
+    ) -> None:
+        background_task_id = response.session.metadata.get("background_task_id")
+        if not isinstance(background_task_id, str) or (
+            response.session.metadata.get("background_run") is not True
+        ):
+            return
+        routing = request.subagent_routing
+        result_available = response.session.status in {"waiting", "completed", "failed"}
+        inferred_approval_request_id = approval_request_id
+        inferred_question_request_id = question_request_id
+        if inferred_approval_request_id is None or inferred_question_request_id is None:
+            for event in reversed(response.events):
+                request_id = event.payload.get("request_id")
+                if not isinstance(request_id, str):
+                    continue
+                if (
+                    event.event_type == RUNTIME_APPROVAL_REQUESTED
+                    and inferred_approval_request_id is None
+                ):
+                    inferred_approval_request_id = request_id
+                if (
+                    event.event_type == RUNTIME_QUESTION_REQUESTED
+                    and inferred_question_request_id is None
+                ):
+                    inferred_question_request_id = request_id
+        updated_at = self._next_background_task_timestamp(connection=connection)
+        _ = connection.execute(
+            """
+            UPDATE background_tasks
+            SET requested_child_session_id = COALESCE(requested_child_session_id, ?),
+                routing_mode = COALESCE(routing_mode, ?),
+                routing_category = COALESCE(routing_category, ?),
+                routing_subagent_type = COALESCE(routing_subagent_type, ?),
+                routing_description = COALESCE(routing_description, ?),
+                routing_command = COALESCE(routing_command, ?),
+                approval_request_id = COALESCE(?, approval_request_id),
+                question_request_id = COALESCE(?, question_request_id),
+                result_available = ?,
+                session_id = COALESCE(session_id, ?),
+                updated_at = ?
+            WHERE workspace = ? AND task_id = ?
+            """,
+            (
+                request.session_id,
+                routing.mode if routing is not None else None,
+                routing.category if routing is not None else None,
+                routing.subagent_type if routing is not None else None,
+                routing.description if routing is not None else None,
+                routing.command if routing is not None else None,
+                inferred_approval_request_id,
+                inferred_question_request_id,
+                1 if result_available else 0,
+                response.session.session.id,
+                updated_at,
+                str(workspace),
+                background_task_id,
+            ),
+        )
+
+    def _enriched_background_task_event_payload(
+        self,
+        *,
+        connection: sqlite3.Connection,
+        workspace: Path,
+        event_type: str,
+        payload: dict[str, object],
+    ) -> dict[str, object]:
+        if event_type not in DELEGATED_BACKGROUND_TASK_EVENT_TYPES:
+            return payload
+        task_id = payload.get("task_id")
+        if not isinstance(task_id, str):
+            return payload
+        try:
+            row = self._background_task_runtime_row(
+                connection=connection,
+                workspace=workspace,
+                task_id=task_id,
+            )
+        except ValueError:
+            return payload
+        durable_payload: dict[str, object] = {
+            "task_id": cast(str, row["task_id"]),
+            "parent_session_id": cast(str | None, row["request_parent_session_id"]),
+            "status": cast(str, row["status"]),
+            "result_available": bool(cast(int, row["result_available"])),
+        }
+        optional_fields: tuple[tuple[str, str], ...] = (
+            ("requested_child_session_id", "requested_child_session_id"),
+            ("child_session_id", "session_id"),
+            ("approval_request_id", "approval_request_id"),
+            ("question_request_id", "question_request_id"),
+            ("routing_mode", "routing_mode"),
+            ("routing_category", "routing_category"),
+            ("routing_subagent_type", "routing_subagent_type"),
+            ("routing_description", "routing_description"),
+            ("routing_command", "routing_command"),
+            ("cancellation_cause", "cancellation_cause"),
+        )
+        for payload_key, row_key in optional_fields:
+            value = row[row_key]
+            if value is not None:
+                durable_payload[payload_key] = cast(object, value)
+        return {**payload, **durable_payload}
 
     def _read_pending_approval_json(
         self, *, connection: sqlite3.Connection, session_id: str
@@ -1041,16 +1257,26 @@ class SqliteSessionStore:
         task: BackgroundTaskState,
     ) -> None:
         task_id = validate_background_task_id(task.task.id)
+        routing = task.routing_identity
         with self._connect(workspace) as connection:
+            linked_session_id = task.session_id or task.request.session_id
+            initial_runtime_state = self._linked_session_background_task_runtime_state(
+                connection=connection,
+                workspace=workspace,
+                session_id=linked_session_id,
+            )
             timestamp = self._next_background_task_timestamp(connection=connection)
             _ = connection.execute(
                 """
                 INSERT INTO background_tasks (
                     task_id, workspace, status, prompt, request_session_id,
-                    request_parent_session_id, request_metadata_json,
+                    request_parent_session_id, request_metadata_json, requested_child_session_id,
+                    routing_mode, routing_category, routing_subagent_type,
+                    routing_description, routing_command, approval_request_id,
+                    question_request_id, cancellation_cause, result_available,
                     allocate_session_id, session_id, error, cancel_requested_at,
                     created_at, updated_at, started_at, finished_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task_id,
@@ -1060,6 +1286,16 @@ class SqliteSessionStore:
                     task.request.session_id,
                     task.request.parent_session_id,
                     json.dumps(task.request.metadata, sort_keys=True),
+                    task.request.session_id,
+                    routing.mode if routing is not None else None,
+                    routing.category if routing is not None else None,
+                    routing.subagent_type if routing is not None else None,
+                    routing.description if routing is not None else None,
+                    routing.command if routing is not None else None,
+                    initial_runtime_state["approval_request_id"],
+                    initial_runtime_state["question_request_id"],
+                    initial_runtime_state["cancellation_cause"],
+                    initial_runtime_state["result_available"],
                     1 if task.request.allocate_session_id else 0,
                     task.session_id,
                     task.error,
@@ -1161,7 +1397,14 @@ class SqliteSessionStore:
                 SET status = ?, session_id = ?, started_at = COALESCE(started_at, ?), updated_at = ?
                 WHERE workspace = ? AND task_id = ? AND status = 'queued'
                 """,
-                ("running", session_id, updated_at, updated_at, str(workspace), task_id),
+                (
+                    "running",
+                    session_id,
+                    updated_at,
+                    updated_at,
+                    str(workspace),
+                    task_id,
+                ),
             ).rowcount
             connection.commit()
         if updated == 0:
@@ -1181,15 +1424,34 @@ class SqliteSessionStore:
                 "background task terminal status must be completed, failed, or cancelled"
             )
         task_id = validate_background_task_id(task_id)
+        result_available = 1 if status in ("completed", "failed") else 0
         with self._connect(workspace) as connection:
+            current = self._background_task_runtime_row(
+                connection=connection,
+                workspace=workspace,
+                task_id=task_id,
+            )
+            cancellation_cause = cast(str | None, current["cancellation_cause"])
+            if status == "cancelled" and error is not None:
+                cancellation_cause = error
             updated_at = self._next_background_task_timestamp(connection=connection)
             _ = connection.execute(
                 """
                 UPDATE background_tasks
-                SET status = ?, error = ?, finished_at = ?, updated_at = ?
+                SET status = ?, error = ?, finished_at = ?, updated_at = ?,
+                    cancellation_cause = ?, result_available = ?
                 WHERE workspace = ? AND task_id = ?
                 """,
-                (status, error, updated_at, updated_at, str(workspace), task_id),
+                (
+                    status,
+                    error,
+                    updated_at,
+                    updated_at,
+                    cancellation_cause,
+                    result_available,
+                    str(workspace),
+                    task_id,
+                ),
             )
             connection.commit()
         return self.load_background_task(workspace=workspace, task_id=task_id)
@@ -1208,10 +1470,12 @@ class SqliteSessionStore:
                 cancelled = connection.execute(
                     """
                     UPDATE background_tasks
-                    SET status = 'cancelled', error = ?, finished_at = ?, updated_at = ?
+                    SET status = 'cancelled', error = ?, cancellation_cause = ?,
+                        result_available = 0, finished_at = ?, updated_at = ?
                     WHERE workspace = ? AND task_id = ? AND status = 'queued'
                     """,
                     (
+                        "cancelled before start",
                         "cancelled before start",
                         updated_at,
                         updated_at,
@@ -1279,7 +1543,8 @@ class SqliteSessionStore:
             _ = connection.execute(
                 f"""
                 UPDATE background_tasks
-                SET status = 'failed', error = ?, finished_at = ?, updated_at = ?
+                SET status = 'failed', error = ?, finished_at = ?,
+                    updated_at = ?, result_available = 1
                 WHERE workspace = ? AND task_id IN ({placeholders})
                 """,
                 (message, updated_at, updated_at, str(workspace), *task_ids),
@@ -1289,6 +1554,59 @@ class SqliteSessionStore:
             self.load_background_task(workspace=workspace, task_id=cast(str, row["task_id"]))
             for row in rows
         )
+
+    def persist_background_task_runtime_state(
+        self,
+        *,
+        workspace: Path,
+        task_id: str,
+        approval_request_id: str | None = None,
+        question_request_id: str | None = None,
+        result_available: bool | None = None,
+        cancellation_cause: str | None = None,
+    ) -> BackgroundTaskState:
+        task_id = validate_background_task_id(task_id)
+        with self._connect(workspace) as connection:
+            current = self._background_task_runtime_row(
+                connection=connection,
+                workspace=workspace,
+                task_id=task_id,
+            )
+            updated_at = self._next_background_task_timestamp(connection=connection)
+            _ = connection.execute(
+                """
+                UPDATE background_tasks
+                SET approval_request_id = ?,
+                    question_request_id = ?,
+                    cancellation_cause = ?,
+                    result_available = ?,
+                    updated_at = ?
+                WHERE workspace = ? AND task_id = ?
+                """,
+                (
+                    approval_request_id
+                    if approval_request_id is not None
+                    else cast(str | None, current["approval_request_id"]),
+                    question_request_id
+                    if question_request_id is not None
+                    else cast(str | None, current["question_request_id"]),
+                    cancellation_cause
+                    if cancellation_cause is not None
+                    else cast(str | None, current["cancellation_cause"]),
+                    (
+                        1
+                        if result_available
+                        else 0
+                        if result_available is not None
+                        else cast(int, current["result_available"])
+                    ),
+                    updated_at,
+                    str(workspace),
+                    task_id,
+                ),
+            )
+            connection.commit()
+        return self.load_background_task(workspace=workspace, task_id=task_id)
 
     def _background_task_state_from_row(self, row: sqlite3.Row) -> BackgroundTaskState:
         metadata = json.loads(cast(str, row["request_metadata_json"]))
@@ -1305,6 +1623,10 @@ class SqliteSessionStore:
                 allocate_session_id=bool(cast(int, row["allocate_session_id"])),
             ),
             session_id=cast(str | None, row["session_id"]),
+            approval_request_id=cast(str | None, row["approval_request_id"]),
+            question_request_id=cast(str | None, row["question_request_id"]),
+            cancellation_cause=cast(str | None, row["cancellation_cause"]),
+            result_available=bool(cast(int, row["result_available"])),
             error=cast(str | None, row["error"]),
             created_at=cast(int, row["created_at"]),
             updated_at=cast(int, row["updated_at"]),
@@ -1312,6 +1634,27 @@ class SqliteSessionStore:
             finished_at=cast(int | None, row["finished_at"]),
             cancel_requested_at=cast(int | None, row["cancel_requested_at"]),
         )
+
+    def _background_task_runtime_row(
+        self,
+        *,
+        connection: sqlite3.Connection,
+        workspace: Path,
+        task_id: str,
+    ) -> sqlite3.Row:
+        row = cast(
+            sqlite3.Row | None,
+            connection.execute(
+                """
+                SELECT * FROM background_tasks
+                WHERE workspace = ? AND task_id = ?
+                """,
+                (str(workspace), task_id),
+            ).fetchone(),
+        )
+        if row is None:
+            raise ValueError(f"unknown background task: {task_id}")
+        return row
 
     def _next_background_task_timestamp(self, *, connection: sqlite3.Connection) -> int:
         row = cast(
@@ -1321,6 +1664,65 @@ class SqliteSessionStore:
             ).fetchone(),
         )
         return cast(int, row["next_ts"])
+
+    def _linked_session_background_task_runtime_state(
+        self,
+        *,
+        connection: sqlite3.Connection,
+        workspace: Path,
+        session_id: str | None,
+    ) -> dict[str, object]:
+        if session_id is None:
+            return {
+                "approval_request_id": None,
+                "question_request_id": None,
+                "cancellation_cause": None,
+                "result_available": 0,
+            }
+        row = cast(
+            sqlite3.Row | None,
+            connection.execute(
+                """
+                SELECT status, pending_approval_json, pending_question_json
+                FROM sessions
+                WHERE workspace = ? AND session_id = ?
+                """,
+                (str(workspace), session_id),
+            ).fetchone(),
+        )
+        if row is None:
+            return {
+                "approval_request_id": None,
+                "question_request_id": None,
+                "cancellation_cause": None,
+                "result_available": 0,
+            }
+        approval_request_id: str | None = None
+        question_request_id: str | None = None
+        approval_payload = cast(str | None, row["pending_approval_json"])
+        if approval_payload is not None:
+            parsed = json.loads(approval_payload)
+            if isinstance(parsed, dict):
+                parsed_payload = cast(dict[str, object], parsed)
+                request_id = parsed_payload.get("request_id")
+                if isinstance(request_id, str):
+                    approval_request_id = request_id
+        question_payload = cast(str | None, row["pending_question_json"])
+        if question_payload is not None:
+            parsed = json.loads(question_payload)
+            if isinstance(parsed, dict):
+                parsed_payload = cast(dict[str, object], parsed)
+                request_id = parsed_payload.get("request_id")
+                if isinstance(request_id, str):
+                    question_request_id = request_id
+        status = cast(str, row["status"])
+        result_available = 1 if status in {"waiting", "completed", "failed"} else 0
+        return {
+            "approval_request_id": approval_request_id,
+            "question_request_id": question_request_id,
+            "cancellation_cause": None,
+            "result_available": result_available,
+        }
 
     def acknowledge_notification(
         self, *, workspace: Path, notification_id: str

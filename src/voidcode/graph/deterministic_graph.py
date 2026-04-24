@@ -49,7 +49,7 @@ class DeterministicReadOnlyStep:
     is_finished: bool = False
 
 
-class DeterministicReadOnlyGraph:
+class DeterministicGraph:
     def __init__(self, *, max_steps: int = 4) -> None:
         if max_steps < 1:
             raise ValueError("max_steps must be at least 1")

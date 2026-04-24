@@ -282,7 +282,7 @@ def _approval_runtime(
     return runtime_request, runtime
 
 
-def _single_agent_runtime(
+def _provider_runtime(
     tmp_path: Path,
     *,
     mode: str = "ask",
@@ -301,7 +301,7 @@ def _single_agent_runtime(
                 workspace=tmp_path,
                 config=runtime_config(
                     approval_mode=mode,
-                    execution_engine="single_agent",
+                    execution_engine="provider",
                     model="opencode/gpt-5.4",
                 ),
                 permission_policy=policy,
@@ -311,8 +311,8 @@ def _single_agent_runtime(
     return runtime_request, runtime
 
 
-def test_single_agent_runtime_surfaces_provider_context_limit_failure_kind(tmp_path: Path) -> None:
-    runtime_request, _ = _single_agent_runtime(tmp_path, mode="allow")
+def test_provider_runtime_surfaces_provider_context_limit_failure_kind(tmp_path: Path) -> None:
+    runtime_request, _ = _provider_runtime(tmp_path, mode="allow")
 
     service_module = importlib.import_module("voidcode.runtime.service")
 
@@ -334,7 +334,7 @@ def test_single_agent_runtime_surfaces_provider_context_limit_failure_kind(tmp_p
             graph=FailingGraph(),
             config=importlib.import_module("voidcode.runtime.config").RuntimeConfig(
                 approval_mode="allow",
-                execution_engine="single_agent",
+                execution_engine="provider",
                 model="opencode/gpt-5.4",
             ),
         ),
@@ -355,7 +355,7 @@ class _ScriptedModelProvider:
     name: str
     outcomes: tuple[object, ...]
 
-    def single_agent_provider(self) -> object:
+    def turn_provider(self) -> object:
         outcomes = list(self.outcomes)
         name = self.name
 
@@ -367,8 +367,8 @@ class _ScriptedModelProvider:
                 _ = request
                 if not outcomes:
                     return importlib.import_module(
-                        "voidcode.runtime.single_agent_provider"
-                    ).SingleAgentTurnResult(output="done")
+                        "voidcode.runtime.provider_protocol"
+                    ).ProviderTurnResult(output="done")
                 outcome = outcomes.pop(0)
                 if isinstance(outcome, Exception):
                     raise outcome
@@ -377,12 +377,12 @@ class _ScriptedModelProvider:
         return _Provider()
 
 
-def test_single_agent_runtime_falls_back_to_next_provider_target(tmp_path: Path) -> None:
+def test_provider_runtime_falls_back_to_next_provider_target(tmp_path: Path) -> None:
     runtime_request, _ = _load_runtime_types()
     permission_module = importlib.import_module("voidcode.runtime.permission")
     config_module = importlib.import_module("voidcode.runtime.config")
     model_provider_module = importlib.import_module("voidcode.provider.registry")
-    single_agent_provider_module = importlib.import_module("voidcode.runtime.single_agent_provider")
+    provider_protocol_module = importlib.import_module("voidcode.runtime.provider_protocol")
     service_module = importlib.import_module("voidcode.runtime.service")
 
     runtime = cast(
@@ -391,7 +391,7 @@ def test_single_agent_runtime_falls_back_to_next_provider_target(tmp_path: Path)
             workspace=tmp_path,
             config=config_module.RuntimeConfig(
                 approval_mode="allow",
-                execution_engine="single_agent",
+                execution_engine="provider",
                 model="opencode/gpt-5.4",
                 provider_fallback=config_module.RuntimeProviderFallbackConfig(
                     preferred_model="opencode/gpt-5.4",
@@ -404,7 +404,7 @@ def test_single_agent_runtime_falls_back_to_next_provider_target(tmp_path: Path)
                     "opencode": _ScriptedModelProvider(
                         name="opencode",
                         outcomes=(
-                            single_agent_provider_module.ProviderExecutionError(
+                            provider_protocol_module.ProviderExecutionError(
                                 kind="rate_limit",
                                 provider_name="opencode",
                                 model_name="gpt-5.4",
@@ -415,9 +415,7 @@ def test_single_agent_runtime_falls_back_to_next_provider_target(tmp_path: Path)
                     "custom": _ScriptedModelProvider(
                         name="custom",
                         outcomes=(
-                            single_agent_provider_module.SingleAgentTurnResult(
-                                output="fallback ok"
-                            ),
+                            provider_protocol_module.ProviderTurnResult(output="fallback ok"),
                         ),
                     ),
                 }
@@ -1154,7 +1152,7 @@ def test_runtime_requests_approval_for_ast_grep_replace_when_policy_is_ask(tmp_p
     }
 
 
-def test_runtime_executes_read_only_slice_and_emits_events(tmp_path: Path) -> None:
+def test_runtime_executes_deterministic_graph_and_emits_events(tmp_path: Path) -> None:
     sample_file = tmp_path / "sample.txt"
     _ = sample_file.write_text("alpha\nbeta\n", encoding="utf-8")
     runtime_request, runtime_class = _load_runtime_types()
@@ -1180,10 +1178,10 @@ def test_runtime_executes_read_only_slice_and_emits_events(tmp_path: Path) -> No
     assert result.output == "alpha\nbeta\n"
 
 
-def test_single_agent_runtime_executes_read_path_and_persists_config(tmp_path: Path) -> None:
+def test_provider_runtime_executes_read_path_and_persists_config(tmp_path: Path) -> None:
     sample_file = tmp_path / "sample.txt"
     _ = sample_file.write_text("alpha\nbeta\n", encoding="utf-8")
-    runtime_request, runtime = _single_agent_runtime(tmp_path, mode="allow")
+    runtime_request, runtime = _provider_runtime(tmp_path, mode="allow")
 
     result = runtime.run(runtime_request(prompt="read sample.txt", session_id="single-agent-read"))
     replay = runtime.resume("single-agent-read")
@@ -1192,7 +1190,7 @@ def test_single_agent_runtime_executes_read_path_and_persists_config(tmp_path: P
     assert result.output == "alpha\nbeta\n"
     assert result.session.metadata["runtime_config"] == {
         "approval_mode": "allow",
-        "execution_engine": "single_agent",
+        "execution_engine": "provider",
         "max_steps": 4,
         "lsp": {"configured_enabled": False, "mode": "disabled", "servers": []},
         "mcp": {"configured_enabled": False, "mode": "disabled", "servers": []},
@@ -1219,17 +1217,21 @@ def test_single_agent_runtime_executes_read_path_and_persists_config(tmp_path: P
         "acp": {
             "available": False,
             "configured_enabled": False,
+            "last_delegation": None,
             "last_error": None,
+            "last_event_type": None,
+            "last_request_id": None,
+            "last_request_type": None,
             "mode": "disabled",
             "status": "disconnected",
         }
     }
-    assert result.events[3].payload["mode"] == "single_agent"
+    assert result.events[3].payload["mode"] == "provider"
     assert replay.output == result.output
 
 
-def test_single_agent_runtime_requests_and_resumes_write_approval(tmp_path: Path) -> None:
-    runtime_request, runtime = _single_agent_runtime(tmp_path, mode="ask")
+def test_provider_runtime_requests_and_resumes_write_approval(tmp_path: Path) -> None:
+    runtime_request, runtime = _provider_runtime(tmp_path, mode="ask")
 
     waiting = runtime.run(
         runtime_request(
@@ -1245,7 +1247,7 @@ def test_single_agent_runtime_requests_and_resumes_write_approval(tmp_path: Path
     )
 
     assert waiting.session.status == "waiting"
-    assert waiting.events[3].payload["mode"] == "single_agent"
+    assert waiting.events[3].payload["mode"] == "provider"
     assert waiting.events[-1].event_type == "runtime.approval_requested"
     assert resumed.session.status == "completed"
     assert resumed.output == "approved later"
@@ -1381,7 +1383,7 @@ def test_runtime_background_task_cancel_reconciles_orphaned_task_from_fresh_runt
     assert cancelled.cancel_requested_at is None
 
 
-def test_runtime_executes_grep_read_only_slice_and_emits_events(tmp_path: Path) -> None:
+def test_runtime_executes_grep_deterministic_graph_and_emits_events(tmp_path: Path) -> None:
     sample_file = tmp_path / "sample.txt"
     _ = sample_file.write_text("alpha\nbeta alpha\n", encoding="utf-8")
     runtime_request, runtime_class = _load_runtime_types()
@@ -1784,7 +1786,7 @@ def test_runtime_migrates_legacy_session_schema_for_pending_approval(tmp_path: P
     assert "resume_checkpoint_json" in columns
     assert "request_parent_session_id" in background_task_columns
     assert delivery_tables == [("session_event_deliveries",)]
-    assert user_version == 7
+    assert user_version == 8
 
 
 def test_runtime_replay_is_unchanged_when_resume_checkpoint_exists(tmp_path: Path) -> None:
@@ -1886,7 +1888,11 @@ def test_runtime_resume_uses_persisted_runtime_config_over_fresh_resume_override
         "acp": {
             "available": False,
             "configured_enabled": False,
+            "last_delegation": None,
             "last_error": None,
+            "last_event_type": None,
+            "last_request_id": None,
+            "last_request_type": None,
             "mode": "disabled",
             "status": "disconnected",
         }
@@ -1932,7 +1938,11 @@ def test_runtime_resume_accepts_legacy_sessions_without_runtime_config_metadata(
             "acp": {
                 "available": False,
                 "configured_enabled": False,
+                "last_delegation": None,
                 "last_error": None,
+                "last_event_type": None,
+                "last_request_id": None,
+                "last_request_type": None,
                 "mode": "disabled",
                 "status": "disconnected",
             }
@@ -1986,7 +1996,11 @@ def test_runtime_resume_repairs_legacy_non_dict_runtime_state_metadata(tmp_path:
         "acp": {
             "available": False,
             "configured_enabled": False,
+            "last_delegation": None,
             "last_error": None,
+            "last_event_type": None,
+            "last_request_id": None,
+            "last_request_type": None,
             "mode": "disabled",
             "status": "disconnected",
         }

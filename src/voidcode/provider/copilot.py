@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from .config import CopilotProviderConfig, LiteLLMProviderConfig
 from .litellm_backend import LiteLLMBackendSingleAgentProvider
-from .protocol import SingleAgentProvider
+from .protocol import TurnProvider
 
 
 @dataclass(frozen=True, slots=True)
@@ -12,7 +12,7 @@ class CopilotModelProvider:
     name: str = "copilot"
     config: CopilotProviderConfig | None = None
 
-    def single_agent_provider(self) -> SingleAgentProvider:
+    def turn_provider(self) -> TurnProvider:
         token = None
         if self.config is not None and self.config.auth is not None:
             token = self.config.auth.token

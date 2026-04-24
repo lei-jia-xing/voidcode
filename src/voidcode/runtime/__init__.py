@@ -17,7 +17,14 @@ from .contracts import (
     RuntimeStreamChunkKind,
     StreamingRuntimeEntrypoint,
 )
-from .events import EventEnvelope, EventSource
+from .events import (
+    DelegatedExecutionPayload,
+    DelegatedLifecycleEventPayload,
+    DelegatedLifecycleMessage,
+    DelegatedRoutingPayload,
+    EventEnvelope,
+    EventSource,
+)
 from .permission import PendingApproval, PermissionDecision, PermissionPolicy, PermissionResolution
 from .session import SessionRef, SessionState, SessionStatus, StoredSessionSummary
 from .storage import SessionStore
@@ -37,6 +44,10 @@ if TYPE_CHECKING:
 __all__ = [
     "EventEnvelope",
     "EventSource",
+    "DelegatedExecutionPayload",
+    "DelegatedLifecycleEventPayload",
+    "DelegatedLifecycleMessage",
+    "DelegatedRoutingPayload",
     "BackgroundTaskRef",
     "BackgroundTaskRequestSnapshot",
     "BackgroundTaskResult",

@@ -2,9 +2,9 @@ Delegate work to a child runtime session or background task.
 
 Usage:
 - Use this tool when the work should be split into a delegated child run rather than handled inline.
-- Provide exactly one of `category` or `subagent_type` so the request has a declared routing intent, even if the current runtime still executes on the shared single-agent substrate.
+- Provide exactly one of `category` or `subagent_type` so the request has a declared routing intent within the runtime-owned delegated execution model.
 - `prompt` is required and should contain the full delegated task.
 - `load_skills` is required. Pass an empty list when no extra skills are needed.
 - When `run_in_background` is true, this tool starts a real background task and returns a `task_id`.
 - After starting a background task, use `background_output` to read status/results and `background_cancel` to cancel a task by id.
-- The current runtime preserves parent/child lineage and requested skills, but it does not yet provide fully separate executable agent presets for every upstream role.
+- The current runtime preserves parent/child lineage, requested skills, and delegated task correlation. Top-level active runs still execute as `leader`, while delegated child runs can execute routed `advisor`, `explore`, `product`, `researcher`, or `worker` presets through the runtime-owned delegation path.

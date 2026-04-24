@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from .config import AnthropicProviderConfig, LiteLLMProviderConfig
 from .litellm_backend import LiteLLMBackendSingleAgentProvider
-from .protocol import SingleAgentProvider
+from .protocol import TurnProvider
 
 
 @dataclass(frozen=True, slots=True)
@@ -12,7 +12,7 @@ class AnthropicModelProvider:
     name: str = "anthropic"
     config: AnthropicProviderConfig | None = None
 
-    def single_agent_provider(self) -> SingleAgentProvider:
+    def turn_provider(self) -> TurnProvider:
         adapted_config = LiteLLMProviderConfig(
             api_key=None if self.config is None else self.config.api_key,
             base_url=None if self.config is None else self.config.base_url,

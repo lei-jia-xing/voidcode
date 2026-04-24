@@ -17,7 +17,7 @@ import pytest
 import voidcode.runtime.service as runtime_service_module
 from voidcode.acp import AcpRequestEnvelope, AcpResponseEnvelope
 from voidcode.agent import LEADER_AGENT_MANIFEST, get_builtin_agent_manifest
-from voidcode.graph.read_only_slice import DeterministicReadOnlyGraph
+from voidcode.graph.deterministic_graph import DeterministicGraph
 from voidcode.provider.auth import ProviderAuthAuthorizeRequest
 from voidcode.provider.config import (
     CopilotProviderAuthConfig,
@@ -42,6 +42,7 @@ from voidcode.runtime.config import (
     RuntimeToolsConfig,
 )
 from voidcode.runtime.context_window import ContextWindowPolicy, RuntimeContinuityState
+from voidcode.runtime.contracts import RuntimeRequestError
 from voidcode.runtime.events import (
     RUNTIME_BACKGROUND_TASK_CANCELLED,
     RUNTIME_BACKGROUND_TASK_COMPLETED,
@@ -66,6 +67,12 @@ from voidcode.runtime.mcp import (
     McpToolDescriptor,
 )
 from voidcode.runtime.permission import PermissionPolicy
+from voidcode.runtime.provider_protocol import (
+    ProviderExecutionError,
+    ProviderStreamEvent,
+    ProviderTurnRequest,
+    ProviderTurnResult,
+)
 from voidcode.runtime.question import QuestionResponse
 from voidcode.runtime.service import (
     GraphRunRequest,
@@ -76,12 +83,7 @@ from voidcode.runtime.service import (
     ToolRegistry,
     VoidCodeRuntime,
 )
-from voidcode.runtime.single_agent_provider import (
-    ProviderExecutionError,
-    ProviderStreamEvent,
-    SingleAgentTurnRequest,
-    SingleAgentTurnResult,
-)
+from voidcode.runtime.session import SessionRef
 from voidcode.runtime.task import BackgroundTaskState
 from voidcode.skills import SkillRegistry
 from voidcode.tools import ToolCall
@@ -346,23 +348,23 @@ class _FailingProviderGraph:
         raise ValueError("provider context window exceeded")
 
 
-class _ScriptedSingleAgentProvider:
+class _ScriptedTurnProvider:
     def __init__(self, *, name: str, outcomes: tuple[object, ...]) -> None:
         self.name = name
         self._outcomes = list(outcomes)
-        self.requests: list[SingleAgentTurnRequest] = []
+        self.requests: list[ProviderTurnRequest] = []
 
-    def propose_turn(self, request: object) -> SingleAgentTurnResult:
-        self.requests.append(cast(SingleAgentTurnRequest, request))
+    def propose_turn(self, request: object) -> ProviderTurnResult:
+        self.requests.append(cast(ProviderTurnRequest, request))
         if not self._outcomes:
-            return SingleAgentTurnResult(output="done")
+            return ProviderTurnResult(output="done")
         outcome = self._outcomes.pop(0)
         if isinstance(outcome, Exception):
             raise outcome
-        return cast(SingleAgentTurnResult, outcome)
+        return cast(ProviderTurnResult, outcome)
 
     def stream_turn(self, request: object):
-        turn_request = cast(SingleAgentTurnRequest, request)
+        turn_request = cast(ProviderTurnRequest, request)
         self.requests.append(turn_request)
         if turn_request.abort_signal is not None and turn_request.abort_signal.cancelled:
             return iter(
@@ -388,7 +390,7 @@ class _ScriptedSingleAgentProvider:
             raise outcome
         if isinstance(outcome, tuple):
             return iter(cast(tuple[ProviderStreamEvent, ...], outcome))
-        turn_result = cast(SingleAgentTurnResult, outcome)
+        turn_result = cast(ProviderTurnResult, outcome)
         if turn_result.output is not None:
             return iter(
                 (
@@ -403,10 +405,10 @@ class _ScriptedSingleAgentProvider:
 class _ScriptedModelProvider:
     name: str
     outcomes: tuple[object, ...]
-    created_providers: list[_ScriptedSingleAgentProvider] | None = None
+    created_providers: list[_ScriptedTurnProvider] | None = None
 
-    def single_agent_provider(self) -> _ScriptedSingleAgentProvider:
-        provider = _ScriptedSingleAgentProvider(name=self.name, outcomes=self.outcomes)
+    def turn_provider(self) -> _ScriptedTurnProvider:
+        provider = _ScriptedTurnProvider(name=self.name, outcomes=self.outcomes)
         if self.created_providers is not None:
             self.created_providers.append(provider)
         return provider
@@ -424,16 +426,16 @@ class _AlwaysFailingModelProvider:
         self.name = name
         self._error_kind = error_kind
 
-    def single_agent_provider(self) -> _AlwaysFailingSingleAgentProvider:
-        return _AlwaysFailingSingleAgentProvider(name=self.name, error_kind=self._error_kind)
+    def turn_provider(self) -> _AlwaysFailingTurnProvider:
+        return _AlwaysFailingTurnProvider(name=self.name, error_kind=self._error_kind)
 
 
 @dataclass(slots=True)
-class _AlwaysFailingSingleAgentProvider:
+class _AlwaysFailingTurnProvider:
     name: str
     error_kind: Literal["rate_limit", "context_limit", "invalid_model", "transient_failure"]
 
-    def propose_turn(self, request: object) -> SingleAgentTurnResult:
+    def propose_turn(self, request: object) -> ProviderTurnResult:
         _ = request
         raise ProviderExecutionError(
             kind=self.error_kind,
@@ -447,10 +449,10 @@ class _AlwaysFailingSingleAgentProvider:
 class _ApprovalResumeFallbackModelProvider:
     name: str
     attempts_seen: list[int]
-    requests_seen: list[SingleAgentTurnRequest] | None = None
+    requests_seen: list[ProviderTurnRequest] | None = None
 
-    def single_agent_provider(self) -> _ApprovalResumeFallbackSingleAgentProvider:
-        return _ApprovalResumeFallbackSingleAgentProvider(
+    def turn_provider(self) -> _ApprovalResumeFallbackTurnProvider:
+        return _ApprovalResumeFallbackTurnProvider(
             name=self.name,
             attempts_seen=self.attempts_seen,
             requests_seen=self.requests_seen,
@@ -458,24 +460,24 @@ class _ApprovalResumeFallbackModelProvider:
 
 
 @dataclass(slots=True)
-class _ApprovalResumeFallbackSingleAgentProvider:
+class _ApprovalResumeFallbackTurnProvider:
     name: str
     attempts_seen: list[int]
-    requests_seen: list[SingleAgentTurnRequest] | None = None
+    requests_seen: list[ProviderTurnRequest] | None = None
 
-    def propose_turn(self, request: object) -> SingleAgentTurnResult:
-        turn_request = cast(SingleAgentTurnRequest, request)
+    def propose_turn(self, request: object) -> ProviderTurnResult:
+        turn_request = cast(ProviderTurnRequest, request)
         self.attempts_seen.append(turn_request.attempt)
         if self.requests_seen is not None:
             self.requests_seen.append(turn_request)
         if not turn_request.tool_results:
-            return SingleAgentTurnResult(
+            return ProviderTurnResult(
                 tool_call=ToolCall(
                     tool_name="write_file",
                     arguments={"path": "alpha.txt", "content": "1"},
                 )
             )
-        return SingleAgentTurnResult(output="done")
+        return ProviderTurnResult(output="done")
 
 
 class _BackgroundTaskSuccessGraph:
@@ -512,6 +514,30 @@ class _TaskToolGraph:
                 )
             )
         return _StubStep(output="delegation started", is_finished=True)
+
+
+class _NestedDelegationGraph:
+    def step(
+        self,
+        request: GraphRunRequest,
+        tool_results: tuple[object, ...],
+        *,
+        session: SessionState,
+    ) -> _StubStep:
+        _ = request, session
+        if not tool_results:
+            return _StubStep(
+                tool_call=ToolCall(
+                    tool_name="task",
+                    arguments={
+                        "prompt": "nested delegated child prompt",
+                        "run_in_background": True,
+                        "load_skills": [],
+                        "category": "quick",
+                    },
+                )
+            )
+        return _StubStep(output="nested delegation started", is_finished=True)
 
 
 class _BackgroundTaskFailureGraph:
@@ -696,8 +722,280 @@ def test_runtime_task_tool_starts_background_task_with_skill_metadata(tmp_path: 
     assert len(tasks) == 1
     task = runtime.load_background_task(tasks[0].task.id)
     assert task.request.parent_session_id == "leader-session"
-    assert task.request.metadata == {"skills": ["demo"]}
+    assert task.request.metadata == {
+        "skills": ["demo"],
+        "delegation": {
+            "mode": "background",
+            "category": "quick",
+            "depth": 1,
+            "remaining_spawn_budget": 3,
+            "selected_preset": "worker",
+            "selected_execution_engine": "provider",
+        },
+        "agent": {
+            "preset": "worker",
+            "prompt_profile": "worker",
+            "execution_engine": "provider",
+        },
+    }
     assert task.request.prompt.startswith("Delegated runtime task.")
+
+
+def test_runtime_category_routing_resolves_real_child_agent_and_persists_identity(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+
+    started = runtime.start_background_task(
+        RuntimeRequest(
+            prompt="delegated child",
+            parent_session_id="leader-session",
+            allocate_session_id=True,
+            metadata={
+                "delegation": {
+                    "mode": "background",
+                    "category": "quick",
+                }
+            },
+        )
+    )
+    completed = _wait_for_background_task(runtime, started.task.id)
+    child_session_id = cast(str, completed.session_id)
+    child_response = runtime.resume(child_session_id)
+    result = runtime.load_background_task_result(started.task.id)
+
+    assert started.request.metadata == {
+        "delegation": {
+            "mode": "background",
+            "category": "quick",
+            "depth": 1,
+            "remaining_spawn_budget": 3,
+            "selected_preset": "worker",
+            "selected_execution_engine": "provider",
+        },
+        "agent": {
+            "preset": "worker",
+            "prompt_profile": "worker",
+            "execution_engine": "provider",
+        },
+    }
+    runtime_config = cast(dict[str, object], child_response.session.metadata["runtime_config"])
+    assert runtime_config["agent"] == {
+        "preset": "worker",
+        "prompt_profile": "worker",
+        "execution_engine": "provider",
+    }
+    assert result.routing is not None
+    assert result.routing.category == "quick"
+    assert result.routing.subagent_type is None
+    assert result.requested_child_session_id == child_session_id
+
+
+def test_runtime_subagent_type_routing_resolves_real_child_agent_and_persists_identity(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+    response = runtime.run(
+        RuntimeRequest(
+            prompt="delegated child",
+            session_id="child-session",
+            parent_session_id="leader-session",
+            metadata={
+                "delegation": {
+                    "mode": "sync",
+                    "subagent_type": "explore",
+                }
+            },
+        )
+    )
+
+    runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
+    assert runtime_config["agent"] == {
+        "preset": "explore",
+        "prompt_profile": "explore",
+        "execution_engine": "provider",
+    }
+    assert response.session.metadata["delegation"] == {
+        "mode": "sync",
+        "subagent_type": "explore",
+        "depth": 1,
+        "remaining_spawn_budget": 3,
+        "selected_preset": "explore",
+        "selected_execution_engine": "provider",
+    }
+
+
+def test_runtime_background_delegation_executes_on_real_provider_child_path(
+    tmp_path: Path,
+) -> None:
+    created_providers: list[_ScriptedTurnProvider] = []
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(ProviderTurnResult(output="delegated child complete"),),
+                created_providers=created_providers,
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            agent=RuntimeAgentConfig(
+                preset="leader",
+                model="opencode/gpt-5.4",
+            )
+        ),
+        model_provider_registry=registry,
+    )
+    _ = runtime.run(RuntimeRequest(prompt="read sample.txt", session_id="leader-session"))
+
+    started = runtime.start_background_task(
+        RuntimeRequest(
+            prompt="Investigate delegated execution path",
+            parent_session_id="leader-session",
+            allocate_session_id=True,
+            metadata={"delegation": {"mode": "background", "category": "quick"}},
+        )
+    )
+    completed = _wait_for_background_task(runtime, started.task.id)
+    child_session_id = cast(str, completed.session_id)
+    child_result = runtime.session_result(session_id=child_session_id)
+    child_effective = runtime.effective_runtime_config(session_id=child_session_id)
+
+    assert completed.status == "completed"
+    assert child_result.output == "delegated child complete"
+    assert len(created_providers) == 2
+    assert child_effective.execution_engine == "provider"
+    assert child_effective.agent == RuntimeAgentConfig(
+        preset="worker",
+        prompt_profile="worker",
+        model="opencode/gpt-5.4",
+        execution_engine="provider",
+    )
+    assert created_providers[1].requests[0].agent_preset == {
+        "preset": "worker",
+        "prompt_profile": "worker",
+        "model": "opencode/gpt-5.4",
+        "execution_engine": "provider",
+    }
+
+
+def test_runtime_rejects_mismatched_delegated_execution_engine_override(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+
+    with pytest.raises(
+        RuntimeRequestError,
+        match=(
+            "request metadata 'agent.execution_engine' must match delegated child "
+            "execution engine 'provider'"
+        ),
+    ):
+        _ = runtime.run(
+            RuntimeRequest(
+                prompt="delegated child",
+                parent_session_id="leader-session",
+                metadata={
+                    "delegation": {
+                        "mode": "sync",
+                        "subagent_type": "explore",
+                    },
+                    "agent": {"preset": "explore", "execution_engine": "deterministic"},
+                },
+            )
+        )
+
+
+def test_runtime_rejects_unknown_delegated_subagent_type(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+
+    with pytest.raises(
+        RuntimeRequestError,
+        match="unknown subagent_type 'not-real'",
+    ):
+        _ = runtime.run(
+            RuntimeRequest(
+                prompt="delegated child",
+                parent_session_id="leader-session",
+                metadata={
+                    "delegation": {
+                        "mode": "sync",
+                        "subagent_type": "not-real",
+                    }
+                },
+            )
+        )
+
+
+def test_runtime_rejects_leader_as_delegated_child_preset(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+
+    with pytest.raises(
+        RuntimeRequestError,
+        match="subagent_type 'leader' is not a callable child preset",
+    ):
+        _ = runtime.run(
+            RuntimeRequest(
+                prompt="delegated child",
+                parent_session_id="leader-session",
+                metadata={
+                    "delegation": {
+                        "mode": "sync",
+                        "subagent_type": "leader",
+                    }
+                },
+            )
+        )
+
+
+def test_runtime_rejects_unsupported_delegated_category(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+
+    with pytest.raises(
+        RuntimeRequestError,
+        match="unsupported task category 'mystery'",
+    ):
+        _ = runtime.run(
+            RuntimeRequest(
+                prompt="delegated child",
+                parent_session_id="leader-session",
+                metadata={
+                    "delegation": {
+                        "mode": "background",
+                        "category": "mystery",
+                    }
+                },
+            )
+        )
+
+
+def test_runtime_rejects_mismatched_delegated_agent_override(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+
+    with pytest.raises(
+        RuntimeRequestError,
+        match="request metadata 'agent.preset' must match delegated child preset 'explore'",
+    ):
+        _ = runtime.run(
+            RuntimeRequest(
+                prompt="delegated child",
+                parent_session_id="leader-session",
+                metadata={
+                    "delegation": {
+                        "mode": "sync",
+                        "subagent_type": "explore",
+                    },
+                    "agent": {"preset": "worker"},
+                },
+            )
+        )
 
 
 def test_runtime_background_task_worker_uses_local_cli_session_when_no_session_id_and_allocate_session_id_is_false(  # noqa: E501
@@ -741,6 +1039,115 @@ def test_runtime_rejects_unknown_parent_session_id(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="parent session does not exist: missing-parent"):
         _ = runtime.run(RuntimeRequest(prompt="child task", parent_session_id="missing-parent"))
+
+
+def test_runtime_enforces_delegation_depth_limit(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+
+    response = runtime.run(
+        RuntimeRequest(
+            prompt="depth-1",
+            session_id="child-depth-1",
+            parent_session_id="leader-session",
+            metadata={"delegation": {"mode": "sync", "category": "quick"}},
+        )
+    )
+    second = runtime.run(
+        RuntimeRequest(
+            prompt="depth-2",
+            session_id="child-depth-2",
+            parent_session_id="child-depth-1",
+            metadata={"delegation": {"mode": "sync", "category": "quick"}},
+        )
+    )
+    third = runtime.run(
+        RuntimeRequest(
+            prompt="depth-3",
+            session_id="child-depth-3",
+            parent_session_id="child-depth-2",
+            metadata={"delegation": {"mode": "sync", "category": "quick"}},
+        )
+    )
+
+    assert cast(dict[str, object], response.session.metadata["delegation"])["depth"] == 1
+    assert cast(dict[str, object], second.session.metadata["delegation"])["depth"] == 2
+    assert cast(dict[str, object], third.session.metadata["delegation"])["depth"] == 3
+    with pytest.raises(RuntimeRequestError, match="delegation depth limit exceeded"):
+        _ = runtime.run(
+            RuntimeRequest(
+                prompt="depth-4",
+                parent_session_id="child-depth-3",
+                metadata={"delegation": {"mode": "sync", "category": "quick"}},
+            )
+        )
+
+
+def test_runtime_enforces_task_budget(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+    store = _private_attr(runtime, "_session_store")
+    store.save_run(
+        workspace=tmp_path,
+        request=RuntimeRequest(
+            prompt="budget-root",
+            session_id="budget-root",
+            parent_session_id="leader-session",
+        ),
+        response=RuntimeResponse(
+            session=SessionState(
+                session=SessionRef(id="budget-root", parent_id="leader-session"),
+                status="completed",
+                turn=1,
+                metadata={
+                    "workspace": str(tmp_path),
+                    "delegation": {
+                        "mode": "sync",
+                        "category": "quick",
+                        "depth": 1,
+                        "remaining_spawn_budget": 0,
+                    },
+                },
+            ),
+            events=(),
+            output="budget-root",
+        ),
+    )
+
+    with pytest.raises(RuntimeRequestError, match="delegation spawn budget exhausted"):
+        _ = runtime.run(
+            RuntimeRequest(
+                prompt="child-over-budget",
+                parent_session_id="budget-root",
+                metadata={"delegation": {"mode": "sync", "category": "quick"}},
+            )
+        )
+
+
+def test_runtime_nested_task_tool_propagates_runtime_governance_budget(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_NestedDelegationGraph())
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+
+    child = runtime.run(
+        RuntimeRequest(
+            prompt="delegate from child",
+            session_id="child-session",
+            parent_session_id="leader-session",
+            metadata={"delegation": {"mode": "sync", "category": "quick"}},
+        )
+    )
+    tasks = runtime.list_background_tasks_by_parent_session(parent_session_id="child-session")
+    task = runtime.load_background_task(tasks[0].task.id)
+
+    assert child.output == "nested delegation started"
+    assert task.request.metadata["delegation"] == {
+        "mode": "background",
+        "category": "quick",
+        "depth": 2,
+        "remaining_spawn_budget": 2,
+        "selected_preset": "worker",
+        "selected_execution_engine": "provider",
+    }
 
 
 def test_runtime_allows_child_session_while_parent_stream_is_active(tmp_path: Path) -> None:
@@ -1079,13 +1486,41 @@ def test_runtime_background_task_completion_emits_parent_session_event_once(
 
     assert completed.status == "completed"
     assert len(completed_events) == 1
+    completed_delegated = completed_events[0].delegated_lifecycle
+    assert completed_delegated is not None
+    assert completed_delegated.delegation.delegated_task_id == started.task.id
+    assert completed_delegated.message.summary_output == "Completed: background child"
     assert completed_events[0].payload == {
         "task_id": started.task.id,
         "parent_session_id": "leader-session",
+        "requested_child_session_id": cast(str, completed.session_id),
         "child_session_id": cast(str, completed.session_id),
         "status": "completed",
         "summary_output": "Completed: background child",
         "result_available": True,
+        "delegation": {
+            "parent_session_id": "leader-session",
+            "requested_child_session_id": cast(str, completed.session_id),
+            "child_session_id": cast(str, completed.session_id),
+            "delegated_task_id": started.task.id,
+            "approval_request_id": None,
+            "question_request_id": None,
+            "routing": None,
+            "selected_preset": None,
+            "selected_execution_engine": None,
+            "lifecycle_status": "completed",
+            "approval_blocked": False,
+            "result_available": True,
+            "cancellation_cause": None,
+        },
+        "message": {
+            "kind": "delegated_lifecycle",
+            "status": "completed",
+            "summary_output": "Completed: background child",
+            "error": None,
+            "approval_blocked": False,
+            "result_available": True,
+        },
     }
 
     deduped_response = runtime.resume("leader-session")
@@ -1125,14 +1560,39 @@ def test_runtime_background_task_failure_emits_parent_session_event_once(
 
     assert failed.status == "failed"
     assert len(failed_events) == 1
-    assert failed_events[0].payload == {
-        "task_id": started.task.id,
+    failed_delegated = failed_events[0].delegated_lifecycle
+    assert failed_delegated is not None
+    assert failed_delegated.message.error == cast(str, failed.error)
+    event_payload = failed_events[0].payload
+    assert event_payload["task_id"] == started.task.id
+    assert event_payload["parent_session_id"] == "leader-session"
+    assert event_payload["requested_child_session_id"] == cast(str, failed.session_id)
+    assert event_payload["child_session_id"] == cast(str, failed.session_id)
+    assert event_payload["status"] == "failed"
+    assert event_payload["error"] == cast(str, failed.error)
+    assert event_payload["result_available"] is True
+    assert event_payload["delegation"] == {
         "parent_session_id": "leader-session",
+        "requested_child_session_id": cast(str, failed.session_id),
         "child_session_id": cast(str, failed.session_id),
-        "status": "failed",
-        "error": cast(str, failed.error),
+        "delegated_task_id": started.task.id,
+        "approval_request_id": None,
+        "question_request_id": None,
+        "routing": None,
+        "selected_preset": None,
+        "selected_execution_engine": None,
+        "lifecycle_status": "failed",
+        "approval_blocked": False,
         "result_available": True,
+        "cancellation_cause": None,
     }
+    event_message = cast(dict[str, object], event_payload["message"])
+    assert event_message["kind"] == "delegated_lifecycle"
+    assert event_message["status"] == "failed"
+    assert event_message["error"] == cast(str, failed.error)
+    assert event_message["approval_blocked"] is False
+    assert event_message["result_available"] is True
+    assert failed_delegated.message.summary_output == f"Failed: {cast(str, failed.error)}"
 
     deduped_response = runtime.resume("leader-session")
 
@@ -1178,12 +1638,39 @@ def test_runtime_background_task_cancellation_emits_parent_session_event_once(
 
     assert cancelled.status == "cancelled"
     assert len(cancelled_events) == 1
+    cancelled_delegated = cancelled_events[0].delegated_lifecycle
+    assert cancelled_delegated is not None
+    assert cancelled_delegated.delegation.cancellation_cause == "cancelled before start"
     assert cancelled_events[0].payload == {
         "task_id": "task-parent-cancel",
         "parent_session_id": "leader-session",
         "status": "cancelled",
         "error": "cancelled before start",
+        "cancellation_cause": "cancelled before start",
         "result_available": False,
+        "delegation": {
+            "parent_session_id": "leader-session",
+            "requested_child_session_id": None,
+            "child_session_id": None,
+            "delegated_task_id": "task-parent-cancel",
+            "approval_request_id": None,
+            "question_request_id": None,
+            "routing": None,
+            "selected_preset": None,
+            "selected_execution_engine": None,
+            "lifecycle_status": "cancelled",
+            "approval_blocked": False,
+            "result_available": False,
+            "cancellation_cause": "cancelled before start",
+        },
+        "message": {
+            "kind": "delegated_lifecycle",
+            "status": "cancelled",
+            "summary_output": None,
+            "error": "cancelled before start",
+            "approval_blocked": False,
+            "result_available": False,
+        },
     }
 
     deduped_response = runtime.resume("leader-session")
@@ -1280,10 +1767,34 @@ def test_runtime_reconciles_persisted_child_terminal_truth_and_backfills_parent_
     assert recovered_events[0].payload == {
         "task_id": "task-recover",
         "parent_session_id": "leader-session",
+        "requested_child_session_id": "child-session",
         "child_session_id": "child-session",
         "status": "completed",
         "summary_output": "Completed: background child",
         "result_available": True,
+        "delegation": {
+            "parent_session_id": "leader-session",
+            "requested_child_session_id": "child-session",
+            "child_session_id": "child-session",
+            "delegated_task_id": "task-recover",
+            "approval_request_id": None,
+            "question_request_id": None,
+            "routing": None,
+            "selected_preset": None,
+            "selected_execution_engine": None,
+            "lifecycle_status": "completed",
+            "approval_blocked": False,
+            "result_available": True,
+            "cancellation_cause": None,
+        },
+        "message": {
+            "kind": "delegated_lifecycle",
+            "status": "completed",
+            "summary_output": "Completed: background child",
+            "error": None,
+            "approval_blocked": False,
+            "result_available": True,
+        },
     }
     assert (
         sum(event.event_type == RUNTIME_BACKGROUND_TASK_COMPLETED for event in replayed.events) == 1
@@ -1383,12 +1894,42 @@ def test_runtime_background_task_waiting_approval_emits_parent_session_event_onc
         if event.event_type == RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL
     ]
     assert len(waiting_events) == 1
+    waiting_delegated = waiting_events[0].delegated_lifecycle
+    assert waiting_delegated is not None
+    assert waiting_delegated.delegation.lifecycle_status == "waiting_approval"
+    assert waiting_delegated.message.approval_blocked is True
     assert waiting_events[0].payload == {
         "task_id": started.task.id,
         "parent_session_id": "leader-session",
+        "requested_child_session_id": child_session_id,
         "child_session_id": child_session_id,
+        "approval_request_id": cast(str, child_response.events[-1].payload["request_id"]),
         "status": "running",
         "approval_blocked": True,
+        "result_available": True,
+        "delegation": {
+            "parent_session_id": "leader-session",
+            "requested_child_session_id": child_session_id,
+            "child_session_id": child_session_id,
+            "delegated_task_id": started.task.id,
+            "approval_request_id": cast(str, child_response.events[-1].payload["request_id"]),
+            "question_request_id": None,
+            "routing": None,
+            "selected_preset": None,
+            "selected_execution_engine": None,
+            "lifecycle_status": "waiting_approval",
+            "approval_blocked": True,
+            "result_available": True,
+            "cancellation_cause": None,
+        },
+        "message": {
+            "kind": "delegated_lifecycle",
+            "status": "waiting_approval",
+            "summary_output": "Approval blocked on write_file: write_file alpha.txt",
+            "error": None,
+            "approval_blocked": True,
+            "result_available": True,
+        },
     }
     assert [event.sequence for event in leader_response.events] == sorted(
         event.sequence for event in leader_response.events
@@ -1407,6 +1948,23 @@ def test_runtime_background_task_waiting_approval_emits_parent_session_event_onc
         )
         == 1
     )
+
+
+def test_runtime_waiting_approval_event_records_child_ownership(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    waiting = runtime.run(RuntimeRequest(prompt="go", session_id="owned-approval-child"))
+    approval_event = waiting.events[-1]
+
+    assert approval_event.event_type == "runtime.approval_requested"
+    assert approval_event.payload["owner_session_id"] == "owned-approval-child"
+    assert approval_event.payload["owner_parent_session_id"] is None
+    assert approval_event.payload["delegated_task_id"] is None
 
 
 def test_runtime_background_task_waiting_approval_resume_finalizes_task(
@@ -1525,6 +2083,127 @@ def test_runtime_background_task_waiting_approval_resume_with_fresh_runtime_pres
     assert finalized.error is None
 
 
+def test_runtime_background_task_approval_resume_overrides_stale_failed_task_status(
+    tmp_path: Path,
+) -> None:
+    initial_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+    _ = initial_runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+
+    started = initial_runtime.start_background_task(
+        RuntimeRequest(prompt="background child", parent_session_id="leader-session")
+    )
+    running = _wait_for_background_task_session(initial_runtime, started.task.id)
+    child_session_id = cast(str, running.session_id)
+    child_response = _wait_for_session_event(
+        initial_runtime,
+        child_session_id,
+        "runtime.approval_requested",
+    )
+    approval_request_id = cast(str, child_response.events[-1].payload["request_id"])
+
+    _ = initial_runtime._session_store.mark_background_task_terminal(  # pyright: ignore[reportPrivateUsage]
+        workspace=tmp_path,
+        task_id=started.task.id,
+        status="failed",
+        error="background task interrupted before completion",
+    )
+
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+    stale = resumed_runtime.load_background_task(started.task.id)
+
+    resumed = resumed_runtime.resume(
+        child_session_id,
+        approval_request_id=approval_request_id,
+        approval_decision="allow",
+    )
+    finalized = resumed_runtime.load_background_task(started.task.id)
+    result = resumed_runtime.load_background_task_result(started.task.id)
+
+    assert stale.status == "failed"
+    assert resumed.session.status == "completed"
+    assert finalized.status == "completed"
+    assert finalized.error is None
+    assert result.status == "completed"
+    assert result.error is None
+
+
+def test_runtime_resume_rejects_parent_session_for_child_owned_approval(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+
+    started = runtime.start_background_task(
+        RuntimeRequest(prompt="background child", parent_session_id="leader-session")
+    )
+    running = _wait_for_background_task_session(runtime, started.task.id)
+    child_session_id = cast(str, running.session_id)
+    child_response = _wait_for_session_event(
+        runtime,
+        child_session_id,
+        "runtime.approval_requested",
+    )
+    approval_request_id = cast(str, child_response.events[-1].payload["request_id"])
+
+    with pytest.raises(
+        ValueError,
+        match="approval resume must target the child session that owns the approval request",
+    ):
+        _ = runtime.resume(
+            "leader-session",
+            approval_request_id=approval_request_id,
+            approval_decision="allow",
+        )
+
+
+def test_runtime_cancel_background_task_propagates_to_waiting_child_session(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+
+    started = runtime.start_background_task(
+        RuntimeRequest(prompt="background child", parent_session_id="leader-session")
+    )
+    running = _wait_for_background_task_session(runtime, started.task.id)
+    child_session_id = cast(str, running.session_id)
+    child_response = _wait_for_session_event(
+        runtime,
+        child_session_id,
+        "runtime.approval_requested",
+    )
+
+    cancelled = runtime.cancel_background_task(started.task.id)
+    cancelled_child = runtime.resume(child_session_id)
+
+    assert child_response.events[-1].payload["owner_session_id"] == child_session_id
+    assert child_response.events[-1].payload["delegated_task_id"] == started.task.id
+    assert cancelled.status == "cancelled"
+    assert cancelled.error == "cancelled by parent while child session was waiting"
+    assert cancelled_child.session.status == "failed"
+    assert cancelled_child.events[-1].payload == {
+        "error": "cancelled by parent while child session was waiting",
+        "cancelled": True,
+        "delegated_task_id": started.task.id,
+    }
+
+
 def test_runtime_background_task_waiting_approval_race_does_not_fail_child_task(
     tmp_path: Path,
 ) -> None:
@@ -1554,6 +2233,104 @@ def test_runtime_background_task_waiting_approval_race_does_not_fail_child_task(
 
     assert after_duplicate_emit.status == "running"
     assert after_duplicate_emit.error is None
+
+
+def test_runtime_fresh_parent_result_reconciles_waiting_background_task_lineage_and_event(
+    tmp_path: Path,
+) -> None:
+    initial_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+    _ = initial_runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+
+    started = initial_runtime.start_background_task(
+        RuntimeRequest(prompt="background child", parent_session_id="leader-session")
+    )
+    running = _wait_for_background_task_session(initial_runtime, started.task.id)
+    child_session_id = cast(str, running.session_id)
+    child_waiting = _wait_for_session_event(
+        initial_runtime,
+        child_session_id,
+        "runtime.approval_requested",
+    )
+
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+    listed = resumed_runtime.list_background_tasks_by_parent_session(
+        parent_session_id="leader-session"
+    )
+    result = resumed_runtime.load_background_task_result(started.task.id)
+    leader_result = resumed_runtime.session_result(session_id="leader-session")
+    child_replay = resumed_runtime.resume(child_session_id)
+
+    waiting_events = [
+        event
+        for event in leader_result.transcript
+        if event.event_type == RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL
+    ]
+
+    assert len(listed) == 1
+    assert listed[0].task.id == started.task.id
+    assert listed[0].session_id == child_session_id
+    assert listed[0].status == "running"
+    assert result.task_id == started.task.id
+    assert result.parent_session_id == "leader-session"
+    assert result.child_session_id == child_session_id
+    assert result.status == "running"
+    assert result.approval_blocked is True
+    assert result.summary_output == "Approval blocked on write_file: write_file alpha.txt"
+    assert result.result_available is True
+    assert len(waiting_events) == 1
+    waiting_delegated = waiting_events[0].delegated_lifecycle
+    assert waiting_delegated is not None
+    assert waiting_delegated.delegation.approval_request_id == cast(
+        str, child_waiting.events[-1].payload["request_id"]
+    )
+    assert waiting_events[0].payload == {
+        "task_id": started.task.id,
+        "parent_session_id": "leader-session",
+        "requested_child_session_id": child_session_id,
+        "child_session_id": child_session_id,
+        "approval_request_id": cast(str, child_waiting.events[-1].payload["request_id"]),
+        "status": "running",
+        "approval_blocked": True,
+        "result_available": True,
+        "delegation": {
+            "parent_session_id": "leader-session",
+            "requested_child_session_id": child_session_id,
+            "child_session_id": child_session_id,
+            "delegated_task_id": started.task.id,
+            "approval_request_id": cast(str, child_waiting.events[-1].payload["request_id"]),
+            "question_request_id": None,
+            "routing": None,
+            "selected_preset": None,
+            "selected_execution_engine": None,
+            "lifecycle_status": "waiting_approval",
+            "approval_blocked": True,
+            "result_available": True,
+            "cancellation_cause": None,
+        },
+        "message": {
+            "kind": "delegated_lifecycle",
+            "status": "waiting_approval",
+            "summary_output": "Approval blocked on write_file: write_file alpha.txt",
+            "error": None,
+            "approval_blocked": True,
+            "result_available": True,
+        },
+    }
+    assert child_replay.session.session.parent_id == "leader-session"
+    assert child_replay.session.metadata["background_task_id"] == started.task.id
+    assert child_replay.session.metadata["background_run"] is True
+    assert child_replay.events[-1].event_type == "runtime.approval_requested"
+    assert child_waiting.events[-1].payload == child_replay.events[-1].payload
 
 
 def test_runtime_reuses_existing_session_lineage_when_parent_is_omitted(tmp_path: Path) -> None:
@@ -1620,6 +2397,36 @@ def test_runtime_background_task_worker_allocates_session_id_when_requested_with
     assert resumed.session.metadata["background_task_id"] == started.task.id
     assert resumed.session.metadata["background_run"] is True
     assert resumed.output == "background hello"
+
+
+def test_runtime_session_routing_seam_preserves_requested_child_identity() -> None:
+    request = RuntimeRequest(
+        prompt="child task",
+        session_id="child-existing",
+        parent_session_id="leader-session",
+    )
+
+    routing = runtime_service_module.resolve_runtime_session_routing(request)
+
+    assert routing.session_id == "child-existing"
+    assert routing.requested_session_id == "child-existing"
+    assert routing.parent_session_id == "leader-session"
+    assert routing.allocate_session_id is False
+
+
+def test_runtime_session_routing_seam_allocates_generated_child_identity_for_delegation() -> None:
+    request = RuntimeRequest(
+        prompt="child task",
+        parent_session_id="leader-session",
+        allocate_session_id=True,
+    )
+
+    routing = runtime_service_module.resolve_runtime_session_routing(request)
+
+    assert routing.session_id.startswith("session-")
+    assert routing.requested_session_id is None
+    assert routing.parent_session_id == "leader-session"
+    assert routing.allocate_session_id is True
 
 
 def test_runtime_background_task_persists_failure_state(tmp_path: Path) -> None:
@@ -1867,6 +2674,7 @@ def test_runtime_exposes_managed_acp_connect_disconnect_and_request(tmp_path: Pa
     response = runtime.request_acp(request_type="ping", payload={"demo": True})
     assert response.status == "ok"
     assert response.payload == {"request_type": "ping", "accepted": True, "demo": True}
+    assert runtime.current_acp_state().last_request_type == "ping"
 
     disconnect_events = runtime.disconnect_acp()
     assert [event.event_type for event in disconnect_events] == ["runtime.acp_disconnected"]
@@ -1903,6 +2711,117 @@ def test_runtime_fail_acp_surfaces_failure_events_and_metadata(tmp_path: Path) -
     assert [event.event_type for event in fail_events] == ["runtime.acp_failed"]
     assert runtime.current_acp_state().status == "failed"
     assert runtime.current_acp_state().last_error == "boom"
+
+
+def test_runtime_request_delegated_acp_carries_runtime_owned_correlation(tmp_path: Path) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("delegated acp\n", encoding="utf-8")
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_StubGraph(),
+        config=RuntimeConfig(acp=RuntimeAcpConfig(enabled=True)),
+    )
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+    started = runtime.start_background_task(
+        RuntimeRequest(
+            prompt="background child",
+            parent_session_id="leader-session",
+            metadata={"delegation": {"mode": "background", "category": "deep"}},
+        )
+    )
+    running = _wait_for_background_task_session(runtime, started.task.id)
+    _ = runtime.connect_acp()
+
+    response = runtime.request_delegated_acp(
+        request_type="delegated_status",
+        task_id=started.task.id,
+        payload={"phase": "running"},
+    )
+
+    assert response.status == "ok"
+    assert response.request_id == started.task.id
+    assert response.session_id == running.session_id
+    assert response.parent_session_id == "leader-session"
+    assert response.delegation is not None
+    assert response.delegation.parent_session_id == "leader-session"
+    assert response.delegation.delegated_task_id == started.task.id
+    assert response.delegation.routing_category == "deep"
+    assert response.delegation.selected_preset == "worker"
+    assert response.delegation.selected_execution_engine == "provider"
+    assert runtime.current_acp_state().last_request_id == started.task.id
+
+
+def test_runtime_background_task_waiting_approval_publishes_acp_delegated_lifecycle(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(acp=RuntimeAcpConfig(enabled=True), approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+    _ = runtime.connect_acp()
+
+    started = runtime.start_background_task(
+        RuntimeRequest(
+            prompt="background child",
+            parent_session_id="leader-session",
+            metadata={"delegation": {"mode": "background", "category": "deep"}},
+        )
+    )
+    running = _wait_for_background_task_session(runtime, started.task.id)
+    child_session_id = cast(str, running.session_id)
+    _ = _wait_for_session_event(runtime, child_session_id, "runtime.approval_requested")
+
+    leader_response = _wait_for_session_event(
+        runtime,
+        "leader-session",
+        RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL,
+    )
+    acp_events = [
+        event
+        for event in leader_response.events
+        if event.event_type == "runtime.acp_delegated_lifecycle"
+    ]
+
+    assert len(acp_events) == 1
+    assert acp_events[0].payload["session_id"] == child_session_id
+    assert acp_events[0].payload["parent_session_id"] == "leader-session"
+    delegation_payload = cast(dict[str, object], acp_events[0].payload["delegation"])
+    assert delegation_payload["delegated_task_id"] == started.task.id
+    assert delegation_payload["routing_category"] == "deep"
+    assert delegation_payload["lifecycle_status"] == "waiting_approval"
+    assert delegation_payload["approval_blocked"] is True
+    assert runtime.current_acp_state().status == "disconnected"
+
+
+def test_runtime_background_task_completion_updates_acp_runtime_state_with_result_availability(
+    tmp_path: Path,
+) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("background complete\n", encoding="utf-8")
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_StubGraph(),
+        config=RuntimeConfig(acp=RuntimeAcpConfig(enabled=True)),
+    )
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+    _ = runtime.connect_acp()
+
+    started = runtime.start_background_task(
+        RuntimeRequest(
+            prompt="background hello",
+            parent_session_id="leader-session",
+            metadata={"delegation": {"mode": "background", "category": "deep"}},
+        )
+    )
+    _ = _wait_for_background_task(runtime, started.task.id)
+    result = runtime.load_background_task_result(started.task.id)
+
+    assert result.status == "completed"
+    state = runtime.current_acp_state()
+    assert state.status == "disconnected"
 
 
 def test_runtime_connect_acp_rejects_disabled_adapter(tmp_path: Path) -> None:
@@ -2241,6 +3160,10 @@ def test_runtime_resume_skips_acp_startup_when_mcp_refresh_already_failed(
             _ = message
             raise AssertionError("not used")
 
+        def publish(self, envelope: object) -> AcpResponseEnvelope:
+            _ = envelope
+            raise AssertionError("not used")
+
         def drain_events(self) -> tuple[AcpRuntimeEvent, ...]:
             return ()
 
@@ -2435,6 +3358,10 @@ def test_runtime_default_extension_construction_preserves_public_run_path(
         "status": "disconnected",
         "available": False,
         "last_error": None,
+        "last_request_type": "handshake",
+        "last_request_id": None,
+        "last_event_type": None,
+        "last_delegation": None,
     }
 
 
@@ -2464,6 +3391,10 @@ def test_runtime_run_emits_acp_lifecycle_events_and_persists_final_state(tmp_pat
         "status": "disconnected",
         "available": False,
         "last_error": None,
+        "last_request_type": "handshake",
+        "last_request_id": None,
+        "last_event_type": None,
+        "last_delegation": None,
     }
 
 
@@ -2496,6 +3427,10 @@ def test_runtime_run_fails_when_acp_handshake_fails(tmp_path: Path) -> None:
         "status": "failed",
         "available": False,
         "last_error": "ACP handshake rejected by memory transport",
+        "last_request_type": None,
+        "last_request_id": None,
+        "last_event_type": None,
+        "last_delegation": None,
     }
 
 
@@ -2775,6 +3710,10 @@ def test_runtime_failed_run_disconnects_acp_before_persisting_failure(
         "status": "disconnected",
         "available": False,
         "last_error": None,
+        "last_request_type": "handshake",
+        "last_request_id": None,
+        "last_event_type": None,
+        "last_delegation": None,
     }
 
 
@@ -2807,6 +3746,10 @@ def test_runtime_resume_returns_disconnected_acp_state_after_waiting_again(
         "status": "disconnected",
         "available": False,
         "last_error": None,
+        "last_request_type": "handshake",
+        "last_request_id": None,
+        "last_event_type": None,
+        "last_delegation": None,
     }
 
 
@@ -2832,7 +3775,7 @@ def test_runtime_resume_stream_replay_keeps_failed_status_on_trailing_acp_discon
         workspace=tmp_path,
         config=RuntimeConfig(
             acp=RuntimeAcpConfig(enabled=True),
-            execution_engine="single_agent",
+            execution_engine="provider",
             model="opencode/gpt-5.4",
         ),
         model_provider_registry=registry,
@@ -3696,27 +4639,27 @@ def test_runtime_resume_uses_persisted_approval_mode_for_follow_up_gated_tools(
 def test_runtime_approval_resume_preserves_canonical_continuity_state(tmp_path: Path) -> None:
     sample_file = tmp_path / "sample.txt"
     sample_file.write_text("alpha\n", encoding="utf-8")
-    created_providers: list[_ScriptedSingleAgentProvider] = []
+    created_providers: list[_ScriptedTurnProvider] = []
     registry = ModelProviderRegistry(
         providers={
             "opencode": _ScriptedModelProvider(
                 name="opencode",
                 outcomes=(
-                    SingleAgentTurnResult(tool_call=ToolCall("read_file", {"path": "sample.txt"})),
-                    SingleAgentTurnResult(tool_call=ToolCall("read_file", {"path": "sample.txt"})),
-                    SingleAgentTurnResult(
+                    ProviderTurnResult(tool_call=ToolCall("read_file", {"path": "sample.txt"})),
+                    ProviderTurnResult(tool_call=ToolCall("read_file", {"path": "sample.txt"})),
+                    ProviderTurnResult(
                         tool_call=ToolCall(
                             "write_file",
                             {"path": "beta.txt", "content": "2"},
                         )
                     ),
-                    SingleAgentTurnResult(
+                    ProviderTurnResult(
                         tool_call=ToolCall(
                             "write_file",
                             {"path": "beta.txt", "content": "2"},
                         )
                     ),
-                    SingleAgentTurnResult(output="done"),
+                    ProviderTurnResult(output="done"),
                 ),
                 created_providers=created_providers,
             )
@@ -3725,7 +4668,7 @@ def test_runtime_approval_resume_preserves_canonical_continuity_state(tmp_path: 
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         config=RuntimeConfig(
-            execution_engine="single_agent",
+            execution_engine="provider",
             model="opencode/gpt-5.4",
             approval_mode="ask",
         ),
@@ -4221,14 +5164,14 @@ def test_runtime_effective_runtime_config_keeps_persisted_non_agent_sessions_cle
     assert effective.agent is None
 
 
-def test_runtime_graph_selection_avoids_reusing_initial_single_agent_graph(
+def test_runtime_graph_selection_avoids_reusing_initial_provider_graph(
     tmp_path: Path,
 ) -> None:
     registry = ModelProviderRegistry(
         providers={
             "opencode": _ScriptedModelProvider(
                 name="opencode",
-                outcomes=(SingleAgentTurnResult(output="unused"),),
+                outcomes=(ProviderTurnResult(output="unused"),),
             )
         }
     )
@@ -4257,7 +5200,127 @@ def test_runtime_graph_selection_avoids_reusing_initial_single_agent_graph(
     )
 
     assert graph is not _private_attr(runtime, "_graph")
-    assert isinstance(graph, DeterministicReadOnlyGraph)
+    assert isinstance(graph, DeterministicGraph)
+
+
+def test_runtime_graph_selection_seam_uses_provider_attempt_target(tmp_path: Path) -> None:
+    created_providers: list[_ScriptedTurnProvider] = []
+    registry = ModelProviderRegistry(
+        providers={
+            "primary": _ScriptedModelProvider(
+                name="primary",
+                outcomes=(ProviderTurnResult(output="unused"),),
+                created_providers=created_providers,
+            ),
+            "fallback": _ScriptedModelProvider(
+                name="fallback",
+                outcomes=(ProviderTurnResult(output="unused"),),
+                created_providers=created_providers,
+            ),
+        }
+    )
+    fallback = RuntimeProviderFallbackConfig(
+        preferred_model="primary/model-a",
+        fallback_models=("fallback/model-b",),
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="primary/model-a",
+            provider_fallback=fallback,
+        ),
+        model_provider_registry=registry,
+    )
+
+    selection = runtime._graph_selection_for_effective_config(  # pyright: ignore[reportPrivateUsage]
+        runtime.effective_runtime_config(),
+        provider_attempt=1,
+    )
+
+    assert selection.provider_attempt == 1
+    assert selection.provider_target.selection.provider == "fallback"
+    assert selection.provider_target.selection.model == "model-b"
+    assert created_providers[-1].name == "fallback"
+
+
+def test_runtime_provider_fallback_seam_returns_next_graph_selection(tmp_path: Path) -> None:
+    created_providers: list[_ScriptedTurnProvider] = []
+    registry = ModelProviderRegistry(
+        providers={
+            "primary": _ScriptedModelProvider(
+                name="primary",
+                outcomes=(ProviderTurnResult(output="unused"),),
+                created_providers=created_providers,
+            ),
+            "fallback": _ScriptedModelProvider(
+                name="fallback",
+                outcomes=(ProviderTurnResult(output="unused"),),
+                created_providers=created_providers,
+            ),
+        }
+    )
+    fallback = RuntimeProviderFallbackConfig(
+        preferred_model="primary/model-a",
+        fallback_models=("fallback/model-b",),
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="primary/model-a",
+            provider_fallback=fallback,
+        ),
+        model_provider_registry=registry,
+    )
+
+    selection = runtime._fallback_graph_selection(  # pyright: ignore[reportPrivateUsage]
+        error=ProviderExecutionError(
+            kind="rate_limit",
+            provider_name="primary",
+            model_name="model-a",
+            message="rate limited",
+        ),
+        session_metadata={
+            "runtime_config": {
+                "approval_mode": "ask",
+                "execution_engine": "provider",
+                "max_steps": 4,
+                "tool_timeout_seconds": None,
+                "provider_fallback": {
+                    "preferred_model": "primary/model-a",
+                    "fallback_models": ["fallback/model-b"],
+                },
+                "resolved_provider": {
+                    "active_target": {
+                        "provider": "primary",
+                        "model": "model-a",
+                        "raw_model": "primary/model-a",
+                    },
+                    "targets": [
+                        {
+                            "provider": "primary",
+                            "model": "model-a",
+                            "raw_model": "primary/model-a",
+                        },
+                        {
+                            "provider": "fallback",
+                            "model": "model-b",
+                            "raw_model": "fallback/model-b",
+                        },
+                    ],
+                },
+                "plan": None,
+            }
+        },
+        provider_attempt=0,
+    )
+
+    assert selection is not None
+    assert selection.provider_attempt == 1
+    assert selection.provider_target.selection.provider == "fallback"
+    assert selection.provider_target.selection.model == "model-b"
+    assert created_providers[-1].name == "fallback"
 
 
 def test_runtime_effective_runtime_config_uses_request_metadata_max_steps_for_new_runs(
@@ -4289,7 +5352,11 @@ def test_runtime_effective_runtime_config_uses_request_metadata_max_steps_for_ne
             "configured_enabled": False,
             "status": "disconnected",
             "available": False,
+            "last_delegation": None,
             "last_error": None,
+            "last_event_type": None,
+            "last_request_id": None,
+            "last_request_type": None,
         }
     }
 
@@ -4464,25 +5531,25 @@ def test_runtime_prefers_explicit_graph_over_config_selected_execution_engine(
     assert response.output == "hello"
 
 
-def test_runtime_initializes_single_agent_graph_from_config(tmp_path: Path) -> None:
+def test_runtime_initializes_provider_graph_from_config(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         config=RuntimeConfig(
-            execution_engine="single_agent",
+            execution_engine="provider",
             model="opencode/gpt-5.4",
         ),
     )
 
     graph = _private_attr(runtime, "_graph")
 
-    assert graph.__class__.__name__ == "ProviderSingleAgentGraph"
+    assert graph.__class__.__name__ == "ProviderGraph"
 
 
 def test_runtime_classifies_provider_context_limit_failures(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_FailingProviderGraph(),
-        config=RuntimeConfig(execution_engine="single_agent", model="opencode/gpt-5.4"),
+        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
     )
 
     response = runtime.run(RuntimeRequest(prompt="read sample.txt", session_id="provider-limit"))
@@ -4495,17 +5562,17 @@ def test_runtime_classifies_provider_context_limit_failures(tmp_path: Path) -> N
     }
 
 
-def test_runtime_single_agent_compaction_emits_continuity_state_and_persists_metadata(
+def test_runtime_provider_compaction_emits_continuity_state_and_persists_metadata(
     tmp_path: Path,
 ) -> None:
     sample_file = tmp_path / "sample.txt"
     sample_file.write_text("alpha\n", encoding="utf-8")
-    created_providers: list[_ScriptedSingleAgentProvider] = []
+    created_providers: list[_ScriptedTurnProvider] = []
     registry = ModelProviderRegistry(
         providers={
             "opencode": _ScriptedModelProvider(
                 name="opencode",
-                outcomes=(SingleAgentTurnResult(output="done"),),
+                outcomes=(ProviderTurnResult(output="done"),),
                 created_providers=created_providers,
             )
         }
@@ -4562,15 +5629,15 @@ def test_runtime_single_agent_compaction_emits_continuity_state_and_persists_met
     assert replay_runtime_state["continuity"] == expected_continuity
 
 
-def test_runtime_rejects_single_agent_engine_without_model(tmp_path: Path) -> None:
+def test_runtime_rejects_provider_engine_without_model(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="requires a configured model"):
         _ = VoidCodeRuntime(
             workspace=tmp_path,
-            config=RuntimeConfig(execution_engine="single_agent"),
+            config=RuntimeConfig(execution_engine="provider"),
         )
 
 
-def test_runtime_effective_runtime_config_recovers_single_agent_engine(tmp_path: Path) -> None:
+def test_runtime_effective_runtime_config_recovers_provider_engine(tmp_path: Path) -> None:
     sample_file = tmp_path / "sample.txt"
     sample_file.write_text("agent config\n", encoding="utf-8")
 
@@ -4578,7 +5645,7 @@ def test_runtime_effective_runtime_config_recovers_single_agent_engine(tmp_path:
         workspace=tmp_path,
         config=RuntimeConfig(
             approval_mode="allow",
-            execution_engine="single_agent",
+            execution_engine="provider",
             model="opencode/gpt-5.4",
         ),
     )
@@ -4591,20 +5658,20 @@ def test_runtime_effective_runtime_config_recovers_single_agent_engine(tmp_path:
     effective = resumed_runtime.effective_runtime_config(session_id="single-agent-config")
 
     assert effective.approval_mode == "allow"
-    assert effective.execution_engine == "single_agent"
+    assert effective.execution_engine == "provider"
     assert effective.model == "opencode/gpt-5.4"
 
 
-def test_runtime_agent_config_selects_single_agent_graph_and_persists_agent_metadata(
+def test_runtime_agent_config_selects_provider_graph_and_persists_agent_metadata(
     tmp_path: Path,
 ) -> None:
     (tmp_path / "sample.txt").write_text("leader config\n", encoding="utf-8")
-    created_providers: list[_ScriptedSingleAgentProvider] = []
+    created_providers: list[_ScriptedTurnProvider] = []
     registry = ModelProviderRegistry(
         providers={
             "opencode": _ScriptedModelProvider(
                 name="opencode",
-                outcomes=(SingleAgentTurnResult(output="leader complete"),),
+                outcomes=(ProviderTurnResult(output="leader complete"),),
                 created_providers=created_providers,
             )
         }
@@ -4632,22 +5699,22 @@ def test_runtime_agent_config_selects_single_agent_graph_and_persists_agent_meta
         "preset": "leader",
         "prompt_profile": "leader",
         "model": "opencode/gpt-5.4",
-        "execution_engine": "single_agent",
+        "execution_engine": "provider",
     }
     runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
     assert runtime_config["agent"] == {
         "preset": "leader",
         "prompt_profile": "leader",
         "model": "opencode/gpt-5.4",
-        "execution_engine": "single_agent",
+        "execution_engine": "provider",
     }
-    assert effective.execution_engine == "single_agent"
+    assert effective.execution_engine == "provider"
     assert effective.model == "opencode/gpt-5.4"
     assert effective.agent == RuntimeAgentConfig(
         preset="leader",
         prompt_profile="leader",
         model="opencode/gpt-5.4",
-        execution_engine="single_agent",
+        execution_engine="provider",
     )
 
 
@@ -4655,12 +5722,12 @@ def test_runtime_request_metadata_agent_override_persists_and_restores_agent_con
     tmp_path: Path,
 ) -> None:
     (tmp_path / "sample.txt").write_text("leader override\n", encoding="utf-8")
-    created_providers: list[_ScriptedSingleAgentProvider] = []
+    created_providers: list[_ScriptedTurnProvider] = []
     registry = ModelProviderRegistry(
         providers={
             "opencode": _ScriptedModelProvider(
                 name="opencode",
-                outcomes=(SingleAgentTurnResult(output="override complete"),),
+                outcomes=(ProviderTurnResult(output="override complete"),),
                 created_providers=created_providers,
             )
         }
@@ -4693,15 +5760,15 @@ def test_runtime_request_metadata_agent_override_persists_and_restores_agent_con
         "preset": "leader",
         "prompt_profile": "leader",
         "model": "opencode/gpt-5.4",
-        "execution_engine": "single_agent",
+        "execution_engine": "provider",
     }
-    assert effective.execution_engine == "single_agent"
+    assert effective.execution_engine == "provider"
     assert effective.model == "opencode/gpt-5.4"
     assert effective.agent == RuntimeAgentConfig(
         preset="leader",
         prompt_profile="leader",
         model="opencode/gpt-5.4",
-        execution_engine="single_agent",
+        execution_engine="provider",
     )
 
 
@@ -4709,12 +5776,12 @@ def test_runtime_partial_request_agent_override_preserves_inherited_agent_fields
     tmp_path: Path,
 ) -> None:
     (tmp_path / "sample.txt").write_text("leader partial override\n", encoding="utf-8")
-    created_providers: list[_ScriptedSingleAgentProvider] = []
+    created_providers: list[_ScriptedTurnProvider] = []
     registry = ModelProviderRegistry(
         providers={
             "opencode": _ScriptedModelProvider(
                 name="opencode",
-                outcomes=(SingleAgentTurnResult(output="partial override complete"),),
+                outcomes=(ProviderTurnResult(output="partial override complete"),),
                 created_providers=created_providers,
             )
         }
@@ -4754,7 +5821,7 @@ def test_runtime_partial_request_agent_override_preserves_inherited_agent_fields
         "preset": "leader",
         "prompt_profile": "leader",
         "model": "opencode/gpt-5.4",
-        "execution_engine": "single_agent",
+        "execution_engine": "provider",
         "provider_fallback": {
             "preferred_model": "opencode/gpt-5.4",
             "fallback_models": ["opencode/gpt-5.3"],
@@ -4765,28 +5832,28 @@ def test_runtime_partial_request_agent_override_preserves_inherited_agent_fields
         "preset": "leader",
         "prompt_profile": "leader",
         "model": "opencode/gpt-5.4",
-        "execution_engine": "single_agent",
+        "execution_engine": "provider",
         "provider_fallback": {
             "preferred_model": "opencode/gpt-5.4",
             "fallback_models": ["opencode/gpt-5.3"],
         },
     }
-    assert effective.execution_engine == "single_agent"
+    assert effective.execution_engine == "provider"
     assert effective.model == "opencode/gpt-5.4"
     assert effective.provider_fallback == fallback
     assert effective.agent == RuntimeAgentConfig(
         preset="leader",
         prompt_profile="leader",
         model="opencode/gpt-5.4",
-        execution_engine="single_agent",
+        execution_engine="provider",
         provider_fallback=fallback,
     )
 
 
-def test_runtime_rejects_declaration_only_agent_config(tmp_path: Path) -> None:
+def test_runtime_rejects_non_top_level_agent_config(tmp_path: Path) -> None:
     with pytest.raises(
         ValueError,
-        match="agent preset 'worker' is declaration-only",
+        match="agent preset 'worker' cannot be executed as the top-level active agent",
     ):
         _ = VoidCodeRuntime(
             workspace=tmp_path,
@@ -4794,12 +5861,15 @@ def test_runtime_rejects_declaration_only_agent_config(tmp_path: Path) -> None:
         )
 
 
-def test_runtime_rejects_declaration_only_request_agent_override(tmp_path: Path) -> None:
+def test_runtime_rejects_non_top_level_request_agent_override(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(workspace=tmp_path, config=RuntimeConfig())
 
     with pytest.raises(
         ValueError,
-        match="request metadata 'agent': agent preset 'worker' is declaration-only",
+        match=(
+            "request metadata 'agent': agent preset 'worker' cannot be executed as the "
+            "top-level active agent"
+        ),
     ):
         _ = runtime.run(
             RuntimeRequest(
@@ -4811,12 +5881,12 @@ def test_runtime_rejects_declaration_only_request_agent_override(tmp_path: Path)
 
 
 def test_runtime_agent_tool_allowlist_limits_provider_visible_tools(tmp_path: Path) -> None:
-    created_providers: list[_ScriptedSingleAgentProvider] = []
+    created_providers: list[_ScriptedTurnProvider] = []
     registry = ModelProviderRegistry(
         providers={
             "opencode": _ScriptedModelProvider(
                 name="opencode",
-                outcomes=(SingleAgentTurnResult(output="allowed tools captured"),),
+                outcomes=(ProviderTurnResult(output="allowed tools captured"),),
                 created_providers=created_providers,
             )
         }
@@ -4844,18 +5914,18 @@ def test_runtime_agent_tool_allowlist_limits_provider_visible_tools(tmp_path: Pa
         "preset": "leader",
         "prompt_profile": "leader",
         "model": "opencode/gpt-5.4",
-        "execution_engine": "single_agent",
+        "execution_engine": "provider",
         "tools": {"allowlist": ["read_file"]},
     }
 
 
 def test_runtime_agent_tool_default_set_further_narrows_allowlist(tmp_path: Path) -> None:
-    created_providers: list[_ScriptedSingleAgentProvider] = []
+    created_providers: list[_ScriptedTurnProvider] = []
     registry = ModelProviderRegistry(
         providers={
             "opencode": _ScriptedModelProvider(
                 name="opencode",
-                outcomes=(SingleAgentTurnResult(output="default tools captured"),),
+                outcomes=(ProviderTurnResult(output="default tools captured"),),
                 created_providers=created_providers,
             )
         }
@@ -4884,12 +5954,12 @@ def test_runtime_agent_tool_default_set_further_narrows_allowlist(tmp_path: Path
 
 
 def test_runtime_agent_empty_tool_allowlist_exposes_no_tools(tmp_path: Path) -> None:
-    created_providers: list[_ScriptedSingleAgentProvider] = []
+    created_providers: list[_ScriptedTurnProvider] = []
     registry = ModelProviderRegistry(
         providers={
             "opencode": _ScriptedModelProvider(
                 name="opencode",
-                outcomes=(SingleAgentTurnResult(output="no tools exposed"),),
+                outcomes=(ProviderTurnResult(output="no tools exposed"),),
                 created_providers=created_providers,
             )
         }
@@ -4916,12 +5986,12 @@ def test_runtime_agent_empty_tool_allowlist_exposes_no_tools(tmp_path: Path) -> 
 
 
 def test_runtime_agent_empty_default_set_exposes_no_tools(tmp_path: Path) -> None:
-    created_providers: list[_ScriptedSingleAgentProvider] = []
+    created_providers: list[_ScriptedTurnProvider] = []
     registry = ModelProviderRegistry(
         providers={
             "opencode": _ScriptedModelProvider(
                 name="opencode",
-                outcomes=(SingleAgentTurnResult(output="empty default captured"),),
+                outcomes=(ProviderTurnResult(output="empty default captured"),),
                 created_providers=created_providers,
             )
         }
@@ -4951,12 +6021,12 @@ def test_runtime_agent_empty_default_set_exposes_no_tools(tmp_path: Path) -> Non
 
 
 def test_runtime_agent_builtin_tools_disabled_exposes_no_builtin_tools(tmp_path: Path) -> None:
-    created_providers: list[_ScriptedSingleAgentProvider] = []
+    created_providers: list[_ScriptedTurnProvider] = []
     registry = ModelProviderRegistry(
         providers={
             "opencode": _ScriptedModelProvider(
                 name="opencode",
-                outcomes=(SingleAgentTurnResult(output="no builtins exposed"),),
+                outcomes=(ProviderTurnResult(output="no builtins exposed"),),
                 created_providers=created_providers,
             )
         }
@@ -4987,7 +6057,7 @@ def test_runtime_agent_builtin_tools_disabled_exposes_no_builtin_tools(tmp_path:
         "preset": "leader",
         "prompt_profile": "leader",
         "model": "opencode/gpt-5.4",
-        "execution_engine": "single_agent",
+        "execution_engine": "provider",
         "tools": {"builtin": {"enabled": False}},
     }
 
@@ -5029,12 +6099,12 @@ def test_runtime_agent_builtin_tools_disabled_preserves_mcp_tools(tmp_path: Path
         def drain_events(self):
             return ()
 
-    created_providers: list[_ScriptedSingleAgentProvider] = []
+    created_providers: list[_ScriptedTurnProvider] = []
     registry = ModelProviderRegistry(
         providers={
             "opencode": _ScriptedModelProvider(
                 name="opencode",
-                outcomes=(SingleAgentTurnResult(output="mcp tools captured"),),
+                outcomes=(ProviderTurnResult(output="mcp tools captured"),),
                 created_providers=created_providers,
             )
         }
@@ -5067,12 +6137,12 @@ def test_runtime_agent_builtin_tools_disabled_preserves_mcp_tools(tmp_path: Path
 def test_runtime_agent_builtin_tools_disabled_preserves_injected_non_builtin_tools(
     tmp_path: Path,
 ) -> None:
-    created_providers: list[_ScriptedSingleAgentProvider] = []
+    created_providers: list[_ScriptedTurnProvider] = []
     registry = ModelProviderRegistry(
         providers={
             "opencode": _ScriptedModelProvider(
                 name="opencode",
-                outcomes=(SingleAgentTurnResult(output="custom tools captured"),),
+                outcomes=(ProviderTurnResult(output="custom tools captured"),),
                 created_providers=created_providers,
             )
         }
@@ -5136,7 +6206,7 @@ def test_runtime_agent_skills_config_loads_and_persists_runtime_skills(
     assert runtime_config["agent"] == {
         "preset": "leader",
         "prompt_profile": "leader",
-        "execution_engine": "single_agent",
+        "execution_engine": "provider",
         "skills": {"enabled": True, "paths": ["agent-skills"]},
     }
     assert _SkillCapturingStubGraph.last_request is not None
@@ -5413,7 +6483,7 @@ def test_runtime_request_agent_override_can_enable_skill_loading(
     assert effective.agent == RuntimeAgentConfig(
         preset="leader",
         prompt_profile="leader",
-        execution_engine="single_agent",
+        execution_engine="provider",
         skills=RuntimeSkillsConfig(enabled=True, paths=("agent-skills",)),
     )
 
@@ -5425,7 +6495,7 @@ def test_runtime_agent_tool_allowlist_blocks_invocation(tmp_path: Path) -> None:
             "opencode": _ScriptedModelProvider(
                 name="opencode",
                 outcomes=(
-                    SingleAgentTurnResult(
+                    ProviderTurnResult(
                         tool_call=ToolCall(
                             tool_name="write_file",
                             arguments={"path": "blocked.txt", "content": "blocked"},
@@ -5459,13 +6529,13 @@ def test_runtime_agent_tool_allowlist_survives_approval_resume(tmp_path: Path) -
             "opencode": _ScriptedModelProvider(
                 name="opencode",
                 outcomes=(
-                    SingleAgentTurnResult(
+                    ProviderTurnResult(
                         tool_call=ToolCall(
                             tool_name="write_file",
                             arguments={"path": "allowed.txt", "content": "allowed"},
                         )
                     ),
-                    SingleAgentTurnResult(output="done"),
+                    ProviderTurnResult(output="done"),
                 ),
             )
         }
@@ -5516,7 +6586,7 @@ def test_runtime_effective_runtime_config_recovers_provider_fallback_chain(tmp_p
         workspace=tmp_path,
         config=RuntimeConfig(
             approval_mode="allow",
-            execution_engine="single_agent",
+            execution_engine="provider",
             model="opencode/gpt-5.4",
             provider_fallback=RuntimeProviderFallbackConfig(
                 preferred_model="opencode/gpt-5.4",
@@ -5544,7 +6614,7 @@ def test_runtime_effective_runtime_config_treats_missing_persisted_provider_fall
         workspace=tmp_path,
         config=RuntimeConfig(
             approval_mode="allow",
-            execution_engine="single_agent",
+            execution_engine="provider",
             model="opencode/gpt-5.4",
             provider_fallback=RuntimeProviderFallbackConfig(
                 preferred_model="opencode/gpt-5.4",
@@ -5583,7 +6653,7 @@ def test_runtime_effective_runtime_config_treats_missing_persisted_provider_fall
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
         config=RuntimeConfig(
-            execution_engine="single_agent",
+            execution_engine="provider",
             model="fresh/model",
             provider_fallback=RuntimeProviderFallbackConfig(
                 preferred_model="fresh/model",
@@ -5594,7 +6664,7 @@ def test_runtime_effective_runtime_config_treats_missing_persisted_provider_fall
     effective = resumed_runtime.effective_runtime_config(session_id="fallback-config-missing-key")
 
     assert effective.approval_mode == "allow"
-    assert effective.execution_engine == "single_agent"
+    assert effective.execution_engine == "provider"
     assert effective.model == "opencode/gpt-5.4"
     assert effective.provider_fallback == RuntimeProviderFallbackConfig(
         preferred_model="opencode/gpt-5.4",
@@ -5610,7 +6680,7 @@ def test_runtime_persists_resolved_provider_snapshot_in_runtime_metadata(tmp_pat
         workspace=tmp_path,
         config=RuntimeConfig(
             approval_mode="allow",
-            execution_engine="single_agent",
+            execution_engine="provider",
             model="opencode/gpt-5.4",
             provider_fallback=RuntimeProviderFallbackConfig(
                 preferred_model="opencode/gpt-5.4",
@@ -5653,7 +6723,7 @@ def test_runtime_effective_runtime_config_rejects_malformed_persisted_provider_f
         workspace=tmp_path,
         config=RuntimeConfig(
             approval_mode="allow",
-            execution_engine="single_agent",
+            execution_engine="provider",
             model="opencode/gpt-5.4",
             provider_fallback=RuntimeProviderFallbackConfig(
                 preferred_model="opencode/gpt-5.4",
@@ -5711,7 +6781,7 @@ def test_runtime_resume_preserves_provider_attempt_and_target_across_pending_app
     )
     config = RuntimeConfig(
         approval_mode="ask",
-        execution_engine="single_agent",
+        execution_engine="provider",
         model="opencode/gpt-5.4",
         provider_fallback=RuntimeProviderFallbackConfig(
             preferred_model="opencode/gpt-5.4",
@@ -5731,6 +6801,40 @@ def test_runtime_resume_preserves_provider_attempt_and_target_across_pending_app
         )
 
     assert waiting.session.status == "waiting"
+    assert waiting.session.metadata["provider_attempt"] == 1
+    assert waiting.session.metadata["runtime_config"] == {
+        "approval_mode": "ask",
+        "execution_engine": "provider",
+        "max_steps": 4,
+        "tool_timeout_seconds": None,
+        "model": "opencode/gpt-5.4",
+        "provider_fallback": {
+            "preferred_model": "opencode/gpt-5.4",
+            "fallback_models": ["custom/demo"],
+        },
+        "plan": None,
+        "resolved_provider": {
+            "active_target": {
+                "raw_model": "opencode/gpt-5.4",
+                "provider": "opencode",
+                "model": "gpt-5.4",
+            },
+            "targets": [
+                {
+                    "raw_model": "opencode/gpt-5.4",
+                    "provider": "opencode",
+                    "model": "gpt-5.4",
+                },
+                {
+                    "raw_model": "custom/demo",
+                    "provider": "custom",
+                    "model": "demo",
+                },
+            ],
+        },
+        "lsp": {"mode": "disabled", "configured_enabled": False, "servers": []},
+        "mcp": {"mode": "disabled", "configured_enabled": False, "servers": []},
+    }
     assert custom_attempts == [1]
     approval_event = waiting.events[-1]
     assert approval_event.event_type == "runtime.approval_requested"
@@ -5747,14 +6851,25 @@ def test_runtime_resume_preserves_provider_attempt_and_target_across_pending_app
         permission_policy=PermissionPolicy(mode="ask"),
         model_provider_registry=registry,
     )
+    effective_waiting = resumed_runtime.effective_runtime_config(
+        session_id="resume-provider-attempt"
+    )
     resumed = resumed_runtime.resume(
         session_id="resume-provider-attempt",
         approval_request_id=request_id,
         approval_decision="allow",
     )
 
+    assert effective_waiting.approval_mode == "ask"
+    assert effective_waiting.execution_engine == "provider"
+    assert effective_waiting.model == "opencode/gpt-5.4"
+    assert effective_waiting.provider_fallback == RuntimeProviderFallbackConfig(
+        preferred_model="opencode/gpt-5.4",
+        fallback_models=("custom/demo",),
+    )
     assert resumed.session.status == "completed"
     assert resumed.output == "done"
+    assert resumed.session.metadata["provider_attempt"] == 1
     assert custom_attempts == [1, 1, 1]
     assert all(attempt == 1 for attempt in custom_attempts)
     resumed_fallback_events = [
@@ -5773,7 +6888,7 @@ def test_runtime_effective_runtime_config_accepts_non_first_active_target_in_sna
         workspace=tmp_path,
         config=RuntimeConfig(
             approval_mode="allow",
-            execution_engine="single_agent",
+            execution_engine="provider",
             model="opencode/gpt-5.4",
             provider_fallback=RuntimeProviderFallbackConfig(
                 preferred_model="opencode/gpt-5.4",
@@ -5826,7 +6941,7 @@ def test_runtime_effective_runtime_config_rejects_malformed_persisted_resolved_p
         workspace=tmp_path,
         config=RuntimeConfig(
             approval_mode="allow",
-            execution_engine="single_agent",
+            execution_engine="provider",
             model="opencode/gpt-5.4",
             provider_fallback=RuntimeProviderFallbackConfig(
                 preferred_model="opencode/gpt-5.4",
@@ -6726,14 +7841,14 @@ def test_runtime_downgrades_to_next_provider_target_on_provider_failures(
             ),
             "custom": _ScriptedModelProvider(
                 name="custom",
-                outcomes=(SingleAgentTurnResult(output="fallback complete"),),
+                outcomes=(ProviderTurnResult(output="fallback complete"),),
             ),
         }
     )
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         config=RuntimeConfig(
-            execution_engine="single_agent",
+            execution_engine="provider",
             model="opencode/gpt-5.4",
             provider_fallback=RuntimeProviderFallbackConfig(
                 preferred_model="opencode/gpt-5.4",
@@ -6761,7 +7876,7 @@ def test_runtime_downgrades_to_next_provider_target_on_provider_failures(
     }
 
 
-def test_runtime_single_agent_streaming_emits_ordered_provider_stream_events(
+def test_runtime_provider_streaming_emits_ordered_provider_stream_events(
     tmp_path: Path,
 ) -> None:
     registry = ModelProviderRegistry(
@@ -6780,7 +7895,7 @@ def test_runtime_single_agent_streaming_emits_ordered_provider_stream_events(
     )
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        config=RuntimeConfig(execution_engine="single_agent", model="opencode/gpt-5.4"),
+        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
         model_provider_registry=registry,
     )
 
@@ -6810,14 +7925,14 @@ def test_runtime_run_stream_preserves_streamed_tool_requests(tmp_path: Path) -> 
                         ),
                         ProviderStreamEvent(kind="done", done_reason="completed"),
                     ),
-                    SingleAgentTurnResult(output="sample contents"),
+                    ProviderTurnResult(output="sample contents"),
                 ),
             ),
         }
     )
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        config=RuntimeConfig(execution_engine="single_agent", model="opencode/gpt-5.4"),
+        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
         model_provider_registry=registry,
     )
 
@@ -6864,7 +7979,7 @@ def test_runtime_run_disables_provider_stream_by_default(tmp_path: Path) -> None
     assert _SkillCapturingStubGraph.last_request.metadata["provider_stream"] is False
 
 
-def test_runtime_single_agent_stream_error_maps_to_fallback_when_retryable(
+def test_runtime_provider_stream_error_maps_to_fallback_when_retryable(
     tmp_path: Path,
 ) -> None:
     registry = ModelProviderRegistry(
@@ -6885,14 +8000,14 @@ def test_runtime_single_agent_stream_error_maps_to_fallback_when_retryable(
             ),
             "custom": _ScriptedModelProvider(
                 name="custom",
-                outcomes=(SingleAgentTurnResult(output="fallback complete"),),
+                outcomes=(ProviderTurnResult(output="fallback complete"),),
             ),
         }
     )
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         config=RuntimeConfig(
-            execution_engine="single_agent",
+            execution_engine="provider",
             model="opencode/gpt-5.4",
             provider_fallback=RuntimeProviderFallbackConfig(
                 preferred_model="opencode/gpt-5.4",
@@ -6915,7 +8030,7 @@ def test_runtime_single_agent_stream_error_maps_to_fallback_when_retryable(
     assert fallback_events[0].payload["reason"] == "transient_failure"
 
 
-def test_runtime_single_agent_stream_json_error_payload_maps_to_context_limit_without_fallback(
+def test_runtime_provider_stream_json_error_payload_maps_to_context_limit_without_fallback(
     tmp_path: Path,
 ) -> None:
     registry = ModelProviderRegistry(
@@ -6939,14 +8054,14 @@ def test_runtime_single_agent_stream_json_error_payload_maps_to_context_limit_wi
             ),
             "custom": _ScriptedModelProvider(
                 name="custom",
-                outcomes=(SingleAgentTurnResult(output="fallback complete"),),
+                outcomes=(ProviderTurnResult(output="fallback complete"),),
             ),
         }
     )
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         config=RuntimeConfig(
-            execution_engine="single_agent",
+            execution_engine="provider",
             model="opencode/gpt-5.4",
             provider_fallback=RuntimeProviderFallbackConfig(
                 preferred_model="opencode/gpt-5.4",
@@ -6998,14 +8113,14 @@ def test_runtime_fallback_event_preserves_provider_error_details(tmp_path: Path)
             ),
             "custom": _ScriptedModelProvider(
                 name="custom",
-                outcomes=(SingleAgentTurnResult(output="fallback complete"),),
+                outcomes=(ProviderTurnResult(output="fallback complete"),),
             ),
         }
     )
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         config=RuntimeConfig(
-            execution_engine="single_agent",
+            execution_engine="provider",
             model="opencode/gpt-5.4",
             provider_fallback=RuntimeProviderFallbackConfig(
                 preferred_model="opencode/gpt-5.4",
@@ -7047,7 +8162,7 @@ def test_runtime_failed_event_preserves_provider_error_details(tmp_path: Path) -
     )
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        config=RuntimeConfig(execution_engine="single_agent", model="opencode/gpt-5.4"),
+        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
         model_provider_registry=registry,
     )
 
@@ -7063,20 +8178,20 @@ def test_runtime_failed_event_preserves_provider_error_details(tmp_path: Path) -
     }
 
 
-def test_runtime_single_agent_stream_cancelled_maps_to_failed_without_fallback(
+def test_runtime_provider_stream_cancelled_maps_to_failed_without_fallback(
     tmp_path: Path,
 ) -> None:
     registry = ModelProviderRegistry(
         providers={
             "opencode": _ScriptedModelProvider(
                 name="opencode",
-                outcomes=(SingleAgentTurnResult(output="ignored"),),
+                outcomes=(ProviderTurnResult(output="ignored"),),
             ),
         }
     )
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        config=RuntimeConfig(execution_engine="single_agent", model="opencode/gpt-5.4"),
+        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
         model_provider_registry=registry,
     )
 
@@ -7117,7 +8232,7 @@ def test_runtime_fails_without_downgrade_on_context_limit(tmp_path: Path) -> Non
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         config=RuntimeConfig(
-            execution_engine="single_agent",
+            execution_engine="provider",
             model="opencode/gpt-5.4",
             provider_fallback=RuntimeProviderFallbackConfig(
                 preferred_model="opencode/gpt-5.4",
@@ -7213,7 +8328,7 @@ def test_runtime_provider_fallback_exhaustion_after_three_targets_reports_termin
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         config=RuntimeConfig(
-            execution_engine="single_agent",
+            execution_engine="provider",
             model="opencode/gpt-5.4",
             provider_fallback=RuntimeProviderFallbackConfig(
                 preferred_model="opencode/gpt-5.4",

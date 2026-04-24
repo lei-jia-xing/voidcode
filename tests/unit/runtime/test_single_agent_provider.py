@@ -5,10 +5,10 @@ import pytest
 from voidcode.provider.registry import ModelProviderRegistry
 from voidcode.provider.resolution import resolve_provider_model
 from voidcode.runtime.context_window import RuntimeContextWindow
-from voidcode.runtime.single_agent_provider import (
+from voidcode.runtime.provider_protocol import (
     ProviderExecutionError,
-    SingleAgentTurnRequest,
-    StubSingleAgentProvider,
+    ProviderTurnRequest,
+    StubTurnProvider,
 )
 from voidcode.tools.contracts import ToolDefinition, ToolResult
 
@@ -22,14 +22,14 @@ def _tool_definitions() -> tuple[ToolDefinition, ...]:
     )
 
 
-def test_stub_single_agent_provider_proposes_tool_call_for_first_turn() -> None:
+def test_stub_provider_protocol_proposes_tool_call_for_first_turn() -> None:
     provider_model = resolve_provider_model(
         "opencode/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
 
-    result = StubSingleAgentProvider(name="opencode").propose_turn(
-        SingleAgentTurnRequest(
+    result = StubTurnProvider(name="opencode").propose_turn(
+        ProviderTurnRequest(
             prompt="read sample.txt",
             available_tools=_tool_definitions(),
             tool_results=(),
@@ -47,14 +47,14 @@ def test_stub_single_agent_provider_proposes_tool_call_for_first_turn() -> None:
     assert result.output is None
 
 
-def test_stub_single_agent_provider_finalizes_from_last_tool_result() -> None:
+def test_stub_provider_protocol_finalizes_from_last_tool_result() -> None:
     provider_model = resolve_provider_model(
         "opencode/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
 
-    result = StubSingleAgentProvider(name="opencode").propose_turn(
-        SingleAgentTurnRequest(
+    result = StubTurnProvider(name="opencode").propose_turn(
+        ProviderTurnRequest(
             prompt="read sample.txt",
             available_tools=_tool_definitions(),
             tool_results=(
@@ -87,15 +87,15 @@ def test_stub_single_agent_provider_finalizes_from_last_tool_result() -> None:
     assert result.output == "alpha\nbeta\n"
 
 
-def test_stub_single_agent_provider_rejects_unsupported_requests() -> None:
+def test_stub_provider_protocol_rejects_unsupported_requests() -> None:
     provider_model = resolve_provider_model(
         "opencode/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
 
     with pytest.raises(ValueError, match="unsupported request"):
-        _ = StubSingleAgentProvider(name="opencode").propose_turn(
-            SingleAgentTurnRequest(
+        _ = StubTurnProvider(name="opencode").propose_turn(
+            ProviderTurnRequest(
                 prompt="summarize sample.txt",
                 available_tools=_tool_definitions(),
                 tool_results=(),
@@ -120,14 +120,14 @@ def test_provider_execution_error_requires_supported_kind() -> None:
     assert str(error) == "too many requests"
 
 
-def test_stub_single_agent_provider_uses_bounded_context_window_results_for_finalize() -> None:
+def test_stub_provider_protocol_uses_bounded_context_window_results_for_finalize() -> None:
     provider_model = resolve_provider_model(
         "opencode/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
 
-    result = StubSingleAgentProvider(name="opencode").propose_turn(
-        SingleAgentTurnRequest(
+    result = StubTurnProvider(name="opencode").propose_turn(
+        ProviderTurnRequest(
             prompt="read sample.txt",
             available_tools=_tool_definitions(),
             tool_results=(

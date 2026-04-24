@@ -12,7 +12,7 @@ type AgentManifestId = Literal[
     "product",
 ]
 type AgentMode = Literal["primary", "subagent", "all"]
-type AgentExecutionEngineName = Literal["deterministic", "single_agent"]
+type AgentExecutionEngineName = Literal["deterministic", "provider"]
 
 
 @dataclass(frozen=True, slots=True)

@@ -20,7 +20,7 @@ WRITE_REQUEST_PATTERN = re.compile(r"^write\s+(?P<path>\S+)\s+(?P<content>.+)$",
 
 
 @runtime_checkable
-class SingleAgentContextWindow(Protocol):
+class ProviderContextWindow(Protocol):
     @property
     def prompt(self) -> str: ...
 
@@ -38,11 +38,11 @@ class SingleAgentContextWindow(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
-class SingleAgentTurnRequest:
+class ProviderTurnRequest:
     prompt: str
     available_tools: tuple[ToolDefinition, ...]
     tool_results: tuple[ToolResult, ...]
-    context_window: SingleAgentContextWindow
+    context_window: ProviderContextWindow
     applied_skills: tuple[AppliedSkill, ...]
     raw_model: str | None
     provider_name: str | None
@@ -50,17 +50,17 @@ class SingleAgentTurnRequest:
     skill_prompt_context: str = ""
     agent_preset: dict[str, object] | None = None
     attempt: int = 0
-    abort_signal: SingleAgentAbortSignal | None = None
+    abort_signal: ProviderAbortSignal | None = None
 
 
 @dataclass(frozen=True, slots=True)
-class SingleAgentTurnResult:
+class ProviderTurnResult:
     tool_call: ToolCall | None = None
     output: str | None = None
 
 
 @runtime_checkable
-class SingleAgentAbortSignal(Protocol):
+class ProviderAbortSignal(Protocol):
     @property
     def cancelled(self) -> bool: ...
 
@@ -103,7 +103,7 @@ def wrap_provider_stream(
     *,
     provider_name: str,
     model_name: str,
-    abort_signal: SingleAgentAbortSignal | None,
+    abort_signal: ProviderAbortSignal | None,
     chunk_timeout_seconds: float,
 ) -> Iterator[ProviderStreamEvent]:
     if chunk_timeout_seconds <= 0:
@@ -172,34 +172,37 @@ class ProviderExecutionError(ValueError):
 
 
 @runtime_checkable
-class SingleAgentProvider(Protocol):
+class TurnProvider(Protocol):
     @property
     def name(self) -> str: ...
 
-    def propose_turn(self, request: SingleAgentTurnRequest) -> SingleAgentTurnResult: ...
+    def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult: ...
 
 
 @runtime_checkable
-class StreamableSingleAgentProvider(Protocol):
+class StreamableTurnProvider(Protocol):
     @property
     def name(self) -> str: ...
 
-    def stream_turn(self, request: SingleAgentTurnRequest) -> Iterator[ProviderStreamEvent]: ...
+    def stream_turn(self, request: ProviderTurnRequest) -> Iterator[ProviderStreamEvent]: ...
 
 
 @runtime_checkable
-class ModelProvider(Protocol):
+class ModelTurnProvider(Protocol):
     @property
     def name(self) -> str: ...
 
-    def single_agent_provider(self) -> SingleAgentProvider: ...
+    def turn_provider(self) -> TurnProvider: ...
+
+
+ModelProvider = ModelTurnProvider
 
 
 @dataclass(frozen=True, slots=True)
-class StubSingleAgentProvider:
+class StubTurnProvider:
     name: str
 
-    def propose_turn(self, request: SingleAgentTurnRequest) -> SingleAgentTurnResult:
+    def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
         commands = [line.strip() for line in request.prompt.splitlines() if line.strip()]
         if not commands:
             raise ValueError("request must not be empty")
@@ -209,7 +212,7 @@ class StubSingleAgentProvider:
             if not request.context_window.tool_results:
                 raise ValueError("request must contain at least one actionable command")
             last_result = request.context_window.tool_results[-1]
-            return SingleAgentTurnResult(output=last_result.content if last_result.content else "")
+            return ProviderTurnResult(output=last_result.content if last_result.content else "")
 
         trimmed_prompt = commands[step_index]
 
@@ -219,7 +222,7 @@ class StubSingleAgentProvider:
             if not path_text:
                 raise ValueError("request path must not be empty")
             self._ensure_tool(request.available_tools, "read_file", read_only=True)
-            return SingleAgentTurnResult(tool_call=ToolCall("read_file", {"path": path_text}))
+            return ProviderTurnResult(tool_call=ToolCall("read_file", {"path": path_text}))
 
         grep_match = GREP_REQUEST_PATTERN.match(trimmed_prompt)
         if grep_match is not None:
@@ -230,7 +233,7 @@ class StubSingleAgentProvider:
             if not path_text:
                 raise ValueError("request path must not be empty")
             self._ensure_tool(request.available_tools, "grep", read_only=True)
-            return SingleAgentTurnResult(
+            return ProviderTurnResult(
                 tool_call=ToolCall("grep", {"pattern": pattern_text, "path": path_text})
             )
 
@@ -240,9 +243,7 @@ class StubSingleAgentProvider:
             if not command_text:
                 raise ValueError("request command must not be empty")
             self._ensure_tool(request.available_tools, "shell_exec", read_only=False)
-            return SingleAgentTurnResult(
-                tool_call=ToolCall("shell_exec", {"command": command_text})
-            )
+            return ProviderTurnResult(tool_call=ToolCall("shell_exec", {"command": command_text}))
 
         write_match = WRITE_REQUEST_PATTERN.match(trimmed_prompt)
         if write_match is not None:
@@ -253,7 +254,7 @@ class StubSingleAgentProvider:
             if not content_text:
                 raise ValueError("request content must not be empty")
             self._ensure_tool(request.available_tools, "write_file", read_only=False)
-            return SingleAgentTurnResult(
+            return ProviderTurnResult(
                 tool_call=ToolCall("write_file", {"path": path_text, "content": content_text})
             )
 

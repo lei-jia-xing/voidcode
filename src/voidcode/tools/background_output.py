@@ -73,6 +73,8 @@ class BackgroundOutputTool:
             "summary_output": result.summary_output,
             "error": result.error,
             "result_available": result.result_available,
+            "delegation": result.delegated_execution.as_payload(),
+            "message": result.delegated_message.as_payload(),
         }
         content = (
             result.summary_output

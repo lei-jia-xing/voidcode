@@ -4,10 +4,24 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Literal, Protocol, TypedDict, cast, runtime_checkable
 
-from .events import EventEnvelope
+from .events import (
+    DelegatedExecutionPayload,
+    DelegatedLifecycleEventPayload,
+    DelegatedLifecycleMessage,
+    DelegatedRoutingPayload,
+    EventEnvelope,
+)
 from .question import QuestionResponse
 from .session import SessionRef, SessionState
-from .task import BackgroundTaskState, BackgroundTaskStatus, StoredBackgroundTaskSummary
+from .task import (
+    BackgroundTaskState,
+    BackgroundTaskStatus,
+    ResolvedSubagentRoute,
+    StoredBackgroundTaskSummary,
+    SubagentExecutionContract,
+    SubagentRoutingIdentity,
+    resolve_subagent_route,
+)
 
 
 class RuntimeRequestError(ValueError):
@@ -25,6 +39,7 @@ class NoPendingQuestionError(ValueError):
 class RuntimeRequestMetadata(TypedDict, total=False):
     abort_requested: bool
     agent: dict[str, object]
+    delegation: RuntimeSubagentRoutingMetadata
     max_steps: int
     provider_stream: bool
     skills: list[str]
@@ -37,15 +52,206 @@ class InternalRuntimeRequestMetadata(RuntimeRequestMetadata, total=False):
 
 type RuntimeRequestMetadataPayload = RuntimeRequestMetadata | InternalRuntimeRequestMetadata
 
+type RuntimeSubagentMode = Literal["sync", "background"]
+
+
+class RuntimeSubagentRoutingMetadata(TypedDict, total=False):
+    mode: RuntimeSubagentMode
+    category: str
+    subagent_type: str
+    description: str
+    command: str
+    depth: int
+    remaining_spawn_budget: int
+    selected_preset: str
+    selected_execution_engine: str
+
 
 _STABLE_RUNTIME_REQUEST_METADATA_KEYS = frozenset(
-    {"abort_requested", "agent", "max_steps", "provider_stream", "skills"}
+    {"abort_requested", "agent", "delegation", "max_steps", "provider_stream", "skills"}
 )
 _INTERNAL_RUNTIME_REQUEST_METADATA_KEYS = frozenset({"background_run", "background_task_id"})
 
 
 def _empty_runtime_request_metadata() -> RuntimeRequestMetadata:
     return {}
+
+
+def _validate_optional_runtime_metadata_string(
+    value: object,
+    *,
+    field_name: str,
+) -> str:
+    if not isinstance(value, str) or not value:
+        raise RuntimeRequestError(f"request metadata '{field_name}' must be a non-empty string")
+    return value
+
+
+def validate_runtime_subagent_routing_metadata(
+    metadata: object,
+) -> RuntimeSubagentRoutingMetadata:
+    if not isinstance(metadata, dict):
+        raise RuntimeRequestError("request metadata 'delegation' must be an object when provided")
+
+    metadata_items = cast(dict[object, object], metadata)
+    non_string_keys = sorted(repr(key) for key in metadata_items if not isinstance(key, str))
+    if non_string_keys:
+        joined = ", ".join(non_string_keys)
+        raise RuntimeRequestError(
+            f"request metadata 'delegation' keys must be strings; received invalid key(s): {joined}"
+        )
+
+    routing_metadata = {cast(str, key): value for key, value in metadata_items.items()}
+
+    allowed_keys = {
+        "mode",
+        "category",
+        "subagent_type",
+        "description",
+        "command",
+        "depth",
+        "remaining_spawn_budget",
+        "selected_preset",
+        "selected_execution_engine",
+    }
+    unknown_keys = sorted(key for key in routing_metadata if key not in allowed_keys)
+    if unknown_keys:
+        joined = ", ".join(unknown_keys)
+        raise RuntimeRequestError(f"unsupported request metadata 'delegation' field(s): {joined}")
+
+    raw_mode = routing_metadata.get("mode")
+    if raw_mode not in ("sync", "background"):
+        raise RuntimeRequestError(
+            "request metadata 'delegation.mode' must be 'sync' or 'background'"
+        )
+
+    category = routing_metadata.get("category")
+    subagent_type = routing_metadata.get("subagent_type")
+    if bool(category) == bool(subagent_type):
+        raise RuntimeRequestError(
+            "request metadata 'delegation' must provide exactly one of "
+            "'category' or 'subagent_type'"
+        )
+
+    normalized: RuntimeSubagentRoutingMetadata = {"mode": raw_mode}
+    if category is not None:
+        normalized["category"] = _validate_optional_runtime_metadata_string(
+            category,
+            field_name="delegation.category",
+        )
+    if subagent_type is not None:
+        normalized["subagent_type"] = _validate_optional_runtime_metadata_string(
+            subagent_type,
+            field_name="delegation.subagent_type",
+        )
+    if "description" in routing_metadata:
+        normalized["description"] = _validate_optional_runtime_metadata_string(
+            routing_metadata["description"],
+            field_name="delegation.description",
+        )
+    if "command" in routing_metadata:
+        normalized["command"] = _validate_optional_runtime_metadata_string(
+            routing_metadata["command"],
+            field_name="delegation.command",
+        )
+    if "depth" in routing_metadata:
+        raw_depth = routing_metadata["depth"]
+        if not isinstance(raw_depth, int) or isinstance(raw_depth, bool) or raw_depth < 1:
+            raise RuntimeRequestError(
+                "request metadata 'delegation.depth' must be a positive integer"
+            )
+        normalized["depth"] = raw_depth
+    if "remaining_spawn_budget" in routing_metadata:
+        raw_remaining_budget = routing_metadata["remaining_spawn_budget"]
+        if (
+            not isinstance(raw_remaining_budget, int)
+            or isinstance(raw_remaining_budget, bool)
+            or raw_remaining_budget < 0
+        ):
+            raise RuntimeRequestError(
+                "request metadata 'delegation.remaining_spawn_budget' must be a "
+                "non-negative integer"
+            )
+        normalized["remaining_spawn_budget"] = raw_remaining_budget
+    if "selected_preset" in routing_metadata:
+        normalized["selected_preset"] = _validate_optional_runtime_metadata_string(
+            routing_metadata["selected_preset"],
+            field_name="delegation.selected_preset",
+        )
+    if "selected_execution_engine" in routing_metadata:
+        selected_execution_engine = _validate_optional_runtime_metadata_string(
+            routing_metadata["selected_execution_engine"],
+            field_name="delegation.selected_execution_engine",
+        )
+        if selected_execution_engine != "provider":
+            raise RuntimeRequestError(
+                "request metadata 'delegation.selected_execution_engine' must be 'provider'"
+            )
+        normalized["selected_execution_engine"] = selected_execution_engine
+    return normalized
+
+
+def runtime_subagent_routing_from_metadata(
+    metadata: RuntimeRequestMetadataPayload | dict[str, object] | None,
+) -> SubagentRoutingIdentity | None:
+    if metadata is None:
+        return None
+    raw_routing = metadata.get("delegation")
+    if raw_routing is None:
+        return None
+    normalized = validate_runtime_subagent_routing_metadata(raw_routing)
+    mode = normalized.get("mode")
+    if mode is None:
+        raise RuntimeRequestError("request metadata 'delegation.mode' is required")
+    return SubagentRoutingIdentity(
+        mode=mode,
+        category=normalized.get("category"),
+        subagent_type=normalized.get("subagent_type"),
+        description=normalized.get("description"),
+        command=normalized.get("command"),
+    )
+
+
+def runtime_subagent_route_from_metadata(
+    metadata: RuntimeRequestMetadataPayload | dict[str, object] | None,
+) -> ResolvedSubagentRoute | None:
+    routing = runtime_subagent_routing_from_metadata(metadata)
+    if routing is None:
+        return None
+    try:
+        resolved = resolve_subagent_route(routing)
+    except ValueError as exc:
+        raise RuntimeRequestError(str(exc)) from exc
+    if metadata is None:
+        return resolved
+    raw_routing = metadata.get("delegation")
+    if not isinstance(raw_routing, dict):
+        return resolved
+    routing_metadata = cast(dict[str, object], raw_routing)
+    persisted_selected_preset = routing_metadata.get("selected_preset")
+    if persisted_selected_preset is None:
+        return resolved
+    if not isinstance(persisted_selected_preset, str):
+        raise RuntimeRequestError(
+            "request metadata 'delegation.selected_preset' must be a non-empty string"
+        )
+    if persisted_selected_preset != resolved.selected_preset:
+        raise RuntimeRequestError(
+            "request metadata 'delegation.selected_preset' does not match the resolved child preset"
+        )
+    persisted_execution_engine = routing_metadata.get("selected_execution_engine")
+    if persisted_execution_engine is None:
+        return resolved
+    if not isinstance(persisted_execution_engine, str):
+        raise RuntimeRequestError(
+            "request metadata 'delegation.selected_execution_engine' must be 'provider'"
+        )
+    if persisted_execution_engine != resolved.execution_engine:
+        raise RuntimeRequestError(
+            "request metadata 'delegation.selected_execution_engine' does not match the "
+            "resolved child execution engine"
+        )
+    return resolved
 
 
 def validate_runtime_request_metadata(
@@ -82,6 +288,11 @@ def validate_runtime_request_metadata(
         if not isinstance(agent, dict):
             raise RuntimeRequestError("request metadata 'agent' must be an object when provided")
         normalized["agent"] = dict(cast(dict[str, object], agent))
+
+    if "delegation" in metadata:
+        normalized["delegation"] = validate_runtime_subagent_routing_metadata(
+            metadata["delegation"]
+        )
 
     if "max_steps" in metadata:
         max_steps = metadata["max_steps"]
@@ -139,6 +350,25 @@ class RuntimeRequest:
     metadata: RuntimeRequestMetadataPayload = field(default_factory=_empty_runtime_request_metadata)
     allocate_session_id: bool = False
 
+    @property
+    def subagent_routing(self) -> SubagentRoutingIdentity | None:
+        return runtime_subagent_routing_from_metadata(self.metadata)
+
+    @property
+    def subagent_execution(self) -> SubagentExecutionContract:
+        metadata = self.metadata
+        delegated_task_id = None
+        raw_background_task_id = metadata.get("background_task_id")
+        if isinstance(raw_background_task_id, str):
+            delegated_task_id = raw_background_task_id
+        return SubagentExecutionContract.from_snapshot(
+            parent_session_id=self.parent_session_id,
+            requested_child_session_id=self.session_id,
+            child_session_id=None,
+            delegated_task_id=delegated_task_id,
+            metadata=metadata,
+        )
+
 
 def validate_session_reference_id(value: str, *, field_name: str = "session_id") -> str:
     if not value:
@@ -180,6 +410,14 @@ class RuntimeSessionResult:
     transcript: tuple[EventEnvelope, ...] = ()
     last_event_sequence: int = 0
 
+    @property
+    def delegated_events(self) -> tuple[DelegatedLifecycleEventPayload, ...]:
+        return tuple(
+            delegated
+            for event in self.transcript
+            if (delegated := event.delegated_lifecycle) is not None
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class BackgroundTaskResult:
@@ -187,10 +425,147 @@ class BackgroundTaskResult:
     parent_session_id: str | None
     child_session_id: str | None
     status: BackgroundTaskStatus
+    requested_child_session_id: str | None = None
+    routing: SubagentRoutingIdentity | None = None
+    approval_request_id: str | None = None
+    question_request_id: str | None = None
     approval_blocked: bool = False
     summary_output: str | None = None
     error: str | None = None
     result_available: bool = False
+    cancellation_cause: str | None = None
+
+    @property
+    def subagent_execution(self) -> SubagentExecutionContract:
+        return SubagentExecutionContract.from_snapshot(
+            parent_session_id=self.parent_session_id,
+            requested_child_session_id=self.requested_child_session_id,
+            child_session_id=self.child_session_id,
+            delegated_task_id=self.task_id,
+            approval_request_id=self.approval_request_id,
+            question_request_id=self.question_request_id,
+            metadata=(
+                {
+                    "delegation": {
+                        "mode": self.routing.mode,
+                        **(
+                            {"category": self.routing.category}
+                            if self.routing.category is not None
+                            else {}
+                        ),
+                        **(
+                            {"subagent_type": self.routing.subagent_type}
+                            if self.routing.subagent_type is not None
+                            else {}
+                        ),
+                        **(
+                            {"description": self.routing.description}
+                            if self.routing.description is not None
+                            else {}
+                        ),
+                        **(
+                            {"command": self.routing.command}
+                            if self.routing.command is not None
+                            else {}
+                        ),
+                    }
+                }
+                if self.routing is not None
+                else None
+            ),
+        )
+
+    @property
+    def delegated_routing(self) -> DelegatedRoutingPayload | None:
+        if self.routing is None:
+            return None
+        return DelegatedRoutingPayload(
+            mode=self.routing.mode,
+            category=self.routing.category,
+            subagent_type=self.routing.subagent_type,
+            description=self.routing.description,
+            command=self.routing.command,
+        )
+
+    @property
+    def delegated_execution(self) -> DelegatedExecutionPayload:
+        metadata = self.subagent_execution
+        selected_preset = None
+        selected_execution_engine = None
+        if self.routing is not None:
+            route = runtime_subagent_route_from_metadata(
+                {
+                    "delegation": {
+                        "mode": self.routing.mode,
+                        **(
+                            {"category": self.routing.category}
+                            if self.routing.category is not None
+                            else {}
+                        ),
+                        **(
+                            {"subagent_type": self.routing.subagent_type}
+                            if self.routing.subagent_type is not None
+                            else {}
+                        ),
+                        **(
+                            {"description": self.routing.description}
+                            if self.routing.description is not None
+                            else {}
+                        ),
+                        **(
+                            {"command": self.routing.command}
+                            if self.routing.command is not None
+                            else {}
+                        ),
+                    }
+                }
+            )
+            if route is not None:
+                selected_preset = route.selected_preset
+                selected_execution_engine = route.execution_engine
+        lifecycle_status: Literal[
+            "queued",
+            "running",
+            "waiting_approval",
+            "completed",
+            "failed",
+            "cancelled",
+        ] = "waiting_approval" if self.approval_blocked else self.status
+        return DelegatedExecutionPayload(
+            parent_session_id=metadata.correlation.parent_session_id,
+            requested_child_session_id=metadata.correlation.requested_child_session_id,
+            child_session_id=metadata.correlation.child_session_id,
+            delegated_task_id=metadata.correlation.delegated_task_id,
+            approval_request_id=metadata.correlation.approval_request_id,
+            question_request_id=metadata.correlation.question_request_id,
+            routing=self.delegated_routing,
+            selected_preset=selected_preset,
+            selected_execution_engine=selected_execution_engine,
+            lifecycle_status=lifecycle_status,
+            approval_blocked=self.approval_blocked,
+            result_available=self.result_available,
+            cancellation_cause=self.cancellation_cause,
+        )
+
+    @property
+    def delegated_message(self) -> DelegatedLifecycleMessage:
+        return DelegatedLifecycleMessage(
+            status=self.delegated_execution.lifecycle_status,
+            summary_output=self.summary_output,
+            error=self.error,
+            approval_blocked=self.approval_blocked,
+            result_available=self.result_available,
+        )
+
+    @property
+    def delegated_event(self) -> DelegatedLifecycleEventPayload:
+        delegated_execution = self.delegated_execution
+        return DelegatedLifecycleEventPayload(
+            session_id=self.child_session_id,
+            parent_session_id=self.parent_session_id,
+            delegation=delegated_execution,
+            message=self.delegated_message,
+        )
 
 
 @dataclass(frozen=True, slots=True)

@@ -27,8 +27,8 @@ from .errors import provider_execution_error_from_api_payload
 from .protocol import (
     ProviderExecutionError,
     ProviderStreamEvent,
-    SingleAgentTurnRequest,
-    SingleAgentTurnResult,
+    ProviderTurnRequest,
+    ProviderTurnResult,
 )
 
 
@@ -55,7 +55,7 @@ class LiteLLMBackendSingleAgentProvider:
             },
         }
 
-    def _model_identifier(self, request: SingleAgentTurnRequest) -> str:
+    def _model_identifier(self, request: ProviderTurnRequest) -> str:
         if request.provider_name == "litellm":
             if request.model_name is None:
                 raise ProviderExecutionError(
@@ -94,12 +94,12 @@ class LiteLLMBackendSingleAgentProvider:
             return stripped
         return f"{stripped}/v1"
 
-    def _completion_kwargs_for_request(self, request: SingleAgentTurnRequest) -> dict[str, object]:
+    def _completion_kwargs_for_request(self, request: ProviderTurnRequest) -> dict[str, object]:
         _ = request
         return dict(self.completion_kwargs or {})
 
     @staticmethod
-    def _skill_system_message(request: SingleAgentTurnRequest) -> str | None:
+    def _skill_system_message(request: ProviderTurnRequest) -> str | None:
         if request.skill_prompt_context.strip():
             return request.skill_prompt_context.strip()
         if not request.applied_skills:
@@ -128,7 +128,7 @@ class LiteLLMBackendSingleAgentProvider:
         )
 
     @classmethod
-    def _agent_profile_system_message(cls, request: SingleAgentTurnRequest) -> str | None:
+    def _agent_profile_system_message(cls, request: ProviderTurnRequest) -> str | None:
         agent_preset = request.agent_preset
         if agent_preset is None:
             return None
@@ -146,7 +146,7 @@ class LiteLLMBackendSingleAgentProvider:
         )
 
     @staticmethod
-    def _continuity_system_message(request: SingleAgentTurnRequest) -> str | None:
+    def _continuity_system_message(request: ProviderTurnRequest) -> str | None:
         continuity_state = request.context_window.continuity_state
         if continuity_state is None:
             return None
@@ -157,7 +157,7 @@ class LiteLLMBackendSingleAgentProvider:
 
         return f"Runtime continuity summary:\n{summary_text.strip()}"
 
-    def _build_messages(self, request: SingleAgentTurnRequest) -> list[dict[str, str]]:
+    def _build_messages(self, request: ProviderTurnRequest) -> list[dict[str, str]]:
         messages: list[dict[str, str]] = []
         agent_profile_message = self._agent_profile_system_message(request)
         if agent_profile_message is not None:
@@ -248,7 +248,7 @@ class LiteLLMBackendSingleAgentProvider:
         module_any = cast(Any, litellm_module)
         return module_any.completion(**payload)
 
-    def propose_turn(self, request: SingleAgentTurnRequest) -> SingleAgentTurnResult:
+    def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
         model_identifier = self._model_identifier(request)
         timeout_seconds = (
             30.0
@@ -274,24 +274,24 @@ class LiteLLMBackendSingleAgentProvider:
             response_payload = cast(dict[str, object], response.model_dump())
             raw_choices = response_payload.get("choices")
             if not isinstance(raw_choices, list) or not raw_choices:
-                return SingleAgentTurnResult(output="")
+                return ProviderTurnResult(output="")
             choices = cast(list[object], raw_choices)
             first_choice_obj = choices[0]
             if not isinstance(first_choice_obj, dict):
-                return SingleAgentTurnResult(output="")
+                return ProviderTurnResult(output="")
             message_obj = cast(dict[str, object], first_choice_obj).get("message")
             if not isinstance(message_obj, dict):
-                return SingleAgentTurnResult(output="")
+                return ProviderTurnResult(output="")
             message = cast(dict[str, object], message_obj)
 
             tool_call = self._extract_first_tool_call(message)
             if tool_call is not None:
-                return SingleAgentTurnResult(tool_call=tool_call)
+                return ProviderTurnResult(tool_call=tool_call)
 
             content_obj = message.get("content")
             if isinstance(content_obj, str):
-                return SingleAgentTurnResult(output=content_obj)
-            return SingleAgentTurnResult(output="")
+                return ProviderTurnResult(output=content_obj)
+            return ProviderTurnResult(output="")
         except Exception as exc:
             raise self._map_exception(
                 exc,
@@ -299,7 +299,7 @@ class LiteLLMBackendSingleAgentProvider:
                 model_name=request.model_name or "unknown",
             ) from exc
 
-    def stream_turn(self, request: SingleAgentTurnRequest) -> Iterator[ProviderStreamEvent]:
+    def stream_turn(self, request: ProviderTurnRequest) -> Iterator[ProviderStreamEvent]:
         model_identifier = self._model_identifier(request)
         timeout_seconds = (
             30.0

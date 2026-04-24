@@ -1,10 +1,10 @@
 from .contracts import GraphRunner, GraphRunRequest, GraphRunResult
-from .read_only_slice import DeterministicReadOnlyGraph
-from .single_agent_slice import ProviderSingleAgentGraph
+from .deterministic_graph import DeterministicGraph
+from .provider_graph import ProviderGraph
 
 __all__ = [
-    "DeterministicReadOnlyGraph",
-    "ProviderSingleAgentGraph",
+    "DeterministicGraph",
+    "ProviderGraph",
     "GraphRunRequest",
     "GraphRunResult",
     "GraphRunner",

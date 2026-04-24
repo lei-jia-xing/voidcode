@@ -217,9 +217,9 @@ def test_runtime_config_uses_model_environment_when_repo_file_missing(tmp_path: 
 def test_runtime_config_uses_execution_engine_environment_when_repo_file_missing(
     tmp_path: Path,
 ) -> None:
-    config = load_runtime_config(tmp_path, env={EXECUTION_ENGINE_ENV_VAR: "single_agent"})
+    config = load_runtime_config(tmp_path, env={EXECUTION_ENGINE_ENV_VAR: "provider"})
 
-    assert config.execution_engine == "single_agent"
+    assert config.execution_engine == "provider"
 
 
 def test_runtime_config_uses_max_steps_environment_when_repo_file_missing(tmp_path: Path) -> None:
@@ -322,7 +322,7 @@ def test_runtime_config_prefers_repo_file_execution_engine_over_environment(tmp_
         encoding="utf-8",
     )
 
-    config = load_runtime_config(tmp_path, env={EXECUTION_ENGINE_ENV_VAR: "single_agent"})
+    config = load_runtime_config(tmp_path, env={EXECUTION_ENGINE_ENV_VAR: "provider"})
 
     assert config.execution_engine == "deterministic"
 
@@ -372,11 +372,11 @@ def test_runtime_config_prefers_explicit_execution_engine_over_repo_file_and_env
 
     config = load_runtime_config(
         tmp_path,
-        execution_engine="single_agent",
+        execution_engine="provider",
         env={EXECUTION_ENGINE_ENV_VAR: "deterministic"},
     )
 
-    assert config.execution_engine == "single_agent"
+    assert config.execution_engine == "provider"
 
 
 def test_runtime_config_prefers_explicit_max_steps_over_repo_file_and_environment(
@@ -852,15 +852,15 @@ def test_runtime_config_derives_java_lsp_defaults_when_workspace_matches(
     )
 
 
-def test_runtime_config_accepts_single_agent_execution_engine(tmp_path: Path) -> None:
+def test_runtime_config_accepts_provider_execution_engine(tmp_path: Path) -> None:
     runtime_config_path(tmp_path).write_text(
-        json.dumps({"execution_engine": "single_agent", "model": "opencode/gpt-5.4"}),
+        json.dumps({"execution_engine": "provider", "model": "opencode/gpt-5.4"}),
         encoding="utf-8",
     )
 
     config = load_runtime_config(tmp_path, env={})
 
-    assert config.execution_engine == "single_agent"
+    assert config.execution_engine == "provider"
     assert config.model == "opencode/gpt-5.4"
 
 
@@ -890,7 +890,7 @@ def test_runtime_config_parses_leader_agent_preset_from_repo_file(tmp_path: Path
         preset="leader",
         prompt_profile="leader",
         model="opencode/gpt-5.4",
-        execution_engine="single_agent",
+        execution_engine="provider",
         tools=RuntimeToolsConfig(
             builtin=RuntimeToolsBuiltinConfig(enabled=True),
             paths=(".voidcode/tools",),
@@ -946,7 +946,7 @@ def test_runtime_agent_payload_round_trips_through_serialization() -> None:
         "preset": "leader",
         "prompt_profile": "leader",
         "model": "opencode/gpt-5.4",
-        "execution_engine": "single_agent",
+        "execution_engine": "provider",
         "tools": {
             "builtin": {"enabled": True},
             "paths": [".voidcode/tools"],
@@ -972,13 +972,13 @@ def test_runtime_agent_payload_round_trips_explicit_empty_tool_boundaries() -> N
     assert agent == RuntimeAgentConfig(
         preset="leader",
         prompt_profile="leader",
-        execution_engine="single_agent",
+        execution_engine="provider",
         tools=RuntimeToolsConfig(allowlist=(), default=()),
     )
     assert serialize_runtime_agent_config(agent) == {
         "preset": "leader",
         "prompt_profile": "leader",
-        "execution_engine": "single_agent",
+        "execution_engine": "provider",
         "tools": {"allowlist": [], "default": []},
     }
 
@@ -1229,11 +1229,11 @@ def test_runtime_config_explicit_approval_mode_does_not_affect_environment_execu
     config = load_runtime_config(
         tmp_path,
         approval_mode="allow",
-        env={EXECUTION_ENGINE_ENV_VAR: "single_agent"},
+        env={EXECUTION_ENGINE_ENV_VAR: "provider"},
     )
 
     assert config.approval_mode == "allow"
-    assert config.execution_engine == "single_agent"
+    assert config.execution_engine == "provider"
 
 
 def test_runtime_config_rejects_invalid_environment_approval_mode(tmp_path: Path) -> None:
@@ -2094,7 +2094,7 @@ def test_runtime_config_uses_opencode_go_environment_credentials_without_provide
         tmp_path,
         env={
             MODEL_ENV_VAR: "opencode-go/glm-5",
-            EXECUTION_ENGINE_ENV_VAR: "single_agent",
+            EXECUTION_ENGINE_ENV_VAR: "provider",
             "OPENCODE_API_KEY": "opencode-go-env-key",
             "XDG_CONFIG_HOME": str(tmp_path / "xdg-config"),
             "HOME": str(tmp_path / "home"),
@@ -2102,7 +2102,7 @@ def test_runtime_config_uses_opencode_go_environment_credentials_without_provide
     )
 
     assert config.model == "opencode-go/glm-5"
-    assert config.execution_engine == "single_agent"
+    assert config.execution_engine == "provider"
     assert config.providers is not None
     assert config.providers.opencode_go == SimplifiedProviderConfig(api_key="opencode-go-env-key")
 

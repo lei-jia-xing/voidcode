@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import operator
 from dataclasses import dataclass, field
-from typing import Annotated, Protocol, TypedDict, runtime_checkable
+from typing import Annotated, Any, Protocol, TypedDict, runtime_checkable
 
 from ..runtime.context_window import RuntimeContextWindow
 from ..runtime.events import EventEnvelope, EventSource
@@ -52,6 +52,32 @@ class GraphRunResult:
     events: tuple[EventEnvelope, ...] = ()
     tool_results: tuple[ToolResult, ...] = ()
     output: str | None = None
+
+
+@runtime_checkable
+class GraphStep(Protocol):
+    @property
+    def tool_call(self) -> ToolCall | None: ...
+
+    @property
+    def events(self) -> tuple[Any, ...]: ...
+
+    @property
+    def output(self) -> str | None: ...
+
+    @property
+    def is_finished(self) -> bool: ...
+
+
+@runtime_checkable
+class RuntimeGraph(Protocol):
+    def step(
+        self,
+        request: GraphRunRequest,
+        tool_results: tuple[ToolResult, ...],
+        *,
+        session: SessionState,
+    ) -> GraphStep: ...
 
 
 @runtime_checkable

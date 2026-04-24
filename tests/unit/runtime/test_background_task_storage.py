@@ -1,13 +1,21 @@
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 from typing import cast
 
 import pytest
 
 from voidcode.runtime.contracts import RuntimeRequest, RuntimeResponse
-from voidcode.runtime.events import EventEnvelope
+from voidcode.runtime.events import (
+    DELEGATED_BACKGROUND_TASK_CORRELATION_FIELDS,
+    DELEGATED_BACKGROUND_TASK_DURABILITY_FIELDS,
+    DELEGATED_BACKGROUND_TASK_EVENT_TYPES,
+    DELEGATED_BACKGROUND_TASK_ROUTING_FIELDS,
+    EventEnvelope,
+)
 from voidcode.runtime.permission import PendingApproval
+from voidcode.runtime.question import PendingQuestion, PendingQuestionOption, PendingQuestionPrompt
 from voidcode.runtime.session import SessionRef, SessionState
 from voidcode.runtime.storage import SqliteSessionStore
 from voidcode.runtime.task import (
@@ -81,6 +89,58 @@ def test_background_task_storage_preserves_stable_request_metadata_round_trip(
         "provider_stream": True,
         "skills": ["alpha", "beta"],
     }
+
+
+def test_background_task_storage_persists_delegated_correlation_and_routing_columns(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "sessions.sqlite3"
+    store = SqliteSessionStore(database_path=database_path)
+    task = BackgroundTaskState(
+        task=BackgroundTaskRef(id="task-routing"),
+        request=BackgroundTaskRequestSnapshot(
+            prompt="delegate work",
+            session_id="child-requested",
+            parent_session_id="leader-session",
+            metadata={
+                "delegation": {
+                    "mode": "background",
+                    "category": "quick",
+                    "description": "Review quickly",
+                    "command": "pytest tests/unit",
+                }
+            },
+            allocate_session_id=True,
+        ),
+    )
+
+    store.create_background_task(workspace=tmp_path, task=task)
+
+    with sqlite3.connect(database_path) as connection:
+        row = connection.execute(
+            """
+            SELECT requested_child_session_id, routing_mode, routing_category,
+                   routing_subagent_type, routing_description, routing_command,
+                   approval_request_id, question_request_id, cancellation_cause,
+                   result_available
+            FROM background_tasks
+            WHERE task_id = ?
+            """,
+            ("task-routing",),
+        ).fetchone()
+
+    assert row == (
+        "child-requested",
+        "background",
+        "quick",
+        None,
+        "Review quickly",
+        "pytest tests/unit",
+        None,
+        None,
+        None,
+        0,
+    )
 
 
 def test_background_task_storage_create_assigns_store_timestamps_and_orders_by_latest_update(
@@ -197,6 +257,48 @@ def test_background_task_storage_marks_running_and_terminal(tmp_path: Path) -> N
     assert completed.finished_at is not None
 
 
+def test_background_task_storage_terminal_states_persist_result_availability_and_cancellation_cause(
+    tmp_path: Path,
+) -> None:
+    store = SqliteSessionStore()
+    store.create_background_task(workspace=tmp_path, task=_task(task_id="task-terminal"))
+    _ = store.mark_background_task_running(
+        workspace=tmp_path,
+        task_id="task-terminal",
+        session_id="session-terminal",
+    )
+
+    completed = store.mark_background_task_terminal(
+        workspace=tmp_path,
+        task_id="task-terminal",
+        status="completed",
+    )
+    store.create_background_task(workspace=tmp_path, task=_task(task_id="task-cancelled-terminal"))
+    cancelled = store.mark_background_task_terminal(
+        workspace=tmp_path,
+        task_id="task-cancelled-terminal",
+        status="cancelled",
+        error="operator cancelled",
+    )
+
+    with sqlite3.connect(tmp_path / ".voidcode" / "sessions.sqlite3") as connection:
+        rows = connection.execute(
+            """
+            SELECT task_id, result_available, cancellation_cause
+            FROM background_tasks
+            WHERE task_id IN ('task-terminal', 'task-cancelled-terminal')
+            ORDER BY task_id ASC
+            """
+        ).fetchall()
+
+    assert completed.status == "completed"
+    assert cancelled.status == "cancelled"
+    assert rows == [
+        ("task-cancelled-terminal", 0, "operator cancelled"),
+        ("task-terminal", 1, None),
+    ]
+
+
 def test_background_task_storage_cancel_semantics(tmp_path: Path) -> None:
     store = SqliteSessionStore()
     store.create_background_task(workspace=tmp_path, task=_task(task_id="task-c"))
@@ -205,6 +307,292 @@ def test_background_task_storage_cancel_semantics(tmp_path: Path) -> None:
 
     assert cancelled.status == "cancelled"
     assert cancelled.error == "cancelled before start"
+
+    with sqlite3.connect(tmp_path / ".voidcode" / "sessions.sqlite3") as connection:
+        row = connection.execute(
+            "SELECT cancellation_cause, result_available FROM background_tasks WHERE task_id = ?",
+            ("task-c",),
+        ).fetchone()
+
+    assert row == ("cancelled before start", 0)
+
+
+def test_background_task_storage_persists_approval_and_question_request_correlation_on_session_save(
+    tmp_path: Path,
+) -> None:
+    store = SqliteSessionStore()
+    store.create_background_task(
+        workspace=tmp_path,
+        task=BackgroundTaskState(
+            task=BackgroundTaskRef(id="task-correlation"),
+            status="running",
+            request=BackgroundTaskRequestSnapshot(
+                prompt="background child",
+                session_id="child-requested",
+                parent_session_id="leader-session",
+                metadata={
+                    "delegation": {
+                        "mode": "background",
+                        "subagent_type": "explore",
+                    }
+                },
+            ),
+            session_id="child-session",
+            started_at=1,
+        ),
+    )
+
+    approval_request = RuntimeRequest(
+        prompt="background child",
+        session_id="child-requested",
+        parent_session_id="leader-session",
+        metadata={
+            "background_run": True,
+            "background_task_id": "task-correlation",
+            "delegation": {
+                "mode": "background",
+                "subagent_type": "explore",
+            },
+        },
+    )
+    approval_response = RuntimeResponse(
+        session=SessionState(
+            session=SessionRef(id="child-session", parent_id="leader-session"),
+            status="waiting",
+            turn=1,
+            metadata={
+                "background_run": True,
+                "background_task_id": "task-correlation",
+            },
+        ),
+        events=(
+            EventEnvelope(
+                session_id="child-session",
+                sequence=1,
+                event_type="runtime.request_received",
+                source="runtime",
+                payload={"prompt": "background child"},
+            ),
+            EventEnvelope(
+                session_id="child-session",
+                sequence=2,
+                event_type="runtime.approval_requested",
+                source="runtime",
+                payload={"request_id": "approval-1", "tool": "write_file"},
+            ),
+        ),
+    )
+    store.save_pending_approval(
+        workspace=tmp_path,
+        request=approval_request,
+        response=approval_response,
+        pending_approval=PendingApproval(request_id="approval-1", tool_name="write_file"),
+    )
+
+    question_response = RuntimeResponse(
+        session=SessionState(
+            session=SessionRef(id="child-session", parent_id="leader-session"),
+            status="waiting",
+            turn=2,
+            metadata={
+                "background_run": True,
+                "background_task_id": "task-correlation",
+            },
+        ),
+        events=(
+            EventEnvelope(
+                session_id="child-session",
+                sequence=1,
+                event_type="runtime.request_received",
+                source="runtime",
+                payload={"prompt": "background child"},
+            ),
+            EventEnvelope(
+                session_id="child-session",
+                sequence=2,
+                event_type="runtime.question_requested",
+                source="runtime",
+                payload={"request_id": "question-1", "question_count": 1},
+            ),
+        ),
+    )
+    store.save_pending_question(
+        workspace=tmp_path,
+        request=approval_request,
+        response=question_response,
+        pending_question=PendingQuestion(
+            request_id="question-1",
+            tool_name="question",
+            arguments={},
+            prompts=(
+                PendingQuestionPrompt(
+                    question="Proceed?",
+                    header="Proceed",
+                    options=(PendingQuestionOption(label="yes"),),
+                    multiple=False,
+                ),
+            ),
+        ),
+    )
+    terminal_response = RuntimeResponse(
+        session=SessionState(
+            session=SessionRef(id="child-session", parent_id="leader-session"),
+            status="completed",
+            turn=3,
+            metadata={
+                "background_run": True,
+                "background_task_id": "task-correlation",
+            },
+        ),
+        events=(
+            EventEnvelope(
+                session_id="child-session",
+                sequence=1,
+                event_type="runtime.request_received",
+                source="runtime",
+                payload={"prompt": "background child"},
+            ),
+            EventEnvelope(
+                session_id="child-session",
+                sequence=2,
+                event_type="graph.response_ready",
+                source="graph",
+                payload={},
+            ),
+        ),
+        output="done",
+    )
+    store.save_run(workspace=tmp_path, request=approval_request, response=terminal_response)
+
+    with sqlite3.connect(tmp_path / ".voidcode" / "sessions.sqlite3") as connection:
+        row = connection.execute(
+            """
+            SELECT requested_child_session_id, session_id, approval_request_id,
+                   question_request_id, routing_mode, routing_subagent_type,
+                   result_available
+            FROM background_tasks
+            WHERE task_id = ?
+            """,
+            ("task-correlation",),
+        ).fetchone()
+
+    assert row == (
+        "child-requested",
+        "child-session",
+        "approval-1",
+        "question-1",
+        "background",
+        "explore",
+        1,
+    )
+
+
+def test_background_task_storage_round_trips_pending_approval_owner_fields(tmp_path: Path) -> None:
+    store = SqliteSessionStore()
+    request = RuntimeRequest(prompt="child", session_id="child-session")
+    response = RuntimeResponse(
+        session=SessionState(
+            session=SessionRef(id="child-session", parent_id="leader-session"),
+            status="waiting",
+            turn=1,
+            metadata={"background_task_id": "task-owner", "background_run": True},
+        ),
+        events=(),
+    )
+    pending = PendingApproval(
+        request_id="approval-owner",
+        tool_name="write_file",
+        owner_session_id="child-session",
+        owner_parent_session_id="leader-session",
+        delegated_task_id="task-owner",
+    )
+
+    store.save_pending_approval(
+        workspace=tmp_path,
+        request=request,
+        response=response,
+        pending_approval=pending,
+    )
+
+    loaded = store.load_pending_approval(workspace=tmp_path, session_id="child-session")
+
+    assert loaded == pending
+
+
+def test_background_task_storage_enriches_parent_visible_delegated_event_payload_from_durable_truth(
+    tmp_path: Path,
+) -> None:
+    store = SqliteSessionStore()
+    parent_request = RuntimeRequest(prompt="leader task", session_id="leader-session")
+    parent_response = RuntimeResponse(
+        session=SessionState(
+            session=SessionRef(id="leader-session"),
+            status="completed",
+            turn=1,
+            metadata={},
+        ),
+        events=(
+            EventEnvelope(
+                session_id="leader-session",
+                sequence=1,
+                event_type="graph.response_ready",
+                source="graph",
+            ),
+        ),
+        output="done",
+    )
+    store.save_run(workspace=tmp_path, request=parent_request, response=parent_response)
+    store.create_background_task(
+        workspace=tmp_path,
+        task=BackgroundTaskState(
+            task=BackgroundTaskRef(id="task-event"),
+            status="running",
+            request=BackgroundTaskRequestSnapshot(
+                prompt="delegated",
+                session_id="child-requested",
+                parent_session_id="leader-session",
+                metadata={
+                    "delegation": {
+                        "mode": "background",
+                        "category": "quick",
+                        "description": "Quick delegated run",
+                    }
+                },
+            ),
+            session_id="child-session",
+            started_at=1,
+        ),
+    )
+    _ = store.persist_background_task_runtime_state(
+        workspace=tmp_path,
+        task_id="task-event",
+        approval_request_id="approval-42",
+        result_available=True,
+    )
+
+    appended = store.append_session_event(
+        workspace=tmp_path,
+        session_id="leader-session",
+        event_type="runtime.background_task_waiting_approval",
+        source="runtime",
+        payload={"task_id": "task-event", "approval_blocked": True},
+        dedupe_key="background_task_waiting_approval:task-event:approval-42",
+    )
+
+    assert appended is not None
+    assert appended.payload == {
+        "task_id": "task-event",
+        "approval_blocked": True,
+        "parent_session_id": "leader-session",
+        "status": "running",
+        "result_available": True,
+        "requested_child_session_id": "child-requested",
+        "child_session_id": "child-session",
+        "approval_request_id": "approval-42",
+        "routing_mode": "background",
+        "routing_category": "quick",
+        "routing_description": "Quick delegated run",
+    }
 
 
 def test_background_task_storage_queued_cancel_race_does_not_overwrite_running_task(
@@ -487,3 +875,217 @@ def test_background_task_storage_reconciles_incomplete_tasks_on_restart(tmp_path
     assert [task.task.id for task in reconciled] == ["task-e", "task-f"]
     assert all(task.status == "failed" for task in reconciled)
     assert all(task.error == "background task interrupted before completion" for task in reconciled)
+
+
+def test_background_task_storage_reconciliation_preserves_approval_blocked_child_with_durable_correlation(  # noqa: E501
+    tmp_path: Path,
+) -> None:
+    store = SqliteSessionStore()
+    waiting_request = RuntimeRequest(
+        prompt="background child",
+        session_id="child-requested",
+        parent_session_id="leader-session",
+        metadata={
+            "background_run": True,
+            "background_task_id": "task-waiting-durable",
+            "delegation": {
+                "mode": "background",
+                "subagent_type": "explore",
+            },
+        },
+    )
+    waiting_response = RuntimeResponse(
+        session=SessionState(
+            session=SessionRef(id="child-session", parent_id="leader-session"),
+            status="waiting",
+            turn=1,
+            metadata={"background_task_id": "task-waiting-durable", "background_run": True},
+        ),
+        events=(
+            EventEnvelope(
+                session_id="child-session",
+                sequence=1,
+                event_type="runtime.request_received",
+                source="runtime",
+                payload={"prompt": "background child"},
+            ),
+            EventEnvelope(
+                session_id="child-session",
+                sequence=2,
+                event_type="runtime.approval_requested",
+                source="runtime",
+                payload={"request_id": "approval-durable", "tool": "write_file"},
+            ),
+        ),
+    )
+    store.save_pending_approval(
+        workspace=tmp_path,
+        request=waiting_request,
+        response=waiting_response,
+        pending_approval=PendingApproval(
+            request_id="approval-durable",
+            tool_name="write_file",
+        ),
+    )
+    store.create_background_task(
+        workspace=tmp_path,
+        task=BackgroundTaskState(
+            task=BackgroundTaskRef(id="task-waiting-durable"),
+            status="running",
+            request=BackgroundTaskRequestSnapshot(
+                prompt="background child",
+                session_id="child-requested",
+                parent_session_id="leader-session",
+                metadata={"delegation": {"mode": "background", "subagent_type": "explore"}},
+            ),
+            session_id="child-session",
+            started_at=1,
+            updated_at=1,
+        ),
+    )
+
+    failed = store.fail_incomplete_background_tasks(
+        workspace=tmp_path,
+        message="background task interrupted before completion",
+    )
+
+    with sqlite3.connect(tmp_path / ".voidcode" / "sessions.sqlite3") as connection:
+        row = connection.execute(
+            """
+            SELECT status, approval_request_id, requested_child_session_id,
+                   routing_mode, routing_subagent_type, result_available
+            FROM background_tasks
+            WHERE task_id = ?
+            """,
+            ("task-waiting-durable",),
+        ).fetchone()
+
+    assert failed == ()
+    assert row == (
+        "running",
+        "approval-durable",
+        "child-requested",
+        "background",
+        "explore",
+        1,
+    )
+
+
+def test_runtime_events_define_delegated_background_task_durability_fields() -> None:
+    assert DELEGATED_BACKGROUND_TASK_EVENT_TYPES == (
+        "runtime.background_task_waiting_approval",
+        "runtime.background_task_completed",
+        "runtime.background_task_failed",
+        "runtime.background_task_cancelled",
+        "runtime.delegated_result_available",
+    )
+    assert DELEGATED_BACKGROUND_TASK_CORRELATION_FIELDS == (
+        "task_id",
+        "parent_session_id",
+        "requested_child_session_id",
+        "child_session_id",
+        "approval_request_id",
+        "question_request_id",
+    )
+    assert DELEGATED_BACKGROUND_TASK_ROUTING_FIELDS == (
+        "routing_mode",
+        "routing_category",
+        "routing_subagent_type",
+        "routing_description",
+        "routing_command",
+    )
+    assert DELEGATED_BACKGROUND_TASK_DURABILITY_FIELDS == (
+        *DELEGATED_BACKGROUND_TASK_CORRELATION_FIELDS,
+        *DELEGATED_BACKGROUND_TASK_ROUTING_FIELDS,
+        "status",
+        "approval_blocked",
+        "result_available",
+        "cancellation_cause",
+    )
+
+
+def test_background_task_event_enrichment_keeps_typed_delegation_payload_transport_friendly(
+    tmp_path: Path,
+) -> None:
+    store = SqliteSessionStore()
+    store.create_background_task(
+        workspace=tmp_path,
+        task=BackgroundTaskState(
+            task=BackgroundTaskRef(id="task-typed-event"),
+            status="running",
+            request=BackgroundTaskRequestSnapshot(
+                prompt="delegated",
+                session_id="child-requested",
+                parent_session_id="leader-session",
+                metadata={
+                    "delegation": {
+                        "mode": "background",
+                        "subagent_type": "explore",
+                        "description": "Inspect logs",
+                    }
+                },
+            ),
+            session_id="child-session",
+            approval_request_id="approval-1",
+            result_available=True,
+            started_at=1,
+            updated_at=1,
+        ),
+    )
+    parent_request = RuntimeRequest(prompt="leader", session_id="leader-session")
+    parent_response = RuntimeResponse(
+        session=SessionState(
+            session=SessionRef(id="leader-session"),
+            status="completed",
+            turn=1,
+        ),
+        events=(),
+        output="done",
+    )
+    store.save_run(workspace=tmp_path, request=parent_request, response=parent_response)
+
+    appended = store.append_session_event(
+        workspace=tmp_path,
+        session_id="leader-session",
+        event_type="runtime.background_task_waiting_approval",
+        source="runtime",
+        payload={
+            "task_id": "task-typed-event",
+            "approval_blocked": True,
+            "delegation": {
+                "delegated_task_id": "task-typed-event",
+                "parent_session_id": "leader-session",
+                "child_session_id": "child-session",
+                "requested_child_session_id": "child-requested",
+                "routing": {
+                    "mode": "background",
+                    "subagent_type": "explore",
+                    "description": "Inspect logs",
+                },
+                "lifecycle_status": "waiting_approval",
+                "approval_request_id": "approval-1",
+                "question_request_id": None,
+                "selected_preset": None,
+                "selected_execution_engine": None,
+                "approval_blocked": True,
+                "result_available": True,
+                "cancellation_cause": None,
+            },
+            "message": {
+                "kind": "delegated_lifecycle",
+                "status": "waiting_approval",
+                "summary_output": None,
+                "error": None,
+                "approval_blocked": True,
+                "result_available": True,
+            },
+        },
+    )
+
+    assert appended is not None
+    delegated = appended.delegated_lifecycle
+    assert delegated is not None
+    assert delegated.delegation.delegated_task_id == "task-typed-event"
+    assert delegated.delegation.routing is not None
+    assert delegated.delegation.routing.subagent_type == "explore"
+    assert delegated.message.approval_blocked is True

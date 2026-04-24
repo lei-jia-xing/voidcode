@@ -25,6 +25,11 @@ from voidcode.runtime.events import (
     RUNTIME_SKILLS_APPLIED,
     RUNTIME_SKILLS_BINDING_MISMATCH,
     RUNTIME_TOOL_STARTED,
+    DelegatedExecutionPayload,
+    DelegatedLifecycleEventPayload,
+    DelegatedLifecycleMessage,
+    DelegatedRoutingPayload,
+    EventEnvelope,
 )
 
 
@@ -56,3 +61,86 @@ def test_future_additive_event_types_cover_async_lifecycle_surfaces() -> None:
         RUNTIME_BACKGROUND_TASK_CANCELLED,
         RUNTIME_DELEGATED_RESULT_AVAILABLE,
     )
+
+
+def test_delegated_lifecycle_payload_preserves_typed_transport_shape() -> None:
+    delegated = DelegatedLifecycleEventPayload(
+        session_id="child-session",
+        parent_session_id="leader-session",
+        delegation=DelegatedExecutionPayload(
+            parent_session_id="leader-session",
+            requested_child_session_id="child-requested",
+            child_session_id="child-session",
+            delegated_task_id="task-1",
+            routing=DelegatedRoutingPayload(mode="background", category="deep"),
+            selected_preset="worker",
+            selected_execution_engine="provider",
+            lifecycle_status="waiting_approval",
+            approval_blocked=True,
+            result_available=True,
+        ),
+        message=DelegatedLifecycleMessage(
+            status="waiting_approval",
+            approval_blocked=True,
+            result_available=True,
+        ),
+    )
+
+    payload = delegated.as_payload()
+
+    assert payload["delegation"] == {
+        "parent_session_id": "leader-session",
+        "requested_child_session_id": "child-requested",
+        "child_session_id": "child-session",
+        "delegated_task_id": "task-1",
+        "approval_request_id": None,
+        "question_request_id": None,
+        "routing": {"mode": "background", "category": "deep"},
+        "selected_preset": "worker",
+        "selected_execution_engine": "provider",
+        "lifecycle_status": "waiting_approval",
+        "approval_blocked": True,
+        "result_available": True,
+        "cancellation_cause": None,
+    }
+    assert payload["message"] == {
+        "kind": "delegated_lifecycle",
+        "status": "waiting_approval",
+        "summary_output": None,
+        "error": None,
+        "approval_blocked": True,
+        "result_available": True,
+    }
+    assert payload["task_id"] == "task-1"
+    assert payload["routing_category"] == "deep"
+
+
+def test_event_envelope_parses_legacy_delegated_payloads_without_ad_hoc_key_checks() -> None:
+    event = EventEnvelope(
+        session_id="leader-session",
+        sequence=1,
+        event_type=RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL,
+        source="runtime",
+        payload={
+            "task_id": "task-1",
+            "parent_session_id": "leader-session",
+            "requested_child_session_id": "child-session",
+            "child_session_id": "child-session",
+            "approval_request_id": "approval-1",
+            "status": "running",
+            "approval_blocked": True,
+            "result_available": True,
+            "routing_mode": "background",
+            "routing_subagent_type": "explore",
+        },
+    )
+
+    delegated = event.delegated_lifecycle
+
+    assert delegated is not None
+    assert delegated.parent_session_id == "leader-session"
+    assert delegated.delegation.delegated_task_id == "task-1"
+    assert delegated.delegation.lifecycle_status == "waiting_approval"
+    assert delegated.delegation.routing is not None
+    assert delegated.delegation.routing.subagent_type == "explore"
+    assert delegated.message.approval_blocked is True

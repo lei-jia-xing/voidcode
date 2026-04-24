@@ -23,9 +23,12 @@
 当前 `voidcode.acp` 已经承载的稳定定义包括：
 
 - `AcpConfigState`
+- `AcpDelegatedExecution`
 - `AcpRequestEnvelope`
 - `AcpResponseEnvelope`
+- `AcpEventEnvelope`
 - `AcpRequestHandler`
+- `AcpEventPublisher`
 
 这些定义位于：
 
@@ -40,13 +43,21 @@
   - 提供 `from_enabled()` 作为 runtime-agnostic helper
 - `AcpRequestEnvelope`
   - adapter-facing request envelope
-  - 当前只包含 `request_type` 与 `payload`
+  - 当前包含 `request_type`、request/session/parent correlation，以及 delegation-aware payload
 - `AcpResponseEnvelope`
   - adapter-facing response envelope
-  - 当前只包含 `status`、`payload` 与 `error`
+  - 当前包含 `status`、request/session/parent correlation、delegation-aware payload 与 `error`
+- `AcpEventEnvelope`
+  - adapter-facing event envelope
+  - 当前支持 `parent_session_id` 与 `delegation`
 - `AcpRequestHandler`
   - 最小 adapter-facing protocol contract
   - 当前只要求 `request(envelope)`
+- `AcpEventPublisher`
+  - 最小 adapter-facing event publish contract
+- `AcpDelegatedExecution`
+  - capability-layer 的 delegation identity/correlation shape
+  - 与 runtime-owned delegated lifecycle truth 对齐，但不夺走 lifecycle ownership
 
 ## 不负责什么
 
@@ -60,7 +71,7 @@
 - recovery / startup / handshake flow
 - agent-to-agent messaging semantics
 - multi-agent routing plane
-- delegated execution substrate
+- delegated execution lifecycle ownership
 
 这些能力仍然必须留在 `runtime/`，而不是提前抽成 capability-layer API。
 
@@ -85,11 +96,12 @@
 - 在 run / approval-resume 启动阶段 connect + handshake
 - 在 finalized run / approval-resume 结束路径上 disconnect；某些 waiting / approval-blocked 路径也会断开 ACP 并持久化运行态，但不会在当次响应里发出 `runtime.acp_disconnected`
 - 通过 `runtime.acp_connected` / `runtime.acp_failed` 发出事件，并在正常 finalized disconnect 路径上发出 `runtime.acp_disconnected`
+- 在 delegated child lifecycle 过程中发出 `runtime.acp_delegated_lifecycle`
 - 将运行态写入 `session.metadata["runtime_state"]["acp"]`
 
 因此，ACP 现在应被理解为：
 
-> 一个已经进入最小 runtime-managed transport / lifecycle 路径、但尚未扩展成 agent control-plane 的受管能力边界。
+> 一个已经进入 runtime-managed transport / lifecycle 路径、并且已经具备 delegation-aware contract / event envelope 的受管能力边界。
 
 ## 它现在不是什么
 
@@ -98,7 +110,6 @@
 - agent-to-agent messaging bus
 - multi-agent routing layer
 - supervisor / worker handoff transport
-- 可恢复 delegated execution infrastructure
 - 当前可直接产品化的 agent control plane
 
 这点非常重要。对 VoidCode 当前阶段而言，ACP 仍然是**边界预留**，不是已经成熟的协作底座。
@@ -160,7 +171,7 @@ ACP 和 agent 不是同一个维度。
 
 更准确的说法是：
 
-> ACP 已经有了最小 contract 层与 runtime-managed lifecycle 基线，但距离真正的 agent coordination control plane 仍然很远。
+> ACP 已经有了 delegation-aware contract 层与 runtime-managed lifecycle 基线，并参与当前 delegated execution observability；但距离真正的 agent coordination control plane 仍然很远。
 
 ## 相关文档
 

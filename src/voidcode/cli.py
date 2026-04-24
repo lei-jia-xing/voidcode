@@ -20,11 +20,17 @@ from .doctor import (
 )
 from .provider.snapshot import resolved_provider_snapshot
 from .runtime.config import RuntimeConfig, load_runtime_config, serialize_provider_fallback_config
-from .runtime.contracts import RuntimeRequest, RuntimeStreamChunk, validate_runtime_request_metadata
+from .runtime.contracts import (
+    BackgroundTaskResult,
+    RuntimeRequest,
+    RuntimeStreamChunk,
+    validate_runtime_request_metadata,
+)
 from .runtime.events import EventEnvelope
 from .runtime.permission import PermissionDecision, PermissionResolution
 from .runtime.service import VoidCodeRuntime
 from .runtime.session import SessionState, StoredSessionSummary
+from .runtime.task import BackgroundTaskState, StoredBackgroundTaskSummary
 from .server import serve
 
 Handler = Callable[[argparse.Namespace], int]
@@ -112,7 +118,7 @@ def _consume_runtime_stream(
 ) -> tuple[str | None, SessionState, EventEnvelope | None]:
     output: str | None = None
     final_session: SessionState | None = None
-    last_event: EventEnvelope | None = None
+    last_event = cast(EventEnvelope | None, None)
 
     for chunk in chunks:
         final_session = chunk.session
@@ -206,6 +212,92 @@ def _format_session_summary(session: StoredSessionSummary) -> str:
     )
 
 
+def _format_named_record(prefix: str, fields: Sequence[tuple[str, object]]) -> str:
+    suffix = " ".join(f"{key}={value}" for key, value in fields)
+    return f"{prefix} {suffix}" if suffix else prefix
+
+
+def _background_task_fields(task: BackgroundTaskState) -> list[tuple[str, object]]:
+    fields: list[tuple[str, object]] = [
+        ("id", task.task.id),
+        ("status", task.status),
+        ("parent_session_id", task.parent_session_id),
+        ("requested_child_session_id", task.request.session_id),
+        ("child_session_id", task.child_session_id),
+        ("approval_request_id", task.approval_request_id),
+        ("question_request_id", task.question_request_id),
+        ("result_available", task.result_available),
+    ]
+    if task.cancellation_cause is not None:
+        fields.append(("cancellation_cause", task.cancellation_cause))
+    if task.error is not None:
+        fields.append(("error", task.error))
+    routing = task.routing_identity
+    if routing is not None:
+        fields.append(("delegation_mode", routing.mode))
+        if routing.category is not None:
+            fields.append(("category", routing.category))
+        if routing.subagent_type is not None:
+            fields.append(("subagent_type", routing.subagent_type))
+        if routing.description is not None:
+            fields.append(("description", routing.description))
+        if routing.command is not None:
+            fields.append(("command", routing.command))
+    return fields
+
+
+def _format_background_task_state(task: BackgroundTaskState) -> str:
+    return _format_named_record("TASK", _background_task_fields(task))
+
+
+def _background_task_result_fields(result: BackgroundTaskResult) -> list[tuple[str, object]]:
+    fields: list[tuple[str, object]] = [
+        ("id", result.task_id),
+        ("status", result.status),
+        ("parent_session_id", result.parent_session_id),
+        ("requested_child_session_id", result.requested_child_session_id),
+        ("child_session_id", result.child_session_id),
+        ("approval_request_id", result.approval_request_id),
+        ("question_request_id", result.question_request_id),
+        ("approval_blocked", result.approval_blocked),
+        ("result_available", result.result_available),
+    ]
+    if result.summary_output is not None:
+        fields.append(("summary_output", repr(result.summary_output)))
+    if result.error is not None:
+        fields.append(("error", result.error))
+    routing = result.routing
+    if routing is not None:
+        fields.append(("delegation_mode", routing.mode))
+        if routing.category is not None:
+            fields.append(("category", routing.category))
+        if routing.subagent_type is not None:
+            fields.append(("subagent_type", routing.subagent_type))
+        if routing.description is not None:
+            fields.append(("description", routing.description))
+        if routing.command is not None:
+            fields.append(("command", routing.command))
+    return fields
+
+
+def _format_background_task_result(result: BackgroundTaskResult) -> str:
+    return _format_named_record("TASK", _background_task_result_fields(result))
+
+
+def _format_background_task_summary(task: StoredBackgroundTaskSummary) -> str:
+    return _format_named_record(
+        "TASK",
+        [
+            ("id", task.task.id),
+            ("status", task.status),
+            ("session_id", task.session_id),
+            ("created_at", task.created_at),
+            ("updated_at", task.updated_at),
+            ("prompt", repr(task.prompt)),
+        ],
+    )
+
+
 def _handle_sessions_resume_command(args: argparse.Namespace) -> int:
     workspace = cast(Path, args.workspace)
     session_id = cast(str, args.session_id)
@@ -224,6 +316,89 @@ def _handle_sessions_resume_command(args: argparse.Namespace) -> int:
         _close_runtime(runtime)
 
     _print_runtime_response(result)
+    return 0
+
+
+def _handle_tasks_status_command(args: argparse.Namespace) -> int:
+    workspace = cast(Path, args.workspace)
+    task_id = cast(str, args.task_id)
+    runtime = VoidCodeRuntime(workspace=workspace)
+    try:
+        try:
+            task = runtime.load_background_task(task_id)
+        except ValueError as exc:
+            raise SystemExit(f"error: {exc}") from None
+    finally:
+        _close_runtime(runtime)
+
+    print(_format_background_task_state(task))
+    return 0
+
+
+def _handle_tasks_output_command(args: argparse.Namespace) -> int:
+    workspace = cast(Path, args.workspace)
+    task_id = cast(str, args.task_id)
+    runtime = VoidCodeRuntime(workspace=workspace)
+    task_result: BackgroundTaskResult | None = None
+    session_output: str | None = None
+    try:
+        try:
+            task_result = runtime.load_background_task_result(task_id)
+            if task_result.result_available and task_result.child_session_id is not None:
+                try:
+                    session_output = runtime.session_result(
+                        session_id=task_result.child_session_id
+                    ).output
+                except ValueError:
+                    session_output = None
+        except ValueError as exc:
+            raise SystemExit(f"error: {exc}") from None
+    finally:
+        _close_runtime(runtime)
+
+    assert task_result is not None
+    print(_format_background_task_result(task_result))
+    fallback_output = (
+        task_result.summary_output if task_result.summary_output is not None else task_result.error
+    )
+    _print_runtime_output(session_output or fallback_output)
+    return 0
+
+
+def _handle_tasks_cancel_command(args: argparse.Namespace) -> int:
+    workspace = cast(Path, args.workspace)
+    task_id = cast(str, args.task_id)
+    runtime = VoidCodeRuntime(workspace=workspace)
+    try:
+        try:
+            task = runtime.cancel_background_task(task_id)
+        except ValueError as exc:
+            raise SystemExit(f"error: {exc}") from None
+    finally:
+        _close_runtime(runtime)
+
+    print(_format_background_task_state(task))
+    return 0
+
+
+def _handle_tasks_list_command(args: argparse.Namespace) -> int:
+    workspace = cast(Path, args.workspace)
+    parent_session_id = cast(str | None, getattr(args, "parent_session_id", None))
+    runtime = VoidCodeRuntime(workspace=workspace)
+    try:
+        try:
+            tasks = (
+                runtime.list_background_tasks_by_parent_session(parent_session_id=parent_session_id)
+                if parent_session_id is not None
+                else runtime.list_background_tasks()
+            )
+        except ValueError as exc:
+            raise SystemExit(f"error: {exc}") from None
+    finally:
+        _close_runtime(runtime)
+
+    for task in tasks:
+        print(_format_background_task_summary(task))
     return 0
 
 
@@ -504,6 +679,9 @@ def build_parser() -> argparse.ArgumentParser:
     sessions_parser = subparsers.add_parser("sessions", help="Inspect persisted local sessions.")
     sessions_subparsers = sessions_parser.add_subparsers(dest="sessions_command")
 
+    tasks_parser = subparsers.add_parser("tasks", help="Inspect delegated background tasks.")
+    tasks_subparsers = tasks_parser.add_subparsers(dest="tasks_command")
+
     config_parser = subparsers.add_parser("config", help="Inspect effective runtime configuration.")
     config_subparsers = config_parser.add_subparsers(dest="config_command")
 
@@ -574,6 +752,56 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional approval decision applied to the pending request during resume.",
     )
     resume_parser.set_defaults(handler=_handle_sessions_resume_command)
+
+    tasks_status_parser = tasks_subparsers.add_parser(
+        "status", help="Show delegated task lifecycle state."
+    )
+    _ = tasks_status_parser.add_argument("task_id", help="Delegated background task identifier.")
+    _ = tasks_status_parser.add_argument(
+        "--workspace",
+        type=Path,
+        default=Path.cwd(),
+        help="Workspace root used to resolve the local session database.",
+    )
+    tasks_status_parser.set_defaults(handler=_handle_tasks_status_command)
+
+    tasks_output_parser = tasks_subparsers.add_parser(
+        "output", help="Show delegated task output and correlation details."
+    )
+    _ = tasks_output_parser.add_argument("task_id", help="Delegated background task identifier.")
+    _ = tasks_output_parser.add_argument(
+        "--workspace",
+        type=Path,
+        default=Path.cwd(),
+        help="Workspace root used to resolve the local session database.",
+    )
+    tasks_output_parser.set_defaults(handler=_handle_tasks_output_command)
+
+    tasks_cancel_parser = tasks_subparsers.add_parser(
+        "cancel", help="Cancel delegated background work."
+    )
+    _ = tasks_cancel_parser.add_argument("task_id", help="Delegated background task identifier.")
+    _ = tasks_cancel_parser.add_argument(
+        "--workspace",
+        type=Path,
+        default=Path.cwd(),
+        help="Workspace root used to resolve the local session database.",
+    )
+    tasks_cancel_parser.set_defaults(handler=_handle_tasks_cancel_command)
+
+    tasks_list_parser = tasks_subparsers.add_parser("list", help="List delegated background tasks.")
+    _ = tasks_list_parser.add_argument(
+        "--workspace",
+        type=Path,
+        default=Path.cwd(),
+        help="Workspace root used to resolve the local session database.",
+    )
+    _ = tasks_list_parser.add_argument(
+        "--parent-session",
+        dest="parent_session_id",
+        help="Optional parent session identifier used to filter delegated tasks.",
+    )
+    tasks_list_parser.set_defaults(handler=_handle_tasks_list_command)
 
     # Capability doctor command
     doctor_parser = subparsers.add_parser(

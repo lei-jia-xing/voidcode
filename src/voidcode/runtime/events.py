@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Final, Literal
+from typing import Final, Literal, cast
 
 type EventSource = Literal["runtime", "graph", "tool"]
 
@@ -14,6 +15,7 @@ type ExistingEventType = Literal[
     "runtime.acp_connected",
     "runtime.acp_disconnected",
     "runtime.acp_failed",
+    "runtime.acp_delegated_lifecycle",
     "runtime.lsp_server_started",
     "runtime.lsp_server_reused",
     "runtime.lsp_server_startup_rejected",
@@ -50,6 +52,21 @@ type PrototypeAdditiveEventType = Literal[
     "runtime.background_task_cancelled",
     "runtime.delegated_result_available",
 ]
+type DelegatedBackgroundTaskEventType = Literal[
+    "runtime.background_task_waiting_approval",
+    "runtime.background_task_completed",
+    "runtime.background_task_failed",
+    "runtime.background_task_cancelled",
+    "runtime.delegated_result_available",
+]
+type DelegatedLifecycleStatus = Literal[
+    "queued",
+    "running",
+    "waiting_approval",
+    "completed",
+    "failed",
+    "cancelled",
+]
 type KnownEventType = ExistingEventType | PrototypeAdditiveEventType
 
 RUNTIME_REQUEST_RECEIVED: Final[ExistingEventType] = "runtime.request_received"
@@ -60,6 +77,7 @@ RUNTIME_PROVIDER_FALLBACK: Final[ExistingEventType] = "runtime.provider_fallback
 RUNTIME_ACP_CONNECTED: Final[ExistingEventType] = "runtime.acp_connected"
 RUNTIME_ACP_DISCONNECTED: Final[ExistingEventType] = "runtime.acp_disconnected"
 RUNTIME_ACP_FAILED: Final[ExistingEventType] = "runtime.acp_failed"
+RUNTIME_ACP_DELEGATED_LIFECYCLE: Final[ExistingEventType] = "runtime.acp_delegated_lifecycle"
 RUNTIME_LSP_SERVER_STARTED: Final[ExistingEventType] = "runtime.lsp_server_started"
 RUNTIME_LSP_SERVER_REUSED: Final[ExistingEventType] = "runtime.lsp_server_reused"
 RUNTIME_LSP_SERVER_STARTUP_REJECTED: Final[ExistingEventType] = (
@@ -116,6 +134,7 @@ EMITTED_EVENT_TYPES: Final[tuple[ExistingEventType, ...]] = (
     RUNTIME_ACP_CONNECTED,
     RUNTIME_ACP_DISCONNECTED,
     RUNTIME_ACP_FAILED,
+    RUNTIME_ACP_DELEGATED_LIFECYCLE,
     RUNTIME_LSP_SERVER_STARTED,
     RUNTIME_LSP_SERVER_REUSED,
     RUNTIME_LSP_SERVER_STARTUP_REJECTED,
@@ -156,6 +175,307 @@ KNOWN_EVENT_TYPES: Final[tuple[KnownEventType, ...]] = (
     *EMITTED_EVENT_TYPES,
     *PROTOTYPE_ADDITIVE_EVENT_TYPES,
 )
+DELEGATED_BACKGROUND_TASK_EVENT_TYPES: Final[tuple[DelegatedBackgroundTaskEventType, ...]] = (
+    RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL,
+    RUNTIME_BACKGROUND_TASK_COMPLETED,
+    RUNTIME_BACKGROUND_TASK_FAILED,
+    RUNTIME_BACKGROUND_TASK_CANCELLED,
+    RUNTIME_DELEGATED_RESULT_AVAILABLE,
+)
+DELEGATED_BACKGROUND_TASK_CORRELATION_FIELDS: Final[tuple[str, ...]] = (
+    "task_id",
+    "parent_session_id",
+    "requested_child_session_id",
+    "child_session_id",
+    "approval_request_id",
+    "question_request_id",
+)
+DELEGATED_BACKGROUND_TASK_ROUTING_FIELDS: Final[tuple[str, ...]] = (
+    "routing_mode",
+    "routing_category",
+    "routing_subagent_type",
+    "routing_description",
+    "routing_command",
+)
+DELEGATED_BACKGROUND_TASK_DURABILITY_FIELDS: Final[tuple[str, ...]] = (
+    *DELEGATED_BACKGROUND_TASK_CORRELATION_FIELDS,
+    *DELEGATED_BACKGROUND_TASK_ROUTING_FIELDS,
+    "status",
+    "approval_blocked",
+    "result_available",
+    "cancellation_cause",
+)
+ACP_DELEGATED_EXECUTION_FIELDS: Final[tuple[str, ...]] = (
+    *DELEGATED_BACKGROUND_TASK_DURABILITY_FIELDS,
+    "selected_preset",
+    "selected_execution_engine",
+    "lifecycle_status",
+)
+
+_DELEGATED_EVENT_STATUS_BY_TYPE: Final[
+    dict[DelegatedBackgroundTaskEventType | ExistingEventType, DelegatedLifecycleStatus]
+] = {
+    RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL: "waiting_approval",
+    RUNTIME_BACKGROUND_TASK_COMPLETED: "completed",
+    RUNTIME_BACKGROUND_TASK_FAILED: "failed",
+    RUNTIME_BACKGROUND_TASK_CANCELLED: "cancelled",
+    RUNTIME_DELEGATED_RESULT_AVAILABLE: "completed",
+    RUNTIME_ACP_DELEGATED_LIFECYCLE: "running",
+}
+
+
+def _string_or_none(value: object) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def _bool_or_default(value: object, *, default: bool = False) -> bool:
+    return value if isinstance(value, bool) else default
+
+
+def _mapping_or_none(value: object) -> Mapping[str, object] | None:
+    if not isinstance(value, Mapping):
+        return None
+    mapping = cast(Mapping[object, object], value)
+    if not all(isinstance(key, str) for key in mapping):
+        return None
+    return cast(Mapping[str, object], value)
+
+
+@dataclass(frozen=True, slots=True)
+class DelegatedRoutingPayload:
+    mode: Literal["sync", "background"] | None = None
+    category: str | None = None
+    subagent_type: str | None = None
+    description: str | None = None
+    command: str | None = None
+
+    def as_payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {}
+        if self.mode is not None:
+            payload["mode"] = self.mode
+        if self.category is not None:
+            payload["category"] = self.category
+        if self.subagent_type is not None:
+            payload["subagent_type"] = self.subagent_type
+        if self.description is not None:
+            payload["description"] = self.description
+        if self.command is not None:
+            payload["command"] = self.command
+        return payload
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, object] | None) -> DelegatedRoutingPayload | None:
+        if payload is None:
+            return None
+        raw_mode = payload.get("mode")
+        mode = raw_mode if raw_mode in ("sync", "background") else None
+        routing = cls(
+            mode=mode,
+            category=_string_or_none(payload.get("category")),
+            subagent_type=_string_or_none(payload.get("subagent_type")),
+            description=_string_or_none(payload.get("description")),
+            command=_string_or_none(payload.get("command")),
+        )
+        return routing if routing.as_payload() else None
+
+
+@dataclass(frozen=True, slots=True)
+class DelegatedExecutionPayload:
+    parent_session_id: str | None = None
+    requested_child_session_id: str | None = None
+    child_session_id: str | None = None
+    delegated_task_id: str | None = None
+    approval_request_id: str | None = None
+    question_request_id: str | None = None
+    routing: DelegatedRoutingPayload | None = None
+    selected_preset: str | None = None
+    selected_execution_engine: str | None = None
+    lifecycle_status: DelegatedLifecycleStatus | None = None
+    approval_blocked: bool = False
+    result_available: bool = False
+    cancellation_cause: str | None = None
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "parent_session_id": self.parent_session_id,
+            "requested_child_session_id": self.requested_child_session_id,
+            "child_session_id": self.child_session_id,
+            "delegated_task_id": self.delegated_task_id,
+            "approval_request_id": self.approval_request_id,
+            "question_request_id": self.question_request_id,
+            "routing": self.routing.as_payload() if self.routing is not None else None,
+            "selected_preset": self.selected_preset,
+            "selected_execution_engine": self.selected_execution_engine,
+            "lifecycle_status": self.lifecycle_status,
+            "approval_blocked": self.approval_blocked,
+            "result_available": self.result_available,
+            "cancellation_cause": self.cancellation_cause,
+        }
+
+    def legacy_payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "task_id": self.delegated_task_id,
+            "parent_session_id": self.parent_session_id,
+            "requested_child_session_id": self.requested_child_session_id,
+            "child_session_id": self.child_session_id,
+            "approval_request_id": self.approval_request_id,
+            "question_request_id": self.question_request_id,
+            "status": self.lifecycle_status,
+            "approval_blocked": self.approval_blocked,
+            "result_available": self.result_available,
+            "cancellation_cause": self.cancellation_cause,
+        }
+        if self.routing is not None:
+            routing = self.routing
+            payload.update(
+                {
+                    "routing_mode": routing.mode,
+                    "routing_category": routing.category,
+                    "routing_subagent_type": routing.subagent_type,
+                    "routing_description": routing.description,
+                    "routing_command": routing.command,
+                }
+            )
+        return payload
+
+    @classmethod
+    def from_payload(
+        cls,
+        payload: Mapping[str, object],
+        *,
+        lifecycle_status: DelegatedLifecycleStatus | None = None,
+    ) -> DelegatedExecutionPayload:
+        nested_routing = DelegatedRoutingPayload.from_payload(
+            _mapping_or_none(payload.get("routing"))
+        )
+        legacy_routing = DelegatedRoutingPayload.from_payload(
+            {
+                key: value
+                for key, value in {
+                    "mode": payload.get("routing_mode"),
+                    "category": payload.get("routing_category"),
+                    "subagent_type": payload.get("routing_subagent_type"),
+                    "description": payload.get("routing_description"),
+                    "command": payload.get("routing_command"),
+                }.items()
+                if value is not None
+            }
+        )
+        raw_status = payload.get("lifecycle_status")
+        parsed_status = (
+            raw_status if raw_status in _DELEGATED_EVENT_STATUS_BY_TYPE.values() else None
+        )
+        return cls(
+            parent_session_id=_string_or_none(payload.get("parent_session_id")),
+            requested_child_session_id=_string_or_none(payload.get("requested_child_session_id")),
+            child_session_id=_string_or_none(payload.get("child_session_id")),
+            delegated_task_id=_string_or_none(payload.get("delegated_task_id"))
+            or _string_or_none(payload.get("task_id")),
+            approval_request_id=_string_or_none(payload.get("approval_request_id")),
+            question_request_id=_string_or_none(payload.get("question_request_id")),
+            routing=nested_routing or legacy_routing,
+            selected_preset=_string_or_none(payload.get("selected_preset")),
+            selected_execution_engine=_string_or_none(payload.get("selected_execution_engine")),
+            lifecycle_status=cast(
+                DelegatedLifecycleStatus | None,
+                parsed_status or lifecycle_status or _string_or_none(payload.get("status")),
+            ),
+            approval_blocked=_bool_or_default(payload.get("approval_blocked")),
+            result_available=_bool_or_default(payload.get("result_available")),
+            cancellation_cause=_string_or_none(payload.get("cancellation_cause")),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DelegatedLifecycleMessage:
+    kind: Literal["delegated_lifecycle"] = "delegated_lifecycle"
+    status: DelegatedLifecycleStatus | None = None
+    summary_output: str | None = None
+    error: str | None = None
+    approval_blocked: bool = False
+    result_available: bool = False
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "kind": self.kind,
+            "status": self.status,
+            "summary_output": self.summary_output,
+            "error": self.error,
+            "approval_blocked": self.approval_blocked,
+            "result_available": self.result_available,
+        }
+
+    @classmethod
+    def from_payload(
+        cls,
+        payload: Mapping[str, object] | None,
+        *,
+        default_status: DelegatedLifecycleStatus | None = None,
+    ) -> DelegatedLifecycleMessage:
+        if payload is None:
+            return cls(status=default_status)
+        raw_status = payload.get("status")
+        status = (
+            raw_status if raw_status in _DELEGATED_EVENT_STATUS_BY_TYPE.values() else default_status
+        )
+        return cls(
+            status=cast(DelegatedLifecycleStatus | None, status),
+            summary_output=_string_or_none(payload.get("summary_output")),
+            error=_string_or_none(payload.get("error")),
+            approval_blocked=_bool_or_default(payload.get("approval_blocked")),
+            result_available=_bool_or_default(payload.get("result_available")),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DelegatedLifecycleEventPayload:
+    session_id: str | None = None
+    parent_session_id: str | None = None
+    delegation: DelegatedExecutionPayload = field(default_factory=DelegatedExecutionPayload)
+    message: DelegatedLifecycleMessage = field(default_factory=DelegatedLifecycleMessage)
+
+    def as_payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            **self.delegation.legacy_payload(),
+            **self.message.as_payload(),
+            "delegation": self.delegation.as_payload(),
+            "message": self.message.as_payload(),
+        }
+        if self.session_id is not None:
+            payload["session_id"] = self.session_id
+        if self.parent_session_id is not None:
+            payload["parent_session_id"] = self.parent_session_id
+        return payload
+
+    @classmethod
+    def from_event(cls, event: EventEnvelope) -> DelegatedLifecycleEventPayload | None:
+        if event.event_type not in (
+            *DELEGATED_BACKGROUND_TASK_EVENT_TYPES,
+            RUNTIME_ACP_DELEGATED_LIFECYCLE,
+        ):
+            return None
+        default_status = _DELEGATED_EVENT_STATUS_BY_TYPE.get(
+            cast(DelegatedBackgroundTaskEventType | ExistingEventType, event.event_type)
+        )
+        payload = event.payload
+        delegation_payload = _mapping_or_none(payload.get("delegation")) or payload
+        message_payload = _mapping_or_none(payload.get("message")) or payload
+        delegation = DelegatedExecutionPayload.from_payload(
+            delegation_payload,
+            lifecycle_status=default_status,
+        )
+        message = DelegatedLifecycleMessage.from_payload(
+            message_payload,
+            default_status=delegation.lifecycle_status or default_status,
+        )
+        return cls(
+            session_id=_string_or_none(payload.get("session_id")) or event.session_id,
+            parent_session_id=(
+                _string_or_none(payload.get("parent_session_id")) or delegation.parent_session_id
+            ),
+            delegation=delegation,
+            message=message,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,3 +485,7 @@ class EventEnvelope:
     event_type: str
     source: EventSource
     payload: dict[str, object] = field(default_factory=dict)
+
+    @property
+    def delegated_lifecycle(self) -> DelegatedLifecycleEventPayload | None:
+        return DelegatedLifecycleEventPayload.from_event(self)

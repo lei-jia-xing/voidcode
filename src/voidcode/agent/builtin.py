@@ -37,9 +37,9 @@ LEADER_AGENT_MANIFEST = AgentManifest(
     id="leader",
     name="Leader",
     mode="primary",
-    description="Primary user-facing agent preset mapped to the current single-agent path.",
+    description="Primary user-facing agent preset mapped to the runtime provider path.",
     prompt_profile="leader",
-    execution_engine="single_agent",
+    execution_engine="provider",
     tool_allowlist=_LEADER_TOOL_ALLOWLIST,
 )
 
@@ -57,6 +57,7 @@ WORKER_AGENT_MANIFEST = AgentManifest(
         "apply_patch",
         "shell_exec",
         "format_file",
+        "task",
     ),
 )
 

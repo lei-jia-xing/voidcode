@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from .config import SimplifiedProviderConfig, simplified_config_to_litellm
 from .litellm_backend import LiteLLMBackendSingleAgentProvider
-from .protocol import SingleAgentProvider, SingleAgentTurnRequest
+from .protocol import ProviderTurnRequest, TurnProvider
 
 _ANTHROPIC_COMPATIBLE_MODELS = frozenset({"minimax-m2.5", "minimax-m2.7"})
 _ALIBABA_COMPATIBLE_MODELS = frozenset({"qwen3.5-plus", "qwen3.6-plus"})
@@ -14,7 +14,7 @@ _ALIBABA_COMPATIBLE_MODELS = frozenset({"qwen3.5-plus", "qwen3.6-plus"})
 class OpenCodeGoSingleAgentProvider(LiteLLMBackendSingleAgentProvider):
     """LiteLLM adapter for OpenCode Go's model-family-specific SDK routes."""
 
-    def _completion_kwargs_for_request(self, request: SingleAgentTurnRequest) -> dict[str, object]:
+    def _completion_kwargs_for_request(self, request: ProviderTurnRequest) -> dict[str, object]:
         kwargs = LiteLLMBackendSingleAgentProvider._completion_kwargs_for_request(self, request)
         model_name = request.model_name or ""
         if model_name in _ANTHROPIC_COMPATIBLE_MODELS:
@@ -62,7 +62,7 @@ class OpenCodeGoModelProvider:
     name: str = "opencode-go"
     config: SimplifiedProviderConfig | None = None
 
-    def single_agent_provider(self) -> SingleAgentProvider:
+    def turn_provider(self) -> TurnProvider:
         adapted_config = simplified_config_to_litellm(self.name, self.config)
         return OpenCodeGoSingleAgentProvider(
             name=self.name,

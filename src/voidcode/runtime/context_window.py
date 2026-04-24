@@ -119,7 +119,7 @@ def _build_continuity_state(
     )
 
 
-def prepare_single_agent_context(
+def prepare_provider_context(
     *,
     prompt: str,
     tool_results: tuple[ToolResult, ...],

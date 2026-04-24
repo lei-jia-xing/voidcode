@@ -26,6 +26,12 @@ class PermissionPolicy:
 
 
 @dataclass(frozen=True, slots=True)
+class DelegationGovernance:
+    max_depth: int = 3
+    spawn_budget: int = 4
+
+
+@dataclass(frozen=True, slots=True)
 class PendingApproval:
     request_id: str
     tool_name: str
@@ -33,6 +39,9 @@ class PendingApproval:
     target_summary: str = ""
     reason: str = ""
     policy_mode: PermissionDecision = "ask"
+    owner_session_id: str | None = None
+    owner_parent_session_id: str | None = None
+    delegated_task_id: str | None = None
 
 
 def default_policy_for_tool(tool: ToolDefinition) -> PermissionPolicy:
@@ -46,17 +55,33 @@ def resolve_permission(
     tool_call: ToolCall,
     *,
     policy: PermissionPolicy,
+    owner_session_id: str | None = None,
+    owner_parent_session_id: str | None = None,
+    delegated_task_id: str | None = None,
 ) -> PermissionOutcome:
     if tool.read_only:
         return PermissionOutcome(decision="allow")
 
-    pending_approval = build_pending_approval(tool_call, policy=policy)
+    pending_approval = build_pending_approval(
+        tool_call,
+        policy=policy,
+        owner_session_id=owner_session_id,
+        owner_parent_session_id=owner_parent_session_id,
+        delegated_task_id=delegated_task_id,
+    )
     if policy.mode == "ask":
         return PermissionOutcome(decision="ask", pending_approval=pending_approval)
     return PermissionOutcome(decision=policy.mode, pending_approval=pending_approval)
 
 
-def build_pending_approval(tool_call: ToolCall, *, policy: PermissionPolicy) -> PendingApproval:
+def build_pending_approval(
+    tool_call: ToolCall,
+    *,
+    policy: PermissionPolicy,
+    owner_session_id: str | None = None,
+    owner_parent_session_id: str | None = None,
+    delegated_task_id: str | None = None,
+) -> PendingApproval:
     path = tool_call.arguments.get("path")
     if isinstance(path, str) and path:
         target_summary = f"{tool_call.tool_name} {path}"
@@ -69,4 +94,7 @@ def build_pending_approval(tool_call: ToolCall, *, policy: PermissionPolicy) -> 
         target_summary=target_summary,
         reason="non-read-only tool invocation",
         policy_mode=policy.mode,
+        owner_session_id=owner_session_id,
+        owner_parent_session_id=owner_parent_session_id,
+        delegated_task_id=delegated_task_id,
     )

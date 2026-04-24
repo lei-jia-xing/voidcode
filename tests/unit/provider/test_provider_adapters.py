@@ -24,8 +24,8 @@ from voidcode.provider.protocol import (
     ModelProvider,
     ProviderExecutionError,
     ProviderStreamEvent,
-    SingleAgentTurnRequest,
-    StreamableSingleAgentProvider,
+    ProviderTurnRequest,
+    StreamableTurnProvider,
 )
 from voidcode.tools.contracts import ToolDefinition, ToolResult
 
@@ -48,9 +48,9 @@ class _StubContextWindow:
         return self._continuity_state
 
 
-def _build_turn_request(*, model_name: str) -> SingleAgentTurnRequest:
+def _build_turn_request(*, model_name: str) -> ProviderTurnRequest:
     tool_results = (ToolResult(tool_name="read_file", status="ok", content="hello world"),)
-    return SingleAgentTurnRequest(
+    return ProviderTurnRequest(
         prompt="read sample.txt",
         available_tools=(
             ToolDefinition(name="read_file", description="read file", read_only=True),
@@ -66,9 +66,9 @@ def _build_turn_request(*, model_name: str) -> SingleAgentTurnRequest:
     )
 
 
-def _build_turn_request_with_skill(*, model_name: str) -> SingleAgentTurnRequest:
+def _build_turn_request_with_skill(*, model_name: str) -> ProviderTurnRequest:
     tool_results = (ToolResult(tool_name="read_file", status="ok", content="hello world"),)
-    return SingleAgentTurnRequest(
+    return ProviderTurnRequest(
         prompt="summarize sample.txt",
         available_tools=(
             ToolDefinition(name="read_file", description="read file", read_only=True),
@@ -90,9 +90,9 @@ def _build_turn_request_with_skill(*, model_name: str) -> SingleAgentTurnRequest
     )
 
 
-def _build_turn_request_with_continuity(*, model_name: str) -> SingleAgentTurnRequest:
+def _build_turn_request_with_continuity(*, model_name: str) -> ProviderTurnRequest:
     tool_results = (ToolResult(tool_name="read_file", status="ok", content="hello world"),)
-    return SingleAgentTurnRequest(
+    return ProviderTurnRequest(
         prompt="summarize sample.txt",
         available_tools=(
             ToolDefinition(name="read_file", description="read file", read_only=True),
@@ -243,8 +243,8 @@ def test_provider_adapter_stream_turn_emits_happy_path_chunks(
     provider_name: str,
     provider: ModelProvider,
 ) -> None:
-    single_agent = provider.single_agent_provider()
-    assert isinstance(single_agent, StreamableSingleAgentProvider)
+    provider = provider.turn_provider()
+    assert isinstance(provider, StreamableTurnProvider)
 
     _patch_litellm_completion(
         monkeypatch,
@@ -256,7 +256,7 @@ def test_provider_adapter_stream_turn_emits_happy_path_chunks(
         ),
     )
 
-    events = list(single_agent.stream_turn(_build_turn_request(model_name=provider_name)))
+    events = list(provider.stream_turn(_build_turn_request(model_name=provider_name)))
 
     payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
     assert isinstance(payload_obj, dict)
@@ -284,8 +284,8 @@ def test_provider_adapter_stream_turn_maps_http_error_to_provider_execution_erro
     provider_name: str,
     provider: ModelProvider,
 ) -> None:
-    single_agent = provider.single_agent_provider()
-    assert isinstance(single_agent, StreamableSingleAgentProvider)
+    provider = provider.turn_provider()
+    assert isinstance(provider, StreamableTurnProvider)
 
     _patch_litellm_completion(
         monkeypatch,
@@ -294,7 +294,7 @@ def test_provider_adapter_stream_turn_maps_http_error_to_provider_execution_erro
     )
 
     with pytest.raises(ProviderExecutionError, match="Too many requests") as exc_info:
-        _ = list(single_agent.stream_turn(_build_turn_request(model_name=provider_name)))
+        _ = list(provider.stream_turn(_build_turn_request(model_name=provider_name)))
 
     assert exc_info.value.kind == "rate_limit"
 
@@ -313,7 +313,7 @@ def test_provider_adapter_propose_turn_returns_text_output(
     provider_name: str,
     provider: ModelProvider,
 ) -> None:
-    single_agent = provider.single_agent_provider()
+    provider = provider.turn_provider()
 
     _patch_litellm_completion(
         monkeypatch,
@@ -321,7 +321,7 @@ def test_provider_adapter_propose_turn_returns_text_output(
         completion_content="hello world",
     )
 
-    result = single_agent.propose_turn(_build_turn_request(model_name=provider_name))
+    result = provider.propose_turn(_build_turn_request(model_name=provider_name))
 
     assert result.output == "hello world"
 
@@ -340,7 +340,7 @@ def test_provider_adapter_injects_applied_skills_into_system_messages(
     provider_name: str,
     provider: ModelProvider,
 ) -> None:
-    single_agent = provider.single_agent_provider()
+    provider = provider.turn_provider()
 
     _patch_litellm_completion(
         monkeypatch,
@@ -348,7 +348,7 @@ def test_provider_adapter_injects_applied_skills_into_system_messages(
         completion_content="hello world",
     )
 
-    result = single_agent.propose_turn(_build_turn_request_with_skill(model_name=provider_name))
+    result = provider.propose_turn(_build_turn_request_with_skill(model_name=provider_name))
 
     assert result.output == "hello world"
     payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
@@ -376,9 +376,9 @@ def test_provider_adapter_prefers_runtime_skill_prompt_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     provider = OpenAIModelProvider()
-    single_agent = provider.single_agent_provider()
+    provider = provider.turn_provider()
     request = _build_turn_request_with_skill(model_name="openai")
-    request = SingleAgentTurnRequest(
+    request = ProviderTurnRequest(
         prompt=request.prompt,
         available_tools=request.available_tools,
         tool_results=request.tool_results,
@@ -397,7 +397,7 @@ def test_provider_adapter_prefers_runtime_skill_prompt_context(
         completion_content="hello world",
     )
 
-    _ = single_agent.propose_turn(request)
+    _ = provider.propose_turn(request)
 
     payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
     assert isinstance(payload_obj, dict)
@@ -425,7 +425,7 @@ def test_provider_adapter_injects_continuity_summary_into_system_messages(
     provider_name: str,
     provider: ModelProvider,
 ) -> None:
-    single_agent = provider.single_agent_provider()
+    provider = provider.turn_provider()
 
     _patch_litellm_completion(
         monkeypatch,
@@ -433,9 +433,7 @@ def test_provider_adapter_injects_continuity_summary_into_system_messages(
         completion_content="hello world",
     )
 
-    result = single_agent.propose_turn(
-        _build_turn_request_with_continuity(model_name=provider_name)
-    )
+    result = provider.propose_turn(_build_turn_request_with_continuity(model_name=provider_name))
 
     assert result.output == "hello world"
     payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
@@ -462,9 +460,9 @@ def test_provider_adapter_omits_continuity_message_without_summary_text(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     provider = OpenAIModelProvider()
-    single_agent = provider.single_agent_provider()
+    provider = provider.turn_provider()
     request = _build_turn_request(model_name="openai")
-    request = SingleAgentTurnRequest(
+    request = ProviderTurnRequest(
         prompt=request.prompt,
         available_tools=request.available_tools,
         tool_results=request.tool_results,
@@ -486,7 +484,7 @@ def test_provider_adapter_omits_continuity_message_without_summary_text(
         completion_content="hello world",
     )
 
-    _ = single_agent.propose_turn(request)
+    _ = provider.propose_turn(request)
 
     payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
     assert isinstance(payload_obj, dict)
@@ -501,9 +499,9 @@ def test_provider_adapter_injects_leader_prompt_profile_system_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     provider = OpenAIModelProvider()
-    single_agent = provider.single_agent_provider()
+    provider = provider.turn_provider()
     request = _build_turn_request(model_name="openai")
-    request = SingleAgentTurnRequest(
+    request = ProviderTurnRequest(
         prompt=request.prompt,
         available_tools=request.available_tools,
         tool_results=request.tool_results,
@@ -516,7 +514,7 @@ def test_provider_adapter_injects_leader_prompt_profile_system_message(
             "preset": "leader",
             "prompt_profile": "leader",
             "model": "openai/demo",
-            "execution_engine": "single_agent",
+            "execution_engine": "provider",
         },
         attempt=request.attempt,
         abort_signal=request.abort_signal,
@@ -527,7 +525,7 @@ def test_provider_adapter_injects_leader_prompt_profile_system_message(
         completion_content="hello world",
     )
 
-    _ = single_agent.propose_turn(request)
+    _ = provider.propose_turn(request)
 
     payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
     assert isinstance(payload_obj, dict)
@@ -550,7 +548,7 @@ def test_provider_adapter_propose_turn_uses_model_map_for_litellm_alias(
             base_url="http://localhost:4000",
         ),
     )
-    single_agent = provider.single_agent_provider()
+    provider = provider.turn_provider()
 
     _patch_litellm_completion(
         monkeypatch,
@@ -558,7 +556,7 @@ def test_provider_adapter_propose_turn_uses_model_map_for_litellm_alias(
         completion_content="hello world",
     )
 
-    _ = single_agent.propose_turn(_build_turn_request(model_name="demo"))
+    _ = provider.propose_turn(_build_turn_request(model_name="demo"))
 
     payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
     assert isinstance(payload_obj, dict)
@@ -586,7 +584,7 @@ def test_opencode_go_provider_routes_model_families_to_required_sdk_adapter(
     from voidcode.provider.config import SimplifiedProviderConfig
 
     provider = OpenCodeGoModelProvider(config=SimplifiedProviderConfig(api_key="opencode-go-key"))
-    single_agent = provider.single_agent_provider()
+    provider = provider.turn_provider()
 
     _patch_litellm_completion(
         monkeypatch,
@@ -594,8 +592,8 @@ def test_opencode_go_provider_routes_model_families_to_required_sdk_adapter(
         completion_content="ok",
     )
 
-    result = single_agent.propose_turn(
-        SingleAgentTurnRequest(
+    result = provider.propose_turn(
+        ProviderTurnRequest(
             prompt="read sample.txt",
             available_tools=(
                 ToolDefinition(name="read_file", description="read file", read_only=True),
@@ -638,7 +636,7 @@ def test_glm_provider_does_not_append_v1_to_base_url(monkeypatch: pytest.MonkeyP
     from voidcode.provider.glm import GLMModelProvider
 
     provider = GLMModelProvider(config=SimplifiedProviderConfig(api_key="glm-key"))
-    single_agent = provider.single_agent_provider()
+    provider = provider.turn_provider()
 
     _patch_litellm_completion(
         monkeypatch,
@@ -646,7 +644,7 @@ def test_glm_provider_does_not_append_v1_to_base_url(monkeypatch: pytest.MonkeyP
         completion_content="ok",
     )
 
-    _ = single_agent.propose_turn(_build_turn_request(model_name="glm"))
+    _ = provider.propose_turn(_build_turn_request(model_name="glm"))
 
     payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
     assert isinstance(payload_obj, dict)
@@ -658,7 +656,7 @@ def test_provider_adapter_propose_turn_returns_tool_call_when_model_requests_too
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     provider = OpenAIModelProvider()
-    single_agent = provider.single_agent_provider()
+    provider = provider.turn_provider()
 
     _patch_litellm_completion(
         monkeypatch,
@@ -673,7 +671,7 @@ def test_provider_adapter_propose_turn_returns_tool_call_when_model_requests_too
         ],
     )
 
-    result = single_agent.propose_turn(_build_turn_request(model_name="openai"))
+    result = provider.propose_turn(_build_turn_request(model_name="openai"))
 
     assert result.tool_call is not None
     assert result.tool_call.tool_name == "read_file"
@@ -688,7 +686,7 @@ def test_google_provider_api_key_uses_google_auth_header(
             auth=GoogleProviderAuthConfig(method="api_key", api_key="AIza-test")
         )
     )
-    single_agent = provider.single_agent_provider()
+    provider = provider.turn_provider()
 
     _patch_litellm_completion(
         monkeypatch,
@@ -696,7 +694,7 @@ def test_google_provider_api_key_uses_google_auth_header(
         completion_content="ok",
     )
 
-    result = single_agent.propose_turn(_build_turn_request(model_name="google"))
+    result = provider.propose_turn(_build_turn_request(model_name="google"))
 
     assert result.output == "ok"
     payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
@@ -712,8 +710,8 @@ def test_provider_adapter_stream_turn_emits_tool_event_when_model_streams_tool_r
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     provider = OpenAIModelProvider()
-    single_agent = provider.single_agent_provider()
-    assert isinstance(single_agent, StreamableSingleAgentProvider)
+    provider = provider.turn_provider()
+    assert isinstance(provider, StreamableTurnProvider)
 
     _patch_litellm_completion(
         monkeypatch,
@@ -735,7 +733,7 @@ def test_provider_adapter_stream_turn_emits_tool_event_when_model_streams_tool_r
         ),
     )
 
-    events = list(single_agent.stream_turn(_build_turn_request(model_name="openai")))
+    events = list(provider.stream_turn(_build_turn_request(model_name="openai")))
 
     assert events == [
         ProviderStreamEvent(
@@ -751,8 +749,8 @@ def test_provider_adapter_stream_turn_emits_reasoning_events_from_reasoning_cont
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     provider = OpenAIModelProvider()
-    single_agent = provider.single_agent_provider()
-    assert isinstance(single_agent, StreamableSingleAgentProvider)
+    provider = provider.turn_provider()
+    assert isinstance(provider, StreamableTurnProvider)
 
     import voidcode.provider.litellm_backend as backend_module
 
@@ -780,7 +778,7 @@ def test_provider_adapter_stream_turn_emits_reasoning_events_from_reasoning_cont
     else:
         monkeypatch.setattr(backend_module.litellm_module, "completion", _completion)
 
-    events = list(single_agent.stream_turn(_build_turn_request(model_name="openai")))
+    events = list(provider.stream_turn(_build_turn_request(model_name="openai")))
 
     assert events == [
         ProviderStreamEvent(kind="delta", channel="reasoning", text="Thinking step."),
@@ -793,8 +791,8 @@ def test_provider_adapter_stream_turn_emits_reasoning_events_from_thinking_block
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     provider = AnthropicModelProvider()
-    single_agent = provider.single_agent_provider()
-    assert isinstance(single_agent, StreamableSingleAgentProvider)
+    provider = provider.turn_provider()
+    assert isinstance(provider, StreamableTurnProvider)
 
     import voidcode.provider.litellm_backend as backend_module
 
@@ -822,7 +820,7 @@ def test_provider_adapter_stream_turn_emits_reasoning_events_from_thinking_block
     else:
         monkeypatch.setattr(backend_module.litellm_module, "completion", _completion)
 
-    events = list(single_agent.stream_turn(_build_turn_request(model_name="anthropic")))
+    events = list(provider.stream_turn(_build_turn_request(model_name="anthropic")))
 
     assert events == [
         ProviderStreamEvent(kind="delta", channel="reasoning", text="Private chain."),
@@ -845,7 +843,7 @@ def test_provider_adapters_call_litellm_directly_without_internal_bridge(
     provider_name: str,
     provider: ModelProvider,
 ) -> None:
-    single_agent = provider.single_agent_provider()
+    provider = provider.turn_provider()
 
     _patch_litellm_completion(
         monkeypatch,
@@ -853,7 +851,7 @@ def test_provider_adapters_call_litellm_directly_without_internal_bridge(
         completion_content="ok",
     )
 
-    result = single_agent.propose_turn(_build_turn_request(model_name=provider_name))
+    result = provider.propose_turn(_build_turn_request(model_name=provider_name))
 
     assert result.output == "ok"
     payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
@@ -873,7 +871,7 @@ def test_copilot_provider_reads_token_from_configured_env_var(
             auth=CopilotProviderAuthConfig(method="token", token_env_var="COPILOT_TOKEN")
         )
     )
-    single_agent = provider.single_agent_provider()
+    provider = provider.turn_provider()
 
     _patch_litellm_completion(
         monkeypatch,
@@ -881,7 +879,7 @@ def test_copilot_provider_reads_token_from_configured_env_var(
         completion_content="ok",
     )
 
-    result = single_agent.propose_turn(_build_turn_request(model_name="copilot"))
+    result = provider.propose_turn(_build_turn_request(model_name="copilot"))
 
     assert result.output == "ok"
     payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
@@ -901,7 +899,7 @@ def test_google_provider_service_account_forwards_vertex_credentials(
             )
         )
     )
-    single_agent = provider.single_agent_provider()
+    provider = provider.turn_provider()
 
     _patch_litellm_completion(
         monkeypatch,
@@ -909,7 +907,7 @@ def test_google_provider_service_account_forwards_vertex_credentials(
         completion_content="ok",
     )
 
-    result = single_agent.propose_turn(_build_turn_request(model_name="google"))
+    result = provider.propose_turn(_build_turn_request(model_name="google"))
 
     assert result.output == "ok"
     payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")

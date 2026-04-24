@@ -36,10 +36,10 @@ MAX_STEPS_ENV_VAR = "VOIDCODE_MAX_STEPS"
 TOOL_TIMEOUT_ENV_VAR = "VOIDCODE_TOOL_TIMEOUT_SECONDS"
 _VALID_APPROVAL_MODES = ("allow", "deny", "ask")
 _VALID_TUI_COMMANDS = ("command_palette", "session_new", "session_resume")
-type ExecutionEngineName = Literal["deterministic", "single_agent"]
+type ExecutionEngineName = Literal["deterministic", "provider"]
 type RuntimeAgentPresetId = AgentManifestId
 
-_VALID_EXECUTION_ENGINES: tuple[ExecutionEngineName, ...] = ("deterministic", "single_agent")
+_VALID_EXECUTION_ENGINES: tuple[ExecutionEngineName, ...] = ("deterministic", "provider")
 _TOP_LEVEL_ENV_VARS = (
     APPROVAL_MODE_ENV_VAR,
     MODEL_ENV_VAR,

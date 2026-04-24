@@ -3,7 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal, Protocol
 
-from ..acp import AcpConfigState, AcpRequestEnvelope, AcpRequestHandler, AcpResponseEnvelope
+from ..acp import (
+    AcpConfigState,
+    AcpDelegatedExecution,
+    AcpEventEnvelope,
+    AcpRequestEnvelope,
+    AcpRequestHandler,
+    AcpResponseEnvelope,
+)
 from .config import RuntimeAcpConfig
 
 
@@ -21,22 +28,65 @@ class _MemoryAcpTransport:
         if not self.connected:
             return AcpResponseEnvelope(
                 status="error",
+                request_type=envelope.request_type,
+                request_id=envelope.request_id,
+                session_id=envelope.session_id,
+                parent_session_id=envelope.parent_session_id,
+                delegation=envelope.delegation,
                 error="ACP transport is not connected",
                 payload={"request_type": envelope.request_type},
             )
         if envelope.request_type == "handshake_fail":
             return AcpResponseEnvelope(
                 status="error",
+                request_type=envelope.request_type,
+                request_id=envelope.request_id,
+                session_id=envelope.session_id,
+                parent_session_id=envelope.parent_session_id,
+                delegation=envelope.delegation,
                 error="ACP handshake rejected by memory transport",
                 payload={"request_type": envelope.request_type},
             )
+        payload: dict[str, object] = {
+            "request_type": envelope.request_type,
+            "accepted": True,
+            **envelope.payload,
+        }
+        if envelope.delegation is not None:
+            payload["delegation"] = envelope.delegation.as_payload()
         return AcpResponseEnvelope(
             status="ok",
-            payload={
-                "request_type": envelope.request_type,
-                "accepted": True,
-                **envelope.payload,
-            },
+            request_type=envelope.request_type,
+            request_id=envelope.request_id,
+            session_id=envelope.session_id,
+            parent_session_id=envelope.parent_session_id,
+            delegation=envelope.delegation,
+            payload=payload,
+        )
+
+    def publish(self, envelope: AcpEventEnvelope) -> AcpResponseEnvelope:
+        if not self.connected:
+            return AcpResponseEnvelope(
+                status="error",
+                session_id=envelope.session_id,
+                parent_session_id=envelope.parent_session_id,
+                delegation=envelope.delegation,
+                error="ACP transport is not connected",
+                payload={"event_type": envelope.event_type},
+            )
+        payload: dict[str, object] = {
+            "event_type": envelope.event_type,
+            "accepted": True,
+            **envelope.payload,
+        }
+        if envelope.delegation is not None:
+            payload["delegation"] = envelope.delegation.as_payload()
+        return AcpResponseEnvelope(
+            status="ok",
+            session_id=envelope.session_id,
+            parent_session_id=envelope.parent_session_id,
+            delegation=envelope.delegation,
+            payload=payload,
         )
 
 
@@ -48,6 +98,9 @@ def _config_state_from_runtime_config(config: RuntimeAcpConfig | None) -> AcpCon
 class AcpRuntimeEvent:
     event_type: str
     payload: dict[str, object]
+    session_id: str | None = None
+    parent_session_id: str | None = None
+    delegation: AcpDelegatedExecution | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +111,10 @@ class AcpAdapterState:
     available: bool = False
     status: Literal["disconnected", "connected", "failed"] = "disconnected"
     last_error: str | None = None
+    last_request_type: str | None = None
+    last_request_id: str | None = None
+    last_event_type: str | None = None
+    last_delegation: AcpDelegatedExecution | None = None
 
 
 class AcpAdapter(AcpRequestHandler, Protocol):
@@ -71,6 +128,8 @@ class AcpAdapter(AcpRequestHandler, Protocol):
     def disconnect(self) -> tuple[AcpRuntimeEvent, ...]: ...
 
     def fail(self, message: str) -> tuple[AcpRuntimeEvent, ...]: ...
+
+    def publish(self, envelope: AcpEventEnvelope) -> AcpResponseEnvelope: ...
 
     def drain_events(self) -> tuple[AcpRuntimeEvent, ...]: ...
 
@@ -101,6 +160,10 @@ class DisabledAcpAdapter:
 
     def fail(self, message: str) -> tuple[AcpRuntimeEvent, ...]:
         _ = message
+        raise ValueError("ACP runtime support is disabled")
+
+    def publish(self, envelope: AcpEventEnvelope) -> AcpResponseEnvelope:
+        _ = envelope
         raise ValueError("ACP runtime support is disabled")
 
     def drain_events(self) -> tuple[AcpRuntimeEvent, ...]:
@@ -151,6 +214,8 @@ class ManagedAcpAdapter:
             configured=True,
             available=True,
             status="connected",
+            last_request_type=handshake_response.request_type,
+            last_request_id=handshake_response.request_id,
         )
         self._record_event(
             AcpRuntimeEvent(
@@ -164,17 +229,23 @@ class ManagedAcpAdapter:
         if self._state.status != "connected":
             return ()
         self._transport = self._transport.close()
+        last_delegation = self._state.last_delegation
         self._state = AcpAdapterState(
             mode="managed",
             configuration=self._configuration,
             configured=True,
             available=False,
             status="disconnected",
+            last_request_type=self._state.last_request_type,
+            last_request_id=self._state.last_request_id,
+            last_event_type=self._state.last_event_type,
+            last_delegation=last_delegation,
         )
         self._record_event(
             AcpRuntimeEvent(
                 event_type="runtime.acp_disconnected",
                 payload={"status": "disconnected", "available": False},
+                delegation=last_delegation,
             )
         )
         return self.drain_events()
@@ -183,10 +254,53 @@ class ManagedAcpAdapter:
         if self._state.status != "connected":
             return AcpResponseEnvelope(
                 status="error",
+                request_type=envelope.request_type,
+                request_id=envelope.request_id,
+                session_id=envelope.session_id,
+                parent_session_id=envelope.parent_session_id,
+                delegation=envelope.delegation,
                 error="ACP adapter is not connected",
                 payload={"request_type": envelope.request_type},
             )
-        return self._transport.request(envelope)
+        response = self._transport.request(envelope)
+        self._state = AcpAdapterState(
+            mode="managed",
+            configuration=self._configuration,
+            configured=True,
+            available=True,
+            status=self._state.status,
+            last_error=self._state.last_error,
+            last_request_type=envelope.request_type,
+            last_request_id=envelope.request_id,
+            last_event_type=self._state.last_event_type,
+            last_delegation=envelope.delegation,
+        )
+        return response
+
+    def publish(self, envelope: AcpEventEnvelope) -> AcpResponseEnvelope:
+        if self._state.status != "connected":
+            return AcpResponseEnvelope(
+                status="error",
+                session_id=envelope.session_id,
+                parent_session_id=envelope.parent_session_id,
+                delegation=envelope.delegation,
+                error="ACP adapter is not connected",
+                payload={"event_type": envelope.event_type},
+            )
+        response = self._transport.publish(envelope)
+        self._state = AcpAdapterState(
+            mode="managed",
+            configuration=self._configuration,
+            configured=True,
+            available=True,
+            status=self._state.status,
+            last_error=self._state.last_error,
+            last_request_type=self._state.last_request_type,
+            last_request_id=self._state.last_request_id,
+            last_event_type=envelope.event_type,
+            last_delegation=envelope.delegation,
+        )
+        return response
 
     def drain_events(self) -> tuple[AcpRuntimeEvent, ...]:
         events = tuple(self._pending_events)
@@ -206,11 +320,16 @@ class ManagedAcpAdapter:
             available=False,
             status="failed",
             last_error=message,
+            last_request_type=self._state.last_request_type,
+            last_request_id=self._state.last_request_id,
+            last_event_type=self._state.last_event_type,
+            last_delegation=self._state.last_delegation,
         )
         self._record_event(
             AcpRuntimeEvent(
                 event_type="runtime.acp_failed",
                 payload={"status": "failed", "available": False, "error": message},
+                delegation=self._state.last_delegation,
             )
         )
 

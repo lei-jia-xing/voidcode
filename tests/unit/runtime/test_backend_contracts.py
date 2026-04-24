@@ -88,6 +88,8 @@ def test_contract_modules_export_expected_symbols() -> None:
     assert background_task.parent_session_id == "session-parent"
     assert background_task_result.task_id == "task-1"
     assert background_task_result.result_available is False
+    assert background_task_result.delegated_event.delegation.delegated_task_id == "task-1"
+    assert background_task_result.delegated_event.message.status == "queued"
     assert session_summary.session.id == "session-1"
     assert graph_request.available_tools == ()
     assert graph_result.tool_results == (result,)
@@ -268,3 +270,55 @@ def test_runtime_contracts_allow_additive_future_event_types() -> None:
     assert get_type_hints(runtime.EventEnvelope)["event_type"] is str
     assert response.events[0].event_type == events_module.RUNTIME_MEMORY_REFRESHED
     assert asdict(response.events[0])["event_type"] == events_module.RUNTIME_MEMORY_REFRESHED
+
+
+def test_event_envelope_exposes_typed_delegated_lifecycle_payload() -> None:
+    runtime = _runtime_module()
+
+    event = runtime.EventEnvelope(
+        session_id="leader-session",
+        sequence=2,
+        event_type="runtime.background_task_completed",
+        source="runtime",
+        payload={
+            "task_id": "task-1",
+            "parent_session_id": "leader-session",
+            "child_session_id": "child-session",
+            "requested_child_session_id": "child-requested",
+            "status": "completed",
+            "summary_output": "Completed: delegated work",
+            "result_available": True,
+            "delegation": {
+                "delegated_task_id": "task-1",
+                "parent_session_id": "leader-session",
+                "child_session_id": "child-session",
+                "requested_child_session_id": "child-requested",
+                "routing": {"mode": "background", "category": "quick"},
+                "lifecycle_status": "completed",
+                "result_available": True,
+                "approval_blocked": False,
+                "cancellation_cause": None,
+                "approval_request_id": None,
+                "question_request_id": None,
+                "selected_preset": "worker",
+                "selected_execution_engine": "provider",
+            },
+            "message": {
+                "kind": "delegated_lifecycle",
+                "status": "completed",
+                "summary_output": "Completed: delegated work",
+                "error": None,
+                "approval_blocked": False,
+                "result_available": True,
+            },
+        },
+    )
+
+    delegated = event.delegated_lifecycle
+
+    assert delegated is not None
+    assert delegated.delegation.delegated_task_id == "task-1"
+    assert delegated.delegation.routing is not None
+    assert delegated.delegation.routing.category == "quick"
+    assert delegated.message.summary_output == "Completed: delegated work"
+    assert delegated.message.status == "completed"

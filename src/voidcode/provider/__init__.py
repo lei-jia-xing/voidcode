@@ -46,12 +46,12 @@ from .models import (
 from .openai import OpenAIModelProvider
 from .opencode_go import OpenCodeGoModelProvider
 from .protocol import (
-    ModelProvider,
+    ModelTurnProvider,
     ProviderExecutionError,
-    SingleAgentProvider,
-    SingleAgentTurnRequest,
-    SingleAgentTurnResult,
-    StubSingleAgentProvider,
+    ProviderTurnRequest,
+    ProviderTurnResult,
+    StubTurnProvider,
+    TurnProvider,
 )
 from .qwen import QwenModelProvider
 from .registry import ModelProviderRegistry, StaticModelProvider
@@ -70,7 +70,7 @@ __all__ = [
     "CopilotModelProvider",
     "GoogleModelProvider",
     "LiteLLMModelProvider",
-    "ModelProvider",
+    "ModelTurnProvider",
     "ProviderModelCatalog",
     "ModelProviderRegistry",
     "OpenAIModelProvider",
@@ -90,15 +90,15 @@ __all__ = [
     "ResolvedProviderChain",
     "ResolvedProviderConfig",
     "ResolvedProviderModel",
-    "SingleAgentProvider",
-    "SingleAgentTurnRequest",
-    "SingleAgentTurnResult",
+    "TurnProvider",
+    "ProviderTurnRequest",
+    "ProviderTurnResult",
     "SingleAgentContextLimitError",
     "SingleAgentProviderError",
     "LiteLLMProviderConfig",
     "SimplifiedProviderConfig",
     "StaticModelProvider",
-    "StubSingleAgentProvider",
+    "StubTurnProvider",
     "GLMModelProvider",
     "MiniMaxModelProvider",
     "KimiModelProvider",

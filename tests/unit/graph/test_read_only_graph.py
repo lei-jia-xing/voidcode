@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from voidcode.graph import GraphRunRequest
-from voidcode.graph.read_only_slice import DeterministicReadOnlyGraph
+from voidcode.graph.deterministic_graph import DeterministicGraph
 from voidcode.runtime.session import SessionRef, SessionState
 from voidcode.tools.contracts import ToolDefinition, ToolResult
 
@@ -22,7 +22,7 @@ def _request(prompt: str) -> GraphRunRequest:
 
 
 def test_graph_direct_import_and_step_work_without_runtime_cycle() -> None:
-    graph = DeterministicReadOnlyGraph()
+    graph = DeterministicGraph()
     request = _request("read sample.txt")
 
     step = graph.step(request, (), session=request.session)
@@ -37,7 +37,7 @@ def test_graph_direct_import_and_step_work_without_runtime_cycle() -> None:
 
 
 def test_graph_max_step_guard_is_verifiable_via_step() -> None:
-    graph = DeterministicReadOnlyGraph(max_steps=1)
+    graph = DeterministicGraph(max_steps=1)
     request = _request("read sample.txt")
 
     with pytest.raises(ValueError, match="graph exceeded max steps: 1"):

@@ -10,6 +10,7 @@ from ..runtime.contracts import (
     RuntimeRequest,
     RuntimeResponse,
     RuntimeSessionResult,
+    validate_runtime_request_metadata,
 )
 from ..runtime.task import BackgroundTaskState, StoredBackgroundTaskSummary
 from .contracts import ToolCall, ToolDefinition, ToolResult
@@ -75,6 +76,21 @@ class _TaskArgs(BaseModel):
         return self
 
 
+def _delegation_metadata(args: _TaskArgs) -> dict[str, str]:
+    metadata: dict[str, str] = {
+        "mode": "background" if args.run_in_background else "sync",
+    }
+    if args.category is not None:
+        metadata["category"] = args.category
+    if args.subagent_type is not None:
+        metadata["subagent_type"] = args.subagent_type
+    if args.description is not None:
+        metadata["description"] = args.description
+    if args.command is not None:
+        metadata["command"] = args.command
+    return metadata
+
+
 def _delegated_prompt(args: _TaskArgs) -> str:
     routing = [
         "Delegated runtime task.",
@@ -125,11 +141,24 @@ class TaskTool:
             ) from exc
 
         context = require_runtime_tool_context(self.definition.name)
+        request_metadata: dict[str, object] = {
+            "skills": list(args.load_skills),
+            "delegation": _delegation_metadata(args),
+        }
+        if context.delegation_depth > 0 or context.remaining_spawn_budget is not None:
+            delegation_payload = request_metadata["delegation"]
+            assert isinstance(delegation_payload, dict)
+            delegation_payload["depth"] = context.delegation_depth + 1
+            if context.remaining_spawn_budget is not None:
+                delegation_payload["remaining_spawn_budget"] = max(
+                    context.remaining_spawn_budget - 1,
+                    0,
+                )
         request = RuntimeRequest(
             prompt=_delegated_prompt(args),
             session_id=args.session_id,
             parent_session_id=context.session_id,
-            metadata={"skills": list(args.load_skills)},
+            metadata=validate_runtime_request_metadata(request_metadata),
             allocate_session_id=args.session_id is None,
         )
 

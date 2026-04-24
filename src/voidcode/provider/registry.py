@@ -20,7 +20,7 @@ from .minimax import MiniMaxModelProvider
 from .model_catalog import ProviderModelCatalog, discover_available_models
 from .openai import OpenAIModelProvider
 from .opencode_go import OpenCodeGoModelProvider
-from .protocol import ModelProvider, SingleAgentProvider, StubSingleAgentProvider
+from .protocol import ModelTurnProvider, StubTurnProvider, TurnProvider
 from .qwen import QwenModelProvider
 
 _DEFAULT_DISCOVERY_BASE_URLS: dict[str, str] = {
@@ -57,13 +57,13 @@ _SIMPLIFIED_PROVIDER_MAP: dict[str, type] = {
 class StaticModelProvider:
     name: str
 
-    def single_agent_provider(self) -> SingleAgentProvider:
-        return StubSingleAgentProvider(name=self.name)
+    def turn_provider(self) -> TurnProvider:
+        return StubTurnProvider(name=self.name)
 
 
 @dataclass(slots=True)
 class ModelProviderRegistry:
-    providers: dict[str, ModelProvider]
+    providers: dict[str, ModelTurnProvider]
     default_litellm_config: LiteLLMProviderConfig | None = None
     custom_provider_configs: Mapping[str, LiteLLMProviderConfig] | None = None
     model_catalog: dict[str, ProviderModelCatalog] | None = None
@@ -92,7 +92,7 @@ class ModelProviderRegistry:
             model_catalog={},
         )
 
-    def resolve(self, provider_name: str) -> ModelProvider:
+    def resolve(self, provider_name: str) -> ModelTurnProvider:
         provider = self.providers.get(provider_name)
         if provider is not None:
             return provider

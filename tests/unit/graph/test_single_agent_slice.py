@@ -3,18 +3,18 @@ from __future__ import annotations
 import pytest
 
 from voidcode.graph.contracts import GraphRunRequest
-from voidcode.graph.single_agent_slice import ProviderSingleAgentGraph
+from voidcode.graph.provider_graph import ProviderGraph
 from voidcode.provider.registry import ModelProviderRegistry
 from voidcode.provider.resolution import resolve_provider_model
 from voidcode.runtime.context_window import RuntimeContextWindow, RuntimeContinuityState
-from voidcode.runtime.session import SessionRef, SessionState
-from voidcode.runtime.single_agent_provider import (
+from voidcode.runtime.provider_protocol import (
     ProviderExecutionError,
     ProviderStreamEvent,
-    SingleAgentTurnRequest,
-    SingleAgentTurnResult,
-    StubSingleAgentProvider,
+    ProviderTurnRequest,
+    ProviderTurnResult,
+    StubTurnProvider,
 )
+from voidcode.runtime.session import SessionRef, SessionState
 from voidcode.tools.contracts import ToolDefinition, ToolResult
 
 
@@ -29,18 +29,18 @@ def _session() -> SessionState:
     return SessionState(session=SessionRef(id="s1"), status="running", turn=1, metadata={})
 
 
-class _CapturingSingleAgentProvider:
+class _CapturingTurnProvider:
     name = "opencode"
 
     def __init__(self) -> None:
-        self.requests: list[SingleAgentTurnRequest] = []
+        self.requests: list[ProviderTurnRequest] = []
 
-    def propose_turn(self, request: SingleAgentTurnRequest) -> SingleAgentTurnResult:
+    def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
         self.requests.append(request)
-        return SingleAgentTurnResult(output="done")
+        return ProviderTurnResult(output="done")
 
 
-class _StreamOutputSingleAgentProvider:
+class _StreamOutputTurnProvider:
     name = "opencode"
     stream_calls: int
     propose_calls: int
@@ -49,12 +49,12 @@ class _StreamOutputSingleAgentProvider:
         self.stream_calls = 0
         self.propose_calls = 0
 
-    def propose_turn(self, request: SingleAgentTurnRequest) -> SingleAgentTurnResult:
+    def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
         _ = request
         self.propose_calls += 1
-        return SingleAgentTurnResult(output="stream-final")
+        return ProviderTurnResult(output="stream-final")
 
-    def stream_turn(self, request: SingleAgentTurnRequest):
+    def stream_turn(self, request: ProviderTurnRequest):
         _ = request
         self.stream_calls += 1
         return iter(
@@ -66,14 +66,14 @@ class _StreamOutputSingleAgentProvider:
         )
 
 
-class _StreamErrorSingleAgentProvider:
+class _StreamErrorTurnProvider:
     name = "opencode"
 
-    def propose_turn(self, request: SingleAgentTurnRequest) -> SingleAgentTurnResult:
+    def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
         _ = request
-        return SingleAgentTurnResult(output="fallback")
+        return ProviderTurnResult(output="fallback")
 
-    def stream_turn(self, request: SingleAgentTurnRequest):
+    def stream_turn(self, request: ProviderTurnRequest):
         _ = request
         return iter(
             (
@@ -88,32 +88,32 @@ class _StreamErrorSingleAgentProvider:
         )
 
 
-class _StreamNoTextDoneSingleAgentProvider:
+class _StreamNoTextDoneTurnProvider:
     name = "opencode"
 
     def __init__(self) -> None:
         self.stream_calls = 0
         self.propose_calls = 0
 
-    def propose_turn(self, request: SingleAgentTurnRequest) -> SingleAgentTurnResult:
+    def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
         _ = request
         self.propose_calls += 1
-        return SingleAgentTurnResult(output="should-not-be-used")
+        return ProviderTurnResult(output="should-not-be-used")
 
-    def stream_turn(self, request: SingleAgentTurnRequest):
+    def stream_turn(self, request: ProviderTurnRequest):
         _ = request
         self.stream_calls += 1
         return iter((ProviderStreamEvent(kind="done", done_reason="completed"),))
 
 
-class _StreamToolSingleAgentProvider:
+class _StreamToolTurnProvider:
     name = "opencode"
 
-    def propose_turn(self, request: SingleAgentTurnRequest) -> SingleAgentTurnResult:
+    def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
         _ = request
-        return SingleAgentTurnResult(output="should-not-be-used")
+        return ProviderTurnResult(output="should-not-be-used")
 
-    def stream_turn(self, request: SingleAgentTurnRequest):
+    def stream_turn(self, request: ProviderTurnRequest):
         _ = request
         return iter(
             (
@@ -127,13 +127,13 @@ class _StreamToolSingleAgentProvider:
         )
 
 
-def test_provider_single_agent_graph_requests_tool_on_first_turn() -> None:
+def test_provider_provider_graph_requests_tool_on_first_turn() -> None:
     provider_model = resolve_provider_model(
         "opencode/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
-    graph = ProviderSingleAgentGraph(
-        provider=StubSingleAgentProvider(name="opencode"),
+    graph = ProviderGraph(
+        provider=StubTurnProvider(name="opencode"),
         provider_model=provider_model,
     )
 
@@ -156,7 +156,7 @@ def test_provider_single_agent_graph_requests_tool_on_first_turn() -> None:
     assert step.events[0].payload == {"step": 1, "phase": "plan", "max_steps": 4}
     assert step.events[1].payload == {
         "turn": 1,
-        "mode": "single_agent",
+        "mode": "provider",
         "provider": "opencode",
         "model": "gpt-5.4",
         "attempt": 0,
@@ -165,13 +165,13 @@ def test_provider_single_agent_graph_requests_tool_on_first_turn() -> None:
     }
 
 
-def test_provider_single_agent_graph_finalizes_after_tool_result() -> None:
+def test_provider_provider_graph_finalizes_after_tool_result() -> None:
     provider_model = resolve_provider_model(
         "opencode/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
-    graph = ProviderSingleAgentGraph(
-        provider=StubSingleAgentProvider(name="opencode"),
+    graph = ProviderGraph(
+        provider=StubTurnProvider(name="opencode"),
         provider_model=provider_model,
     )
 
@@ -215,7 +215,7 @@ def test_provider_single_agent_graph_finalizes_after_tool_result() -> None:
     assert step.events[0].payload == {"step": 2, "phase": "plan", "max_steps": 4}
     assert step.events[1].payload == {
         "turn": 2,
-        "mode": "single_agent",
+        "mode": "provider",
         "provider": "opencode",
         "model": "gpt-5.4",
         "attempt": 0,
@@ -226,13 +226,13 @@ def test_provider_single_agent_graph_finalizes_after_tool_result() -> None:
     assert step.events[3].payload == {"output_preview": "alpha\n"}
 
 
-def test_provider_single_agent_graph_passes_applied_skill_context_to_provider() -> None:
+def test_provider_provider_graph_passes_applied_skill_context_to_provider() -> None:
     provider_model = resolve_provider_model(
         "opencode/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
-    provider = _CapturingSingleAgentProvider()
-    graph = ProviderSingleAgentGraph(provider=provider, provider_model=provider_model)
+    provider = _CapturingTurnProvider()
+    graph = ProviderGraph(provider=provider, provider_model=provider_model)
 
     step = graph.step(
         request=GraphRunRequest(
@@ -275,13 +275,13 @@ def test_provider_single_agent_graph_passes_applied_skill_context_to_provider() 
     assert provider.requests[0].context_window.prompt == "read sample.txt"
 
 
-def test_provider_single_agent_graph_forwards_agent_preset_to_provider() -> None:
+def test_provider_provider_graph_forwards_agent_preset_to_provider() -> None:
     provider_model = resolve_provider_model(
         "opencode/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
-    provider = _CapturingSingleAgentProvider()
-    graph = ProviderSingleAgentGraph(provider=provider, provider_model=provider_model)
+    provider = _CapturingTurnProvider()
+    graph = ProviderGraph(provider=provider, provider_model=provider_model)
 
     step = graph.step(
         request=GraphRunRequest(
@@ -294,7 +294,7 @@ def test_provider_single_agent_graph_forwards_agent_preset_to_provider() -> None
                     "preset": "leader",
                     "prompt_profile": "leader",
                     "model": "opencode/gpt-5.4",
-                    "execution_engine": "single_agent",
+                    "execution_engine": "provider",
                 }
             },
         ),
@@ -307,17 +307,17 @@ def test_provider_single_agent_graph_forwards_agent_preset_to_provider() -> None
         "preset": "leader",
         "prompt_profile": "leader",
         "model": "opencode/gpt-5.4",
-        "execution_engine": "single_agent",
+        "execution_engine": "provider",
     }
 
 
-def test_provider_single_agent_graph_forwards_bounded_context_window_to_provider() -> None:
+def test_provider_provider_graph_forwards_bounded_context_window_to_provider() -> None:
     provider_model = resolve_provider_model(
         "opencode/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
-    provider = _CapturingSingleAgentProvider()
-    graph = ProviderSingleAgentGraph(provider=provider, provider_model=provider_model)
+    provider = _CapturingTurnProvider()
+    graph = ProviderGraph(provider=provider, provider_model=provider_model)
 
     bounded_context = RuntimeContextWindow(
         prompt="read sample.txt",
@@ -378,13 +378,13 @@ def test_provider_single_agent_graph_forwards_bounded_context_window_to_provider
     )
 
 
-def test_provider_single_agent_graph_enforces_configured_max_steps() -> None:
+def test_provider_provider_graph_enforces_configured_max_steps() -> None:
     provider_model = resolve_provider_model(
         "opencode/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
-    graph = ProviderSingleAgentGraph(
-        provider=StubSingleAgentProvider(name="opencode"),
+    graph = ProviderGraph(
+        provider=StubTurnProvider(name="opencode"),
         provider_model=provider_model,
         max_steps=1,
     )
@@ -409,13 +409,13 @@ def test_provider_single_agent_graph_enforces_configured_max_steps() -> None:
         )
 
 
-def test_provider_single_agent_graph_streams_ordered_events_and_deterministic_output() -> None:
+def test_provider_provider_graph_streams_ordered_events_and_deterministic_output() -> None:
     provider_model = resolve_provider_model(
         "opencode/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
-    graph = ProviderSingleAgentGraph(
-        provider=_StreamOutputSingleAgentProvider(),
+    graph = ProviderGraph(
+        provider=_StreamOutputTurnProvider(),
         provider_model=provider_model,
     )
 
@@ -440,15 +440,13 @@ def test_provider_single_agent_graph_streams_ordered_events_and_deterministic_ou
     assert model_turn_events[0].payload["streaming"] is True
 
 
-def test_provider_single_agent_graph_stream_done_without_text_does_not_fallback_propose_turn() -> (
-    None
-):
+def test_provider_provider_graph_stream_done_without_text_does_not_fallback_propose_turn() -> None:
     provider_model = resolve_provider_model(
         "opencode/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
-    provider = _StreamNoTextDoneSingleAgentProvider()
-    graph = ProviderSingleAgentGraph(provider=provider, provider_model=provider_model)
+    provider = _StreamNoTextDoneTurnProvider()
+    graph = ProviderGraph(provider=provider, provider_model=provider_model)
 
     step = graph.step(
         request=GraphRunRequest(
@@ -468,13 +466,13 @@ def test_provider_single_agent_graph_stream_done_without_text_does_not_fallback_
     assert provider.propose_calls == 0
 
 
-def test_provider_single_agent_graph_returns_streamed_tool_call() -> None:
+def test_provider_provider_graph_returns_streamed_tool_call() -> None:
     provider_model = resolve_provider_model(
         "opencode/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
-    graph = ProviderSingleAgentGraph(
-        provider=_StreamToolSingleAgentProvider(),
+    graph = ProviderGraph(
+        provider=_StreamToolTurnProvider(),
         provider_model=provider_model,
     )
 
@@ -497,13 +495,13 @@ def test_provider_single_agent_graph_returns_streamed_tool_call() -> None:
     assert step.tool_call.arguments == {"path": "sample.txt"}
 
 
-def test_provider_single_agent_graph_stream_error_maps_to_provider_execution_error() -> None:
+def test_provider_provider_graph_stream_error_maps_to_provider_execution_error() -> None:
     provider_model = resolve_provider_model(
         "opencode/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
-    graph = ProviderSingleAgentGraph(
-        provider=_StreamErrorSingleAgentProvider(),
+    graph = ProviderGraph(
+        provider=_StreamErrorTurnProvider(),
         provider_model=provider_model,
     )
 

@@ -10,6 +10,8 @@ from dataclasses import dataclass
 class RuntimeToolInvocationContext:
     session_id: str
     parent_session_id: str | None = None
+    delegation_depth: int = 0
+    remaining_spawn_budget: int | None = None
 
 
 _CURRENT_RUNTIME_TOOL_CONTEXT: ContextVar[RuntimeToolInvocationContext | None] = ContextVar(
