@@ -4,7 +4,34 @@ from pydantic import BaseModel, field_validator
 
 
 class ReadFileArgs(BaseModel):
-    path: str
+    filePath: str
+    offset: int | None = None
+    limit: int | None = None
+
+    @field_validator("filePath", mode="after")
+    @classmethod
+    def _validate_file_path(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("filePath must not be empty")
+        return value
+
+    @field_validator("offset", mode="after")
+    @classmethod
+    def _validate_offset(cls, value: int | None) -> int | None:
+        if value is None:
+            return None
+        if value < 1:
+            raise ValueError("offset must be greater than or equal to 1")
+        return value
+
+    @field_validator("limit", mode="after")
+    @classmethod
+    def _validate_limit(cls, value: int | None) -> int | None:
+        if value is None:
+            return None
+        if value < 1:
+            raise ValueError("limit must be greater than or equal to 1")
+        return value
 
 
 class WriteFileArgs(BaseModel):
@@ -15,12 +42,39 @@ class WriteFileArgs(BaseModel):
 class GrepArgs(BaseModel):
     pattern: str
     path: str
+    regex: bool = False
+    context: int = 0
+    include: list[str] | None = None
+    exclude: list[str] | None = None
 
     @field_validator("pattern", mode="after")
     @classmethod
     def _validate_pattern(cls, value: str) -> str:
-        if value == "":
+        if not value.strip():
             raise ValueError("pattern must not be empty")
+        return value
+
+    @field_validator("path", mode="after")
+    @classmethod
+    def _validate_path(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("path must not be empty")
+        return value
+
+    @field_validator("context", mode="after")
+    @classmethod
+    def _validate_context(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("context must be greater than or equal to 0")
+        return value
+
+    @field_validator("include", "exclude", mode="after")
+    @classmethod
+    def _validate_glob_patterns(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        if not all(item.strip() for item in value):
+            raise ValueError("glob patterns must be non-empty strings")
         return value
 
 
