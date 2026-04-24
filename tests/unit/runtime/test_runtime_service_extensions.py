@@ -7200,6 +7200,67 @@ def test_answered_question_does_not_override_later_pending_approval(tmp_path: Pa
     assert pending_approval.tool_name == "write_file"
 
 
+def test_answer_question_resume_does_not_retrigger_session_start_hook(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_QuestionThenDoneGraph(),
+        config=RuntimeConfig(
+            approval_mode="ask",
+            hooks=RuntimeHooksConfig(
+                enabled=True,
+                on_session_start=((sys.executable, "-c", ""),),
+                on_session_end=((sys.executable, "-c", ""),),
+            ),
+        ),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    waiting = runtime.run(RuntimeRequest(prompt="go", session_id="question-resume-hook-session"))
+    question_request_id = str(waiting.events[-1].payload["request_id"])
+
+    resumed = runtime.answer_question(
+        session_id="question-resume-hook-session",
+        question_request_id=question_request_id,
+        responses=(QuestionResponse(header="Runtime path", answers=("Reuse existing",)),),
+    )
+
+    assert sum(event.event_type == RUNTIME_SESSION_STARTED for event in waiting.events) == 1
+    assert sum(event.event_type == RUNTIME_SESSION_STARTED for event in resumed.events) == 1
+    assert any(event.event_type == RUNTIME_SESSION_ENDED for event in resumed.events)
+
+
+def test_answer_question_resume_waiting_emits_session_idle_hook(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_QuestionThenApprovalGraph(),
+        config=RuntimeConfig(
+            approval_mode="ask",
+            hooks=RuntimeHooksConfig(
+                enabled=True,
+                on_session_idle=((sys.executable, "-c", ""),),
+            ),
+        ),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    waiting = runtime.run(RuntimeRequest(prompt="go", session_id="question-resume-idle-session"))
+    question_event = next(
+        event for event in waiting.events if event.event_type == "runtime.question_requested"
+    )
+    question_request_id = str(question_event.payload["request_id"])
+
+    resumed = runtime.answer_question(
+        session_id="question-resume-idle-session",
+        question_request_id=question_request_id,
+        responses=(QuestionResponse(header="Runtime path", answers=("Reuse existing",)),),
+    )
+
+    idle = next(event for event in resumed.events if event.event_type == RUNTIME_SESSION_IDLE)
+    assert resumed.session.status == "waiting"
+    assert idle.payload["reason"] == "waiting_for_approval"
+    assert idle.payload["hook_status"] == "ok"
+
+
 def test_answer_question_rejects_duplicate_headers(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
@@ -8403,6 +8464,27 @@ def test_runtime_executes_session_start_and_end_hooks(tmp_path: Path) -> None:
     assert ended.payload["hook_status"] == "ok"
 
 
+def test_runtime_session_end_hook_failure_does_not_override_terminal_truth(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_BackgroundTaskSuccessGraph(),
+        config=RuntimeConfig(
+            hooks=RuntimeHooksConfig(
+                enabled=True,
+                on_session_end=((sys.executable, "-c", "raise SystemExit(7)"),),
+            )
+        ),
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="hello", session_id="session-end-failure"))
+
+    assert response.session.status == "completed"
+    assert response.output == "hello"
+    assert response.events[-1].event_type == RUNTIME_SESSION_ENDED
+    assert response.events[-1].payload["hook_status"] == "error"
+    assert all(event.event_type != "runtime.failed" for event in response.events)
+
+
 def test_runtime_executes_session_idle_hook_without_losing_pending_approval(
     tmp_path: Path,
 ) -> None:
@@ -8429,6 +8511,35 @@ def test_runtime_executes_session_idle_hook_without_losing_pending_approval(
     idle = next(event for event in response.events if event.event_type == RUNTIME_SESSION_IDLE)
     assert idle.payload["reason"] == "waiting_for_approval"
     assert idle.payload["hook_status"] == "ok"
+
+
+def test_runtime_resume_does_not_retrigger_session_start_hook(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(
+            approval_mode="ask",
+            hooks=RuntimeHooksConfig(
+                enabled=True,
+                on_session_start=((sys.executable, "-c", ""),),
+                on_session_end=((sys.executable, "-c", ""),),
+            ),
+        ),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    waiting = runtime.run(RuntimeRequest(prompt="go", session_id="resume-hook-session"))
+    approval_request_id = str(waiting.events[-1].payload["request_id"])
+
+    resumed = runtime.resume(
+        session_id="resume-hook-session",
+        approval_request_id=approval_request_id,
+        approval_decision="allow",
+    )
+
+    assert sum(event.event_type == RUNTIME_SESSION_STARTED for event in waiting.events) == 1
+    assert sum(event.event_type == RUNTIME_SESSION_STARTED for event in resumed.events) == 1
+    assert any(event.event_type == RUNTIME_SESSION_ENDED for event in resumed.events)
 
 
 def test_runtime_disconnects_acp_before_failing_on_session_idle_hook_error(

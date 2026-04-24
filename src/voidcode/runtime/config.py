@@ -535,6 +535,10 @@ def _parse_hooks_config(raw_hooks: object) -> RuntimeHooksConfig | None:
     enabled = hooks_payload.get("enabled")
     if enabled is not None and not isinstance(enabled, bool):
         raise ValueError("runtime config field 'hooks.enabled' must be a boolean when provided")
+    timeout_seconds = _parse_hook_timeout_seconds(
+        hooks_payload.get("timeout_seconds"),
+        source="runtime config field 'hooks.timeout_seconds'",
+    )
 
     pre_tool = _parse_command_list(hooks_payload.get("pre_tool"), field_path="hooks.pre_tool")
     post_tool = _parse_command_list(hooks_payload.get("post_tool"), field_path="hooks.post_tool")
@@ -573,6 +577,7 @@ def _parse_hooks_config(raw_hooks: object) -> RuntimeHooksConfig | None:
 
     return RuntimeHooksConfig(
         enabled=enabled,
+        timeout_seconds=timeout_seconds,
         pre_tool=pre_tool,
         post_tool=post_tool,
         on_session_start=on_session_start,
@@ -678,6 +683,14 @@ def _parse_formatter_cwd_policy(
             "workspace, nearest_root, file_directory"
         )
     return raw_value
+
+
+def _parse_hook_timeout_seconds(raw_value: object, *, source: str) -> float | None:
+    if raw_value is None:
+        return RuntimeHooksConfig().timeout_seconds
+    if not isinstance(raw_value, int | float) or isinstance(raw_value, bool) or raw_value < 1:
+        raise ValueError(f"{source} must be a number greater than or equal to 1")
+    return float(raw_value)
 
 
 class _RuntimeToolsBuiltinValidationModel(BaseModel):
