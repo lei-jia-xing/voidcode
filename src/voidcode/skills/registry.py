@@ -14,7 +14,16 @@ class SkillRegistry:
 
     @classmethod
     def from_skills(cls, skills: Iterable[SkillMetadata]) -> SkillRegistry:
-        return cls(skills={skill.name: skill for skill in skills})
+        resolved: dict[str, SkillMetadata] = {}
+        for skill in skills:
+            existing = resolved.get(skill.name)
+            if existing is not None:
+                raise ValueError(
+                    "duplicate skill name "
+                    f"'{skill.name}' discovered at {existing.entry_path} and {skill.entry_path}"
+                )
+            resolved[skill.name] = skill
+        return cls(skills=resolved)
 
     @classmethod
     def discover(

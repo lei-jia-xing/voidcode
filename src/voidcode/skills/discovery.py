@@ -3,11 +3,15 @@ from __future__ import annotations
 from collections.abc import Iterable
 from pathlib import Path
 
-from .manifest import parse_skill_body, parse_skill_frontmatter
+from .manifest import SkillManifestParseError, parse_skill_manifest
 from .models import SkillMetadata
 
 SKILL_ENTRY_FILE_NAME = "SKILL.md"
 DEFAULT_SKILL_SEARCH_PATHS = (".voidcode/skills",)
+
+
+class SkillLoadError(ValueError):
+    pass
 
 
 class LocalSkillMetadataLoader:
@@ -26,9 +30,8 @@ class LocalSkillMetadataLoader:
             )
             if not skill_root.exists() or not skill_root.is_dir():
                 continue
-            for skill_dir in sorted(path for path in skill_root.iterdir() if path.is_dir()):
-                entry_path = skill_dir / SKILL_ENTRY_FILE_NAME
-                if not entry_path.exists() or not entry_path.is_file():
+            for entry_path in sorted(skill_root.glob(f"**/{SKILL_ENTRY_FILE_NAME}")):
+                if not entry_path.is_file():
                     continue
                 discovered.append(self.load(entry_path))
 
@@ -36,15 +39,23 @@ class LocalSkillMetadataLoader:
 
     def load(self, entry_path: Path) -> SkillMetadata:
         resolved_entry_path = entry_path.resolve()
-        contents = resolved_entry_path.read_text(encoding="utf-8")
-        metadata = parse_skill_frontmatter(contents)
-        return SkillMetadata(
-            name=metadata["name"],
-            description=metadata["description"],
-            directory=resolved_entry_path.parent,
-            entry_path=resolved_entry_path,
-            content=parse_skill_body(contents),
-        )
+        try:
+            contents = resolved_entry_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise SkillLoadError(f"failed to read skill file {resolved_entry_path}: {exc}") from exc
+        try:
+            manifest = parse_skill_manifest(contents, path=str(resolved_entry_path))
+            return SkillMetadata(
+                name=manifest.name,
+                description=manifest.description,
+                directory=resolved_entry_path.parent,
+                entry_path=resolved_entry_path,
+                content=manifest.content,
+            )
+        except SkillManifestParseError as exc:
+            raise SkillLoadError(str(exc)) from exc
+        except ValueError as exc:
+            raise SkillLoadError(f"{resolved_entry_path}: {exc}") from exc
 
 
 def resolve_workspace_relative_path(*, workspace: Path, configured_path: str) -> Path:
