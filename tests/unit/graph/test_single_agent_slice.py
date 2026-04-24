@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from voidcode.graph.contracts import GraphRunRequest
@@ -15,7 +17,7 @@ from voidcode.runtime.provider_protocol import (
     StubTurnProvider,
 )
 from voidcode.runtime.session import SessionRef, SessionState
-from voidcode.tools.contracts import ToolDefinition, ToolResult
+from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolResult
 
 
 def _tool_definitions() -> tuple[ToolDefinition, ...]:
@@ -38,6 +40,25 @@ class _CapturingTurnProvider:
     def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
         self.requests.append(request)
         return ProviderTurnResult(output="done")
+
+
+class _MixedNonStreamingTurnProvider:
+    name = "opencode"
+
+    def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
+        _ = request
+        return ProviderTurnResult(
+            tool_call=ToolCall(tool_name="read_file", arguments={"path": "sample.txt"}),
+            output="done",
+        )
+
+
+class _EmptyNonStreamingTurnProvider:
+    name = "opencode"
+
+    def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
+        _ = request
+        return ProviderTurnResult()
 
 
 class _StreamOutputTurnProvider:
@@ -117,6 +138,109 @@ class _StreamToolTurnProvider:
         _ = request
         return iter(
             (
+                ProviderStreamEvent(
+                    kind="content",
+                    channel="tool",
+                    text='{"tool_name":"read_file","arguments":{"path":"sample.txt"}}',
+                ),
+                ProviderStreamEvent(kind="done", done_reason="completed"),
+            )
+        )
+
+
+class _StreamChunkedToolTurnProvider:
+    name = "opencode"
+
+    def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
+        _ = request
+        return ProviderTurnResult(output="should-not-be-used")
+
+    def stream_turn(self, request: ProviderTurnRequest):
+        _ = request
+        return iter(
+            (
+                ProviderStreamEvent(
+                    kind="content",
+                    channel="tool",
+                    text='{"tool_name":"read_file",',
+                ),
+                ProviderStreamEvent(
+                    kind="content",
+                    channel="tool",
+                    text='"arguments":{"path":"sample.txt"}}',
+                ),
+                ProviderStreamEvent(kind="done", done_reason="completed"),
+            )
+        )
+
+
+class _StreamToolSnapshotTurnProvider:
+    name = "opencode"
+
+    def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
+        _ = request
+        return ProviderTurnResult(output="should-not-be-used")
+
+    def stream_turn(self, request: ProviderTurnRequest):
+        _ = request
+        return iter(
+            (
+                ProviderStreamEvent(
+                    kind="content",
+                    channel="tool",
+                    text='{"tool_name":"read_file","arguments":{}}',
+                ),
+                ProviderStreamEvent(
+                    kind="content",
+                    channel="tool",
+                    text='{"tool_name":"read_file","arguments":{"path":"sample.txt"}}',
+                ),
+                ProviderStreamEvent(kind="done", done_reason="completed"),
+            )
+        )
+
+
+class _StreamMalformedToolTurnProvider:
+    name = "opencode"
+
+    def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
+        _ = request
+        return ProviderTurnResult(output="should-not-be-used")
+
+    def stream_turn(self, request: ProviderTurnRequest):
+        _ = request
+        return iter(
+            (
+                ProviderStreamEvent(kind="content", channel="tool", text='{"tool_name":'),
+                ProviderStreamEvent(kind="done", done_reason="completed"),
+            )
+        )
+
+
+class _StreamMissingDoneTurnProvider:
+    name = "opencode"
+
+    def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
+        _ = request
+        return ProviderTurnResult(output="should-not-be-used")
+
+    def stream_turn(self, request: ProviderTurnRequest):
+        _ = request
+        return iter((ProviderStreamEvent(kind="delta", channel="text", text="partial"),))
+
+
+class _StreamMixedTerminalTurnProvider:
+    name = "opencode"
+
+    def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
+        _ = request
+        return ProviderTurnResult(output="should-not-be-used")
+
+    def stream_turn(self, request: ProviderTurnRequest):
+        _ = request
+        return iter(
+            (
+                ProviderStreamEvent(kind="delta", channel="text", text="hello"),
                 ProviderStreamEvent(
                     kind="content",
                     channel="tool",
@@ -224,6 +348,179 @@ def test_provider_provider_graph_finalizes_after_tool_result() -> None:
     }
     assert step.events[2].payload == {"step": 3, "phase": "finalize", "max_steps": 4}
     assert step.events[3].payload == {"output_preview": "alpha\n"}
+
+
+def test_provider_provider_graph_rejects_nonstream_mixed_output_and_tool_call() -> None:
+    provider_model = resolve_provider_model(
+        "opencode/gpt-5.4",
+        registry=ModelProviderRegistry.with_defaults(),
+    )
+    graph = ProviderGraph(
+        provider=_MixedNonStreamingTurnProvider(),
+        provider_model=provider_model,
+    )
+
+    with pytest.raises(ProviderExecutionError, match="both output and a tool call") as exc_info:
+        _ = graph.step(
+            request=GraphRunRequest(
+                session=_session(),
+                prompt="read sample.txt",
+                available_tools=_tool_definitions(),
+                context_window=RuntimeContextWindow(prompt="read sample.txt"),
+            ),
+            tool_results=(),
+            session=_session(),
+        )
+
+    assert exc_info.value.kind == "transient_failure"
+
+
+def test_provider_provider_graph_rejects_nonstream_missing_terminal_outcome() -> None:
+    provider_model = resolve_provider_model(
+        "opencode/gpt-5.4",
+        registry=ModelProviderRegistry.with_defaults(),
+    )
+    graph = ProviderGraph(
+        provider=_EmptyNonStreamingTurnProvider(),
+        provider_model=provider_model,
+    )
+
+    with pytest.raises(
+        ProviderExecutionError,
+        match="neither output nor a tool call",
+    ) as exc_info:
+        _ = graph.step(
+            request=GraphRunRequest(
+                session=_session(),
+                prompt="read sample.txt",
+                available_tools=_tool_definitions(),
+                context_window=RuntimeContextWindow(prompt="read sample.txt"),
+            ),
+            tool_results=(),
+            session=_session(),
+        )
+
+    assert exc_info.value.kind == "transient_failure"
+
+
+def test_provider_provider_graph_preserves_stream_error_details() -> None:
+    provider_model = resolve_provider_model(
+        "opencode/gpt-5.4",
+        registry=ModelProviderRegistry.with_defaults(),
+    )
+
+    class _DetailedStreamErrorTurnProvider:
+        name = "opencode"
+
+        def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
+            _ = request
+            return ProviderTurnResult(output="fallback")
+
+        def stream_turn(self, request: ProviderTurnRequest):
+            _ = request
+            error_payload = json.dumps(
+                {
+                    "message": "network interrupted",
+                    "status_code": 429,
+                    "code": "rate_limit_exceeded",
+                    "prompt": "secret",
+                }
+            )
+            return iter(
+                (
+                    ProviderStreamEvent(
+                        kind="error",
+                        channel="error",
+                        error=error_payload,
+                        error_kind="transient_failure",
+                    ),
+                )
+            )
+
+    graph = ProviderGraph(
+        provider=_DetailedStreamErrorTurnProvider(),
+        provider_model=provider_model,
+    )
+
+    with pytest.raises(ProviderExecutionError, match="network interrupted") as exc_info:
+        _ = graph.step(
+            request=GraphRunRequest(
+                session=_session(),
+                prompt="read sample.txt",
+                available_tools=_tool_definitions(),
+                context_window=RuntimeContextWindow(prompt="read sample.txt"),
+                metadata={"provider_stream": True},
+            ),
+            tool_results=(),
+            session=_session(),
+        )
+
+    assert exc_info.value.details == {
+        "message": "network interrupted",
+        "status_code": 429,
+        "code": "rate_limit_exceeded",
+        "prompt": "secret",
+        "source": "stream",
+        "error_code": "rate_limit_exceeded",
+    }
+    assert exc_info.value.kind == "rate_limit"
+
+
+def test_provider_provider_graph_prefers_parsed_stream_error_kind_over_generic_transient() -> None:
+    provider_model = resolve_provider_model(
+        "opencode/gpt-5.4",
+        registry=ModelProviderRegistry.with_defaults(),
+    )
+
+    class _ContextLimitStreamErrorTurnProvider:
+        name = "opencode"
+
+        def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
+            _ = request
+            return ProviderTurnResult(output="fallback")
+
+        def stream_turn(self, request: ProviderTurnRequest):
+            _ = request
+            error_payload = json.dumps(
+                {
+                    "message": "prompt exceeds the context window",
+                    "status_code": 413,
+                    "code": "context_length_exceeded",
+                }
+            )
+            return iter(
+                (
+                    ProviderStreamEvent(
+                        kind="error",
+                        channel="error",
+                        error=error_payload,
+                        error_kind="transient_failure",
+                    ),
+                )
+            )
+
+    graph = ProviderGraph(
+        provider=_ContextLimitStreamErrorTurnProvider(),
+        provider_model=provider_model,
+    )
+
+    with pytest.raises(
+        ProviderExecutionError,
+        match="prompt exceeds the context window",
+    ) as exc_info:
+        _ = graph.step(
+            request=GraphRunRequest(
+                session=_session(),
+                prompt="read sample.txt",
+                available_tools=_tool_definitions(),
+                context_window=RuntimeContextWindow(prompt="read sample.txt"),
+                metadata={"provider_stream": True},
+            ),
+            tool_results=(),
+            session=_session(),
+        )
+
+    assert exc_info.value.kind == "context_limit"
 
 
 def test_provider_provider_graph_passes_applied_skill_context_to_provider() -> None:
@@ -493,6 +790,145 @@ def test_provider_provider_graph_returns_streamed_tool_call() -> None:
     assert step.tool_call is not None
     assert step.tool_call.tool_name == "read_file"
     assert step.tool_call.arguments == {"path": "sample.txt"}
+
+
+def test_provider_provider_graph_reconstructs_chunked_streamed_tool_call() -> None:
+    provider_model = resolve_provider_model(
+        "opencode/gpt-5.4",
+        registry=ModelProviderRegistry.with_defaults(),
+    )
+    graph = ProviderGraph(
+        provider=_StreamChunkedToolTurnProvider(),
+        provider_model=provider_model,
+    )
+
+    step = graph.step(
+        request=GraphRunRequest(
+            session=_session(),
+            prompt="read sample.txt",
+            available_tools=_tool_definitions(),
+            context_window=RuntimeContextWindow(prompt="read sample.txt"),
+            metadata={"provider_stream": True},
+        ),
+        tool_results=(),
+        session=_session(),
+    )
+
+    assert step.is_finished is False
+    assert step.output is None
+    assert step.tool_call is not None
+    assert step.tool_call.tool_name == "read_file"
+    assert step.tool_call.arguments == {"path": "sample.txt"}
+
+
+def test_provider_provider_graph_uses_latest_complete_tool_snapshot() -> None:
+    provider_model = resolve_provider_model(
+        "opencode/gpt-5.4",
+        registry=ModelProviderRegistry.with_defaults(),
+    )
+    graph = ProviderGraph(
+        provider=_StreamToolSnapshotTurnProvider(),
+        provider_model=provider_model,
+    )
+
+    step = graph.step(
+        request=GraphRunRequest(
+            session=_session(),
+            prompt="read sample.txt",
+            available_tools=_tool_definitions(),
+            context_window=RuntimeContextWindow(prompt="read sample.txt"),
+            metadata={"provider_stream": True},
+        ),
+        tool_results=(),
+        session=_session(),
+    )
+
+    assert step.is_finished is False
+    assert step.output is None
+    assert step.tool_call is not None
+    assert step.tool_call.tool_name == "read_file"
+    assert step.tool_call.arguments == {"path": "sample.txt"}
+
+
+def test_provider_provider_graph_rejects_malformed_streamed_tool_payload() -> None:
+    provider_model = resolve_provider_model(
+        "opencode/gpt-5.4",
+        registry=ModelProviderRegistry.with_defaults(),
+    )
+    graph = ProviderGraph(
+        provider=_StreamMalformedToolTurnProvider(),
+        provider_model=provider_model,
+    )
+
+    with pytest.raises(ProviderExecutionError, match="malformed tool payload") as exc_info:
+        _ = graph.step(
+            request=GraphRunRequest(
+                session=_session(),
+                prompt="read sample.txt",
+                available_tools=_tool_definitions(),
+                context_window=RuntimeContextWindow(prompt="read sample.txt"),
+                metadata={"provider_stream": True},
+            ),
+            tool_results=(),
+            session=_session(),
+        )
+
+    assert exc_info.value.kind == "transient_failure"
+
+
+def test_provider_provider_graph_requires_done_event_for_stream_completion() -> None:
+    provider_model = resolve_provider_model(
+        "opencode/gpt-5.4",
+        registry=ModelProviderRegistry.with_defaults(),
+    )
+    graph = ProviderGraph(
+        provider=_StreamMissingDoneTurnProvider(),
+        provider_model=provider_model,
+    )
+
+    with pytest.raises(ProviderExecutionError, match="without a done event") as exc_info:
+        _ = graph.step(
+            request=GraphRunRequest(
+                session=_session(),
+                prompt="read sample.txt",
+                available_tools=_tool_definitions(),
+                context_window=RuntimeContextWindow(prompt="read sample.txt"),
+                metadata={"provider_stream": True},
+            ),
+            tool_results=(),
+            session=_session(),
+        )
+
+    assert exc_info.value.kind == "transient_failure"
+
+
+def test_provider_provider_graph_rejects_mixed_text_and_tool_terminal_output() -> None:
+    provider_model = resolve_provider_model(
+        "opencode/gpt-5.4",
+        registry=ModelProviderRegistry.with_defaults(),
+    )
+    graph = ProviderGraph(
+        provider=_StreamMixedTerminalTurnProvider(),
+        provider_model=provider_model,
+    )
+
+    with pytest.raises(
+        ProviderExecutionError,
+        match="both text output and a tool call",
+    ) as exc_info:
+        _ = graph.step(
+            request=GraphRunRequest(
+                session=_session(),
+                prompt="read sample.txt",
+                available_tools=_tool_definitions(),
+                context_window=RuntimeContextWindow(prompt="read sample.txt"),
+                metadata={"provider_stream": True},
+            ),
+            tool_results=(),
+            session=_session(),
+        )
+
+    assert exc_info.value.kind == "transient_failure"
 
 
 def test_provider_provider_graph_stream_error_maps_to_provider_execution_error() -> None:

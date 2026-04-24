@@ -815,6 +815,61 @@ def test_provider_adapter_stream_turn_emits_tool_event_when_model_streams_tool_r
     ]
 
 
+def test_provider_adapter_stream_turn_emits_repeated_tool_snapshots_for_updates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = OpenAIModelProvider()
+    provider = provider.turn_provider()
+    assert isinstance(provider, StreamableTurnProvider)
+
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="stream",
+        stream_tool_chunks=(
+            (
+                [
+                    {
+                        "index": 0,
+                        "function": {
+                            "name": "read_file",
+                            "arguments": '{"path":',
+                        },
+                    }
+                ],
+                None,
+            ),
+            (
+                [
+                    {
+                        "index": 0,
+                        "function": {
+                            "arguments": '"sample.txt"}',
+                        },
+                    }
+                ],
+                None,
+            ),
+            (None, "tool_calls"),
+        ),
+    )
+
+    events = list(provider.stream_turn(_build_turn_request(model_name="openai")))
+
+    assert events == [
+        ProviderStreamEvent(
+            kind="content",
+            channel="tool",
+            text='{"tool_name": "read_file", "arguments": {}}',
+        ),
+        ProviderStreamEvent(
+            kind="content",
+            channel="tool",
+            text='{"tool_name": "read_file", "arguments": {"path": "sample.txt"}}',
+        ),
+        ProviderStreamEvent(kind="done", done_reason="completed"),
+    ]
+
+
 def test_provider_adapter_stream_turn_emits_reasoning_events_from_reasoning_content(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

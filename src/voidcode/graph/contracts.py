@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import operator
 from dataclasses import dataclass, field
-from typing import Annotated, Any, Protocol, TypedDict, runtime_checkable
+from typing import Annotated, Protocol, TypedDict, runtime_checkable
 
-from ..runtime.context_window import RuntimeContextWindow
-from ..runtime.events import EventEnvelope, EventSource
+from ..provider.protocol import ProviderContextWindow
+from ..runtime.events import EventSource
 from ..runtime.session import SessionState
 from ..tools.contracts import ToolCall, ToolDefinition, ToolResult
 
@@ -42,16 +42,8 @@ class GraphRunRequest:
     available_tools: tuple[ToolDefinition, ...] = ()
     applied_skills: tuple[AppliedSkill, ...] = ()
     skill_prompt_context: str = ""
-    context_window: RuntimeContextWindow | None = None
+    context_window: ProviderContextWindow | None = None
     metadata: dict[str, object] = field(default_factory=dict)
-
-
-@dataclass(frozen=True, slots=True)
-class GraphRunResult:
-    session: SessionState
-    events: tuple[EventEnvelope, ...] = ()
-    tool_results: tuple[ToolResult, ...] = ()
-    output: str | None = None
 
 
 @runtime_checkable
@@ -60,7 +52,7 @@ class GraphStep(Protocol):
     def tool_call(self) -> ToolCall | None: ...
 
     @property
-    def events(self) -> tuple[Any, ...]: ...
+    def events(self) -> tuple[GraphEvent, ...]: ...
 
     @property
     def output(self) -> str | None: ...
@@ -78,8 +70,3 @@ class RuntimeGraph(Protocol):
         *,
         session: SessionState,
     ) -> GraphStep: ...
-
-
-@runtime_checkable
-class GraphRunner(Protocol):
-    def run(self, request: GraphRunRequest) -> GraphRunResult: ...

@@ -2,19 +2,19 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import cast
+from typing import Any, Literal, cast
 
 from ..provider.errors import parse_provider_stream_error
 from ..provider.models import ResolvedProviderModel
 from ..provider.protocol import (
     ProviderAbortSignal,
+    ProviderContextWindow,
     ProviderExecutionError,
     ProviderStreamEvent,
     ProviderTurnRequest,
     StreamableTurnProvider,
     TurnProvider,
 )
-from ..runtime.context_window import RuntimeContextWindow
 from ..runtime.events import GRAPH_LOOP_STEP, GRAPH_MODEL_TURN, GRAPH_RESPONSE_READY
 from ..runtime.session import SessionState
 from ..tools.contracts import ToolCall, ToolResult
@@ -28,6 +28,18 @@ class ProviderStep:
     output: str | None = None
     is_finished: bool = False
 
+    def __post_init__(self) -> None:
+        if self.is_finished:
+            if self.tool_call is not None:
+                raise ValueError("finished graph steps must not include a tool call")
+            if self.output is None:
+                raise ValueError("finished graph steps must include output")
+            return
+        if self.tool_call is None:
+            raise ValueError("non-finished graph steps must include a tool call")
+        if self.output is not None:
+            raise ValueError("non-finished graph steps must not include output")
+
 
 @dataclass(slots=True)
 class _GraphAbortSignal:
@@ -39,6 +51,15 @@ class _GraphAbortSignal:
 
     def set_cancelled(self, value: bool) -> None:
         self._cancelled = value
+
+
+@dataclass(frozen=True, slots=True)
+class _PromptOnlyContextWindow:
+    prompt: str
+    tool_results: tuple[ToolResult, ...] = ()
+    compacted: bool = False
+    retained_tool_result_count: int = 0
+    continuity_state: object | None = None
 
 
 class ProviderGraph:
@@ -113,7 +134,7 @@ class ProviderGraph:
             prompt=request.prompt,
             available_tools=request.available_tools,
             tool_results=tool_results,
-            context_window=request.context_window or RuntimeContextWindow(prompt=request.prompt),
+            context_window=request.context_window or self._default_context_window(request.prompt),
             applied_skills=request.applied_skills,
             raw_model=self._provider_model.selection.raw_model,
             provider_name=self._provider_model.selection.provider,
@@ -132,6 +153,16 @@ class ProviderGraph:
             )
 
         turn_result = self._provider.propose_turn(turn_request)
+        if turn_result.output is not None and turn_result.tool_call is not None:
+            raise self._provider_execution_error(
+                kind="transient_failure",
+                model_name=turn_request.model_name,
+                message="provider turn produced both output and a tool call",
+                details={
+                    "source": "graph_nonstream",
+                    "reason": "mixed_terminal_outcome",
+                },
+            )
 
         if turn_result.output is not None:
             finalize_events = planning_events + (
@@ -147,6 +178,17 @@ class ProviderGraph:
                 is_finished=True,
             )
 
+        if turn_result.tool_call is None:
+            raise self._provider_execution_error(
+                kind="transient_failure",
+                model_name=turn_request.model_name,
+                message="provider turn produced neither output nor a tool call",
+                details={
+                    "source": "graph_nonstream",
+                    "reason": "missing_terminal_outcome",
+                },
+            )
+
         return ProviderStep(events=planning_events, tool_call=turn_result.tool_call)
 
     def _step_streaming(
@@ -159,7 +201,8 @@ class ProviderGraph:
         stream_provider = cast(StreamableTurnProvider, self._provider)
         stream_events: list[GraphEvent] = []
         output_parts: list[str] = []
-        streamed_tool_call: ToolCall | None = None
+        tool_payload_parts: list[str] = []
+        done_reason: str | None = None
 
         for stream_event in stream_provider.stream_turn(turn_request):
             stream_events.append(self._stream_event_to_graph_event(stream_event))
@@ -171,20 +214,7 @@ class ProviderGraph:
                 and stream_event.channel == "tool"
                 and stream_event.text is not None
             ):
-                try:
-                    raw_tool_payload = json.loads(stream_event.text)
-                except json.JSONDecodeError:
-                    streamed_tool_call = None
-                else:
-                    if isinstance(raw_tool_payload, dict):
-                        tool_payload = cast(dict[str, object], raw_tool_payload)
-                        tool_name_obj = tool_payload.get("tool_name")
-                        arguments_obj = tool_payload.get("arguments")
-                        if isinstance(tool_name_obj, str) and isinstance(arguments_obj, dict):
-                            streamed_tool_call = ToolCall(
-                                tool_name=tool_name_obj,
-                                arguments=cast(dict[str, object], arguments_obj),
-                            )
+                tool_payload_parts.append(stream_event.text)
             if stream_event.kind == "error":
                 if stream_event.error_kind == "cancelled":
                     raise ProviderExecutionError(
@@ -215,7 +245,6 @@ class ProviderGraph:
                     "rate_limit",
                     "context_limit",
                     "invalid_model",
-                    "transient_failure",
                 }:
                     parsed_kind = stream_event.error_kind
                 raise ProviderExecutionError(
@@ -226,46 +255,162 @@ class ProviderGraph:
                     details=parsed.details,
                 )
             if stream_event.kind == "done":
-                if stream_event.done_reason == "cancelled":
-                    raise ProviderExecutionError(
-                        kind="cancelled",
-                        provider_name=self._provider.name,
-                        model_name=turn_request.model_name or "unknown",
-                        message="provider stream cancelled",
-                    )
-                if stream_event.done_reason == "error":
-                    raise ProviderExecutionError(
-                        kind="transient_failure",
-                        provider_name=self._provider.name,
-                        model_name=turn_request.model_name or "unknown",
-                        message="provider stream ended with error",
-                    )
-                if streamed_tool_call is not None:
-                    return ProviderStep(
-                        events=planning_events + tuple(stream_events),
-                        tool_call=streamed_tool_call,
-                    )
-                output = "".join(output_parts)
-                finalize_events = (
-                    planning_events
-                    + tuple(stream_events)
-                    + (
-                        self._graph_event(
-                            GRAPH_LOOP_STEP,
-                            {
-                                "step": current_turn + 1,
-                                "phase": "finalize",
-                                "max_steps": self._max_steps,
-                            },
-                        ),
-                        self._graph_event(GRAPH_RESPONSE_READY, {"output_preview": output}),
-                    )
-                )
-                return ProviderStep(events=finalize_events, output=output, is_finished=True)
+                done_reason = stream_event.done_reason
+                break
 
-        return ProviderStep(
-            events=planning_events + tuple(stream_events), output="", is_finished=True
+        if done_reason is None:
+            raise self._provider_execution_error(
+                kind="transient_failure",
+                model_name=turn_request.model_name,
+                message="provider stream ended without a done event",
+                details={"source": "graph_stream", "reason": "missing_done_event"},
+            )
+        if done_reason == "cancelled":
+            raise self._provider_execution_error(
+                kind="cancelled",
+                model_name=turn_request.model_name,
+                message="provider stream cancelled",
+                details={"source": "graph_stream", "reason": "done_cancelled"},
+            )
+        if done_reason == "error":
+            raise self._provider_execution_error(
+                kind="transient_failure",
+                model_name=turn_request.model_name,
+                message="provider stream ended with error",
+                details={"source": "graph_stream", "reason": "done_error"},
+            )
+
+        streamed_tool_call = self._parse_streamed_tool_call(
+            tool_payload_parts,
+            model_name=turn_request.model_name,
         )
+        output = "".join(output_parts)
+
+        if streamed_tool_call is not None and output:
+            raise self._provider_execution_error(
+                kind="transient_failure",
+                model_name=turn_request.model_name,
+                message="provider stream produced both text output and a tool call",
+                details={
+                    "source": "graph_stream",
+                    "reason": "mixed_terminal_outcome",
+                },
+            )
+
+        if streamed_tool_call is not None:
+            return ProviderStep(
+                events=planning_events + tuple(stream_events),
+                tool_call=streamed_tool_call,
+            )
+
+        finalize_events = (
+            planning_events
+            + tuple(stream_events)
+            + (
+                self._graph_event(
+                    GRAPH_LOOP_STEP,
+                    {
+                        "step": current_turn + 1,
+                        "phase": "finalize",
+                        "max_steps": self._max_steps,
+                    },
+                ),
+                self._graph_event(GRAPH_RESPONSE_READY, {"output_preview": output}),
+            )
+        )
+        return ProviderStep(events=finalize_events, output=output, is_finished=True)
+
+    def _parse_streamed_tool_call(
+        self,
+        payload_parts: list[str],
+        *,
+        model_name: str | None,
+    ) -> ToolCall | None:
+        if not payload_parts:
+            return None
+        raw_payload_text = payload_parts[-1]
+        try:
+            raw_tool_payload = json.loads(raw_payload_text)
+        except json.JSONDecodeError as exc:
+            raw_payload_text = "".join(payload_parts)
+            try:
+                raw_tool_payload = json.loads(raw_payload_text)
+            except json.JSONDecodeError:
+                raise self._provider_execution_error(
+                    kind="transient_failure",
+                    model_name=model_name,
+                    message="provider stream emitted malformed tool payload",
+                    details={
+                        "source": "graph_stream",
+                        "reason": "malformed_tool_payload",
+                    },
+                ) from exc
+
+        if not isinstance(raw_tool_payload, dict):
+            raise self._provider_execution_error(
+                kind="transient_failure",
+                model_name=model_name,
+                message="provider stream tool payload must be a JSON object",
+                details={
+                    "source": "graph_stream",
+                    "reason": "tool_payload_not_object",
+                },
+            )
+
+        tool_payload = cast(dict[str, Any], raw_tool_payload)
+        tool_name_obj = tool_payload.get("tool_name")
+        arguments_obj = tool_payload.get("arguments")
+        if not isinstance(tool_name_obj, str) or not tool_name_obj.strip():
+            raise self._provider_execution_error(
+                kind="transient_failure",
+                model_name=model_name,
+                message="provider stream tool payload must include a non-empty tool_name",
+                details={
+                    "source": "graph_stream",
+                    "reason": "missing_tool_name",
+                },
+            )
+        if not isinstance(arguments_obj, dict):
+            raise self._provider_execution_error(
+                kind="transient_failure",
+                model_name=model_name,
+                message="provider stream tool payload must include an arguments object",
+                details={
+                    "source": "graph_stream",
+                    "reason": "invalid_tool_arguments",
+                },
+            )
+
+        return ToolCall(
+            tool_name=tool_name_obj,
+            arguments=cast(dict[str, object], arguments_obj),
+        )
+
+    def _provider_execution_error(
+        self,
+        *,
+        kind: Literal[
+            "rate_limit",
+            "context_limit",
+            "invalid_model",
+            "transient_failure",
+            "cancelled",
+        ],
+        model_name: str | None,
+        message: str,
+        details: dict[str, object] | None = None,
+    ) -> ProviderExecutionError:
+        return ProviderExecutionError(
+            kind=kind,
+            provider_name=self._provider.name,
+            model_name=model_name or "unknown",
+            message=message,
+            details=details,
+        )
+
+    @staticmethod
+    def _default_context_window(prompt: str) -> ProviderContextWindow:
+        return _PromptOnlyContextWindow(prompt=prompt)
 
     @staticmethod
     def _stream_event_to_graph_event(stream_event: ProviderStreamEvent) -> GraphEvent:

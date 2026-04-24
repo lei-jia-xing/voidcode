@@ -40,7 +40,6 @@ def test_contract_modules_export_expected_symbols() -> None:
         input_schema={"path": "string"},
     )
     call = tools.ToolCall(tool_name=tool.name, arguments={"path": "README.md"})
-    result = tools.ToolResult(tool_name=tool.name, status="ok", content="hello")
     runtime_request = runtime.RuntimeRequest(
         prompt="Inspect the repo",
         session_id=session.session.id,
@@ -73,7 +72,6 @@ def test_contract_modules_export_expected_symbols() -> None:
     runtime_response = runtime.RuntimeResponse(session=session, events=(event,), output="done")
     stream_chunk = runtime.RuntimeStreamChunk(kind="event", session=session, event=event)
     graph_request = graph.GraphRunRequest(session=session, prompt=runtime_request.prompt)
-    graph_result = graph.GraphRunResult(session=session, events=(event,), tool_results=(result,))
 
     assert session.session.id == "session-1"
     assert session.session.parent_id == "session-parent"
@@ -92,7 +90,6 @@ def test_contract_modules_export_expected_symbols() -> None:
     assert background_task_result.delegated_event.message.status == "queued"
     assert session_summary.session.id == "session-1"
     assert graph_request.available_tools == ()
-    assert graph_result.tool_results == (result,)
 
 
 def test_contracts_are_frozen_and_isolate_default_state() -> None:
@@ -131,7 +128,6 @@ def test_tool_result_validates_status_consistently() -> None:
 
 def test_runtime_and_graph_protocols_are_runtime_checkable() -> None:
     runtime_module = _runtime_module()
-    graph_module = _graph_module()
 
     class StubRuntime:
         def run(self, request: Any) -> Any:
@@ -176,47 +172,24 @@ def test_runtime_and_graph_protocols_are_runtime_checkable() -> None:
                 output=typed_request.prompt.upper(),
             )
 
-    class StubGraphRunner:
-        def run(self, request: Any) -> Any:
-            typed_request = graph_module.GraphRunRequest(**asdict(request))
-            return graph_module.GraphRunResult(
-                session=typed_request.session,
-                output=typed_request.prompt,
-            )
-
     runtime = StubRuntime()
-    graph_runner = StubGraphRunner()
 
     assert isinstance(runtime, runtime_module.RuntimeEntrypoint)
     assert isinstance(runtime, runtime_module.StreamingRuntimeEntrypoint)
-    assert isinstance(graph_runner, graph_module.GraphRunner)
     assert runtime.run(runtime_module.RuntimeRequest(prompt="hello")).output == "HELLO"
     stream = runtime.run_stream(runtime_module.RuntimeRequest(prompt="hello"))
     assert isinstance(stream, Iterator)
     assert [chunk.session.status for chunk in stream] == ["running", "completed"]
-    assert (
-        graph_runner.run(
-            graph_module.GraphRunRequest(
-                session=runtime_module.SessionState(
-                    session=runtime_module.SessionRef(id="session-1")
-                ),
-                prompt="hi",
-            )
-        ).output
-        == "hi"
-    )
 
 
 def test_contract_types_expose_explicit_annotations() -> None:
     runtime = _runtime_module()
-    graph = _graph_module()
     tools = _tools_module()
 
     runtime_request_hints = get_type_hints(runtime.RuntimeRequest)
     background_task_result_hints = get_type_hints(runtime.BackgroundTaskResult)
     background_task_hints = get_type_hints(runtime.BackgroundTaskState)
     tool_result_hints = get_type_hints(tools.ToolResult)
-    graph_runner_hints = get_type_hints(graph.GraphRunner.run)
 
     assert runtime_request_hints["prompt"] is str
     assert background_task_result_hints["task_id"] is str
@@ -225,8 +198,6 @@ def test_contract_types_expose_explicit_annotations() -> None:
     assert str(background_task_hints["status"]) == "BackgroundTaskStatus"
     assert tool_result_hints["tool_name"] is str
     assert str(tool_result_hints["status"]) == "ToolResultStatus"
-    assert graph_runner_hints["request"] is graph.GraphRunRequest
-    assert graph_runner_hints["return"] is graph.GraphRunResult
 
 
 def test_runtime_stream_chunk_validates_required_fields() -> None:
