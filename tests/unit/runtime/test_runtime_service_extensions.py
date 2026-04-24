@@ -25,7 +25,12 @@ from voidcode.provider.config import (
     LiteLLMProviderConfig,
 )
 from voidcode.provider.registry import ModelProviderRegistry
-from voidcode.runtime.acp import AcpAdapterState, AcpRuntimeEvent, DisabledAcpAdapter
+from voidcode.runtime.acp import (
+    AcpAdapterState,
+    AcpRuntimeEvent,
+    DisabledAcpAdapter,
+    ManagedAcpAdapter,
+)
 from voidcode.runtime.config import (
     RuntimeAcpConfig,
     RuntimeAgentConfig,
@@ -550,6 +555,20 @@ class _BackgroundTaskFailureGraph:
     ) -> _StubStep:
         _ = request, tool_results, session
         raise RuntimeError("background boom")
+
+
+class _DisconnectingDelegatedRequestAcpAdapter(ManagedAcpAdapter):
+    def __init__(self) -> None:
+        super().__init__(RuntimeAcpConfig(enabled=True))
+        self.requests: list[AcpRequestEnvelope] = []
+        self._disconnect_on_first_request = True
+
+    def request(self, envelope: AcpRequestEnvelope) -> AcpResponseEnvelope:
+        self.requests.append(envelope)
+        if self._disconnect_on_first_request:
+            self._disconnect_on_first_request = False
+            self._transport = self._transport.close()
+        return super().request(envelope)
 
 
 def _wait_for_background_task(
@@ -2748,6 +2767,51 @@ def test_runtime_request_delegated_acp_carries_runtime_owned_correlation(tmp_pat
     assert response.delegation.routing_category == "deep"
     assert response.delegation.selected_preset == "worker"
     assert response.delegation.selected_execution_engine == "provider"
+    assert runtime.current_acp_state().last_request_id == started.task.id
+
+
+def test_runtime_request_delegated_acp_reconnects_once_after_disconnect_race(
+    tmp_path: Path,
+) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("delegated acp\n", encoding="utf-8")
+    acp_adapter = _DisconnectingDelegatedRequestAcpAdapter()
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_StubGraph(),
+        config=RuntimeConfig(acp=RuntimeAcpConfig(enabled=True)),
+        acp_adapter=acp_adapter,
+    )
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+    started = runtime.start_background_task(
+        RuntimeRequest(
+            prompt="background child",
+            parent_session_id="leader-session",
+            metadata={"delegation": {"mode": "background", "category": "deep"}},
+        )
+    )
+    running = _wait_for_background_task_session(runtime, started.task.id)
+    _ = runtime.connect_acp()
+
+    response = runtime.request_delegated_acp(
+        request_type="delegated_status",
+        task_id=started.task.id,
+        payload={"phase": "running"},
+    )
+
+    assert response.status == "ok"
+    assert len(acp_adapter.requests) == 2
+    assert acp_adapter.requests[0] is acp_adapter.requests[1]
+    assert response.request_id == started.task.id
+    assert response.session_id == running.session_id
+    assert response.parent_session_id == "leader-session"
+    assert response.delegation is not None
+    assert response.delegation.parent_session_id == "leader-session"
+    assert response.delegation.delegated_task_id == started.task.id
+    assert response.delegation.routing_category == "deep"
+    assert response.delegation.selected_preset == "worker"
+    assert response.delegation.selected_execution_engine == "provider"
+    assert runtime.current_acp_state().status == "connected"
     assert runtime.current_acp_state().last_request_id == started.task.id
 
 
