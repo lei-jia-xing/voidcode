@@ -8,6 +8,10 @@ from hypothesis import strategies as st
 
 from voidcode.runtime.http import RuntimeTransportApp
 
+pytestmark = pytest.mark.filterwarnings(
+    "ignore:unclosed database in <sqlite3.Connection object.*:ResourceWarning"
+)
+
 CI_SETTINGS = settings(derandomize=True, database=None, deadline=None, max_examples=200)
 
 _text_chars = st.characters(
