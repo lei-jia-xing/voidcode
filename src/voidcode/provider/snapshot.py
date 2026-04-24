@@ -3,11 +3,73 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import cast
 
+from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
+
 from .config import ProviderFallbackConfig
 from .errors import format_invalid_provider_config_error
 from .models import ResolvedProviderChain, ResolvedProviderConfig, ResolvedProviderModel
 from .registry import ModelProviderRegistry
 from .resolution import resolve_provider_model
+
+
+class _ResolvedProviderTargetSnapshotPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    raw_model: str
+    provider: str
+    model: str
+
+    @field_validator("raw_model", "provider", "model", mode="before")
+    @classmethod
+    def _validate_required_string(cls, value: object) -> str:
+        if not isinstance(value, str):
+            raise ValueError("must be a string")
+        return value
+
+
+class _ResolvedProviderSnapshotPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    active_target: _ResolvedProviderTargetSnapshotPayload
+    targets: tuple[_ResolvedProviderTargetSnapshotPayload, ...]
+
+    @field_validator("targets", mode="before")
+    @classmethod
+    def _validate_targets_array(cls, value: object) -> list[object]:
+        if not isinstance(value, list):
+            raise ValueError("must be an array")
+        return cast(list[object], value)
+
+    @field_validator("targets", mode="after")
+    @classmethod
+    def _validate_targets_not_empty(
+        cls,
+        value: tuple[_ResolvedProviderTargetSnapshotPayload, ...],
+    ) -> tuple[_ResolvedProviderTargetSnapshotPayload, ...]:
+        if not value:
+            raise ValueError("must not be empty")
+        return value
+
+
+def _format_snapshot_validation_error(*, source: str, error: dict[str, object]) -> str:
+    loc = tuple(cast(tuple[object, ...], error.get("loc", ())))
+    error_type = cast(str, error.get("type", ""))
+    field_path = source
+    for item in loc:
+        if isinstance(item, int):
+            field_path = f"{field_path}[{item}]"
+            continue
+        field_path = f"{field_path}.{item}"
+    if error_type in {"model_type", "dict_type"}:
+        return format_invalid_provider_config_error(field_path, "must be an object")
+    reason = cast(str, error.get("msg", "is invalid"))
+    if error_type == "value_error":
+        context = error.get("ctx")
+        if isinstance(context, dict):
+            nested_error = cast(dict[str, object], context).get("error")
+            if isinstance(nested_error, ValueError):
+                reason = str(nested_error)
+    return format_invalid_provider_config_error(field_path, reason)
 
 
 def resolved_provider_snapshot(
@@ -60,29 +122,19 @@ def parse_resolved_provider_snapshot(
     source: str,
     registry: ModelProviderRegistry,
 ) -> ResolvedProviderConfig:
-    if not isinstance(raw_snapshot, dict):
-        raise ValueError(format_invalid_provider_config_error(source, "must be an object"))
+    try:
+        snapshot = _ResolvedProviderSnapshotPayload.model_validate(raw_snapshot)
+    except ValidationError as exc:
+        error = cast(dict[str, object], exc.errors(include_url=False)[0])
+        raise ValueError(_format_snapshot_validation_error(source=source, error=error)) from exc
 
-    snapshot = cast(dict[str, object], raw_snapshot)
-    raw_active_target = snapshot.get("active_target")
-    raw_targets = snapshot.get("targets")
-    if not isinstance(raw_active_target, dict):
-        raise ValueError(
-            format_invalid_provider_config_error(f"{source}.active_target", "must be an object")
-        )
-    if not isinstance(raw_targets, list):
-        raise ValueError(
-            format_invalid_provider_config_error(f"{source}.targets", "must be an array")
-        )
-
-    raw_targets_list = cast(list[object], raw_targets)
     resolved_targets_list = [
         _resolved_provider_model_from_snapshot(
             item,
             source=f"{source}.targets[{index}]",
             registry=registry,
         )
-        for index, item in enumerate(raw_targets_list)
+        for index, item in enumerate(snapshot.targets)
     ]
     if not resolved_targets_list:
         raise ValueError(
@@ -102,7 +154,7 @@ def parse_resolved_provider_snapshot(
     resolved_targets: tuple[ResolvedProviderModel, ...] = tuple(resolved_targets_list)
 
     resolved_active_target = _resolved_provider_model_from_snapshot(
-        cast(object, raw_active_target),
+        snapshot.active_target,
         source=f"{source}.active_target",
         registry=registry,
     )
@@ -195,26 +247,14 @@ def _resolved_provider_model_from_snapshot(
     source: str,
     registry: ModelProviderRegistry,
 ) -> ResolvedProviderModel:
-    if not isinstance(raw_value, dict):
-        raise ValueError(format_invalid_provider_config_error(source, "must be an object"))
-    payload = cast(dict[str, object], raw_value)
-    raw_model = payload.get("raw_model")
-    provider = payload.get("provider")
-    model = payload.get("model")
-    if (
-        not isinstance(raw_model, str)
-        or not isinstance(provider, str)
-        or not isinstance(model, str)
-    ):
-        raise ValueError(
-            format_invalid_provider_config_error(
-                source,
-                "must include string raw_model, provider, and model fields",
-            )
-        )
+    try:
+        payload = _ResolvedProviderTargetSnapshotPayload.model_validate(raw_value)
+    except ValidationError as exc:
+        error = cast(dict[str, object], exc.errors(include_url=False)[0])
+        raise ValueError(_format_snapshot_validation_error(source=source, error=error)) from exc
 
-    resolved = resolve_provider_model(raw_model, registry=registry)
-    if resolved.selection.provider != provider or resolved.selection.model != model:
+    resolved = resolve_provider_model(payload.raw_model, registry=registry)
+    if resolved.selection.provider != payload.provider or resolved.selection.model != payload.model:
         raise ValueError(
             format_invalid_provider_config_error(
                 source,

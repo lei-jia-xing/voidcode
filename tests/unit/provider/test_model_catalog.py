@@ -222,6 +222,44 @@ def test_discover_available_models_marks_fallback_on_fetch_failure() -> None:
     assert result.discovery_mode == "configured_endpoint"
 
 
+def test_discover_available_models_falls_back_on_invalid_openai_discovery_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Response:
+        def __enter__(self) -> _Response:
+            return self
+
+        def __exit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            tb: TracebackType | None,
+        ) -> bool:
+            return False
+
+        def read(self) -> bytes:
+            return json.dumps(["not-an-object"]).encode("utf-8")
+
+    def _fake_urlopen(_request: Request, timeout: float) -> _Response:
+        assert timeout == 10.0
+        return _Response()
+
+    monkeypatch.setattr(model_catalog, "urlopen", _fake_urlopen)
+
+    result = discover_available_models(
+        "openai",
+        LiteLLMProviderConfig(
+            discovery_base_url="https://api.openai.com",
+            model_map={"alias": "gpt-4o"},
+        ),
+    )
+
+    assert result.models == ("alias", "gpt-4o")
+    assert result.source == "fallback"
+    assert result.last_refresh_status == "failed"
+    assert result.last_error == "remote model discovery failed"
+
+
 def test_discover_available_models_custom_provider_builds_url_from_plain_base_url(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

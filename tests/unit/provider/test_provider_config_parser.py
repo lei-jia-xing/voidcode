@@ -109,6 +109,28 @@ def test_parse_provider_configs_payload_rejects_unknown_provider_block() -> None
         )
 
 
+def test_parse_provider_configs_payload_rejects_invalid_openai_base_url_type() -> None:
+    with pytest.raises(
+        ValueError,
+        match=r"runtime config field 'providers\.openai\.base_url' must be a string when provided",
+    ):
+        _ = parse_provider_configs_payload(
+            {"openai": {"base_url": 123}},
+            source="runtime config field 'providers'",
+        )
+
+
+def test_parse_provider_configs_payload_rejects_invalid_litellm_model_map_value() -> None:
+    with pytest.raises(
+        ValueError,
+        match=r"runtime config field 'providers\.litellm\.model_map\.demo' must be a string",
+    ):
+        _ = parse_provider_configs_payload(
+            {"litellm": {"model_map": {"demo": 123}}},
+            source="runtime config field 'providers'",
+        )
+
+
 def test_parse_provider_configs_payload_rejects_invalid_custom_provider_name() -> None:
     with pytest.raises(
         ValueError,

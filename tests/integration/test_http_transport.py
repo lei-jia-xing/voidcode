@@ -1305,6 +1305,33 @@ def test_transport_rejects_invalid_question_answer_payload(tmp_path: Path) -> No
     assert response.json() == {"error": "responses must be a non-empty array"}
 
 
+def test_transport_rejects_invalid_question_answer_item_payload(tmp_path: Path) -> None:
+    create_runtime_app = _load_transport_app_factory()
+    app = create_runtime_app(workspace=tmp_path)
+
+    response = _run_app(
+        app,
+        method="POST",
+        path="/api/sessions/question-session/question",
+        body=json.dumps(
+            {
+                "request_id": "question-1",
+                "responses": [
+                    {
+                        "header": "Runtime path",
+                        "answers": [""],
+                    }
+                ],
+            }
+        ).encode("utf-8"),
+    )
+
+    assert response.status == 400
+    assert response.json() == {
+        "error": "responses[0].answers[0] must be a non-empty string"
+    }
+
+
 def test_transport_rejects_non_post_method_for_question_route(tmp_path: Path) -> None:
     create_runtime_app = _load_transport_app_factory()
     app = create_runtime_app(workspace=tmp_path)

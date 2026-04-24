@@ -9,6 +9,8 @@ from collections.abc import AsyncIterator, Callable, Iterator
 from pathlib import Path
 from typing import Protocol, cast, final
 
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+
 from .config import RuntimeConfig
 from .contracts import (
     BackgroundTaskResult,
@@ -97,6 +99,173 @@ class Receive(Protocol):
 
 class Send(Protocol):
     async def __call__(self, message: dict[str, object]) -> None: ...
+
+
+class _HttpBoundaryModel(BaseModel):
+    model_config = ConfigDict(extra="ignore", validate_default=True)
+
+
+class _RunStreamRequestPayload(_HttpBoundaryModel):
+    prompt: str | None = None
+    session_id: str | None = None
+    parent_session_id: str | None = None
+    metadata: dict[str, object] = Field(default_factory=dict)
+
+    @field_validator("prompt", mode="before")
+    @classmethod
+    def _validate_prompt(cls, value: object) -> str:
+        if not isinstance(value, str) or not value:
+            raise ValueError("must be a non-empty string")
+        return value
+
+    @field_validator("session_id", "parent_session_id", mode="before")
+    @classmethod
+    def _validate_optional_string(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError("must be a string when provided")
+        return value
+
+    @field_validator("metadata", mode="before")
+    @classmethod
+    def _validate_metadata(cls, value: object) -> dict[str, object]:
+        if value is None:
+            return {}
+        if not isinstance(value, dict):
+            raise ValueError("must be an object when provided")
+        return cast(dict[str, object], value)
+
+
+class _ApprovalResolutionRequestPayload(_HttpBoundaryModel):
+    request_id: str | None = None
+    decision: str | None = None
+
+    @field_validator("request_id", mode="before")
+    @classmethod
+    def _validate_request_id(cls, value: object) -> str:
+        if not isinstance(value, str) or not value:
+            raise ValueError("must be a non-empty string")
+        return value
+
+    @field_validator("decision", mode="before")
+    @classmethod
+    def _validate_decision(cls, value: object) -> str:
+        if value not in ("allow", "deny"):
+            raise ValueError("must be 'allow' or 'deny'")
+        return cast(str, value)
+
+
+class _SettingsRequestPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    provider: str | None = None
+    provider_api_key: str | None = None
+    model: str | None = None
+
+    @field_validator("provider", "provider_api_key", "model", mode="before")
+    @classmethod
+    def _validate_optional_string(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError("must be a string when provided")
+        stripped = value.strip()
+        return stripped or None
+
+
+class _QuestionResponsePayload(_HttpBoundaryModel):
+    header: str | None = None
+    answers: tuple[str, ...] | None = None
+
+    @field_validator("header", mode="before")
+    @classmethod
+    def _validate_header(cls, value: object) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("must be a non-empty string")
+        return value
+
+    @field_validator("answers", mode="before")
+    @classmethod
+    def _validate_answers(cls, value: object) -> tuple[str, ...]:
+        if not isinstance(value, list) or not value:
+            raise ValueError("must be a non-empty array")
+        answer_items = cast(list[object], value)
+        answers: list[str] = []
+        for index, raw_answer in enumerate(answer_items):
+            if not isinstance(raw_answer, str) or not raw_answer.strip():
+                raise ValueError(f"[{index}] must be a non-empty string")
+            answers.append(raw_answer)
+        return tuple(answers)
+
+
+class _QuestionAnswerRequestPayload(_HttpBoundaryModel):
+    request_id: str | None = None
+    responses: tuple[_QuestionResponsePayload, ...] | None = None
+
+    @field_validator("request_id", mode="before")
+    @classmethod
+    def _validate_request_id(cls, value: object) -> str:
+        if not isinstance(value, str) or not value:
+            raise ValueError("must be a non-empty string")
+        return value
+
+    @field_validator("responses", mode="before")
+    @classmethod
+    def _validate_responses(cls, value: object) -> list[object]:
+        if not isinstance(value, list) or not value:
+            raise ValueError("must be a non-empty array")
+        return cast(list[object], value)
+
+
+def _parse_json_body(body: bytes) -> object:
+    try:
+        return json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("request body must be valid JSON") from exc
+
+
+def _http_path_from_loc(loc: tuple[object, ...]) -> str:
+    parts: list[str] = []
+    for item in loc:
+        if isinstance(item, int):
+            if not parts:
+                parts.append(f"[{item}]")
+                continue
+            parts[-1] = f"{parts[-1]}[{item}]"
+            continue
+        parts.append(str(item))
+    return ".".join(parts)
+
+
+def _http_validation_reason(error: dict[str, object]) -> str:
+    error_type = cast(str, error.get("type", ""))
+    if error_type == "value_error":
+        context = error.get("ctx")
+        if isinstance(context, dict):
+            nested_error = cast(dict[str, object], context).get("error")
+            if isinstance(nested_error, ValueError):
+                return str(nested_error)
+    return cast(str, error.get("msg", "is invalid"))
+
+
+def _format_http_validation_error(error: dict[str, object]) -> str:
+    loc = tuple(cast(tuple[object, ...], error.get("loc", ())))
+    error_type = cast(str, error.get("type", ""))
+    path = _http_path_from_loc(loc)
+    if error_type == "extra_forbidden":
+        unknown_keys = ", ".join(str(item) for item in loc if isinstance(item, str))
+        return f"unsupported settings field(s): {unknown_keys}"
+    if error_type in {"model_type", "dict_type"}:
+        if not path:
+            return "request body must be a JSON object"
+        return f"{path} must be an object"
+    reason = _http_validation_reason(error)
+    if not path:
+        return reason
+    if reason.startswith("[") or reason.startswith("."):
+        return f"{path}{reason}"
+    return f"{path} {reason}"
 
 
 @final
@@ -749,41 +918,30 @@ class RuntimeTransportApp:
         return b"".join(body_parts)
 
     def _parse_runtime_request(self, body: bytes) -> RuntimeRequest:
-        try:
-            raw_payload = json.loads(body.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise ValueError("request body must be valid JSON") from exc
-
+        raw_payload = _parse_json_body(body)
         if not isinstance(raw_payload, dict):
             raise ValueError("request body must be a JSON object")
-        payload = cast(dict[str, object], raw_payload)
+        try:
+            payload = _RunStreamRequestPayload.model_validate(raw_payload)
+        except ValidationError as exc:
+            error = cast(dict[str, object], exc.errors(include_url=False)[0])
+            raise ValueError(_format_http_validation_error(error)) from exc
 
-        prompt = payload.get("prompt")
-        if not isinstance(prompt, str) or not prompt:
-            raise ValueError("prompt must be a non-empty string")
-
-        session_id = payload.get("session_id")
-        if session_id is not None and not isinstance(session_id, str):
-            raise ValueError("session_id must be a string when provided")
+        session_id = payload.session_id
         if session_id is not None:
             validate_session_id(session_id)
 
-        parent_session_id = payload.get("parent_session_id")
-        if parent_session_id is not None and not isinstance(parent_session_id, str):
-            raise ValueError("parent_session_id must be a string when provided")
+        parent_session_id = payload.parent_session_id
         if parent_session_id is not None:
             validate_session_reference_id(
                 parent_session_id,
                 field_name="parent_session_id",
             )
 
-        metadata = payload.get("metadata", {})
-        if not isinstance(metadata, dict):
-            raise ValueError("metadata must be an object when provided")
-        normalized_metadata = validate_runtime_request_metadata(cast(dict[str, object], metadata))
+        normalized_metadata = validate_runtime_request_metadata(payload.metadata)
 
         return RuntimeRequest(
-            prompt=prompt,
+            prompt=cast(str, payload.prompt),
             session_id=session_id,
             parent_session_id=parent_session_id,
             metadata=normalized_metadata,
@@ -794,98 +952,54 @@ class RuntimeTransportApp:
         self,
         body: bytes,
     ) -> tuple[str, PermissionResolution]:
-        try:
-            raw_payload = json.loads(body.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise ValueError("request body must be valid JSON") from exc
-
+        raw_payload = _parse_json_body(body)
         if not isinstance(raw_payload, dict):
             raise ValueError("request body must be a JSON object")
-        payload = cast(dict[str, object], raw_payload)
+        try:
+            payload = _ApprovalResolutionRequestPayload.model_validate(raw_payload)
+        except ValidationError as exc:
+            error = cast(dict[str, object], exc.errors(include_url=False)[0])
+            raise ValueError(_format_http_validation_error(error)) from exc
 
-        request_id = payload.get("request_id")
-        if not isinstance(request_id, str) or not request_id:
-            raise ValueError("request_id must be a non-empty string")
-
-        decision = payload.get("decision")
-        if decision not in ("allow", "deny"):
-            raise ValueError("decision must be 'allow' or 'deny'")
-
-        return request_id, decision
+        return cast(str, payload.request_id), cast(PermissionResolution, payload.decision)
 
     def _parse_settings_request(self, body: bytes) -> dict[str, str | None]:
-        try:
-            raw_payload = json.loads(body.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise ValueError("request body must be valid JSON") from exc
-
+        raw_payload = _parse_json_body(body)
         if not isinstance(raw_payload, dict):
             raise ValueError("request body must be a JSON object")
-
-        payload = cast(dict[str, object], raw_payload)
-        allowed_keys = {"provider", "provider_api_key", "model"}
-        unknown_keys = sorted(key for key in payload if key not in allowed_keys)
-        if unknown_keys:
-            raise ValueError(f"unsupported settings field(s): {', '.join(unknown_keys)}")
-
-        def _optional_string(name: str) -> str | None:
-            value = payload.get(name)
-            if value is None:
-                return None
-            if not isinstance(value, str):
-                raise ValueError(f"{name} must be a string when provided")
-            stripped = value.strip()
-            return stripped or None
-
+        try:
+            payload = _SettingsRequestPayload.model_validate(raw_payload)
+        except ValidationError as exc:
+            error = cast(dict[str, object], exc.errors(include_url=False)[0])
+            raise ValueError(_format_http_validation_error(error)) from exc
         return {
-            "provider": _optional_string("provider"),
-            "provider_api_key": _optional_string("provider_api_key"),
-            "model": _optional_string("model"),
+            "provider": payload.provider,
+            "provider_api_key": payload.provider_api_key,
+            "model": payload.model,
         }
 
     def _parse_question_answer_request(
         self,
         body: bytes,
     ) -> tuple[str, tuple[QuestionResponse, ...]]:
-        try:
-            raw_payload = json.loads(body.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise ValueError("request body must be valid JSON") from exc
-
+        raw_payload = _parse_json_body(body)
         if not isinstance(raw_payload, dict):
             raise ValueError("request body must be a JSON object")
-        payload = cast(dict[str, object], raw_payload)
+        try:
+            payload = _QuestionAnswerRequestPayload.model_validate(raw_payload)
+        except ValidationError as exc:
+            error = cast(dict[str, object], exc.errors(include_url=False)[0])
+            raise ValueError(_format_http_validation_error(error)) from exc
 
-        request_id = payload.get("request_id")
-        if not isinstance(request_id, str) or not request_id:
-            raise ValueError("request_id must be a non-empty string")
-
-        raw_responses = payload.get("responses")
-        if not isinstance(raw_responses, list) or not raw_responses:
-            raise ValueError("responses must be a non-empty array")
-
-        response_items = cast(list[object], raw_responses)
-        parsed: list[QuestionResponse] = []
-        for index, raw_response in enumerate(response_items):
-            if not isinstance(raw_response, dict):
-                raise ValueError(f"responses[{index}] must be an object")
-            response_payload = cast(dict[str, object], raw_response)
-            header = response_payload.get("header")
-            if not isinstance(header, str) or not header.strip():
-                raise ValueError(f"responses[{index}].header must be a non-empty string")
-            raw_answers = response_payload.get("answers")
-            if not isinstance(raw_answers, list) or not raw_answers:
-                raise ValueError(f"responses[{index}].answers must be a non-empty array")
-            answer_items = cast(list[object], raw_answers)
-            answers: list[str] = []
-            for answer_index, raw_answer in enumerate(answer_items):
-                if not isinstance(raw_answer, str) or not raw_answer.strip():
-                    raise ValueError(
-                        f"responses[{index}].answers[{answer_index}] must be a non-empty string"
-                    )
-                answers.append(raw_answer)
-            parsed.append(QuestionResponse(header=header, answers=tuple(answers)))
-        return request_id, tuple(parsed)
+        responses = payload.responses if payload.responses is not None else ()
+        parsed = tuple(
+            QuestionResponse(
+                header=cast(str, item.header),
+                answers=cast(tuple[str, ...], item.answers),
+            )
+            for item in responses
+        )
+        return cast(str, payload.request_id), parsed
 
     @staticmethod
     def _serialize_runtime_stream_chunk(chunk: RuntimeStreamChunk) -> dict[str, object]:

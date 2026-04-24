@@ -2,7 +2,173 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Literal, cast
+from typing import Annotated, Literal, cast
+
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic.functional_validators import BeforeValidator
+
+
+def _parse_optional_boundary_string(value: object) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("must be a string when provided")
+    return value
+
+
+def _parse_required_boundary_string(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError("must be a string")
+    return value
+
+
+def _parse_optional_boundary_timeout(value: object) -> float | None:
+    if value is None:
+        return None
+    if not isinstance(value, int | float) or isinstance(value, bool) or value <= 0:
+        raise ValueError("must be a number greater than 0 when provided")
+    return float(value)
+
+
+def _parse_optional_boundary_positive_int(value: object) -> int | None:
+    if value is None:
+        return None
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise ValueError("must be an integer greater than or equal to 1 when provided")
+    return value
+
+
+def _parse_boundary_string_list(value: object) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        raise ValueError("must be an array when provided")
+    parsed_items: list[str] = []
+    for index, item in enumerate(cast(list[object], value)):
+        if not isinstance(item, str):
+            raise ValueError(f"[{index}] must be a string")
+        parsed_items.append(item)
+    return tuple(parsed_items)
+
+
+def _parse_boundary_string_mapping(value: object) -> dict[str, str]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError("must be an object when provided")
+    mapping: dict[str, str] = {}
+    for raw_key, raw_item in cast(dict[object, object], value).items():
+        if not isinstance(raw_key, str):
+            raise ValueError(" keys must be strings")
+        if not raw_key:
+            raise ValueError(" keys must not be empty")
+        if not isinstance(raw_item, str):
+            raise ValueError(f".{raw_key} must be a string")
+        if not raw_item:
+            raise ValueError(f".{raw_key} must not be empty")
+        mapping[raw_key] = raw_item
+    return mapping
+
+
+BoundaryOptionalString = Annotated[str | None, BeforeValidator(_parse_optional_boundary_string)]
+BoundaryRequiredString = Annotated[str, BeforeValidator(_parse_required_boundary_string)]
+BoundaryOptionalTimeout = Annotated[float | None, BeforeValidator(_parse_optional_boundary_timeout)]
+BoundaryOptionalPositiveInt = Annotated[
+    int | None, BeforeValidator(_parse_optional_boundary_positive_int)
+]
+BoundaryStringList = Annotated[tuple[str, ...], BeforeValidator(_parse_boundary_string_list)]
+BoundaryStringMapping = Annotated[dict[str, str], BeforeValidator(_parse_boundary_string_mapping)]
+
+
+class _ProviderPayloadModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class _OpenAIProviderConfigPayload(_ProviderPayloadModel):
+    api_key: BoundaryOptionalString = None
+    base_url: BoundaryOptionalString = None
+    discovery_base_url: BoundaryOptionalString = None
+    organization: BoundaryOptionalString = None
+    project: BoundaryOptionalString = None
+    timeout_seconds: BoundaryOptionalTimeout = None
+
+
+class _AnthropicProviderConfigPayload(_ProviderPayloadModel):
+    api_key: BoundaryOptionalString = None
+    base_url: BoundaryOptionalString = None
+    discovery_base_url: BoundaryOptionalString = None
+    version: BoundaryOptionalString = None
+    beta_headers: BoundaryStringList = ()
+    timeout_seconds: BoundaryOptionalTimeout = None
+
+
+class _GoogleProviderAuthConfigPayload(_ProviderPayloadModel):
+    method: BoundaryRequiredString
+    api_key: BoundaryOptionalString = None
+    access_token: BoundaryOptionalString = None
+    service_account_json_path: BoundaryOptionalString = None
+
+
+class _GoogleProviderConfigPayload(_ProviderPayloadModel):
+    auth: _GoogleProviderAuthConfigPayload | None = None
+    base_url: BoundaryOptionalString = None
+    discovery_base_url: BoundaryOptionalString = None
+    project: BoundaryOptionalString = None
+    region: BoundaryOptionalString = None
+    timeout_seconds: BoundaryOptionalTimeout = None
+
+
+class _CopilotProviderAuthConfigPayload(_ProviderPayloadModel):
+    method: BoundaryRequiredString
+    token: BoundaryOptionalString = None
+    token_env_var: BoundaryOptionalString = None
+    refresh_token: BoundaryOptionalString = None
+    refresh_leeway_seconds: BoundaryOptionalPositiveInt = None
+
+
+class _CopilotProviderConfigPayload(_ProviderPayloadModel):
+    auth: _CopilotProviderAuthConfigPayload | None = None
+    base_url: BoundaryOptionalString = None
+    timeout_seconds: BoundaryOptionalTimeout = None
+
+
+class _LiteLLMProviderConfigPayload(_ProviderPayloadModel):
+    api_key: BoundaryOptionalString = None
+    api_key_env_var: BoundaryOptionalString = None
+    base_url: BoundaryOptionalString = None
+    discovery_base_url: BoundaryOptionalString = None
+    auth_header: BoundaryOptionalString = None
+    auth_scheme: BoundaryOptionalString = "bearer"
+    timeout_seconds: BoundaryOptionalTimeout = None
+    model_map: BoundaryStringMapping = Field(default_factory=dict)
+
+
+class _SimplifiedProviderConfigPayload(_ProviderPayloadModel):
+    api_key: BoundaryOptionalString = None
+    api_key_env_var: BoundaryOptionalString = None
+    base_url: BoundaryOptionalString = None
+    discovery_base_url: BoundaryOptionalString = None
+    timeout_seconds: BoundaryOptionalTimeout = None
+    model_map: BoundaryStringMapping = Field(default_factory=dict)
+
+
+class _ProviderConfigsPayload(_ProviderPayloadModel):
+    openai: _OpenAIProviderConfigPayload | None = None
+    anthropic: _AnthropicProviderConfigPayload | None = None
+    google: _GoogleProviderConfigPayload | None = None
+    copilot: _CopilotProviderConfigPayload | None = None
+    litellm: _LiteLLMProviderConfigPayload | None = None
+    glm: _SimplifiedProviderConfigPayload | None = None
+    minimax: _SimplifiedProviderConfigPayload | None = None
+    kimi: _SimplifiedProviderConfigPayload | None = None
+    opencode_go: _SimplifiedProviderConfigPayload | None = Field(default=None, alias="opencode-go")
+    qwen: _SimplifiedProviderConfigPayload | None = None
+    custom: dict[str, _LiteLLMProviderConfigPayload] = Field(default_factory=dict)
+
+
+class _ProviderFallbackPayload(_ProviderPayloadModel):
+    preferred_model: BoundaryRequiredString
+    fallback_models: BoundaryStringList = ()
 
 # =============================================================================
 # Simplified Provider Config for Chinese AI Providers
@@ -387,6 +553,81 @@ def _provider_configs_has_entries(providers: ProviderConfigs) -> bool:
     )
 
 
+def _runtime_config_field_name(field_path: str) -> str | None:
+    runtime_field_prefix = "runtime config field '"
+    if field_path.startswith(runtime_field_prefix) and field_path.endswith("'"):
+        return field_path[len(runtime_field_prefix) : -1]
+    return None
+
+
+def _append_config_field_suffix(field_path: str, suffix: str) -> str:
+    runtime_field_name = _runtime_config_field_name(field_path)
+    if runtime_field_name is not None:
+        return _format_runtime_config_field_error(f"{runtime_field_name}{suffix}")
+    return f"{field_path}{suffix}"
+
+
+def _extend_config_field_path(field_path: str, loc: tuple[object, ...]) -> str:
+    extended = field_path
+    for item in loc:
+        if isinstance(item, int):
+            extended = _append_config_field_suffix(extended, f"[{item}]")
+            continue
+        extended = _nested_config_field(extended, str(item))
+    return extended
+
+
+def _validation_reason_from_error(error: dict[str, object]) -> str:
+    error_type = cast(str, error.get("type", ""))
+    if error_type == "value_error":
+        context = error.get("ctx")
+        if isinstance(context, dict):
+            nested_error = cast(dict[str, object], context).get("error")
+            if isinstance(nested_error, ValueError):
+                return str(nested_error)
+    return cast(str, error.get("msg", "is invalid"))
+
+
+def _format_provider_payload_validation_error(
+    *,
+    field_path: str,
+    error: dict[str, object],
+    object_when_provided: bool = True,
+) -> str:
+    loc = tuple(cast(tuple[object, ...], error.get("loc", ())))
+    error_type = cast(str, error.get("type", ""))
+    target = _extend_config_field_path(field_path, loc)
+    if error_type in {"model_type", "dict_type"}:
+        suffix = " when provided" if object_when_provided else ""
+        return f"{target} must be an object{suffix}"
+    if error_type == "extra_forbidden":
+        return f"{target} is not supported"
+    reason = _validation_reason_from_error(error)
+    if reason.startswith("[") or reason.startswith("."):
+        if " " in reason:
+            suffix, nested_reason = reason.split(" ", maxsplit=1)
+            return f"{_append_config_field_suffix(target, suffix)} {nested_reason}"
+        return _append_config_field_suffix(target, reason)
+    if reason.startswith(" keys"):
+        return f"{target}{reason}"
+    return f"{target} {reason}"
+
+
+def _validate_provider_payload_model[TModel: BaseModel](
+    raw_value: object,
+    *,
+    field_path: str,
+    model_type: type[TModel],
+) -> TModel:
+    try:
+        return model_type.model_validate(raw_value)
+    except ValidationError as exc:
+        error = cast(dict[str, object], exc.errors(include_url=False)[0])
+        raise ValueError(
+            _format_provider_payload_validation_error(field_path=field_path, error=error)
+        ) from exc
+
+
 def parse_provider_configs_payload(
     raw_providers: object,
     *,
@@ -395,88 +636,72 @@ def parse_provider_configs_payload(
 ) -> ProviderConfigs | None:
     if raw_providers is None:
         return None
-    if not isinstance(raw_providers, dict):
-        raise ValueError(f"{source} must be an object when provided")
-
-    payload = cast(dict[str, object], raw_providers)
-    _reject_unknown_keys(
-        payload=payload,
-        source=source,
-        allowed_keys=(
-            "openai",
-            "anthropic",
-            "google",
-            "copilot",
-            "litellm",
-            "glm",
-            "minimax",
-            "kimi",
-            "opencode-go",
-            "qwen",
-            "custom",
-        ),
+    payload = _validate_provider_payload_model(
+        raw_providers,
+        field_path=source,
+        model_type=_ProviderConfigsPayload,
     )
 
     environment: Mapping[str, str] = {} if env is None else env
 
     return ProviderConfigs(
         openai=_parse_openai_provider_config(
-            payload.get("openai"),
+            payload.openai,
             field_path=_nested_config_field(source, "openai"),
             env=environment,
         ),
         anthropic=_parse_anthropic_provider_config(
-            payload.get("anthropic"),
+            payload.anthropic,
             field_path=_nested_config_field(source, "anthropic"),
             env=environment,
         ),
         google=_parse_google_provider_config(
-            payload.get("google"),
+            payload.google,
             field_path=_nested_config_field(source, "google"),
             env=environment,
         ),
         copilot=_parse_copilot_provider_config(
-            payload.get("copilot"),
+            payload.copilot,
             field_path=_nested_config_field(source, "copilot"),
             env=environment,
         ),
         litellm=_parse_litellm_provider_config(
-            payload.get("litellm"),
+            payload.litellm,
             field_path=_nested_config_field(source, "litellm"),
             env=environment,
         ),
         glm=_parse_simplified_provider_config(
-            payload.get("glm"),
+            payload.glm,
             field_path=_nested_config_field(source, "glm"),
             env=environment,
             api_key_env_var=_GLM_API_KEY_ENV_VAR,
         ),
         minimax=_parse_simplified_provider_config(
-            payload.get("minimax"),
+            payload.minimax,
             field_path=_nested_config_field(source, "minimax"),
             env=environment,
             api_key_env_var=_MINIMAX_API_KEY_ENV_VAR,
         ),
         kimi=_parse_simplified_provider_config(
-            payload.get("kimi"),
+            payload.kimi,
             field_path=_nested_config_field(source, "kimi"),
             env=environment,
             api_key_env_var=_KIMI_API_KEY_ENV_VAR,
         ),
         opencode_go=_parse_simplified_provider_config(
-            payload.get("opencode-go"),
+            payload.opencode_go,
             field_path=_nested_config_field(source, "opencode-go"),
             env=environment,
             api_key_env_var=_OPENCODE_API_KEY_ENV_VAR,
         ),
         qwen=_parse_simplified_provider_config(
-            payload.get("qwen"),
+            payload.qwen,
             field_path=_nested_config_field(source, "qwen"),
             env=environment,
             api_key_env_var="DASHSCOPE_API_KEY",
         ),
         custom=_parse_custom_litellm_provider_configs(
-            payload.get("custom"),
+            payload.custom,
             field_path=_nested_config_field(source, "custom"),
             env=environment,
         ),
@@ -559,17 +784,13 @@ def parse_provider_fallback_payload(
 ) -> ProviderFallbackConfig | None:
     if raw_provider_fallback is None:
         return None
-    if not isinstance(raw_provider_fallback, dict):
-        raise ValueError(f"{source} must be an object when provided")
-
-    payload = cast(dict[str, object], raw_provider_fallback)
-    preferred_model = payload.get("preferred_model")
-    if not isinstance(preferred_model, str):
-        raise ValueError(f"{_nested_config_field(source, 'preferred_model')} must be a string")
-    fallback_models = _parse_string_list(
-        payload.get("fallback_models"),
-        field_path=_nested_config_field(source, "fallback_models"),
+    payload = _validate_provider_payload_model(
+        raw_provider_fallback,
+        field_path=source,
+        model_type=_ProviderFallbackPayload,
     )
+    preferred_model = payload.preferred_model
+    fallback_models = payload.fallback_models
     ordered_models = (preferred_model, *fallback_models)
     if len(set(ordered_models)) != len(ordered_models):
         raise ValueError("provider fallback chain must not contain duplicate models")
@@ -598,43 +819,26 @@ def _parse_openai_provider_config(
 ) -> OpenAIProviderConfig | None:
     if raw_value is None:
         return None
-    if not isinstance(raw_value, dict):
-        raise ValueError(f"{field_path} must be an object when provided")
-    payload = cast(dict[str, object], raw_value)
-
-    api_key = _parse_optional_str(
-        payload.get("api_key"),
-        field_path=_nested_config_field(field_path, "api_key"),
+    payload = (
+        raw_value
+        if isinstance(raw_value, _OpenAIProviderConfigPayload)
+        else _validate_provider_payload_model(
+            raw_value,
+            field_path=field_path,
+            model_type=_OpenAIProviderConfigPayload,
+        )
     )
+
+    api_key = payload.api_key
     if api_key is None:
         api_key = env.get(_OPENAI_API_KEY_ENV_VAR)
-    base_url = _parse_optional_str(
-        payload.get("base_url"),
-        field_path=_nested_config_field(field_path, "base_url"),
-    )
-    discovery_base_url = _parse_optional_str(
-        payload.get("discovery_base_url"),
-        field_path=_nested_config_field(field_path, "discovery_base_url"),
-    )
-    organization = _parse_optional_str(
-        payload.get("organization"),
-        field_path=_nested_config_field(field_path, "organization"),
-    )
-    project = _parse_optional_str(
-        payload.get("project"),
-        field_path=_nested_config_field(field_path, "project"),
-    )
-    timeout_seconds = _parse_optional_timeout_seconds(
-        payload.get("timeout_seconds"),
-        field_path=_nested_config_field(field_path, "timeout_seconds"),
-    )
     return OpenAIProviderConfig(
         api_key=api_key,
-        base_url=base_url,
-        discovery_base_url=discovery_base_url,
-        organization=organization,
-        project=project,
-        timeout_seconds=timeout_seconds,
+        base_url=payload.base_url,
+        discovery_base_url=payload.discovery_base_url,
+        organization=payload.organization,
+        project=payload.project,
+        timeout_seconds=payload.timeout_seconds,
     )
 
 
@@ -646,43 +850,26 @@ def _parse_anthropic_provider_config(
 ) -> AnthropicProviderConfig | None:
     if raw_value is None:
         return None
-    if not isinstance(raw_value, dict):
-        raise ValueError(f"{field_path} must be an object when provided")
-    payload = cast(dict[str, object], raw_value)
-
-    api_key = _parse_optional_str(
-        payload.get("api_key"),
-        field_path=_nested_config_field(field_path, "api_key"),
+    payload = (
+        raw_value
+        if isinstance(raw_value, _AnthropicProviderConfigPayload)
+        else _validate_provider_payload_model(
+            raw_value,
+            field_path=field_path,
+            model_type=_AnthropicProviderConfigPayload,
+        )
     )
+
+    api_key = payload.api_key
     if api_key is None:
         api_key = env.get(_ANTHROPIC_API_KEY_ENV_VAR)
-    base_url = _parse_optional_str(
-        payload.get("base_url"),
-        field_path=_nested_config_field(field_path, "base_url"),
-    )
-    discovery_base_url = _parse_optional_str(
-        payload.get("discovery_base_url"),
-        field_path=_nested_config_field(field_path, "discovery_base_url"),
-    )
-    version = _parse_optional_str(
-        payload.get("version"),
-        field_path=_nested_config_field(field_path, "version"),
-    )
-    beta_headers = _parse_string_list(
-        payload.get("beta_headers"),
-        field_path=_nested_config_field(field_path, "beta_headers"),
-    )
-    timeout_seconds = _parse_optional_timeout_seconds(
-        payload.get("timeout_seconds"),
-        field_path=_nested_config_field(field_path, "timeout_seconds"),
-    )
     return AnthropicProviderConfig(
         api_key=api_key,
-        base_url=base_url,
-        discovery_base_url=discovery_base_url,
-        version=version,
-        beta_headers=beta_headers,
-        timeout_seconds=timeout_seconds,
+        base_url=payload.base_url,
+        discovery_base_url=payload.discovery_base_url,
+        version=payload.version,
+        beta_headers=payload.beta_headers,
+        timeout_seconds=payload.timeout_seconds,
     )
 
 
@@ -694,42 +881,28 @@ def _parse_google_provider_config(
 ) -> GoogleProviderConfig | None:
     if raw_value is None:
         return None
-    if not isinstance(raw_value, dict):
-        raise ValueError(f"{field_path} must be an object when provided")
-    payload = cast(dict[str, object], raw_value)
+    payload = (
+        raw_value
+        if isinstance(raw_value, _GoogleProviderConfigPayload)
+        else _validate_provider_payload_model(
+            raw_value,
+            field_path=field_path,
+            model_type=_GoogleProviderConfigPayload,
+        )
+    )
 
     auth = _parse_google_auth_config(
-        payload.get("auth"),
+        payload.auth,
         field_path=_nested_config_field(field_path, "auth"),
         env=env,
     )
-    base_url = _parse_optional_str(
-        payload.get("base_url"),
-        field_path=_nested_config_field(field_path, "base_url"),
-    )
-    discovery_base_url = _parse_optional_str(
-        payload.get("discovery_base_url"),
-        field_path=_nested_config_field(field_path, "discovery_base_url"),
-    )
-    project = _parse_optional_str(
-        payload.get("project"),
-        field_path=_nested_config_field(field_path, "project"),
-    )
-    region = _parse_optional_str(
-        payload.get("region"),
-        field_path=_nested_config_field(field_path, "region"),
-    )
-    timeout_seconds = _parse_optional_timeout_seconds(
-        payload.get("timeout_seconds"),
-        field_path=_nested_config_field(field_path, "timeout_seconds"),
-    )
     return GoogleProviderConfig(
         auth=auth,
-        base_url=base_url,
-        discovery_base_url=discovery_base_url,
-        project=project,
-        region=region,
-        timeout_seconds=timeout_seconds,
+        base_url=payload.base_url,
+        discovery_base_url=payload.discovery_base_url,
+        project=payload.project,
+        region=payload.region,
+        timeout_seconds=payload.timeout_seconds,
     )
 
 
@@ -741,30 +914,27 @@ def _parse_google_auth_config(
 ) -> GoogleProviderAuthConfig | None:
     if raw_value is None:
         return None
-    if not isinstance(raw_value, dict):
-        raise ValueError(f"{field_path} must be an object when provided")
-    payload = cast(dict[str, object], raw_value)
+    payload = (
+        raw_value
+        if isinstance(raw_value, _GoogleProviderAuthConfigPayload)
+        else _validate_provider_payload_model(
+            raw_value,
+            field_path=field_path,
+            model_type=_GoogleProviderAuthConfigPayload,
+        )
+    )
 
-    raw_method = payload.get("method")
+    raw_method = payload.method
     if raw_method not in _VALID_GOOGLE_AUTH_METHODS:
         allowed = ", ".join(_VALID_GOOGLE_AUTH_METHODS)
         raise ValueError(f"{_nested_config_field(field_path, 'method')} must be one of: {allowed}")
     method = raw_method
 
-    api_key = _parse_optional_str(
-        payload.get("api_key"),
-        field_path=_nested_config_field(field_path, "api_key"),
-    )
+    api_key = payload.api_key
     if api_key is None:
         api_key = env.get(_GOOGLE_API_KEY_ENV_VAR)
-    access_token = _parse_optional_str(
-        payload.get("access_token"),
-        field_path=_nested_config_field(field_path, "access_token"),
-    )
-    service_account_json_path = _parse_optional_str(
-        payload.get("service_account_json_path"),
-        field_path=_nested_config_field(field_path, "service_account_json_path"),
-    )
+    access_token = payload.access_token
+    service_account_json_path = payload.service_account_json_path
 
     if method == "api_key":
         if api_key is None:
@@ -830,24 +1000,26 @@ def _parse_copilot_provider_config(
 ) -> CopilotProviderConfig | None:
     if raw_value is None:
         return None
-    if not isinstance(raw_value, dict):
-        raise ValueError(f"{field_path} must be an object when provided")
-    payload = cast(dict[str, object], raw_value)
+    payload = (
+        raw_value
+        if isinstance(raw_value, _CopilotProviderConfigPayload)
+        else _validate_provider_payload_model(
+            raw_value,
+            field_path=field_path,
+            model_type=_CopilotProviderConfigPayload,
+        )
+    )
 
     auth = _parse_copilot_auth_config(
-        payload.get("auth"),
+        payload.auth,
         field_path=_nested_config_field(field_path, "auth"),
         env=env,
     )
-    base_url = _parse_optional_str(
-        payload.get("base_url"),
-        field_path=_nested_config_field(field_path, "base_url"),
+    return CopilotProviderConfig(
+        auth=auth,
+        base_url=payload.base_url,
+        timeout_seconds=payload.timeout_seconds,
     )
-    timeout_seconds = _parse_optional_timeout_seconds(
-        payload.get("timeout_seconds"),
-        field_path=_nested_config_field(field_path, "timeout_seconds"),
-    )
-    return CopilotProviderConfig(auth=auth, base_url=base_url, timeout_seconds=timeout_seconds)
 
 
 def _parse_copilot_auth_config(
@@ -858,36 +1030,30 @@ def _parse_copilot_auth_config(
 ) -> CopilotProviderAuthConfig | None:
     if raw_value is None:
         return None
-    if not isinstance(raw_value, dict):
-        raise ValueError(f"{field_path} must be an object when provided")
-    payload = cast(dict[str, object], raw_value)
+    payload = (
+        raw_value
+        if isinstance(raw_value, _CopilotProviderAuthConfigPayload)
+        else _validate_provider_payload_model(
+            raw_value,
+            field_path=field_path,
+            model_type=_CopilotProviderAuthConfigPayload,
+        )
+    )
 
-    raw_method = payload.get("method")
+    raw_method = payload.method
     if raw_method not in _VALID_COPILOT_AUTH_METHODS:
         allowed = ", ".join(_VALID_COPILOT_AUTH_METHODS)
         raise ValueError(f"{_nested_config_field(field_path, 'method')} must be one of: {allowed}")
     method = raw_method
 
-    token = _parse_optional_str(
-        payload.get("token"),
-        field_path=_nested_config_field(field_path, "token"),
-    )
-    token_env_var = _parse_optional_str(
-        payload.get("token_env_var"),
-        field_path=_nested_config_field(field_path, "token_env_var"),
-    )
+    token = payload.token
+    token_env_var = payload.token_env_var
     if token is None and token_env_var is None:
         token = env.get(_COPILOT_TOKEN_ENV_VAR)
         if token is not None:
             token_env_var = _COPILOT_TOKEN_ENV_VAR
-    refresh_token = _parse_optional_str(
-        payload.get("refresh_token"),
-        field_path=_nested_config_field(field_path, "refresh_token"),
-    )
-    refresh_leeway_seconds = _parse_optional_positive_int(
-        payload.get("refresh_leeway_seconds"),
-        field_path=_nested_config_field(field_path, "refresh_leeway_seconds"),
-    )
+    refresh_token = payload.refresh_token
+    refresh_leeway_seconds = payload.refresh_leeway_seconds
 
     if method == "token":
         if token is None and token_env_var is None:
@@ -937,37 +1103,29 @@ def _parse_litellm_provider_config(
 ) -> LiteLLMProviderConfig | None:
     if raw_value is None:
         return None
-    if not isinstance(raw_value, dict):
-        raise ValueError(f"{field_path} must be an object when provided")
-    payload = cast(dict[str, object], raw_value)
+    payload = (
+        raw_value
+        if isinstance(raw_value, _LiteLLMProviderConfigPayload)
+        else _validate_provider_payload_model(
+            raw_value,
+            field_path=field_path,
+            model_type=_LiteLLMProviderConfigPayload,
+        )
+    )
 
-    api_key = _parse_optional_str(
-        payload.get("api_key"),
-        field_path=_nested_config_field(field_path, "api_key"),
-    )
-    api_key_env_var = _parse_optional_str(
-        payload.get("api_key_env_var"),
-        field_path=_nested_config_field(field_path, "api_key_env_var"),
-    )
+    api_key = payload.api_key
+    api_key_env_var = payload.api_key_env_var
     if api_key is None:
         if api_key_env_var is not None:
             api_key = env.get(api_key_env_var)
         else:
             api_key = env.get(_LITELLM_API_KEY_ENV_VAR) or env.get(_LITELLM_PROXY_API_KEY_ENV_VAR)
 
-    base_url = _parse_optional_str(
-        payload.get("base_url"),
-        field_path=_nested_config_field(field_path, "base_url"),
-    )
+    base_url = payload.base_url
     if base_url is None:
         base_url = env.get(_LITELLM_BASE_URL_ENV_VAR) or env.get(_LITELLM_PROXY_URL_ENV_VAR)
 
-    auth_header = _parse_optional_str(
-        payload.get("auth_header"),
-        field_path=_nested_config_field(field_path, "auth_header"),
-    )
-
-    raw_auth_scheme = payload.get("auth_scheme")
+    raw_auth_scheme = payload.auth_scheme
     auth_scheme: Literal["bearer", "token", "none"] = "bearer"
     if raw_auth_scheme is not None:
         if raw_auth_scheme not in _VALID_LITELLM_AUTH_SCHEMES:
@@ -977,27 +1135,15 @@ def _parse_litellm_provider_config(
             )
         auth_scheme = raw_auth_scheme
 
-    timeout_seconds = _parse_optional_timeout_seconds(
-        payload.get("timeout_seconds"),
-        field_path=_nested_config_field(field_path, "timeout_seconds"),
-    )
-    discovery_base_url = _parse_optional_str(
-        payload.get("discovery_base_url"),
-        field_path=_nested_config_field(field_path, "discovery_base_url"),
-    )
-    model_map = _parse_string_mapping(
-        payload.get("model_map"),
-        field_path=_nested_config_field(field_path, "model_map"),
-    )
     return LiteLLMProviderConfig(
         api_key=api_key,
         api_key_env_var=api_key_env_var,
         base_url=base_url,
-        discovery_base_url=discovery_base_url,
-        auth_header=auth_header,
+        discovery_base_url=payload.discovery_base_url,
+        auth_header=payload.auth_header,
         auth_scheme=auth_scheme,
-        timeout_seconds=timeout_seconds,
-        model_map=model_map,
+        timeout_seconds=payload.timeout_seconds,
+        model_map=payload.model_map,
     )
 
 
@@ -1010,47 +1156,31 @@ def _parse_simplified_provider_config(
 ) -> SimplifiedProviderConfig | None:
     if raw_value is None:
         return None
-    if not isinstance(raw_value, dict):
-        raise ValueError(f"{field_path} must be an object when provided")
-    payload = cast(dict[str, object], raw_value)
+    payload = (
+        raw_value
+        if isinstance(raw_value, _SimplifiedProviderConfigPayload)
+        else _validate_provider_payload_model(
+            raw_value,
+            field_path=field_path,
+            model_type=_SimplifiedProviderConfigPayload,
+        )
+    )
 
-    api_key = _parse_optional_str(
-        payload.get("api_key"),
-        field_path=_nested_config_field(field_path, "api_key"),
-    )
-    api_key_env = _parse_optional_str(
-        payload.get("api_key_env_var"),
-        field_path=_nested_config_field(field_path, "api_key_env_var"),
-    )
+    api_key = payload.api_key
+    api_key_env = payload.api_key_env_var
     if api_key is None:
         if api_key_env is not None:
             api_key = env.get(api_key_env)
         else:
             api_key = env.get(api_key_env_var)
 
-    base_url = _parse_optional_str(
-        payload.get("base_url"),
-        field_path=_nested_config_field(field_path, "base_url"),
-    )
-    timeout_seconds = _parse_optional_timeout_seconds(
-        payload.get("timeout_seconds"),
-        field_path=_nested_config_field(field_path, "timeout_seconds"),
-    )
-    discovery_base_url = _parse_optional_str(
-        payload.get("discovery_base_url"),
-        field_path=_nested_config_field(field_path, "discovery_base_url"),
-    )
-    model_map = _parse_string_mapping(
-        payload.get("model_map"),
-        field_path=_nested_config_field(field_path, "model_map"),
-    )
     return SimplifiedProviderConfig(
         api_key=api_key,
         api_key_env_var=api_key_env,
-        base_url=base_url,
-        discovery_base_url=discovery_base_url,
-        timeout_seconds=timeout_seconds,
-        model_map=model_map,
+        base_url=payload.base_url,
+        discovery_base_url=payload.discovery_base_url,
+        timeout_seconds=payload.timeout_seconds,
+        model_map=payload.model_map,
     )
 
 
@@ -1256,82 +1386,6 @@ def _parse_custom_litellm_provider_configs(
             continue
         parsed[raw_provider_name] = parsed_config
     return parsed
-
-
-def _parse_string_mapping(raw_value: object, *, field_path: str) -> dict[str, str]:
-    if raw_value is None:
-        return {}
-    if not isinstance(raw_value, dict):
-        raise ValueError(f"{field_path} must be an object when provided")
-    mapping: dict[str, str] = {}
-    for raw_key, raw_item in cast(dict[object, object], raw_value).items():
-        if not isinstance(raw_key, str):
-            raise ValueError(f"{field_path} keys must be strings")
-        if not isinstance(raw_item, str):
-            raise ValueError(f"{_nested_config_field(field_path, raw_key)} must be a string")
-        if not raw_key:
-            raise ValueError(f"{field_path} keys must not be empty")
-        if not raw_item:
-            raise ValueError(f"{_nested_config_field(field_path, raw_key)} must not be empty")
-        mapping[raw_key] = raw_item
-    return mapping
-
-
-def _parse_optional_str(raw_value: object, *, field_path: str) -> str | None:
-    if raw_value is None:
-        return None
-    if not isinstance(raw_value, str):
-        raise ValueError(f"{field_path} must be a string when provided")
-    return raw_value
-
-
-def _parse_optional_timeout_seconds(raw_value: object, *, field_path: str) -> float | None:
-    if raw_value is None:
-        return None
-    if not isinstance(raw_value, int | float) or isinstance(raw_value, bool) or raw_value <= 0:
-        raise ValueError(f"{field_path} must be a number greater than 0 when provided")
-    return float(raw_value)
-
-
-def _parse_optional_positive_int(raw_value: object, *, field_path: str) -> int | None:
-    if raw_value is None:
-        return None
-    if not isinstance(raw_value, int) or isinstance(raw_value, bool) or raw_value < 1:
-        raise ValueError(
-            f"{field_path} must be an integer greater than or equal to 1 when provided"
-        )
-    return raw_value
-
-
-def _reject_unknown_keys(
-    *,
-    payload: dict[str, object],
-    source: str,
-    allowed_keys: tuple[str, ...],
-) -> None:
-    allowed = set(allowed_keys)
-    for key in payload:
-        if key not in allowed:
-            raise ValueError(f"{_nested_config_field(source, key)} is not supported")
-
-
-def _parse_string_list(raw_value: object, *, field_path: str) -> tuple[str, ...]:
-    if raw_value is None:
-        return ()
-    if not isinstance(raw_value, list):
-        raise ValueError(
-            f"{_format_runtime_config_field_error(field_path)} must be an array when provided"
-        )
-
-    raw_items = cast(list[object], raw_value)
-    parsed_items: list[str] = []
-    for index, item in enumerate(raw_items):
-        if not isinstance(item, str):
-            raise ValueError(
-                f"{_format_runtime_config_field_error(f'{field_path}[{index}]')} must be a string"
-            )
-        parsed_items.append(item)
-    return tuple(parsed_items)
 
 
 def _nested_config_field(source: str, nested: str) -> str:
