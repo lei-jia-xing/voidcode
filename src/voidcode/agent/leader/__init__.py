@@ -1,20 +1,16 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from functools import cache
-from pathlib import Path
 
-_LEADER_DIR = Path(__file__).resolve().parent
-
-
-@cache
-def _load_prompt_text(filename: str) -> str:
-    return (_LEADER_DIR / filename).read_text(encoding="utf-8").strip()
+from ..prompts import render_builtin_prompt_profile
 
 
 def render_leader_prompt(agent_preset: Mapping[str, object] | None = None) -> str:
     _ = agent_preset
-    return _load_prompt_text("base.txt")
+    prompt = render_builtin_prompt_profile("leader")
+    if prompt is None:
+        raise ValueError("builtin prompt profile 'leader' is not available")
+    return prompt
 
 
 __all__ = ["render_leader_prompt"]

@@ -1014,7 +1014,7 @@ def test_runtime_agent_payload_accepts_future_role_presets_without_execution_map
     assert agent == RuntimeAgentConfig(
         preset="worker",
         prompt_profile="worker",
-        execution_engine=None,
+        execution_engine="provider",
     )
 
 
