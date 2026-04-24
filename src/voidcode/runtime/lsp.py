@@ -27,6 +27,21 @@ from .config import RuntimeLspConfig
 
 logger = logging.getLogger(__name__)
 
+MAX_LSP_HEADER_BYTES = 8192
+MAX_LSP_MESSAGE_BYTES = 1024 * 1024
+
+
+class LspRuntimeError(ValueError):
+    """Base class for runtime-managed LSP failures."""
+
+
+class LspProtocolError(LspRuntimeError):
+    """Raised when an LSP server violates JSON-RPC/LSP framing or payload rules."""
+
+
+class LspMessageBoundsError(LspRuntimeError):
+    """Raised when an LSP message exceeds configured runtime bounds."""
+
 
 @dataclass(frozen=True, slots=True)
 class LspConfigState:
@@ -140,6 +155,8 @@ class _RunningLspServer:
     process: subprocess.Popen[bytes]
     workspace_root: Path
     initialized: bool = False
+    next_request_id: int = 1
+    request_lock: threading.Lock = field(default_factory=threading.Lock)
 
 
 @dataclass(slots=True)
@@ -675,13 +692,16 @@ class ManagedLspManager:
         server_name: str,
     ) -> dict[str, object]:
         process = running_server.process
-        self._write_message(
-            process=process,
-            message={"jsonrpc": "2.0", "id": 1, "method": method, "params": params},
-        )
-        response = self._read_message(process=process)
-        while response is not None and response.get("id") != 1:
+        with running_server.request_lock:
+            request_id = running_server.next_request_id
+            running_server.next_request_id += 1
+            self._write_message(
+                process=process,
+                message={"jsonrpc": "2.0", "id": request_id, "method": method, "params": params},
+            )
             response = self._read_message(process=process)
+            while response is not None and response.get("id") != request_id:
+                response = self._read_message(process=process)
         if response is None:
             raise ValueError(f"No response from LSP server {server_name} for {method}")
         return response
@@ -739,15 +759,29 @@ class ManagedLspManager:
             if not chunk:
                 return None
             header += chunk
+            if len(header) > MAX_LSP_HEADER_BYTES:
+                raise LspMessageBoundsError(f"LSP header exceeded {MAX_LSP_HEADER_BYTES} bytes")
 
         header_text = header.decode("ascii", errors="ignore")
         content_length = None
         for line in header_text.split("\r\n"):
             if line.lower().startswith("content-length:"):
-                content_length = int(line.split(":", 1)[1].strip())
+                raw_length = line.split(":", 1)[1].strip()
+                try:
+                    content_length = int(raw_length)
+                except ValueError as exc:
+                    raise LspProtocolError(
+                        f"invalid Content-Length from LSP server: {raw_length}"
+                    ) from exc
                 break
         if content_length is None:
-            return None
+            raise LspProtocolError("missing Content-Length in LSP response header")
+        if content_length < 0:
+            raise LspProtocolError("invalid negative Content-Length from LSP server")
+        if content_length > MAX_LSP_MESSAGE_BYTES:
+            raise LspMessageBoundsError(
+                f"LSP Content-Length {content_length} exceeds {MAX_LSP_MESSAGE_BYTES} bytes"
+            )
 
         body = b""
         while len(body) < content_length:
@@ -756,7 +790,17 @@ class ManagedLspManager:
             if not chunk:
                 return None
             body += chunk
-        return cast(dict[str, object], json.loads(body.decode("utf-8")))
+        try:
+            decoded_body = body.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise LspProtocolError("invalid UTF-8 payload from LSP server") from exc
+        try:
+            payload = json.loads(decoded_body)
+        except json.JSONDecodeError as exc:
+            raise LspProtocolError("invalid JSON payload from LSP server") from exc
+        if not isinstance(payload, dict):
+            raise LspProtocolError("expected JSON-RPC object payload from LSP server")
+        return cast(dict[str, object], payload)
 
     @staticmethod
     def _wait_for_windows_pipe(*, fd: int, timeout: float) -> bool:

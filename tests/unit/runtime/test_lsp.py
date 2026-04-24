@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from importlib import import_module
 from pathlib import Path
@@ -20,7 +21,10 @@ def _load_lsp_symbols() -> tuple[Any, ...]:
     return (
         module.DisabledLspManager,
         module.LspConfigState,
+        module.LspMessageBoundsError,
+        module.LspProtocolError,
         module.ManagedLspManager,
+        module.MAX_LSP_MESSAGE_BYTES,
         module.LspRequest,
         module.build_lsp_manager,
     )
@@ -28,13 +32,19 @@ def _load_lsp_symbols() -> tuple[Any, ...]:
 
 DisabledLspManager: Any
 LspConfigState: Any
+LspMessageBoundsError: Any
+LspProtocolError: Any
 ManagedLspManager: Any
+MAX_LSP_MESSAGE_BYTES: int
 LspRequest: Any
 build_lsp_manager: Any
 (
     DisabledLspManager,
     LspConfigState,
+    LspMessageBoundsError,
+    LspProtocolError,
     ManagedLspManager,
+    MAX_LSP_MESSAGE_BYTES,
     LspRequest,
     build_lsp_manager,
 ) = _load_lsp_symbols()
@@ -211,6 +221,119 @@ def test_managed_lsp_manager_marks_failed_startup_when_command_is_missing(tmp_pa
     assert state.servers["broken"].last_error is not None
     assert "installed and available on PATH" in str(exc_info.value)
     assert "lsp.servers.broken.command" in str(exc_info.value)
+
+
+def test_read_message_rejects_oversized_content_length() -> None:
+    read_fd, write_fd = os.pipe()
+    try:
+        os.write(write_fd, f"Content-Length: {MAX_LSP_MESSAGE_BYTES + 1}\r\n\r\n".encode("ascii"))
+
+        class _FakeProcess:
+            def __init__(self, stdout: Any) -> None:
+                self.stdout = stdout
+
+        with os.fdopen(read_fd, "rb", buffering=0) as stdout:
+            process = _FakeProcess(stdout)
+            with pytest.raises(LspMessageBoundsError, match="Content-Length"):
+                _ = ManagedLspManager._read_message(process)
+    finally:
+        os.close(write_fd)
+
+
+def test_read_message_rejects_invalid_json_payload() -> None:
+    body = b"{invalid json"
+    payload = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii") + body
+    read_fd, write_fd = os.pipe()
+    try:
+        os.write(write_fd, payload)
+
+        class _FakeProcess:
+            def __init__(self, stdout: Any) -> None:
+                self.stdout = stdout
+
+        with os.fdopen(read_fd, "rb", buffering=0) as stdout:
+            process = _FakeProcess(stdout)
+            with pytest.raises(LspProtocolError, match="invalid JSON"):
+                _ = ManagedLspManager._read_message(process)
+    finally:
+        os.close(write_fd)
+
+
+def test_read_message_rejects_non_object_json_payload() -> None:
+    body = b"[]"
+    payload = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii") + body
+    read_fd, write_fd = os.pipe()
+    try:
+        os.write(write_fd, payload)
+
+        class _FakeProcess:
+            def __init__(self, stdout: Any) -> None:
+                self.stdout = stdout
+
+        with os.fdopen(read_fd, "rb", buffering=0) as stdout:
+            process = _FakeProcess(stdout)
+            with pytest.raises(LspProtocolError, match="JSON-RPC object"):
+                _ = ManagedLspManager._read_message(process)
+    finally:
+        os.close(write_fd)
+
+
+def test_send_request_matches_generated_request_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    manager = ManagedLspManager(
+        RuntimeLspConfig(
+            enabled=True,
+            servers={"pyright": RuntimeLspServerConfig(command=("pyright-langserver", "--stdio"))},
+        )
+    )
+    module = import_module("voidcode.runtime.lsp")
+    running_server_cls = module._RunningLspServer
+
+    class _FakeProcess:
+        pass
+
+    fake_process = _FakeProcess()
+    server_config = manager.configuration.resolve("pyright")
+    assert server_config is not None
+    running_server = running_server_cls(
+        config=server_config,
+        process=fake_process,
+        workspace_root=Path("."),
+    )
+
+    sent_ids: list[int] = []
+    responses: list[dict[str, object] | None] = [
+        {"jsonrpc": "2.0", "method": "window/logMessage", "params": {"type": 3}},
+        {"jsonrpc": "2.0", "id": 1, "result": {"value": "first"}},
+        {"jsonrpc": "2.0", "id": 2, "result": {"value": "second"}},
+    ]
+
+    def _fake_write_message(*, process: object, message: dict[str, object]) -> None:
+        _ = process
+        sent_ids.append(int(message["id"]))
+
+    def _fake_read_message(*, process: object, timeout: float = 30.0) -> dict[str, object] | None:
+        _ = process, timeout
+        return responses.pop(0)
+
+    monkeypatch.setattr(manager, "_write_message", _fake_write_message)
+    monkeypatch.setattr(manager, "_read_message", _fake_read_message)
+
+    first = manager._send_request(
+        running_server,
+        method="textDocument/definition",
+        params={},
+        server_name="pyright",
+    )
+    second = manager._send_request(
+        running_server,
+        method="textDocument/references",
+        params={},
+        server_name="pyright",
+    )
+
+    assert sent_ids == [1, 2]
+    assert first["result"] == {"value": "first"}
+    assert second["result"] == {"value": "second"}
 
 
 def test_managed_lsp_manager_terminates_process_when_initialize_fails(tmp_path: Path) -> None:
@@ -672,6 +795,115 @@ def test_stale_shared_server_release_does_not_stop_replacement_process(
     shutdown_events = manager_three.shutdown()
     assert [event.event_type for event in shutdown_events] == ["runtime.lsp_server_stopped"]
     assert popen_processes[1].terminated is True
+    registry._entries.clear()
+    registry._next_generation = 1
+
+
+def test_managed_lsp_manager_shared_server_uses_single_request_id_sequence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sample_file = tmp_path / "sample.py"
+    sample_file.write_text("x = 1\n", encoding="utf-8")
+    module = import_module("voidcode.runtime.lsp")
+    registry = module._WORKSPACE_SCOPED_LSP_REGISTRY
+    registry._entries.clear()
+    registry._next_generation = 1
+
+    class _FakeProcess:
+        stdin = object()
+        stdout = object()
+
+        def __init__(self) -> None:
+            self.terminated = False
+
+        def poll(self) -> int | None:
+            return 0 if self.terminated else None
+
+        def terminate(self) -> None:
+            self.terminated = True
+
+        def kill(self) -> None:
+            self.terminated = True
+
+        def wait(self, timeout: float = 0.0) -> int:
+            _ = timeout
+            self.terminated = True
+            return 0
+
+    popen_calls: list[tuple[list[str], Path]] = []
+    sent_ids: list[int] = []
+    responses: list[dict[str, object]] = [
+        {"jsonrpc": "2.0", "id": 1, "result": {"capabilities": {}}},
+        {"jsonrpc": "2.0", "id": 2, "result": {"ok": "one"}},
+        {"jsonrpc": "2.0", "id": 3, "result": {"ok": "two"}},
+        {"jsonrpc": "2.0", "id": 4, "result": None},
+    ]
+
+    def _fake_popen(
+        command: list[str], *, cwd: Path, stdin: object, stdout: object, stderr: object
+    ) -> _FakeProcess:
+        _ = stdin, stdout, stderr
+        popen_calls.append((command, cwd))
+        return _FakeProcess()
+
+    def _fake_write_message(*, process: object, message: dict[str, object]) -> None:
+        _ = process
+        message_id = message.get("id")
+        if isinstance(message_id, int):
+            sent_ids.append(message_id)
+
+    def _fake_read_message(*, process: object, timeout: float = 30.0) -> dict[str, object] | None:
+        _ = process, timeout
+        if not responses:
+            return None
+        return responses.pop(0)
+
+    def _fake_send_notification(*args: object, **kwargs: object) -> None:
+        _ = args, kwargs
+
+    monkeypatch.setattr(module.subprocess, "Popen", _fake_popen)
+    monkeypatch.setattr(ManagedLspManager, "_write_message", staticmethod(_fake_write_message))
+    monkeypatch.setattr(ManagedLspManager, "_read_message", staticmethod(_fake_read_message))
+    monkeypatch.setattr(ManagedLspManager, "_send_notification", _fake_send_notification)
+
+    manager_one = ManagedLspManager(
+        RuntimeLspConfig(
+            enabled=True,
+            servers={"pyright": RuntimeLspServerConfig(command=("pyright-langserver", "--stdio"))},
+        )
+    )
+    manager_two = ManagedLspManager(
+        RuntimeLspConfig(
+            enabled=True,
+            servers={"pyright": RuntimeLspServerConfig(command=("pyright-langserver", "--stdio"))},
+        )
+    )
+    request = LspRequest(
+        server_name="pyright",
+        method="textDocument/definition",
+        params={"textDocument": {"uri": sample_file.as_uri()}},
+        workspace=tmp_path,
+    )
+
+    first_response = manager_one.request(request)
+    second_response = manager_two.request(request)
+
+    assert first_response.response["result"] == {"ok": "one"}
+    assert second_response.response["result"] == {"ok": "two"}
+    assert popen_calls == [(["pyright-langserver", "--stdio"], tmp_path)]
+    assert sent_ids == [1, 2, 3]
+
+    assert [event.event_type for event in manager_one.drain_events()] == [
+        "runtime.lsp_server_started"
+    ]
+    assert [event.event_type for event in manager_two.drain_events()] == [
+        "runtime.lsp_server_reused"
+    ]
+
+    assert manager_one.shutdown() == ()
+    shutdown_events = manager_two.shutdown()
+    assert sent_ids == [1, 2, 3, 4]
+    assert [event.event_type for event in shutdown_events] == ["runtime.lsp_server_stopped"]
     registry._entries.clear()
     registry._next_generation = 1
 
