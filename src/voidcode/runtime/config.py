@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from collections.abc import Mapping
 from contextlib import contextmanager
@@ -863,6 +864,10 @@ class _RuntimeMcpValidationModel(BaseModel):
         if isinstance(value, bool) or not isinstance(value, int | float):
             raise ValueError("runtime config field 'mcp.request_timeout_seconds' must be a number")
         parsed = float(value)
+        if not math.isfinite(parsed):
+            raise ValueError(
+                "runtime config field 'mcp.request_timeout_seconds' must be a finite number"
+            )
         if parsed <= 0:
             raise ValueError(
                 "runtime config field 'mcp.request_timeout_seconds' must be greater than 0"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 import pytest
@@ -145,6 +146,21 @@ def test_parse_mcp_config_defaults_transport_and_preserves_public_dataclasses() 
             {"request_timeout_seconds": 0},
             "runtime config field 'mcp.request_timeout_seconds' must be greater than 0",
             id="request-timeout-positive",
+        ),
+        pytest.param(
+            {"request_timeout_seconds": math.nan},
+            "runtime config field 'mcp.request_timeout_seconds' must be a finite number",
+            id="request-timeout-nan",
+        ),
+        pytest.param(
+            {"request_timeout_seconds": math.inf},
+            "runtime config field 'mcp.request_timeout_seconds' must be a finite number",
+            id="request-timeout-inf",
+        ),
+        pytest.param(
+            {"request_timeout_seconds": -math.inf},
+            "runtime config field 'mcp.request_timeout_seconds' must be a finite number",
+            id="request-timeout-neg-inf",
         ),
     ],
 )
