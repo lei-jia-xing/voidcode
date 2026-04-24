@@ -1967,6 +1967,243 @@ def test_runtime_waiting_approval_event_records_child_ownership(tmp_path: Path) 
     assert approval_event.payload["delegated_task_id"] is None
 
 
+def test_runtime_resume_rejects_malformed_persisted_pending_approval_policy_mode(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    waiting = runtime.run(RuntimeRequest(prompt="go", session_id="malformed-pending-approval"))
+    approval_request_id = str(waiting.events[-1].payload["request_id"])
+
+    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    connection = sqlite3.connect(database_path)
+    try:
+        row = connection.execute(
+            "SELECT pending_approval_json FROM sessions WHERE session_id = ?",
+            ("malformed-pending-approval",),
+        ).fetchone()
+        assert row is not None
+        pending_approval = json.loads(str(row[0]))
+        assert isinstance(pending_approval, dict)
+        pending_approval["policy_mode"] = "not-a-real-mode"
+        _ = connection.execute(
+            "UPDATE sessions SET pending_approval_json = ? WHERE session_id = ?",
+            (json.dumps(pending_approval, sort_keys=True), "malformed-pending-approval"),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    with pytest.raises(ValueError, match="invalid permission policy mode: not-a-real-mode"):
+        _ = resumed_runtime.resume(
+            "malformed-pending-approval",
+            approval_request_id=approval_request_id,
+            approval_decision="allow",
+        )
+
+
+def test_runtime_resume_rejects_persisted_approval_owned_by_different_session(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    waiting = runtime.run(RuntimeRequest(prompt="go", session_id="owned-approval-child"))
+    approval_request_id = str(waiting.events[-1].payload["request_id"])
+
+    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    connection = sqlite3.connect(database_path)
+    try:
+        row = connection.execute(
+            "SELECT pending_approval_json FROM sessions WHERE session_id = ?",
+            ("owned-approval-child",),
+        ).fetchone()
+        assert row is not None
+        pending_approval = json.loads(str(row[0]))
+        assert isinstance(pending_approval, dict)
+        pending_approval["owner_session_id"] = "different-child-session"
+        _ = connection.execute(
+            "UPDATE sessions SET pending_approval_json = ? WHERE session_id = ?",
+            (json.dumps(pending_approval, sort_keys=True), "owned-approval-child"),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="approval resume must target the child session that owns the approval request",
+    ):
+        _ = resumed_runtime.resume(
+            "owned-approval-child",
+            approval_request_id=approval_request_id,
+            approval_decision="allow",
+        )
+
+
+def test_runtime_resume_rejects_tampered_pending_approval_payload_against_recorded_request(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    waiting = runtime.run(RuntimeRequest(prompt="go", session_id="approval-binding-mismatch"))
+    approval_request_id = str(waiting.events[-1].payload["request_id"])
+
+    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    connection = sqlite3.connect(database_path)
+    try:
+        row = connection.execute(
+            "SELECT pending_approval_json FROM sessions WHERE session_id = ?",
+            ("approval-binding-mismatch",),
+        ).fetchone()
+        assert row is not None
+        pending_approval = json.loads(str(row[0]))
+        assert isinstance(pending_approval, dict)
+        pending_approval["arguments"] = {"path": "beta.txt", "content": "1"}
+        _ = connection.execute(
+            "UPDATE sessions SET pending_approval_json = ? WHERE session_id = ?",
+            (json.dumps(pending_approval, sort_keys=True), "approval-binding-mismatch"),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="persisted pending approval no longer matches the recorded approval request payload",
+    ):
+        _ = resumed_runtime.resume(
+            "approval-binding-mismatch",
+            approval_request_id=approval_request_id,
+            approval_decision="allow",
+        )
+
+
+def test_runtime_resume_rejects_stale_duplicate_approval_replay_when_pending_state_is_reinserted(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    waiting = runtime.run(RuntimeRequest(prompt="go", session_id="stale-approval-replay"))
+    approval_request_id = str(waiting.events[-1].payload["request_id"])
+    resolved = runtime.resume(
+        "stale-approval-replay",
+        approval_request_id=approval_request_id,
+        approval_decision="allow",
+    )
+
+    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    connection = sqlite3.connect(database_path)
+    try:
+        row = connection.execute(
+            (
+                "SELECT pending_approval_json, resume_checkpoint_json "
+                "FROM sessions WHERE session_id = ?"
+            ),
+            ("stale-approval-replay",),
+        ).fetchone()
+        assert row is not None
+        approval_event = next(
+            event for event in resolved.events if event.event_type == "runtime.approval_requested"
+        )
+        stale_pending = {
+            "request_id": approval_request_id,
+            "tool_name": "write_file",
+            "arguments": {"path": "alpha.txt", "content": "1"},
+            "target_summary": "write_file alpha.txt",
+            "reason": "non-read-only tool invocation",
+            "policy_mode": "ask",
+            "request_event_sequence": approval_event.sequence,
+            "owner_session_id": "stale-approval-replay",
+            "owner_parent_session_id": None,
+            "delegated_task_id": None,
+        }
+        _ = connection.execute(
+            (
+                "UPDATE sessions SET pending_approval_json = ?, resume_checkpoint_json = ? "
+                "WHERE session_id = ?"
+            ),
+            (
+                json.dumps(stale_pending, sort_keys=True),
+                json.dumps(
+                    {
+                        "version": 1,
+                        "kind": "approval_wait",
+                        "prompt": "go",
+                        "session_status": "waiting",
+                        "session_metadata": resolved.session.metadata,
+                        "tool_results": [],
+                        "last_event_sequence": approval_event.sequence,
+                        "pending_approval_request_id": approval_request_id,
+                        "output": None,
+                    },
+                    sort_keys=True,
+                ),
+                "stale-approval-replay",
+            ),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="approval request was already resolved; stale approval replay is not allowed",
+    ):
+        _ = resumed_runtime.resume(
+            "stale-approval-replay",
+            approval_request_id=approval_request_id,
+            approval_decision="allow",
+        )
+
+
 def test_runtime_background_task_waiting_approval_resume_finalizes_task(
     tmp_path: Path,
 ) -> None:
@@ -2083,6 +2320,58 @@ def test_runtime_background_task_waiting_approval_resume_with_fresh_runtime_pres
     assert finalized.error is None
 
 
+def test_runtime_background_task_parent_notifications_keep_waiting_then_completion_sequence(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+
+    started = runtime.start_background_task(
+        RuntimeRequest(prompt="background child", parent_session_id="leader-session")
+    )
+    running = _wait_for_background_task_session(runtime, started.task.id)
+    child_session_id = cast(str, running.session_id)
+    child_response = _wait_for_session_event(
+        runtime,
+        child_session_id,
+        "runtime.approval_requested",
+    )
+    approval_request_id = cast(str, child_response.events[-1].payload["request_id"])
+
+    _ = runtime.resume(
+        child_session_id,
+        approval_request_id=approval_request_id,
+        approval_decision="allow",
+    )
+    leader_response = _wait_for_session_event(
+        runtime,
+        "leader-session",
+        RUNTIME_BACKGROUND_TASK_COMPLETED,
+    )
+
+    delegated_events = [
+        event
+        for event in leader_response.events
+        if event.event_type
+        in (RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL, RUNTIME_BACKGROUND_TASK_COMPLETED)
+    ]
+
+    assert [event.event_type for event in delegated_events] == [
+        RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL,
+        RUNTIME_BACKGROUND_TASK_COMPLETED,
+    ]
+    assert [event.sequence for event in delegated_events] == sorted(
+        event.sequence for event in delegated_events
+    )
+    assert delegated_events[1].sequence > delegated_events[0].sequence
+    assert len({event.sequence for event in delegated_events}) == 2
+
+
 def test_runtime_background_task_approval_resume_overrides_stale_failed_task_status(
     tmp_path: Path,
 ) -> None:
@@ -2131,10 +2420,10 @@ def test_runtime_background_task_approval_resume_overrides_stale_failed_task_sta
 
     assert stale.status == "failed"
     assert resumed.session.status == "completed"
-    assert finalized.status == "completed"
-    assert finalized.error is None
-    assert result.status == "completed"
-    assert result.error is None
+    assert finalized.status == "failed"
+    assert finalized.error == "background task interrupted before completion"
+    assert result.status == "failed"
+    assert result.error == "background task interrupted before completion"
 
 
 def test_runtime_resume_rejects_parent_session_for_child_owned_approval(tmp_path: Path) -> None:
@@ -2166,6 +2455,189 @@ def test_runtime_resume_rejects_parent_session_for_child_owned_approval(tmp_path
             "leader-session",
             approval_request_id=approval_request_id,
             approval_decision="allow",
+        )
+
+
+def test_runtime_answer_question_rejects_parent_session_for_child_owned_question(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_QuestionThenDoneGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+
+    started = runtime.start_background_task(
+        RuntimeRequest(prompt="background child", parent_session_id="leader-session")
+    )
+    running = _wait_for_background_task_session(runtime, started.task.id)
+    child_session_id = cast(str, running.session_id)
+    child_response = _wait_for_session_event(
+        runtime,
+        child_session_id,
+        "runtime.question_requested",
+    )
+    question_request_id = cast(str, child_response.events[-1].payload["request_id"])
+
+    with pytest.raises(
+        ValueError,
+        match="question answer must target the child session that owns the question request",
+    ):
+        _ = runtime.answer_question(
+            session_id="leader-session",
+            question_request_id=question_request_id,
+            responses=(QuestionResponse(header="Runtime path", answers=("Reuse existing",)),),
+        )
+
+
+def test_runtime_resume_rejects_wrong_workspace_metadata_on_approval_resume(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    waiting = runtime.run(RuntimeRequest(prompt="go", session_id="wrong-workspace-approval"))
+    approval_request_id = str(waiting.events[-1].payload["request_id"])
+
+    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    connection = sqlite3.connect(database_path)
+    try:
+        row = connection.execute(
+            "SELECT metadata_json FROM sessions WHERE session_id = ?",
+            ("wrong-workspace-approval",),
+        ).fetchone()
+        assert row is not None
+        metadata = json.loads(str(row[0]))
+        assert isinstance(metadata, dict)
+        metadata_dict = cast(dict[str, object], metadata)
+        metadata_dict["workspace"] = "/tmp/other-workspace"
+        _ = connection.execute(
+            "UPDATE sessions SET metadata_json = ? WHERE session_id = ?",
+            (json.dumps(metadata_dict, sort_keys=True), "wrong-workspace-approval"),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=f"session wrong-workspace-approval does not belong to workspace {tmp_path}",
+    ):
+        _ = resumed_runtime.resume(
+            "wrong-workspace-approval",
+            approval_request_id=approval_request_id,
+            approval_decision="allow",
+        )
+
+
+def test_runtime_answer_question_rejects_wrong_workspace_metadata(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_QuestionThenDoneGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    waiting = runtime.run(RuntimeRequest(prompt="go", session_id="wrong-workspace-question"))
+    question_request_id = str(waiting.events[-1].payload["request_id"])
+
+    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    connection = sqlite3.connect(database_path)
+    try:
+        row = connection.execute(
+            "SELECT metadata_json FROM sessions WHERE session_id = ?",
+            ("wrong-workspace-question",),
+        ).fetchone()
+        assert row is not None
+        metadata = json.loads(str(row[0]))
+        assert isinstance(metadata, dict)
+        metadata_dict = cast(dict[str, object], metadata)
+        metadata_dict["workspace"] = "/tmp/other-workspace"
+        _ = connection.execute(
+            "UPDATE sessions SET metadata_json = ? WHERE session_id = ?",
+            (json.dumps(metadata_dict, sort_keys=True), "wrong-workspace-question"),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_QuestionThenDoneGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=f"session wrong-workspace-question does not belong to workspace {tmp_path}",
+    ):
+        _ = resumed_runtime.answer_question(
+            session_id="wrong-workspace-question",
+            question_request_id=question_request_id,
+            responses=(QuestionResponse(header="Runtime path", answers=("Reuse existing",)),),
+        )
+
+
+def test_runtime_answer_question_rejects_tampered_pending_question_payload_against_recorded_request(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_QuestionThenDoneGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    waiting = runtime.run(RuntimeRequest(prompt="go", session_id="question-binding-mismatch"))
+    question_request_id = str(waiting.events[-1].payload["request_id"])
+
+    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    connection = sqlite3.connect(database_path)
+    try:
+        row = connection.execute(
+            "SELECT pending_question_json FROM sessions WHERE session_id = ?",
+            ("question-binding-mismatch",),
+        ).fetchone()
+        assert row is not None
+        pending_question = json.loads(str(row[0]))
+        assert isinstance(pending_question, dict)
+        prompts = cast(list[dict[str, object]], pending_question["prompts"])
+        prompts[0]["header"] = "Wrong header"
+        _ = connection.execute(
+            "UPDATE sessions SET pending_question_json = ? WHERE session_id = ?",
+            (json.dumps(pending_question, sort_keys=True), "question-binding-mismatch"),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_QuestionThenDoneGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="persisted pending question no longer matches the recorded question request payload",
+    ):
+        _ = resumed_runtime.answer_question(
+            session_id="question-binding-mismatch",
+            question_request_id=question_request_id,
+            responses=(QuestionResponse(header="Wrong header", answers=("Reuse existing",)),),
         )
 
 
@@ -2457,8 +2929,8 @@ def test_runtime_cancel_background_task_reconciles_orphaned_queued_task(tmp_path
 
     cancelled = runtime.cancel_background_task("task-pre-cancel")
 
-    assert cancelled.status == "failed"
-    assert cancelled.error == "background task interrupted before completion"
+    assert cancelled.status == "cancelled"
+    assert cancelled.error == "cancelled before start"
     assert cancelled.cancel_requested_at is None
 
 
@@ -2554,6 +3026,125 @@ def test_runtime_background_task_worker_rechecks_cancel_before_dispatch(tmp_path
     assert final_task.status == "cancelled"
     assert final_task.error == "cancelled before dispatch"
     run_mock.assert_not_called()
+
+
+def test_runtime_reconciliation_preserves_terminal_task_even_if_child_session_disagrees(
+    tmp_path: Path,
+) -> None:
+    initial_runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    _ = initial_runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+    store = _private_attr(initial_runtime, "_session_store")
+    task_module = importlib.import_module("voidcode.runtime.task")
+    store.create_background_task(
+        workspace=tmp_path,
+        task=task_module.BackgroundTaskState(
+            task=task_module.BackgroundTaskRef(id="task-terminal-truth"),
+            status="completed",
+            request=task_module.BackgroundTaskRequestSnapshot(
+                prompt="background child",
+                parent_session_id="leader-session",
+            ),
+            session_id="child-session-terminal-truth",
+            created_at=1,
+            updated_at=2,
+            started_at=1,
+            finished_at=2,
+        ),
+    )
+    store.save_run(
+        workspace=tmp_path,
+        request=RuntimeRequest(
+            prompt="background child",
+            session_id="child-session-terminal-truth",
+            parent_session_id="leader-session",
+            metadata={
+                "background_run": True,
+                "background_task_id": "task-terminal-truth",
+            },
+        ),
+        response=RuntimeResponse(
+            session=SessionState(
+                session=runtime_service_module.SessionRef(
+                    id="child-session-terminal-truth",
+                    parent_id="leader-session",
+                ),
+                status="failed",
+                turn=1,
+                metadata={
+                    "background_run": True,
+                    "background_task_id": "task-terminal-truth",
+                },
+            ),
+            events=(
+                EventEnvelope(
+                    session_id="child-session-terminal-truth",
+                    sequence=1,
+                    event_type="runtime.request_received",
+                    source="runtime",
+                    payload={"prompt": "background child"},
+                ),
+                EventEnvelope(
+                    session_id="child-session-terminal-truth",
+                    sequence=2,
+                    event_type="runtime.failed",
+                    source="runtime",
+                    payload={"error": "child failed later"},
+                ),
+            ),
+            output=None,
+        ),
+    )
+
+    resumed_runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+
+    reconciled = resumed_runtime.load_background_task("task-terminal-truth")
+    leader_response = _wait_for_session_event(
+        resumed_runtime,
+        "leader-session",
+        RUNTIME_BACKGROUND_TASK_COMPLETED,
+    )
+
+    assert reconciled.status == "completed"
+    assert reconciled.error is None
+    assert (
+        sum(
+            event.event_type == RUNTIME_BACKGROUND_TASK_COMPLETED
+            for event in leader_response.events
+        )
+        == 1
+    )
+
+
+def test_runtime_reconciliation_turns_cancel_requested_running_task_into_cancelled(
+    tmp_path: Path,
+) -> None:
+    first_runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    store = _private_attr(first_runtime, "_session_store")
+    task_module = importlib.import_module("voidcode.runtime.task")
+    store.create_background_task(
+        workspace=tmp_path,
+        task=task_module.BackgroundTaskState(
+            task=task_module.BackgroundTaskRef(id="task-orphan-cancel-request"),
+            status="running",
+            request=task_module.BackgroundTaskRequestSnapshot(prompt="orphan cancel"),
+            session_id="orphan-cancel-session",
+            created_at=1,
+            updated_at=1,
+            started_at=1,
+        ),
+    )
+    _ = store.request_background_task_cancel(
+        workspace=tmp_path,
+        task_id="task-orphan-cancel-request",
+    )
+
+    second_runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    reconciled = second_runtime.load_background_task("task-orphan-cancel-request")
+
+    assert reconciled.status == "cancelled"
+    assert reconciled.error == "cancelled by parent during delegated execution"
+    assert reconciled.cancellation_cause == "cancelled by parent during delegated execution"
+    assert reconciled.result_available is False
 
 
 def test_runtime_initializes_extension_state_from_config_when_enabled(tmp_path: Path) -> None:
@@ -5447,6 +6038,57 @@ def test_runtime_effective_config_restores_persisted_plan_metadata(tmp_path: Pat
     assert effective.plan == plan_config
 
 
+def test_runtime_effective_runtime_config_preserves_explicit_none_plan_over_fresh_default(
+    tmp_path: Path,
+) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("plan none\n", encoding="utf-8")
+
+    initial_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(plan=None),
+    )
+    response = initial_runtime.run(
+        RuntimeRequest(prompt="read sample.txt", session_id="plan-none-session")
+    )
+    runtime_config_metadata = cast(dict[str, object], response.session.metadata["runtime_config"])
+
+    assert runtime_config_metadata["plan"] is None
+
+    extension_file = tmp_path / "resume_plan_extension.py"
+    extension_file.write_text(
+        "\n".join(
+            (
+                "from voidcode.runtime.plan import PlanPatch",
+                "",
+                "def build(options):",
+                "    contributor_type = type(",
+                "        'Contributor',",
+                "        (),",
+                "        {'apply': lambda self, context: PlanPatch()},",
+                "    )",
+                "    return contributor_type()",
+            )
+        ),
+        encoding="utf-8",
+    )
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            plan=RuntimePlanConfig(
+                provider="custom",
+                module=str(extension_file),
+                factory="build",
+                options={"mode": "fresh"},
+            )
+        ),
+    )
+
+    effective = resumed_runtime.effective_runtime_config(session_id="plan-none-session")
+
+    assert effective.plan is None
+
+
 @pytest.mark.parametrize(
     "invalid_max_steps",
     [0, -1, "4", 1.5, [], {}],
@@ -7665,7 +8307,7 @@ def test_runtime_resume_falls_back_when_persisted_checkpoint_is_missing(tmp_path
     assert resumed.output == "done"
 
 
-def test_runtime_resume_falls_back_when_persisted_checkpoint_json_is_corrupt(
+def test_runtime_resume_rejects_persisted_checkpoint_json_is_corrupt(
     tmp_path: Path,
 ) -> None:
     runtime = VoidCodeRuntime(
@@ -7696,17 +8338,15 @@ def test_runtime_resume_falls_back_when_persisted_checkpoint_json_is_corrupt(
         permission_policy=PermissionPolicy(mode="ask"),
     )
 
-    resumed = resumed_runtime.resume(
-        session_id="checkpoint-corrupt-json-session",
-        approval_request_id=approval_request_id,
-        approval_decision="allow",
-    )
-
-    assert resumed.session.status == "completed"
-    assert resumed.output == "done"
+    with pytest.raises(ValueError, match="persisted resume checkpoint JSON is malformed"):
+        _ = resumed_runtime.resume(
+            session_id="checkpoint-corrupt-json-session",
+            approval_request_id=approval_request_id,
+            approval_decision="allow",
+        )
 
 
-def test_runtime_resume_falls_back_when_persisted_checkpoint_payload_is_not_object(
+def test_runtime_resume_rejects_persisted_checkpoint_payload_is_not_object(
     tmp_path: Path,
 ) -> None:
     runtime = VoidCodeRuntime(
@@ -7737,14 +8377,281 @@ def test_runtime_resume_falls_back_when_persisted_checkpoint_payload_is_not_obje
         permission_policy=PermissionPolicy(mode="ask"),
     )
 
-    resumed = resumed_runtime.resume(
-        session_id="checkpoint-non-object-session",
-        approval_request_id=approval_request_id,
-        approval_decision="allow",
+    with pytest.raises(
+        ValueError,
+        match="persisted resume checkpoint payload must decode to an object",
+    ):
+        _ = resumed_runtime.resume(
+            session_id="checkpoint-non-object-session",
+            approval_request_id=approval_request_id,
+            approval_decision="allow",
+        )
+
+
+def test_runtime_resume_rejects_malformed_persisted_checkpoint_payload_with_valid_json_object(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
     )
 
-    assert resumed.session.status == "completed"
-    assert resumed.output == "done"
+    waiting = runtime.run(RuntimeRequest(prompt="go", session_id="checkpoint-malformed-object"))
+    approval_request_id = str(waiting.events[-1].payload["request_id"])
+
+    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    connection = sqlite3.connect(database_path)
+    try:
+        _ = connection.execute(
+            "UPDATE sessions SET resume_checkpoint_json = ? WHERE session_id = ?",
+            (
+                json.dumps(
+                    {
+                        "kind": "approval_wait",
+                        "version": 1,
+                        "pending_approval_request_id": approval_request_id,
+                        "session_metadata": waiting.session.metadata,
+                        "tool_results": [],
+                    },
+                    sort_keys=True,
+                ),
+                "checkpoint-malformed-object",
+            ),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="persisted approval resume checkpoint prompt must be a string",
+    ):
+        _ = resumed_runtime.resume(
+            session_id="checkpoint-malformed-object",
+            approval_request_id=approval_request_id,
+            approval_decision="allow",
+        )
+
+
+def test_runtime_resume_rejects_checkpoint_kind_mismatch(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    waiting = runtime.run(RuntimeRequest(prompt="go", session_id="checkpoint-kind-mismatch"))
+    approval_request_id = str(waiting.events[-1].payload["request_id"])
+
+    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    connection = sqlite3.connect(database_path)
+    try:
+        row = connection.execute(
+            "SELECT resume_checkpoint_json FROM sessions WHERE session_id = ?",
+            ("checkpoint-kind-mismatch",),
+        ).fetchone()
+        assert row is not None
+        checkpoint = cast(dict[str, object], json.loads(str(row[0])))
+        checkpoint["kind"] = "question_wait"
+        _ = connection.execute(
+            "UPDATE sessions SET resume_checkpoint_json = ? WHERE session_id = ?",
+            (json.dumps(checkpoint, sort_keys=True), "checkpoint-kind-mismatch"),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"persisted resume checkpoint kind mismatch: "
+            r"expected 'approval_wait', got 'question_wait'"
+        ),
+    ):
+        _ = resumed_runtime.resume(
+            session_id="checkpoint-kind-mismatch",
+            approval_request_id=approval_request_id,
+            approval_decision="allow",
+        )
+
+
+def test_runtime_resume_rejects_checkpoint_version_mismatch(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    waiting = runtime.run(RuntimeRequest(prompt="go", session_id="checkpoint-version-mismatch"))
+    approval_request_id = str(waiting.events[-1].payload["request_id"])
+
+    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    connection = sqlite3.connect(database_path)
+    try:
+        row = connection.execute(
+            "SELECT resume_checkpoint_json FROM sessions WHERE session_id = ?",
+            ("checkpoint-version-mismatch",),
+        ).fetchone()
+        assert row is not None
+        checkpoint = cast(dict[str, object], json.loads(str(row[0])))
+        checkpoint["version"] = 99
+        _ = connection.execute(
+            "UPDATE sessions SET resume_checkpoint_json = ? WHERE session_id = ?",
+            (json.dumps(checkpoint, sort_keys=True), "checkpoint-version-mismatch"),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"persisted resume checkpoint version mismatch: expected 1, got 99",
+    ):
+        _ = resumed_runtime.resume(
+            session_id="checkpoint-version-mismatch",
+            approval_request_id=approval_request_id,
+            approval_decision="allow",
+        )
+
+
+def test_runtime_resume_rejects_malformed_persisted_checkpoint_tool_result_entry(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_MultiStepStubGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    waiting = runtime.run(RuntimeRequest(prompt="go", session_id="checkpoint-bad-tool-result"))
+    first_approval_request_id = str(waiting.events[-1].payload["request_id"])
+    second_waiting = runtime.resume(
+        session_id="checkpoint-bad-tool-result",
+        approval_request_id=first_approval_request_id,
+        approval_decision="allow",
+    )
+    second_approval_request_id = str(second_waiting.events[-1].payload["request_id"])
+
+    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    connection = sqlite3.connect(database_path)
+    try:
+        row = connection.execute(
+            "SELECT resume_checkpoint_json FROM sessions WHERE session_id = ?",
+            ("checkpoint-bad-tool-result",),
+        ).fetchone()
+        assert row is not None
+        checkpoint = cast(dict[str, object], json.loads(str(row[0])))
+        checkpoint["tool_results"] = [
+            {
+                "tool_name": "write_file",
+                "status": "ok",
+                "data": "not-an-object",
+                "content": None,
+                "error": None,
+            }
+        ]
+        _ = connection.execute(
+            "UPDATE sessions SET resume_checkpoint_json = ? WHERE session_id = ?",
+            (json.dumps(checkpoint, sort_keys=True), "checkpoint-bad-tool-result"),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_MultiStepStubGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="persisted resume checkpoint tool_results are malformed",
+    ):
+        _ = resumed_runtime.resume(
+            session_id="checkpoint-bad-tool-result",
+            approval_request_id=second_approval_request_id,
+            approval_decision="allow",
+        )
+
+
+def test_runtime_answer_question_rejects_checkpoint_kind_mismatch(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_QuestionThenDoneGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    waiting = runtime.run(
+        RuntimeRequest(prompt="go", session_id="question-checkpoint-kind-mismatch")
+    )
+    question_request_id = str(waiting.events[-1].payload["request_id"])
+
+    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    connection = sqlite3.connect(database_path)
+    try:
+        row = connection.execute(
+            "SELECT resume_checkpoint_json FROM sessions WHERE session_id = ?",
+            ("question-checkpoint-kind-mismatch",),
+        ).fetchone()
+        assert row is not None
+        checkpoint = cast(dict[str, object], json.loads(str(row[0])))
+        checkpoint["kind"] = "approval_wait"
+        _ = connection.execute(
+            "UPDATE sessions SET resume_checkpoint_json = ? WHERE session_id = ?",
+            (json.dumps(checkpoint, sort_keys=True), "question-checkpoint-kind-mismatch"),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_QuestionThenDoneGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"persisted resume checkpoint kind mismatch: "
+            r"expected 'question_wait', got 'approval_wait'"
+        ),
+    ):
+        _ = resumed_runtime.answer_question(
+            session_id="question-checkpoint-kind-mismatch",
+            question_request_id=question_request_id,
+            responses=(QuestionResponse(header="Runtime path", answers=("Reuse existing",)),),
+        )
 
 
 def test_runtime_resume_fallback_keeps_successful_tool_results_with_null_error(

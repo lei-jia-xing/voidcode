@@ -33,6 +33,8 @@ from .task import (
     BackgroundTaskState,
     BackgroundTaskStatus,
     StoredBackgroundTaskSummary,
+    is_background_task_terminal,
+    is_background_task_transition_allowed,
     validate_background_task_id,
 )
 
@@ -162,6 +164,86 @@ class SessionEventAppender(Protocol):
 @final
 class SqliteSessionStore:
     _database_path: Path | None
+    _RESUME_CHECKPOINT_KINDS = frozenset({"approval_wait", "question_wait", "terminal"})
+
+    _CANONICAL_SCHEMA: dict[str, tuple[tuple[str, str, int, str | None, int], ...]] = {
+        "sessions": (
+            ("session_id", "TEXT", 0, None, 1),
+            ("parent_session_id", "TEXT", 0, None, 0),
+            ("workspace", "TEXT", 1, None, 0),
+            ("status", "TEXT", 1, None, 0),
+            ("turn", "INTEGER", 1, None, 0),
+            ("prompt", "TEXT", 1, None, 0),
+            ("output", "TEXT", 0, None, 0),
+            ("metadata_json", "TEXT", 1, None, 0),
+            ("pending_approval_json", "TEXT", 0, None, 0),
+            ("pending_question_json", "TEXT", 0, None, 0),
+            ("resume_checkpoint_json", "TEXT", 0, None, 0),
+            ("created_at", "INTEGER", 1, None, 0),
+            ("updated_at", "INTEGER", 1, None, 0),
+            ("last_event_sequence", "INTEGER", 1, None, 0),
+        ),
+        "session_events": (
+            ("session_id", "TEXT", 1, None, 1),
+            ("sequence", "INTEGER", 1, None, 2),
+            ("event_type", "TEXT", 1, None, 0),
+            ("source", "TEXT", 1, None, 0),
+            ("payload_json", "TEXT", 1, None, 0),
+        ),
+        "background_tasks": (
+            ("task_id", "TEXT", 0, None, 1),
+            ("workspace", "TEXT", 1, None, 0),
+            ("status", "TEXT", 1, None, 0),
+            ("prompt", "TEXT", 1, None, 0),
+            ("request_session_id", "TEXT", 0, None, 0),
+            ("request_parent_session_id", "TEXT", 0, None, 0),
+            ("request_metadata_json", "TEXT", 1, None, 0),
+            ("requested_child_session_id", "TEXT", 0, None, 0),
+            ("routing_mode", "TEXT", 0, None, 0),
+            ("routing_category", "TEXT", 0, None, 0),
+            ("routing_subagent_type", "TEXT", 0, None, 0),
+            ("routing_description", "TEXT", 0, None, 0),
+            ("routing_command", "TEXT", 0, None, 0),
+            ("approval_request_id", "TEXT", 0, None, 0),
+            ("question_request_id", "TEXT", 0, None, 0),
+            ("cancellation_cause", "TEXT", 0, None, 0),
+            ("result_available", "INTEGER", 1, "0", 0),
+            ("allocate_session_id", "INTEGER", 1, None, 0),
+            ("session_id", "TEXT", 0, None, 0),
+            ("error", "TEXT", 0, None, 0),
+            ("cancel_requested_at", "INTEGER", 0, None, 0),
+            ("created_at", "INTEGER", 1, None, 0),
+            ("updated_at", "INTEGER", 1, None, 0),
+            ("started_at", "INTEGER", 0, None, 0),
+            ("finished_at", "INTEGER", 0, None, 0),
+        ),
+        "session_notifications": (
+            ("notification_id", "TEXT", 0, None, 1),
+            ("workspace", "TEXT", 1, None, 0),
+            ("session_id", "TEXT", 1, None, 0),
+            ("kind", "TEXT", 1, None, 0),
+            ("status", "TEXT", 1, None, 0),
+            ("summary", "TEXT", 1, None, 0),
+            ("payload_json", "TEXT", 1, None, 0),
+            ("event_sequence", "INTEGER", 1, None, 0),
+            ("dedupe_key", "TEXT", 1, None, 0),
+            ("created_at", "INTEGER", 1, None, 0),
+            ("acknowledged_at", "INTEGER", 0, None, 0),
+        ),
+        "session_event_deliveries": (
+            ("workspace", "TEXT", 1, None, 1),
+            ("session_id", "TEXT", 1, None, 2),
+            ("dedupe_key", "TEXT", 1, None, 3),
+            ("delivered_at", "INTEGER", 1, None, 0),
+        ),
+    }
+    _CANONICAL_UNIQUE_INDEXES: dict[str, frozenset[tuple[str, ...]]] = {
+        "sessions": frozenset(),
+        "session_events": frozenset(),
+        "background_tasks": frozenset(),
+        "session_notifications": frozenset({("workspace", "dedupe_key")}),
+        "session_event_deliveries": frozenset(),
+    }
 
     def __init__(self, *, database_path: Path | None = None) -> None:
         self._database_path = database_path
@@ -178,12 +260,12 @@ class SqliteSessionStore:
         connection = sqlite3.connect(database_path)
         try:
             connection.row_factory = sqlite3.Row
-            self._ensure_schema(connection)
+            self._ensure_schema(connection=connection, database_path=database_path)
             yield connection
         finally:
             connection.close()
 
-    def _ensure_schema(self, connection: sqlite3.Connection) -> None:
+    def _ensure_schema(self, *, connection: sqlite3.Connection, database_path: Path) -> None:
         _ = connection.execute(
             """
             CREATE TABLE IF NOT EXISTS sessions (
@@ -276,99 +358,142 @@ class SqliteSessionStore:
             )
             """
         )
-        user_version = self._read_user_version(connection=connection)
-        columns = {
-            cast(str, row["name"])
-            for row in cast(
-                list[sqlite3.Row], connection.execute("PRAGMA table_info(sessions)").fetchall()
-            )
-        }
-        background_task_columns = {
+        self._assert_canonical_schema(connection=connection, database_path=database_path)
+        connection.commit()
+
+    @classmethod
+    def _assert_canonical_schema(
+        cls, *, connection: sqlite3.Connection, database_path: Path
+    ) -> None:
+        existing_tables = {
             cast(str, row["name"])
             for row in cast(
                 list[sqlite3.Row],
-                connection.execute("PRAGMA table_info(background_tasks)").fetchall(),
+                connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                ).fetchall(),
             )
         }
-        target_user_version = user_version
-        if "parent_session_id" not in columns:
-            _ = connection.execute("ALTER TABLE sessions ADD COLUMN parent_session_id TEXT")
-            target_user_version = max(target_user_version, 5)
-        if "pending_approval_json" not in columns:
-            _ = connection.execute("ALTER TABLE sessions ADD COLUMN pending_approval_json TEXT")
-            target_user_version = max(target_user_version, 1)
-        if "pending_question_json" not in columns:
-            _ = connection.execute("ALTER TABLE sessions ADD COLUMN pending_question_json TEXT")
-            target_user_version = max(target_user_version, 7)
-        if "resume_checkpoint_json" not in columns:
-            _ = connection.execute("ALTER TABLE sessions ADD COLUMN resume_checkpoint_json TEXT")
-            target_user_version = max(target_user_version, 3)
-        if "request_parent_session_id" not in background_task_columns:
-            _ = connection.execute(
-                "ALTER TABLE background_tasks ADD COLUMN request_parent_session_id TEXT"
+        missing_tables = sorted(set(cls._CANONICAL_SCHEMA) - existing_tables)
+        if missing_tables:
+            cls._raise_schema_mismatch(
+                database_path=database_path,
+                detail=f"missing tables: {', '.join(missing_tables)}",
             )
-            target_user_version = max(target_user_version, 6)
-        if "requested_child_session_id" not in background_task_columns:
-            _ = connection.execute(
-                "ALTER TABLE background_tasks ADD COLUMN requested_child_session_id TEXT"
+        for table_name, expected_columns in cls._CANONICAL_SCHEMA.items():
+            cls._assert_canonical_table_shape(
+                connection=connection,
+                database_path=database_path,
+                table_name=table_name,
+                expected_columns=expected_columns,
             )
-            target_user_version = max(target_user_version, 8)
-        if "routing_mode" not in background_task_columns:
-            _ = connection.execute("ALTER TABLE background_tasks ADD COLUMN routing_mode TEXT")
-            target_user_version = max(target_user_version, 8)
-        if "routing_category" not in background_task_columns:
-            _ = connection.execute("ALTER TABLE background_tasks ADD COLUMN routing_category TEXT")
-            target_user_version = max(target_user_version, 8)
-        if "routing_subagent_type" not in background_task_columns:
-            _ = connection.execute(
-                "ALTER TABLE background_tasks ADD COLUMN routing_subagent_type TEXT"
+        for table_name, expected_indexes in cls._CANONICAL_UNIQUE_INDEXES.items():
+            cls._assert_canonical_unique_indexes(
+                connection=connection,
+                database_path=database_path,
+                table_name=table_name,
+                expected_indexes=expected_indexes,
             )
-            target_user_version = max(target_user_version, 8)
-        if "routing_description" not in background_task_columns:
-            _ = connection.execute(
-                "ALTER TABLE background_tasks ADD COLUMN routing_description TEXT"
+
+    @classmethod
+    def _assert_canonical_table_shape(
+        cls,
+        *,
+        connection: sqlite3.Connection,
+        database_path: Path,
+        table_name: str,
+        expected_columns: tuple[tuple[str, str, int, str | None, int], ...],
+    ) -> None:
+        actual_columns = cls._table_columns(connection=connection, table_name=table_name)
+        expected_column_names = {column[0] for column in expected_columns}
+        actual_column_names = {column[0] for column in actual_columns}
+        missing_columns = sorted(expected_column_names - actual_column_names)
+        if missing_columns:
+            cls._raise_schema_mismatch(
+                database_path=database_path,
+                detail=f"table '{table_name}' missing columns: {', '.join(missing_columns)}",
             )
-            target_user_version = max(target_user_version, 8)
-        if "routing_command" not in background_task_columns:
-            _ = connection.execute("ALTER TABLE background_tasks ADD COLUMN routing_command TEXT")
-            target_user_version = max(target_user_version, 8)
-        if "approval_request_id" not in background_task_columns:
-            _ = connection.execute(
-                "ALTER TABLE background_tasks ADD COLUMN approval_request_id TEXT"
+        unexpected_columns = sorted(actual_column_names - expected_column_names)
+        if unexpected_columns:
+            cls._raise_schema_mismatch(
+                database_path=database_path,
+                detail=(
+                    f"table '{table_name}' has unexpected columns: {', '.join(unexpected_columns)}"
+                ),
             )
-            target_user_version = max(target_user_version, 8)
-        if "question_request_id" not in background_task_columns:
-            _ = connection.execute(
-                "ALTER TABLE background_tasks ADD COLUMN question_request_id TEXT"
+        if actual_columns != expected_columns:
+            cls._raise_schema_mismatch(
+                database_path=database_path,
+                detail=f"table '{table_name}' shape does not match canonical runtime schema",
             )
-            target_user_version = max(target_user_version, 8)
-        if "cancellation_cause" not in background_task_columns:
-            _ = connection.execute(
-                "ALTER TABLE background_tasks ADD COLUMN cancellation_cause TEXT"
+
+    @classmethod
+    def _assert_canonical_unique_indexes(
+        cls,
+        *,
+        connection: sqlite3.Connection,
+        database_path: Path,
+        table_name: str,
+        expected_indexes: frozenset[tuple[str, ...]],
+    ) -> None:
+        actual_indexes = cls._table_unique_indexes(connection=connection, table_name=table_name)
+        if actual_indexes == expected_indexes:
+            return
+        expected = ", ".join("(" + ", ".join(index) + ")" for index in sorted(expected_indexes))
+        actual = ", ".join("(" + ", ".join(index) + ")" for index in sorted(actual_indexes))
+        cls._raise_schema_mismatch(
+            database_path=database_path,
+            detail=(
+                f"table '{table_name}' unique indexes do not match canonical runtime schema: "
+                f"expected [{expected}] got [{actual}]"
+            ),
+        )
+
+    @staticmethod
+    def _table_columns(
+        *, connection: sqlite3.Connection, table_name: str
+    ) -> tuple[tuple[str, str, int, str | None, int], ...]:
+        return tuple(
+            (
+                cast(str, row["name"]),
+                cast(str, row["type"]),
+                cast(int, row["notnull"]),
+                cast(str | None, row["dflt_value"]),
+                cast(int, row["pk"]),
             )
-            target_user_version = max(target_user_version, 8)
-        if "result_available" not in background_task_columns:
-            _ = connection.execute(
-                "ALTER TABLE background_tasks ADD COLUMN result_available INTEGER NOT NULL DEFAULT 0"  # noqa: E501
+            for row in cast(
+                list[sqlite3.Row],
+                connection.execute(f"PRAGMA table_info({table_name})").fetchall(),
             )
-            target_user_version = max(target_user_version, 8)
-        if user_version < 2:
-            target_user_version = max(target_user_version, 2)
-        if user_version < 3:
-            target_user_version = max(target_user_version, 3)
-        if user_version < 4:
-            target_user_version = max(target_user_version, 4)
-        if user_version < 5:
-            target_user_version = max(target_user_version, 5)
-        if user_version < 6:
-            target_user_version = max(target_user_version, 6)
-        if user_version < 7:
-            target_user_version = max(target_user_version, 7)
-        if user_version < 8:
-            target_user_version = max(target_user_version, 8)
-        if target_user_version != user_version:
-            _ = connection.execute(f"PRAGMA user_version = {target_user_version}")
-        connection.commit()
+        )
+
+    @staticmethod
+    def _table_unique_indexes(
+        *, connection: sqlite3.Connection, table_name: str
+    ) -> frozenset[tuple[str, ...]]:
+        return frozenset(
+            tuple(
+                cast(str, column_row["name"])
+                for column_row in cast(
+                    list[sqlite3.Row],
+                    connection.execute(
+                        f"PRAGMA index_info({cast(str, index_row['name'])})"
+                    ).fetchall(),
+                )
+            )
+            for index_row in cast(
+                list[sqlite3.Row],
+                connection.execute(f"PRAGMA index_list({table_name})").fetchall(),
+            )
+            if cast(int, index_row["unique"]) == 1 and cast(str, index_row["origin"]) == "u"
+        )
+
+    @staticmethod
+    def _raise_schema_mismatch(*, database_path: Path, detail: str) -> None:
+        raise RuntimeError(
+            "sqlite runtime schema mismatch: "
+            f"{detail}. Remove '{database_path}' and rerun to reset local runtime storage."
+        )
 
     @staticmethod
     def _parse_session_status(value: str) -> SessionStatus:
@@ -397,6 +522,249 @@ class SqliteSessionStore:
             raise ValueError(f"invalid background task status: {value}")
         return value
 
+    @staticmethod
+    def _session_last_event_sequence(events: tuple[EventEnvelope, ...]) -> int:
+        return events[-1].sequence if events else 0
+
+    @staticmethod
+    def _session_events_payload(
+        events: tuple[EventEnvelope, ...],
+    ) -> list[tuple[str, int, str, str, str]]:
+        return [
+            (
+                event.session_id,
+                event.sequence,
+                event.event_type,
+                event.source,
+                json.dumps(event.payload, sort_keys=True),
+            )
+            for event in events
+        ]
+
+    def _replace_session_events(
+        self,
+        *,
+        connection: sqlite3.Connection,
+        session_id: str,
+        events: tuple[EventEnvelope, ...],
+    ) -> None:
+        _ = connection.execute("DELETE FROM session_events WHERE session_id = ?", (session_id,))
+        _ = connection.executemany(
+            """
+            INSERT INTO session_events (session_id, sequence, event_type, source, payload_json)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            self._session_events_payload(events),
+        )
+
+    def _write_session_snapshot(
+        self,
+        *,
+        connection: sqlite3.Connection,
+        workspace: Path,
+        request: RuntimeRequest,
+        response: RuntimeResponse,
+        pending_approval_json: str | None,
+        pending_question_json: str | None,
+        resume_checkpoint: dict[str, object],
+    ) -> int:
+        session_id = response.session.session.id
+        created_at = self._read_created_at(connection=connection, session_id=session_id)
+        updated_at = self._next_timestamp(connection=connection)
+        _ = connection.execute(
+            """
+            INSERT OR REPLACE INTO sessions (
+                session_id, parent_session_id, workspace, status, turn, prompt, output,
+                metadata_json, pending_approval_json, pending_question_json,
+                resume_checkpoint_json, created_at, updated_at,
+                last_event_sequence
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                session_id,
+                response.session.session.parent_id,
+                str(workspace),
+                response.session.status,
+                response.session.turn,
+                request.prompt,
+                response.output,
+                json.dumps(response.session.metadata, sort_keys=True),
+                pending_approval_json,
+                pending_question_json,
+                json.dumps(resume_checkpoint, sort_keys=True),
+                created_at,
+                updated_at,
+                self._session_last_event_sequence(response.events),
+            ),
+        )
+        self._replace_session_events(
+            connection=connection,
+            session_id=session_id,
+            events=response.events,
+        )
+        return updated_at
+
+    @staticmethod
+    def _checkpoint_skill_snapshot(
+        metadata: dict[str, object],
+    ) -> tuple[object | None, object | None, dict[str, object]]:
+        snapshot_payload = metadata.get("skill_snapshot")
+        snapshot = (
+            cast(dict[str, object], snapshot_payload) if isinstance(snapshot_payload, dict) else {}
+        )
+        binding_payload = snapshot.get("binding_snapshot")
+        binding_snapshot = (
+            cast(dict[str, object], binding_payload) if isinstance(binding_payload, dict) else {}
+        )
+        return snapshot.get("snapshot_hash"), snapshot.get("snapshot_version"), binding_snapshot
+
+    @classmethod
+    def _resume_checkpoint_base(
+        cls,
+        *,
+        request: RuntimeRequest,
+        response: RuntimeResponse,
+        kind: str,
+    ) -> dict[str, object]:
+        snapshot_hash, snapshot_version, binding_snapshot = cls._checkpoint_skill_snapshot(
+            response.session.metadata
+        )
+        return {
+            "version": 1,
+            "kind": kind,
+            "prompt": request.prompt,
+            "session_status": response.session.status,
+            "session_metadata": response.session.metadata,
+            "skill_snapshot_hash": snapshot_hash,
+            "skill_snapshot_version": snapshot_version,
+            "skill_binding_snapshot": binding_snapshot,
+            "tool_results": cls._tool_results_from_events(response.events),
+            "last_event_sequence": cls._session_last_event_sequence(response.events),
+            "output": response.output,
+        }
+
+    @staticmethod
+    def _decode_json_object_payload(
+        payload: str,
+        *,
+        malformed_message: str,
+        non_object_message: str,
+    ) -> dict[str, object]:
+        try:
+            decoded = json.loads(payload)
+        except json.JSONDecodeError as exc:
+            raise ValueError(malformed_message) from exc
+        if not isinstance(decoded, dict):
+            raise ValueError(non_object_message)
+        return cast(dict[str, object], decoded)
+
+    @classmethod
+    def _decode_resume_checkpoint_payload(cls, payload: str) -> dict[str, object]:
+        checkpoint = cls._decode_json_object_payload(
+            payload,
+            malformed_message="persisted resume checkpoint JSON is malformed",
+            non_object_message="persisted resume checkpoint payload must decode to an object",
+        )
+        kind = checkpoint.get("kind")
+        if not isinstance(kind, str) or kind not in cls._RESUME_CHECKPOINT_KINDS:
+            raise ValueError(f"persisted resume checkpoint kind is invalid: {kind!r}")
+        return checkpoint
+
+    @staticmethod
+    def _background_task_runtime_state_defaults() -> dict[str, object]:
+        return {
+            "approval_request_id": None,
+            "question_request_id": None,
+            "cancellation_cause": None,
+            "result_available": 0,
+        }
+
+    @classmethod
+    def _request_id_from_pending_payload(cls, payload: str | None) -> str | None:
+        if payload is None:
+            return None
+        parsed = json.loads(payload)
+        if not isinstance(parsed, dict):
+            return None
+        request_id = cast(dict[str, object], parsed).get("request_id")
+        return request_id if isinstance(request_id, str) else None
+
+    @classmethod
+    def _background_task_runtime_state_from_session_row(
+        cls, row: sqlite3.Row | None
+    ) -> dict[str, object]:
+        if row is None:
+            return cls._background_task_runtime_state_defaults()
+        status = cast(str, row["status"])
+        return {
+            "approval_request_id": cls._request_id_from_pending_payload(
+                cast(str | None, row["pending_approval_json"])
+            ),
+            "question_request_id": cls._request_id_from_pending_payload(
+                cast(str | None, row["pending_question_json"])
+            ),
+            "cancellation_cause": None,
+            "result_available": 1 if status in {"waiting", "completed", "failed"} else 0,
+        }
+
+    @classmethod
+    def _background_task_summary_from_row(cls, row: sqlite3.Row) -> StoredBackgroundTaskSummary:
+        return StoredBackgroundTaskSummary(
+            task=BackgroundTaskRef(id=cast(str, row["task_id"])),
+            status=cls._parse_background_task_status(cast(str, row["status"])),
+            prompt=cast(str, row["prompt"]),
+            session_id=cast(str | None, row["session_id"]),
+            error=cast(str | None, row["error"]),
+            created_at=cast(int, row["created_at"]),
+            updated_at=cast(int, row["updated_at"]),
+        )
+
+    @staticmethod
+    def _background_task_durable_payload(row: sqlite3.Row) -> dict[str, object]:
+        durable_payload: dict[str, object] = {
+            "task_id": cast(str, row["task_id"]),
+            "parent_session_id": cast(str | None, row["request_parent_session_id"]),
+            "status": cast(str, row["status"]),
+            "result_available": bool(cast(int, row["result_available"])),
+        }
+        optional_fields: tuple[tuple[str, str], ...] = (
+            ("requested_child_session_id", "requested_child_session_id"),
+            ("child_session_id", "session_id"),
+            ("approval_request_id", "approval_request_id"),
+            ("question_request_id", "question_request_id"),
+            ("routing_mode", "routing_mode"),
+            ("routing_category", "routing_category"),
+            ("routing_subagent_type", "routing_subagent_type"),
+            ("routing_description", "routing_description"),
+            ("routing_command", "routing_command"),
+            ("cancellation_cause", "cancellation_cause"),
+        )
+        for payload_key, row_key in optional_fields:
+            value = row[row_key]
+            if value is not None:
+                durable_payload[payload_key] = cast(object, value)
+        return durable_payload
+
+    @staticmethod
+    def _pending_question_payload(pending_question: PendingQuestion) -> dict[str, object]:
+        return {
+            "request_id": pending_question.request_id,
+            "tool_name": pending_question.tool_name,
+            "arguments": pending_question.arguments,
+            "prompts": [
+                {
+                    "question": prompt.question,
+                    "header": prompt.header,
+                    "multiple": prompt.multiple,
+                    "options": [
+                        {"label": option.label, "description": option.description}
+                        for option in prompt.options
+                    ],
+                }
+                for prompt in pending_question.prompts
+            ],
+        }
+
     def save_run(
         self,
         *,
@@ -407,60 +775,23 @@ class SqliteSessionStore:
     ) -> None:
         session_id = response.session.session.id
         with self._connect(workspace) as connection:
-            created_at = self._read_created_at(connection=connection, session_id=session_id)
-            updated_at = self._next_timestamp(connection=connection)
-            _ = connection.execute(
-                """
-                INSERT OR REPLACE INTO sessions (
-                    session_id, parent_session_id, workspace, status, turn, prompt, output,
-                    metadata_json, pending_approval_json, pending_question_json,
-                    resume_checkpoint_json, created_at, updated_at,
-                    last_event_sequence
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,  # noqa: E501
-                (
-                    session_id,
-                    response.session.session.parent_id,
-                    str(workspace),
-                    response.session.status,
-                    response.session.turn,
-                    request.prompt,
-                    response.output,
-                    json.dumps(response.session.metadata, sort_keys=True),
+            updated_at = self._write_session_snapshot(
+                connection=connection,
+                workspace=workspace,
+                request=request,
+                response=response,
+                pending_approval_json=(
                     None
                     if clear_pending_approval
                     else self._read_pending_approval_json(
                         connection=connection, session_id=session_id
-                    ),
-                    None,
-                    json.dumps(
-                        self._terminal_resume_checkpoint(
-                            request=request,
-                            response=response,
-                        ),
-                        sort_keys=True,
-                    ),
-                    created_at,
-                    updated_at,
-                    response.events[-1].sequence if response.events else 0,
-                ),
-            )
-            _ = connection.execute("DELETE FROM session_events WHERE session_id = ?", (session_id,))
-            _ = connection.executemany(
-                """
-                INSERT INTO session_events (session_id, sequence, event_type, source, payload_json)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                [
-                    (
-                        event.session_id,
-                        event.sequence,
-                        event.event_type,
-                        event.source,
-                        json.dumps(event.payload, sort_keys=True),
                     )
-                    for event in response.events
-                ],
+                ),
+                pending_question_json=None,
+                resume_checkpoint=self._terminal_resume_checkpoint(
+                    request=request,
+                    response=response,
+                ),
             )
             self._sync_background_task_durable_state(
                 connection=connection,
@@ -514,59 +845,19 @@ class SqliteSessionStore:
         response: RuntimeResponse,
         pending_approval: PendingApproval,
     ) -> None:
-        session_id = response.session.session.id
         with self._connect(workspace) as connection:
-            created_at = self._read_created_at(connection=connection, session_id=session_id)
-            updated_at = self._next_timestamp(connection=connection)
-            _ = connection.execute(
-                """
-                INSERT OR REPLACE INTO sessions (
-                    session_id, parent_session_id, workspace, status, turn, prompt, output,
-                    metadata_json, pending_approval_json, pending_question_json,
-                    resume_checkpoint_json, created_at, updated_at,
-                    last_event_sequence
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,  # noqa: E501
-                (
-                    session_id,
-                    response.session.session.parent_id,
-                    str(workspace),
-                    response.session.status,
-                    response.session.turn,
-                    request.prompt,
-                    response.output,
-                    json.dumps(response.session.metadata, sort_keys=True),
-                    json.dumps(asdict(pending_approval), sort_keys=True),
-                    None,
-                    json.dumps(
-                        self._approval_wait_resume_checkpoint(
-                            request=request,
-                            response=response,
-                            pending_approval=pending_approval,
-                        ),
-                        sort_keys=True,
-                    ),
-                    created_at,
-                    updated_at,
-                    response.events[-1].sequence if response.events else 0,
+            updated_at = self._write_session_snapshot(
+                connection=connection,
+                workspace=workspace,
+                request=request,
+                response=response,
+                pending_approval_json=json.dumps(asdict(pending_approval), sort_keys=True),
+                pending_question_json=None,
+                resume_checkpoint=self._approval_wait_resume_checkpoint(
+                    request=request,
+                    response=response,
+                    pending_approval=pending_approval,
                 ),
-            )
-            _ = connection.execute("DELETE FROM session_events WHERE session_id = ?", (session_id,))
-            _ = connection.executemany(
-                """
-                INSERT INTO session_events (session_id, sequence, event_type, source, payload_json)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                [
-                    (
-                        event.session_id,
-                        event.sequence,
-                        event.event_type,
-                        event.source,
-                        json.dumps(event.payload, sort_keys=True),
-                    )
-                    for event in response.events
-                ],
             )
             self._sync_background_task_durable_state(
                 connection=connection,
@@ -614,6 +905,11 @@ class SqliteSessionStore:
             target_summary=cast(str, data.get("target_summary", "")),
             reason=cast(str, data.get("reason", "")),
             policy_mode=raw_policy_mode,
+            request_event_sequence=(
+                cast(int, data["request_event_sequence"])
+                if isinstance(data.get("request_event_sequence"), int)
+                else None
+            ),
             owner_session_id=(
                 cast(str, data["owner_session_id"])
                 if isinstance(data.get("owner_session_id"), str)
@@ -647,76 +943,21 @@ class SqliteSessionStore:
         response: RuntimeResponse,
         pending_question: PendingQuestion,
     ) -> None:
-        session_id = response.session.session.id
         with self._connect(workspace) as connection:
-            created_at = self._read_created_at(connection=connection, session_id=session_id)
-            updated_at = self._next_timestamp(connection=connection)
-            payload = {
-                "request_id": pending_question.request_id,
-                "tool_name": pending_question.tool_name,
-                "arguments": pending_question.arguments,
-                "prompts": [
-                    {
-                        "question": prompt.question,
-                        "header": prompt.header,
-                        "multiple": prompt.multiple,
-                        "options": [
-                            {"label": option.label, "description": option.description}
-                            for option in prompt.options
-                        ],
-                    }
-                    for prompt in pending_question.prompts
-                ],
-            }
-            _ = connection.execute(
-                """
-                INSERT OR REPLACE INTO sessions (
-                    session_id, parent_session_id, workspace, status, turn, prompt, output,
-                    metadata_json, pending_approval_json, pending_question_json,
-                    resume_checkpoint_json, created_at, updated_at,
-                    last_event_sequence
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    session_id,
-                    response.session.session.parent_id,
-                    str(workspace),
-                    response.session.status,
-                    response.session.turn,
-                    request.prompt,
-                    response.output,
-                    json.dumps(response.session.metadata, sort_keys=True),
-                    None,
-                    json.dumps(payload, sort_keys=True),
-                    json.dumps(
-                        self._question_wait_resume_checkpoint(
-                            request=request,
-                            response=response,
-                            pending_question=pending_question,
-                        ),
-                        sort_keys=True,
-                    ),
-                    created_at,
-                    updated_at,
-                    response.events[-1].sequence if response.events else 0,
+            updated_at = self._write_session_snapshot(
+                connection=connection,
+                workspace=workspace,
+                request=request,
+                response=response,
+                pending_approval_json=None,
+                pending_question_json=json.dumps(
+                    self._pending_question_payload(pending_question), sort_keys=True
                 ),
-            )
-            _ = connection.execute("DELETE FROM session_events WHERE session_id = ?", (session_id,))
-            _ = connection.executemany(
-                """
-                INSERT INTO session_events (session_id, sequence, event_type, source, payload_json)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                [
-                    (
-                        event.session_id,
-                        event.sequence,
-                        event.event_type,
-                        event.source,
-                        json.dumps(event.payload, sort_keys=True),
-                    )
-                    for event in response.events
-                ],
+                resume_checkpoint=self._question_wait_resume_checkpoint(
+                    request=request,
+                    response=response,
+                    pending_question=pending_question,
+                ),
             )
             self._sync_background_task_durable_state(
                 connection=connection,
@@ -813,13 +1054,7 @@ class SqliteSessionStore:
         payload = cast(str | None, row["resume_checkpoint_json"])
         if payload is None:
             return None
-        try:
-            checkpoint = json.loads(payload)
-        except json.JSONDecodeError:
-            return None
-        if not isinstance(checkpoint, dict):
-            return None
-        return cast(dict[str, object], checkpoint)
+        return self._decode_resume_checkpoint_payload(payload)
 
     def append_session_event(
         self,
@@ -987,29 +1222,7 @@ class SqliteSessionStore:
             )
         except ValueError:
             return payload
-        durable_payload: dict[str, object] = {
-            "task_id": cast(str, row["task_id"]),
-            "parent_session_id": cast(str | None, row["request_parent_session_id"]),
-            "status": cast(str, row["status"]),
-            "result_available": bool(cast(int, row["result_available"])),
-        }
-        optional_fields: tuple[tuple[str, str], ...] = (
-            ("requested_child_session_id", "requested_child_session_id"),
-            ("child_session_id", "session_id"),
-            ("approval_request_id", "approval_request_id"),
-            ("question_request_id", "question_request_id"),
-            ("routing_mode", "routing_mode"),
-            ("routing_category", "routing_category"),
-            ("routing_subagent_type", "routing_subagent_type"),
-            ("routing_description", "routing_description"),
-            ("routing_command", "routing_command"),
-            ("cancellation_cause", "cancellation_cause"),
-        )
-        for payload_key, row_key in optional_fields:
-            value = row[row_key]
-            if value is not None:
-                durable_payload[payload_key] = cast(object, value)
-        return {**payload, **durable_payload}
+        return {**payload, **self._background_task_durable_payload(row)}
 
     def _read_pending_approval_json(
         self, *, connection: sqlite3.Connection, session_id: str
@@ -1032,81 +1245,59 @@ class SqliteSessionStore:
         response: RuntimeResponse,
         pending_approval: PendingApproval,
     ) -> dict[str, object]:
-        snapshot_payload = response.session.metadata.get("skill_snapshot")
-        snapshot = (
-            cast(dict[str, object], snapshot_payload) if isinstance(snapshot_payload, dict) else {}
-        )
-        binding_payload = snapshot.get("binding_snapshot")
-        binding_snapshot = (
-            cast(dict[str, object], binding_payload) if isinstance(binding_payload, dict) else {}
-        )
         return {
-            "version": 1,
-            "kind": "approval_wait",
-            "prompt": request.prompt,
-            "session_status": response.session.status,
-            "session_metadata": response.session.metadata,
-            "skill_snapshot_hash": snapshot.get("snapshot_hash"),
-            "skill_snapshot_version": snapshot.get("snapshot_version"),
-            "skill_binding_snapshot": binding_snapshot,
-            "tool_results": SqliteSessionStore._tool_results_from_events(response.events),
-            "last_event_sequence": response.events[-1].sequence if response.events else 0,
+            **SqliteSessionStore._resume_checkpoint_base(
+                request=request,
+                response=response,
+                kind="approval_wait",
+            ),
             "pending_approval_request_id": pending_approval.request_id,
-            "output": response.output,
+            "pending_approval_tool_name": pending_approval.tool_name,
+            "pending_approval_arguments": pending_approval.arguments,
+            "pending_approval_request_event_sequence": pending_approval.request_event_sequence,
+            "pending_approval_owner_session_id": pending_approval.owner_session_id,
+            "pending_approval_owner_parent_session_id": pending_approval.owner_parent_session_id,
+            "pending_approval_delegated_task_id": pending_approval.delegated_task_id,
         }
 
     @staticmethod
     def _question_wait_resume_checkpoint(
         *, request: RuntimeRequest, response: RuntimeResponse, pending_question: PendingQuestion
     ) -> dict[str, object]:
-        snapshot_payload = response.session.metadata.get("skill_snapshot")
-        snapshot = (
-            cast(dict[str, object], snapshot_payload) if isinstance(snapshot_payload, dict) else {}
-        )
-        binding_payload = snapshot.get("binding_snapshot")
-        binding_snapshot = (
-            cast(dict[str, object], binding_payload) if isinstance(binding_payload, dict) else {}
-        )
         return {
-            "version": 1,
-            "kind": "question_wait",
-            "prompt": request.prompt,
-            "session_status": response.session.status,
-            "session_metadata": response.session.metadata,
-            "skill_snapshot_hash": snapshot.get("snapshot_hash"),
-            "skill_snapshot_version": snapshot.get("snapshot_version"),
-            "skill_binding_snapshot": binding_snapshot,
-            "tool_results": SqliteSessionStore._tool_results_from_events(response.events),
-            "last_event_sequence": response.events[-1].sequence if response.events else 0,
+            **SqliteSessionStore._resume_checkpoint_base(
+                request=request,
+                response=response,
+                kind="question_wait",
+            ),
             "pending_question_request_id": pending_question.request_id,
-            "output": response.output,
+            "pending_question_tool_name": pending_question.tool_name,
+            "pending_question_prompts": [
+                {
+                    "header": prompt.header,
+                    "question": prompt.question,
+                    "multiple": prompt.multiple,
+                    "options": [
+                        {
+                            "label": option.label,
+                            "description": option.description,
+                        }
+                        for option in prompt.options
+                    ],
+                }
+                for prompt in pending_question.prompts
+            ],
         }
 
     @staticmethod
     def _terminal_resume_checkpoint(
         *, request: RuntimeRequest, response: RuntimeResponse
     ) -> dict[str, object]:
-        snapshot_payload = response.session.metadata.get("skill_snapshot")
-        snapshot = (
-            cast(dict[str, object], snapshot_payload) if isinstance(snapshot_payload, dict) else {}
+        return SqliteSessionStore._resume_checkpoint_base(
+            request=request,
+            response=response,
+            kind="terminal",
         )
-        binding_payload = snapshot.get("binding_snapshot")
-        binding_snapshot = (
-            cast(dict[str, object], binding_payload) if isinstance(binding_payload, dict) else {}
-        )
-        return {
-            "version": 1,
-            "kind": "terminal",
-            "prompt": request.prompt,
-            "session_status": response.session.status,
-            "session_metadata": response.session.metadata,
-            "skill_snapshot_hash": snapshot.get("snapshot_hash"),
-            "skill_snapshot_version": snapshot.get("snapshot_version"),
-            "skill_binding_snapshot": binding_snapshot,
-            "tool_results": SqliteSessionStore._tool_results_from_events(response.events),
-            "last_event_sequence": response.events[-1].sequence if response.events else 0,
-            "output": response.output,
-        }
 
     @staticmethod
     def _tool_results_from_events(events: tuple[EventEnvelope, ...]) -> list[dict[str, object]]:
@@ -1339,18 +1530,7 @@ class SqliteSessionStore:
                     (str(workspace),),
                 ).fetchall(),
             )
-        return tuple(
-            StoredBackgroundTaskSummary(
-                task=BackgroundTaskRef(id=cast(str, row["task_id"])),
-                status=self._parse_background_task_status(cast(str, row["status"])),
-                prompt=cast(str, row["prompt"]),
-                session_id=cast(str | None, row["session_id"]),
-                error=cast(str | None, row["error"]),
-                created_at=cast(int, row["created_at"]),
-                updated_at=cast(int, row["updated_at"]),
-            )
-            for row in rows
-        )
+        return tuple(self._background_task_summary_from_row(row) for row in rows)
 
     def list_background_tasks_by_parent_session(
         self, *, workspace: Path, parent_session_id: str
@@ -1368,18 +1548,7 @@ class SqliteSessionStore:
                     (str(workspace), parent_session_id),
                 ).fetchall(),
             )
-        return tuple(
-            StoredBackgroundTaskSummary(
-                task=BackgroundTaskRef(id=cast(str, row["task_id"])),
-                status=self._parse_background_task_status(cast(str, row["status"])),
-                prompt=cast(str, row["prompt"]),
-                session_id=cast(str | None, row["session_id"]),
-                error=cast(str | None, row["error"]),
-                created_at=cast(int, row["created_at"]),
-                updated_at=cast(int, row["updated_at"]),
-            )
-            for row in rows
-        )
+        return tuple(self._background_task_summary_from_row(row) for row in rows)
 
     def mark_background_task_running(
         self,
@@ -1390,8 +1559,20 @@ class SqliteSessionStore:
     ) -> BackgroundTaskState:
         task_id = validate_background_task_id(task_id)
         with self._connect(workspace) as connection:
+            current = self._background_task_runtime_row(
+                connection=connection,
+                workspace=workspace,
+                task_id=task_id,
+            )
+            current_status = self._parse_background_task_status(cast(str, current["status"]))
+            if not is_background_task_transition_allowed(
+                current_status=current_status,
+                next_status="running",
+            ):
+                connection.commit()
+                return self._background_task_state_from_row(current)
             updated_at = self._next_background_task_timestamp(connection=connection)
-            updated = connection.execute(
+            _ = connection.execute(
                 """
                 UPDATE background_tasks
                 SET status = ?, session_id = ?, started_at = COALESCE(started_at, ?), updated_at = ?
@@ -1405,11 +1586,14 @@ class SqliteSessionStore:
                     str(workspace),
                     task_id,
                 ),
-            ).rowcount
+            )
+            updated_row = self._background_task_runtime_row(
+                connection=connection,
+                workspace=workspace,
+                task_id=task_id,
+            )
             connection.commit()
-        if updated == 0:
-            return self.load_background_task(workspace=workspace, task_id=task_id)
-        return self.load_background_task(workspace=workspace, task_id=task_id)
+        return self._background_task_state_from_row(updated_row)
 
     def mark_background_task_terminal(
         self,
@@ -1424,16 +1608,23 @@ class SqliteSessionStore:
                 "background task terminal status must be completed, failed, or cancelled"
             )
         task_id = validate_background_task_id(task_id)
-        result_available = 1 if status in ("completed", "failed") else 0
         with self._connect(workspace) as connection:
             current = self._background_task_runtime_row(
                 connection=connection,
                 workspace=workspace,
                 task_id=task_id,
             )
+            current_status = self._parse_background_task_status(cast(str, current["status"]))
+            if not is_background_task_transition_allowed(
+                current_status=current_status,
+                next_status=status,
+            ):
+                connection.commit()
+                return self._background_task_state_from_row(current)
             cancellation_cause = cast(str | None, current["cancellation_cause"])
             if status == "cancelled" and error is not None:
                 cancellation_cause = error
+            result_available = 1 if status in ("completed", "failed") else 0
             updated_at = self._next_background_task_timestamp(connection=connection)
             _ = connection.execute(
                 """
@@ -1453,8 +1644,13 @@ class SqliteSessionStore:
                     task_id,
                 ),
             )
+            updated_row = self._background_task_runtime_row(
+                connection=connection,
+                workspace=workspace,
+                task_id=task_id,
+            )
             connection.commit()
-        return self.load_background_task(workspace=workspace, task_id=task_id)
+        return self._background_task_state_from_row(updated_row)
 
     def request_background_task_cancel(
         self,
@@ -1463,9 +1659,17 @@ class SqliteSessionStore:
         task_id: str,
     ) -> BackgroundTaskState:
         task_id = validate_background_task_id(task_id)
-        current = self.load_background_task(workspace=workspace, task_id=task_id)
-        if current.status == "queued":
-            with self._connect(workspace) as connection:
+        with self._connect(workspace) as connection:
+            current = self._background_task_runtime_row(
+                connection=connection,
+                workspace=workspace,
+                task_id=task_id,
+            )
+            current_status = self._parse_background_task_status(cast(str, current["status"]))
+            if is_background_task_terminal(current_status):
+                connection.commit()
+                return self._background_task_state_from_row(current)
+            if current_status == "queued":
                 updated_at = self._next_background_task_timestamp(connection=connection)
                 cancelled = connection.execute(
                     """
@@ -1483,13 +1687,23 @@ class SqliteSessionStore:
                         task_id,
                     ),
                 ).rowcount
-                connection.commit()
-            if cancelled == 1:
-                return self.load_background_task(workspace=workspace, task_id=task_id)
-            current = self.load_background_task(workspace=workspace, task_id=task_id)
-        if current.status in ("completed", "failed", "cancelled"):
-            return current
-        with self._connect(workspace) as connection:
+                if cancelled == 1:
+                    updated_row = self._background_task_runtime_row(
+                        connection=connection,
+                        workspace=workspace,
+                        task_id=task_id,
+                    )
+                    connection.commit()
+                    return self._background_task_state_from_row(updated_row)
+                current = self._background_task_runtime_row(
+                    connection=connection,
+                    workspace=workspace,
+                    task_id=task_id,
+                )
+                current_status = self._parse_background_task_status(cast(str, current["status"]))
+                if is_background_task_terminal(current_status):
+                    connection.commit()
+                    return self._background_task_state_from_row(current)
             updated_at = self._next_background_task_timestamp(connection=connection)
             _ = connection.execute(
                 """
@@ -1500,8 +1714,13 @@ class SqliteSessionStore:
                 """,
                 (updated_at, updated_at, str(workspace), task_id),
             )
+            updated_row = self._background_task_runtime_row(
+                connection=connection,
+                workspace=workspace,
+                task_id=task_id,
+            )
             connection.commit()
-        return self.load_background_task(workspace=workspace, task_id=task_id)
+        return self._background_task_state_from_row(updated_row)
 
     def fail_incomplete_background_tasks(
         self,
@@ -1514,7 +1733,7 @@ class SqliteSessionStore:
                 list[sqlite3.Row],
                 connection.execute(
                     """
-                    SELECT background_tasks.task_id
+                    SELECT background_tasks.task_id, background_tasks.cancel_requested_at
                     FROM background_tasks
                     LEFT JOIN sessions
                       ON sessions.workspace = background_tasks.workspace
@@ -1537,22 +1756,56 @@ class SqliteSessionStore:
             )
             if not rows:
                 return ()
-            task_ids = tuple(cast(str, row["task_id"]) for row in rows)
-            placeholders = ", ".join("?" for _ in task_ids)
-            updated_at = self._next_background_task_timestamp(connection=connection)
-            _ = connection.execute(
-                f"""
-                UPDATE background_tasks
-                SET status = 'failed', error = ?, finished_at = ?,
-                    updated_at = ?, result_available = 1
-                WHERE workspace = ? AND task_id IN ({placeholders})
-                """,
-                (message, updated_at, updated_at, str(workspace), *task_ids),
-            )
+            reconciled_task_ids: list[str] = []
+            for row in rows:
+                task_id = cast(str, row["task_id"])
+                cancel_requested_at = cast(int | None, row["cancel_requested_at"])
+                updated_at = self._next_background_task_timestamp(connection=connection)
+                if cancel_requested_at is not None:
+                    _ = connection.execute(
+                        """
+                        UPDATE background_tasks
+                        SET status = 'cancelled',
+                            error = ?,
+                            cancellation_cause = COALESCE(cancellation_cause, ?),
+                            finished_at = ?,
+                            updated_at = ?,
+                            result_available = 0
+                        WHERE workspace = ?
+                          AND task_id = ?
+                          AND status = 'running'
+                          AND cancel_requested_at IS NOT NULL
+                        """,
+                        (
+                            "cancelled by parent during delegated execution",
+                            "cancelled by parent during delegated execution",
+                            updated_at,
+                            updated_at,
+                            str(workspace),
+                            task_id,
+                        ),
+                    )
+                else:
+                    _ = connection.execute(
+                        """
+                        UPDATE background_tasks
+                        SET status = 'failed',
+                            error = ?,
+                            finished_at = ?,
+                            updated_at = ?,
+                            result_available = 1
+                        WHERE workspace = ?
+                          AND task_id = ?
+                          AND status IN ('queued', 'running')
+                          AND cancel_requested_at IS NULL
+                        """,
+                        (message, updated_at, updated_at, str(workspace), task_id),
+                    )
+                reconciled_task_ids.append(task_id)
             connection.commit()
         return tuple(
-            self.load_background_task(workspace=workspace, task_id=cast(str, row["task_id"]))
-            for row in rows
+            self.load_background_task(workspace=workspace, task_id=task_id)
+            for task_id in reconciled_task_ids
         )
 
     def persist_background_task_runtime_state(
@@ -1572,6 +1825,11 @@ class SqliteSessionStore:
                 workspace=workspace,
                 task_id=task_id,
             )
+            if is_background_task_terminal(
+                self._parse_background_task_status(cast(str, current["status"]))
+            ):
+                connection.commit()
+                return self._background_task_state_from_row(current)
             updated_at = self._next_background_task_timestamp(connection=connection)
             _ = connection.execute(
                 """
@@ -1673,12 +1931,7 @@ class SqliteSessionStore:
         session_id: str | None,
     ) -> dict[str, object]:
         if session_id is None:
-            return {
-                "approval_request_id": None,
-                "question_request_id": None,
-                "cancellation_cause": None,
-                "result_available": 0,
-            }
+            return self._background_task_runtime_state_defaults()
         row = cast(
             sqlite3.Row | None,
             connection.execute(
@@ -1690,39 +1943,7 @@ class SqliteSessionStore:
                 (str(workspace), session_id),
             ).fetchone(),
         )
-        if row is None:
-            return {
-                "approval_request_id": None,
-                "question_request_id": None,
-                "cancellation_cause": None,
-                "result_available": 0,
-            }
-        approval_request_id: str | None = None
-        question_request_id: str | None = None
-        approval_payload = cast(str | None, row["pending_approval_json"])
-        if approval_payload is not None:
-            parsed = json.loads(approval_payload)
-            if isinstance(parsed, dict):
-                parsed_payload = cast(dict[str, object], parsed)
-                request_id = parsed_payload.get("request_id")
-                if isinstance(request_id, str):
-                    approval_request_id = request_id
-        question_payload = cast(str | None, row["pending_question_json"])
-        if question_payload is not None:
-            parsed = json.loads(question_payload)
-            if isinstance(parsed, dict):
-                parsed_payload = cast(dict[str, object], parsed)
-                request_id = parsed_payload.get("request_id")
-                if isinstance(request_id, str):
-                    question_request_id = request_id
-        status = cast(str, row["status"])
-        result_available = 1 if status in {"waiting", "completed", "failed"} else 0
-        return {
-            "approval_request_id": approval_request_id,
-            "question_request_id": question_request_id,
-            "cancellation_cause": None,
-            "result_available": result_available,
-        }
+        return self._background_task_runtime_state_from_session_row(row)
 
     def acknowledge_notification(
         self, *, workspace: Path, notification_id: str
@@ -1927,54 +2148,95 @@ class SqliteSessionStore:
         pending_question: PendingQuestion | None,
         notification_run_id: int,
     ) -> dict[str, object] | None:
-        session_id = response.session.session.id
         if pending_approval is not None:
-            summary, _ = self._result_summary(response=response, prompt=request.prompt)
-            event_sequence = response.events[-1].sequence if response.events else 0
-            dedupe_key = f"{session_id}:approval_blocked:{pending_approval.request_id}"
-            return {
-                "notification_id": dedupe_key,
-                "dedupe_key": dedupe_key,
-                "kind": "approval_blocked",
-                "summary": summary,
-                "event_sequence": event_sequence,
-                "payload": {
-                    "request_id": pending_approval.request_id,
-                    "tool": pending_approval.tool_name,
-                    "arguments": pending_approval.arguments,
-                    "target_summary": pending_approval.target_summary,
-                    "reason": pending_approval.reason,
-                },
-            }
+            return self._approval_notification_candidate(
+                request=request,
+                response=response,
+                pending_approval=pending_approval,
+            )
         if pending_question is not None:
-            summary, _ = self._result_summary(response=response, prompt=request.prompt)
-            event_sequence = response.events[-1].sequence if response.events else 0
-            dedupe_key = f"{session_id}:question_blocked:{pending_question.request_id}"
-            return {
-                "notification_id": dedupe_key,
-                "dedupe_key": dedupe_key,
-                "kind": "question_blocked",
-                "summary": summary,
-                "event_sequence": event_sequence,
-                "payload": {
-                    "request_id": pending_question.request_id,
-                    "questions": [
-                        {
-                            "header": prompt.header,
-                            "question": prompt.question,
-                            "multiple": prompt.multiple,
-                            "options": [
-                                {"label": option.label, "description": option.description}
-                                for option in prompt.options
-                            ],
-                        }
-                        for prompt in pending_question.prompts
-                    ],
-                },
-            }
+            return self._question_notification_candidate(
+                request=request,
+                response=response,
+                pending_question=pending_question,
+            )
+        return self._terminal_notification_candidate(
+            request=request,
+            response=response,
+            notification_run_id=notification_run_id,
+        )
+
+    def _approval_notification_candidate(
+        self,
+        *,
+        request: RuntimeRequest,
+        response: RuntimeResponse,
+        pending_approval: PendingApproval,
+    ) -> dict[str, object]:
+        session_id = response.session.session.id
+        summary, _ = self._result_summary(response=response, prompt=request.prompt)
+        event_sequence = self._session_last_event_sequence(response.events)
+        dedupe_key = f"{session_id}:approval_blocked:{pending_approval.request_id}"
+        return {
+            "notification_id": dedupe_key,
+            "dedupe_key": dedupe_key,
+            "kind": "approval_blocked",
+            "summary": summary,
+            "event_sequence": event_sequence,
+            "payload": {
+                "request_id": pending_approval.request_id,
+                "tool": pending_approval.tool_name,
+                "arguments": pending_approval.arguments,
+                "target_summary": pending_approval.target_summary,
+                "reason": pending_approval.reason,
+            },
+        }
+
+    def _question_notification_candidate(
+        self,
+        *,
+        request: RuntimeRequest,
+        response: RuntimeResponse,
+        pending_question: PendingQuestion,
+    ) -> dict[str, object]:
+        session_id = response.session.session.id
+        summary, _ = self._result_summary(response=response, prompt=request.prompt)
+        event_sequence = self._session_last_event_sequence(response.events)
+        dedupe_key = f"{session_id}:question_blocked:{pending_question.request_id}"
+        return {
+            "notification_id": dedupe_key,
+            "dedupe_key": dedupe_key,
+            "kind": "question_blocked",
+            "summary": summary,
+            "event_sequence": event_sequence,
+            "payload": {
+                "request_id": pending_question.request_id,
+                "questions": [
+                    {
+                        "header": prompt.header,
+                        "question": prompt.question,
+                        "multiple": prompt.multiple,
+                        "options": [
+                            {"label": option.label, "description": option.description}
+                            for option in prompt.options
+                        ],
+                    }
+                    for prompt in pending_question.prompts
+                ],
+            },
+        }
+
+    def _terminal_notification_candidate(
+        self,
+        *,
+        request: RuntimeRequest,
+        response: RuntimeResponse,
+        notification_run_id: int,
+    ) -> dict[str, object] | None:
+        session_id = response.session.session.id
+        event_sequence = self._session_last_event_sequence(response.events)
         if response.session.status == "completed":
             summary, _ = self._result_summary(response=response, prompt=request.prompt)
-            event_sequence = response.events[-1].sequence if response.events else 0
             dedupe_key = f"{session_id}:completion:{notification_run_id}"
             return {
                 "notification_id": dedupe_key,
@@ -1986,7 +2248,6 @@ class SqliteSessionStore:
             }
         if response.session.status == "failed":
             summary, error = self._result_summary(response=response, prompt=request.prompt)
-            event_sequence = response.events[-1].sequence if response.events else 0
             dedupe_key = f"{session_id}:failure:{notification_run_id}"
             return {
                 "notification_id": dedupe_key,
@@ -2014,15 +2275,6 @@ class SqliteSessionStore:
             acknowledged_at=cast(int | None, row["acknowledged_at"]),
             payload=cast(dict[str, object], json.loads(cast(str, row["payload_json"]))),
         )
-
-    def _read_user_version(self, *, connection: sqlite3.Connection) -> int:
-        row = cast(
-            sqlite3.Row | tuple[object, ...] | None,
-            connection.execute("PRAGMA user_version").fetchone(),
-        )
-        if row is None:
-            return 0
-        return cast(int, row[0])
 
     def _read_created_at(self, *, connection: sqlite3.Connection, session_id: str) -> int:
         row = cast(

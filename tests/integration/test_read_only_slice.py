@@ -1378,8 +1378,8 @@ def test_runtime_background_task_cancel_reconciles_orphaned_task_from_fresh_runt
     second_runtime = cast(RuntimeRunner, cast(object, runtime_class(workspace=tmp_path)))
     cancelled = second_runtime.cancel_background_task("task-fresh-cancel")
 
-    assert cancelled.status == "failed"
-    assert cancelled.error == "background task interrupted before completion"
+    assert cancelled.status == "cancelled"
+    assert cancelled.error == "cancelled before start"
     assert cancelled.cancel_requested_at is None
 
 
@@ -1531,6 +1531,80 @@ def test_runtime_persists_pending_approval_until_single_resume_resolution(tmp_pa
     with pytest.raises(ValueError, match="no pending approval"):
         _ = resumed_runtime.resume(
             "persisted-approval",
+            approval_request_id=approval_request_id,
+            approval_decision="allow",
+        )
+
+
+def test_runtime_rejects_stale_duplicate_approval_replay_after_resolution_even_if_pending_state_is_restored(  # noqa: E501
+    tmp_path: Path,
+) -> None:
+    runtime_request, runtime = _approval_runtime(tmp_path, mode="ask")
+
+    waiting = runtime.run(
+        runtime_request(prompt="write danger.txt stale replay", session_id="stale-replay-session")
+    )
+    approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
+    resolved = runtime.resume(
+        "stale-replay-session",
+        approval_request_id=approval_request_id,
+        approval_decision="allow",
+    )
+
+    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    connection = sqlite3.connect(database_path)
+    try:
+        approval_event = next(
+            event for event in resolved.events if event.event_type == "runtime.approval_requested"
+        )
+        _ = connection.execute(
+            (
+                "UPDATE sessions SET pending_approval_json = ?, resume_checkpoint_json = ? "
+                "WHERE session_id = ?"
+            ),
+            (
+                json.dumps(
+                    {
+                        "request_id": approval_request_id,
+                        "tool_name": "write_file",
+                        "arguments": {"path": "danger.txt", "content": "stale replay"},
+                        "target_summary": "write_file danger.txt",
+                        "reason": "non-read-only tool invocation",
+                        "policy_mode": "ask",
+                        "request_event_sequence": approval_event.sequence,
+                        "owner_session_id": "stale-replay-session",
+                        "owner_parent_session_id": None,
+                        "delegated_task_id": None,
+                    },
+                    sort_keys=True,
+                ),
+                json.dumps(
+                    {
+                        "version": 1,
+                        "kind": "approval_wait",
+                        "prompt": "write danger.txt stale replay",
+                        "session_status": "waiting",
+                        "session_metadata": resolved.session.metadata,
+                        "tool_results": [],
+                        "last_event_sequence": approval_event.sequence,
+                        "pending_approval_request_id": approval_request_id,
+                        "output": None,
+                    },
+                    sort_keys=True,
+                ),
+                "stale-replay-session",
+            ),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    with pytest.raises(
+        ValueError,
+        match="approval request was already resolved; stale approval replay is not allowed",
+    ):
+        _ = runtime.resume(
+            "stale-replay-session",
             approval_request_id=approval_request_id,
             approval_decision="allow",
         )
@@ -1713,7 +1787,7 @@ def test_runtime_denied_multi_step_loop_stops_before_follow_up_tools(tmp_path: P
     assert (tmp_path / "copied.txt").exists() is False
 
 
-def test_runtime_migrates_legacy_session_schema_for_pending_approval(tmp_path: Path) -> None:
+def test_runtime_rejects_legacy_session_schema_for_pending_approval(tmp_path: Path) -> None:
     runtime_request, runtime = _approval_runtime(tmp_path, mode="ask")
     database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
     database_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1753,40 +1827,10 @@ def test_runtime_migrates_legacy_session_schema_for_pending_approval(tmp_path: P
     finally:
         connection.close()
 
-    waiting = runtime.run(
-        runtime_request(prompt="write danger.txt legacy approval", session_id="legacy-session")
-    )
-
-    assert waiting.session.status == "waiting"
-
-    check = sqlite3.connect(database_path)
-    try:
-        session_rows = cast(
-            list[tuple[object, ...]], check.execute("PRAGMA table_info(sessions)").fetchall()
+    with pytest.raises(RuntimeError, match="sqlite runtime schema mismatch"):
+        _ = runtime.run(
+            runtime_request(prompt="write danger.txt legacy approval", session_id="legacy-session")
         )
-        background_task_rows = cast(
-            list[tuple[object, ...]],
-            check.execute("PRAGMA table_info(background_tasks)").fetchall(),
-        )
-        delivery_tables = cast(
-            list[tuple[object, ...]],
-            check.execute(
-                "SELECT name FROM sqlite_master "
-                "WHERE type = 'table' AND name = 'session_event_deliveries'"
-            ).fetchall(),
-        )
-        columns = [cast(str, row[1]) for row in session_rows]
-        background_task_columns = [cast(str, row[1]) for row in background_task_rows]
-        user_version = cast(int, check.execute("PRAGMA user_version").fetchone()[0])
-    finally:
-        check.close()
-
-    assert "parent_session_id" in columns
-    assert "pending_approval_json" in columns
-    assert "resume_checkpoint_json" in columns
-    assert "request_parent_session_id" in background_task_columns
-    assert delivery_tables == [("session_event_deliveries",)]
-    assert user_version == 8
 
 
 def test_runtime_replay_is_unchanged_when_resume_checkpoint_exists(tmp_path: Path) -> None:

@@ -1026,7 +1026,7 @@ def test_http_approval_resolution_endpoint_resumes_real_waiting_background_task(
     assert output_payload["output"] == "delegated"
 
 
-def test_http_approval_resolution_repairs_stale_task_status_across_runtime_instances(
+def test_http_approval_resolution_preserves_stale_terminal_task_status_across_runtime_instances(
     tmp_path: Path,
 ) -> None:
     runtime_request, runtime_class = _load_runtime_types()
@@ -1088,8 +1088,8 @@ def test_http_approval_resolution_repairs_stale_task_status_across_runtime_insta
     assert task_status == 200
     assert output_status == 200
     assert cast(dict[str, object], resume_payload["session"])["status"] == "completed"
-    assert task_payload["status"] == "completed"
-    assert output_task_payload["status"] == "completed"
+    assert task_payload["status"] == "failed"
+    assert output_task_payload["status"] == "failed"
     assert output_payload["output"] == "delegated"
 
 

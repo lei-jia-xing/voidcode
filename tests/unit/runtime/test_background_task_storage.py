@@ -857,6 +857,62 @@ def test_background_task_storage_does_not_overwrite_terminal_task_when_marking_r
     assert running.started_at is None
 
 
+@pytest.mark.parametrize(
+    ("initial_status", "next_status", "initial_error"),
+    (
+        ("completed", "failed", None),
+        ("completed", "cancelled", None),
+        ("failed", "completed", "boom"),
+        ("failed", "cancelled", "boom"),
+        ("cancelled", "completed", "operator cancelled"),
+        ("cancelled", "failed", "operator cancelled"),
+    ),
+)
+def test_background_task_storage_terminal_states_are_immutable_across_terminal_rewrites(
+    tmp_path: Path,
+    initial_status: BackgroundTaskStatus,
+    next_status: BackgroundTaskStatus,
+    initial_error: str | None,
+) -> None:
+    store = SqliteSessionStore()
+    task_id = f"task-{initial_status}-immutable-{next_status}"
+    store.create_background_task(workspace=tmp_path, task=_task(task_id=task_id))
+
+    terminal = store.mark_background_task_terminal(
+        workspace=tmp_path,
+        task_id=task_id,
+        status=initial_status,
+        error=initial_error,
+    )
+    rewritten = store.mark_background_task_terminal(
+        workspace=tmp_path,
+        task_id=task_id,
+        status=next_status,
+        error="should be ignored",
+    )
+
+    assert rewritten == terminal
+    assert rewritten.status == initial_status
+    assert rewritten.error == initial_error
+
+
+def test_background_task_storage_rejects_non_terminal_status_in_terminal_marker(
+    tmp_path: Path,
+) -> None:
+    store = SqliteSessionStore()
+    store.create_background_task(workspace=tmp_path, task=_task(task_id="task-illegal-terminal"))
+
+    with pytest.raises(
+        ValueError,
+        match="background task terminal status must be completed, failed, or cancelled",
+    ):
+        _ = store.mark_background_task_terminal(
+            workspace=tmp_path,
+            task_id="task-illegal-terminal",
+            status=cast(BackgroundTaskStatus, "running"),
+        )
+
+
 def test_background_task_storage_reconciles_incomplete_tasks_on_restart(tmp_path: Path) -> None:
     store = SqliteSessionStore()
     store.create_background_task(workspace=tmp_path, task=_task(task_id="task-e"))
@@ -875,6 +931,39 @@ def test_background_task_storage_reconciles_incomplete_tasks_on_restart(tmp_path
     assert [task.task.id for task in reconciled] == ["task-e", "task-f"]
     assert all(task.status == "failed" for task in reconciled)
     assert all(task.error == "background task interrupted before completion" for task in reconciled)
+
+
+def test_background_task_storage_reconciliation_converts_cancel_requested_running_task_to_cancelled(
+    tmp_path: Path,
+) -> None:
+    store = SqliteSessionStore()
+    store.create_background_task(workspace=tmp_path, task=_task(task_id="task-reconcile-cancelled"))
+    _ = store.mark_background_task_running(
+        workspace=tmp_path,
+        task_id="task-reconcile-cancelled",
+        session_id="session-reconcile-cancelled",
+    )
+    requested_cancel = store.request_background_task_cancel(
+        workspace=tmp_path,
+        task_id="task-reconcile-cancelled",
+    )
+
+    reconciled = store.fail_incomplete_background_tasks(
+        workspace=tmp_path,
+        message="background task interrupted before completion",
+    )
+    cancelled = store.load_background_task(
+        workspace=tmp_path,
+        task_id="task-reconcile-cancelled",
+    )
+
+    assert requested_cancel.status == "running"
+    assert requested_cancel.cancel_requested_at is not None
+    assert [task.task.id for task in reconciled] == ["task-reconcile-cancelled"]
+    assert cancelled.status == "cancelled"
+    assert cancelled.error == "cancelled by parent during delegated execution"
+    assert cancelled.cancellation_cause == "cancelled by parent during delegated execution"
+    assert cancelled.result_available is False
 
 
 def test_background_task_storage_reconciliation_preserves_approval_blocked_child_with_durable_correlation(  # noqa: E501

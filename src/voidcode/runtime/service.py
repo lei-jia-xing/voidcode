@@ -1,3 +1,4 @@
+# pyright: reportUnusedFunction=false, reportUnusedImport=false
 from __future__ import annotations
 
 import json
@@ -5,11 +6,10 @@ import logging
 import os
 import threading
 from collections.abc import Callable, Iterable, Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast, final
-from uuid import uuid4
 
 from ..acp import AcpDelegatedExecution, AcpEventEnvelope, AcpRequestEnvelope, AcpResponseEnvelope
 from ..agent import get_builtin_agent_manifest
@@ -23,12 +23,7 @@ from ..hook.executor import (
     run_tool_hooks,
 )
 from ..provider.auth import ProviderAuthResolver
-from ..provider.errors import (
-    SingleAgentContextLimitError,
-    classify_provider_error,
-    format_fallback_exhausted_error,
-    format_invalid_provider_config_error,
-)
+from ..provider.errors import format_invalid_provider_config_error
 from ..provider.models import (
     ResolvedProviderChain,
     ResolvedProviderConfig,
@@ -44,20 +39,17 @@ from ..skills import SkillRegistry
 from ..tools.background_cancel import BackgroundCancelTool
 from ..tools.background_output import BackgroundOutputTool
 from ..tools.contracts import (
-    RuntimeTimeoutAwareTool,
-    RuntimeToolTimeoutError,
     Tool,
     ToolCall,
     ToolDefinition,
     ToolResult,
-    ToolResultStatus,
 )
 from ..tools.guidance import definition_with_guidance
 from ..tools.question import QuestionTool
-from ..tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
 from ..tools.skill import SkillTool
 from ..tools.task import TaskTool
 from .acp import AcpAdapter, AcpAdapterState, build_acp_adapter
+from .background_tasks import RuntimeBackgroundTaskSupervisor
 from .config import (
     ExecutionEngineName,
     RuntimeAgentConfig,
@@ -85,8 +77,6 @@ from .context_window import (
 )
 from .contracts import (
     BackgroundTaskResult,
-    InternalRuntimeRequestMetadata,
-    NoPendingQuestionError,
     RuntimeNotification,
     RuntimeRequest,
     RuntimeRequestError,
@@ -106,11 +96,6 @@ from .events import (
     RUNTIME_ACP_DISCONNECTED,
     RUNTIME_ACP_FAILED,
     RUNTIME_APPROVAL_REQUESTED,
-    RUNTIME_BACKGROUND_TASK_CANCELLED,
-    RUNTIME_BACKGROUND_TASK_COMPLETED,
-    RUNTIME_BACKGROUND_TASK_FAILED,
-    RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL,
-    RUNTIME_FAILED,
     RUNTIME_LSP_SERVER_FAILED,
     RUNTIME_LSP_SERVER_REUSED,
     RUNTIME_LSP_SERVER_STARTED,
@@ -119,13 +104,10 @@ from .events import (
     RUNTIME_MCP_SERVER_FAILED,
     RUNTIME_MCP_SERVER_STARTED,
     RUNTIME_MCP_SERVER_STOPPED,
-    RUNTIME_MEMORY_REFRESHED,
     RUNTIME_QUESTION_ANSWERED,
     RUNTIME_QUESTION_REQUESTED,
     RUNTIME_SKILLS_APPLIED,
-    RUNTIME_SKILLS_BINDING_MISMATCH,
     RUNTIME_SKILLS_LOADED,
-    RUNTIME_TOOL_STARTED,
     EventEnvelope,
 )
 from .execution_seams import (
@@ -151,6 +133,8 @@ from .plan import (
 )
 from .provider_protocol import ProviderExecutionError
 from .question import PendingQuestion, QuestionResponse
+from .resume import RuntimeResumeCoordinator
+from .run_loop import RuntimeRunLoopCoordinator
 from .session import SessionRef, SessionState, SessionStatus, StoredSessionSummary
 from .skills import (
     SkillExecutionSnapshot,
@@ -164,10 +148,7 @@ from .skills import (
 )
 from .storage import SessionEventAppender, SessionStore, SqliteSessionStore
 from .task import (
-    BackgroundTaskRef,
-    BackgroundTaskRequestSnapshot,
     BackgroundTaskState,
-    BackgroundTaskStatus,
     StoredBackgroundTaskSummary,
     validate_background_task_id,
 )
@@ -391,6 +372,9 @@ class VoidCodeRuntime:
     _plan_contributor: PlanContributor
     _background_task_threads: dict[str, threading.Thread]
     _background_tasks_reconciled: bool
+    _run_loop_coordinator: RuntimeRunLoopCoordinator
+    _resume_coordinator: RuntimeResumeCoordinator
+    _background_task_supervisor: RuntimeBackgroundTaskSupervisor
     _hook_recursion_env_var = "VOIDCODE_RUNNING_TOOL_HOOK"
     _default_context_window_policy = ContextWindowPolicy()
 
@@ -496,6 +480,9 @@ class VoidCodeRuntime:
         self._background_task_threads = {}
         self._background_tasks_reconciled = False
         self._default_context_window_policy = context_window_policy or ContextWindowPolicy()
+        self._run_loop_coordinator = RuntimeRunLoopCoordinator(self)
+        self._resume_coordinator = RuntimeResumeCoordinator(self)
+        self._background_task_supervisor = RuntimeBackgroundTaskSupervisor(self)
 
     def __enter__(self) -> VoidCodeRuntime:
         return self
@@ -658,6 +645,7 @@ class VoidCodeRuntime:
 
     @staticmethod
     def _resequence_event(event: EventEnvelope, *, sequence: int) -> EventEnvelope:
+        # Referenced via extracted collaborators.
         return EventEnvelope(
             session_id=event.session_id,
             sequence=sequence,
@@ -764,6 +752,7 @@ class VoidCodeRuntime:
         *,
         provider_attempt: int = 0,
     ) -> RuntimeGraphSelection:
+        # Referenced via extracted run-loop/resume collaborators.
         return select_graph_for_effective_config(
             config=config,
             provider_attempt=provider_attempt,
@@ -776,6 +765,7 @@ class VoidCodeRuntime:
         session_metadata: dict[str, object],
         provider_attempt: int,
     ) -> RuntimeGraphSelection | None:
+        # Referenced via extracted run-loop collaborator.
         return fallback_graph_for_provider_error(
             error=error,
             provider_chain=self._provider_chain_for_session_metadata(session_metadata),
@@ -784,6 +774,7 @@ class VoidCodeRuntime:
         )
 
     def _session_routing_for_request(self, request: RuntimeRequest) -> RuntimeSessionRouting:
+        # Referenced via extracted background-task collaborator.
         return resolve_runtime_session_routing(request)
 
     def _runtime_config_for_request(self, request: RuntimeRequest) -> EffectiveRuntimeConfig:
@@ -1094,6 +1085,7 @@ class VoidCodeRuntime:
         approval_blocked: bool | None = None,
         result_available: bool | None = None,
     ) -> None:
+        # Referenced via extracted background-task collaborator.
         if self.current_acp_state().status != "connected":
             return
         delegation = self._delegated_execution_for_task(
@@ -1123,6 +1115,7 @@ class VoidCodeRuntime:
         approval_blocked: bool | None = None,
         result_available: bool | None = None,
     ) -> None:
+        # Referenced via extracted background-task collaborator.
         parent_session_id = task.parent_session_id
         if parent_session_id is None:
             return
@@ -1494,544 +1487,17 @@ class VoidCodeRuntime:
         permission_policy: PermissionPolicy | None = None,
         preserved_continuity_state: RuntimeContinuityState | None = None,
     ) -> Iterator[RuntimeStreamChunk]:
-        active_permission_policy = permission_policy or self._permission_policy
-        # Continuity memory reinjection boundary: allow a continuity state to be
-        # carried into the next iteration after a memory compaction (if any).
-        continuity_to_reinject: RuntimeContinuityState | None = preserved_continuity_state
-        provider_attempt = self._provider_attempt_from_metadata(graph_request.metadata)
-        while True:
-            current_session = session
-            base_context = self._prepare_provider_context_window(
-                prompt=graph_request.prompt,
-                tool_results=tuple(tool_results),
-                session_metadata=current_session.metadata,
-            )
-            reinjected_continuity = continuity_to_reinject
-            # Apply reinjected continuity state if present, giving reinjection
-            # semantics after a compaction boundary.
-            if reinjected_continuity is not None:
-                context_window = RuntimeContextWindow(
-                    prompt=base_context.prompt,
-                    tool_results=base_context.tool_results,
-                    compacted=base_context.compacted,
-                    compaction_reason=base_context.compaction_reason,
-                    original_tool_result_count=base_context.original_tool_result_count,
-                    retained_tool_result_count=base_context.retained_tool_result_count,
-                    max_tool_result_count=base_context.max_tool_result_count,
-                    continuity_state=reinjected_continuity,
-                )
-            else:
-                context_window = base_context
-            continuity_to_reinject = None
-            session = self._session_with_context_window_metadata(current_session, context_window)
-            graph_request = GraphRunRequest(
-                session=session,
-                prompt=graph_request.prompt,
-                available_tools=graph_request.available_tools,
-                applied_skills=graph_request.applied_skills,
-                skill_prompt_context=graph_request.skill_prompt_context,
-                context_window=context_window,
-                metadata=graph_request.metadata,
-            )
-            if context_window.compacted and reinjected_continuity is None:
-                sequence += 1
-                yield RuntimeStreamChunk(
-                    kind="event",
-                    session=session,
-                    event=EventEnvelope(
-                        session_id=session.session.id,
-                        sequence=sequence,
-                        event_type=RUNTIME_MEMORY_REFRESHED,
-                        source="runtime",
-                        payload={
-                            "reason": context_window.compaction_reason,
-                            "original_tool_result_count": context_window.original_tool_result_count,
-                            "retained_tool_result_count": context_window.retained_tool_result_count,
-                            "compacted": True,
-                            "continuity_state": (
-                                context_window.continuity_state.metadata_payload()
-                                if context_window.continuity_state is not None
-                                else None
-                            ),
-                        },
-                    ),
-                )
-            try:
-                graph_step = graph.step(
-                    graph_request,
-                    tool_results=tuple(tool_results),
-                    session=session,
-                )
-            except Exception as exc:
-                current_provider_attempt = self._provider_attempt_from_metadata(
-                    {"provider_attempt": provider_attempt}
-                )
-                provider_error = exc if isinstance(exc, ProviderExecutionError) else None
-                if provider_error is not None:
-                    if provider_error.kind == "cancelled":
-                        yield self._failed_chunk(
-                            session=session,
-                            sequence=sequence + 1,
-                            error=str(provider_error),
-                            payload={
-                                "provider_error_kind": provider_error.kind,
-                                "provider": provider_error.provider_name,
-                                "model": provider_error.model_name,
-                                "cancelled": True,
-                            },
-                        )
-                        return
-                    fallback_selection = self._fallback_graph_selection(
-                        error=provider_error,
-                        session_metadata=session.metadata,
-                        provider_attempt=current_provider_attempt,
-                    )
-                    next_attempt: int = current_provider_attempt + 1
-                    if fallback_selection is not None:
-                        next_target = fallback_selection.provider_target
-                        logger.info(
-                            (
-                                "provider fallback for session %s: %s/%s -> %s/%s "
-                                "(reason=%s, attempt=%s)"
-                            ),
-                            session.session.id,
-                            provider_error.provider_name,
-                            provider_error.model_name,
-                            next_target.selection.provider,
-                            next_target.selection.model,
-                            provider_error.kind,
-                            next_attempt,
-                        )
-                        sequence += 1
-                        yield RuntimeStreamChunk(
-                            kind="event",
-                            session=session,
-                            event=EventEnvelope(
-                                session_id=session.session.id,
-                                sequence=sequence,
-                                event_type="runtime.provider_fallback",
-                                source="runtime",
-                                payload={
-                                    "reason": provider_error.kind,
-                                    "from_provider": provider_error.provider_name,
-                                    "from_model": provider_error.model_name,
-                                    "to_provider": next_target.selection.provider,
-                                    "to_model": next_target.selection.model,
-                                    "attempt": next_attempt,
-                                    **(
-                                        {"provider_error_details": provider_error.details}
-                                        if provider_error.details is not None
-                                        else {}
-                                    ),
-                                },
-                            ),
-                        )
-                        provider_attempt = fallback_selection.provider_attempt
-                        session = SessionState(
-                            session=session.session,
-                            status=session.status,
-                            turn=session.turn,
-                            metadata={
-                                **session.metadata,
-                                "provider_attempt": provider_attempt,
-                            },
-                        )
-                        graph = fallback_selection.graph
-                        graph_request = GraphRunRequest(
-                            session=session,
-                            prompt=graph_request.prompt,
-                            available_tools=graph_request.available_tools,
-                            applied_skills=graph_request.applied_skills,
-                            skill_prompt_context=graph_request.skill_prompt_context,
-                            metadata={
-                                **graph_request.metadata,
-                                "provider_attempt": provider_attempt,
-                            },
-                        )
-                        continue
-                    if provider_error.kind in {"rate_limit", "invalid_model", "transient_failure"}:
-                        yield self._failed_chunk(
-                            session=session,
-                            sequence=sequence + 1,
-                            error=format_fallback_exhausted_error(
-                                provider_name=provider_error.provider_name,
-                                model_name=provider_error.model_name,
-                                attempt=next_attempt,
-                            ),
-                            payload={
-                                "provider_error_kind": provider_error.kind,
-                                "provider": provider_error.provider_name,
-                                "model": provider_error.model_name,
-                                "fallback_exhausted": True,
-                                **(
-                                    {"provider_error_details": provider_error.details}
-                                    if provider_error.details is not None
-                                    else {}
-                                ),
-                            },
-                        )
-                        return
-                if provider_error is not None:
-                    yield self._failed_chunk(
-                        session=session,
-                        sequence=sequence + 1,
-                        error=str(provider_error),
-                        payload={
-                            "provider_error_kind": provider_error.kind,
-                            "provider": provider_error.provider_name,
-                            "model": provider_error.model_name,
-                            **(
-                                {"provider_error_details": provider_error.details}
-                                if provider_error.details is not None
-                                else {}
-                            ),
-                        },
-                    )
-                    return
-                classified_error = classify_provider_error(exc)
-                yield self._failed_chunk(
-                    session=session,
-                    sequence=sequence + 1,
-                    error=str(exc),
-                    payload=(
-                        {"kind": "provider_context_limit"}
-                        if isinstance(classified_error, SingleAgentContextLimitError)
-                        else None
-                    ),
-                )
-                if isinstance(classified_error, SingleAgentContextLimitError):
-                    return
-                raise
-
-            is_final_step = (
-                getattr(graph_step, "is_finished", False)
-                or getattr(graph_step, "output", None) is not None
-            )
-            current_chunk_session = session
-            if is_final_step:
-                current_chunk_session = self._session_with_plan_state(
-                    SessionState(
-                        session=session.session,
-                        status="completed",
-                        turn=session.turn,
-                        metadata=session.metadata,
-                    ),
-                    status="completed",
-                )
-
-            for event in self._renumber_events(
-                getattr(graph_step, "events", ()),
-                session_id=session.session.id,
-                start_sequence=sequence + 1,
-            ):
-                sequence = event.sequence
-                yield RuntimeStreamChunk(kind="event", session=current_chunk_session, event=event)
-
-            if is_final_step:
-                if getattr(graph_step, "output", None) is not None:
-                    yield RuntimeStreamChunk(
-                        kind="output",
-                        session=current_chunk_session,
-                        output=graph_step.output,
-                    )
-                break
-
-            plan_tool_call = getattr(graph_step, "tool_call", None)
-            if plan_tool_call is None:
-                yield self._failed_chunk(
-                    session=session,
-                    sequence=sequence + 1,
-                    error="graph step did not produce a tool call or output",
-                )
-                raise ValueError("graph step did not produce a tool call or output")
-
-            sequence += 1
-            yield RuntimeStreamChunk(
-                kind="event",
-                session=session,
-                event=EventEnvelope(
-                    session_id=session.session.id,
-                    sequence=sequence,
-                    event_type="graph.tool_request_created",
-                    source="graph",
-                    payload={
-                        "tool": plan_tool_call.tool_name,
-                        "arguments": dict(plan_tool_call.arguments),
-                        **(
-                            {"path": path}
-                            if isinstance((path := plan_tool_call.arguments.get("path")), str)
-                            else {}
-                        ),
-                    },
-                ),
-            )
-
-            try:
-                tool = tool_registry.resolve(plan_tool_call.tool_name)
-            except Exception as exc:
-                yield self._failed_chunk(session=session, sequence=sequence + 1, error=str(exc))
-                raise
-
-            sequence += 1
-            yield RuntimeStreamChunk(
-                kind="event",
-                session=session,
-                event=EventEnvelope(
-                    session_id=session.session.id,
-                    sequence=sequence,
-                    event_type="runtime.tool_lookup_succeeded",
-                    source="runtime",
-                    payload={"tool": plan_tool_call.tool_name},
-                ),
-            )
-
-            sequence += 1
-            if approval_resolution is not None:
-                pending, decision = approval_resolution
-                if (
-                    plan_tool_call.tool_name == pending.tool_name
-                    and dict(plan_tool_call.arguments) == pending.arguments
-                ):
-                    sequence += 1
-                    permission_chunks = self._approval_resolution_outcome(
-                        session=session,
-                        pending=pending,
-                        decision=decision,
-                        sequence=sequence,
-                    )
-                    approval_resolution = None
-                else:
-                    msg = (
-                        f"graph step produced a different tool call "
-                        f"({plan_tool_call.tool_name}) than the pending "
-                        f"approval ({pending.tool_name})"
-                    )
-                    raise ValueError(msg)
-            else:
-                permission_chunks = self._resolve_permission(
-                    session=session,
-                    tool=tool.definition,
-                    tool_call=plan_tool_call,
-                    sequence=sequence,
-                    permission_policy=active_permission_policy,
-                )
-            yield from permission_chunks.chunks
-            if permission_chunks.chunks:
-                session = permission_chunks.chunks[-1].session
-            if permission_chunks.pending_approval is not None:
-                return
-            if permission_chunks.denied:
-                return
-
-            sequence = permission_chunks.last_sequence
-
-            pre_hook_outcome = self._run_tool_hooks(
-                session=session,
-                sequence=sequence,
-                tool_name=plan_tool_call.tool_name,
-                phase="pre",
-            )
-            yield from pre_hook_outcome.chunks
-            sequence = pre_hook_outcome.last_sequence
-            if pre_hook_outcome.failed_error is not None:
-                yield self._failed_chunk(
-                    session=session,
-                    sequence=sequence + 1,
-                    error=pre_hook_outcome.failed_error,
-                )
-                raise RuntimeError(pre_hook_outcome.failed_error)
-
-            _tool_timeout = self._effective_runtime_config_from_metadata(
-                session.metadata
-            ).tool_timeout_seconds
-            sequence += 1
-            yield RuntimeStreamChunk(
-                kind="event",
-                session=session,
-                event=EventEnvelope(
-                    session_id=session.session.id,
-                    sequence=sequence,
-                    event_type=RUNTIME_TOOL_STARTED,
-                    source="runtime",
-                    payload={"tool": plan_tool_call.tool_name},
-                ),
-            )
-            try:
-                with bind_runtime_tool_context(
-                    RuntimeToolInvocationContext(
-                        session_id=session.session.id,
-                        parent_session_id=session.session.parent_id,
-                        delegation_depth=self._delegation_depth_from_metadata(session.metadata),
-                        remaining_spawn_budget=self._remaining_spawn_budget_from_metadata(
-                            session.metadata
-                        ),
-                    )
-                ):
-                    if _tool_timeout is None:
-                        tool_result = tool.invoke(plan_tool_call, workspace=self._workspace)
-                    elif isinstance(tool, RuntimeTimeoutAwareTool):
-                        tool_result = tool.invoke_with_runtime_timeout(
-                            plan_tool_call,
-                            workspace=self._workspace,
-                            timeout_seconds=_tool_timeout,
-                        )
-                    else:
-                        tool_result = tool.invoke(plan_tool_call, workspace=self._workspace)
-            except Exception as exc:
-                for acp_event in self._envelopes_for_acp_events(
-                    session_id=session.session.id,
-                    start_sequence=sequence + 1,
-                    acp_events=self._acp_adapter.drain_events(),
-                ):
-                    sequence = acp_event.sequence
-                    session = self._session_with_current_acp_metadata(session)
-                    yield RuntimeStreamChunk(kind="event", session=session, event=acp_event)
-                for mcp_event in self._envelopes_for_mcp_events(
-                    session_id=session.session.id,
-                    start_sequence=sequence + 1,
-                    mcp_events=self._mcp_manager.drain_events(),
-                ):
-                    sequence = mcp_event.sequence
-                    yield RuntimeStreamChunk(kind="event", session=session, event=mcp_event)
-                for lsp_event in self._envelopes_for_lsp_events(
-                    session_id=session.session.id,
-                    start_sequence=sequence + 1,
-                    lsp_events=self._lsp_manager.drain_events(),
-                ):
-                    sequence = lsp_event.sequence
-                    yield RuntimeStreamChunk(kind="event", session=session, event=lsp_event)
-                if isinstance(exc, RuntimeToolTimeoutError):
-                    sequence += 1
-                    yield RuntimeStreamChunk(
-                        kind="event",
-                        session=session,
-                        event=EventEnvelope(
-                            session_id=session.session.id,
-                            sequence=sequence,
-                            event_type="runtime.tool_timeout",
-                            source="runtime",
-                            payload={
-                                "tool": plan_tool_call.tool_name,
-                                "timeout_seconds": _tool_timeout,
-                            },
-                        ),
-                    )
-                    yield self._failed_chunk(session=session, sequence=sequence + 1, error=str(exc))
-                    return
-                yield self._failed_chunk(session=session, sequence=sequence + 1, error=str(exc))
-                raise
-
-            for acp_event in self._envelopes_for_acp_events(
-                session_id=session.session.id,
-                start_sequence=sequence + 1,
-                acp_events=self._acp_adapter.drain_events(),
-            ):
-                sequence = acp_event.sequence
-                session = self._session_with_current_acp_metadata(session)
-                yield RuntimeStreamChunk(kind="event", session=session, event=acp_event)
-
-            for mcp_event in self._envelopes_for_mcp_events(
-                session_id=session.session.id,
-                start_sequence=sequence + 1,
-                mcp_events=self._mcp_manager.drain_events(),
-            ):
-                sequence = mcp_event.sequence
-                yield RuntimeStreamChunk(kind="event", session=session, event=mcp_event)
-
-            for lsp_event in self._envelopes_for_lsp_events(
-                session_id=session.session.id,
-                start_sequence=sequence + 1,
-                lsp_events=self._lsp_manager.drain_events(),
-            ):
-                sequence = lsp_event.sequence
-                yield RuntimeStreamChunk(kind="event", session=session, event=lsp_event)
-
-            if plan_tool_call.tool_name == QuestionTool.definition.name:
-                pending_question = PendingQuestion(
-                    request_id=f"question-{uuid4().hex}",
-                    tool_name=plan_tool_call.tool_name,
-                    arguments=dict(plan_tool_call.arguments),
-                    prompts=QuestionTool.parse_prompts(plan_tool_call.arguments),
-                )
-                waiting_session = self._session_with_plan_state(
-                    SessionState(
-                        session=session.session,
-                        status="waiting",
-                        turn=session.turn,
-                        metadata=session.metadata,
-                    ),
-                    status="waiting_question",
-                    blocked_tool=pending_question.tool_name,
-                )
-                sequence += 1
-                yield RuntimeStreamChunk(
-                    kind="event",
-                    session=waiting_session,
-                    event=EventEnvelope(
-                        session_id=session.session.id,
-                        sequence=sequence,
-                        event_type=RUNTIME_QUESTION_REQUESTED,
-                        source="runtime",
-                        payload={
-                            "request_id": pending_question.request_id,
-                            "tool": pending_question.tool_name,
-                            "question_count": len(pending_question.prompts),
-                            "questions": [
-                                {
-                                    "header": prompt.header,
-                                    "question": prompt.question,
-                                    "multiple": prompt.multiple,
-                                    "options": [
-                                        {
-                                            "label": option.label,
-                                            "description": option.description,
-                                        }
-                                        for option in prompt.options
-                                    ],
-                                }
-                                for prompt in pending_question.prompts
-                            ],
-                        },
-                    ),
-                )
-                return
-
-            sequence += 1
-            yield RuntimeStreamChunk(
-                kind="event",
-                session=session,
-                event=EventEnvelope(
-                    session_id=session.session.id,
-                    sequence=sequence,
-                    event_type="runtime.tool_completed",
-                    source="tool",
-                    payload={
-                        "tool": tool_result.tool_name,
-                        "status": tool_result.status,
-                        "content": tool_result.content,
-                        "error": tool_result.error,
-                        **tool_result.data,
-                    },
-                ),
-            )
-
-            post_hook_outcome = self._run_tool_hooks(
-                session=session,
-                sequence=sequence,
-                tool_name=plan_tool_call.tool_name,
-                phase="post",
-            )
-            yield from post_hook_outcome.chunks
-            sequence = post_hook_outcome.last_sequence
-            if post_hook_outcome.failed_error is not None:
-                yield self._failed_chunk(
-                    session=session,
-                    sequence=sequence + 1,
-                    error=post_hook_outcome.failed_error,
-                )
-                raise RuntimeError(post_hook_outcome.failed_error)
-
-            tool_results.append(tool_result)
+        yield from self._run_loop_coordinator.execute_graph_loop(
+            graph=graph,
+            tool_registry=tool_registry,
+            session=session,
+            sequence=sequence,
+            graph_request=graph_request,
+            tool_results=tool_results,
+            approval_resolution=approval_resolution,
+            permission_policy=permission_policy,
+            preserved_continuity_state=preserved_continuity_state,
+        )
 
     def _run_lifecycle_hooks(
         self,
@@ -2081,6 +1547,7 @@ class VoidCodeRuntime:
         tool_name: str,
         phase: Literal["pre", "post"],
     ) -> _HookOutcome:
+        # Referenced via extracted run-loop collaborator.
         outcome: HookExecutionOutcome = run_tool_hooks(
             HookExecutionRequest(
                 hooks=self._config.hooks,
@@ -2174,6 +1641,7 @@ class VoidCodeRuntime:
         sequence: int,
         permission_policy: PermissionPolicy,
     ) -> _PermissionOutcome:
+        # Referenced via extracted run-loop collaborator.
         permission = resolve_permission(
             tool,
             tool_call,
@@ -2245,12 +1713,13 @@ class VoidCodeRuntime:
                 "delegated_task_id": pending.delegated_task_id,
             },
         )
+        pending = replace(pending, request_event_sequence=request_event.sequence)
         return _PermissionOutcome(
             chunks=(
                 RuntimeStreamChunk(kind="event", session=waiting_session, event=request_event),
             ),
             last_sequence=sequence,
-            pending_approval=pending_approval,
+            pending_approval=pending,
         )
 
     def _approval_resolution_outcome(
@@ -2309,30 +1778,7 @@ class VoidCodeRuntime:
         return self._session_store.list_sessions(workspace=self._workspace)
 
     def start_background_task(self, request: RuntimeRequest) -> BackgroundTaskState:
-        self._reconcile_background_tasks_if_needed()
-        validated_request = self._validated_request(request)
-        task_id = f"task-{uuid4().hex}"
-        initial_state = BackgroundTaskState(
-            task=BackgroundTaskRef(id=task_id),
-            status="queued",
-            request=BackgroundTaskRequestSnapshot(
-                prompt=validated_request.prompt,
-                session_id=validated_request.session_id,
-                parent_session_id=validated_request.parent_session_id,
-                metadata=dict(validated_request.metadata),
-                allocate_session_id=validated_request.allocate_session_id,
-            ),
-        )
-        self._session_store.create_background_task(workspace=self._workspace, task=initial_state)
-        worker = threading.Thread(
-            target=self._run_background_task_worker,
-            args=(task_id,),
-            name=f"voidcode-background-task-{task_id}",
-            daemon=True,
-        )
-        self._background_task_threads[task_id] = worker
-        worker.start()
-        return self.load_background_task(task_id)
+        return self._background_task_supervisor.start_background_task(request)
 
     def load_background_task(self, task_id: str) -> BackgroundTaskState:
         self._reconcile_background_tasks_if_needed()
@@ -2340,18 +1786,16 @@ class VoidCodeRuntime:
         return self._session_store.load_background_task(workspace=self._workspace, task_id=task_id)
 
     def load_background_task_result(self, task_id: str) -> BackgroundTaskResult:
-        task = self.load_background_task(task_id)
-        self._backfill_parent_background_task_event(task=task)
-        return self._background_task_result(task=task)
+        return self._background_task_supervisor.load_background_task_result(task_id)
 
     def list_background_tasks(self) -> tuple[StoredBackgroundTaskSummary, ...]:
-        self._reconcile_background_tasks_if_needed()
+        self._background_task_supervisor.reconcile_background_tasks_if_needed()
         return self._session_store.list_background_tasks(workspace=self._workspace)
 
     def list_background_tasks_by_parent_session(
         self, *, parent_session_id: str
     ) -> tuple[StoredBackgroundTaskSummary, ...]:
-        self._reconcile_background_tasks_if_needed()
+        self._background_task_supervisor.reconcile_background_tasks_if_needed()
         validated_parent_session_id = validate_session_reference_id(
             parent_session_id,
             field_name="parent_session_id",
@@ -2362,74 +1806,7 @@ class VoidCodeRuntime:
         )
 
     def cancel_background_task(self, task_id: str) -> BackgroundTaskState:
-        validate_background_task_id(task_id)
-        self._reconcile_background_tasks_if_needed()
-        previous_task = self._session_store.load_background_task(
-            workspace=self._workspace,
-            task_id=task_id,
-        )
-        task = self._session_store.request_background_task_cancel(
-            workspace=self._workspace,
-            task_id=task_id,
-        )
-        if task.status == "running" and task.session_id is not None:
-            child_response = self._load_background_task_child_response(task=task)
-            if child_response is not None and child_response.session.status == "waiting":
-                self._session_store.clear_pending_approval(
-                    workspace=self._workspace,
-                    session_id=task.session_id,
-                )
-                self._session_store.clear_pending_question(
-                    workspace=self._workspace,
-                    session_id=task.session_id,
-                )
-                cancelled_metadata = dict(child_response.session.metadata)
-                cancelled_metadata["abort_requested"] = True
-                cancelled_response = RuntimeResponse(
-                    session=SessionState(
-                        session=child_response.session.session,
-                        status="failed",
-                        turn=child_response.session.turn,
-                        metadata=cancelled_metadata,
-                    ),
-                    events=child_response.events
-                    + (
-                        EventEnvelope(
-                            session_id=task.session_id,
-                            sequence=(
-                                child_response.events[-1].sequence if child_response.events else 0
-                            )
-                            + 1,
-                            event_type=RUNTIME_FAILED,
-                            source="runtime",
-                            payload={
-                                "error": "cancelled by parent while child session was waiting",
-                                "cancelled": True,
-                                "delegated_task_id": task.task.id,
-                            },
-                        ),
-                    ),
-                    output=child_response.output,
-                )
-                self._session_store.save_run(
-                    workspace=self._workspace,
-                    request=RuntimeRequest(
-                        prompt=self._prompt_from_events(child_response.events),
-                        session_id=task.session_id,
-                        parent_session_id=task.parent_session_id,
-                        metadata=cast(RuntimeRequestMetadataPayload, cancelled_metadata),
-                    ),
-                    response=cancelled_response,
-                )
-                task = self._session_store.mark_background_task_terminal(
-                    workspace=self._workspace,
-                    task_id=task_id,
-                    status="cancelled",
-                    error="cancelled by parent while child session was waiting",
-                )
-        if previous_task.status != "cancelled" and task.status == "cancelled":
-            self._run_background_task_lifecycle_hook(task)
-        return task
+        return self._background_task_supervisor.cancel_background_task(task_id)
 
     def session_result(self, *, session_id: str) -> RuntimeSessionResult:
         validate_session_id(session_id)
@@ -2438,7 +1815,9 @@ class VoidCodeRuntime:
             session_id=session_id,
         )
         self._validate_session_workspace(result.session, session_id=session_id)
-        self._reconcile_parent_background_task_events_for_session(parent_session_id=session_id)
+        self._background_task_supervisor.reconcile_parent_background_task_events_for_session(
+            parent_session_id=session_id
+        )
         result = self._session_store.load_session_result(
             workspace=self._workspace,
             session_id=session_id,
@@ -2611,7 +1990,9 @@ class VoidCodeRuntime:
                 workspace=self._workspace, session_id=session_id
             )
             self._validate_session_workspace(response.session, session_id=session_id)
-            self._reconcile_parent_background_task_events_for_session(parent_session_id=session_id)
+            self._background_task_supervisor.reconcile_parent_background_task_events_for_session(
+                parent_session_id=session_id
+            )
             response = self._session_store.load_session(
                 workspace=self._workspace, session_id=session_id
             )
@@ -2628,7 +2009,9 @@ class VoidCodeRuntime:
             approval_request_id=approval_request_id,
             approval_decision=approval_decision,
         )
-        self._finalize_background_task_from_session_response(session_response=response)
+        self._background_task_supervisor.finalize_background_task_from_session_response(
+            session_response=response
+        )
         return response
 
     def resume_stream(
@@ -2644,7 +2027,9 @@ class VoidCodeRuntime:
                 workspace=self._workspace, session_id=session_id
             )
             self._validate_session_workspace(response.session, session_id=session_id)
-            self._reconcile_parent_background_task_events_for_session(parent_session_id=session_id)
+            self._background_task_supervisor.reconcile_parent_background_task_events_for_session(
+                parent_session_id=session_id
+            )
             response = self._session_store.load_session(
                 workspace=self._workspace, session_id=session_id
             )
@@ -2670,6 +2055,48 @@ class VoidCodeRuntime:
         session_id: str,
         approval_request_id: str,
     ) -> None:
+        self._validate_waiting_request_target_ownership(
+            session_id=session_id,
+            request_id=approval_request_id,
+            request_kind="approval",
+        )
+        pending = self._session_store.load_pending_approval(
+            workspace=self._workspace,
+            session_id=session_id,
+        )
+        if pending is None:
+            return
+        if pending.owner_session_id is not None and pending.owner_session_id != session_id:
+            raise ValueError(
+                "approval resume must target the child session that owns the approval request"
+            )
+        if pending.request_id != approval_request_id:
+            return
+
+    def _validate_question_targets_owned_request(
+        self,
+        *,
+        session_id: str,
+        question_request_id: str,
+    ) -> None:
+        self._validate_waiting_request_target_ownership(
+            session_id=session_id,
+            request_id=question_request_id,
+            request_kind="question",
+        )
+
+    def _validate_waiting_request_target_ownership(
+        self,
+        *,
+        session_id: str,
+        request_id: str,
+        request_kind: Literal["approval", "question"],
+    ) -> None:
+        wrong_target_error = (
+            "approval resume must target the child session that owns the approval request"
+            if request_kind == "approval"
+            else "question answer must target the child session that owns the question request"
+        )
         list_by_parent = cast(
             Callable[..., tuple[StoredBackgroundTaskSummary, ...]] | None,
             getattr(
@@ -2689,28 +2116,19 @@ class VoidCodeRuntime:
                 )
                 child_response = self._load_background_task_child_response(task=task)
                 owned_request_id = (
-                    self._approval_request_id_from_waiting_response(child_response)
-                    if child_response is not None
-                    else task.approval_request_id
-                )
-                if owned_request_id == approval_request_id:
-                    raise ValueError(
-                        "approval resume must target the child session that owns "
-                        "the approval request"
+                    self._waiting_request_id_from_response(
+                        child_response,
+                        request_kind=request_kind,
                     )
-
-        pending = self._session_store.load_pending_approval(
-            workspace=self._workspace,
-            session_id=session_id,
-        )
-        if pending is None:
-            return
-        if pending.owner_session_id is not None and pending.owner_session_id != session_id:
-            raise ValueError(
-                "approval resume must target the child session that owns the approval request"
-            )
-        if pending.request_id != approval_request_id:
-            return
+                    if child_response is not None
+                    else (
+                        task.approval_request_id
+                        if request_kind == "approval"
+                        else task.question_request_id
+                    )
+                )
+                if owned_request_id == request_id:
+                    raise ValueError(wrong_target_error)
 
     def answer_question(
         self,
@@ -2720,12 +2138,18 @@ class VoidCodeRuntime:
         responses: tuple[QuestionResponse, ...],
     ) -> RuntimeResponse:
         validate_session_id(session_id)
+        self._validate_question_targets_owned_request(
+            session_id=session_id,
+            question_request_id=question_request_id,
+        )
         _, response = self._answer_pending_question_response(
             session_id=session_id,
             question_request_id=question_request_id,
             responses=responses,
         )
-        self._finalize_background_task_from_session_response(session_response=response)
+        self._background_task_supervisor.finalize_background_task_from_session_response(
+            session_response=response
+        )
         return response
 
     def answer_question_stream(
@@ -2736,6 +2160,10 @@ class VoidCodeRuntime:
         responses: tuple[QuestionResponse, ...],
     ) -> Iterator[RuntimeStreamChunk]:
         validate_session_id(session_id)
+        self._validate_question_targets_owned_request(
+            session_id=session_id,
+            question_request_id=question_request_id,
+        )
         yield from self._answer_pending_question_stream(
             session_id=session_id,
             question_request_id=question_request_id,
@@ -2766,6 +2194,7 @@ class VoidCodeRuntime:
             target_summary=str(payload.get("target_summary", "")),
             reason=str(payload.get("reason", "")),
             policy_mode=raw_policy_mode,
+            request_event_sequence=approval_event.sequence,
             owner_session_id=(
                 str(payload["owner_session_id"])
                 if payload.get("owner_session_id") is not None
@@ -2782,6 +2211,188 @@ class VoidCodeRuntime:
                 else None
             ),
         )
+
+    @staticmethod
+    def _request_event_and_resolution_state(
+        events: tuple[EventEnvelope, ...],
+        *,
+        request_kind: Literal["approval", "question"],
+        request_id: str,
+    ) -> tuple[EventEnvelope | None, bool]:
+        request_event_type = (
+            RUNTIME_APPROVAL_REQUESTED if request_kind == "approval" else RUNTIME_QUESTION_REQUESTED
+        )
+        resolution_event_type = (
+            "runtime.approval_resolved" if request_kind == "approval" else RUNTIME_QUESTION_ANSWERED
+        )
+        request_event: EventEnvelope | None = None
+        resolved = False
+        for event in events:
+            event_request_id = event.payload.get("request_id")
+            if event_request_id != request_id:
+                continue
+            if event.event_type == request_event_type:
+                request_event = event
+            elif event.event_type == resolution_event_type:
+                resolved = True
+        return request_event, resolved
+
+    def _validate_pending_approval_matches_recorded_request(
+        self,
+        *,
+        stored: RuntimeResponse,
+        pending: PendingApproval,
+        checkpoint: dict[str, object] | None,
+    ) -> None:
+        # Referenced via extracted resume collaborator.
+        request_event, resolved = self._request_event_and_resolution_state(
+            stored.events,
+            request_kind="approval",
+            request_id=pending.request_id,
+        )
+        if resolved:
+            raise ValueError(
+                "approval request was already resolved; stale approval replay is not allowed"
+            )
+        if request_event is None:
+            if checkpoint is None:
+                raise ValueError(
+                    "persisted pending approval has no matching approval request event"
+                )
+            if checkpoint.get("pending_approval_request_id") != pending.request_id:
+                raise ValueError(
+                    "persisted approval resume checkpoint request id "
+                    "does not match pending approval"
+                )
+            if (
+                checkpoint.get("pending_approval_tool_name") != pending.tool_name
+                or checkpoint.get("pending_approval_arguments") != pending.arguments
+            ):
+                raise ValueError(
+                    "persisted pending approval no longer matches "
+                    "the recorded approval request payload"
+                )
+            if checkpoint.get("pending_approval_owner_session_id") != pending.owner_session_id:
+                raise ValueError(
+                    "persisted pending approval owner_session_id "
+                    "does not match the recorded approval request"
+                )
+            if (
+                checkpoint.get("pending_approval_owner_parent_session_id")
+                != pending.owner_parent_session_id
+            ):
+                raise ValueError(
+                    "persisted pending approval owner_parent_session_id "
+                    "does not match the recorded approval request"
+                )
+            if checkpoint.get("pending_approval_delegated_task_id") != pending.delegated_task_id:
+                raise ValueError(
+                    "persisted pending approval delegated_task_id "
+                    "does not match the recorded approval request"
+                )
+            checkpoint_sequence = checkpoint.get("pending_approval_request_event_sequence")
+            if (
+                pending.request_event_sequence is not None
+                and checkpoint_sequence is not None
+                and checkpoint_sequence != pending.request_event_sequence
+            ):
+                raise ValueError(
+                    "persisted pending approval sequence "
+                    "does not match the recorded approval request"
+                )
+            return
+        if (
+            pending.request_event_sequence is not None
+            and request_event.sequence != pending.request_event_sequence
+        ):
+            raise ValueError(
+                "persisted pending approval sequence does not match the recorded approval request"
+            )
+        payload = request_event.payload
+        if (
+            payload.get("tool") != pending.tool_name
+            or payload.get("arguments") != pending.arguments
+        ):
+            raise ValueError(
+                "persisted pending approval no longer matches the recorded approval request payload"
+            )
+        if payload.get("owner_session_id") != pending.owner_session_id:
+            raise ValueError(
+                "persisted pending approval owner_session_id "
+                "does not match the recorded approval request"
+            )
+        if payload.get("owner_parent_session_id") != pending.owner_parent_session_id:
+            raise ValueError(
+                "persisted pending approval owner_parent_session_id "
+                "does not match the recorded approval request"
+            )
+        if payload.get("delegated_task_id") != pending.delegated_task_id:
+            raise ValueError(
+                "persisted pending approval delegated_task_id "
+                "does not match the recorded approval request"
+            )
+
+    def _validate_pending_question_matches_recorded_request(
+        self,
+        *,
+        stored: RuntimeResponse,
+        pending: PendingQuestion,
+        checkpoint: dict[str, object] | None,
+    ) -> None:
+        # Referenced via extracted resume collaborator.
+        request_event, resolved = self._request_event_and_resolution_state(
+            stored.events,
+            request_kind="question",
+            request_id=pending.request_id,
+        )
+        if resolved:
+            raise ValueError(
+                "question request was already answered; stale question replay is not allowed"
+            )
+        expected_questions = [
+            {
+                "header": prompt.header,
+                "question": prompt.question,
+                "multiple": prompt.multiple,
+                "options": [
+                    {
+                        "label": option.label,
+                        "description": option.description,
+                    }
+                    for option in prompt.options
+                ],
+            }
+            for prompt in pending.prompts
+        ]
+        if request_event is None:
+            if checkpoint is None:
+                raise ValueError(
+                    "persisted pending question has no matching question request event"
+                )
+            if checkpoint.get("pending_question_request_id") != pending.request_id:
+                raise ValueError(
+                    "persisted question resume checkpoint request id "
+                    "does not match pending question"
+                )
+            if checkpoint.get("pending_question_tool_name") != pending.tool_name:
+                raise ValueError(
+                    "persisted pending question tool does not match the recorded question request"
+                )
+            if checkpoint.get("pending_question_prompts") != expected_questions:
+                raise ValueError(
+                    "persisted pending question no longer matches "
+                    "the recorded question request payload"
+                )
+            return
+        payload = request_event.payload
+        if payload.get("tool") != pending.tool_name:
+            raise ValueError(
+                "persisted pending question tool does not match the recorded question request"
+            )
+        if payload.get("questions") != expected_questions:
+            raise ValueError(
+                "persisted pending question no longer matches the recorded question request payload"
+            )
 
     def _pending_question_from_response(self, response: RuntimeResponse) -> PendingQuestion | None:
         answered_request_ids = {
@@ -2817,40 +2428,12 @@ class VoidCodeRuntime:
         approval_decision: PermissionResolution,
         finalize_background_task: bool = False,
     ) -> Iterator[RuntimeStreamChunk]:
-        stored_response = self._session_store.load_session(
-            workspace=self._workspace, session_id=session_id
-        )
-        pending = self._session_store.load_pending_approval(
-            workspace=self._workspace, session_id=session_id
-        )
-        checkpoint = self._load_resume_checkpoint(session_id=session_id)
-        if pending is None:
-            raise ValueError(f"no pending approval for session: {session_id}")
-        if pending.request_id != approval_request_id:
-            raise ValueError("approval request id does not match pending session approval")
-        streamed_events: list[EventEnvelope] = []
-        output: str | None = None
-        final_session: SessionState | None = None
-        for chunk in self._resume_pending_approval_impl(
-            stored=stored_response,
-            pending=pending,
+        yield from self._resume_coordinator.resume_pending_approval_stream(
+            session_id=session_id,
+            approval_request_id=approval_request_id,
             approval_decision=approval_decision,
-            checkpoint=checkpoint,
-        ):
-            final_session = chunk.session
-            if chunk.event is not None:
-                streamed_events.append(chunk.event)
-            if chunk.kind == "output":
-                output = chunk.output
-            yield chunk
-        if finalize_background_task:
-            response = self._response_from_resumed_chunks(
-                stored_response=stored_response,
-                streamed_events=streamed_events,
-                output=output,
-                final_session=final_session,
-            )
-            self._finalize_background_task_from_session_response(session_response=response)
+            finalize_background_task=finalize_background_task,
+        )
 
     def _resume_pending_approval_response(
         self,
@@ -2859,43 +2442,11 @@ class VoidCodeRuntime:
         approval_request_id: str,
         approval_decision: PermissionResolution,
     ) -> tuple[tuple[EventEnvelope, ...], RuntimeResponse]:
-        stored_response = self._session_store.load_session(
-            workspace=self._workspace,
+        return self._resume_coordinator.resume_pending_approval_response(
             session_id=session_id,
-        )
-        pending = self._session_store.load_pending_approval(
-            workspace=self._workspace, session_id=session_id
-        )
-        checkpoint = self._load_resume_checkpoint(session_id=session_id)
-        if pending is None:
-            raise ValueError(f"no pending approval for session: {session_id}")
-        if pending.request_id != approval_request_id:
-            raise ValueError("approval request id does not match pending session approval")
-
-        stored_events = stored_response.events
-        streamed_events: list[EventEnvelope] = []
-        output: str | None = None
-        final_session: SessionState | None = None
-
-        for chunk in self._resume_pending_approval_impl(
-            stored=stored_response,
-            pending=pending,
+            approval_request_id=approval_request_id,
             approval_decision=approval_decision,
-            checkpoint=checkpoint,
-        ):
-            final_session = chunk.session
-            if chunk.event is not None:
-                streamed_events.append(chunk.event)
-            if chunk.kind == "output":
-                output = chunk.output
-
-        response = self._response_from_resumed_chunks(
-            stored_response=stored_response,
-            streamed_events=streamed_events,
-            output=output,
-            final_session=final_session,
         )
-        return stored_events, response
 
     def _answer_pending_question_stream(
         self,
@@ -2905,41 +2456,12 @@ class VoidCodeRuntime:
         responses: tuple[QuestionResponse, ...],
         finalize_background_task: bool = False,
     ) -> Iterator[RuntimeStreamChunk]:
-        stored_response = self._session_store.load_session(
-            workspace=self._workspace, session_id=session_id
+        yield from self._resume_coordinator.answer_pending_question_stream(
+            session_id=session_id,
+            question_request_id=question_request_id,
+            responses=responses,
+            finalize_background_task=finalize_background_task,
         )
-        pending = self._session_store.load_pending_question(
-            workspace=self._workspace, session_id=session_id
-        )
-        checkpoint = self._load_resume_checkpoint(session_id=session_id)
-        if pending is None:
-            raise NoPendingQuestionError(f"no pending question for session: {session_id}")
-        if pending.request_id != question_request_id:
-            raise ValueError("question request id does not match pending session question")
-        normalized_responses = QuestionTool.validate_responses(pending.prompts, responses)
-        streamed_events: list[EventEnvelope] = []
-        output: str | None = None
-        final_session: SessionState | None = None
-        for chunk in self._answer_pending_question_impl(
-            stored=stored_response,
-            pending=pending,
-            responses=normalized_responses,
-            checkpoint=checkpoint,
-        ):
-            final_session = chunk.session
-            if chunk.event is not None:
-                streamed_events.append(chunk.event)
-            if chunk.kind == "output":
-                output = chunk.output
-            yield chunk
-        if finalize_background_task:
-            response = self._response_from_resumed_chunks(
-                stored_response=stored_response,
-                streamed_events=streamed_events,
-                output=output,
-                final_session=final_session,
-            )
-            self._finalize_background_task_from_session_response(session_response=response)
 
     def _answer_pending_question_response(
         self,
@@ -2948,43 +2470,11 @@ class VoidCodeRuntime:
         question_request_id: str,
         responses: tuple[QuestionResponse, ...],
     ) -> tuple[tuple[EventEnvelope, ...], RuntimeResponse]:
-        stored_response = self._session_store.load_session(
-            workspace=self._workspace,
+        return self._resume_coordinator.answer_pending_question_response(
             session_id=session_id,
+            question_request_id=question_request_id,
+            responses=responses,
         )
-        pending = self._session_store.load_pending_question(
-            workspace=self._workspace, session_id=session_id
-        )
-        checkpoint = self._load_resume_checkpoint(session_id=session_id)
-        if pending is None:
-            raise NoPendingQuestionError(f"no pending question for session: {session_id}")
-        if pending.request_id != question_request_id:
-            raise ValueError("question request id does not match pending session question")
-        normalized_responses = QuestionTool.validate_responses(pending.prompts, responses)
-
-        streamed_events: list[EventEnvelope] = []
-        output: str | None = None
-        final_session: SessionState | None = None
-
-        for chunk in self._answer_pending_question_impl(
-            stored=stored_response,
-            pending=pending,
-            responses=normalized_responses,
-            checkpoint=checkpoint,
-        ):
-            final_session = chunk.session
-            if chunk.event is not None:
-                streamed_events.append(chunk.event)
-            if chunk.kind == "output":
-                output = chunk.output
-
-        response = self._response_from_resumed_chunks(
-            stored_response=stored_response,
-            streamed_events=streamed_events,
-            output=output,
-            final_session=final_session,
-        )
-        return stored_response.events, response
 
     def _answer_pending_question_impl(
         self,
@@ -2994,224 +2484,12 @@ class VoidCodeRuntime:
         responses: tuple[QuestionResponse, ...],
         checkpoint: dict[str, object] | None,
     ) -> Iterator[RuntimeStreamChunk]:
-        session = SessionState(
-            session=stored.session.session,
-            status="running",
-            turn=stored.session.turn,
-            metadata=stored.session.metadata,
-        )
-        max_stored_sequence = stored.events[-1].sequence if stored.events else 0
-        question_answer_result = QuestionTool.answer_tool_result(responses)
-
-        checkpoint_state = self._question_resume_state_from_checkpoint(
-            checkpoint=checkpoint,
+        yield from self._resume_coordinator.answer_pending_question_impl(
+            stored=stored,
             pending=pending,
-            stored_metadata=stored.session.metadata,
+            responses=responses,
+            checkpoint=checkpoint,
         )
-        if checkpoint_state is not None:
-            prompt = checkpoint_state.prompt
-            session = SessionState(
-                session=stored.session.session,
-                status="running",
-                turn=stored.session.turn,
-                metadata=checkpoint_state.session_metadata,
-            )
-            tool_results: list[ToolResult] = list(checkpoint_state.tool_results)
-        else:
-            prompt = self._prompt_from_events(stored.events)
-            tool_results = []
-            for event in stored.events:
-                if event.event_type == "runtime.tool_completed":
-                    error_value = event.payload.get("error")
-                    raw_content = event.payload.get("content")
-                    is_err = error_value is not None
-                    tool_results.append(
-                        ToolResult(
-                            tool_name=str(event.payload.get("tool", "unknown")),
-                            content=(
-                                str(raw_content) if raw_content is not None and not is_err else None
-                            ),
-                            status="error" if is_err else "ok",
-                            data=event.payload,
-                            error=str(error_value) if is_err else None,
-                        )
-                    )
-        tool_results.append(question_answer_result)
-
-        sequence = max_stored_sequence + 1
-        answered_event = EventEnvelope(
-            session_id=session.session.id,
-            sequence=sequence,
-            event_type=RUNTIME_QUESTION_ANSWERED,
-            source="runtime",
-            payload={
-                "request_id": pending.request_id,
-                "responses": [
-                    {"header": response.header, "answers": list(response.answers)}
-                    for response in responses
-                ],
-            },
-        )
-        yield RuntimeStreamChunk(kind="event", session=session, event=answered_event)
-        sequence += 1
-        loop_events = [answered_event]
-        tool_completed_event = EventEnvelope(
-            session_id=session.session.id,
-            sequence=sequence,
-            event_type="runtime.tool_completed",
-            source="tool",
-            payload={
-                "tool": question_answer_result.tool_name,
-                "status": question_answer_result.status,
-                "content": question_answer_result.content,
-                "error": question_answer_result.error,
-                **question_answer_result.data,
-            },
-        )
-        yield RuntimeStreamChunk(kind="event", session=session, event=tool_completed_event)
-        loop_events.append(tool_completed_event)
-
-        effective_config = self._effective_runtime_config_from_metadata(session.metadata)
-        tool_registry = self._tool_registry_for_effective_config(effective_config)
-        skill_registry = self._skill_registry_for_effective_config(effective_config)
-        resumed_skill_snapshot = self._build_skill_snapshot(
-            skill_registry,
-            metadata=session.metadata,
-            agent=effective_config.agent,
-            source="resume",
-        )
-        graph_request = GraphRunRequest(
-            session=session,
-            prompt=prompt,
-            available_tools=tool_registry.definitions(),
-            applied_skills=resumed_skill_snapshot.applied_skill_payloads,
-            skill_prompt_context=resumed_skill_snapshot.skill_prompt_context,
-            context_window=self._prepare_provider_context_window(
-                prompt=prompt,
-                tool_results=tuple(tool_results),
-                session_metadata=session.metadata,
-            ),
-            metadata={
-                **session.metadata,
-                "agent_preset": serialize_runtime_agent_config(effective_config.agent),
-                "provider_attempt": (
-                    session.metadata.get("provider_attempt", 0)
-                    if isinstance(session.metadata.get("provider_attempt", 0), int)
-                    else 0
-                ),
-            },
-        )
-        graph = self._graph_for_session_metadata(session.metadata)
-        output: str | None = None
-        final_session = session
-        last_sequence = sequence
-        try:
-            for chunk in self._execute_graph_loop(
-                graph=graph,
-                tool_registry=tool_registry,
-                session=session,
-                sequence=sequence,
-                graph_request=graph_request,
-                tool_results=tool_results,
-                permission_policy=self._permission_policy_for_session(session.metadata),
-                preserved_continuity_state=self._continuity_state_from_session_metadata(
-                    session.metadata
-                ),
-            ):
-                final_session = chunk.session
-                if chunk.event is not None:
-                    last_sequence = chunk.event.sequence
-                    loop_events.append(chunk.event)
-                if chunk.kind == "output":
-                    output = chunk.output
-                yield chunk
-        except Exception:
-            if final_session.status == "failed":
-                response = RuntimeResponse(
-                    session=final_session,
-                    events=stored.events + tuple(loop_events),
-                    output=output,
-                )
-                request = RuntimeRequest(
-                    prompt=prompt,
-                    session_id=stored.session.session.id,
-                    parent_session_id=stored.session.session.parent_id,
-                )
-                self._persist_response(request=request, response=response)
-                return
-            raise
-
-        if final_session.status == "waiting":
-            final_session = self._disconnect_acp_for_session_state(final_session)
-            waiting_response = RuntimeResponse(
-                session=final_session,
-                events=stored.events + tuple(loop_events),
-                output=output,
-            )
-            idle_reason = self._resume_waiting_reason(waiting_response)
-            idle_hook_outcome = self._run_lifecycle_hooks(
-                session=final_session,
-                sequence=last_sequence,
-                surface="session_idle",
-                payload={"reason": idle_reason, "resume": True},
-            )
-            for hook_chunk in idle_hook_outcome.chunks:
-                hook_event = cast(EventEnvelope, hook_chunk.event)
-                last_sequence = hook_event.sequence
-                loop_events.append(hook_event)
-                yield hook_chunk
-            if idle_hook_outcome.failed_error is not None:
-                failed_chunk = self._failed_chunk(
-                    session=final_session,
-                    sequence=idle_hook_outcome.last_sequence + 1,
-                    error=idle_hook_outcome.failed_error,
-                )
-                failed_event = cast(EventEnvelope, failed_chunk.event)
-                loop_events.append(failed_event)
-                final_session = failed_chunk.session
-                yield failed_chunk
-        else:
-            final_chunks, final_session, final_sequence = self._finalize_run_acp(
-                session=final_session,
-                sequence=last_sequence,
-            )
-            for chunk in final_chunks:
-                if chunk.event is not None:
-                    last_sequence += 1
-                    resequenced_event = self._resequence_event(chunk.event, sequence=last_sequence)
-                    loop_events.append(resequenced_event)
-                    yield RuntimeStreamChunk(
-                        kind="event", session=chunk.session, event=resequenced_event
-                    )
-            end_hook_outcome = self._run_lifecycle_hooks(
-                session=final_session,
-                sequence=max(last_sequence, final_sequence),
-                surface="session_end",
-                payload={"session_status": final_session.status, "resume": True},
-            )
-            for hook_chunk in end_hook_outcome.chunks:
-                hook_event = cast(EventEnvelope, hook_chunk.event)
-                last_sequence = hook_event.sequence
-                loop_events.append(hook_event)
-                yield hook_chunk
-            if end_hook_outcome.failed_error is not None:
-                logger.warning(
-                    "session_end hook failed for %s during question resume: %s",
-                    final_session.session.id,
-                    end_hook_outcome.failed_error,
-                )
-
-        response = RuntimeResponse(
-            session=final_session,
-            events=stored.events + tuple(loop_events),
-            output=output,
-        )
-        request = RuntimeRequest(
-            prompt=prompt,
-            session_id=stored.session.session.id,
-            parent_session_id=stored.session.session.parent_id,
-        )
-        self._persist_response(request=request, response=response)
 
     def _resume_waiting_reason(self, response: RuntimeResponse) -> str:
         try:
@@ -3232,14 +2510,11 @@ class VoidCodeRuntime:
         output: str | None,
         final_session: SessionState | None,
     ) -> RuntimeResponse:
-        if final_session is None:
-            raise ValueError("runtime stream emitted no chunks")
-        if final_session.status == "waiting":
-            final_session = self._reload_persisted_session(session_id=final_session.session.id)
-        return RuntimeResponse(
-            session=final_session,
-            events=stored_response.events + tuple(streamed_events),
+        return self._resume_coordinator.response_from_resumed_chunks(
+            stored_response=stored_response,
+            streamed_events=streamed_events,
             output=output,
+            final_session=final_session,
         )
 
     def _resume_pending_approval_impl(
@@ -3250,388 +2525,12 @@ class VoidCodeRuntime:
         approval_decision: PermissionResolution,
         checkpoint: dict[str, object] | None,
     ) -> Iterator[RuntimeStreamChunk]:
-        session = SessionState(
-            session=stored.session.session,
-            status="running",
-            turn=stored.session.turn,
-            metadata=stored.session.metadata,
-        )
-
-        max_stored_sequence = stored.events[-1].sequence if stored.events else 0
-        loop_events: list[EventEnvelope] = []
-        output: str | None = None
-
-        checkpoint_state = self._approval_resume_state_from_checkpoint(
-            checkpoint=checkpoint,
+        yield from self._resume_coordinator.resume_pending_approval_impl(
+            stored=stored,
             pending=pending,
-            stored_metadata=stored.session.metadata,
+            approval_decision=approval_decision,
+            checkpoint=checkpoint,
         )
-        binding_mismatch_payload: dict[str, object] | None = None
-        if checkpoint is not None:
-            checkpoint_binding = checkpoint.get("skill_binding_snapshot")
-            checkpoint_binding_payload = (
-                cast(dict[str, object], checkpoint_binding)
-                if isinstance(checkpoint_binding, dict)
-                else None
-            )
-            if checkpoint_binding_payload is not None:
-                stored_snapshot_payload = cast(
-                    dict[str, object] | None,
-                    stored.session.metadata.get("skill_snapshot"),
-                )
-                stored_binding_payload = (
-                    cast(dict[str, object], stored_snapshot_payload.get("binding_snapshot"))
-                    if isinstance(stored_snapshot_payload, dict)
-                    and isinstance(stored_snapshot_payload.get("binding_snapshot"), dict)
-                    else None
-                )
-                mismatch_payload = self._skill_binding_mismatch_payload(
-                    checkpoint_binding_payload,
-                    stored_binding_payload,
-                )
-                if cast(bool, mismatch_payload["mismatch"]):
-                    binding_mismatch_payload = mismatch_payload
-        if checkpoint_state is not None:
-            prompt = checkpoint_state.prompt
-            session = SessionState(
-                session=stored.session.session,
-                status="running",
-                turn=stored.session.turn,
-                metadata=checkpoint_state.session_metadata,
-            )
-            tool_results: list[ToolResult] = list(checkpoint_state.tool_results)
-        else:
-            prompt = self._prompt_from_events(stored.events)
-            tool_results = []
-            for event in stored.events:
-                if event.event_type == "runtime.tool_completed":
-                    error_value = event.payload.get("error")
-                    raw_content = event.payload.get("content")
-                    is_err = error_value is not None
-                    tool_results.append(
-                        ToolResult(
-                            tool_name=str(event.payload.get("tool", "unknown")),
-                            content=(
-                                str(raw_content) if raw_content is not None and not is_err else None
-                            ),
-                            status="error" if is_err else "ok",
-                            data=event.payload,
-                            error=str(error_value) if is_err else None,
-                        )
-                    )
-
-        session = self._session_with_current_acp_metadata(session)
-        preserved_continuity_state = self._continuity_state_from_session_metadata(session.metadata)
-        mcp_startup_chunks, session, _, mcp_failed_chunk = self._refresh_mcp_tools_for_session(
-            session=session,
-            sequence=max_stored_sequence,
-            failure_kind="mcp_startup_failed",
-        )
-        effective_config = self._effective_runtime_config_from_metadata(session.metadata)
-        tool_registry = self._tool_registry_for_effective_config(effective_config)
-        skill_registry = self._skill_registry_for_effective_config(effective_config)
-
-        resumed_skill_snapshot = self._build_skill_snapshot(
-            skill_registry,
-            metadata=session.metadata,
-            agent=effective_config.agent,
-            source="resume",
-        )
-        resumed_applied_skills = resumed_skill_snapshot.applied_skill_payloads
-        graph_request = GraphRunRequest(
-            session=session,
-            prompt=prompt,
-            available_tools=tool_registry.definitions(),
-            applied_skills=resumed_applied_skills,
-            skill_prompt_context=resumed_skill_snapshot.skill_prompt_context,
-            context_window=self._prepare_provider_context_window(
-                prompt=prompt,
-                tool_results=tuple(tool_results),
-                session_metadata=session.metadata,
-            ),
-            metadata={
-                **session.metadata,
-                "agent_preset": serialize_runtime_agent_config(effective_config.agent),
-                "provider_attempt": (
-                    session.metadata.get("provider_attempt", 0)
-                    if isinstance(session.metadata.get("provider_attempt", 0), int)
-                    else 0
-                ),
-            },
-        )
-        provider_attempt = self._provider_attempt_from_metadata(graph_request.metadata)
-        graph = self._graph_for_session_metadata(session.metadata)
-        if provider_attempt > 0:
-            graph = self._graph_selection_for_effective_config(
-                self._effective_runtime_config_from_metadata(session.metadata),
-                provider_attempt=provider_attempt,
-            ).graph
-
-        emitted_sequence = max_stored_sequence
-        if binding_mismatch_payload is not None:
-            emitted_sequence += 1
-            mismatch_event = EventEnvelope(
-                session_id=session.session.id,
-                sequence=emitted_sequence,
-                event_type=RUNTIME_SKILLS_BINDING_MISMATCH,
-                source="runtime",
-                payload={
-                    **binding_mismatch_payload,
-                    "resume": True,
-                    "approval_request_id": pending.request_id,
-                },
-            )
-            loop_events.append(mismatch_event)
-            yield RuntimeStreamChunk(kind="event", session=session, event=mismatch_event)
-        for chunk in mcp_startup_chunks:
-            emitted_sequence += 1
-            resequenced_event = self._resequence_event(
-                cast(EventEnvelope, chunk.event), sequence=emitted_sequence
-            )
-            resequenced_chunk = RuntimeStreamChunk(
-                kind="event", session=chunk.session, event=resequenced_event
-            )
-            loop_events.append(resequenced_event)
-            yield resequenced_chunk
-        if mcp_failed_chunk is not None:
-            emitted_sequence += 1
-            resequenced_failed = self._resequence_event(
-                cast(EventEnvelope, mcp_failed_chunk.event), sequence=emitted_sequence
-            )
-            failed_chunk = RuntimeStreamChunk(
-                kind="event",
-                session=mcp_failed_chunk.session,
-                event=resequenced_failed,
-            )
-            loop_events.append(resequenced_failed)
-            response = RuntimeResponse(
-                session=mcp_failed_chunk.session,
-                events=stored.events + tuple(loop_events),
-                output=output,
-            )
-            request = RuntimeRequest(
-                prompt=prompt,
-                session_id=stored.session.session.id,
-                parent_session_id=stored.session.session.parent_id,
-            )
-            self._persist_response(request=request, response=response)
-            yield failed_chunk
-            return
-
-        deferred_startup_acp_events: tuple[object, ...] = ()
-        if self.current_acp_state().configuration.configured_enabled is True:
-            try:
-                deferred_startup_acp_events = self._acp_adapter.connect()
-            except Exception as exc:
-                startup_chunks, session, last_sequence = self._emit_current_acp_drain(
-                    session=session,
-                    start_sequence=max_stored_sequence + 1,
-                )
-                startup_failed_chunk = self._failed_chunk(
-                    session=self._session_with_current_acp_metadata(session),
-                    sequence=last_sequence + 1,
-                    error=str(exc),
-                    payload={"kind": "acp_startup_failed"},
-                )
-            else:
-                session = self._session_with_current_acp_metadata(session)
-                startup_chunks = ()
-                startup_failed_chunk = None
-        else:
-            startup_chunks = ()
-            startup_failed_chunk = None
-        for chunk in startup_chunks:
-            emitted_sequence += 1
-            resequenced_event = self._resequence_event(
-                cast(EventEnvelope, chunk.event), sequence=emitted_sequence
-            )
-            resequenced_chunk = RuntimeStreamChunk(
-                kind="event", session=chunk.session, event=resequenced_event
-            )
-            loop_events.append(resequenced_event)
-            yield resequenced_chunk
-        if startup_failed_chunk is not None:
-            emitted_sequence += 1
-            resequenced_failed = self._resequence_event(
-                cast(EventEnvelope, startup_failed_chunk.event),
-                sequence=emitted_sequence,
-            )
-            failed_chunk = RuntimeStreamChunk(
-                kind="event",
-                session=startup_failed_chunk.session,
-                event=resequenced_failed,
-            )
-            loop_events.append(resequenced_failed)
-            response = RuntimeResponse(
-                session=startup_failed_chunk.session,
-                events=stored.events + tuple(loop_events),
-                output=output,
-            )
-            request = RuntimeRequest(
-                prompt=prompt,
-                session_id=stored.session.session.id,
-                parent_session_id=stored.session.session.parent_id,
-            )
-            self._persist_response(request=request, response=response)
-            yield failed_chunk
-            return
-
-        sequence = max_stored_sequence
-        try:
-            for chunk in self._execute_graph_loop(
-                graph=graph,
-                tool_registry=tool_registry,
-                session=session,
-                sequence=sequence,
-                graph_request=graph_request,
-                tool_results=tool_results,
-                approval_resolution=(pending, approval_decision),
-                permission_policy=self._permission_policy_for_session(session.metadata),
-                preserved_continuity_state=preserved_continuity_state,
-            ):
-                if deferred_startup_acp_events and (
-                    (
-                        chunk.event is not None
-                        and chunk.event.event_type
-                        in {"runtime.approval_resolved", "runtime.failed"}
-                    )
-                    or chunk.kind == "output"
-                ):
-                    startup_chunks, updated_session, _ = self._emit_acp_events(
-                        session=chunk.session,
-                        start_sequence=emitted_sequence + 1,
-                        acp_events=deferred_startup_acp_events,
-                    )
-                    deferred_startup_acp_events = ()
-                    for startup_chunk in startup_chunks:
-                        startup_event = cast(EventEnvelope, startup_chunk.event)
-                        emitted_sequence = startup_event.sequence
-                        loop_events.append(startup_event)
-                        yield startup_chunk
-                    if chunk.event is not None:
-                        chunk = RuntimeStreamChunk(
-                            kind="event",
-                            session=updated_session,
-                            event=chunk.event,
-                        )
-                    elif chunk.kind == "output":
-                        chunk = RuntimeStreamChunk(
-                            kind="output",
-                            session=updated_session,
-                            output=chunk.output,
-                        )
-                if chunk.event is not None:
-                    emitted_sequence += 1
-                    resequenced_event = self._resequence_event(
-                        chunk.event, sequence=emitted_sequence
-                    )
-                    loop_events.append(resequenced_event)
-                    yield RuntimeStreamChunk(
-                        kind="event", session=chunk.session, event=resequenced_event
-                    )
-                if chunk.kind == "output":
-                    output = chunk.output
-                    yield chunk
-                session = chunk.session
-        except Exception:
-            if session.status == "failed":
-                response = RuntimeResponse(
-                    session=session,
-                    events=stored.events + tuple(loop_events),
-                    output=output,
-                )
-                request = RuntimeRequest(
-                    prompt=prompt,
-                    session_id=stored.session.session.id,
-                    parent_session_id=stored.session.session.parent_id,
-                )
-                self._persist_response(request=request, response=response)
-                return
-            raise
-
-        if deferred_startup_acp_events:
-            startup_chunks, session, _ = self._emit_acp_events(
-                session=session,
-                start_sequence=emitted_sequence + 1,
-                acp_events=deferred_startup_acp_events,
-            )
-            deferred_startup_acp_events = ()
-            for startup_chunk in startup_chunks:
-                startup_event = cast(EventEnvelope, startup_chunk.event)
-                emitted_sequence = startup_event.sequence
-                loop_events.append(startup_event)
-                yield startup_chunk
-
-        last_sequence = emitted_sequence
-        if session.status == "waiting":
-            session = self._disconnect_acp_for_session_state(session)
-            idle_hook_outcome = self._run_lifecycle_hooks(
-                session=session,
-                sequence=last_sequence,
-                surface="session_idle",
-                payload={"reason": "waiting_for_approval", "resume": True},
-            )
-            for hook_chunk in idle_hook_outcome.chunks:
-                hook_event = cast(EventEnvelope, hook_chunk.event)
-                emitted_sequence = hook_event.sequence
-                loop_events.append(hook_event)
-                yield hook_chunk
-            if idle_hook_outcome.failed_error is not None:
-                failed_chunk = self._failed_chunk(
-                    session=session,
-                    sequence=idle_hook_outcome.last_sequence + 1,
-                    error=idle_hook_outcome.failed_error,
-                )
-                failed_event = cast(EventEnvelope, failed_chunk.event)
-                loop_events.append(failed_event)
-                session = failed_chunk.session
-                yield failed_chunk
-        else:
-            final_chunks, session, _ = self._finalize_run_acp(
-                session=session,
-                sequence=last_sequence,
-            )
-            for chunk in final_chunks:
-                if chunk.event is not None:
-                    emitted_sequence += 1
-                    resequenced_event = self._resequence_event(
-                        chunk.event, sequence=emitted_sequence
-                    )
-                    loop_events.append(resequenced_event)
-                    yield RuntimeStreamChunk(
-                        kind="event", session=chunk.session, event=resequenced_event
-                    )
-            end_hook_outcome = self._run_lifecycle_hooks(
-                session=session,
-                sequence=emitted_sequence,
-                surface="session_end",
-                payload={"session_status": session.status, "resume": True},
-            )
-            for hook_chunk in end_hook_outcome.chunks:
-                hook_event = cast(EventEnvelope, hook_chunk.event)
-                emitted_sequence = hook_event.sequence
-                loop_events.append(hook_event)
-                yield hook_chunk
-            if end_hook_outcome.failed_error is not None:
-                logger.warning(
-                    "session_end hook failed for %s during resume: %s",
-                    session.session.id,
-                    end_hook_outcome.failed_error,
-                )
-
-        response = RuntimeResponse(
-            session=session,
-            events=stored.events + tuple(loop_events),
-            output=output,
-        )
-
-        request = RuntimeRequest(
-            prompt=prompt,
-            session_id=stored.session.session.id,
-            parent_session_id=stored.session.session.parent_id,
-        )
-        self._persist_response(request=request, response=response)
-        return
 
     def _approval_resume_state_from_checkpoint(
         self,
@@ -3640,48 +2539,17 @@ class VoidCodeRuntime:
         pending: PendingApproval,
         stored_metadata: dict[str, object],
     ) -> _ApprovalResumeCheckpointState | None:
-        if checkpoint is None:
-            return None
-        if checkpoint.get("kind") != "approval_wait":
-            return None
-        if checkpoint.get("version") != 1:
-            return None
-        if checkpoint.get("pending_approval_request_id") != pending.request_id:
-            return None
-        checkpoint_snapshot_hash = checkpoint.get("skill_snapshot_hash")
-        stored_snapshot_payload = cast(
-            dict[str, object] | None,
-            stored_metadata.get("skill_snapshot"),
+        state = self._resume_coordinator.approval_resume_state_from_checkpoint(
+            checkpoint=checkpoint,
+            pending=pending,
+            stored_metadata=stored_metadata,
         )
-        stored_snapshot_hash = (
-            stored_snapshot_payload.get("snapshot_hash")
-            if isinstance(stored_snapshot_payload, dict)
-            else None
-        )
-        if (
-            checkpoint_snapshot_hash is not None
-            and stored_snapshot_hash is not None
-            and checkpoint_snapshot_hash != stored_snapshot_hash
-        ):
-            return None
-        prompt = checkpoint.get("prompt")
-        session_metadata = checkpoint.get("session_metadata")
-        raw_tool_results = checkpoint.get("tool_results")
-        if not isinstance(prompt, str) or not isinstance(session_metadata, dict):
-            return None
-        if cast(dict[str, object], session_metadata) != stored_metadata:
-            return None
-        if not isinstance(raw_tool_results, list):
-            return None
-        checkpoint_tool_results = cast(list[object], raw_tool_results)
-        try:
-            tool_results = self._tool_results_from_checkpoint(checkpoint_tool_results)
-        except (TypeError, ValueError):
+        if state is None:
             return None
         return _ApprovalResumeCheckpointState(
-            prompt=prompt,
-            session_metadata=cast(dict[str, object], session_metadata),
-            tool_results=tool_results,
+            prompt=state.prompt,
+            session_metadata=state.session_metadata,
+            tool_results=state.tool_results,
         )
 
     def _question_resume_state_from_checkpoint(
@@ -3691,80 +2559,41 @@ class VoidCodeRuntime:
         pending: PendingQuestion,
         stored_metadata: dict[str, object],
     ) -> _ApprovalResumeCheckpointState | None:
-        if checkpoint is None:
-            return None
-        if checkpoint.get("kind") != "question_wait":
-            return None
-        if checkpoint.get("version") != 1:
-            return None
-        if checkpoint.get("pending_question_request_id") != pending.request_id:
-            return None
-        prompt = checkpoint.get("prompt")
-        session_metadata = checkpoint.get("session_metadata")
-        raw_tool_results = checkpoint.get("tool_results")
-        if not isinstance(prompt, str) or not isinstance(session_metadata, dict):
-            return None
-        if cast(dict[str, object], session_metadata) != stored_metadata:
-            return None
-        if not isinstance(raw_tool_results, list):
-            return None
-        checkpoint_tool_results = cast(list[object], raw_tool_results)
-        try:
-            tool_results = self._tool_results_from_checkpoint(checkpoint_tool_results)
-        except (TypeError, ValueError):
+        state = self._resume_coordinator.question_resume_state_from_checkpoint(
+            checkpoint=checkpoint,
+            pending=pending,
+            stored_metadata=stored_metadata,
+        )
+        if state is None:
             return None
         return _ApprovalResumeCheckpointState(
-            prompt=prompt,
-            session_metadata=cast(dict[str, object], session_metadata),
-            tool_results=tool_results,
-        )
-
-    def _load_resume_checkpoint(self, *, session_id: str) -> dict[str, object] | None:
-        load_checkpoint = getattr(self._session_store, "load_resume_checkpoint", None)
-        if load_checkpoint is None:
-            return None
-        return cast(
-            dict[str, object] | None,
-            load_checkpoint(workspace=self._workspace, session_id=session_id),
+            prompt=state.prompt,
+            session_metadata=state.session_metadata,
+            tool_results=state.tool_results,
         )
 
     @staticmethod
+    def _validated_resume_checkpoint_envelope(
+        *, checkpoint: dict[str, object] | None, expected_kind: str
+    ) -> _PersistedResumeCheckpointEnvelope | None:
+        envelope = RuntimeResumeCoordinator.validated_resume_checkpoint_envelope(
+            checkpoint=checkpoint,
+            expected_kind=expected_kind,
+        )
+        if envelope is None:
+            return None
+        return _PersistedResumeCheckpointEnvelope(
+            kind=envelope.kind,
+            version=envelope.version,
+            payload=envelope.payload,
+        )
+
+    def _load_resume_checkpoint(self, *, session_id: str) -> dict[str, object] | None:
+        return self._resume_coordinator.load_resume_checkpoint(session_id=session_id)
+
+    @staticmethod
     def _tool_results_from_checkpoint(raw_tool_results: list[object]) -> tuple[ToolResult, ...]:
-        parsed: list[ToolResult] = []
-        for raw_tool_result in raw_tool_results:
-            if not isinstance(raw_tool_result, dict):
-                raise ValueError("persisted resume checkpoint tool_results must contain objects")
-            payload = cast(dict[str, object], raw_tool_result)
-            tool_name = payload.get("tool_name")
-            status = payload.get("status")
-            data = payload.get("data")
-            content = payload.get("content")
-            error = payload.get("error")
-            if (
-                not isinstance(tool_name, str)
-                or status not in ("ok", "error")
-                or not isinstance(data, dict)
-            ):
-                raise ValueError("persisted resume checkpoint tool_results are malformed")
-            if content is not None and not isinstance(content, str):
-                raise ValueError(
-                    "persisted resume checkpoint tool result content must be a string or null"
-                )
-            if error is not None and not isinstance(error, str):
-                raise ValueError(
-                    "persisted resume checkpoint tool result error must be a string or null"
-                )
-            tool_status: ToolResultStatus = status
-            parsed.append(
-                ToolResult(
-                    tool_name=tool_name,
-                    content=content,
-                    status=tool_status,
-                    data=cast(dict[str, object], data),
-                    error=error,
-                )
-            )
-        return tuple(parsed)
+        return RuntimeResumeCoordinator.tool_results_from_checkpoint(raw_tool_results)
 
     @staticmethod
     def _replay_response(response: RuntimeResponse) -> Iterator[RuntimeStreamChunk]:
@@ -3973,6 +2802,7 @@ class VoidCodeRuntime:
 
     @staticmethod
     def _prompt_from_events(events: tuple[EventEnvelope, ...]) -> str:
+        # Referenced via extracted collaborators.
         if not events:
             return ""
         prompt = events[0].payload.get("prompt")
@@ -3982,6 +2812,7 @@ class VoidCodeRuntime:
 
     @staticmethod
     def _provider_attempt_from_metadata(metadata: dict[str, object]) -> int:
+        # Referenced via extracted collaborators.
         raw_provider_attempt = metadata.get("provider_attempt", 0)
         return raw_provider_attempt if isinstance(raw_provider_attempt, int) else 0
 
@@ -4004,6 +2835,7 @@ class VoidCodeRuntime:
     def _continuity_state_from_session_metadata(
         session_metadata: dict[str, object],
     ) -> RuntimeContinuityState | None:
+        # Referenced via extracted collaborators.
         runtime_state = session_metadata.get("runtime_state")
         if not isinstance(runtime_state, dict):
             return None
@@ -4039,6 +2871,7 @@ class VoidCodeRuntime:
     def _session_with_context_window_metadata(
         session: SessionState, context_window: RuntimeContextWindow
     ) -> SessionState:
+        # Referenced via extracted run-loop collaborator.
         raw_runtime_state = session.metadata.get("runtime_state")
         runtime_state = (
             dict(cast(dict[str, object], raw_runtime_state))
@@ -4070,6 +2903,7 @@ class VoidCodeRuntime:
     def _renumber_events(
         events: tuple[GraphEvent, ...], *, session_id: str, start_sequence: int
     ) -> tuple[EventEnvelope, ...]:
+        # Referenced via extracted run-loop collaborator.
         return tuple(
             EventEnvelope(
                 session_id=session_id,
@@ -4184,6 +3018,7 @@ class VoidCodeRuntime:
         expected: dict[str, object] | None,
         actual: dict[str, object] | None,
     ) -> dict[str, object]:
+        # Referenced via extracted resume collaborator.
         expected_payload = expected if isinstance(expected, dict) else {}
         actual_payload = actual if isinstance(actual, dict) else {}
         keys = sorted(set(expected_payload.keys()) | set(actual_payload.keys()))
@@ -4707,6 +3542,7 @@ class VoidCodeRuntime:
     def _permission_policy_for_session(
         self, metadata: dict[str, object] | None
     ) -> PermissionPolicy:
+        # Referenced via extracted resume collaborator.
         approval_mode: PermissionDecision = self._permission_policy.mode
         if metadata is not None:
             persisted_runtime_config = metadata.get("runtime_config")
@@ -4719,10 +3555,22 @@ class VoidCodeRuntime:
 
     @staticmethod
     def _approval_request_id_from_waiting_response(response: RuntimeResponse) -> str | None:
+        # Referenced via extracted background-task collaborator.
+        return VoidCodeRuntime._waiting_request_id_from_response(response, request_kind="approval")
+
+    @staticmethod
+    def _waiting_request_id_from_response(
+        response: RuntimeResponse,
+        *,
+        request_kind: Literal["approval", "question"],
+    ) -> str | None:
         if response.session.status != "waiting":
             return None
+        target_event_type = (
+            RUNTIME_APPROVAL_REQUESTED if request_kind == "approval" else RUNTIME_QUESTION_REQUESTED
+        )
         for event in reversed(response.events):
-            if event.event_type in {RUNTIME_APPROVAL_REQUESTED, RUNTIME_QUESTION_REQUESTED}:
+            if event.event_type == target_event_type:
                 request_id = event.payload.get("request_id")
                 return str(request_id) if request_id is not None else None
         return None
@@ -4732,167 +3580,38 @@ class VoidCodeRuntime:
         *,
         task: BackgroundTaskState,
     ) -> RuntimeResponse | None:
-        child_session_id = task.session_id
-        if child_session_id is None:
-            return None
-        try:
-            response = self._session_store.load_session(
-                workspace=self._workspace,
-                session_id=child_session_id,
-            )
-        except UnknownSessionError:
-            return None
-        self._validate_session_workspace(response.session, session_id=child_session_id)
-        return response
+        # Compatibility wrapper for tests/callers.
+        return self._background_task_supervisor.load_background_task_child_response(task=task)
 
     def _load_background_task_child_result(
         self,
         *,
         task: BackgroundTaskState,
     ) -> RuntimeSessionResult | None:
-        child_session_id = task.session_id
-        if child_session_id is None:
-            return None
-        try:
-            result = self._session_store.load_session_result(
-                workspace=self._workspace,
-                session_id=child_session_id,
-            )
-        except UnknownSessionError:
-            return None
-        self._validate_session_workspace(result.session, session_id=child_session_id)
-        return result
+        # Compatibility wrapper for tests/callers.
+        return self._background_task_supervisor.load_background_task_child_result(task=task)
 
     def _background_task_result(self, *, task: BackgroundTaskState) -> BackgroundTaskResult:
-        child_result = self._load_background_task_child_result(task=task)
-        approval_blocked = child_result is not None and child_result.status == "waiting"
-        summary_output = child_result.summary if child_result is not None else None
-        error = (
-            child_result.error if child_result is not None and child_result.error else task.error
-        )
-        result_available = task.result_available
-        if not result_available and task.status != "cancelled" and child_result is not None:
-            result_available = True
-        return BackgroundTaskResult(
-            task_id=task.task.id,
-            parent_session_id=task.parent_session_id,
-            child_session_id=task.session_id,
-            status=task.status,
-            requested_child_session_id=task.request.session_id or task.session_id,
-            routing=task.routing_identity,
-            approval_request_id=task.approval_request_id,
-            question_request_id=task.question_request_id,
-            approval_blocked=approval_blocked,
-            summary_output=summary_output,
-            error=error,
-            result_available=result_available,
-            cancellation_cause=task.cancellation_cause,
-        )
+        # Compatibility wrapper for tests/callers.
+        return self._background_task_supervisor.background_task_result(task=task)
 
     def _emit_background_task_parent_terminal_event(self, *, task: BackgroundTaskState) -> None:
-        parent_session_id = task.parent_session_id
-        if parent_session_id is None or task.status not in ("completed", "failed", "cancelled"):
-            return
-        session_event_appender = self._session_store
-        if not isinstance(session_event_appender, SessionEventAppender):
-            logger.debug(
-                "skipping background terminal parent event for session store without append support"
-            )
-            return
-        result = self._background_task_result(task=task)
-        event_type_by_status: dict[BackgroundTaskStatus, str] = {
-            "completed": RUNTIME_BACKGROUND_TASK_COMPLETED,
-            "failed": RUNTIME_BACKGROUND_TASK_FAILED,
-            "cancelled": RUNTIME_BACKGROUND_TASK_CANCELLED,
-        }
-        event_type = event_type_by_status[task.status]
-        payload: dict[str, object] = {
-            "task_id": task.task.id,
-            "parent_session_id": parent_session_id,
-            "status": task.status,
-            "result_available": result.result_available,
-            "delegation": result.delegated_execution.as_payload(),
-            "message": result.delegated_message.as_payload(),
-        }
-        if result.child_session_id is not None:
-            payload["child_session_id"] = result.child_session_id
-        if task.status == "completed" and result.summary_output is not None:
-            payload["summary_output"] = result.summary_output
-        if task.status in ("failed", "cancelled") and result.error is not None:
-            payload["error"] = result.error
-        if task.approval_request_id is not None:
-            payload["approval_request_id"] = task.approval_request_id
-        if task.question_request_id is not None:
-            payload["question_request_id"] = task.question_request_id
-        try:
-            _ = session_event_appender.append_session_event(
-                workspace=self._workspace,
-                session_id=parent_session_id,
-                event_type=event_type,
-                source="runtime",
-                payload=payload,
-                dedupe_key=f"{event_type}:{task.task.id}",
-            )
-            self._append_parent_acp_delegated_lifecycle_event(
-                task=task,
-                lifecycle_status=task.status,
-                result_available=result.result_available,
-                payload=payload,
-            )
-            self._publish_delegated_acp_event(
-                task=task,
-                lifecycle_status=task.status,
-                result_available=result.result_available,
-                payload=payload,
-            )
-        except UnknownSessionError:
-            logger.debug(
-                "skipping background terminal event for unavailable parent session: %s",
-                parent_session_id,
-            )
+        # Compatibility wrapper for tests/callers.
+        self._background_task_supervisor.emit_background_task_parent_terminal_event(task=task)
 
     def _backfill_parent_background_task_event(self, *, task: BackgroundTaskState) -> None:
-        if task.parent_session_id is None:
-            return
-        if task.status in ("completed", "failed", "cancelled"):
-            self._emit_background_task_parent_terminal_event(task=task)
-            return
-        if task.status != "running":
-            return
-        child_response = self._load_background_task_child_response(task=task)
-        if child_response is None or child_response.session.status != "waiting":
-            return
-        self._emit_background_task_waiting_approval(
-            task=task,
-            child_response=child_response,
-        )
+        # Compatibility wrapper for tests/callers.
+        self._background_task_supervisor.backfill_parent_background_task_event(task=task)
 
     def _reconcile_parent_background_task_events_for_session(
         self,
         *,
         parent_session_id: str,
     ) -> None:
-        task_summaries = self._session_store.list_background_tasks_by_parent_session(
-            workspace=self._workspace,
-            parent_session_id=parent_session_id,
+        # Compatibility wrapper for tests/callers.
+        self._background_task_supervisor.reconcile_parent_background_task_events_for_session(
+            parent_session_id=parent_session_id
         )
-        for task_summary in task_summaries:
-            task = self._session_store.load_background_task(
-                workspace=self._workspace,
-                task_id=task_summary.task.id,
-            )
-            if task.status == "running" and task.session_id is not None:
-                child_response = self._load_background_task_child_response(task=task)
-                if child_response is not None and child_response.session.status in (
-                    "waiting",
-                    "completed",
-                    "failed",
-                ):
-                    self._finalize_background_task_from_session_response(
-                        session_response=child_response
-                    )
-                    continue
-            self._backfill_parent_background_task_event(task=task)
 
     def _emit_background_task_waiting_approval(
         self,
@@ -4900,140 +3619,25 @@ class VoidCodeRuntime:
         task: BackgroundTaskState,
         child_response: RuntimeResponse,
     ) -> None:
-        parent_session_id = task.parent_session_id
-        child_session_id = task.session_id
-        if parent_session_id is None or child_session_id is None:
-            return
-        approval_request_id = self._approval_request_id_from_waiting_response(child_response)
-        dedupe_key = (
-            f"background_task_waiting_approval:{task.task.id}:{approval_request_id}"
-            if approval_request_id is not None
-            else f"background_task_waiting_approval:{task.task.id}:{child_session_id}"
+        # Compatibility wrapper for tests/callers.
+        self._background_task_supervisor.emit_background_task_waiting_approval(
+            task=task,
+            child_response=child_response,
         )
-        session_event_appender = self._session_store
-        if not isinstance(session_event_appender, SessionEventAppender):
-            logger.debug(
-                "skipping background waiting event for session store without append support"
-            )
-            return
-        result = self._background_task_result(task=task)
-        try:
-            _ = session_event_appender.append_session_event(
-                workspace=self._workspace,
-                session_id=parent_session_id,
-                event_type=RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL,
-                source="runtime",
-                payload={
-                    "task_id": task.task.id,
-                    "parent_session_id": parent_session_id,
-                    "child_session_id": child_session_id,
-                    "status": "running",
-                    "approval_blocked": True,
-                    "delegation": result.delegated_execution.as_payload(),
-                    "message": result.delegated_message.as_payload(),
-                    **(
-                        {"approval_request_id": approval_request_id}
-                        if approval_request_id is not None
-                        else {}
-                    ),
-                },
-                dedupe_key=dedupe_key,
-            )
-            acp_payload: dict[str, object] = {
-                "task_id": task.task.id,
-                "parent_session_id": parent_session_id,
-                "child_session_id": child_session_id,
-                "approval_request_id": approval_request_id,
-                "status": "running",
-                "approval_blocked": True,
-            }
-            self._append_parent_acp_delegated_lifecycle_event(
-                task=task,
-                lifecycle_status="waiting_approval",
-                approval_blocked=True,
-                payload=acp_payload,
-            )
-            self._publish_delegated_acp_event(
-                task=task,
-                lifecycle_status="waiting_approval",
-                approval_blocked=True,
-                payload=acp_payload,
-            )
-        except UnknownSessionError:
-            logger.debug(
-                "skipping background waiting event for unavailable parent session: %s",
-                parent_session_id,
-            )
 
     def _finalize_background_task_from_session_response(
         self,
         *,
         session_response: RuntimeResponse,
     ) -> None:
-        metadata = session_response.session.metadata
-        background_task_id = metadata.get("background_task_id")
-        background_run = metadata.get("background_run")
-        if not isinstance(background_task_id, str) or background_run is not True:
-            return
-        current_task = self._session_store.load_background_task(
-            workspace=self._workspace,
-            task_id=background_task_id,
+        # Compatibility wrapper for tests/callers.
+        self._background_task_supervisor.finalize_background_task_from_session_response(
+            session_response=session_response
         )
-        if current_task.status == "cancelled":
-            return
-        if session_response.session.status == "waiting":
-            if current_task.status in ("completed", "failed"):
-                return
-            self._emit_background_task_waiting_approval(
-                task=current_task,
-                child_response=session_response,
-            )
-            return
-        terminal_status: BackgroundTaskStatus = (
-            "completed" if session_response.session.status == "completed" else "failed"
-        )
-        if current_task.status == terminal_status:
-            return
-        error: str | None = None
-        if terminal_status == "failed":
-            for event in reversed(session_response.events):
-                if event.event_type == RUNTIME_FAILED:
-                    event_error = event.payload.get("error")
-                    error = str(event_error) if event_error is not None else None
-                    break
-        terminal_task = self._session_store.mark_background_task_terminal(
-            workspace=self._workspace,
-            task_id=background_task_id,
-            status=terminal_status,
-            error=error,
-        )
-        self._run_background_task_lifecycle_hook(terminal_task)
 
     def _run_background_task_lifecycle_hook(self, task: BackgroundTaskState) -> None:
-        surface_by_status: dict[BackgroundTaskStatus, RuntimeHookSurface] = {
-            "completed": "background_task_completed",
-            "failed": "background_task_failed",
-            "cancelled": "background_task_cancelled",
-        }
-        surface = surface_by_status.get(task.status)
-        if surface is None:
-            return
-        self._run_background_task_lifecycle_surface(
-            task=task,
-            surface=surface,
-            session_id=task.session_id or task.request.session_id or "runtime",
-        )
-        self._emit_background_task_parent_terminal_event(task=task)
-        if task.status == "completed" and task.parent_session_id is not None:
-            self._run_background_task_lifecycle_surface(
-                task=task,
-                surface="delegated_result_available",
-                session_id=task.parent_session_id,
-                extra_payload={
-                    "delegated_session_id": task.session_id or "",
-                    "parent_session_id": task.parent_session_id,
-                },
-            )
+        # Compatibility wrapper for tests/callers.
+        self._background_task_supervisor.run_background_task_lifecycle_hook(task)
 
     def _run_background_task_lifecycle_surface(
         self,
@@ -5043,187 +3647,21 @@ class VoidCodeRuntime:
         session_id: str,
         extra_payload: dict[str, object] | None = None,
     ) -> None:
-        outcome = run_lifecycle_hooks(
-            LifecycleHookExecutionRequest(
-                hooks=self._config.hooks,
-                workspace=self._workspace,
-                session_id=session_id,
-                surface=surface,
-                recursion_env_var=self._hook_recursion_env_var,
-                environment=os.environ,
-                sequence_start=0,
-                payload={
-                    "background_task_id": task.task.id,
-                    "background_task_status": task.status,
-                    **({"background_task_error": task.error} if task.error is not None else {}),
-                    **(extra_payload or {}),
-                },
-            )
+        # Compatibility wrapper for tests/callers.
+        self._background_task_supervisor.run_background_task_lifecycle_surface(
+            task=task,
+            surface=surface,
+            session_id=session_id,
+            extra_payload=extra_payload,
         )
-        if outcome.failed_error is not None:
-            logger.warning("background task lifecycle hook failed: %s", outcome.failed_error)
 
     def _reconcile_background_tasks_if_needed(self) -> None:
-        if self._background_tasks_reconciled:
-            return
-        task_summaries = self._session_store.list_background_tasks(workspace=self._workspace)
-        for task_summary in task_summaries:
-            if task_summary.status != "running" or task_summary.session_id is None:
-                continue
-            task = self._session_store.load_background_task(
-                workspace=self._workspace,
-                task_id=task_summary.task.id,
-            )
-            child_response = self._load_background_task_child_response(task=task)
-            if child_response is None:
-                continue
-            if child_response.session.status in ("waiting", "completed", "failed"):
-                self._finalize_background_task_from_session_response(
-                    session_response=child_response
-                )
-        fail_incomplete = getattr(self._session_store, "fail_incomplete_background_tasks", None)
-        if callable(fail_incomplete):
-            failed_tasks = cast(
-                tuple[BackgroundTaskState, ...],
-                fail_incomplete(
-                    workspace=self._workspace,
-                    message="background task interrupted before completion",
-                ),
-            )
-            for failed_task in failed_tasks:
-                self._run_background_task_lifecycle_hook(failed_task)
-        task_summaries = self._session_store.list_background_tasks(workspace=self._workspace)
-        for task_summary in task_summaries:
-            task = self._session_store.load_background_task(
-                workspace=self._workspace,
-                task_id=task_summary.task.id,
-            )
-            self._backfill_parent_background_task_event(task=task)
-        self._background_tasks_reconciled = True
+        # Compatibility wrapper for tests/callers.
+        self._background_task_supervisor.reconcile_background_tasks_if_needed()
 
     def _run_background_task_worker(self, task_id: str) -> None:
-        try:
-            task = self.load_background_task(task_id)
-            if task.status == "cancelled":
-                return
-            request = RuntimeRequest(
-                prompt=task.request.prompt,
-                session_id=task.request.session_id,
-                parent_session_id=task.request.parent_session_id,
-                metadata=cast(RuntimeRequestMetadataPayload, task.request.metadata),
-                allocate_session_id=task.request.allocate_session_id,
-            )
-            routing = self._session_routing_for_request(request)
-            session_id = routing.session_id
-            running_task = self._session_store.mark_background_task_running(
-                workspace=self._workspace,
-                task_id=task_id,
-                session_id=session_id,
-            )
-            if running_task.status != "running":
-                return
-            dispatch_task = self.load_background_task(task_id)
-            if dispatch_task.status != "running":
-                return
-            if dispatch_task.cancel_requested_at is not None:
-                terminal_task = self._session_store.mark_background_task_terminal(
-                    workspace=self._workspace,
-                    task_id=task_id,
-                    status="cancelled",
-                    error="cancelled before dispatch",
-                )
-                self._run_background_task_lifecycle_hook(terminal_task)
-                return
-            events: list[EventEnvelope] = []
-            output: str | None = None
-            final_session: SessionState | None = None
-            internal_request = RuntimeRequest(
-                prompt=dispatch_task.request.prompt,
-                session_id=session_id,
-                parent_session_id=dispatch_task.request.parent_session_id,
-                metadata=cast(
-                    InternalRuntimeRequestMetadata,
-                    {
-                        **dispatch_task.request.metadata,
-                        "background_task_id": task_id,
-                        "background_run": True,
-                    },
-                ),
-                allocate_session_id=False,
-            )
-            for chunk in self._run_with_persistence(
-                internal_request,
-                allow_internal_metadata=True,
-            ):
-                final_session = chunk.session
-                if chunk.event is not None:
-                    events.append(chunk.event)
-                if chunk.kind == "output":
-                    output = chunk.output
-                current_task_state = self._session_store.load_background_task(
-                    workspace=self._workspace,
-                    task_id=task_id,
-                )
-                if current_task_state.cancel_requested_at is not None:
-                    cancel_metadata = dict(final_session.metadata)
-                    cancel_metadata["abort_requested"] = True
-                    cancelled_response = RuntimeResponse(
-                        session=SessionState(
-                            session=final_session.session,
-                            status="failed",
-                            turn=final_session.turn,
-                            metadata=cancel_metadata,
-                        ),
-                        events=tuple(events)
-                        + (
-                            EventEnvelope(
-                                session_id=session_id,
-                                sequence=(events[-1].sequence if events else 0) + 1,
-                                event_type=RUNTIME_FAILED,
-                                source="runtime",
-                                payload={
-                                    "error": "cancelled by parent during delegated execution",
-                                    "cancelled": True,
-                                    "delegated_task_id": task_id,
-                                },
-                            ),
-                        ),
-                        output=output,
-                    )
-                    self._session_store.save_run(
-                        workspace=self._workspace,
-                        request=internal_request,
-                        response=cancelled_response,
-                    )
-                    terminal_task = self._session_store.mark_background_task_terminal(
-                        workspace=self._workspace,
-                        task_id=task_id,
-                        status="cancelled",
-                        error="cancelled by parent during delegated execution",
-                    )
-                    self._run_background_task_lifecycle_hook(terminal_task)
-                    return
-            if final_session is None:
-                raise ValueError("runtime stream emitted no chunks")
-            if final_session.status == "waiting":
-                final_session = self._reload_persisted_session(session_id=final_session.session.id)
-            response = RuntimeResponse(
-                session=final_session,
-                events=tuple(events),
-                output=output,
-            )
-            self._finalize_background_task_from_session_response(session_response=response)
-        except Exception as exc:
-            logger.exception("background task failed: %s", task_id)
-            terminal_task = self._session_store.mark_background_task_terminal(
-                workspace=self._workspace,
-                task_id=task_id,
-                status="failed",
-                error=str(exc),
-            )
-            self._run_background_task_lifecycle_hook(terminal_task)
-        finally:
-            self._background_task_threads.pop(task_id, None)
+        # Compatibility wrapper for tests/callers.
+        self._background_task_supervisor.run_background_task_worker(task_id)
 
     def _effective_runtime_config_from_metadata(
         self, metadata: dict[str, object] | None
@@ -5338,6 +3776,7 @@ class VoidCodeRuntime:
                         str(exc),
                     )
                 ) from exc
+        plan = None
         if "plan" in runtime_config:
             try:
                 plan = parse_runtime_plan_payload(
@@ -5490,6 +3929,13 @@ class _ApprovalResumeCheckpointState:
     prompt: str
     session_metadata: dict[str, object]
     tool_results: tuple[ToolResult, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _PersistedResumeCheckpointEnvelope:
+    kind: str
+    version: int
+    payload: dict[str, object]
 
 
 @dataclass(frozen=True, slots=True)

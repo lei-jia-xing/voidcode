@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 from typing import cast
 
@@ -26,6 +27,7 @@ from voidcode.runtime.config import (
     RUNTIME_CONFIG_FILE_NAME,
     TOOL_TIMEOUT_ENV_VAR,
     RuntimeAgentConfig,
+    RuntimeConfig,
     RuntimeFormatterPresetConfig,
     RuntimeHooksConfig,
     RuntimeLspConfig,
@@ -48,6 +50,7 @@ from voidcode.runtime.config import (
     serialize_runtime_agent_config,
     user_runtime_config_path,
 )
+from voidcode.runtime.service import RuntimeRequest, VoidCodeRuntime
 
 _parse_tui_config = runtime_config.__dict__["_parse_tui_config"]
 _parse_tools_config = runtime_config.__dict__["_parse_tools_config"]
@@ -2147,3 +2150,100 @@ def test_runtime_config_repo_provider_overrides_environment_provider_credentials
 
     assert config.providers is not None
     assert config.providers.opencode_go == SimplifiedProviderConfig(api_key="repo-key")
+
+
+def test_runtime_config_resume_prefers_persisted_session_values_over_fresh_defaults(
+    tmp_path: Path,
+) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("resume precedence\n", encoding="utf-8")
+
+    initial_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            approval_mode="allow",
+            model="session/model",
+            execution_engine="provider",
+            max_steps=7,
+        ),
+    )
+    _ = initial_runtime.run(
+        RuntimeRequest(prompt="read sample.txt", session_id="resume-config-precedence")
+    )
+
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            approval_mode="deny",
+            model="fresh/model",
+            execution_engine="deterministic",
+            max_steps=3,
+        ),
+    )
+    effective = resumed_runtime.effective_runtime_config(session_id="resume-config-precedence")
+
+    assert effective.approval_mode == "allow"
+    assert effective.model == "session/model"
+    assert effective.execution_engine == "provider"
+    assert effective.max_steps == 7
+
+
+def test_runtime_config_resume_preserves_persisted_none_plan_precedence(tmp_path: Path) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("resume plan precedence\n", encoding="utf-8")
+
+    initial_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(plan=None),
+    )
+    _ = initial_runtime.run(
+        RuntimeRequest(prompt="read sample.txt", session_id="resume-plan-none-precedence")
+    )
+
+    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    connection = sqlite3.connect(database_path)
+    try:
+        row = connection.execute(
+            "SELECT metadata_json FROM sessions WHERE session_id = ?",
+            ("resume-plan-none-precedence",),
+        ).fetchone()
+        assert row is not None
+        metadata = json.loads(str(row[0]))
+        assert isinstance(metadata, dict)
+        runtime_config_metadata = cast(dict[str, object], metadata["runtime_config"])
+        assert runtime_config_metadata["plan"] is None
+    finally:
+        connection.close()
+
+    extension_file = tmp_path / "plan_extension.py"
+    extension_file.write_text(
+        "\n".join(
+            (
+                "from voidcode.runtime.plan import PlanPatch",
+                "",
+                "def build(options):",
+                "    contributor_type = type(",
+                "        'Contributor',",
+                "        (),",
+                "        {'apply': lambda self, context: PlanPatch()},",
+                "    )",
+                "    return contributor_type()",
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            plan=RuntimePlanConfig(
+                provider="custom",
+                module=str(extension_file),
+                factory="build",
+                options={"mode": "fresh"},
+            )
+        ),
+    )
+    effective = resumed_runtime.effective_runtime_config(session_id="resume-plan-none-precedence")
+
+    assert effective.plan is None

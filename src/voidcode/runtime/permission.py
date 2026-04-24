@@ -39,6 +39,7 @@ class PendingApproval:
     target_summary: str = ""
     reason: str = ""
     policy_mode: PermissionDecision = "ask"
+    request_event_sequence: int | None = None
     owner_session_id: str | None = None
     owner_parent_session_id: str | None = None
     delegated_task_id: str | None = None

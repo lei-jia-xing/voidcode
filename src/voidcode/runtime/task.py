@@ -93,6 +93,16 @@ _CATEGORY_TO_SUBAGENT_PRESET: dict[str, SubagentExecutablePreset] = {
 }
 
 _CALLABLE_SUBAGENT_PRESETS = frozenset({"advisor", "explore", "product", "researcher", "worker"})
+_BACKGROUND_TASK_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
+_BACKGROUND_TASK_ALLOWED_TRANSITIONS: dict[
+    BackgroundTaskStatus, frozenset[BackgroundTaskStatus]
+] = {
+    "queued": frozenset({"running", "completed", "failed", "cancelled"}),
+    "running": frozenset({"completed", "failed", "cancelled"}),
+    "completed": frozenset(),
+    "failed": frozenset(),
+    "cancelled": frozenset(),
+}
 
 
 def resolve_subagent_route(requested: SubagentRoutingIdentity) -> ResolvedSubagentRoute:
@@ -119,6 +129,20 @@ def resolve_subagent_route(requested: SubagentRoutingIdentity) -> ResolvedSubage
             f"{valid_categories}"
         )
     return ResolvedSubagentRoute(requested=requested, selected_preset=selected_preset)
+
+
+def is_background_task_terminal(status: BackgroundTaskStatus) -> bool:
+    return status in _BACKGROUND_TASK_TERMINAL_STATUSES
+
+
+def is_background_task_transition_allowed(
+    *,
+    current_status: BackgroundTaskStatus,
+    next_status: BackgroundTaskStatus,
+) -> bool:
+    if current_status == next_status:
+        return True
+    return next_status in _BACKGROUND_TASK_ALLOWED_TRANSITIONS[current_status]
 
 
 def subagent_routing_identity_from_metadata(

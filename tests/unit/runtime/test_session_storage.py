@@ -6,6 +6,8 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from voidcode.runtime.contracts import RuntimeRequest, RuntimeResponse
 from voidcode.runtime.events import EventEnvelope
 from voidcode.runtime.question import PendingQuestion, PendingQuestionOption, PendingQuestionPrompt
@@ -60,8 +62,66 @@ def test_session_storage_persists_parent_lineage_across_read_surfaces(tmp_path: 
     assert notifications[0].session.parent_id == "leader-session"
 
 
-def test_session_storage_migrates_legacy_schema_for_parent_lineage(tmp_path: Path) -> None:
-    database_path = tmp_path / "legacy-sessions.sqlite3"
+def test_session_storage_bootstraps_canonical_schema_for_fresh_database(tmp_path: Path) -> None:
+    database_path = tmp_path / "fresh-sessions.sqlite3"
+    store = SqliteSessionStore(database_path=database_path)
+    request = RuntimeRequest(prompt="fresh bootstrap", session_id="fresh-session")
+    response = RuntimeResponse(
+        session=SessionState(
+            session=SessionRef(id="fresh-session"),
+            status="completed",
+            turn=1,
+            metadata={},
+        ),
+        events=(
+            EventEnvelope(
+                session_id="fresh-session",
+                sequence=1,
+                event_type="graph.response_ready",
+                source="graph",
+            ),
+        ),
+        output="done",
+    )
+
+    store.save_run(workspace=tmp_path, request=request, response=response)
+
+    with closing(sqlite3.connect(database_path)) as connection:
+        session_columns = [
+            row[1] for row in connection.execute("PRAGMA table_info(sessions)").fetchall()
+        ]
+        delivery_columns = [
+            row[1]
+            for row in connection.execute("PRAGMA table_info(session_event_deliveries)").fetchall()
+        ]
+        notification_indexes = connection.execute(
+            "PRAGMA index_list(session_notifications)"
+        ).fetchall()
+
+    assert session_columns == [
+        "session_id",
+        "parent_session_id",
+        "workspace",
+        "status",
+        "turn",
+        "prompt",
+        "output",
+        "metadata_json",
+        "pending_approval_json",
+        "pending_question_json",
+        "resume_checkpoint_json",
+        "created_at",
+        "updated_at",
+        "last_event_sequence",
+    ]
+    assert delivery_columns == ["workspace", "session_id", "dedupe_key", "delivered_at"]
+    assert any(row[2] == 1 and row[3] == "u" for row in notification_indexes)
+
+
+def test_session_storage_rejects_non_canonical_schema_missing_runtime_columns(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "invalid-sessions.sqlite3"
     with closing(sqlite3.connect(database_path)) as connection:
         _ = connection.execute(
             """
@@ -73,8 +133,6 @@ def test_session_storage_migrates_legacy_schema_for_parent_lineage(tmp_path: Pat
                 prompt TEXT NOT NULL,
                 output TEXT,
                 metadata_json TEXT NOT NULL,
-                pending_approval_json TEXT,
-                resume_checkpoint_json TEXT,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
                 last_event_sequence INTEGER NOT NULL
@@ -131,71 +189,143 @@ def test_session_storage_migrates_legacy_schema_for_parent_lineage(tmp_path: Pat
             )
             """
         )
-        _ = connection.execute(
-            """
-            INSERT INTO sessions (
-                session_id, workspace, status, turn, prompt, output, metadata_json,
-                pending_approval_json, resume_checkpoint_json, created_at, updated_at,
-                last_event_sequence
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                "legacy-session",
-                str(tmp_path),
-                "completed",
-                1,
-                "legacy",
-                "done",
-                "{}",
-                None,
-                None,
-                1,
-                1,
-                0,
-            ),
-        )
-        _ = connection.execute("PRAGMA user_version = 4")
         connection.commit()
 
     store = SqliteSessionStore(database_path=database_path)
-    loaded = store.load_session(workspace=tmp_path, session_id="legacy-session")
-    task = BackgroundTaskState(
-        task=BackgroundTaskRef(id="task-parent-lineage"),
-        request=BackgroundTaskRequestSnapshot(
-            prompt="child background task",
-            parent_session_id="leader-session",
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            r"table 'sessions' missing columns: .*"
+            r"Remove '.*/invalid-sessions\.sqlite3' and rerun to reset local runtime storage\."
         ),
-        created_at=1,
-        updated_at=1,
-    )
-
-    store.create_background_task(workspace=tmp_path, task=task)
-    loaded_task = store.load_background_task(
-        workspace=tmp_path,
-        task_id="task-parent-lineage",
-    )
+    ):
+        store.list_sessions(workspace=tmp_path)
 
     with closing(sqlite3.connect(database_path)) as connection:
         session_columns = {
             row[1] for row in connection.execute("PRAGMA table_info(sessions)").fetchall()
         }
-        background_task_columns = {
-            row[1] for row in connection.execute("PRAGMA table_info(background_tasks)").fetchall()
-        }
-        delivery_tables = {
-            row[0]
-            for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table'"
-            ).fetchall()
-        }
-        user_version = connection.execute("PRAGMA user_version").fetchone()[0]
 
-    assert loaded.session.session.parent_id is None
-    assert "parent_session_id" in session_columns
-    assert "request_parent_session_id" in background_task_columns
-    assert "session_event_deliveries" in delivery_tables
-    assert loaded_task.request.parent_session_id == "leader-session"
-    assert user_version == 8
+    assert "parent_session_id" not in session_columns
+    assert "pending_approval_json" not in session_columns
+
+
+def test_session_storage_rejects_non_canonical_schema_with_wrong_existing_table_shape(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "wrong-table-shape.sqlite3"
+    with closing(sqlite3.connect(database_path)) as connection:
+        _ = connection.execute(
+            """
+            CREATE TABLE sessions (
+                session_id TEXT PRIMARY KEY,
+                parent_session_id TEXT,
+                workspace TEXT NOT NULL,
+                status TEXT NOT NULL,
+                turn INTEGER NOT NULL,
+                prompt TEXT NOT NULL,
+                output TEXT,
+                metadata_json TEXT NOT NULL,
+                pending_approval_json TEXT,
+                pending_question_json TEXT,
+                resume_checkpoint_json TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                last_event_sequence INTEGER NOT NULL
+            )
+            """
+        )
+        _ = connection.execute(
+            """
+            CREATE TABLE session_events (
+                session_id TEXT NOT NULL,
+                sequence INTEGER NOT NULL,
+                event_type TEXT NOT NULL,
+                source TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                PRIMARY KEY (session_id, sequence)
+            )
+            """
+        )
+        _ = connection.execute(
+            """
+            CREATE TABLE background_tasks (
+                task_id TEXT PRIMARY KEY,
+                workspace TEXT NOT NULL,
+                status TEXT NOT NULL,
+                prompt TEXT NOT NULL,
+                request_session_id TEXT,
+                request_parent_session_id TEXT,
+                request_metadata_json TEXT NOT NULL,
+                requested_child_session_id TEXT,
+                routing_mode TEXT,
+                routing_category TEXT,
+                routing_subagent_type TEXT,
+                routing_description TEXT,
+                routing_command TEXT,
+                approval_request_id TEXT,
+                question_request_id TEXT,
+                cancellation_cause TEXT,
+                result_available INTEGER NOT NULL DEFAULT 0,
+                allocate_session_id INTEGER NOT NULL,
+                session_id TEXT,
+                error TEXT,
+                cancel_requested_at INTEGER,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                started_at INTEGER,
+                finished_at INTEGER
+            )
+            """
+        )
+        _ = connection.execute(
+            """
+            CREATE TABLE session_notifications (
+                notification_id TEXT PRIMARY KEY,
+                workspace TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                status TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                event_sequence INTEGER NOT NULL,
+                dedupe_key TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                acknowledged_at INTEGER,
+                UNIQUE(workspace, dedupe_key)
+            )
+            """
+        )
+        _ = connection.execute(
+            """
+            CREATE TABLE session_event_deliveries (
+                workspace TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                delivered_at INTEGER NOT NULL,
+                PRIMARY KEY (workspace, session_id)
+            )
+            """
+        )
+        connection.commit()
+
+    store = SqliteSessionStore(database_path=database_path)
+
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            r"table 'session_event_deliveries' missing columns: dedupe_key.*"
+            r"Remove '.*/wrong-table-shape\.sqlite3' and rerun to reset local runtime storage\."
+        ),
+    ):
+        store.list_notifications(workspace=tmp_path)
+
+    with closing(sqlite3.connect(database_path)) as connection:
+        delivery_columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(session_event_deliveries)").fetchall()
+        }
+
+    assert "dedupe_key" not in delivery_columns
 
 
 def test_tool_results_from_events_keeps_success_payloads_with_null_error() -> None:
@@ -270,6 +400,63 @@ def test_tool_results_from_events_preserves_successful_null_content() -> None:
             "error": None,
         }
     ]
+
+
+def test_session_storage_load_resume_checkpoint_rejects_corrupt_json(tmp_path: Path) -> None:
+    store = SqliteSessionStore()
+    request = RuntimeRequest(prompt="go", session_id="checkpoint-corrupt-json")
+    response = RuntimeResponse(
+        session=SessionState(
+            session=SessionRef(id="checkpoint-corrupt-json"),
+            status="waiting",
+            turn=1,
+            metadata={},
+        ),
+        events=(),
+    )
+    store.save_run(workspace=tmp_path, request=request, response=response)
+
+    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    with closing(sqlite3.connect(database_path)) as connection:
+        _ = connection.execute(
+            "UPDATE sessions SET resume_checkpoint_json = ? WHERE session_id = ?",
+            ("{broken json", "checkpoint-corrupt-json"),
+        )
+        connection.commit()
+
+    with pytest.raises(ValueError, match="persisted resume checkpoint JSON is malformed"):
+        _ = store.load_resume_checkpoint(workspace=tmp_path, session_id="checkpoint-corrupt-json")
+
+
+def test_session_storage_load_resume_checkpoint_rejects_invalid_kind(tmp_path: Path) -> None:
+    store = SqliteSessionStore()
+    request = RuntimeRequest(prompt="go", session_id="checkpoint-invalid-kind")
+    response = RuntimeResponse(
+        session=SessionState(
+            session=SessionRef(id="checkpoint-invalid-kind"),
+            status="waiting",
+            turn=1,
+            metadata={},
+        ),
+        events=(),
+    )
+    store.save_run(workspace=tmp_path, request=request, response=response)
+
+    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    with closing(sqlite3.connect(database_path)) as connection:
+        _ = connection.execute(
+            "UPDATE sessions SET resume_checkpoint_json = ? WHERE session_id = ?",
+            (
+                '{"kind":"not-real","version":1}',
+                "checkpoint-invalid-kind",
+            ),
+        )
+        connection.commit()
+
+    with pytest.raises(
+        ValueError, match=r"persisted resume checkpoint kind is invalid: 'not-real'"
+    ):
+        _ = store.load_resume_checkpoint(workspace=tmp_path, session_id="checkpoint-invalid-kind")
 
 
 def test_session_storage_append_session_event_assigns_sequence_and_dedupes(
