@@ -43,7 +43,7 @@ def test_stub_provider_protocol_proposes_tool_call_for_first_turn() -> None:
 
     assert result.tool_call is not None
     assert result.tool_call.tool_name == "read_file"
-    assert result.tool_call.arguments == {"path": "sample.txt"}
+    assert result.tool_call.arguments == {"filePath": "sample.txt"}
     assert result.output is None
 
 
@@ -62,7 +62,7 @@ def test_stub_provider_protocol_finalizes_from_last_tool_result() -> None:
                     tool_name="read_file",
                     content="alpha\nbeta\n",
                     status="ok",
-                    data={"path": "sample.txt", "content": "alpha\nbeta\n"},
+                    data={"path": "sample.txt", "type": "file", "content": "alpha\nbeta\n"},
                 ),
             ),
             context_window=RuntimeContextWindow(
@@ -72,7 +72,7 @@ def test_stub_provider_protocol_finalizes_from_last_tool_result() -> None:
                         tool_name="read_file",
                         content="alpha\nbeta\n",
                         status="ok",
-                        data={"path": "sample.txt", "content": "alpha\nbeta\n"},
+                        data={"path": "sample.txt", "type": "file", "content": "alpha\nbeta\n"},
                     ),
                 ),
             ),
@@ -135,13 +135,13 @@ def test_stub_provider_protocol_uses_bounded_context_window_results_for_finalize
                     tool_name="read_file",
                     content="old\n",
                     status="ok",
-                    data={"path": "sample.txt", "content": "old\n"},
+                    data={"path": "sample.txt", "type": "file", "content": "old\n"},
                 ),
                 ToolResult(
                     tool_name="read_file",
                     content="new\n",
                     status="ok",
-                    data={"path": "sample.txt", "content": "new\n"},
+                    data={"path": "sample.txt", "type": "file", "content": "new\n"},
                 ),
             ),
             context_window=RuntimeContextWindow(
@@ -151,7 +151,7 @@ def test_stub_provider_protocol_uses_bounded_context_window_results_for_finalize
                         tool_name="read_file",
                         content="new\n",
                         status="ok",
-                        data={"path": "sample.txt", "content": "new\n"},
+                        data={"path": "sample.txt", "type": "file", "content": "new\n"},
                     ),
                 ),
                 compacted=True,

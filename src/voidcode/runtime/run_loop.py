@@ -16,7 +16,11 @@ from ..provider.errors import (
 from ..tools.contracts import RuntimeTimeoutAwareTool, RuntimeToolTimeoutError, ToolResult
 from ..tools.question import QuestionTool
 from ..tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
-from .context_window import RuntimeContextWindow, RuntimeContinuityState
+from .context_window import (
+    RuntimeContextWindow,
+    RuntimeContinuityState,
+    normalize_tool_result_content,
+)
 from .contracts import RuntimeStreamChunk
 from .events import (
     RUNTIME_MEMORY_REFRESHED,
@@ -525,7 +529,7 @@ class RuntimeRunLoopCoordinator:
                     payload={
                         "tool": tool_result.tool_name,
                         "status": tool_result.status,
-                        "content": tool_result.content,
+                        "content": normalize_tool_result_content(tool_result.content),
                         "error": tool_result.error,
                         **tool_result.data,
                     },

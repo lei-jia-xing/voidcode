@@ -7,6 +7,7 @@ from typing import Protocol, cast
 
 from langgraph.graph import END, START, StateGraph
 
+from ..runtime.context_window import normalize_read_file_output
 from ..runtime.events import (
     GRAPH_LOOP_STEP,
     GRAPH_MODEL_TURN,
@@ -204,10 +205,10 @@ class DeterministicGraph:
                 ),
                 self._graph_event(
                     GRAPH_RESPONSE_READY,
-                    {"output_preview": last_result.content or ""},
+                    {"output_preview": normalize_read_file_output(last_result.content) or ""},
                 ),
             ],
-            "output": last_result.content if last_result.content is not None else "",
+            "output": normalize_read_file_output(last_result.content) or "",
         }
 
     def _select_tool_call(
@@ -233,7 +234,7 @@ class DeterministicGraph:
                 raise ValueError("request path must not be empty")
 
             self._ensure_read_tool_available(available_tools)
-            return ToolCall(tool_name="read_file", arguments={"path": path_text})
+            return ToolCall(tool_name="read_file", arguments={"filePath": path_text})
 
         grep_match = GREP_REQUEST_PATTERN.match(trimmed_prompt)
         if grep_match is not None:

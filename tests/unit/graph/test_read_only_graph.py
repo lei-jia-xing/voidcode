@@ -29,7 +29,7 @@ def test_graph_direct_import_and_step_work_without_runtime_cycle() -> None:
 
     assert step.tool_call is not None
     assert step.tool_call.tool_name == "read_file"
-    assert step.tool_call.arguments == {"path": "sample.txt"}
+    assert step.tool_call.arguments == {"filePath": "sample.txt"}
     assert [event.event_type for event in step.events] == [
         "graph.loop_step",
         "graph.model_turn",

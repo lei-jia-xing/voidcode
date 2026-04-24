@@ -78,7 +78,7 @@ def _tool_result_preview(result: ToolResult, *, max_preview_chars: int) -> str:
     if isinstance(command, str) and command:
         parts.append(f"command={command}")
 
-    content = result.content.strip() if result.content else ""
+    content = normalize_read_file_output(result.content)
     error = result.error.strip() if result.error else ""
     preview_source = content or error
     if preview_source:
@@ -88,6 +88,37 @@ def _tool_result_preview(result: ToolResult, *, max_preview_chars: int) -> str:
         preview_label = "content_preview" if content else "error_preview"
         parts.append(f'{preview_label}="{clipped}"')
     return " ".join(parts)
+
+
+def normalize_tool_result_content(content: str | None) -> str | None:
+    if not content:
+        return content
+
+    return normalize_read_file_output(content)
+
+
+def normalize_read_file_output(content: str | None) -> str | None:
+    if not content:
+        return content
+
+    stripped = content.strip()
+    if not (stripped.startswith("<path>") and "<content>" in stripped and "</content>" in stripped):
+        return content
+
+    body_start = stripped.find("<content>") + len("<content>")
+    body_end = stripped.rfind("</content>")
+    body = stripped[body_start:body_end].strip()
+    lines: list[str] = []
+    for raw_line in body.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("("):
+            continue
+        if ": " in raw_line:
+            _, text = raw_line.split(": ", 1)
+            lines.append(text)
+            continue
+        lines.append(raw_line)
+    return "\n".join(lines)
 
 
 def _build_continuity_state(

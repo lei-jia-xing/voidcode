@@ -6,6 +6,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Literal, Protocol, runtime_checkable
 
+from ..runtime.context_window import normalize_read_file_output
 from ..tools.contracts import ToolCall, ToolDefinition, ToolResult
 
 type AppliedSkill = dict[str, str]
@@ -212,7 +213,7 @@ class StubTurnProvider:
             if not request.context_window.tool_results:
                 raise ValueError("request must contain at least one actionable command")
             last_result = request.context_window.tool_results[-1]
-            return ProviderTurnResult(output=last_result.content if last_result.content else "")
+            return ProviderTurnResult(output=_normalize_tool_output(last_result.content))
 
         trimmed_prompt = commands[step_index]
 
@@ -222,7 +223,7 @@ class StubTurnProvider:
             if not path_text:
                 raise ValueError("request path must not be empty")
             self._ensure_tool(request.available_tools, "read_file", read_only=True)
-            return ProviderTurnResult(tool_call=ToolCall("read_file", {"path": path_text}))
+            return ProviderTurnResult(tool_call=ToolCall("read_file", {"filePath": path_text}))
 
         grep_match = GREP_REQUEST_PATTERN.match(trimmed_prompt)
         if grep_match is not None:
@@ -270,3 +271,8 @@ class StubTurnProvider:
         if any(tool.name == tool_name and tool.read_only is read_only for tool in tools):
             return
         raise ValueError(f"{tool_name} tool is not registered for single-agent execution")
+
+
+def _normalize_tool_output(content: str | None) -> str:
+    normalized = normalize_read_file_output(content)
+    return "" if normalized is None else normalized
