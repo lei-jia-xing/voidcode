@@ -328,19 +328,23 @@ class ProviderGraph:
     ) -> ToolCall | None:
         if not payload_parts:
             return None
-        raw_payload_text = "".join(payload_parts)
+        raw_payload_text = payload_parts[-1]
         try:
             raw_tool_payload = json.loads(raw_payload_text)
         except json.JSONDecodeError as exc:
-            raise self._provider_execution_error(
-                kind="transient_failure",
-                model_name=model_name,
-                message="provider stream emitted malformed tool payload",
-                details={
-                    "source": "graph_stream",
-                    "reason": "malformed_tool_payload",
-                },
-            ) from exc
+            raw_payload_text = "".join(payload_parts)
+            try:
+                raw_tool_payload = json.loads(raw_payload_text)
+            except json.JSONDecodeError:
+                raise self._provider_execution_error(
+                    kind="transient_failure",
+                    model_name=model_name,
+                    message="provider stream emitted malformed tool payload",
+                    details={
+                        "source": "graph_stream",
+                        "reason": "malformed_tool_payload",
+                    },
+                ) from exc
 
         if not isinstance(raw_tool_payload, dict):
             raise self._provider_execution_error(

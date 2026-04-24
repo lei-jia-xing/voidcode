@@ -174,6 +174,32 @@ class _StreamChunkedToolTurnProvider:
         )
 
 
+class _StreamToolSnapshotTurnProvider:
+    name = "opencode"
+
+    def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
+        _ = request
+        return ProviderTurnResult(output="should-not-be-used")
+
+    def stream_turn(self, request: ProviderTurnRequest):
+        _ = request
+        return iter(
+            (
+                ProviderStreamEvent(
+                    kind="content",
+                    channel="tool",
+                    text='{"tool_name":"read_file","arguments":{}}',
+                ),
+                ProviderStreamEvent(
+                    kind="content",
+                    channel="tool",
+                    text='{"tool_name":"read_file","arguments":{"path":"sample.txt"}}',
+                ),
+                ProviderStreamEvent(kind="done", done_reason="completed"),
+            )
+        )
+
+
 class _StreamMalformedToolTurnProvider:
     name = "opencode"
 
@@ -773,6 +799,35 @@ def test_provider_provider_graph_reconstructs_chunked_streamed_tool_call() -> No
     )
     graph = ProviderGraph(
         provider=_StreamChunkedToolTurnProvider(),
+        provider_model=provider_model,
+    )
+
+    step = graph.step(
+        request=GraphRunRequest(
+            session=_session(),
+            prompt="read sample.txt",
+            available_tools=_tool_definitions(),
+            context_window=RuntimeContextWindow(prompt="read sample.txt"),
+            metadata={"provider_stream": True},
+        ),
+        tool_results=(),
+        session=_session(),
+    )
+
+    assert step.is_finished is False
+    assert step.output is None
+    assert step.tool_call is not None
+    assert step.tool_call.tool_name == "read_file"
+    assert step.tool_call.arguments == {"path": "sample.txt"}
+
+
+def test_provider_provider_graph_uses_latest_complete_tool_snapshot() -> None:
+    provider_model = resolve_provider_model(
+        "opencode/gpt-5.4",
+        registry=ModelProviderRegistry.with_defaults(),
+    )
+    graph = ProviderGraph(
+        provider=_StreamToolSnapshotTurnProvider(),
         provider_model=provider_model,
     )
 
