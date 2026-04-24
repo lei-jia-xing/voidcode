@@ -102,6 +102,12 @@ def _build_runtime_with_lsp(tmp_path: Path, *, command: tuple[str, ...]) -> Void
     return runtime
 
 
+def _build_runtime_with_lsp_script(tmp_path: Path, script_body: str) -> VoidCodeRuntime:
+    server_script = tmp_path / "fake_lsp_server.py"
+    server_script.write_text(script_body, encoding="utf-8")
+    return _build_runtime_with_lsp(tmp_path, command=(sys.executable, "-u", str(server_script)))
+
+
 @dataclass(slots=True)
 class _StubLspStep:
     tool_call: ToolCall | None = None
@@ -285,3 +291,71 @@ def test_runtime_managed_lsp_tool_uses_builtin_root_markers_for_workspace_select
     )
 
     assert started_event.payload["workspace_root"] == str(project_root)
+
+
+def test_runtime_managed_lsp_tool_surfaces_protocol_failure_from_server(tmp_path: Path) -> None:
+    sample_file = tmp_path / "sample.py"
+    sample_file.write_text("x = 1\n", encoding="utf-8")
+    runtime = _build_runtime_with_lsp_script(
+        tmp_path,
+        "import json\n"
+        "import sys\n\n"
+        "def read_message():\n"
+        '    header = b""\n'
+        '    while b"\\r\\n\\r\\n" not in header:\n'
+        "        chunk = sys.stdin.buffer.read(1)\n"
+        "        if not chunk:\n"
+        "            return None\n"
+        "        header += chunk\n"
+        "    content_length = None\n"
+        '    for line in header.decode("ascii", errors="ignore").split("\\r\\n"):\n'
+        '        if line.lower().startswith("content-length:"):\n'
+        '            content_length = int(line.split(":", 1)[1].strip())\n'
+        "            break\n"
+        "    if content_length is None:\n"
+        "        return None\n"
+        "    body = sys.stdin.buffer.read(content_length)\n"
+        "    if not body:\n"
+        "        return None\n"
+        '    return json.loads(body.decode("utf-8"))\n\n'
+        "def send_raw(payload):\n"
+        '    body = payload.encode("utf-8")\n'
+        '    header = f"Content-Length: {len(body)}\\r\\n\\r\\n".encode("ascii")\n'
+        "    sys.stdout.buffer.write(header + body)\n"
+        "    sys.stdout.buffer.flush()\n\n"
+        "while True:\n"
+        "    message = read_message()\n"
+        "    if message is None:\n"
+        "        break\n"
+        '    method = message.get("method")\n'
+        '    request_id = message.get("id")\n'
+        '    if method == "initialize":\n'
+        "        send_raw(\n"
+        "            json.dumps(\n"
+        '                {"jsonrpc": "2.0", "id": request_id, "result": {"capabilities": {}}}\n'
+        "            )\n"
+        "        )\n"
+        "        continue\n"
+        '    if method in {"initialized", "shutdown", "exit"}:\n'
+        '        if method == "shutdown":\n'
+        '            send_raw(json.dumps({"jsonrpc": "2.0", "id": request_id, "result": None}))\n'
+        '        if method == "exit":\n'
+        "            break\n"
+        "        continue\n"
+        '    send_raw("[]")\n',
+    )
+    tool = LspTool(requester=runtime.request_lsp)
+
+    with pytest.raises(ValueError, match="LSP protocol error"):
+        _ = tool.invoke(
+            ToolCall(
+                tool_name="lsp",
+                arguments={
+                    "operation": "textDocument/definition",
+                    "filePath": "sample.py",
+                    "line": 1,
+                    "character": 1,
+                },
+            ),
+            workspace=tmp_path,
+        )

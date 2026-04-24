@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import enum
+from importlib import import_module
 from pathlib import Path
 from typing import Any, ClassVar, Protocol, cast
 
@@ -55,6 +56,29 @@ class LspTool:
     def __init__(self, *, requester: LspRequester) -> None:
         self._requester = requester
         self._converter = lsp_converters.get_converter()
+
+    @staticmethod
+    def _invoke_requester(
+        requester: LspRequester,
+        *,
+        server_name: str | None,
+        method: str,
+        params: dict[str, object],
+        workspace: Path,
+    ) -> Any:
+        try:
+            return requester(
+                server_name=server_name,
+                method=method,
+                params=params,
+                workspace=workspace,
+            )
+        except ValueError as exc:
+            runtime_lsp = import_module("voidcode.runtime.lsp")
+            runtime_error = getattr(runtime_lsp, "LspRuntimeError", None)
+            if runtime_error is not None and isinstance(exc, runtime_error):
+                raise ValueError(f"LSP protocol error: {exc}") from exc
+            raise
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
         op_value = call.arguments.get("operation")
@@ -119,7 +143,8 @@ class LspTool:
             )
 
         if operation in (LspOperation.INCOMING_CALLS, LspOperation.OUTGOING_CALLS):
-            prepare_result = self._requester(
+            prepare_result = self._invoke_requester(
+                self._requester,
                 server_name=server,
                 method=LspOperation.PREPARE_CALL_HIERARCHY.value,
                 params=self._converter.unstructure(
@@ -148,7 +173,8 @@ class LspTool:
                 raise ValueError("LSP prepareCallHierarchy returned no item")
             params = {"item": item}
 
-            response = self._requester(
+            response = self._invoke_requester(
+                self._requester,
                 server_name=server,
                 method=operation.value,
                 params=params,
@@ -163,7 +189,8 @@ class LspTool:
                 data={"lsp_response": response.response},
             )
 
-        response = self._requester(
+        response = self._invoke_requester(
+            self._requester,
             server_name=server,
             method=operation.value,
             params=params,
