@@ -6,6 +6,7 @@ import {
   Code2,
   FolderOpen,
   Plus,
+  Settings,
 } from "lucide-react";
 import type {
   StoredSessionSummary,
@@ -22,6 +23,7 @@ interface SessionSidebarProps {
   isReplayLoading: boolean;
   onSelectSession: (sessionId: string) => void;
   onOpenProjects: () => void;
+  onOpenSettings: () => void;
 }
 
 function formatSessionUpdatedAt(updatedAt: number, now = Date.now()): string {
@@ -54,6 +56,7 @@ export function SessionSidebar({
   isReplayLoading,
   onSelectSession,
   onOpenProjects,
+  onOpenSettings,
 }: SessionSidebarProps) {
   const { t } = useTranslation();
   const [isExpanded, setIsExpanded] = useState(true);
@@ -279,9 +282,31 @@ export function SessionSidebar({
             >
               <Plus className="w-4 h-4" />
             </button>
+
+            <button
+              type="button"
+              onClick={onOpenSettings}
+              className="w-10 h-10 rounded-xl border border-slate-800 bg-slate-900/50 flex items-center justify-center text-slate-400 hover:bg-slate-800/60 hover:text-slate-200 transition-colors"
+              aria-label={t("nav.settings")}
+            >
+              <Settings className="w-4 h-4" />
+            </button>
           </div>
         )}
       </div>
+
+      {isExpanded && (
+        <div className="hidden border-t border-slate-800 p-3 md:block">
+          <button
+            type="button"
+            onClick={onOpenSettings}
+            className="w-full flex items-center gap-2 rounded-lg px-3 py-2.5 text-sm text-slate-400 transition-colors hover:bg-slate-800/50 hover:text-slate-200"
+          >
+            <Settings className="w-4 h-4" />
+            <span>{t("nav.settings")}</span>
+          </button>
+        </div>
+      )}
     </aside>
   );
 }

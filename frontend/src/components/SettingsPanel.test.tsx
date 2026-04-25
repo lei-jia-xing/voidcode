@@ -14,6 +14,8 @@ const baseProps = {
   ],
   providersStatus: "success",
   providersError: null,
+  language: "en",
+  onToggleLanguage: vi.fn(),
   onClose: vi.fn(),
   onLoad: vi.fn(),
   onLoadProviders: vi.fn(),
@@ -41,8 +43,8 @@ describe("SettingsPanel", () => {
 
     expect(screen.getByText("GLM")).toBeInTheDocument();
     expect(screen.getByText("OpenAI")).toBeInTheDocument();
-    expect(screen.getByText("Configured")).toBeInTheDocument();
-    expect(screen.getByText("Not configured")).toBeInTheDocument();
+    expect(screen.getByTitle("Configured")).toBeInTheDocument();
+    expect(screen.getByTitle("Not configured")).toBeInTheDocument();
   });
 
   it("shows empty state when no providers are available", () => {

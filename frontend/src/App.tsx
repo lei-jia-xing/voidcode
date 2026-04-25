@@ -11,8 +11,6 @@ import { deriveChatMessages } from "./lib/runtime/event-parser";
 import { RuntimeClient } from "./lib/runtime/client";
 import {
   Loader2,
-  Settings,
-  Globe,
   Server,
   CheckCircle2,
   XCircle,
@@ -160,10 +158,6 @@ function App() {
     await runTask(message);
   };
 
-  const toggleLanguage = () => {
-    setLanguage(language === "en" ? "zh-CN" : "en");
-  };
-
   const testRuntime = async () => {
     setRuntimeTestStatus("testing");
     try {
@@ -211,6 +205,7 @@ function App() {
         isReplayLoading={isReplayLoading}
         onSelectSession={selectSession}
         onOpenProjects={() => setShowProjects(true)}
+        onOpenSettings={() => setShowSettings(true)}
       />
 
       <div className="flex-1 flex flex-col min-w-0">
@@ -279,17 +274,6 @@ function App() {
 
                 <button
                   type="button"
-                  onClick={toggleLanguage}
-                  title={
-                    language === "en" ? t("language.zh") : t("language.en")
-                  }
-                  className="rounded-lg border border-slate-700 bg-transparent px-2 py-1.5 text-slate-400 hover:bg-slate-800/60 hover:text-slate-200 transition-colors"
-                >
-                  <Globe className="w-4 h-4" />
-                </button>
-
-                <button
-                  type="button"
                   onClick={testRuntime}
                   disabled={runtimeTestStatus === "testing"}
                   title={t("debug.testRuntime")}
@@ -304,15 +288,6 @@ function App() {
                   ) : (
                     <Server className="w-4 h-4" />
                   )}
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setShowSettings(true)}
-                  title={t("nav.settings")}
-                  className="rounded-lg border border-slate-700 bg-transparent px-2 py-1.5 text-slate-400 hover:bg-slate-800/60 hover:text-slate-200 transition-colors"
-                >
-                  <Settings className="w-4 h-4" />
                 </button>
               </div>
             </header>
@@ -358,17 +333,6 @@ function App() {
               <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={toggleLanguage}
-                  title={
-                    language === "en" ? t("language.zh") : t("language.en")
-                  }
-                  className="rounded-lg border border-slate-700 bg-slate-900/50 px-2 py-1.5 text-slate-400 hover:bg-slate-800/60 hover:text-slate-200 transition-colors"
-                >
-                  <Globe className="w-4 h-4" />
-                </button>
-
-                <button
-                  type="button"
                   onClick={testRuntime}
                   disabled={runtimeTestStatus === "testing"}
                   title={t("debug.testRuntime")}
@@ -383,15 +347,6 @@ function App() {
                   ) : (
                     <Server className="w-4 h-4" />
                   )}
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setShowSettings(true)}
-                  title={t("nav.settings")}
-                  className="rounded-lg border border-slate-700 bg-slate-900/50 px-2 py-1.5 text-slate-400 hover:bg-slate-800/60 hover:text-slate-200 transition-colors"
-                >
-                  <Settings className="w-4 h-4" />
                 </button>
               </div>
             </header>
@@ -443,6 +398,8 @@ function App() {
         providers={providers}
         providersStatus={providersStatus}
         providersError={providersError}
+        language={language}
+        onToggleLanguage={() => setLanguage(language === "en" ? "zh-CN" : "en")}
         onClose={() => setShowSettings(false)}
         onLoad={loadSettings}
         onLoadProviders={loadProviders}

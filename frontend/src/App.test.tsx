@@ -91,15 +91,10 @@ describe("App", () => {
     vi.useRealTimers();
   });
 
-  it("toggles language when language button is clicked", () => {
+  it("does not render a standalone language header button", () => {
     render(<App />);
 
-    const langBtn = screen.getByTitle("中文");
-    expect(langBtn).toBeInTheDocument();
-
-    fireEvent.click(langBtn);
-
-    expect(mockStore.setLanguage).toHaveBeenCalledWith("zh-CN");
+    expect(screen.queryByTitle("中文")).not.toBeInTheDocument();
   });
 
   it("renders composer and triggers runTask on submit", () => {
@@ -824,17 +819,18 @@ describe("App", () => {
 
     render(<App />);
 
-    const modelInput = screen.getByLabelText("Model");
-    expect(modelInput).toHaveValue("opencode-go/glm-5.1");
+    const modelInput = screen.getByRole("button", { name: "Model" });
+    expect(modelInput).toHaveTextContent("OpenCode Go / glm-5.1");
 
-    fireEvent.change(modelInput, { target: { value: "new-model/v1" } });
+    fireEvent.click(modelInput);
+    fireEvent.click(screen.getByRole("button", { name: "new-model/v1" }));
     expect(mockStore.setProviderModel).toHaveBeenCalledWith("new-model/v1");
   });
 
   it("renders settings panel when settings button is clicked", () => {
     render(<App />);
 
-    const settingsButton = screen.getByTitle("Settings");
+    const settingsButton = screen.getByRole("button", { name: "Settings" });
     fireEvent.click(settingsButton);
 
     expect(screen.getByTestId("settings-panel-mock")).toBeInTheDocument();
