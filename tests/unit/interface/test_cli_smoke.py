@@ -229,6 +229,67 @@ def test_sessions_resume_surfaces_approval_resolution_errors_cleanly() -> None:
     assert "Traceback" not in resume_result.stderr
 
 
+def test_sessions_debug_outputs_json_snapshot() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        _ = (workspace / "sample.txt").write_text("sample\n", encoding="utf-8")
+        env = with_src_pythonpath(os.environ.copy())
+
+        setup_result = _run_module_cli(
+            "run",
+            "read sample.txt",
+            "--workspace",
+            str(workspace),
+            "--session-id",
+            "debug-session",
+            env=env,
+        )
+        debug_result = _run_module_cli(
+            "sessions",
+            "debug",
+            "debug-session",
+            "--workspace",
+            str(workspace),
+            env=env,
+        )
+
+    payload = json.loads(debug_result.stdout)
+    assert setup_result.returncode == 0
+    assert debug_result.returncode == 0
+    assert payload["prompt"] == "read sample.txt"
+    assert payload["persisted_status"] == "completed"
+    assert payload["current_status"] == "completed"
+    assert payload["active"] is False
+    assert payload["terminal"] is True
+    assert payload["replayable"] is True
+    assert payload["resume_checkpoint_kind"] == "terminal"
+    assert payload["pending_approval"] is None
+    assert payload["pending_question"] is None
+    assert payload["last_relevant_event"]["event_type"] == "graph.response_ready"
+    assert payload["suggested_operator_action"] == "replay"
+    assert "Traceback" not in debug_result.stderr
+
+
+def test_sessions_debug_missing_session_returns_clean_error() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        env = with_src_pythonpath(os.environ.copy())
+
+        result = _run_module_cli(
+            "sessions",
+            "debug",
+            "missing-session",
+            "--workspace",
+            str(workspace),
+            env=env,
+        )
+
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert "error: unknown session: missing-session" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
 def test_tui_command_forwards_workspace_and_approval_mode() -> None:
     cli = importlib.import_module("voidcode.cli")
     tui = importlib.import_module("voidcode.tui")

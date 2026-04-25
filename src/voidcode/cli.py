@@ -23,6 +23,7 @@ from .runtime.config import RuntimeConfig, load_runtime_config, serialize_provid
 from .runtime.contracts import (
     BackgroundTaskResult,
     RuntimeRequest,
+    RuntimeSessionDebugSnapshot,
     RuntimeStreamChunk,
     validate_runtime_request_metadata,
 )
@@ -298,6 +299,95 @@ def _format_background_task_summary(task: StoredBackgroundTaskSummary) -> str:
     )
 
 
+def _serialize_session_debug_snapshot(snapshot: RuntimeSessionDebugSnapshot) -> dict[str, object]:
+    session_payload: dict[str, object] = {"id": snapshot.session.session.id}
+    if snapshot.session.session.parent_id is not None:
+        session_payload["parent_id"] = snapshot.session.session.parent_id
+    return {
+        "session": {
+            "session": session_payload,
+            "status": snapshot.session.status,
+            "turn": snapshot.session.turn,
+            "metadata": snapshot.session.metadata,
+        },
+        "prompt": snapshot.prompt,
+        "persisted_status": snapshot.persisted_status,
+        "current_status": snapshot.current_status,
+        "active": snapshot.active,
+        "resumable": snapshot.resumable,
+        "replayable": snapshot.replayable,
+        "terminal": snapshot.terminal,
+        "resume_checkpoint_kind": snapshot.resume_checkpoint_kind,
+        "pending_approval": (
+            {
+                "request_id": snapshot.pending_approval.request_id,
+                "tool_name": snapshot.pending_approval.tool_name,
+                "target_summary": snapshot.pending_approval.target_summary,
+                "reason": snapshot.pending_approval.reason,
+                "policy_mode": snapshot.pending_approval.policy_mode,
+                "arguments": snapshot.pending_approval.arguments,
+                "owner_session_id": snapshot.pending_approval.owner_session_id,
+                "owner_parent_session_id": snapshot.pending_approval.owner_parent_session_id,
+                "delegated_task_id": snapshot.pending_approval.delegated_task_id,
+            }
+            if snapshot.pending_approval is not None
+            else None
+        ),
+        "pending_question": (
+            {
+                "request_id": snapshot.pending_question.request_id,
+                "tool_name": snapshot.pending_question.tool_name,
+                "question_count": snapshot.pending_question.question_count,
+                "headers": list(snapshot.pending_question.headers),
+            }
+            if snapshot.pending_question is not None
+            else None
+        ),
+        "last_event_sequence": snapshot.last_event_sequence,
+        "last_relevant_event": (
+            {
+                "sequence": snapshot.last_relevant_event.sequence,
+                "event_type": snapshot.last_relevant_event.event_type,
+                "source": snapshot.last_relevant_event.source,
+                "payload": snapshot.last_relevant_event.payload,
+            }
+            if snapshot.last_relevant_event is not None
+            else None
+        ),
+        "last_failure_event": (
+            {
+                "sequence": snapshot.last_failure_event.sequence,
+                "event_type": snapshot.last_failure_event.event_type,
+                "source": snapshot.last_failure_event.source,
+                "payload": snapshot.last_failure_event.payload,
+            }
+            if snapshot.last_failure_event is not None
+            else None
+        ),
+        "failure": (
+            {
+                "classification": snapshot.failure.classification,
+                "message": snapshot.failure.message,
+            }
+            if snapshot.failure is not None
+            else None
+        ),
+        "last_tool": (
+            {
+                "tool_name": snapshot.last_tool.tool_name,
+                "status": snapshot.last_tool.status,
+                "summary": snapshot.last_tool.summary,
+                "arguments": snapshot.last_tool.arguments,
+                "sequence": snapshot.last_tool.sequence,
+            }
+            if snapshot.last_tool is not None
+            else None
+        ),
+        "suggested_operator_action": snapshot.suggested_operator_action,
+        "operator_guidance": snapshot.operator_guidance,
+    }
+
+
 def _handle_sessions_resume_command(args: argparse.Namespace) -> int:
     workspace = cast(Path, args.workspace)
     session_id = cast(str, args.session_id)
@@ -316,6 +406,22 @@ def _handle_sessions_resume_command(args: argparse.Namespace) -> int:
         _close_runtime(runtime)
 
     _print_runtime_response(result)
+    return 0
+
+
+def _handle_sessions_debug_command(args: argparse.Namespace) -> int:
+    workspace = cast(Path, args.workspace)
+    session_id = cast(str, args.session_id)
+    runtime = VoidCodeRuntime(workspace=workspace)
+    try:
+        try:
+            snapshot = runtime.session_debug_snapshot(session_id=session_id)
+        except ValueError as exc:
+            raise SystemExit(f"error: {exc}") from None
+    finally:
+        _close_runtime(runtime)
+
+    print(json.dumps(_serialize_session_debug_snapshot(snapshot), sort_keys=True))
     return 0
 
 
@@ -752,6 +858,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional approval decision applied to the pending request during resume.",
     )
     resume_parser.set_defaults(handler=_handle_sessions_resume_command)
+
+    debug_parser = sessions_subparsers.add_parser(
+        "debug", help="Show a minimal runtime-owned debug snapshot for one session."
+    )
+    _ = debug_parser.add_argument("session_id", help="Persisted session identifier to inspect.")
+    _ = debug_parser.add_argument(
+        "--workspace",
+        type=Path,
+        default=Path.cwd(),
+        help="Workspace root used to resolve the local session database.",
+    )
+    _ = debug_parser.add_argument(
+        "--json",
+        action="store_true",
+        default=True,
+        help="Output JSON debug snapshot (default).",
+    )
+    debug_parser.set_defaults(handler=_handle_sessions_debug_command)
 
     tasks_status_parser = tasks_subparsers.add_parser(
         "status", help="Show delegated task lifecycle state."
