@@ -6,19 +6,32 @@ import logging
 import queue
 import threading
 from collections.abc import AsyncIterator, Callable, Iterator
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Protocol, cast, final
 
 from .config import RuntimeConfig
 from .contracts import (
+    AgentSummary,
     BackgroundTaskResult,
+    CapabilityStatusSnapshot,
+    GitStatusSnapshot,
     NoPendingQuestionError,
+    ProviderModelsResult,
+    ProviderSummary,
+    ReviewChangedFile,
+    ReviewFileDiff,
+    ReviewTreeNode,
     RuntimeNotification,
     RuntimeRequest,
     RuntimeRequestError,
     RuntimeResponse,
     RuntimeSessionResult,
+    RuntimeStatusSnapshot,
     RuntimeStreamChunk,
+    WorkspaceRegistrySnapshot,
+    WorkspaceReviewSnapshot,
+    WorkspaceSummary,
     validate_runtime_request_metadata,
     validate_session_id,
     validate_session_reference_id,
@@ -35,6 +48,7 @@ from .task import (
     SubagentRoutingIdentity,
     validate_background_task_id,
 )
+from .workspace import SingleWorkspaceRuntimeCoordinator, WorkspaceOpenError
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +81,20 @@ class RuntimeTransport(Protocol):
         provider_api_key: str | None = None,
         model: str | None = None,
     ) -> dict[str, object]: ...
+
+    def list_provider_summaries(self) -> tuple[ProviderSummary, ...]: ...
+
+    def provider_models_result(self, provider_name: str) -> ProviderModelsResult: ...
+
+    def list_agent_summaries(self) -> tuple[AgentSummary, ...]: ...
+
+    def current_status(self) -> RuntimeStatusSnapshot: ...
+
+    def retry_mcp_connections(self) -> RuntimeStatusSnapshot: ...
+
+    def review_snapshot(self) -> WorkspaceReviewSnapshot: ...
+
+    def review_diff(self, path: str) -> ReviewFileDiff: ...
 
     def session_result(self, *, session_id: str) -> RuntimeSessionResult: ...
 
@@ -102,15 +130,38 @@ class Send(Protocol):
 @final
 class RuntimeTransportApp:
     _runtime_factory: Callable[[], RuntimeTransport]
+    _workspace_coordinator: SingleWorkspaceRuntimeCoordinator | None
 
-    def __init__(self, *, runtime_factory: Callable[[], RuntimeTransport]) -> None:
+    def __init__(
+        self,
+        *,
+        runtime_factory: Callable[[], RuntimeTransport],
+        workspace_coordinator: SingleWorkspaceRuntimeCoordinator | None = None,
+    ) -> None:
         self._runtime_factory = runtime_factory
+        self._workspace_coordinator = workspace_coordinator
 
     @staticmethod
-    def _close_runtime(runtime: RuntimeTransport) -> None:
+    def _close_runtime(
+        runtime: RuntimeTransport,
+        *,
+        workspace_coordinator: SingleWorkspaceRuntimeCoordinator | None = None,
+    ) -> None:
+        if workspace_coordinator is not None and workspace_coordinator.owns_runtime(runtime):
+            return
         exit_method = getattr(runtime, "__exit__", None)
         if callable(exit_method):
             exit_method(None, None, None)
+
+    @contextmanager
+    def _active_request_scope(self) -> Iterator[None]:
+        request_scope = (
+            self._workspace_coordinator.active_request()
+            if self._workspace_coordinator is not None
+            else nullcontext()
+        )
+        with request_scope:
+            yield
 
     async def __call__(
         self,
@@ -187,6 +238,83 @@ class RuntimeTransportApp:
                 status=405,
                 payload={"error": "method not allowed"},
             )
+            return
+
+        if path == "/api/workspaces":
+            if method != "GET":
+                await self._json_response(
+                    send,
+                    status=405,
+                    payload={"error": "method not allowed"},
+                )
+                return
+            await self._handle_list_workspaces(send)
+            return
+
+        if path == "/api/workspaces/open":
+            if method != "POST":
+                await self._json_response(
+                    send,
+                    status=405,
+                    payload={"error": "method not allowed"},
+                )
+                return
+            await self._handle_open_workspace(receive, send)
+            return
+
+        if path == "/api/providers":
+            if method != "GET":
+                await self._json_response(
+                    send,
+                    status=405,
+                    payload={"error": "method not allowed"},
+                )
+                return
+            await self._handle_list_providers(send)
+            return
+
+        if path == "/api/agents":
+            if method != "GET":
+                await self._json_response(
+                    send,
+                    status=405,
+                    payload={"error": "method not allowed"},
+                )
+                return
+            await self._handle_list_agents(send)
+            return
+
+        if path == "/api/status":
+            if method != "GET":
+                await self._json_response(
+                    send,
+                    status=405,
+                    payload={"error": "method not allowed"},
+                )
+                return
+            await self._handle_get_status(send)
+            return
+
+        if path == "/api/status/mcp/retry":
+            if method != "POST":
+                await self._json_response(
+                    send,
+                    status=405,
+                    payload={"error": "method not allowed"},
+                )
+                return
+            await self._handle_retry_mcp(send)
+            return
+
+        if path == "/api/review":
+            if method != "GET":
+                await self._json_response(
+                    send,
+                    status=405,
+                    payload={"error": "method not allowed"},
+                )
+                return
+            await self._handle_get_review(send)
             return
 
         notification_prefix = "/api/notifications/"
@@ -360,6 +488,42 @@ class RuntimeTransportApp:
             await self._handle_resume(session_id=session_id, send=send)
             return
 
+        provider_prefix = "/api/providers/"
+        if path.startswith(provider_prefix):
+            provider_path = path.removeprefix(provider_prefix)
+            if not provider_path.endswith("/models"):
+                await self._json_response(send, status=404, payload={"error": "not found"})
+                return
+            provider_name = provider_path.removesuffix("/models")
+            if not provider_name:
+                await self._json_response(send, status=404, payload={"error": "not found"})
+                return
+            if method != "GET":
+                await self._json_response(
+                    send,
+                    status=405,
+                    payload={"error": "method not allowed"},
+                )
+                return
+            await self._handle_provider_models(provider_name=provider_name, send=send)
+            return
+
+        review_diff_prefix = "/api/review/diff/"
+        if path.startswith(review_diff_prefix):
+            diff_path = path.removeprefix(review_diff_prefix)
+            if not diff_path:
+                await self._json_response(send, status=404, payload={"error": "not found"})
+                return
+            if method != "GET":
+                await self._json_response(
+                    send,
+                    status=405,
+                    payload={"error": "method not allowed"},
+                )
+                return
+            await self._handle_get_review_diff(path=diff_path, send=send)
+            return
+
         await self._json_response(send, status=404, payload={"error": "not found"})
 
     async def _handle_lifespan(self, receive: Receive, send: Send) -> None:
@@ -370,6 +534,8 @@ class RuntimeTransportApp:
                 await send({"type": "lifespan.startup.complete"})
                 continue
             if message_type == "lifespan.shutdown":
+                if self._workspace_coordinator is not None:
+                    self._workspace_coordinator.close()
                 await send({"type": "lifespan.shutdown.complete"})
                 return
             if message_type == "lifespan.disconnect":
@@ -377,6 +543,7 @@ class RuntimeTransportApp:
             raise RuntimeError(f"unsupported lifespan message type: {message_type!r}")
 
     async def _handle_run_stream(self, receive: Receive, send: Send) -> None:
+        runtime: RuntimeTransport | None = None
         try:
             body = await self._read_body(receive)
             request = self._parse_runtime_request(body)
@@ -384,41 +551,45 @@ class RuntimeTransportApp:
             await self._json_response(send, status=400, payload={"error": str(exc)})
             return
 
-        runtime = self._runtime_factory()
-        stream = self._stream_runtime_chunks(runtime, request)
         try:
-            first_chunk = await anext(stream)
-        except StopAsyncIteration:
-            logger.exception("runtime stream emitted no chunks before response start")
-            await self._json_response(send, status=500, payload={"error": "internal server error"})
-            self._close_runtime(runtime)
-            return
-        except RuntimeRequestError as exc:
-            await self._json_response(send, status=400, payload={"error": str(exc)})
-            self._close_runtime(runtime)
-            return
-        except Exception:
-            logger.exception("unexpected transport streaming failure")
-            await self._json_response(send, status=500, payload={"error": "internal server error"})
-            self._close_runtime(runtime)
-            return
+            with self._active_request_scope():
+                runtime = self._runtime_factory()
+                stream = self._stream_runtime_chunks(runtime, request)
+                try:
+                    first_chunk = await anext(stream)
+                except StopAsyncIteration:
+                    logger.exception("runtime stream emitted no chunks before response start")
+                    await self._json_response(
+                        send, status=500, payload={"error": "internal server error"}
+                    )
+                    return
+                except RuntimeRequestError as exc:
+                    await self._json_response(send, status=400, payload={"error": str(exc)})
+                    return
+                except Exception:
+                    logger.exception("unexpected transport streaming failure")
+                    await self._json_response(
+                        send, status=500, payload={"error": "internal server error"}
+                    )
+                    return
 
-        await self._send_stream_start(send)
+                await self._send_stream_start(send)
 
-        emitted_failed_chunk = await self._send_runtime_stream_chunk(send, first_chunk)
-        try:
-            async for chunk in stream:
-                chunk_failed = await self._send_runtime_stream_chunk(send, chunk)
-                emitted_failed_chunk = emitted_failed_chunk or chunk_failed
-        except Exception:
-            if not emitted_failed_chunk:
-                logger.exception("unexpected transport streaming failure")
-            await send({"type": "http.response.body", "body": b"", "more_body": False})
-            self._close_runtime(runtime)
-            return
+                emitted_failed_chunk = await self._send_runtime_stream_chunk(send, first_chunk)
+                try:
+                    async for chunk in stream:
+                        chunk_failed = await self._send_runtime_stream_chunk(send, chunk)
+                        emitted_failed_chunk = emitted_failed_chunk or chunk_failed
+                except Exception:
+                    if not emitted_failed_chunk:
+                        logger.exception("unexpected transport streaming failure")
+                    await send({"type": "http.response.body", "body": b"", "more_body": False})
+                    return
 
-        await send({"type": "http.response.body", "body": b"", "more_body": False})
-        self._close_runtime(runtime)
+                await send({"type": "http.response.body", "body": b"", "more_body": False})
+        finally:
+            if runtime is not None:
+                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
 
     async def _send_stream_start(self, send: Send) -> None:
         await send(
@@ -449,13 +620,14 @@ class RuntimeTransportApp:
         return chunk.event is not None and chunk.event.event_type == "runtime.failed"
 
     async def _handle_list_sessions(self, send: Send) -> None:
-        runtime = self._runtime_factory()
-        try:
-            payload = [
-                self._serialize_stored_session_summary(item) for item in runtime.list_sessions()
-            ]
-        finally:
-            self._close_runtime(runtime)
+        with self._active_request_scope():
+            runtime = self._runtime_factory()
+            try:
+                payload = [
+                    self._serialize_stored_session_summary(item) for item in runtime.list_sessions()
+                ]
+            finally:
+                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
         await self._json_response(send, status=200, payload=payload)
 
     async def _handle_start_background_task(self, receive: Receive, send: Send) -> None:
@@ -466,14 +638,15 @@ class RuntimeTransportApp:
             await self._json_response(send, status=400, payload={"error": str(exc)})
             return
 
-        runtime = self._runtime_factory()
-        try:
-            task = runtime.start_background_task(request)
-        except RuntimeRequestError as exc:
-            await self._json_response(send, status=400, payload={"error": str(exc)})
-            return
-        finally:
-            self._close_runtime(runtime)
+        with self._active_request_scope():
+            runtime = self._runtime_factory()
+            try:
+                task = runtime.start_background_task(request)
+            except RuntimeRequestError as exc:
+                await self._json_response(send, status=400, payload={"error": str(exc)})
+                return
+            finally:
+                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
         await self._json_response(
             send,
             status=201,
@@ -481,14 +654,15 @@ class RuntimeTransportApp:
         )
 
     async def _handle_list_background_tasks(self, send: Send) -> None:
-        runtime = self._runtime_factory()
-        try:
-            payload = [
-                self._serialize_background_task_summary(item)
-                for item in runtime.list_background_tasks()
-            ]
-        finally:
-            self._close_runtime(runtime)
+        with self._active_request_scope():
+            runtime = self._runtime_factory()
+            try:
+                payload = [
+                    self._serialize_background_task_summary(item)
+                    for item in runtime.list_background_tasks()
+                ]
+            finally:
+                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
         await self._json_response(send, status=200, payload=payload)
 
     async def _handle_list_background_tasks_by_parent_session(
@@ -497,27 +671,29 @@ class RuntimeTransportApp:
         parent_session_id: str,
         send: Send,
     ) -> None:
-        runtime = self._runtime_factory()
-        try:
-            payload = [
-                self._serialize_background_task_summary(item)
-                for item in runtime.list_background_tasks_by_parent_session(
-                    parent_session_id=parent_session_id
-                )
-            ]
-        finally:
-            self._close_runtime(runtime)
+        with self._active_request_scope():
+            runtime = self._runtime_factory()
+            try:
+                payload = [
+                    self._serialize_background_task_summary(item)
+                    for item in runtime.list_background_tasks_by_parent_session(
+                        parent_session_id=parent_session_id
+                    )
+                ]
+            finally:
+                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
         await self._json_response(send, status=200, payload=payload)
 
     async def _handle_background_task_status(self, *, task_id: str, send: Send) -> None:
-        runtime = self._runtime_factory()
-        try:
-            task = runtime.load_background_task(task_id)
-        except ValueError as exc:
-            await self._json_response(send, status=404, payload={"error": str(exc)})
-            return
-        finally:
-            self._close_runtime(runtime)
+        with self._active_request_scope():
+            runtime = self._runtime_factory()
+            try:
+                task = runtime.load_background_task(task_id)
+            except ValueError as exc:
+                await self._json_response(send, status=404, payload={"error": str(exc)})
+                return
+            finally:
+                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
         await self._json_response(
             send,
             status=200,
@@ -525,22 +701,23 @@ class RuntimeTransportApp:
         )
 
     async def _handle_background_task_output(self, *, task_id: str, send: Send) -> None:
-        runtime = self._runtime_factory()
-        try:
-            task_result = runtime.load_background_task_result(task_id)
-            child_session_result: RuntimeSessionResult | None = None
-            if task_result.child_session_id is not None:
-                try:
-                    child_session_result = runtime.session_result(
-                        session_id=task_result.child_session_id
-                    )
-                except ValueError:
-                    child_session_result = None
-        except ValueError as exc:
-            await self._json_response(send, status=404, payload={"error": str(exc)})
-            return
-        finally:
-            self._close_runtime(runtime)
+        with self._active_request_scope():
+            runtime = self._runtime_factory()
+            try:
+                task_result = runtime.load_background_task_result(task_id)
+                child_session_result: RuntimeSessionResult | None = None
+                if task_result.child_session_id is not None:
+                    try:
+                        child_session_result = runtime.session_result(
+                            session_id=task_result.child_session_id
+                        )
+                    except ValueError:
+                        child_session_result = None
+            except ValueError as exc:
+                await self._json_response(send, status=404, payload={"error": str(exc)})
+                return
+            finally:
+                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
         resolved_output = (
             child_session_result.output
             if child_session_result is not None and child_session_result.output is not None
@@ -561,14 +738,15 @@ class RuntimeTransportApp:
         )
 
     async def _handle_cancel_background_task(self, *, task_id: str, send: Send) -> None:
-        runtime = self._runtime_factory()
-        try:
-            task = runtime.cancel_background_task(task_id)
-        except ValueError as exc:
-            await self._json_response(send, status=404, payload={"error": str(exc)})
-            return
-        finally:
-            self._close_runtime(runtime)
+        with self._active_request_scope():
+            runtime = self._runtime_factory()
+            try:
+                task = runtime.cancel_background_task(task_id)
+            except ValueError as exc:
+                await self._json_response(send, status=404, payload={"error": str(exc)})
+                return
+            finally:
+                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
         await self._json_response(
             send,
             status=200,
@@ -576,19 +754,139 @@ class RuntimeTransportApp:
         )
 
     async def _handle_list_notifications(self, send: Send) -> None:
-        runtime = self._runtime_factory()
-        try:
-            payload = [self._serialize_notification(item) for item in runtime.list_notifications()]
-        finally:
-            self._close_runtime(runtime)
+        with self._active_request_scope():
+            runtime = self._runtime_factory()
+            try:
+                payload = [
+                    self._serialize_notification(item) for item in runtime.list_notifications()
+                ]
+            finally:
+                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
         await self._json_response(send, status=200, payload=payload)
 
     async def _handle_get_settings(self, send: Send) -> None:
-        runtime = self._runtime_factory()
+        with self._active_request_scope():
+            runtime = self._runtime_factory()
+            try:
+                payload = runtime.web_settings()
+            finally:
+                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
+        await self._json_response(send, status=200, payload=payload)
+
+    async def _handle_list_workspaces(self, send: Send) -> None:
+        if self._workspace_coordinator is None:
+            await self._json_response(send, status=404, payload={"error": "not found"})
+            return
+        payload = self._serialize_workspace_registry_snapshot(
+            self._workspace_coordinator.snapshot()
+        )
+        await self._json_response(send, status=200, payload=payload)
+
+    async def _handle_open_workspace(self, receive: Receive, send: Send) -> None:
+        if self._workspace_coordinator is None:
+            await self._json_response(send, status=404, payload={"error": "not found"})
+            return
         try:
-            payload = runtime.web_settings()
-        finally:
-            self._close_runtime(runtime)
+            body = await self._read_body(receive)
+            raw_payload = json.loads(body.decode("utf-8"))
+            if not isinstance(raw_payload, dict):
+                raise ValueError("request body must be a JSON object")
+            payload = cast(dict[str, object], raw_payload)
+            path = payload.get("path")
+            if not isinstance(path, str) or not path.strip():
+                raise ValueError("path must be a non-empty string")
+            snapshot = self._workspace_coordinator.open_workspace(path)
+        except WorkspaceOpenError as exc:
+            await self._json_response(
+                send,
+                status=exc.status_code,
+                payload={"error": str(exc), "code": exc.code},
+            )
+            return
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            await self._json_response(send, status=400, payload={"error": str(exc)})
+            return
+        await self._json_response(
+            send,
+            status=200,
+            payload=self._serialize_workspace_registry_snapshot(snapshot),
+        )
+
+    async def _handle_list_providers(self, send: Send) -> None:
+        with self._active_request_scope():
+            runtime = self._runtime_factory()
+            try:
+                payload = [
+                    self._serialize_provider_summary(provider)
+                    for provider in runtime.list_provider_summaries()
+                ]
+            finally:
+                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
+        await self._json_response(send, status=200, payload=payload)
+
+    async def _handle_provider_models(self, *, provider_name: str, send: Send) -> None:
+        with self._active_request_scope():
+            runtime = self._runtime_factory()
+            try:
+                result = runtime.provider_models_result(provider_name)
+            finally:
+                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
+        status = 200 if result.configured else 409
+        await self._json_response(
+            send, status=status, payload=self._serialize_provider_models_result(result)
+        )
+
+    async def _handle_list_agents(self, send: Send) -> None:
+        with self._active_request_scope():
+            runtime = self._runtime_factory()
+            try:
+                payload = [
+                    self._serialize_agent_summary(agent) for agent in runtime.list_agent_summaries()
+                ]
+            finally:
+                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
+        await self._json_response(send, status=200, payload=payload)
+
+    async def _handle_get_status(self, send: Send) -> None:
+        with self._active_request_scope():
+            runtime = self._runtime_factory()
+            try:
+                payload = self._serialize_runtime_status_snapshot(runtime.current_status())
+            finally:
+                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
+        await self._json_response(send, status=200, payload=payload)
+
+    async def _handle_retry_mcp(self, send: Send) -> None:
+        with self._active_request_scope():
+            runtime = self._runtime_factory()
+            try:
+                payload = self._serialize_runtime_status_snapshot(runtime.retry_mcp_connections())
+            except ValueError as exc:
+                await self._json_response(send, status=400, payload={"error": str(exc)})
+            else:
+                await self._json_response(send, status=200, payload=payload)
+            finally:
+                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
+
+    async def _handle_get_review(self, send: Send) -> None:
+        with self._active_request_scope():
+            runtime = self._runtime_factory()
+            try:
+                payload = self._serialize_workspace_review_snapshot(runtime.review_snapshot())
+            finally:
+                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
+        await self._json_response(send, status=200, payload=payload)
+
+    async def _handle_get_review_diff(self, *, path: str, send: Send) -> None:
+        with self._active_request_scope():
+            runtime = self._runtime_factory()
+            try:
+                payload = self._serialize_review_file_diff(runtime.review_diff(path))
+            except ValueError as exc:
+                await self._json_response(send, status=400, payload={"error": str(exc)})
+                return
+            finally:
+                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
         await self._json_response(send, status=200, payload=payload)
 
     async def _handle_update_settings(self, receive: Receive, send: Send) -> None:
@@ -599,25 +897,27 @@ class RuntimeTransportApp:
             await self._json_response(send, status=400, payload={"error": str(exc)})
             return
 
-        runtime = self._runtime_factory()
-        try:
-            result = runtime.update_web_settings(**payload)
-        except ValueError as exc:
-            await self._json_response(send, status=400, payload={"error": str(exc)})
-            return
-        finally:
-            self._close_runtime(runtime)
+        with self._active_request_scope():
+            runtime = self._runtime_factory()
+            try:
+                result = runtime.update_web_settings(**payload)
+            except ValueError as exc:
+                await self._json_response(send, status=400, payload={"error": str(exc)})
+                return
+            finally:
+                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
         await self._json_response(send, status=200, payload=result)
 
     async def _handle_resume(self, *, session_id: str, send: Send) -> None:
-        runtime = self._runtime_factory()
-        try:
-            response = runtime.resume(session_id)
-        except ValueError as exc:
-            await self._json_response(send, status=404, payload={"error": str(exc)})
-            return
-        finally:
-            self._close_runtime(runtime)
+        with self._active_request_scope():
+            runtime = self._runtime_factory()
+            try:
+                response = runtime.resume(session_id)
+            except ValueError as exc:
+                await self._json_response(send, status=404, payload={"error": str(exc)})
+                return
+            finally:
+                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
         await self._json_response(
             send,
             status=200,
@@ -625,14 +925,15 @@ class RuntimeTransportApp:
         )
 
     async def _handle_session_result(self, *, session_id: str, send: Send) -> None:
-        runtime = self._runtime_factory()
-        try:
-            result = runtime.session_result(session_id=session_id)
-        except ValueError as exc:
-            await self._json_response(send, status=404, payload={"error": str(exc)})
-            return
-        finally:
-            self._close_runtime(runtime)
+        with self._active_request_scope():
+            runtime = self._runtime_factory()
+            try:
+                result = runtime.session_result(session_id=session_id)
+            except ValueError as exc:
+                await self._json_response(send, status=404, payload={"error": str(exc)})
+                return
+            finally:
+                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
         await self._json_response(
             send,
             status=200,
@@ -653,18 +954,19 @@ class RuntimeTransportApp:
             await self._json_response(send, status=400, payload={"error": str(exc)})
             return
 
-        runtime = self._runtime_factory()
-        try:
-            response = runtime.resume(
-                session_id,
-                approval_request_id=approval_request_id,
-                approval_decision=approval_decision,
-            )
-        except ValueError as exc:
-            await self._json_response(send, status=404, payload={"error": str(exc)})
-            return
-        finally:
-            self._close_runtime(runtime)
+        with self._active_request_scope():
+            runtime = self._runtime_factory()
+            try:
+                response = runtime.resume(
+                    session_id,
+                    approval_request_id=approval_request_id,
+                    approval_decision=approval_decision,
+                )
+            except ValueError as exc:
+                await self._json_response(send, status=404, payload={"error": str(exc)})
+                return
+            finally:
+                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
         await self._json_response(
             send,
             status=200,
@@ -685,18 +987,19 @@ class RuntimeTransportApp:
             await self._json_response(send, status=400, payload={"error": str(exc)})
             return
 
-        runtime = self._runtime_factory()
-        try:
-            response = runtime.answer_question(
-                session_id,
-                question_request_id=question_request_id,
-                responses=responses,
-            )
-        except (ValueError, NoPendingQuestionError) as exc:
-            await self._json_response(send, status=404, payload={"error": str(exc)})
-            return
-        finally:
-            self._close_runtime(runtime)
+        with self._active_request_scope():
+            runtime = self._runtime_factory()
+            try:
+                response = runtime.answer_question(
+                    session_id,
+                    question_request_id=question_request_id,
+                    responses=responses,
+                )
+            except (ValueError, NoPendingQuestionError) as exc:
+                await self._json_response(send, status=404, payload={"error": str(exc)})
+                return
+            finally:
+                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
         await self._json_response(
             send,
             status=200,
@@ -709,14 +1012,15 @@ class RuntimeTransportApp:
         notification_id: str,
         send: Send,
     ) -> None:
-        runtime = self._runtime_factory()
-        try:
-            notification = runtime.acknowledge_notification(notification_id=notification_id)
-        except ValueError as exc:
-            await self._json_response(send, status=404, payload={"error": str(exc)})
-            return
-        finally:
-            self._close_runtime(runtime)
+        with self._active_request_scope():
+            runtime = self._runtime_factory()
+            try:
+                notification = runtime.acknowledge_notification(notification_id=notification_id)
+            except ValueError as exc:
+                await self._json_response(send, status=404, payload={"error": str(exc)})
+                return
+            finally:
+                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
         await self._json_response(
             send,
             status=200,
@@ -1015,6 +1319,137 @@ class RuntimeTransportApp:
         }
 
     @staticmethod
+    def _serialize_workspace_summary(summary: WorkspaceSummary) -> dict[str, object]:
+        return {
+            "path": summary.path,
+            "label": summary.label,
+            "available": summary.available,
+            "current": summary.current,
+            "last_opened_at": summary.last_opened_at,
+        }
+
+    @staticmethod
+    def _serialize_workspace_registry_snapshot(
+        snapshot: WorkspaceRegistrySnapshot,
+    ) -> dict[str, object]:
+        return {
+            "current": (
+                None
+                if snapshot.current is None
+                else RuntimeTransportApp._serialize_workspace_summary(snapshot.current)
+            ),
+            "recent": [
+                RuntimeTransportApp._serialize_workspace_summary(item) for item in snapshot.recent
+            ],
+            "candidates": [
+                RuntimeTransportApp._serialize_workspace_summary(item)
+                for item in snapshot.candidates
+            ],
+        }
+
+    @staticmethod
+    def _serialize_provider_summary(summary: ProviderSummary) -> dict[str, object]:
+        return {
+            "name": summary.name,
+            "label": summary.label,
+            "configured": summary.configured,
+            "current": summary.current,
+        }
+
+    @staticmethod
+    def _serialize_provider_models_result(result: ProviderModelsResult) -> dict[str, object]:
+        return {
+            "provider": result.provider,
+            "configured": result.configured,
+            "models": list(result.models),
+            "source": result.source,
+            "last_refresh_status": result.last_refresh_status,
+            "last_error": result.last_error,
+            "discovery_mode": result.discovery_mode,
+        }
+
+    @staticmethod
+    def _serialize_agent_summary(summary: AgentSummary) -> dict[str, object]:
+        return {
+            "id": summary.id,
+            "label": summary.label,
+            "description": summary.description,
+        }
+
+    @staticmethod
+    def _serialize_git_status_snapshot(snapshot: GitStatusSnapshot) -> dict[str, object]:
+        return {
+            "state": snapshot.state,
+            "root": snapshot.root,
+            "error": snapshot.error,
+        }
+
+    @staticmethod
+    def _serialize_capability_status_snapshot(
+        snapshot: CapabilityStatusSnapshot,
+    ) -> dict[str, object]:
+        return {
+            "state": snapshot.state,
+            "error": snapshot.error,
+            "details": snapshot.details,
+        }
+
+    @staticmethod
+    def _serialize_runtime_status_snapshot(
+        snapshot: RuntimeStatusSnapshot,
+    ) -> dict[str, object]:
+        return {
+            "git": RuntimeTransportApp._serialize_git_status_snapshot(snapshot.git),
+            "lsp": RuntimeTransportApp._serialize_capability_status_snapshot(snapshot.lsp),
+            "mcp": RuntimeTransportApp._serialize_capability_status_snapshot(snapshot.mcp),
+        }
+
+    @staticmethod
+    def _serialize_review_changed_file(item: ReviewChangedFile) -> dict[str, object]:
+        return {
+            "path": item.path,
+            "change_type": item.change_type,
+            "old_path": item.old_path,
+        }
+
+    @staticmethod
+    def _serialize_review_tree_node(node: ReviewTreeNode) -> dict[str, object]:
+        return {
+            "path": node.path,
+            "name": node.name,
+            "kind": node.kind,
+            "changed": node.changed,
+            "children": [
+                RuntimeTransportApp._serialize_review_tree_node(child) for child in node.children
+            ],
+        }
+
+    @staticmethod
+    def _serialize_workspace_review_snapshot(
+        snapshot: WorkspaceReviewSnapshot,
+    ) -> dict[str, object]:
+        return {
+            "root": snapshot.root,
+            "git": RuntimeTransportApp._serialize_git_status_snapshot(snapshot.git),
+            "changed_files": [
+                RuntimeTransportApp._serialize_review_changed_file(item)
+                for item in snapshot.changed_files
+            ],
+            "tree": [
+                RuntimeTransportApp._serialize_review_tree_node(node) for node in snapshot.tree
+            ],
+        }
+
+    @staticmethod
+    def _serialize_review_file_diff(diff: ReviewFileDiff) -> dict[str, object]:
+        return {
+            "root": diff.root,
+            "path": diff.path,
+            "state": diff.state,
+            "diff": diff.diff,
+        }
+
+    @staticmethod
     def _serialize_notification(notification: RuntimeNotification) -> dict[str, object]:
         return {
             "id": notification.id,
@@ -1105,7 +1540,28 @@ def create_runtime_app(
     config: RuntimeConfig | None = None,
     runtime_factory: Callable[[], RuntimeTransport] | None = None,
 ) -> RuntimeTransportApp:
-    resolved_factory = runtime_factory or (
-        lambda: VoidCodeRuntime(workspace=workspace, config=config)
+    if runtime_factory is not None:
+        return RuntimeTransportApp(runtime_factory=runtime_factory)
+
+    resolved_workspace = workspace.resolve()
+    if not resolved_workspace.is_dir():
+        return RuntimeTransportApp(
+            runtime_factory=lambda: VoidCodeRuntime(workspace=resolved_workspace, config=config)
+        )
+
+    coordinator = SingleWorkspaceRuntimeCoordinator(
+        initial_workspace=resolved_workspace,
+        runtime_factory=lambda workspace: VoidCodeRuntime(
+            workspace=workspace,
+            config=config,
+        ),
+        config=config,
     )
-    return RuntimeTransportApp(runtime_factory=resolved_factory)
+
+    def resolved_factory() -> RuntimeTransport:
+        return cast(RuntimeTransport, coordinator.runtime())
+
+    return RuntimeTransportApp(
+        runtime_factory=resolved_factory,
+        workspace_coordinator=coordinator,
+    )

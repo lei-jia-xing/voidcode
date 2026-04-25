@@ -1,3 +1,4 @@
+# pyright: reportArgumentType=false
 from __future__ import annotations
 
 import importlib
@@ -69,6 +70,7 @@ from voidcode.runtime.mcp import (
     McpConfigState,
     McpManagerState,
     McpRuntimeEvent,
+    McpServerRuntimeState,
     McpToolCallResult,
     McpToolDescriptor,
 )
@@ -3604,24 +3606,40 @@ def test_runtime_surfaces_mcp_lifecycle_events_in_run_responses(tmp_path: Path) 
     assert any(event.event_type == RUNTIME_MCP_SERVER_STARTED for event in response.events)
 
 
-def test_runtime_emits_mcp_failed_before_terminal_failure_on_startup_refresh(
+def test_runtime_emits_mcp_failed_and_continues_run_on_startup_refresh(
     tmp_path: Path,
 ) -> None:
     class _FailingMcpManager:
         def __init__(self) -> None:
             self._drained = False
+            self._failed = False
 
         startup_error = "MCP[echo]: failed to start server - command not found: missing-mcp"
 
         @property
         def configuration(self) -> McpConfigState:
-            return McpConfigState(configured_enabled=True)
+            return McpConfigState(configured_enabled=True, servers={"echo": object()})
 
         def current_state(self) -> McpManagerState:
-            return McpManagerState(mode="managed", configuration=self.configuration)
+            return McpManagerState(
+                mode="managed",
+                configuration=self.configuration,
+                servers={
+                    "echo": McpServerRuntimeState(
+                        server_name="echo",
+                        status="failed" if self._failed else "stopped",
+                        workspace_root=str(tmp_path) if self._failed else None,
+                        stage="startup" if self._failed else None,
+                        error=self.startup_error if self._failed else None,
+                        command=(),
+                        retry_available=self._failed,
+                    )
+                },
+            )
 
         def list_tools(self, *, workspace: Path):
             _ = workspace
+            self._failed = True
             raise ValueError(self.startup_error)
 
         def call_tool(
@@ -3652,25 +3670,41 @@ def test_runtime_emits_mcp_failed_before_terminal_failure_on_startup_refresh(
 
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_StubGraph(),
+        graph=_SkillCapturingStubGraph(),
         mcp_manager=_FailingMcpManager(),
     )
 
     response = runtime.run(RuntimeRequest(prompt="hello"))
+    status = runtime.current_status()
 
-    assert response.session.status == "failed"
-    assert [event.event_type for event in response.events] == [
-        "runtime.request_received",
-        RUNTIME_MCP_SERVER_FAILED,
-        "runtime.failed",
-    ]
-    assert response.events[-1].payload == {
-        "error": _FailingMcpManager.startup_error,
-        "kind": "mcp_startup_failed",
+    assert response.session.status == "completed"
+    assert response.output == "hello"
+    event_types = [event.event_type for event in response.events]
+    assert event_types[:2] == ["runtime.request_received", RUNTIME_MCP_SERVER_FAILED]
+    assert "runtime.failed" not in event_types
+    assert "runtime.skills_loaded" in event_types
+    assert status.mcp.state == "failed"
+    assert status.mcp.error == _FailingMcpManager.startup_error
+    assert status.mcp.details == {
+        "configured_server_count": 1,
+        "running_server_count": 0,
+        "failed_server_count": 1,
+        "retry_available": True,
+        "servers": [
+            {
+                "server": "echo",
+                "status": "failed",
+                "workspace_root": str(tmp_path),
+                "stage": "startup",
+                "error": _FailingMcpManager.startup_error,
+                "command": [],
+                "retry_available": True,
+            }
+        ],
     }
 
 
-def test_runtime_resume_emits_mcp_failed_before_terminal_failure_on_startup_refresh(
+def test_runtime_resume_emits_mcp_failed_and_continues_on_startup_refresh(
     tmp_path: Path,
 ) -> None:
     initial_runtime = VoidCodeRuntime(
@@ -3685,18 +3719,34 @@ def test_runtime_resume_emits_mcp_failed_before_terminal_failure_on_startup_refr
     class _FailingMcpManager:
         def __init__(self) -> None:
             self._drained = False
+            self._failed = False
 
         startup_error = "MCP[echo]: failed to start server - command not found: missing-mcp"
 
         @property
         def configuration(self) -> McpConfigState:
-            return McpConfigState(configured_enabled=True)
+            return McpConfigState(configured_enabled=True, servers={"echo": object()})
 
         def current_state(self) -> McpManagerState:
-            return McpManagerState(mode="managed", configuration=self.configuration)
+            return McpManagerState(
+                mode="managed",
+                configuration=self.configuration,
+                servers={
+                    "echo": McpServerRuntimeState(
+                        server_name="echo",
+                        status="failed" if self._failed else "stopped",
+                        workspace_root=str(tmp_path) if self._failed else None,
+                        stage="startup" if self._failed else None,
+                        error=self.startup_error if self._failed else None,
+                        command=(),
+                        retry_available=self._failed,
+                    )
+                },
+            )
 
         def list_tools(self, *, workspace: Path):
             _ = workspace
+            self._failed = True
             raise ValueError(self.startup_error)
 
         def call_tool(
@@ -3738,25 +3788,29 @@ def test_runtime_resume_emits_mcp_failed_before_terminal_failure_on_startup_refr
         approval_request_id=approval_request_id,
         approval_decision="allow",
     )
+    status = resumed_runtime.current_status()
 
     resumed_suffix = [
         event for event in resumed.events if event.sequence > waiting.events[-1].sequence
     ]
-    assert resumed.session.status == "failed"
+    assert resumed.session.status == "completed"
+    assert resumed.output == "done"
     assert [event.sequence for event in resumed_suffix] == list(
         range(waiting.events[-1].sequence + 1, resumed.events[-1].sequence + 1)
     )
-    assert [event.event_type for event in resumed_suffix] == [
-        RUNTIME_MCP_SERVER_FAILED,
-        "runtime.failed",
-    ]
-    assert resumed.events[-1].payload == {
-        "error": _FailingMcpManager.startup_error,
-        "kind": "mcp_startup_failed",
-    }
+    resumed_suffix_types = [event.event_type for event in resumed_suffix]
+    assert resumed_suffix_types[0] == RUNTIME_MCP_SERVER_FAILED
+    assert "runtime.failed" not in resumed_suffix_types
+    assert "graph.tool_request_created" in resumed_suffix_types
+    assert "runtime.tool_lookup_succeeded" in resumed_suffix_types
+    assert "runtime.approval_resolved" in resumed_suffix_types
+    assert "runtime.tool_started" in resumed_suffix_types
+    assert "runtime.tool_completed" in resumed_suffix_types
+    assert status.mcp.state == "failed"
+    assert status.mcp.error == _FailingMcpManager.startup_error
 
 
-def test_runtime_resume_skips_acp_startup_when_mcp_refresh_already_failed(
+def test_runtime_resume_still_starts_acp_when_mcp_refresh_fails(
     tmp_path: Path,
 ) -> None:
     initial_runtime = VoidCodeRuntime(
@@ -3773,18 +3827,34 @@ def test_runtime_resume_skips_acp_startup_when_mcp_refresh_already_failed(
     class _FailingMcpManager:
         def __init__(self) -> None:
             self._drained = False
+            self._failed = False
 
         startup_error = "MCP[echo]: failed to start server - command not found: missing-mcp"
 
         @property
         def configuration(self) -> McpConfigState:
-            return McpConfigState(configured_enabled=True)
+            return McpConfigState(configured_enabled=True, servers={"echo": object()})
 
         def current_state(self) -> McpManagerState:
-            return McpManagerState(mode="managed", configuration=self.configuration)
+            return McpManagerState(
+                mode="managed",
+                configuration=self.configuration,
+                servers={
+                    "echo": McpServerRuntimeState(
+                        server_name="echo",
+                        status="failed" if self._failed else "stopped",
+                        workspace_root=str(tmp_path) if self._failed else None,
+                        stage="startup" if self._failed else None,
+                        error=self.startup_error if self._failed else None,
+                        command=(),
+                        retry_available=self._failed,
+                    )
+                },
+            )
 
         def list_tools(self, *, workspace: Path):
             _ = workspace
+            self._failed = True
             raise ValueError(self.startup_error)
 
         def call_tool(
@@ -3827,7 +3897,7 @@ def test_runtime_resume_skips_acp_startup_when_mcp_refresh_already_failed(
 
         def connect(self) -> tuple[AcpRuntimeEvent, ...]:
             self.connect_calls += 1
-            raise AssertionError("ACP connect should not run after MCP refresh failure")
+            return ()
 
         def disconnect(self) -> tuple[AcpRuntimeEvent, ...]:
             return ()
@@ -3863,12 +3933,18 @@ def test_runtime_resume_skips_acp_startup_when_mcp_refresh_already_failed(
         approval_decision="allow",
     )
 
-    assert acp_adapter.connect_calls == 0
+    assert acp_adapter.connect_calls == 1
     resumed_suffix = [
         event.event_type for event in resumed.events if event.sequence > waiting.events[-1].sequence
     ]
-    assert resumed.session.status == "failed"
-    assert resumed_suffix == [RUNTIME_MCP_SERVER_FAILED, "runtime.failed"]
+    assert resumed.session.status == "completed"
+    assert resumed_suffix[0] == RUNTIME_MCP_SERVER_FAILED
+    assert "runtime.failed" not in resumed_suffix
+    assert "graph.tool_request_created" in resumed_suffix
+    assert "runtime.tool_lookup_succeeded" in resumed_suffix
+    assert "runtime.approval_resolved" in resumed_suffix
+    assert "runtime.tool_started" in resumed_suffix
+    assert "runtime.tool_completed" in resumed_suffix
 
 
 def test_runtime_persists_mcp_failed_before_terminal_failure_on_tool_call_abort(

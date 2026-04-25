@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from mcp.types import LATEST_PROTOCOL_VERSION
 
@@ -92,6 +92,20 @@ class McpManagerState:
 
     mode: str = "disabled"
     configuration: McpConfigState = field(default_factory=McpConfigState)
+    servers: dict[str, McpServerRuntimeState] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class McpServerRuntimeState:
+    """Runtime-owned connection state for a configured MCP server."""
+
+    server_name: str
+    status: Literal["running", "stopped", "failed"] = "stopped"
+    workspace_root: str | None = None
+    stage: str | None = None
+    error: str | None = None
+    command: list[str] = field(default_factory=list)
+    retry_available: bool = False
 
 
 # Protocol definitions for runtime implementation
@@ -119,6 +133,8 @@ class McpManager(Protocol):
     def shutdown(self) -> tuple[McpRuntimeEvent, ...]: ...
 
     def drain_events(self) -> tuple[McpRuntimeEvent, ...]: ...
+
+    def retry_connections(self, *, workspace: Any) -> None: ...
 
 
 # Constants

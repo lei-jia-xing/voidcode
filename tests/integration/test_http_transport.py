@@ -6,6 +6,7 @@ import json
 import logging
 import sys
 import threading
+import time
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -109,6 +110,7 @@ class RuntimeFactory(Protocol):
         workspace: Path,
         tool_registry: object | None = None,
         graph: object | None = None,
+        mcp_manager: object | None = None,
         permission_policy: object | None = None,
         session_store: object | None = None,
     ) -> RuntimeRunner: ...
@@ -184,6 +186,7 @@ class TransportAppFactory(Protocol):
         self,
         *,
         workspace: Path,
+        config: object | None = None,
         runtime_factory: object | None = None,
     ) -> TransportAppLike: ...
 
@@ -2073,6 +2076,632 @@ def test_transport_rejects_invalid_run_stream_payload() -> None:
 
     assert response.status == 400
     assert response.json() == {"error": "prompt must be a non-empty string"}
+
+
+def test_transport_rejects_invalid_agent_model_format_as_bad_request(tmp_path: Path) -> None:
+    create_runtime_app = _load_transport_app_factory()
+    app = create_runtime_app(workspace=tmp_path)
+
+    response = _run_app(
+        app,
+        method="POST",
+        path="/api/runtime/run/stream",
+        body=json.dumps(
+            {
+                "prompt": "read README.md",
+                "metadata": {
+                    "agent": {"preset": "leader", "model": "kimi-k2.6"},
+                },
+            }
+        ).encode("utf-8"),
+    )
+
+    assert response.status == 400
+    assert response.json() == {"error": "model must use provider/model format"}
+
+
+def test_transport_retries_mcp_and_returns_status_snapshot(tmp_path: Path) -> None:
+    create_runtime_app = _load_transport_app_factory()
+
+    class RetryMcpRuntime:
+        def run(self, request: RuntimeRequestLike) -> RuntimeResponseLike:
+            raise AssertionError(f"run should not be called: {request}")
+
+        def run_stream(self, request: RuntimeRequestLike) -> Iterator[StreamChunkLike]:
+            raise AssertionError(f"run_stream should not be called: {request}")
+
+        def start_background_task(self, request: RuntimeRequestLike) -> object:
+            raise AssertionError(f"start_background_task should not be called: {request}")
+
+        def load_background_task(self, task_id: str) -> object:
+            raise AssertionError(f"load_background_task should not be called: {task_id}")
+
+        def load_background_task_result(self, task_id: str) -> object:
+            raise AssertionError(f"load_background_task_result should not be called: {task_id}")
+
+        def list_background_tasks(self) -> tuple[object, ...]:
+            return ()
+
+        def list_background_tasks_by_parent_session(
+            self, *, parent_session_id: str
+        ) -> tuple[object, ...]:
+            raise AssertionError(
+                f"list_background_tasks_by_parent_session should not be called: {parent_session_id}"
+            )
+
+        def cancel_background_task(self, task_id: str) -> object:
+            raise AssertionError(f"cancel_background_task should not be called: {task_id}")
+
+        def list_sessions(self) -> tuple[StoredSessionSummaryLike, ...]:
+            return ()
+
+        def web_settings(self) -> dict[str, object]:
+            return {}
+
+        def update_web_settings(
+            self,
+            *,
+            provider: str | None = None,
+            provider_api_key: str | None = None,
+            model: str | None = None,
+        ) -> dict[str, object]:
+            _ = provider, provider_api_key, model
+            return {}
+
+        def list_provider_summaries(self) -> tuple[object, ...]:
+            return ()
+
+        def provider_models_result(self, provider_name: str) -> object:
+            raise AssertionError(f"provider_models_result should not be called: {provider_name}")
+
+        def list_agent_summaries(self) -> tuple[object, ...]:
+            return ()
+
+        def current_status(self) -> object:
+            raise AssertionError("current_status should not be called")
+
+        def retry_mcp_connections(self) -> object:
+            runtime_contracts = importlib.import_module("voidcode.runtime.contracts")
+            GitStatusSnapshot = runtime_contracts.GitStatusSnapshot
+            CapabilityStatusSnapshot = runtime_contracts.CapabilityStatusSnapshot
+            RuntimeStatusSnapshot = runtime_contracts.RuntimeStatusSnapshot
+            return RuntimeStatusSnapshot(
+                git=GitStatusSnapshot(state="git_ready", root=str(tmp_path)),
+                lsp=CapabilityStatusSnapshot(state="running", error=None, details={}),
+                mcp=CapabilityStatusSnapshot(
+                    state="failed",
+                    error="MCP[demo]: failed to initialize server",
+                    details={
+                        "retry_available": True,
+                        "servers": [
+                            {
+                                "server": "demo",
+                                "status": "failed",
+                                "stage": "startup",
+                                "error": "MCP[demo]: failed to initialize server",
+                                "retry_available": True,
+                            }
+                        ],
+                    },
+                ),
+            )
+
+        def review_snapshot(self) -> object:
+            raise AssertionError("review_snapshot should not be called")
+
+        def review_diff(self, path: str) -> object:
+            raise AssertionError(f"review_diff should not be called: {path}")
+
+        def session_result(self, *, session_id: str) -> object:
+            raise AssertionError(f"session_result should not be called: {session_id}")
+
+        def list_notifications(self) -> tuple[object, ...]:
+            return ()
+
+        def acknowledge_notification(self, *, notification_id: str) -> object:
+            raise AssertionError(
+                f"acknowledge_notification should not be called: {notification_id}"
+            )
+
+        def resume(
+            self,
+            session_id: str,
+            *,
+            approval_request_id: str | None = None,
+            approval_decision: str | None = None,
+        ) -> RuntimeResponseLike:
+            raise AssertionError(
+                f"resume should not be called: {session_id}, {approval_request_id}, {approval_decision}"  # noqa: E501
+            )
+
+        def answer_question(
+            self,
+            session_id: str,
+            *,
+            question_request_id: str,
+            responses: tuple[object, ...],
+        ) -> RuntimeResponseLike:
+            raise AssertionError(
+                f"answer_question should not be called: {session_id}, {question_request_id}, {responses}"  # noqa: E501
+            )
+
+    app = create_runtime_app(workspace=tmp_path, runtime_factory=lambda: RetryMcpRuntime())
+
+    response = _run_app(app, method="POST", path="/api/status/mcp/retry")
+
+    assert response.status == 200
+    assert response.json() == {
+        "git": {"state": "git_ready", "root": str(tmp_path), "error": None},
+        "lsp": {"state": "running", "error": None, "details": {}},
+        "mcp": {
+            "state": "failed",
+            "error": "MCP[demo]: failed to initialize server",
+            "details": {
+                "retry_available": True,
+                "servers": [
+                    {
+                        "server": "demo",
+                        "status": "failed",
+                        "stage": "startup",
+                        "error": "MCP[demo]: failed to initialize server",
+                        "retry_available": True,
+                    }
+                ],
+            },
+        },
+    }
+
+
+def test_transport_rejects_non_post_method_for_mcp_retry(tmp_path: Path) -> None:
+    create_runtime_app = _load_transport_app_factory()
+    app = create_runtime_app(workspace=tmp_path)
+
+    response = _run_app(app, method="GET", path="/api/status/mcp/retry")
+
+    assert response.status == 405
+    assert response.json() == {"error": "method not allowed"}
+
+
+def test_transport_retry_mcp_value_error_returns_http_400_and_closes_runtime_once(
+    tmp_path: Path,
+) -> None:
+    create_runtime_app = _load_transport_app_factory()
+
+    class RetryMcpErrorRuntime:
+        close_calls = 0
+
+        def retry_mcp_connections(self) -> object:
+            raise ValueError("retry failed")
+
+        def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+            _ = exc_type, exc, tb
+            type(self).close_calls += 1
+
+        def run(self, request: RuntimeRequestLike) -> RuntimeResponseLike:
+            raise AssertionError(f"run should not be called: {request}")
+
+        def run_stream(self, request: RuntimeRequestLike) -> Iterator[StreamChunkLike]:
+            raise AssertionError(f"run_stream should not be called: {request}")
+
+        def start_background_task(self, request: RuntimeRequestLike) -> object:
+            raise AssertionError(f"start_background_task should not be called: {request}")
+
+        def load_background_task(self, task_id: str) -> object:
+            raise AssertionError(f"load_background_task should not be called: {task_id}")
+
+        def load_background_task_result(self, task_id: str) -> object:
+            raise AssertionError(f"load_background_task_result should not be called: {task_id}")
+
+        def list_background_tasks(self) -> tuple[object, ...]:
+            return ()
+
+        def list_background_tasks_by_parent_session(
+            self, *, parent_session_id: str
+        ) -> tuple[object, ...]:
+            raise AssertionError(
+                f"list_background_tasks_by_parent_session should not be called: {parent_session_id}"
+            )
+
+        def cancel_background_task(self, task_id: str) -> object:
+            raise AssertionError(f"cancel_background_task should not be called: {task_id}")
+
+        def list_sessions(self) -> tuple[StoredSessionSummaryLike, ...]:
+            return ()
+
+        def web_settings(self) -> dict[str, object]:
+            return {}
+
+        def update_web_settings(
+            self,
+            *,
+            provider: str | None = None,
+            provider_api_key: str | None = None,
+            model: str | None = None,
+        ) -> dict[str, object]:
+            _ = provider, provider_api_key, model
+            return {}
+
+        def list_provider_summaries(self) -> tuple[object, ...]:
+            return ()
+
+        def provider_models_result(self, provider_name: str) -> object:
+            raise AssertionError(f"provider_models_result should not be called: {provider_name}")
+
+        def list_agent_summaries(self) -> tuple[object, ...]:
+            return ()
+
+        def current_status(self) -> object:
+            raise AssertionError("current_status should not be called")
+
+        def review_snapshot(self) -> object:
+            raise AssertionError("review_snapshot should not be called")
+
+        def review_diff(self, path: str) -> object:
+            raise AssertionError(f"review_diff should not be called: {path}")
+
+        def session_result(self, *, session_id: str) -> object:
+            raise AssertionError(f"session_result should not be called: {session_id}")
+
+        def list_notifications(self) -> tuple[object, ...]:
+            return ()
+
+        def acknowledge_notification(self, *, notification_id: str) -> object:
+            raise AssertionError(
+                f"acknowledge_notification should not be called: {notification_id}"
+            )
+
+        def resume(
+            self,
+            session_id: str,
+            *,
+            approval_request_id: str | None = None,
+            approval_decision: str | None = None,
+        ) -> RuntimeResponseLike:
+            raise AssertionError(
+                f"resume should not be called: {session_id}, {approval_request_id}, {approval_decision}"  # noqa: E501
+            )
+
+        def answer_question(
+            self,
+            session_id: str,
+            *,
+            question_request_id: str,
+            responses: tuple[object, ...],
+        ) -> RuntimeResponseLike:
+            raise AssertionError(
+                f"answer_question should not be called: {session_id}, {question_request_id}, {responses}"  # noqa: E501
+            )
+
+    RetryMcpErrorRuntime.close_calls = 0
+    app = create_runtime_app(
+        workspace=tmp_path,
+        runtime_factory=lambda: RetryMcpErrorRuntime(),
+    )
+
+    response = _run_app(app, method="POST", path="/api/status/mcp/retry")
+
+    assert response.status == 400
+    assert response.json() == {"error": "retry failed"}
+    assert RetryMcpErrorRuntime.close_calls == 1
+
+
+def test_transport_marks_review_request_active_for_workspace_switch_conflict(
+    tmp_path: Path,
+) -> None:
+    runtime_http = importlib.import_module("voidcode.runtime.http")
+    runtime_contracts = importlib.import_module("voidcode.runtime.contracts")
+    workspace_module = importlib.import_module("voidcode.runtime.workspace")
+
+    GitStatusSnapshot = runtime_contracts.GitStatusSnapshot
+    WorkspaceReviewSnapshot = runtime_contracts.WorkspaceReviewSnapshot
+    RuntimeTransportApp = runtime_http.RuntimeTransportApp
+    SingleWorkspaceRuntimeCoordinator = workspace_module.SingleWorkspaceRuntimeCoordinator
+
+    class BlockingReviewRuntime:
+        def review_snapshot(self) -> object:
+            release_open.wait(timeout=1)
+            return WorkspaceReviewSnapshot(
+                root=str(tmp_path),
+                git=GitStatusSnapshot(state="not_git_repo"),
+            )
+
+        def list_sessions(self) -> tuple[object, ...]:
+            return ()
+
+        def list_background_tasks(self) -> tuple[object, ...]:
+            return ()
+
+    release_open = threading.Event()
+
+    def _runtime_factory(workspace: Path) -> BlockingReviewRuntime:
+        _ = workspace
+        return BlockingReviewRuntime()
+
+    coordinator = SingleWorkspaceRuntimeCoordinator(
+        initial_workspace=tmp_path,
+        runtime_factory=_runtime_factory,
+    )
+    app = RuntimeTransportApp(
+        runtime_factory=lambda: coordinator.runtime(),
+        workspace_coordinator=coordinator,
+    )
+
+    review_responses: list[_TransportResponse] = []
+
+    def _request_review() -> None:
+        review_responses.append(_run_app(app, method="GET", path="/api/review"))
+
+    thread = threading.Thread(target=_request_review)
+    thread.start()
+
+    busy_response: _TransportResponse | None = None
+    for _ in range(100):
+        response = _run_app(
+            app,
+            method="POST",
+            path="/api/workspaces/open",
+            body=json.dumps({"path": str(tmp_path)}).encode("utf-8"),
+        )
+        if response.status == 409:
+            busy_response = response
+            break
+        time.sleep(0.01)
+
+    if busy_response is None:
+        release_open.set()
+        thread.join(timeout=1)
+        raise AssertionError("workspace open never observed active-request conflict")
+
+    assert busy_response.json() == {
+        "error": "workspace switch rejected while a runtime request is active",
+        "code": "workspace_busy",
+    }
+
+    release_open.set()
+    thread.join(timeout=1)
+    assert len(review_responses) == 1
+    assert review_responses[0].status == 200
+
+
+def test_transport_run_stream_continues_after_mcp_startup_failure_and_status_stays_failed(
+    tmp_path: Path,
+) -> None:
+    create_runtime_app = _load_transport_app_factory()
+    _, runtime_class = _load_runtime_types()
+    mcp_module = importlib.import_module("voidcode.mcp")
+
+    @dataclass(slots=True)
+    class _ImmediateStep:
+        tool_call: object | None = None
+        output: str | None = None
+        events: tuple[object, ...] = ()
+        is_finished: bool = False
+
+    class _CompleteGraph:
+        def step(
+            self,
+            request: object,
+            tool_results: tuple[object, ...],
+            *,
+            session: object,
+        ) -> _ImmediateStep:
+            _ = tool_results, session
+            assert getattr(request, "prompt", None) == "say hello"
+            return _ImmediateStep(output="hello", is_finished=True)
+
+    class _FailingMcpManager:
+        startup_error = (
+            "MCP[context7]: failed to start server - cmd not found "
+            "(command not found): missing-context7"
+        )
+
+        def __init__(self) -> None:
+            self._failed = False
+            self._drained = False
+
+        @property
+        def configuration(self) -> object:
+            return mcp_module.McpConfigState(
+                configured_enabled=True,
+                servers={"context7": object()},
+            )
+
+        def current_state(self) -> object:
+            return mcp_module.McpManagerState(
+                mode="managed",
+                configuration=self.configuration,
+                servers={
+                    "context7": mcp_module.McpServerRuntimeState(
+                        server_name="context7",
+                        status="failed" if self._failed else "stopped",
+                        workspace_root=str(tmp_path) if self._failed else None,
+                        stage="startup" if self._failed else None,
+                        error=self.startup_error if self._failed else None,
+                        command=["missing-context7"],
+                        retry_available=self._failed,
+                    )
+                },
+            )
+
+        def list_tools(self, *, workspace: Path) -> tuple[object, ...]:
+            _ = workspace
+            self._failed = True
+            raise ValueError(self.startup_error)
+
+        def call_tool(
+            self, *, server_name: str, tool_name: str, arguments: dict[str, object], workspace: Path
+        ) -> object:
+            _ = server_name, tool_name, arguments, workspace
+            raise AssertionError("call_tool should not be used")
+
+        def shutdown(self) -> tuple[object, ...]:
+            return ()
+
+        def drain_events(self) -> tuple[object, ...]:
+            if not self._failed or self._drained:
+                return ()
+            self._drained = True
+            return (
+                mcp_module.McpRuntimeEvent(
+                    event_type="runtime.mcp_server_failed",
+                    payload={
+                        "server": "context7",
+                        "workspace_root": str(tmp_path),
+                        "state": "failed",
+                        "stage": "startup",
+                        "error": self.startup_error,
+                        "command": ["missing-context7"],
+                    },
+                ),
+            )
+
+        def retry_connections(self, *, workspace: Path) -> None:
+            _ = workspace
+
+    mcp_manager = _FailingMcpManager()
+    app = create_runtime_app(
+        workspace=tmp_path,
+        runtime_factory=lambda: runtime_class(
+            workspace=tmp_path,
+            graph=_CompleteGraph(),
+            mcp_manager=mcp_manager,
+        ),
+    )
+
+    run_response = _run_app(
+        app,
+        method="POST",
+        path="/api/runtime/run/stream",
+        body=json.dumps({"prompt": "say hello"}).encode("utf-8"),
+    )
+    status_response = _run_app(app, method="GET", path="/api/status")
+
+    payloads = _parse_sse_payloads(run_response)
+    event_types = [
+        cast(dict[str, object], payload["event"])["event_type"]
+        for payload in payloads
+        if payload["event"] is not None
+    ]
+
+    assert run_response.status == 200
+    assert event_types[0] == "runtime.request_received"
+    assert "runtime.mcp_server_failed" in event_types
+    assert "runtime.failed" not in event_types
+    assert payloads[-1]["kind"] == "output"
+    assert payloads[-1]["output"] == "hello"
+    assert status_response.status == 200
+    assert status_response.json() == {
+        "git": {
+            "state": "not_git_repo",
+            "root": None,
+            "error": (
+                "fatal: not a git repository (or any parent up to mount point /)\n"
+                "Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set)."
+            ),
+        },
+        "lsp": {"state": "unconfigured", "error": None, "details": {}},
+        "mcp": {
+            "state": "failed",
+            "error": _FailingMcpManager.startup_error,
+            "details": {
+                "configured_server_count": 1,
+                "running_server_count": 0,
+                "failed_server_count": 1,
+                "retry_available": True,
+                "servers": [
+                    {
+                        "server": "context7",
+                        "status": "failed",
+                        "workspace_root": str(tmp_path),
+                        "stage": "startup",
+                        "error": _FailingMcpManager.startup_error,
+                        "command": ["missing-context7"],
+                        "retry_available": True,
+                    }
+                ],
+            },
+        },
+    }
+
+
+def test_transport_status_preserves_mcp_failed_state_across_fresh_requests(
+    tmp_path: Path,
+) -> None:
+    create_runtime_app = _load_transport_app_factory()
+    runtime_config_module = importlib.import_module("voidcode.runtime.config")
+
+    failing_command = (
+        sys.executable,
+        "-c",
+        "import sys; sys.exit(1)",
+    )
+    config = runtime_config_module.RuntimeConfig(
+        mcp=runtime_config_module.RuntimeMcpConfig(
+            enabled=True,
+            servers={
+                "broken": runtime_config_module.RuntimeMcpServerConfig(
+                    command=failing_command,
+                )
+            },
+        )
+    )
+    app = create_runtime_app(workspace=tmp_path, config=config)
+
+    run_response = _run_app(
+        app,
+        method="POST",
+        path="/api/runtime/run/stream",
+        body=json.dumps({"prompt": "hello"}).encode("utf-8"),
+    )
+    status_response = _run_app(app, method="GET", path="/api/status")
+
+    payloads = _parse_sse_payloads(run_response)
+    event_types = [
+        cast(dict[str, object], payload["event"])["event_type"]
+        for payload in payloads
+        if payload["event"] is not None
+    ]
+    failed_payloads = [
+        cast(dict[str, object], cast(dict[str, object], payload["event"])["payload"])
+        for payload in payloads
+        if payload["event"] is not None
+        and cast(dict[str, object], payload["event"])["event_type"] == "runtime.failed"
+    ]
+
+    assert run_response.status == 200
+    assert event_types[0] == "runtime.request_received"
+    assert "runtime.mcp_server_failed" in event_types
+    assert all(payload.get("kind") != "mcp_startup_failed" for payload in failed_payloads)
+
+    status_payload = cast(dict[str, object], status_response.json())
+    mcp_payload = cast(dict[str, object], status_payload["mcp"])
+    mcp_details = cast(dict[str, object], mcp_payload["details"])
+    servers = cast(list[object], mcp_details["servers"])
+    server_payload = cast(dict[str, object], servers[0])
+
+    assert status_response.status == 200
+    assert cast(dict[str, object], status_payload["git"])["state"] == "not_git_repo"
+    assert cast(dict[str, object], status_payload["lsp"])["state"] == "unconfigured"
+    assert mcp_payload["state"] == "failed"
+    assert isinstance(mcp_payload["error"], str)
+    assert mcp_payload["error"]
+    assert any(
+        fragment in mcp_payload["error"]
+        for fragment in (
+            "failed to start server",
+            "Connection closed",
+        )
+    )
+    assert mcp_details["configured_server_count"] == 1
+    assert mcp_details["running_server_count"] == 0
+    assert mcp_details["failed_server_count"] == 1
+    assert mcp_details["retry_available"] is True
+    assert server_payload["server"] == "broken"
+    assert server_payload["status"] == "failed"
+    assert server_payload["workspace_root"] == str(tmp_path)
+    assert server_payload["stage"] == "startup"
+    assert server_payload["retry_available"] is True
+    assert server_payload["command"] == list(failing_command)
 
 
 def test_transport_rejects_unsupported_request_metadata_field() -> None:

@@ -452,6 +452,107 @@ class RuntimeResponse:
     output: str | None = None
 
 
+type GitStatusState = Literal["git_ready", "not_git_repo", "git_error"]
+type CapabilityState = Literal["running", "stopped", "failed", "unconfigured"]
+type ReviewTreeNodeKind = Literal["file", "directory"]
+type ReviewFileDiffState = Literal["changed", "clean", "not_git_repo"]
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceSummary:
+    path: str
+    label: str
+    available: bool
+    current: bool = False
+    last_opened_at: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceRegistrySnapshot:
+    current: WorkspaceSummary | None
+    recent: tuple[WorkspaceSummary, ...] = ()
+    candidates: tuple[WorkspaceSummary, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderSummary:
+    name: str
+    label: str
+    configured: bool
+    current: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderModelsResult:
+    provider: str
+    configured: bool
+    models: tuple[str, ...] = ()
+    source: str | None = None
+    last_refresh_status: str | None = None
+    last_error: str | None = None
+    discovery_mode: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AgentSummary:
+    id: str
+    label: str
+    description: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class GitStatusSnapshot:
+    state: GitStatusState
+    root: str | None = None
+    error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CapabilityStatusSnapshot:
+    state: CapabilityState
+    error: str | None = None
+    details: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeStatusSnapshot:
+    git: GitStatusSnapshot
+    lsp: CapabilityStatusSnapshot
+    mcp: CapabilityStatusSnapshot
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewChangedFile:
+    path: str
+    change_type: str
+    old_path: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewTreeNode:
+    path: str
+    name: str
+    kind: ReviewTreeNodeKind
+    changed: bool
+    children: tuple[ReviewTreeNode, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewFileDiff:
+    root: str
+    path: str
+    state: ReviewFileDiffState
+    diff: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceReviewSnapshot:
+    root: str
+    git: GitStatusSnapshot
+    changed_files: tuple[ReviewChangedFile, ...] = ()
+    tree: tuple[ReviewTreeNode, ...] = ()
+
+
 type RuntimeNotificationKind = Literal[
     "completion",
     "failure",

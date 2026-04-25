@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import subprocess
 import threading
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field, replace
@@ -12,7 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast, final
 
 from ..acp import AcpDelegatedExecution, AcpEventEnvelope, AcpRequestEnvelope, AcpResponseEnvelope
-from ..agent import get_builtin_agent_manifest
+from ..agent import get_builtin_agent_manifest, list_builtin_agent_manifests
 from ..command import (
     COMMAND_RESOLVED,
     is_prompt_command,
@@ -82,15 +83,23 @@ from .context_window import (
     prepare_provider_context,
 )
 from .contracts import (
+    AgentSummary,
     BackgroundTaskResult,
+    CapabilityStatusSnapshot,
+    GitStatusSnapshot,
+    ProviderModelsResult,
+    ProviderSummary,
+    ReviewFileDiff,
     RuntimeNotification,
     RuntimeRequest,
     RuntimeRequestError,
     RuntimeRequestMetadataPayload,
     RuntimeResponse,
     RuntimeSessionResult,
+    RuntimeStatusSnapshot,
     RuntimeStreamChunk,
     UnknownSessionError,
+    WorkspaceReviewSnapshot,
     runtime_subagent_route_from_metadata,
     validate_runtime_request_metadata,
     validate_session_id,
@@ -140,6 +149,7 @@ from .plan import (
 from .provider_protocol import ProviderExecutionError
 from .question import PendingQuestion, QuestionResponse
 from .resume import RuntimeResumeCoordinator
+from .review import WorkspaceReviewService
 from .run_loop import RuntimeRunLoopCoordinator
 from .session import SessionRef, SessionState, SessionStatus, StoredSessionSummary
 from .skills import (
@@ -650,10 +660,7 @@ class VoidCodeRuntime:
         return self._session_with_current_acp_metadata(session)
 
     def _reload_persisted_session(self, *, session_id: str) -> SessionState:
-        response = self._session_store.load_session(
-            workspace=self._workspace, session_id=session_id
-        )
-        return response.session
+        return self._load_stored_response(session_id=session_id).session
 
     @staticmethod
     def _resequence_event(event: EventEnvelope, *, sequence: int) -> EventEnvelope:
@@ -793,11 +800,14 @@ class VoidCodeRuntime:
         resolved = self._effective_runtime_config_from_metadata(None)
         request_agent = request.metadata.get("agent")
         if request_agent is not None:
-            resolved = self._config_with_request_agent_override(
-                resolved,
-                request_agent,
-                allow_subagent_presets=request.subagent_routing is not None,
-            )
+            try:
+                resolved = self._config_with_request_agent_override(
+                    resolved,
+                    request_agent,
+                    allow_subagent_presets=request.subagent_routing is not None,
+                )
+            except ValueError as exc:
+                raise RuntimeRequestError(str(exc)) from exc
         request_max_steps = request.metadata.get("max_steps")
         if request_max_steps is not None:
             assert isinstance(request_max_steps, int)
@@ -888,7 +898,13 @@ class VoidCodeRuntime:
     ) -> tuple[tuple[RuntimeStreamChunk, ...], SessionState, int, RuntimeStreamChunk | None]:
         try:
             self._refresh_mcp_tools()
-        except Exception as exc:
+        except Exception:
+            logger.info(
+                "continuing session %s after MCP tool refresh failure",
+                session.session.id,
+                extra={"failure_kind": failure_kind},
+                exc_info=True,
+            )
             emitted_events = self._envelopes_for_mcp_events(
                 session_id=session.session.id,
                 start_sequence=sequence + 1,
@@ -899,13 +915,7 @@ class VoidCodeRuntime:
                 for event in emitted_events
             )
             last_sequence = emitted_events[-1].sequence if emitted_events else sequence
-            failed_chunk = self._failed_chunk(
-                session=session,
-                sequence=last_sequence + 1,
-                error=str(exc),
-                payload={"kind": failure_kind},
-            )
-            return emitted, session, last_sequence, failed_chunk
+            return emitted, session, last_sequence, None
         return (), session, sequence, None
 
     def _tool_registry_for_effective_config(
@@ -933,6 +943,9 @@ class VoidCodeRuntime:
 
     def current_lsp_state(self) -> LspManagerState:
         return self._lsp_manager.current_state()
+
+    def current_mcp_state(self):
+        return self._mcp_manager.current_state()
 
     @property
     def provider_auth_resolver(self) -> ProviderAuthResolver:
@@ -1546,7 +1559,7 @@ class VoidCodeRuntime:
         sequence: int,
         surface: RuntimeHookSurface,
         payload: dict[str, object] | None = None,
-    ) -> _HookOutcome:
+    ) -> _RuntimeHookOutcome:
         outcome: HookExecutionOutcome = run_lifecycle_hooks(
             LifecycleHookExecutionRequest(
                 hooks=self._config.hooks,
@@ -1573,7 +1586,7 @@ class VoidCodeRuntime:
             )
             for event in outcome.events
         )
-        return _HookOutcome(
+        return _RuntimeHookOutcome(
             chunks=emitted_chunks,
             last_sequence=outcome.last_sequence,
             failed_error=outcome.failed_error,
@@ -1586,7 +1599,7 @@ class VoidCodeRuntime:
         sequence: int,
         tool_name: str,
         phase: Literal["pre", "post"],
-    ) -> _HookOutcome:
+    ) -> _RuntimeHookOutcome:
         # Referenced via extracted run-loop collaborator.
         outcome: HookExecutionOutcome = run_tool_hooks(
             HookExecutionRequest(
@@ -1614,7 +1627,7 @@ class VoidCodeRuntime:
             )
             for event in outcome.events
         )
-        return _HookOutcome(
+        return _RuntimeHookOutcome(
             chunks=emitted_chunks,
             last_sequence=outcome.last_sequence,
             failed_error=outcome.failed_error,
@@ -1888,10 +1901,7 @@ class VoidCodeRuntime:
         if session_id is None:
             return self._effective_runtime_config_from_metadata(None)
         validate_session_id(session_id)
-        response = self._session_store.load_session(
-            workspace=self._workspace, session_id=session_id
-        )
-        self._validate_session_workspace(response.session, session_id=session_id)
+        response = self._load_stored_response(session_id=session_id)
         return self._effective_runtime_config_from_metadata(response.session.metadata)
 
     def refresh_provider_models(self, provider_name: str) -> tuple[str, ...]:
@@ -1918,7 +1928,174 @@ class VoidCodeRuntime:
             "source": catalog.source,
             "last_refresh_status": catalog.last_refresh_status,
             "last_error": catalog.last_error,
+            "discovery_mode": catalog.discovery_mode,
         }
+
+    def list_provider_summaries(self) -> tuple[ProviderSummary, ...]:
+        current_provider = self._current_provider_name()
+        providers: list[ProviderSummary] = []
+        for provider_name in self._model_provider_registry.providers:
+            providers.append(
+                ProviderSummary(
+                    name=provider_name,
+                    label=self._provider_label(provider_name),
+                    configured=self._provider_is_configured(provider_name),
+                    current=provider_name == current_provider,
+                )
+            )
+        providers.sort(key=lambda item: item.name)
+        return tuple(providers)
+
+    def provider_models_result(self, provider_name: str) -> ProviderModelsResult:
+        catalog = self.provider_model_catalog(provider_name)
+        configured = self._provider_is_configured(provider_name)
+        if catalog is None:
+            return ProviderModelsResult(
+                provider=provider_name,
+                configured=configured,
+                models=(),
+            )
+        return ProviderModelsResult(
+            provider=provider_name,
+            configured=configured,
+            models=tuple(cast(list[str], catalog["models"])),
+            source=cast(str | None, catalog["source"]),
+            last_refresh_status=cast(str | None, catalog["last_refresh_status"]),
+            last_error=cast(str | None, catalog["last_error"]),
+            discovery_mode=cast(str | None, catalog["discovery_mode"]),
+        )
+
+    def list_agent_summaries(self) -> tuple[AgentSummary, ...]:
+        return tuple(
+            AgentSummary(
+                id=manifest.id,
+                label=manifest.name,
+                description=manifest.description,
+            )
+            for manifest in list_builtin_agent_manifests()
+            if manifest.mode == "primary"
+        )
+
+    def current_status(self) -> RuntimeStatusSnapshot:
+        git = self._git_status_snapshot()
+        lsp_state = self.current_lsp_state()
+        mcp_state = self.current_mcp_state()
+        lsp_servers = tuple(lsp_state.servers.values())
+        lsp_status = (
+            "unconfigured"
+            if lsp_state.mode != "managed" or not lsp_state.configuration.configured_enabled
+            else "failed"
+            if any(server.status == "failed" for server in lsp_servers)
+            else "running"
+            if any(server.status == "running" for server in lsp_servers)
+            else "stopped"
+        )
+        lsp_error = next(
+            (server.last_error for server in lsp_servers if server.last_error),
+            None,
+        )
+        mcp_servers = tuple(mcp_state.servers.values())
+        mcp_status = (
+            "unconfigured"
+            if mcp_state.mode != "managed" or not mcp_state.configuration.configured_enabled
+            else "failed"
+            if any(server.status == "failed" for server in mcp_servers)
+            else "running"
+            if any(server.status == "running" for server in mcp_servers)
+            else "stopped"
+        )
+        mcp_error = next((server.error for server in mcp_servers if server.error), None)
+        return RuntimeStatusSnapshot(
+            git=git,
+            lsp=CapabilityStatusSnapshot(state=lsp_status, error=lsp_error),
+            mcp=CapabilityStatusSnapshot(
+                state=mcp_status,
+                error=mcp_error,
+                details={
+                    "configured_server_count": len(mcp_servers),
+                    "running_server_count": sum(
+                        1 for server in mcp_servers if server.status == "running"
+                    ),
+                    "failed_server_count": sum(
+                        1 for server in mcp_servers if server.status == "failed"
+                    ),
+                    "retry_available": any(server.retry_available for server in mcp_servers),
+                    "servers": [
+                        {
+                            "server": server.server_name,
+                            "status": server.status,
+                            "workspace_root": server.workspace_root,
+                            "stage": server.stage,
+                            "error": server.error,
+                            "command": list(server.command),
+                            "retry_available": server.retry_available,
+                        }
+                        for server in mcp_servers
+                    ],
+                },
+            ),
+        )
+
+    def retry_mcp_connections(self) -> RuntimeStatusSnapshot:
+        self._mcp_manager.retry_connections(workspace=self._workspace)
+        try:
+            self._refresh_mcp_tools()
+        except Exception:
+            logger.debug("failed to refresh MCP tools after retry", exc_info=True)
+        return self.current_status()
+
+    def review_snapshot(self) -> WorkspaceReviewSnapshot:
+        return WorkspaceReviewService(workspace=self._workspace).snapshot(
+            git=self._git_status_snapshot()
+        )
+
+    def review_diff(self, path: str) -> ReviewFileDiff:
+        return WorkspaceReviewService(workspace=self._workspace).diff(
+            path=path,
+            git=self._git_status_snapshot(),
+        )
+
+    def _git_status_snapshot(self) -> GitStatusSnapshot:
+        result = subprocess.run(
+            ["git", "-C", str(self._workspace), "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode == 0:
+            return GitStatusSnapshot(
+                state="git_ready", root=result.stdout.strip() or str(self._workspace)
+            )
+        stderr = result.stderr.strip()
+        if "not a git repository" in stderr.lower():
+            return GitStatusSnapshot(state="not_git_repo", root=None, error=stderr or None)
+        return GitStatusSnapshot(
+            state="git_error", root=None, error=stderr or result.stdout.strip() or None
+        )
+
+    def _current_provider_name(self) -> str | None:
+        active_target = self._resolved_provider_config.active_target
+        selection = active_target.selection
+        return selection.provider
+
+    @staticmethod
+    def _provider_label(provider_name: str) -> str:
+        return {
+            "opencode": "OpenCode",
+            "opencode-go": "OpenCode Go",
+            "openai": "OpenAI",
+            "anthropic": "Anthropic",
+            "google": "Google",
+            "copilot": "Copilot",
+            "litellm": "LiteLLM",
+            "glm": "GLM",
+            "minimax": "MiniMax",
+            "kimi": "Kimi",
+            "qwen": "Qwen",
+        }.get(provider_name, provider_name)
+
+    def _provider_is_configured(self, provider_name: str) -> bool:
+        return self._model_provider_registry.provider_config(provider_name) is not None
 
     def web_settings(self) -> dict[str, object]:
         settings = load_global_web_settings()
@@ -2026,17 +2203,11 @@ class VoidCodeRuntime:
     ) -> RuntimeResponse:
         validate_session_id(session_id)
         if approval_request_id is None and approval_decision is None:
-            response = self._session_store.load_session(
-                workspace=self._workspace, session_id=session_id
-            )
-            self._validate_session_workspace(response.session, session_id=session_id)
+            response = self._load_stored_response(session_id=session_id)
             self._background_task_supervisor.reconcile_parent_background_task_events_for_session(
                 parent_session_id=session_id
             )
-            response = self._session_store.load_session(
-                workspace=self._workspace, session_id=session_id
-            )
-            self._validate_session_workspace(response.session, session_id=session_id)
+            response = self._load_stored_response(session_id=session_id)
             return response
         if approval_request_id is None or approval_decision is None:
             raise ValueError("approval resume requires request id and decision")
@@ -2063,17 +2234,11 @@ class VoidCodeRuntime:
     ) -> Iterator[RuntimeStreamChunk]:
         validate_session_id(session_id)
         if approval_request_id is None and approval_decision is None:
-            response = self._session_store.load_session(
-                workspace=self._workspace, session_id=session_id
-            )
-            self._validate_session_workspace(response.session, session_id=session_id)
+            response = self._load_stored_response(session_id=session_id)
             self._background_task_supervisor.reconcile_parent_background_task_events_for_session(
                 parent_session_id=session_id
             )
-            response = self._session_store.load_session(
-                workspace=self._workspace, session_id=session_id
-            )
-            self._validate_session_workspace(response.session, session_id=session_id)
+            response = self._load_stored_response(session_id=session_id)
             yield from self._replay_response(response)
             return
         if approval_request_id is None or approval_decision is None:
@@ -3968,6 +4133,9 @@ class VoidCodeRuntime:
     def _load_existing_session_if_present(self, *, session_id: str) -> RuntimeResponse | None:
         if not self._session_store.has_session(workspace=self._workspace, session_id=session_id):
             return None
+        return self._load_stored_response(session_id=session_id)
+
+    def _load_stored_response(self, *, session_id: str) -> RuntimeResponse:
         response = self._session_store.load_session(
             workspace=self._workspace,
             session_id=session_id,
@@ -4046,7 +4214,7 @@ class _PermissionOutcome:
 
 
 @dataclass(frozen=True, slots=True)
-class _HookOutcome:
+class _RuntimeHookOutcome:
     chunks: tuple[RuntimeStreamChunk, ...]
     last_sequence: int
     failed_error: str | None = None

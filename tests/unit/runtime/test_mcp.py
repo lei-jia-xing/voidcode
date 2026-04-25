@@ -4,6 +4,8 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 from voidcode.mcp import (
     MCP_PROTOCOL_VERSION,
     InMemoryMcpDiagnosticsCollector,
@@ -864,3 +866,44 @@ def test_mcp_manager_emits_failure_event_when_startup_command_is_missing(tmp_pat
     assert failure_events[0].payload["server"] == "missing"
     assert failure_events[0].payload["stage"] == "startup"
     assert failure_events[0].payload["command"] == ["voidcode-mcp-missing-binary"]
+
+
+def test_mcp_manager_preserves_failed_state_after_startup_failure_stop_event(
+    tmp_path: Path,
+) -> None:
+    server_script = tmp_path / "silent_mcp_server.py"
+    server_script.write_text(
+        r"""
+from __future__ import annotations
+
+import time
+
+while True:
+    time.sleep(10)
+""",
+        encoding="utf-8",
+    )
+
+    manager = build_mcp_manager(
+        RuntimeMcpConfig(
+            enabled=True,
+            request_timeout_seconds=0.2,
+            servers={
+                "silent": RuntimeMcpServerConfig(
+                    transport="stdio",
+                    command=(sys.executable, str(server_script)),
+                )
+            },
+        )
+    )
+
+    with pytest.raises(ValueError, match="timed out"):
+        manager.list_tools(workspace=tmp_path)
+
+    state = manager.current_state()
+    server_state = state.servers["silent"]
+
+    assert server_state.status == "failed"
+    assert server_state.stage == "startup"
+    assert server_state.retry_available is True
+    assert server_state.workspace_root == str(tmp_path)

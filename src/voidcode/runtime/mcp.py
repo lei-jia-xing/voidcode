@@ -35,6 +35,7 @@ from ..mcp import (
     McpManager,
     McpManagerState,
     McpRuntimeEvent,
+    McpServerRuntimeState,
     McpToolCallResult,
     McpToolDescriptor,
     McpToolSafety,
@@ -96,6 +97,10 @@ class DisabledMcpManager:
     def drain_events(self) -> tuple[McpRuntimeEvent, ...]:
         return ()
 
+    def retry_connections(self, *, workspace: Path) -> None:
+        _ = workspace
+        return None
+
 
 # =============================================================================
 # Runtime MCP Server (SDK session lifecycle)
@@ -143,6 +148,14 @@ class ManagedMcpManager:
         self._running_servers: dict[str, _RunningMcpServer] = {}
         self._pending_events: list[McpRuntimeEvent] = []
         self._diagnostics_collector = diagnostics_collector
+        self._server_states: dict[str, McpServerRuntimeState] = {
+            name: McpServerRuntimeState(
+                server_name=name,
+                status="stopped",
+                command=list(server.command),
+            )
+            for name, server in self._configuration.servers.items()
+        }
         self._request_timeout_seconds = (
             config.request_timeout_seconds or DEFAULT_MCP_REQUEST_TIMEOUT_SECONDS
         )
@@ -154,7 +167,11 @@ class ManagedMcpManager:
         return self._configuration
 
     def current_state(self) -> McpManagerState:
-        return McpManagerState(mode="managed", configuration=self._configuration)
+        return McpManagerState(
+            mode="managed",
+            configuration=self._configuration,
+            servers=dict(self._server_states),
+        )
 
     def list_tools(self, *, workspace: Path) -> tuple[McpToolDescriptor, ...]:
         tools: list[McpToolDescriptor] = []
@@ -212,6 +229,10 @@ class ManagedMcpManager:
         events = tuple(self._pending_events)
         self._pending_events.clear()
         return events
+
+    def retry_connections(self, *, workspace: Path) -> None:
+        for server_name in self._configuration.servers:
+            self._ensure_running(server_name=server_name, workspace=workspace)
 
     @property
     def _request_timeout(self) -> timedelta:
@@ -299,6 +320,7 @@ class ManagedMcpManager:
             self._record_server_started(
                 server_name=server_name,
                 workspace_root=workspace_root,
+                command=list(server_config.command),
             )
             initialize_result = cast(
                 InitializeResult,
@@ -369,6 +391,7 @@ class ManagedMcpManager:
                 self._record_server_stopped(
                     server_name=server_name,
                     workspace_root=workspace_root,
+                    preserve_failed_state=True,
                 )
             raise ValueError(message) from exc
 
@@ -512,9 +535,41 @@ class ManagedMcpManager:
                 "message": diagnostic.message,
                 "details": diagnostic.details or {},
             }
+        self._server_states[server_name] = McpServerRuntimeState(
+            server_name=server_name,
+            status="failed",
+            workspace_root=str(workspace_root),
+            stage=stage,
+            error=error,
+            command=list(
+                command
+                or self._server_states.get(
+                    server_name, McpServerRuntimeState(server_name=server_name)
+                ).command
+            ),
+            retry_available=True,
+        )
         self._record_event(McpRuntimeEvent(event_type=RUNTIME_MCP_SERVER_FAILED, payload=payload))
 
-    def _record_server_started(self, *, server_name: str, workspace_root: Path) -> None:
+    def _record_server_started(
+        self,
+        *,
+        server_name: str,
+        workspace_root: Path,
+        command: list[str] | None = None,
+    ) -> None:
+        self._server_states[server_name] = McpServerRuntimeState(
+            server_name=server_name,
+            status="running",
+            workspace_root=str(workspace_root),
+            command=list(
+                command
+                or self._server_states.get(
+                    server_name, McpServerRuntimeState(server_name=server_name)
+                ).command
+            ),
+            retry_available=False,
+        )
         self._record_event(
             McpRuntimeEvent(
                 event_type=RUNTIME_MCP_SERVER_STARTED,
@@ -527,7 +582,28 @@ class ManagedMcpManager:
             )
         )
 
-    def _record_server_stopped(self, *, server_name: str, workspace_root: Path) -> None:
+    def _record_server_stopped(
+        self,
+        *,
+        server_name: str,
+        workspace_root: Path,
+        preserve_failed_state: bool = False,
+    ) -> None:
+        existing_state = self._server_states.get(
+            server_name, McpServerRuntimeState(server_name=server_name)
+        )
+        if not (
+            preserve_failed_state
+            and existing_state.status == "failed"
+            and existing_state.workspace_root == str(workspace_root)
+        ):
+            self._server_states[server_name] = McpServerRuntimeState(
+                server_name=server_name,
+                status="stopped",
+                workspace_root=str(workspace_root),
+                command=list(existing_state.command),
+                retry_available=bool(self._configuration.servers),
+            )
         self._record_event(
             McpRuntimeEvent(
                 event_type=RUNTIME_MCP_SERVER_STOPPED,
