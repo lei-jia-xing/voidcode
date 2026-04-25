@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Literal, cast, final
 
 from ..acp import AcpDelegatedExecution, AcpEventEnvelope, AcpRequestEnvelope, AcpResponseEnvelope
 from ..agent import get_builtin_agent_manifest
+from ..command import COMMAND_RESOLVED, load_command_registry, resolve_prompt_command
 from ..graph.contracts import GraphEvent, GraphRunRequest, RuntimeGraph
 from ..hook.config import RuntimeHookSurface
 from ..hook.executor import (
@@ -1302,6 +1303,24 @@ class VoidCodeRuntime:
                 },
             ),
         )
+
+        command_metadata = request_metadata.get("command")
+        if isinstance(command_metadata, dict):
+            sequence += 1
+            yield RuntimeStreamChunk(
+                kind="event",
+                session=session,
+                event=EventEnvelope(
+                    session_id=session.session.id,
+                    sequence=sequence,
+                    event_type=COMMAND_RESOLVED,
+                    source="runtime",
+                    payload={
+                        **cast(dict[str, object], command_metadata),
+                        "rendered_prompt": request.prompt,
+                    },
+                ),
+            )
 
         (
             mcp_startup_chunks,
@@ -2725,12 +2744,47 @@ class VoidCodeRuntime:
                     f"and cannot be rebound to parent session {parent_session_id}"
                 )
 
-        return RuntimeRequest(
+        prompt, metadata = self._resolve_prompt_command_for_request(
             prompt=request.prompt,
+            metadata=metadata,
+        )
+
+        return RuntimeRequest(
+            prompt=prompt,
             session_id=session_id,
             parent_session_id=resolved_parent_session_id,
             metadata=metadata,
             allocate_session_id=request.allocate_session_id,
+        )
+
+    def _resolve_prompt_command_for_request(
+        self,
+        *,
+        prompt: str,
+        metadata: RuntimeRequestMetadataPayload,
+    ) -> tuple[str, RuntimeRequestMetadataPayload]:
+        if "command" in metadata:
+            return prompt, metadata
+        try:
+            resolution = resolve_prompt_command(
+                prompt,
+                load_command_registry(workspace=self._workspace),
+            )
+        except ValueError as exc:
+            raise RuntimeRequestError(str(exc)) from exc
+        if resolution is None:
+            return prompt, metadata
+
+        normalized = dict(cast(dict[str, object], metadata))
+        normalized["command"] = {
+            "name": resolution.invocation.name,
+            "source": resolution.invocation.source,
+            "arguments": list(resolution.invocation.arguments),
+            "raw_arguments": resolution.invocation.raw_arguments,
+            "original_prompt": resolution.invocation.original_prompt,
+        }
+        return resolution.invocation.rendered_prompt, cast(
+            RuntimeRequestMetadataPayload, normalized
         )
 
     def _metadata_with_delegation_governance(

@@ -157,13 +157,13 @@ class VoidCodeTUI(App[int]):
         self.push_screen(CommandPalette(), self._handle_command)
 
     def action_session_new(self) -> None:
-        self._handle_command("session: new")
+        self._handle_command("session.new")
 
     def action_session_resume(self) -> None:
-        self._handle_command("session: resume")
+        self._handle_command("session.resume")
 
     def _handle_command(self, command: str | None) -> None:
-        if command == "session: new":
+        if command == "session.new":
             self.session_id = None
             self._current_prompt = None
             self._set_state("Idle")
@@ -174,7 +174,7 @@ class VoidCodeTUI(App[int]):
                 Text("--- New Session ---", style="bold")
             )
             self.query_one("#composer-input", Input).focus()
-        elif command == "session: resume":
+        elif command == "session.resume":
             sessions = self.runtime.list_sessions()
             self._session_titles = {s.session.id: s.prompt for s in sessions}
 
@@ -198,15 +198,15 @@ class VoidCodeTUI(App[int]):
                     self.query_one("#composer-input", Input).focus()
 
             self.push_screen(SessionListModal(sessions), _handle_session)
-        elif command == "theme: switch":
+        elif command == "theme.switch":
             self.push_screen(
                 ThemePickerModal(self._available_theme_names()), self._handle_theme_selection
             )
-        elif command == "theme: mode":
+        elif command == "theme.mode":
             self.push_screen(ThemeModePickerModal(), self._handle_theme_mode_selection)
-        elif command == "view: wrap":
+        elif command == "view.wrap":
             self._toggle_wrap()
-        elif command == "view: sidebar":
+        elif command == "view.sidebar":
             self._toggle_sidebar()
 
     def _effective_tui_preferences(self) -> RuntimeTuiPreferences:

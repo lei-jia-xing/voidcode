@@ -36,9 +36,18 @@ class NoPendingQuestionError(ValueError):
     """Raised when a session has no pending question to answer."""
 
 
+class RuntimeCommandMetadata(TypedDict):
+    name: str
+    source: str
+    arguments: list[str]
+    raw_arguments: str
+    original_prompt: str
+
+
 class RuntimeRequestMetadata(TypedDict, total=False):
     abort_requested: bool
     agent: dict[str, object]
+    command: RuntimeCommandMetadata
     delegation: RuntimeSubagentRoutingMetadata
     max_steps: int
     provider_stream: bool
@@ -68,7 +77,7 @@ class RuntimeSubagentRoutingMetadata(TypedDict, total=False):
 
 
 _STABLE_RUNTIME_REQUEST_METADATA_KEYS = frozenset(
-    {"abort_requested", "agent", "delegation", "max_steps", "provider_stream", "skills"}
+    {"abort_requested", "agent", "command", "delegation", "max_steps", "provider_stream", "skills"}
 )
 _INTERNAL_RUNTIME_REQUEST_METADATA_KEYS = frozenset({"background_run", "background_task_id"})
 
@@ -85,6 +94,57 @@ def _validate_optional_runtime_metadata_string(
     if not isinstance(value, str) or not value:
         raise RuntimeRequestError(f"request metadata '{field_name}' must be a non-empty string")
     return value
+
+
+def validate_runtime_command_metadata(metadata: object) -> RuntimeCommandMetadata:
+    if not isinstance(metadata, dict):
+        raise RuntimeRequestError("request metadata 'command' must be an object when provided")
+    payload = cast(dict[object, object], metadata)
+    allowed_keys = {"name", "source", "arguments", "raw_arguments", "original_prompt"}
+    non_string_keys = sorted(repr(key) for key in payload if not isinstance(key, str))
+    if non_string_keys:
+        joined = ", ".join(non_string_keys)
+        raise RuntimeRequestError(
+            f"request metadata 'command' keys must be strings; received invalid key(s): {joined}"
+        )
+    command_payload = cast(dict[str, object], payload)
+    unknown_keys = sorted(key for key in command_payload if key not in allowed_keys)
+    if unknown_keys:
+        joined = ", ".join(unknown_keys)
+        raise RuntimeRequestError(f"unsupported request metadata 'command' field(s): {joined}")
+
+    name = _validate_optional_runtime_metadata_string(
+        command_payload.get("name"),
+        field_name="command.name",
+    )
+    source = _validate_optional_runtime_metadata_string(
+        command_payload.get("source"),
+        field_name="command.source",
+    )
+    raw_arguments = command_payload.get("raw_arguments", "")
+    if not isinstance(raw_arguments, str):
+        raise RuntimeRequestError("request metadata 'command.raw_arguments' must be a string")
+    original_prompt = _validate_optional_runtime_metadata_string(
+        command_payload.get("original_prompt"),
+        field_name="command.original_prompt",
+    )
+    raw_arguments_list = command_payload.get("arguments", [])
+    if not isinstance(raw_arguments_list, list):
+        raise RuntimeRequestError("request metadata 'command.arguments' must be a list")
+    arguments: list[str] = []
+    for index, argument in enumerate(cast(list[object], raw_arguments_list)):
+        if not isinstance(argument, str):
+            raise RuntimeRequestError(
+                f"request metadata 'command.arguments[{index}]' must be a string"
+            )
+        arguments.append(argument)
+    return {
+        "name": name,
+        "source": source,
+        "arguments": arguments,
+        "raw_arguments": raw_arguments,
+        "original_prompt": original_prompt,
+    }
 
 
 def validate_runtime_subagent_routing_metadata(
@@ -288,6 +348,9 @@ def validate_runtime_request_metadata(
         if not isinstance(agent, dict):
             raise RuntimeRequestError("request metadata 'agent' must be an object when provided")
         normalized["agent"] = dict(cast(dict[str, object], agent))
+
+    if "command" in metadata:
+        normalized["command"] = validate_runtime_command_metadata(metadata["command"])
 
     if "delegation" in metadata:
         normalized["delegation"] = validate_runtime_subagent_routing_metadata(

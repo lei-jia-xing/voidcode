@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import re
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Literal, Protocol, runtime_checkable
 
+from ..command.resolver import resolve_tool_instruction
 from ..runtime.context_window import normalize_read_file_output
 from ..tools.contracts import ToolCall, ToolDefinition, ToolResult
 
@@ -13,11 +13,6 @@ type AppliedSkill = dict[str, str]
 type ProviderStreamEventKind = Literal["delta", "content", "error", "done"]
 type ProviderStreamChannel = Literal["text", "tool", "reasoning", "error"]
 type ProviderDoneReason = Literal["completed", "cancelled", "error"]
-
-READ_REQUEST_PATTERN = re.compile(r"^(read|show)\s+(?P<path>.+)$", re.IGNORECASE)
-GREP_REQUEST_PATTERN = re.compile(r"^grep\s+(?P<pattern>.+?)\s+(?P<path>\S+)$", re.IGNORECASE)
-RUN_REQUEST_PATTERN = re.compile(r"^run\s+(?P<command>.+)$", re.IGNORECASE)
-WRITE_REQUEST_PATTERN = re.compile(r"^write\s+(?P<path>\S+)\s+(?P<content>.+)$", re.IGNORECASE)
 
 
 @runtime_checkable
@@ -215,62 +210,12 @@ class StubTurnProvider:
             last_result = request.context_window.tool_results[-1]
             return ProviderTurnResult(output=_normalize_tool_output(last_result.content))
 
-        trimmed_prompt = commands[step_index]
-
-        read_match = READ_REQUEST_PATTERN.match(trimmed_prompt)
-        if read_match is not None:
-            path_text = read_match.group("path").strip()
-            if not path_text:
-                raise ValueError("request path must not be empty")
-            self._ensure_tool(request.available_tools, "read_file", read_only=True)
-            return ProviderTurnResult(tool_call=ToolCall("read_file", {"filePath": path_text}))
-
-        grep_match = GREP_REQUEST_PATTERN.match(trimmed_prompt)
-        if grep_match is not None:
-            pattern_text = grep_match.group("pattern").strip()
-            path_text = grep_match.group("path").strip()
-            if not pattern_text:
-                raise ValueError("request pattern must not be empty")
-            if not path_text:
-                raise ValueError("request path must not be empty")
-            self._ensure_tool(request.available_tools, "grep", read_only=True)
-            return ProviderTurnResult(
-                tool_call=ToolCall("grep", {"pattern": pattern_text, "path": path_text})
-            )
-
-        run_match = RUN_REQUEST_PATTERN.match(trimmed_prompt)
-        if run_match is not None:
-            command_text = run_match.group("command").strip()
-            if not command_text:
-                raise ValueError("request command must not be empty")
-            self._ensure_tool(request.available_tools, "shell_exec", read_only=False)
-            return ProviderTurnResult(tool_call=ToolCall("shell_exec", {"command": command_text}))
-
-        write_match = WRITE_REQUEST_PATTERN.match(trimmed_prompt)
-        if write_match is not None:
-            path_text = write_match.group("path").strip()
-            content_text = write_match.group("content")
-            if not path_text:
-                raise ValueError("request path must not be empty")
-            if not content_text:
-                raise ValueError("request content must not be empty")
-            self._ensure_tool(request.available_tools, "write_file", read_only=False)
-            return ProviderTurnResult(
-                tool_call=ToolCall("write_file", {"path": path_text, "content": content_text})
-            )
-
-        msg = (
-            "unsupported request: use 'read <relative-path>', 'show <relative-path>', "
-            "'grep <pattern> <relative-path>', 'run <command>', or "
-            "'write <relative-path> <content>'"
+        resolution = resolve_tool_instruction(
+            commands[step_index],
+            request.available_tools,
+            unavailable_message_suffix="single-agent execution",
         )
-        raise ValueError(msg)
-
-    @staticmethod
-    def _ensure_tool(tools: tuple[ToolDefinition, ...], tool_name: str, *, read_only: bool) -> None:
-        if any(tool.name == tool_name and tool.read_only is read_only for tool in tools):
-            return
-        raise ValueError(f"{tool_name} tool is not registered for single-agent execution")
+        return ProviderTurnResult(tool_call=resolution.tool_call)
 
 
 def _normalize_tool_output(content: str | None) -> str:
