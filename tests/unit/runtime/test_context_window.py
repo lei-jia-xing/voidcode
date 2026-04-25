@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from typing import Literal
 
-from voidcode.runtime.context_window import ContextWindowPolicy, prepare_provider_context
+from voidcode.runtime.context_window import (
+    ContextWindowPolicy,
+    normalize_read_file_output,
+    prepare_provider_context,
+)
 from voidcode.tools.contracts import ToolResult
 
 
@@ -113,3 +117,40 @@ def test_prepare_provider_context_continuity_metadata_includes_version() -> None
     assert payload.get("source") == "tool_result_window"
     assert payload.get("dropped_tool_result_count") == 1
     assert payload.get("retained_tool_result_count") == 1
+
+
+def test_normalize_read_file_output_preserves_showing_lines_footer() -> None:
+    content = "\n".join(
+        [
+            "<path>sample.txt</path>",
+            "<type>file</type>",
+            "<content>",
+            "10: alpha",
+            "11: beta",
+            "(Showing lines 10-11 of 20. Use offset=12 to continue.)",
+            "</content>",
+        ]
+    )
+
+    normalized = normalize_read_file_output(content)
+
+    assert normalized == ("alpha\nbeta\n(Showing lines 10-11 of 20. Use offset=12 to continue.)")
+
+
+def test_normalize_read_file_output_preserves_output_capped_footer() -> None:
+    content = "\n".join(
+        [
+            "<path>sample.txt</path>",
+            "<type>file</type>",
+            "<content>",
+            "1: alpha",
+            "(Output capped at 50 KB. Showing lines 1-1. Use offset=2 to continue.)",
+            "</content>",
+        ]
+    )
+
+    normalized = normalize_read_file_output(content)
+
+    assert normalized == (
+        "alpha\n(Output capped at 50 KB. Showing lines 1-1. Use offset=2 to continue.)"
+    )

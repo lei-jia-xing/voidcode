@@ -111,13 +111,13 @@ def normalize_read_file_output(content: str | None) -> str | None:
     lines: list[str] = []
     for raw_line in body.splitlines():
         line = raw_line.strip()
-        if not line or line.startswith("("):
+        if not line:
             continue
         if ": " in raw_line:
             _, text = raw_line.split(": ", 1)
             lines.append(text)
             continue
-        lines.append(raw_line)
+        lines.append(line)
     return "\n".join(lines)
 
 
