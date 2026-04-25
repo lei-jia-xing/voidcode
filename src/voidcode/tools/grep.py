@@ -44,6 +44,14 @@ class GrepTool:
     )
 
     @staticmethod
+    def _matches_glob(path: str, pattern: str) -> bool:
+        if fnmatch.fnmatch(path, pattern):
+            return True
+        if pattern.startswith("**/"):
+            return fnmatch.fnmatch(path, pattern[3:])
+        return False
+
+    @staticmethod
     def _collect_targets(
         root: Path,
         *,
@@ -51,7 +59,7 @@ class GrepTool:
         exclude: list[str] | None,
     ) -> list[Path]:
         targets: list[Path] = []
-        include_patterns = include or ["**/*"]
+        include_patterns = include or []
         exclude_patterns = exclude or []
         if root.is_file():
             return [root]
@@ -60,9 +68,11 @@ class GrepTool:
             if not candidate.is_file():
                 continue
             rel = candidate.relative_to(root).as_posix()
-            if include_patterns and not any(fnmatch.fnmatch(rel, pat) for pat in include_patterns):
+            if include_patterns and not any(
+                GrepTool._matches_glob(rel, pat) for pat in include_patterns
+            ):
                 continue
-            if any(fnmatch.fnmatch(rel, pat) for pat in exclude_patterns):
+            if any(GrepTool._matches_glob(rel, pat) for pat in exclude_patterns):
                 continue
             targets.append(candidate)
         return targets

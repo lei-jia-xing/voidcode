@@ -79,8 +79,51 @@ def test_grep_tool_supports_regex_context_and_include_exclude(tmp_path: Path) ->
     assert result.status == "ok"
     assert result.data["regex"] is True
     assert result.data["context"] == 1
-    assert result.data["match_count"] == 0
+    assert result.data["match_count"] == 2
+    assert result.data["matches"] == [
+        {
+            "file": "src/sample.py",
+            "line": 1,
+            "text": "alpha",
+            "columns": [1],
+            "before": [],
+            "after": [{"line": 2, "text": "beta"}],
+        },
+        {
+            "file": "src/sample.py",
+            "line": 3,
+            "text": "alpha",
+            "columns": [1],
+            "before": [{"line": 2, "text": "beta"}],
+            "after": [],
+        },
+    ]
     assert "ignored.txt" not in (result.content or "")
+
+
+def test_grep_tool_searches_top_level_files_in_directory_targets_by_default(tmp_path: Path) -> None:
+    src = tmp_path / "src"
+    src.mkdir()
+    _ = (src / "sample.py").write_text("alpha\n", encoding="utf-8")
+    tool = GrepTool()
+
+    result = tool.invoke(
+        ToolCall(tool_name="grep", arguments={"pattern": "alpha", "path": "src"}),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert result.data["match_count"] == 1
+    assert result.data["matches"] == [
+        {
+            "file": "src/sample.py",
+            "line": 1,
+            "text": "alpha",
+            "columns": [1],
+            "before": [],
+            "after": [],
+        }
+    ]
 
 
 def test_grep_tool_returns_zero_matches_summary(tmp_path: Path) -> None:
