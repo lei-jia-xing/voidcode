@@ -727,6 +727,199 @@ def test_runtime_background_task_executes_through_existing_runtime_path(tmp_path
     assert completed == loaded
 
 
+def test_runtime_session_debug_snapshot_reports_completed_state(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+
+    response = runtime.run(RuntimeRequest(prompt="debug hello", session_id="debug-session"))
+    snapshot = runtime.session_debug_snapshot(session_id="debug-session")
+
+    assert response.output == "debug hello"
+    assert snapshot.prompt == "debug hello"
+    assert snapshot.persisted_status == "completed"
+    assert snapshot.current_status == "completed"
+    assert snapshot.active is False
+    assert snapshot.resumable is False
+    assert snapshot.replayable is True
+    assert snapshot.terminal is True
+    assert snapshot.resume_checkpoint_kind == "terminal"
+    assert snapshot.pending_approval is None
+    assert snapshot.pending_question is None
+    assert snapshot.last_event_sequence == response.events[-1].sequence
+    assert snapshot.last_relevant_event is not None
+    assert snapshot.last_relevant_event.event_type == response.events[-1].event_type
+    assert snapshot.last_failure_event is None
+    assert snapshot.failure is None
+    assert snapshot.suggested_operator_action == "replay"
+    assert (
+        snapshot.operator_guidance == "Session is terminal; replay or inspect transcript if needed."
+    )
+
+
+def test_runtime_session_debug_snapshot_reports_pending_approval_state(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    waiting = runtime.run(
+        RuntimeRequest(prompt="write debug.txt hello", session_id="approval-debug")
+    )
+    snapshot = runtime.session_debug_snapshot(session_id="approval-debug")
+
+    assert waiting.session.status == "waiting"
+    assert snapshot.persisted_status == "waiting"
+    assert snapshot.current_status == "waiting_for_approval"
+    assert snapshot.resumable is True
+    assert snapshot.terminal is False
+    assert snapshot.resume_checkpoint_kind == "approval_wait"
+    assert snapshot.pending_approval is not None
+    assert snapshot.pending_approval.tool_name == "write_file"
+    assert snapshot.pending_approval.request_id == waiting.events[-1].payload["request_id"]
+    assert snapshot.pending_question is None
+    assert snapshot.last_relevant_event is not None
+    assert snapshot.last_relevant_event.event_type == "runtime.approval_requested"
+    assert snapshot.last_failure_event is None
+    assert snapshot.failure is None
+    assert snapshot.last_tool is None
+    assert snapshot.suggested_operator_action == "resolve_approval"
+    assert "Resolve approval request" in snapshot.operator_guidance
+
+
+def test_runtime_session_debug_snapshot_reports_pending_question_state(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_QuestionThenDoneGraph())
+
+    waiting = runtime.run(RuntimeRequest(prompt="question debug", session_id="question-debug"))
+    snapshot = runtime.session_debug_snapshot(session_id="question-debug")
+
+    assert waiting.session.status == "waiting"
+    assert snapshot.current_status == "waiting_for_question"
+    assert snapshot.resume_checkpoint_kind == "question_wait"
+    assert snapshot.pending_question is not None
+    assert snapshot.pending_question.request_id == waiting.events[-1].payload["request_id"]
+    assert snapshot.pending_question.question_count == 1
+    assert snapshot.pending_question.headers == ("Runtime path",)
+    assert snapshot.pending_approval is None
+    assert snapshot.last_relevant_event is not None
+    assert snapshot.last_relevant_event.event_type == "runtime.question_requested"
+    assert snapshot.suggested_operator_action == "answer_question"
+    assert "Answer pending question request" in snapshot.operator_guidance
+
+
+def test_runtime_session_debug_snapshot_reports_failure_classification_and_last_tool(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+    waiting = runtime.run(
+        RuntimeRequest(prompt="write debug.txt denied", session_id="failed-debug")
+    )
+
+    response = runtime.resume(
+        "failed-debug",
+        approval_request_id=cast(str, waiting.events[-1].payload["request_id"]),
+        approval_decision="deny",
+    )
+    snapshot = runtime.session_debug_snapshot(session_id="failed-debug")
+
+    assert response.session.status == "failed"
+    assert snapshot.current_status == "failed"
+    assert snapshot.terminal is True
+    assert snapshot.failure is not None
+    assert snapshot.failure.classification == "approval_denied"
+    assert snapshot.failure.message == "permission denied for tool: write_file"
+    assert snapshot.last_failure_event is not None
+    assert snapshot.last_failure_event.event_type == "runtime.failed"
+    assert snapshot.last_relevant_event is not None
+    assert snapshot.last_relevant_event.event_type == "runtime.failed"
+    assert snapshot.last_tool is None
+    assert snapshot.suggested_operator_action == "inspect_failure"
+    assert snapshot.operator_guidance == "Inspect approval_denied and rerun if needed."
+
+
+def test_runtime_session_debug_snapshot_classifies_provider_failure(tmp_path: Path) -> None:
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(
+                    ProviderExecutionError(
+                        kind="context_limit",
+                        provider_name="opencode",
+                        model_name="gpt-5.4",
+                        message="context exceeded",
+                    ),
+                ),
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+        model_provider_registry=registry,
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="read sample.txt", session_id="provider-debug"))
+    snapshot = runtime.session_debug_snapshot(session_id="provider-debug")
+
+    assert response.session.status == "failed"
+    assert snapshot.failure is not None
+    assert snapshot.failure.classification == "provider_failure"
+    assert snapshot.failure.message == "context exceeded"
+    assert snapshot.last_failure_event is not None
+    assert snapshot.last_failure_event.payload["provider_error_kind"] == "context_limit"
+
+
+def test_runtime_session_debug_snapshot_classifies_session_state_inconsistency(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    waiting = runtime.run(
+        RuntimeRequest(prompt="write debug.txt hello", session_id="inconsistent-debug")
+    )
+    assert waiting.session.status == "waiting"
+
+    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    connection = sqlite3.connect(database_path)
+    try:
+        _ = connection.execute(
+            "UPDATE sessions SET pending_approval_json = NULL WHERE session_id = ?",
+            ("inconsistent-debug",),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    snapshot = runtime.session_debug_snapshot(session_id="inconsistent-debug")
+
+    assert snapshot.failure is not None
+    assert snapshot.failure.classification == "session_state_inconsistency"
+    assert snapshot.failure.message == "waiting session is missing pending approval/question state"
+    assert snapshot.suggested_operator_action == "inspect_failure"
+
+
+def test_runtime_session_debug_snapshot_marks_active_running_session(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+
+    stream = runtime.run_stream(RuntimeRequest(prompt="active debug", session_id="active-debug"))
+    first_chunk = next(stream)
+    snapshot = runtime.session_debug_snapshot(session_id="active-debug")
+
+    assert first_chunk.session.status == "running"
+    assert snapshot.active is True
+    assert snapshot.persisted_status == "running"
+    assert snapshot.current_status == "running"
+    assert snapshot.terminal is False
+    assert snapshot.suggested_operator_action == "wait"
+    assert snapshot.operator_guidance == "Session is currently active in the runtime."
+    _ = list(stream)
+
+
 def test_runtime_task_tool_starts_background_task_with_skill_metadata(tmp_path: Path) -> None:
     skill_dir = tmp_path / ".voidcode" / "skills" / "demo"
     _write_demo_skill(skill_dir, content="# Demo\nUse delegated skill.")

@@ -82,6 +82,12 @@ from .contracts import (
     RuntimeRequestError,
     RuntimeRequestMetadataPayload,
     RuntimeResponse,
+    RuntimeSessionDebugEvent,
+    RuntimeSessionDebugFailure,
+    RuntimeSessionDebugPendingApproval,
+    RuntimeSessionDebugPendingQuestion,
+    RuntimeSessionDebugSnapshot,
+    RuntimeSessionDebugToolSummary,
     RuntimeSessionResult,
     RuntimeStreamChunk,
     UnknownSessionError,
@@ -1190,7 +1196,11 @@ class VoidCodeRuntime:
         session_id = self._resolve_session_id(request)
         self._register_active_session_id(
             session_id,
-            metadata=dict(request.metadata),
+            metadata={
+                "prompt": request.prompt,
+                **dict(request.metadata),
+                "request_metadata": dict(request.metadata),
+            },
         )
         try:
             events: list[EventEnvelope] = []
@@ -1841,6 +1851,139 @@ class VoidCodeRuntime:
         self._validate_session_workspace(result.session, session_id=session_id)
         return result
 
+    def session_debug_snapshot(self, *, session_id: str) -> RuntimeSessionDebugSnapshot:
+        validate_session_id(session_id)
+        active = self._is_active_session_id(session_id)
+        try:
+            result = self.session_result(session_id=session_id)
+        except UnknownSessionError:
+            if not active:
+                raise
+            return self._active_only_session_debug_snapshot(session_id=session_id)
+        persistence_error: str | None = None
+        pending_approval: PendingApproval | None = None
+        pending_question: PendingQuestion | None = None
+        resume_checkpoint: dict[str, object] | None = None
+        try:
+            pending_approval = self._session_store.load_pending_approval(
+                workspace=self._workspace,
+                session_id=session_id,
+            )
+            pending_question = self._session_store.load_pending_question(
+                workspace=self._workspace,
+                session_id=session_id,
+            )
+            resume_checkpoint = self._session_store.load_resume_checkpoint(
+                workspace=self._workspace,
+                session_id=session_id,
+            )
+        except ValueError as exc:
+            persistence_error = str(exc)
+        current_status = self._current_debug_status(
+            result=result,
+            active=active,
+            pending_approval=pending_approval,
+            pending_question=pending_question,
+        )
+        terminal = result.session.status in {"completed", "failed"}
+        resumable = result.session.status == "waiting"
+        replayable = bool(result.transcript) or result.output is not None or terminal
+        last_relevant_event = self._debug_event(
+            next(
+                (
+                    event
+                    for event in reversed(result.transcript)
+                    if event.event_type
+                    in {
+                        "runtime.approval_requested",
+                        "runtime.question_requested",
+                        "runtime.approval_resolved",
+                        RUNTIME_QUESTION_ANSWERED,
+                        "runtime.failed",
+                        "runtime.tool_completed",
+                        "graph.response_ready",
+                    }
+                ),
+                result.transcript[-1] if result.transcript else None,
+            )
+        )
+        last_failure_event = self._debug_event(
+            next(
+                (
+                    event
+                    for event in reversed(result.transcript)
+                    if event.event_type == "runtime.failed"
+                ),
+                None,
+            )
+        )
+        last_tool = self._last_tool_summary(result)
+        failure = self._debug_failure(
+            result=result,
+            last_failure_event=last_failure_event,
+            last_tool=last_tool,
+            pending_approval=pending_approval,
+            pending_question=pending_question,
+            resume_checkpoint=resume_checkpoint,
+            persistence_error=persistence_error,
+        )
+        suggested_operator_action, operator_guidance = self._operator_guidance(
+            current_status=current_status,
+            pending_approval=pending_approval,
+            pending_question=pending_question,
+            active=active,
+            terminal=terminal,
+            failure=failure,
+        )
+        return RuntimeSessionDebugSnapshot(
+            session=result.session,
+            prompt=result.prompt,
+            persisted_status=result.status,
+            current_status=current_status,
+            active=active,
+            resumable=resumable,
+            replayable=replayable,
+            terminal=terminal,
+            resume_checkpoint_kind=(
+                cast(str, resume_checkpoint.get("kind"))
+                if isinstance(resume_checkpoint, dict)
+                and isinstance(resume_checkpoint.get("kind"), str)
+                else None
+            ),
+            pending_approval=(
+                RuntimeSessionDebugPendingApproval(
+                    request_id=pending_approval.request_id,
+                    tool_name=pending_approval.tool_name,
+                    target_summary=pending_approval.target_summary,
+                    reason=pending_approval.reason,
+                    policy_mode=pending_approval.policy_mode,
+                    arguments=dict(pending_approval.arguments),
+                    owner_session_id=pending_approval.owner_session_id,
+                    owner_parent_session_id=pending_approval.owner_parent_session_id,
+                    delegated_task_id=pending_approval.delegated_task_id,
+                )
+                if pending_approval is not None
+                else None
+            ),
+            pending_question=(
+                RuntimeSessionDebugPendingQuestion(
+                    request_id=pending_question.request_id,
+                    tool_name=pending_question.tool_name,
+                    question_count=len(pending_question.prompts),
+                    headers=tuple(prompt.header for prompt in pending_question.prompts),
+                )
+                if pending_question is not None
+                else None
+            ),
+            last_event_sequence=result.last_event_sequence,
+            last_relevant_event=last_relevant_event,
+            last_failure_event=last_failure_event,
+            failure=failure,
+            last_tool=last_tool,
+            suggested_operator_action=suggested_operator_action,
+            operator_guidance=operator_guidance,
+        )
+
     def list_notifications(self) -> tuple[RuntimeNotification, ...]:
         notifications = self._session_store.list_notifications(workspace=self._workspace)
         return tuple(
@@ -1991,6 +2134,231 @@ class VoidCodeRuntime:
         self._graph_cache = {}
         self._graph = self._graph_override or self._build_graph_for_engine_from_config(
             self._initial_effective_config
+        )
+
+    @staticmethod
+    def _debug_event(event: EventEnvelope | None) -> RuntimeSessionDebugEvent | None:
+        if event is None:
+            return None
+        return RuntimeSessionDebugEvent(
+            sequence=event.sequence,
+            event_type=event.event_type,
+            source=event.source,
+            payload=dict(event.payload),
+        )
+
+    @staticmethod
+    def _current_debug_status(
+        *,
+        result: RuntimeSessionResult,
+        active: bool,
+        pending_approval: PendingApproval | None,
+        pending_question: PendingQuestion | None,
+    ) -> str:
+        if active and result.session.status == "running":
+            return "running"
+        if pending_approval is not None:
+            return "waiting_for_approval"
+        if pending_question is not None:
+            return "waiting_for_question"
+        if active and result.session.status == "waiting":
+            return "waiting_active"
+        return result.session.status
+
+    @staticmethod
+    def _debug_failure(
+        *,
+        result: RuntimeSessionResult,
+        last_failure_event: RuntimeSessionDebugEvent | None,
+        last_tool: RuntimeSessionDebugToolSummary | None,
+        pending_approval: PendingApproval | None,
+        pending_question: PendingQuestion | None,
+        resume_checkpoint: dict[str, object] | None,
+        persistence_error: str | None,
+    ) -> RuntimeSessionDebugFailure | None:
+        if persistence_error is not None:
+            return RuntimeSessionDebugFailure(
+                classification="session_state_inconsistency",
+                message=persistence_error,
+            )
+        if (
+            inconsistency_message := VoidCodeRuntime._debug_session_state_inconsistency(
+                result=result,
+                pending_approval=pending_approval,
+                pending_question=pending_question,
+                resume_checkpoint=resume_checkpoint,
+            )
+        ) is not None:
+            return RuntimeSessionDebugFailure(
+                classification="session_state_inconsistency",
+                message=inconsistency_message,
+            )
+        message = None
+        classification = "runtime_internal_failure"
+        if last_failure_event is not None:
+            provider_error_kind = last_failure_event.payload.get("provider_error_kind")
+            if isinstance(provider_error_kind, str) and provider_error_kind:
+                classification = "provider_failure"
+            raw_error = last_failure_event.payload.get("error")
+            if raw_error is not None:
+                message = str(raw_error)
+        elif result.error is not None:
+            message = result.error
+        if message is None:
+            if last_tool is not None and last_tool.status == "error":
+                return RuntimeSessionDebugFailure(
+                    classification="tool_execution_failure",
+                    message=last_tool.summary,
+                )
+            return None
+        lowered = message.lower()
+        if "permission denied" in lowered:
+            classification = "approval_denied"
+        elif pending_approval is not None or "approval" in lowered or "question" in lowered:
+            classification = "approval_interruption"
+        elif "cancel" in lowered:
+            classification = "cancelled"
+        elif last_tool is not None and last_tool.status == "error":
+            classification = "tool_execution_failure"
+        elif "tool" in lowered:
+            classification = "tool_execution_failure"
+        return RuntimeSessionDebugFailure(classification=classification, message=message)
+
+    @staticmethod
+    def _debug_session_state_inconsistency(
+        *,
+        result: RuntimeSessionResult,
+        pending_approval: PendingApproval | None,
+        pending_question: PendingQuestion | None,
+        resume_checkpoint: dict[str, object] | None,
+    ) -> str | None:
+        checkpoint_kind = (
+            cast(str, resume_checkpoint.get("kind"))
+            if isinstance(resume_checkpoint, dict)
+            and isinstance(resume_checkpoint.get("kind"), str)
+            else None
+        )
+        if result.session.status == "waiting":
+            if pending_approval is None and pending_question is None:
+                return "waiting session is missing pending approval/question state"
+            if pending_approval is not None and checkpoint_kind != "approval_wait":
+                return "pending approval does not match the persisted resume checkpoint"
+            if pending_question is not None and checkpoint_kind != "question_wait":
+                return "pending question does not match the persisted resume checkpoint"
+        if result.session.status in {"completed", "failed"}:
+            if checkpoint_kind not in {None, "terminal"}:
+                return "terminal session resume checkpoint does not match persisted terminal state"
+            if pending_approval is not None or pending_question is not None:
+                return "terminal session still has pending approval/question state"
+        if result.session.status == "running" and checkpoint_kind == "terminal":
+            return "running session should not carry a terminal resume checkpoint"
+        return None
+
+    @staticmethod
+    def _last_tool_summary(result: RuntimeSessionResult) -> RuntimeSessionDebugToolSummary | None:
+        for event in reversed(result.transcript):
+            if event.event_type != "runtime.tool_completed":
+                continue
+            payload = event.payload
+            tool_name = payload.get("tool")
+            if not isinstance(tool_name, str) or not tool_name:
+                continue
+            raw_status = payload.get("status")
+            status = raw_status if isinstance(raw_status, str) and raw_status else "ok"
+            if status not in {"ok", "error"}:
+                status = "error" if payload.get("error") is not None else "ok"
+            summary_source = payload.get("error") if status == "error" else payload.get("content")
+            summary = str(summary_source).strip() if summary_source is not None else tool_name
+            if len(summary) > 160:
+                summary = summary[:157] + "..."
+            arguments = payload.get("arguments")
+            return RuntimeSessionDebugToolSummary(
+                tool_name=tool_name,
+                status=status,
+                summary=summary,
+                arguments=(
+                    dict(cast(dict[str, object], arguments)) if isinstance(arguments, dict) else {}
+                ),
+                sequence=event.sequence,
+            )
+        return None
+
+    @staticmethod
+    def _operator_guidance(
+        *,
+        current_status: str,
+        pending_approval: PendingApproval | None,
+        pending_question: PendingQuestion | None,
+        active: bool,
+        terminal: bool,
+        failure: RuntimeSessionDebugFailure | None,
+    ) -> tuple[str, str]:
+        if pending_approval is not None:
+            return (
+                "resolve_approval",
+                "Resolve approval request "
+                f"{pending_approval.request_id} for {pending_approval.tool_name}.",
+            )
+        if pending_question is not None:
+            return (
+                "answer_question",
+                f"Answer pending question request {pending_question.request_id} before resuming.",
+            )
+        if failure is not None and failure.classification == "session_state_inconsistency":
+            return (
+                "inspect_failure",
+                "Inspect persisted session state before attempting resume or replay.",
+            )
+        if active:
+            return ("wait", "Session is currently active in the runtime.")
+        if terminal and failure is not None:
+            return ("inspect_failure", f"Inspect {failure.classification} and rerun if needed.")
+        if terminal:
+            return ("replay", "Session is terminal; replay or inspect transcript if needed.")
+        if current_status == "waiting_active":
+            return (
+                "inspect_wait",
+                "Session is waiting but still marked active; inspect runtime ownership.",
+            )
+        return ("inspect_session", "Inspect the persisted session state.")
+
+    def _active_only_session_debug_snapshot(
+        self,
+        *,
+        session_id: str,
+    ) -> RuntimeSessionDebugSnapshot:
+        active_metadata = self._active_session_metadata(session_id) or {}
+        request_metadata = active_metadata.get("request_metadata")
+        session_metadata = {
+            **(
+                dict(cast(dict[str, object], request_metadata))
+                if isinstance(request_metadata, dict)
+                else {}
+            ),
+            "workspace": str(self._workspace),
+        }
+        prompt = (
+            cast(str, active_metadata["prompt"])
+            if isinstance(active_metadata.get("prompt"), str)
+            else ""
+        )
+        session = SessionState(
+            session=SessionRef(id=session_id),
+            status="running",
+            turn=1,
+            metadata=session_metadata,
+        )
+        return RuntimeSessionDebugSnapshot(
+            session=session,
+            prompt=prompt,
+            persisted_status="running",
+            current_status="running",
+            active=True,
+            resumable=False,
+            replayable=False,
+            terminal=False,
+            suggested_operator_action="wait",
+            operator_guidance="Session is currently active in the runtime.",
         )
 
     def resume(

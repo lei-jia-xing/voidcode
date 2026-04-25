@@ -400,6 +400,72 @@ type RuntimeNotificationStatus = Literal["unread", "acknowledged"]
 
 
 @dataclass(frozen=True, slots=True)
+class RuntimeSessionDebugEvent:
+    sequence: int
+    event_type: str
+    source: str
+    payload: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeSessionDebugPendingApproval:
+    request_id: str
+    tool_name: str
+    target_summary: str
+    reason: str
+    policy_mode: str
+    arguments: dict[str, object] = field(default_factory=dict)
+    owner_session_id: str | None = None
+    owner_parent_session_id: str | None = None
+    delegated_task_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeSessionDebugPendingQuestion:
+    request_id: str
+    tool_name: str
+    question_count: int
+    headers: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeSessionDebugToolSummary:
+    tool_name: str
+    status: str
+    summary: str
+    arguments: dict[str, object] = field(default_factory=dict)
+    sequence: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeSessionDebugFailure:
+    classification: str
+    message: str
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeSessionDebugSnapshot:
+    session: SessionState
+    prompt: str
+    persisted_status: str
+    current_status: str
+    active: bool
+    resumable: bool
+    replayable: bool
+    terminal: bool
+    resume_checkpoint_kind: str | None = None
+    pending_approval: RuntimeSessionDebugPendingApproval | None = None
+    pending_question: RuntimeSessionDebugPendingQuestion | None = None
+    last_event_sequence: int = 0
+    last_relevant_event: RuntimeSessionDebugEvent | None = None
+    last_failure_event: RuntimeSessionDebugEvent | None = None
+    failure: RuntimeSessionDebugFailure | None = None
+    last_tool: RuntimeSessionDebugToolSummary | None = None
+    suggested_operator_action: str = "inspect_session"
+    operator_guidance: str = "Inspect the persisted session state."
+
+
+@dataclass(frozen=True, slots=True)
 class RuntimeSessionResult:
     session: SessionState
     prompt: str
