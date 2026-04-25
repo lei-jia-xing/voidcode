@@ -1194,10 +1194,12 @@ class VoidCodeRuntime:
             allow_internal_metadata=allow_internal_metadata,
         )
         session_id = self._resolve_session_id(request)
+        run_id = os.urandom(8).hex()
         self._register_active_session_id(
             session_id,
             metadata={
                 "prompt": request.prompt,
+                "run_id": run_id,
                 **dict(request.metadata),
                 "request_metadata": dict(request.metadata),
             },
@@ -1208,7 +1210,7 @@ class VoidCodeRuntime:
             final_session: SessionState | None = None
 
             try:
-                for chunk in self._stream_chunks(request, session_id=session_id):
+                for chunk in self._stream_chunks(request, session_id=session_id, run_id=run_id):
                     final_session = chunk.session
                     if chunk.event is not None:
                         events.append(chunk.event)
@@ -1277,6 +1279,7 @@ class VoidCodeRuntime:
         request: RuntimeRequest,
         *,
         session_id: str | None = None,
+        run_id: str | None = None,
     ) -> Iterator[RuntimeStreamChunk]:
         resolved_session_id = session_id or self._resolve_session_id(request)
         effective_config = self._runtime_config_for_request(request)
@@ -1289,7 +1292,7 @@ class VoidCodeRuntime:
                 **request_metadata,
                 "workspace": str(self._workspace),
                 "runtime_config": self._runtime_config_metadata(effective_config),
-                "runtime_state": self._runtime_state_metadata(),
+                "runtime_state": self._runtime_state_metadata(run_id=run_id),
             },
         )
         sequence = 1
@@ -1853,11 +1856,17 @@ class VoidCodeRuntime:
     def session_debug_snapshot(self, *, session_id: str) -> RuntimeSessionDebugSnapshot:
         validate_session_id(session_id)
         active = self._is_active_session_id(session_id)
+        active_metadata = self._active_session_metadata(session_id) if active else None
         try:
             result = self._load_session_result(session_id=session_id)
         except UnknownSessionError:
             if not active:
                 raise
+            return self._active_only_session_debug_snapshot(session_id=session_id)
+        if self._should_prefer_active_debug_snapshot(
+            result=result,
+            active_metadata=active_metadata,
+        ):
             return self._active_only_session_debug_snapshot(session_id=session_id)
         persistence_error: str | None = None
         pending_approval: PendingApproval | None = None
@@ -2359,6 +2368,60 @@ class VoidCodeRuntime:
             suggested_operator_action="wait",
             operator_guidance="Session is currently active in the runtime.",
         )
+
+    @staticmethod
+    def _should_prefer_active_debug_snapshot(
+        *,
+        result: RuntimeSessionResult,
+        active_metadata: dict[str, object] | None,
+    ) -> bool:
+        if active_metadata is None:
+            return False
+        active_run_id = active_metadata.get("run_id")
+        persisted_run_id = VoidCodeRuntime._run_id_from_session_metadata(result.session.metadata)
+        if isinstance(active_run_id, str) and active_run_id != persisted_run_id:
+            return True
+        request_metadata = active_metadata.get("request_metadata")
+        if not isinstance(request_metadata, dict):
+            return False
+        active_request_metadata = VoidCodeRuntime._fresh_request_metadata(
+            cast(RuntimeRequestMetadataPayload, request_metadata)
+        )
+        persisted_request_metadata = VoidCodeRuntime._request_metadata_from_session_metadata(
+            result.session.metadata
+        )
+        if active_request_metadata != persisted_request_metadata:
+            return True
+        active_prompt = active_metadata.get("prompt")
+        return isinstance(active_prompt, str) and active_prompt != result.prompt
+
+    @staticmethod
+    def _request_metadata_from_session_metadata(metadata: dict[str, object]) -> dict[str, object]:
+        request_metadata_keys = {
+            "abort_requested",
+            "agent",
+            "delegation",
+            "max_steps",
+            "provider_stream",
+            "skills",
+            "background_run",
+            "background_task_id",
+        }
+        request_metadata = {
+            key: value for key, value in metadata.items() if key in request_metadata_keys
+        }
+        return VoidCodeRuntime._fresh_request_metadata(
+            cast(RuntimeRequestMetadataPayload, request_metadata)
+        )
+
+    @staticmethod
+    def _run_id_from_session_metadata(metadata: dict[str, object]) -> str | None:
+        runtime_state = metadata.get("runtime_state")
+        if not isinstance(runtime_state, dict):
+            return None
+        runtime_state_dict = cast(dict[str, object], runtime_state)
+        run_id = runtime_state_dict.get("run_id")
+        return run_id if isinstance(run_id, str) and run_id else None
 
     def resume(
         self,
@@ -3782,9 +3845,10 @@ class VoidCodeRuntime:
             allow_internal_fields=allow_internal_fields,
         )
 
-    def _runtime_state_metadata(self) -> dict[str, object]:
+    def _runtime_state_metadata(self, *, run_id: str | None = None) -> dict[str, object]:
         acp_state = self._acp_adapter.current_state()
         return {
+            **({"run_id": run_id} if run_id is not None else {}),
             "acp": {
                 "mode": acp_state.mode,
                 "configured_enabled": acp_state.configuration.configured_enabled,
@@ -3799,7 +3863,7 @@ class VoidCodeRuntime:
                     if acp_state.last_delegation is not None
                     else None
                 ),
-            }
+            },
         }
 
     @staticmethod

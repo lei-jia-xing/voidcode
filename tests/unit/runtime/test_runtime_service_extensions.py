@@ -920,6 +920,82 @@ def test_runtime_session_debug_snapshot_marks_active_running_session(tmp_path: P
     _ = list(stream)
 
 
+def test_runtime_session_debug_snapshot_prefers_active_state_for_reused_session_id(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+
+    _ = runtime.run(RuntimeRequest(prompt="old prompt", session_id="reused-debug"))
+    stream = runtime.run_stream(RuntimeRequest(prompt="new prompt", session_id="reused-debug"))
+
+    first_chunk = next(stream)
+    snapshot = runtime.session_debug_snapshot(session_id="reused-debug")
+
+    assert first_chunk.session.status == "running"
+    assert snapshot.prompt == "new prompt"
+    assert snapshot.active is True
+    assert snapshot.persisted_status == "running"
+    assert snapshot.current_status == "running"
+    assert snapshot.terminal is False
+    assert snapshot.suggested_operator_action == "wait"
+    assert snapshot.operator_guidance == "Session is currently active in the runtime."
+    _ = list(stream)
+
+
+def test_runtime_session_debug_snapshot_prefers_active_state_for_reused_session_id_with_same_prompt(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+
+    _ = runtime.run(RuntimeRequest(prompt="same prompt", session_id="same-prompt-debug"))
+    stream = runtime._run_with_persistence(  # pyright: ignore[reportPrivateUsage]
+        RuntimeRequest(prompt="same prompt", session_id="same-prompt-debug")
+    )
+
+    first_chunk = next(stream)
+    snapshot = runtime.session_debug_snapshot(session_id="same-prompt-debug")
+
+    assert first_chunk.session.status == "running"
+    assert snapshot.prompt == "same prompt"
+    assert snapshot.active is True
+    assert snapshot.persisted_status == "running"
+    assert snapshot.current_status == "running"
+    assert snapshot.terminal is False
+    assert snapshot.suggested_operator_action == "wait"
+    assert snapshot.operator_guidance == "Session is currently active in the runtime."
+    _ = list(stream)
+
+
+def test_runtime_session_debug_snapshot_preserves_fresh_terminal_state_while_active(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+
+    deferred_unregister_session_id: str | None = None
+    original_unregister = runtime._unregister_active_session_id  # pyright: ignore[reportPrivateUsage]
+
+    def _defer_unregister(session_id: str) -> None:
+        nonlocal deferred_unregister_session_id
+        deferred_unregister_session_id = session_id
+
+    monkeypatch.setattr(runtime, "_unregister_active_session_id", _defer_unregister)
+    response = runtime.run(RuntimeRequest(prompt="terminal debug", session_id="terminal-debug"))
+    try:
+        assert deferred_unregister_session_id == "terminal-debug"
+        snapshot = runtime.session_debug_snapshot(session_id="terminal-debug")
+    finally:
+        original_unregister("terminal-debug")
+
+    assert response.session.status == "completed"
+    assert snapshot.prompt == "terminal debug"
+    assert snapshot.active is True
+    assert snapshot.persisted_status == "completed"
+    assert snapshot.current_status == "completed"
+    assert snapshot.terminal is True
+    assert snapshot.suggested_operator_action == "wait"
+
+
 def test_runtime_task_tool_starts_background_task_with_skill_metadata(tmp_path: Path) -> None:
     skill_dir = tmp_path / ".voidcode" / "skills" / "demo"
     _write_demo_skill(skill_dir, content="# Demo\nUse delegated skill.")
