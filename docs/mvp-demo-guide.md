@@ -28,7 +28,7 @@
    ```bash
    uv run voidcode sessions list --workspace .
    ```
-   *预期结果*：表格显示该会话，状态为 `completed`（如果之前已完成）。
+   *预期结果*：CLI 打印形如 `SESSION id=<id> status=completed turn=<n> updated_at=<ts> prompt='<prompt>'` 的记录。
 
 3. **会话恢复**：在不重新执行工具的情况下重放整个交互过程。
    ```bash
@@ -75,6 +75,17 @@
 - `mise run check` 的输出（全绿）。
 - 在新工作区成功执行**规范演示流程**（步骤 1-4）的日志，特别是包含内联审批交互的部分。
 - 验证 `.voidcode/sessions.sqlite3` 中包含对应的会话和事件行。
+
+## 故障模式与恢复
+
+规范演示流程覆盖了主链路（happy path）。当演示过程中出现异常时，参考 [故障诊断与恢复操作手册](./failure-diagnosis-runbook.md)。该手册提供：
+
+- 常见故障场景矩阵：审批阻塞、任务失败、会话未找到、后台任务卡住、数据库异常等
+- 按会话状态（`idle` / `running` / `waiting` / `completed` / `failed`）分类的恢复动作
+- 统一观察点：CLI EVENT/RESULT 输出、`sessions list`/`resume`、SQLite 直接查询、HTTP 端点
+- 标准恢复工作流：从工作区确认到数据库重置的有序步骤
+
+所有恢复步骤仅使用当前已实现的 CLI 命令、HTTP 端点和 SQLite 查询，不引入未实现的行为。
 
 ## 边界与已知差距
 
