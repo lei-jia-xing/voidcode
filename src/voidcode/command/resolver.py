@@ -24,6 +24,10 @@ class ToolCommandResolution:
     tool_call: ToolCall
 
 
+def is_prompt_command(prompt: str) -> bool:
+    return prompt.strip().startswith("/")
+
+
 def resolve_prompt_command(prompt: str, registry: CommandRegistry) -> CommandResolution | None:
     first_line, raw_arguments = _parse_slash_command(prompt)
     if first_line is None:

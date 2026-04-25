@@ -4,7 +4,11 @@ from dataclasses import dataclass
 
 from voidcode.command import COMMAND_RESOLVED
 from voidcode.graph.contracts import GraphEvent, GraphRunRequest
-from voidcode.runtime.contracts import RuntimeRequest, validate_runtime_request_metadata
+from voidcode.runtime.contracts import (
+    RuntimeRequest,
+    RuntimeRequestError,
+    validate_runtime_request_metadata,
+)
 from voidcode.runtime.service import VoidCodeRuntime
 from voidcode.runtime.session import SessionState
 from voidcode.tools.contracts import ToolCall, ToolResult
@@ -69,3 +73,35 @@ def test_runtime_command_metadata_validates_structured_shape() -> None:
     )
 
     assert metadata["command"]["name"] == "review"
+
+
+def test_runtime_ignores_malformed_command_files_for_non_slash_prompt(tmp_path) -> None:
+    commands_dir = tmp_path / "commands"
+    commands_dir.mkdir()
+    (commands_dir / "broken.md").write_text(
+        "---\nenabled: sometimes\n---\nBroken command body\n",
+        encoding="utf-8",
+    )
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_EchoPromptGraph())
+
+    response = runtime.run(RuntimeRequest(prompt="normal non-slash prompt"))
+
+    assert response.output == "normal non-slash prompt"
+    assert "command" not in response.session.metadata
+
+
+def test_runtime_still_validates_command_files_for_slash_prompt(tmp_path) -> None:
+    commands_dir = tmp_path / "commands"
+    commands_dir.mkdir()
+    (commands_dir / "broken.md").write_text(
+        "---\nenabled: sometimes\n---\nBroken command body\n",
+        encoding="utf-8",
+    )
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_EchoPromptGraph())
+
+    try:
+        _ = runtime.run(RuntimeRequest(prompt="/broken target"))
+    except RuntimeRequestError as exc:
+        assert "boolean frontmatter" in str(exc)
+    else:
+        raise AssertionError("slash prompt should validate command registry")

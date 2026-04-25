@@ -13,7 +13,12 @@ from typing import TYPE_CHECKING, Literal, cast, final
 
 from ..acp import AcpDelegatedExecution, AcpEventEnvelope, AcpRequestEnvelope, AcpResponseEnvelope
 from ..agent import get_builtin_agent_manifest
-from ..command import COMMAND_RESOLVED, load_command_registry, resolve_prompt_command
+from ..command import (
+    COMMAND_RESOLVED,
+    is_prompt_command,
+    load_command_registry,
+    resolve_prompt_command,
+)
 from ..graph.contracts import GraphEvent, GraphRunRequest, RuntimeGraph
 from ..hook.config import RuntimeHookSurface
 from ..hook.executor import (
@@ -2763,7 +2768,7 @@ class VoidCodeRuntime:
         prompt: str,
         metadata: RuntimeRequestMetadataPayload,
     ) -> tuple[str, RuntimeRequestMetadataPayload]:
-        if "command" in metadata:
+        if "command" in metadata or not is_prompt_command(prompt):
             return prompt, metadata
         try:
             resolution = resolve_prompt_command(

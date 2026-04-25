@@ -78,3 +78,18 @@ def test_tool_instruction_resolver_is_shared_for_read_grep_run_and_write() -> No
     assert resolve_tool_instruction(
         "write output.txt hello", tools, unavailable_message_suffix="test"
     ).tool_call.arguments == {"path": "output.txt", "content": "hello"}
+
+
+def test_template_rendering_does_not_rewrite_inserted_arguments_or_dollar_literals() -> None:
+    from voidcode.command.templating import render_command_template
+
+    rendered = render_command_template(
+        "Cost $100; first=$1; second=$2; missing=$3; args=$ARGUMENTS; literal=$ARGUMENTS_suffix",
+        raw_arguments="price=$2 literal",
+        arguments=("target",),
+    )
+
+    assert rendered == (
+        "Cost $100; first=target; second=; missing=; "
+        "args=price=$2 literal; literal=$ARGUMENTS_suffix"
+    )
