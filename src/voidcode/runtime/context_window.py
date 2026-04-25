@@ -113,6 +113,10 @@ def normalize_read_file_output(content: str | None) -> str | None:
         line = raw_line.strip()
         if not line:
             continue
+        if line.startswith("("):
+            if line.startswith("(Showing lines ") or line.startswith("(Output capped at "):
+                lines.append(line)
+            continue
         if ": " in raw_line:
             _, text = raw_line.split(": ", 1)
             lines.append(text)
