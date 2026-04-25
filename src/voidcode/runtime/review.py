@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shlex
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -102,7 +103,7 @@ class WorkspaceReviewService:
         if not diff_output:
             untracked_path = root / normalized_path
             if untracked_path.exists() and self._is_untracked(root, normalized_path):
-                diff_output = self._untracked_diff(normalized_path)
+                diff_output = self._untracked_diff(normalized_path, root=root)
         return ReviewFileDiff(
             root=str(root),
             path=normalized_path,
@@ -130,13 +131,22 @@ class WorkspaceReviewService:
         if not payload:
             return None
         if "->" in payload:
-            old_path, new_path = [part.strip() for part in payload.split("->", 1)]
+            old_path, new_path = [self._decode_status_path(part) for part in payload.split("->", 1)]
         else:
             old_path = None
-            new_path = payload.strip()
+            new_path = self._decode_status_path(payload)
         change_code = status.replace(" ", "") or "??"
         change_type = self._map_change_type(change_code)
         return ReviewChangedFile(path=new_path, change_type=change_type, old_path=old_path)
+
+    @staticmethod
+    def _decode_status_path(path: str) -> str:
+        stripped = path.strip()
+        if len(stripped) >= 2 and stripped[0] == '"' and stripped[-1] == '"':
+            parsed = shlex.split(stripped, posix=True)
+            if parsed:
+                return parsed[0]
+        return stripped
 
     @staticmethod
     def _map_change_type(code: str) -> ReviewChangeType:
@@ -227,15 +237,16 @@ class WorkspaceReviewService:
             line.strip() == path for line in result.stdout.splitlines()
         )
 
-    def _untracked_diff(self, path: str) -> str:
-        file_path = self._workspace / path
+    def _untracked_diff(self, path: str, *, root: Path) -> str:
+        diff_path = Path(path).as_posix()
+        file_path = root / diff_path
         if not file_path.exists():
             return "\n".join(
                 (
-                    f"diff --git a/{path} b/{path}",
+                    f"diff --git a/{diff_path} b/{diff_path}",
                     "new file mode 100644",
                     "--- /dev/null",
-                    f"+++ b/{path}",
+                    f"+++ b/{diff_path}",
                 )
             )
         try:
@@ -243,9 +254,9 @@ class WorkspaceReviewService:
         except UnicodeDecodeError:
             return "\n".join(
                 (
-                    f"diff --git a/{path} b/{path}",
+                    f"diff --git a/{diff_path} b/{diff_path}",
                     "new file mode 100644",
-                    f"Binary files /dev/null and b/{path} differ",
+                    f"Binary files /dev/null and b/{diff_path} differ",
                 )
             )
         added_lines = [f"+{line}" for line in content.splitlines()]
@@ -253,10 +264,10 @@ class WorkspaceReviewService:
         hunk_header = f"@@ -0,0 +1,{line_count} @@" if line_count else "@@ -0,0 +0,0 @@"
         return "\n".join(
             (
-                f"diff --git a/{path} b/{path}",
+                f"diff --git a/{diff_path} b/{diff_path}",
                 "new file mode 100644",
                 "--- /dev/null",
-                f"+++ b/{path}",
+                f"+++ b/{diff_path}",
                 hunk_header,
                 *added_lines,
             )

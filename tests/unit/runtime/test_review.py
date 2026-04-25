@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -147,5 +148,85 @@ def test_review_snapshot_keeps_changed_files_when_tree_excludes_internal_directo
                     changed=True,
                 ),
             ),
+        ),
+    )
+
+
+def test_review_diff_reads_untracked_file_from_nested_workspace_under_git_root(
+    tmp_path: Path,
+) -> None:
+    git_root = tmp_path / "repo"
+    workspace = git_root / "subdir"
+    workspace.mkdir(parents=True)
+    subprocess.run(["git", "init"], cwd=git_root, check=True, capture_output=True)
+    (workspace / "new.txt").write_text("hello\nworld\n", encoding="utf-8")
+
+    service = WorkspaceReviewService(workspace=workspace)
+
+    result = service.diff(
+        path="subdir/new.txt",
+        git=GitStatusSnapshot(state="git_ready", root=str(git_root)),
+    )
+
+    assert result.state == "changed"
+    assert result.path == "subdir/new.txt"
+    assert result.diff == "\n".join(
+        (
+            "diff --git a/subdir/new.txt b/subdir/new.txt",
+            "new file mode 100644",
+            "--- /dev/null",
+            "+++ b/subdir/new.txt",
+            "@@ -0,0 +1,2 @@",
+            "+hello",
+            "+world",
+        )
+    )
+
+
+def test_review_changed_files_decodes_quoted_untracked_path(tmp_path: Path) -> None:
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    (tmp_path / "a b.txt").write_text("hello\n", encoding="utf-8")
+
+    result = WorkspaceReviewService(workspace=tmp_path).snapshot(
+        git=GitStatusSnapshot(state="git_ready", root=str(tmp_path))
+    )
+
+    assert result.changed_files == (
+        ReviewChangedFile(path="a b.txt", change_type="untracked", old_path=None),
+    )
+
+
+def test_review_changed_files_decodes_quoted_rename_paths(tmp_path: Path) -> None:
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    old_path = tmp_path / "old name.txt"
+    old_path.write_text("hello\n", encoding="utf-8")
+    subprocess.run(["git", "add", "old name.txt"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "init",
+        ],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    old_path.rename(tmp_path / "new name.txt")
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True, capture_output=True)
+
+    result = WorkspaceReviewService(workspace=tmp_path).snapshot(
+        git=GitStatusSnapshot(state="git_ready", root=str(tmp_path))
+    )
+
+    assert result.changed_files == (
+        ReviewChangedFile(
+            path="new name.txt",
+            change_type="renamed",
+            old_path="old name.txt",
         ),
     )
