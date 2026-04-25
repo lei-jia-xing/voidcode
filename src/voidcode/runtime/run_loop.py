@@ -529,7 +529,11 @@ class RuntimeRunLoopCoordinator:
                     payload={
                         "tool": tool_result.tool_name,
                         "status": tool_result.status,
-                        "content": normalize_tool_result_content(tool_result.content),
+                        "content": (
+                            normalize_tool_result_content(tool_result.content)
+                            if tool_result.tool_name == "read_file"
+                            else tool_result.content
+                        ),
                         "error": tool_result.error,
                         **tool_result.data,
                     },

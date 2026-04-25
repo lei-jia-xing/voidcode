@@ -4854,6 +4854,36 @@ class _MultiStepStubGraph:
         return _StubStep(output="done", is_finished=True)
 
 
+class _TaggedWriteGraph:
+    def step(
+        self,
+        request: GraphRunRequest,
+        tool_results: tuple[object, ...],
+        *,
+        session: SessionState,
+    ) -> _StubStep:
+        _ = request, session
+        if not tool_results:
+            return _StubStep(
+                tool_call=ToolCall(
+                    tool_name="write_file",
+                    arguments={
+                        "path": "tagged.txt",
+                        "content": "\n".join(
+                            [
+                                "<path>sample.txt</path>",
+                                "<type>file</type>",
+                                "<content>",
+                                "1: should stay raw",
+                                "</content>",
+                            ]
+                        ),
+                    },
+                )
+            )
+        return _StubStep(output="done", is_finished=True)
+
+
 def test_runtime_resumes_with_subsequent_tool_calls_properly(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
@@ -9053,6 +9083,32 @@ def test_runtime_downgrades_to_next_provider_target_on_provider_failures(
         "to_model": "demo",
         "attempt": 1,
     }
+
+
+def test_runtime_tool_completed_preserves_non_read_file_tagged_content(tmp_path: Path) -> None:
+    tagged_content = "\n".join(
+        [
+            "<path>sample.txt</path>",
+            "<type>file</type>",
+            "<content>",
+            "1: should stay raw",
+            "</content>",
+        ]
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_TaggedWriteGraph(),
+        config=RuntimeConfig(approval_mode="allow"),
+        permission_policy=PermissionPolicy(mode="allow"),
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="go", session_id="non-readfile-tagged-content"))
+
+    tool_completed_event = next(
+        event for event in response.events if event.event_type == "runtime.tool_completed"
+    )
+    assert tool_completed_event.payload["tool"] == "write_file"
+    assert tool_completed_event.payload["content"] == tagged_content
 
 
 def test_runtime_provider_streaming_emits_ordered_provider_stream_events(
