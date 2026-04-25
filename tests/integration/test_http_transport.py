@@ -51,6 +51,10 @@ class RuntimeResponseLike(Protocol):
     output: str | None
 
 
+class RuntimeSessionDebugSnapshotLike(Protocol):
+    prompt: str
+
+
 class RuntimeRequestLike(Protocol):
     prompt: str
     session_id: str | None
@@ -100,6 +104,8 @@ class RuntimeRunner(Protocol):
         question_request_id: str,
         responses: tuple[object, ...],
     ) -> RuntimeResponseLike: ...
+
+    def session_debug_snapshot(self, *, session_id: str) -> RuntimeSessionDebugSnapshotLike: ...
 
 
 class RuntimeFactory(Protocol):
@@ -680,6 +686,50 @@ def test_transport_reads_session_result_with_transcript(tmp_path: Path) -> None:
     assert [
         event["event_type"] for event in cast(list[dict[str, object]], payload["transcript"])
     ] == [event.event_type for event in stored.events]
+
+
+def test_transport_reads_session_debug_snapshot(tmp_path: Path) -> None:
+    sample_file = tmp_path / "sample.txt"
+    _ = sample_file.write_text("debug payload\n", encoding="utf-8")
+    runtime_request, runtime_class = _load_runtime_types()
+    create_runtime_app = _load_transport_app_factory()
+
+    runtime = runtime_class(workspace=tmp_path)
+    stored = runtime.run(runtime_request(prompt="read sample.txt", session_id="debug-session"))
+
+    app = create_runtime_app(workspace=tmp_path)
+    response = _run_app(app, method="GET", path="/api/sessions/debug-session/debug")
+    payload = cast(dict[str, object], response.json())
+
+    assert response.status == 200
+    assert payload["prompt"] == "read sample.txt"
+    assert payload["persisted_status"] == "completed"
+    assert payload["current_status"] == "completed"
+    assert payload["active"] is False
+    assert payload["resumable"] is False
+    assert payload["replayable"] is True
+    assert payload["terminal"] is True
+    assert payload["resume_checkpoint_kind"] == "terminal"
+    assert payload["pending_approval"] is None
+    assert payload["pending_question"] is None
+    assert payload["last_event_sequence"] == stored.events[-1].sequence
+    assert (
+        cast(dict[str, object], payload["last_relevant_event"])["event_type"]
+        == "graph.response_ready"
+    )
+    assert payload["last_failure_event"] is None
+    assert payload["failure"] is None
+    assert payload["suggested_operator_action"] == "replay"
+
+
+def test_transport_returns_not_found_for_missing_session_debug_snapshot(tmp_path: Path) -> None:
+    create_runtime_app = _load_transport_app_factory()
+    app = create_runtime_app(workspace=tmp_path)
+
+    response = _run_app(app, method="GET", path="/api/sessions/missing-session/debug")
+
+    assert response.status == 404
+    assert response.json() == {"error": "unknown session: missing-session"}
 
 
 def test_transport_resolves_pending_approval_allow_over_http(tmp_path: Path) -> None:

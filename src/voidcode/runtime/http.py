@@ -17,6 +17,7 @@ from .contracts import (
     RuntimeRequest,
     RuntimeRequestError,
     RuntimeResponse,
+    RuntimeSessionDebugSnapshot,
     RuntimeSessionResult,
     RuntimeStreamChunk,
     validate_runtime_request_metadata,
@@ -70,6 +71,8 @@ class RuntimeTransport(Protocol):
 
     def session_result(self, *, session_id: str) -> RuntimeSessionResult: ...
 
+    def session_debug_snapshot(self, *, session_id: str) -> RuntimeSessionDebugSnapshot: ...
+
     def list_notifications(self) -> tuple[RuntimeNotification, ...]: ...
 
     def acknowledge_notification(self, *, notification_id: str) -> RuntimeNotification: ...
@@ -89,6 +92,13 @@ class RuntimeTransport(Protocol):
         question_request_id: str,
         responses: tuple[QuestionResponse, ...],
     ) -> RuntimeResponse: ...
+
+
+class RuntimeSessionDebugEventLike(Protocol):
+    sequence: int
+    event_type: str
+    source: str
+    payload: dict[str, object]
 
 
 class Receive(Protocol):
@@ -270,6 +280,7 @@ class RuntimeTransportApp:
             is_approval_route = session_path.endswith("/approval")
             is_question_route = session_path.endswith("/question")
             is_result_route = session_path.endswith("/result")
+            is_debug_route = session_path.endswith("/debug")
             session_id = (
                 session_path.removesuffix("/tasks")
                 if is_task_list_route
@@ -279,6 +290,8 @@ class RuntimeTransportApp:
                 if is_question_route
                 else session_path.removesuffix("/result")
                 if is_result_route
+                else session_path.removesuffix("/debug")
+                if is_debug_route
                 else session_path
             )
             try:
@@ -310,6 +323,8 @@ class RuntimeTransportApp:
                 if is_question_route
                 else session_path.removesuffix("/result")
                 if is_result_route
+                else session_path.removesuffix("/debug")
+                if is_debug_route
                 else session_path
             )
             if is_approval_route:
@@ -349,6 +364,16 @@ class RuntimeTransportApp:
                     )
                     return
                 await self._handle_session_result(session_id=session_id, send=send)
+                return
+            if is_debug_route:
+                if method != "GET":
+                    await self._json_response(
+                        send,
+                        status=405,
+                        payload={"error": "method not allowed"},
+                    )
+                    return
+                await self._handle_session_debug(session_id=session_id, send=send)
                 return
             if method != "GET":
                 await self._json_response(
@@ -637,6 +662,21 @@ class RuntimeTransportApp:
             send,
             status=200,
             payload=self._serialize_session_result(result),
+        )
+
+    async def _handle_session_debug(self, *, session_id: str, send: Send) -> None:
+        runtime = self._runtime_factory()
+        try:
+            snapshot = runtime.session_debug_snapshot(session_id=session_id)
+        except ValueError as exc:
+            await self._json_response(send, status=404, payload={"error": str(exc)})
+            return
+        finally:
+            self._close_runtime(runtime)
+        await self._json_response(
+            send,
+            status=200,
+            payload=self._serialize_session_debug_snapshot(snapshot),
         )
 
     async def _handle_approval_resolution(
@@ -992,6 +1032,87 @@ class RuntimeTransportApp:
             "transcript": [
                 RuntimeTransportApp._serialize_event(event) for event in result.transcript
             ],
+        }
+
+    @staticmethod
+    def _serialize_session_debug_snapshot(
+        snapshot: RuntimeSessionDebugSnapshot,
+    ) -> dict[str, object]:
+        return {
+            "session": RuntimeTransportApp._serialize_session_state(snapshot.session),
+            "prompt": snapshot.prompt,
+            "persisted_status": snapshot.persisted_status,
+            "current_status": snapshot.current_status,
+            "active": snapshot.active,
+            "resumable": snapshot.resumable,
+            "replayable": snapshot.replayable,
+            "terminal": snapshot.terminal,
+            "resume_checkpoint_kind": snapshot.resume_checkpoint_kind,
+            "pending_approval": (
+                {
+                    "request_id": snapshot.pending_approval.request_id,
+                    "tool_name": snapshot.pending_approval.tool_name,
+                    "target_summary": snapshot.pending_approval.target_summary,
+                    "reason": snapshot.pending_approval.reason,
+                    "policy_mode": snapshot.pending_approval.policy_mode,
+                    "arguments": snapshot.pending_approval.arguments,
+                    "owner_session_id": snapshot.pending_approval.owner_session_id,
+                    "owner_parent_session_id": snapshot.pending_approval.owner_parent_session_id,
+                    "delegated_task_id": snapshot.pending_approval.delegated_task_id,
+                }
+                if snapshot.pending_approval is not None
+                else None
+            ),
+            "pending_question": (
+                {
+                    "request_id": snapshot.pending_question.request_id,
+                    "tool_name": snapshot.pending_question.tool_name,
+                    "question_count": snapshot.pending_question.question_count,
+                    "headers": list(snapshot.pending_question.headers),
+                }
+                if snapshot.pending_question is not None
+                else None
+            ),
+            "last_event_sequence": snapshot.last_event_sequence,
+            "last_relevant_event": RuntimeTransportApp._serialize_session_debug_event(
+                snapshot.last_relevant_event
+            ),
+            "last_failure_event": RuntimeTransportApp._serialize_session_debug_event(
+                snapshot.last_failure_event
+            ),
+            "failure": (
+                {
+                    "classification": snapshot.failure.classification,
+                    "message": snapshot.failure.message,
+                }
+                if snapshot.failure is not None
+                else None
+            ),
+            "last_tool": (
+                {
+                    "tool_name": snapshot.last_tool.tool_name,
+                    "status": snapshot.last_tool.status,
+                    "summary": snapshot.last_tool.summary,
+                    "arguments": snapshot.last_tool.arguments,
+                    "sequence": snapshot.last_tool.sequence,
+                }
+                if snapshot.last_tool is not None
+                else None
+            ),
+            "suggested_operator_action": snapshot.suggested_operator_action,
+            "operator_guidance": snapshot.operator_guidance,
+        }
+
+    @staticmethod
+    def _serialize_session_debug_event(event: object | None) -> dict[str, object] | None:
+        if event is None:
+            return None
+        typed_event = cast("RuntimeSessionDebugEventLike", event)
+        return {
+            "sequence": typed_event.sequence,
+            "event_type": typed_event.event_type,
+            "source": typed_event.source,
+            "payload": typed_event.payload,
         }
 
     @staticmethod
