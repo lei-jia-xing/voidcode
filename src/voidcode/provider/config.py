@@ -170,6 +170,7 @@ class _ProviderFallbackPayload(_ProviderPayloadModel):
     preferred_model: BoundaryRequiredString
     fallback_models: BoundaryStringList = ()
 
+
 # =============================================================================
 # Simplified Provider Config for Chinese AI Providers
 # Provides a unified, minimal configuration interface for GLM, MiniMax, Kimi, OpenCode Go, and Qwen

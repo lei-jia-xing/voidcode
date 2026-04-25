@@ -4,7 +4,7 @@ import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Literal, cast
+from typing import Literal
 from urllib.error import URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen

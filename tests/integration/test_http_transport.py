@@ -1327,9 +1327,7 @@ def test_transport_rejects_invalid_question_answer_item_payload(tmp_path: Path) 
     )
 
     assert response.status == 400
-    assert response.json() == {
-        "error": "responses[0].answers[0] must be a non-empty string"
-    }
+    assert response.json() == {"error": "responses[0].answers[0] must be a non-empty string"}
 
 
 def test_transport_rejects_non_post_method_for_question_route(tmp_path: Path) -> None:
