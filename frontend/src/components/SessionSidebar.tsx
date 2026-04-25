@@ -5,21 +5,12 @@ import {
   ChevronRight,
   Code2,
   FolderOpen,
-  Globe,
   Plus,
-  Settings,
-  Server,
-  Loader2,
-  CheckCircle2,
-  XCircle,
-  GitCompare,
 } from "lucide-react";
 import type {
-  RuntimeStatusSnapshot,
   StoredSessionSummary,
   WorkspaceRegistrySnapshot,
 } from "../lib/runtime/types";
-import { StatusBar } from "./StatusBar";
 
 interface SessionSidebarProps {
   workspaces: WorkspaceRegistrySnapshot | null;
@@ -29,21 +20,8 @@ interface SessionSidebarProps {
   sessionsError: string | null;
   isRunning: boolean;
   isReplayLoading: boolean;
-  language: string;
-  runtimeTestStatus: "idle" | "testing" | "success" | "error";
   onSelectSession: (sessionId: string) => void;
-  onToggleLanguage: () => void;
   onOpenProjects: () => void;
-  onToggleReview: () => void;
-  onOpenSettings: () => void;
-  onTestRuntime: () => void;
-  showReview: boolean;
-  statusSnapshot: RuntimeStatusSnapshot | null;
-  statusStatus: "idle" | "loading" | "success" | "error";
-  statusError: string | null;
-  mcpRetryStatus?: "idle" | "loading" | "success" | "error";
-  mcpRetryError?: string | null;
-  onRetryMcp?: () => void;
 }
 
 function formatSessionUpdatedAt(updatedAt: number, now = Date.now()): string {
@@ -74,21 +52,8 @@ export function SessionSidebar({
   sessionsError,
   isRunning,
   isReplayLoading,
-  language,
-  runtimeTestStatus,
   onSelectSession,
-  onToggleLanguage,
   onOpenProjects,
-  onToggleReview,
-  onOpenSettings,
-  onTestRuntime,
-  showReview,
-  statusSnapshot,
-  statusStatus,
-  statusError,
-  mcpRetryStatus,
-  mcpRetryError,
-  onRetryMcp,
 }: SessionSidebarProps) {
   const { t } = useTranslation();
   const [isExpanded, setIsExpanded] = useState(true);
@@ -200,27 +165,7 @@ export function SessionSidebar({
                     <Plus className="w-3.5 h-3.5" />
                     {t("project.openTitle")}
                   </button>
-                  <button
-                    type="button"
-                    onClick={onToggleReview}
-                    className={`rounded-lg border px-3 py-2 text-xs font-medium transition-colors ${
-                      showReview
-                        ? "border-indigo-500/30 bg-indigo-500/10 text-indigo-300"
-                        : "border-slate-700 text-slate-400 hover:bg-slate-800/60 hover:text-slate-200"
-                    }`}
-                  >
-                    <GitCompare className="w-3.5 h-3.5" />
-                  </button>
                 </div>
-
-                <StatusBar
-                  snapshot={statusSnapshot}
-                  status={statusStatus}
-                  error={statusError}
-                  mcpRetryStatus={mcpRetryStatus}
-                  mcpRetryError={mcpRetryError}
-                  onRetryMcp={onRetryMcp}
-                />
               </div>
             </div>
 
@@ -336,63 +281,6 @@ export function SessionSidebar({
             </button>
           </div>
         )}
-      </div>
-
-      <div className="p-3 border-t border-slate-800 space-y-1">
-        <button
-          type="button"
-          onClick={onToggleLanguage}
-          aria-label={language === "en" ? t("language.zh") : t("language.en")}
-          className="w-full flex items-center justify-center md:justify-start md:px-3 py-2.5 rounded-lg text-slate-400 hover:bg-slate-800/50 hover:text-slate-200 transition-colors gap-2"
-        >
-          <Globe className="w-5 h-5" />
-          {isExpanded && (
-            <span className="hidden md:block font-medium text-sm">
-              {language === "en" ? t("language.zh") : t("language.en")}
-            </span>
-          )}
-        </button>
-        <button
-          type="button"
-          onClick={onTestRuntime}
-          disabled={runtimeTestStatus === "testing"}
-          aria-label={t("debug.testRuntime")}
-          className="w-full flex items-center justify-center md:justify-start md:px-3 py-2.5 rounded-lg text-slate-400 hover:bg-slate-800/50 hover:text-slate-200 transition-colors gap-2"
-        >
-          {runtimeTestStatus === "testing" ? (
-            <Loader2 className="w-5 h-5 animate-spin text-indigo-400" />
-          ) : runtimeTestStatus === "success" ? (
-            <CheckCircle2 className="w-5 h-5 text-emerald-400" />
-          ) : runtimeTestStatus === "error" ? (
-            <XCircle className="w-5 h-5 text-rose-400" />
-          ) : (
-            <Server className="w-5 h-5" />
-          )}
-          {isExpanded && (
-            <span className="hidden md:block font-medium text-sm">
-              {runtimeTestStatus === "testing"
-                ? t("debug.testing")
-                : runtimeTestStatus === "success"
-                  ? t("debug.success")
-                  : runtimeTestStatus === "error"
-                    ? t("debug.error")
-                    : t("debug.testRuntime")}
-            </span>
-          )}
-        </button>
-        <button
-          type="button"
-          onClick={onOpenSettings}
-          aria-label={t("nav.settings")}
-          className="w-full flex items-center justify-center md:justify-start md:px-3 py-2.5 rounded-lg text-slate-400 hover:bg-slate-800/50 hover:text-slate-200 transition-colors gap-2"
-        >
-          <Settings className="w-5 h-5" />
-          {isExpanded && (
-            <span className="hidden md:block font-medium text-sm">
-              {t("nav.settings")}
-            </span>
-          )}
-        </button>
       </div>
     </aside>
   );

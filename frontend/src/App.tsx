@@ -9,7 +9,16 @@ import { OpenProjectModal } from "./components/OpenProjectModal";
 import { ReviewPanel } from "./components/ReviewPanel";
 import { deriveChatMessages } from "./lib/runtime/event-parser";
 import { RuntimeClient } from "./lib/runtime/client";
-import { Loader2 } from "lucide-react";
+import {
+  Loader2,
+  Settings,
+  Globe,
+  Server,
+  CheckCircle2,
+  XCircle,
+  GitCompare,
+} from "lucide-react";
+import { StatusBar } from "./components/StatusBar";
 
 function App() {
   const {
@@ -200,23 +209,8 @@ function App() {
         sessionsError={sessionsError}
         isRunning={isRunning}
         isReplayLoading={isReplayLoading}
-        language={language}
-        runtimeTestStatus={runtimeTestStatus}
         onSelectSession={selectSession}
-        onToggleLanguage={toggleLanguage}
         onOpenProjects={() => setShowProjects(true)}
-        onToggleReview={() => setShowReview((value) => !value)}
-        onOpenSettings={() => setShowSettings(true)}
-        onTestRuntime={testRuntime}
-        showReview={showReview}
-        statusSnapshot={statusSnapshot}
-        statusStatus={statusStatus}
-        statusError={statusError}
-        mcpRetryStatus={mcpRetryStatus}
-        mcpRetryError={mcpRetryError}
-        onRetryMcp={() => {
-          void retryMcpConnections();
-        }}
       />
 
       <div className="flex-1 flex flex-col min-w-0">
@@ -256,6 +250,70 @@ function App() {
                   />
                   {isRunning ? t("session.agentBusy") : t("session.agentIdle")}
                 </span>
+
+                <div className="w-px h-4 bg-slate-800 mx-1" />
+
+                <StatusBar
+                  snapshot={statusSnapshot}
+                  status={statusStatus}
+                  error={statusError}
+                  mcpRetryStatus={mcpRetryStatus}
+                  mcpRetryError={mcpRetryError}
+                  onRetryMcp={() => {
+                    void retryMcpConnections();
+                  }}
+                />
+
+                <button
+                  type="button"
+                  onClick={() => setShowReview((value) => !value)}
+                  title={t("review.title")}
+                  className={`rounded-lg border px-2 py-1.5 text-xs font-medium transition-colors ${
+                    showReview
+                      ? "border-indigo-500/30 bg-indigo-500/10 text-indigo-300"
+                      : "border-slate-700 text-slate-400 hover:bg-slate-800/60 hover:text-slate-200"
+                  }`}
+                >
+                  <GitCompare className="w-4 h-4" />
+                </button>
+
+                <button
+                  type="button"
+                  onClick={toggleLanguage}
+                  title={
+                    language === "en" ? t("language.zh") : t("language.en")
+                  }
+                  className="rounded-lg border border-slate-700 bg-transparent px-2 py-1.5 text-slate-400 hover:bg-slate-800/60 hover:text-slate-200 transition-colors"
+                >
+                  <Globe className="w-4 h-4" />
+                </button>
+
+                <button
+                  type="button"
+                  onClick={testRuntime}
+                  disabled={runtimeTestStatus === "testing"}
+                  title={t("debug.testRuntime")}
+                  className="rounded-lg border border-slate-700 bg-transparent px-2 py-1.5 text-slate-400 hover:bg-slate-800/60 hover:text-slate-200 transition-colors"
+                >
+                  {runtimeTestStatus === "testing" ? (
+                    <Loader2 className="w-4 h-4 animate-spin text-indigo-400" />
+                  ) : runtimeTestStatus === "success" ? (
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                  ) : runtimeTestStatus === "error" ? (
+                    <XCircle className="w-4 h-4 text-rose-400" />
+                  ) : (
+                    <Server className="w-4 h-4" />
+                  )}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setShowSettings(true)}
+                  title={t("nav.settings")}
+                  className="rounded-lg border border-slate-700 bg-transparent px-2 py-1.5 text-slate-400 hover:bg-slate-800/60 hover:text-slate-200 transition-colors"
+                >
+                  <Settings className="w-4 h-4" />
+                </button>
               </div>
             </header>
 
@@ -295,21 +353,65 @@ function App() {
             />
           </>
         ) : (
-          <div className="flex flex-1 items-center justify-center p-6">
-            <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-[#0c0c0e] p-6 text-center shadow-[0_0_30px_rgba(0,0,0,0.25)]">
-              <div className="text-lg font-semibold text-slate-100">
-                {t("project.emptyStateTitle")}
+          <div className="flex flex-1 flex-col relative">
+            <header className="h-14 flex items-center justify-end px-4 border-b border-transparent flex-shrink-0 absolute top-0 left-0 right-0 z-10">
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={toggleLanguage}
+                  title={
+                    language === "en" ? t("language.zh") : t("language.en")
+                  }
+                  className="rounded-lg border border-slate-700 bg-slate-900/50 px-2 py-1.5 text-slate-400 hover:bg-slate-800/60 hover:text-slate-200 transition-colors"
+                >
+                  <Globe className="w-4 h-4" />
+                </button>
+
+                <button
+                  type="button"
+                  onClick={testRuntime}
+                  disabled={runtimeTestStatus === "testing"}
+                  title={t("debug.testRuntime")}
+                  className="rounded-lg border border-slate-700 bg-slate-900/50 px-2 py-1.5 text-slate-400 hover:bg-slate-800/60 hover:text-slate-200 transition-colors"
+                >
+                  {runtimeTestStatus === "testing" ? (
+                    <Loader2 className="w-4 h-4 animate-spin text-indigo-400" />
+                  ) : runtimeTestStatus === "success" ? (
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                  ) : runtimeTestStatus === "error" ? (
+                    <XCircle className="w-4 h-4 text-rose-400" />
+                  ) : (
+                    <Server className="w-4 h-4" />
+                  )}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setShowSettings(true)}
+                  title={t("nav.settings")}
+                  className="rounded-lg border border-slate-700 bg-slate-900/50 px-2 py-1.5 text-slate-400 hover:bg-slate-800/60 hover:text-slate-200 transition-colors"
+                >
+                  <Settings className="w-4 h-4" />
+                </button>
               </div>
-              <p className="mt-2 text-sm text-slate-400">
-                {t("project.emptyStateBody")}
-              </p>
-              <button
-                type="button"
-                onClick={() => setShowProjects(true)}
-                className="mt-5 inline-flex items-center justify-center rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-indigo-500"
-              >
-                {t("project.openTitle")}
-              </button>
+            </header>
+
+            <div className="flex flex-1 items-center justify-center p-6 pt-14">
+              <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-[#0c0c0e] p-6 text-center shadow-[0_0_30px_rgba(0,0,0,0.25)]">
+                <div className="text-lg font-semibold text-slate-100">
+                  {t("project.emptyStateTitle")}
+                </div>
+                <p className="mt-2 text-sm text-slate-400">
+                  {t("project.emptyStateBody")}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setShowProjects(true)}
+                  className="mt-5 inline-flex items-center justify-center rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-indigo-500"
+                >
+                  {t("project.openTitle")}
+                </button>
+              </div>
             </div>
           </div>
         )}

@@ -94,7 +94,7 @@ describe("App", () => {
   it("toggles language when language button is clicked", () => {
     render(<App />);
 
-    const langBtn = screen.getByText("中文");
+    const langBtn = screen.getByTitle("中文");
     expect(langBtn).toBeInTheDocument();
 
     fireEvent.click(langBtn);
@@ -834,7 +834,7 @@ describe("App", () => {
   it("renders settings panel when settings button is clicked", () => {
     render(<App />);
 
-    const settingsButton = screen.getByText("Settings");
+    const settingsButton = screen.getByTitle("Settings");
     fireEvent.click(settingsButton);
 
     expect(screen.getByTestId("settings-panel-mock")).toBeInTheDocument();
