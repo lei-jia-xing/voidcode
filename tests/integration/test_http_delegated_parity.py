@@ -140,6 +140,7 @@ class RuntimeFactory(Protocol):
         *,
         workspace: Path,
         permission_policy: object | None = None,
+        graph: object | None = None,
     ) -> RuntimeRunner: ...
 
 
@@ -840,6 +841,43 @@ def test_http_background_task_output_endpoint_exposes_typed_delegated_payload_fo
         "result_available": True,
     }
     assert payload["output"] == "hello"
+
+
+def test_http_background_task_output_endpoint_preserves_empty_child_output(tmp_path: Path) -> None:
+    create_runtime_app = _load_transport_app_factory()
+    runtime_request, runtime_class = _load_runtime_types()
+
+    class _EmptyOutputGraph:
+        def step(
+            self,
+            request: object,
+            tool_results: tuple[object, ...],
+            *,
+            session: object,
+        ) -> object:
+            _ = tool_results, session
+            return type("_Step", (), {"output": "", "is_finished": True, "tool_call": None})()
+
+    runtime = runtime_class(workspace=tmp_path, graph=_EmptyOutputGraph())
+    _ = runtime.run(runtime_request(prompt="read sample.txt", session_id="leader-session"))
+    started = runtime.start_background_task(
+        runtime_request(prompt="empty child", parent_session_id="leader-session")
+    )
+    _wait_for_background_task_terminal(runtime, started.task.id)
+
+    app = create_runtime_app(workspace=tmp_path, runtime_factory=lambda: runtime)
+
+    status, _headers, body = _run_app(
+        app,
+        method="GET",
+        path=f"/api/tasks/{started.task.id}/output",
+    )
+
+    payload = cast(dict[str, object], json.loads(body.decode("utf-8")))
+
+    assert status == 200
+    assert payload["session_result"] is not None
+    assert payload["output"] == ""
 
 
 def test_http_tasks_endpoints_cover_real_runtime_completed_lifecycle(tmp_path: Path) -> None:
