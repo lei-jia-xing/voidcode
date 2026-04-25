@@ -36,7 +36,16 @@
    ```
    *预期结果*：CLI 从持久化存储中检索并完整渲染所有历史事件及 `RESULT` 块。
 
-4. **HTTP 传输观察**：通过 API 暴露会话状态。
+4. **失败诊断观察面**：通过 CLI 或 HTTP 读取 runtime-owned debug snapshot。
+   ```bash
+   uv run voidcode sessions debug <session-id> --workspace .
+
+   # 或者在 HTTP 服务启动后读取同一份诊断视图
+   curl http://127.0.0.1:8000/api/sessions/<session-id>/debug
+   ```
+   *预期结果*：可以直接看到当前/持久化 session status、是否 active、是否可 resume / replay、最近相关事件、最近失败分类，以及建议的下一步操作，而不需要直接读 SQLite 或源码。
+
+5. **HTTP 传输观察**：通过 API 暴露会话状态。
    ```bash
    # 终端 A
    uv run voidcode serve --workspace . --port 8000
@@ -44,7 +53,7 @@
    # 终端 B
    curl http://127.0.0.1:8000/api/sessions
    ```
-   *预期结果*：终端 B 收到包含该会话元数据（含 `prompt` 和 `status`）的 JSON 数组。
+   *预期结果*：终端 B 收到包含该会话元数据（含 `prompt` 和 `status`）的 JSON 数组，并可进一步访问 `/api/sessions/<session-id>/debug` 获取诊断快照。
 
 ## 验证阶梯
 
@@ -62,7 +71,7 @@
 
 ### 3. 客户端冒烟测试
 - **CLI TTY 审批**：验证在 TTY 模式下能否正确触发并响应内联审批提示。
-- **HTTP/SSE**：通过 HTTP 验证流式序列化和会话重放。
+- **HTTP/SSE**：通过 HTTP 验证流式序列化、会话重放和 session debug snapshot。
 - **命令**：`uv run pytest tests/integration/test_http_transport.py`
 
 ### 4. 手动 QA
@@ -73,7 +82,7 @@
 
 要称之为 MVP 可演示，贡献者必须提供：
 - `mise run check` 的输出（全绿）。
-- 在新工作区成功执行**规范演示流程**（步骤 1-4）的日志，特别是包含内联审批交互的部分。
+- 在新工作区成功执行**规范演示流程**（步骤 1-5）的日志，特别是包含内联审批交互和失败诊断快照的部分。
 - 验证 `.voidcode/sessions.sqlite3` 中包含对应的会话和事件行。
 
 ## 边界与已知差距

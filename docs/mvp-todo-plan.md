@@ -178,7 +178,7 @@ VoidCode 已经拥有扎实的 pre-MVP 基础：
 - [x] 为主要产品循环添加全栈测试覆盖
 - [ ] 针对常见失败和恢复记录操作员工作流
 - [x] 通过 `#82` 定义 retention / compaction / checkpoint invalidation 语义，并保证 replay / resume 在该策略下继续成立
-- [ ] 添加调试实时会话所需的观测钩子/日志
+- [x] 添加调试实时会话所需的最小可用观测面（runtime debug snapshot + CLI/HTTP 入口）
 - [x] 更新 README 和贡献者文档以反映真实的 MVP 路径
 
 ### 验收标准
