@@ -11,8 +11,6 @@ import {
   Wrench,
   PauseCircle,
   AlertCircle,
-  User,
-  Bot,
 } from "lucide-react";
 import { ChatMessage } from "../lib/runtime/event-parser";
 
@@ -190,7 +188,6 @@ export function ChatThread({
       <div className="max-w-3xl mx-auto space-y-6">
         {!hasMessages && (
           <div className="flex flex-col items-center justify-center py-20 text-slate-500">
-            <Bot className="w-12 h-12 mb-4 text-slate-600" />
             <p className="text-lg font-medium text-slate-400 mb-1">
               {t("chat.welcomeTitle")}
             </p>
@@ -206,14 +203,16 @@ export function ChatThread({
                 className="flex items-start gap-3 justify-end"
               >
                 <div className="flex-1 flex justify-end">
-                  <div className="bg-indigo-600 text-indigo-50 rounded-2xl rounded-tr-sm px-4 py-3 max-w-[85%]">
-                    <p className="text-sm leading-relaxed whitespace-pre-wrap">
-                      {message.content}
-                    </p>
+                  <div className="max-w-[85%]">
+                    <div className="mb-1 text-right text-[11px] font-medium uppercase tracking-wider text-slate-400">
+                      You
+                    </div>
+                    <div className="bg-indigo-600 text-indigo-50 rounded-2xl rounded-tr-sm px-4 py-3">
+                      <p className="text-sm leading-relaxed whitespace-pre-wrap">
+                        {message.content}
+                      </p>
+                    </div>
                   </div>
-                </div>
-                <div className="w-7 h-7 rounded-full bg-indigo-500/20 flex items-center justify-center flex-shrink-0 mt-0.5">
-                  <User className="w-4 h-4 text-indigo-400" />
                 </div>
               </div>
             );
@@ -221,12 +220,9 @@ export function ChatThread({
 
           return (
             <div key={message.id} className="flex items-start gap-3">
-              <div className="w-7 h-7 rounded-full bg-emerald-500/20 flex items-center justify-center flex-shrink-0 mt-0.5">
-                <Bot className="w-4 h-4 text-emerald-400" />
-              </div>
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 mb-1">
-                  <span className="text-xs font-medium text-slate-300">
+                  <span className="text-[11px] font-medium uppercase tracking-wider text-slate-400">
                     {t("chat.assistantName")}
                   </span>
                   <StatusIndicator status={message.status} />
@@ -258,12 +254,9 @@ export function ChatThread({
           messages.length > 0 &&
           messages[messages.length - 1].role === "user" && (
             <div className="flex items-start gap-3">
-              <div className="w-7 h-7 rounded-full bg-emerald-500/20 flex items-center justify-center flex-shrink-0 mt-0.5">
-                <Bot className="w-4 h-4 text-emerald-400" />
-              </div>
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 mb-1">
-                  <span className="text-xs font-medium text-slate-300">
+                  <span className="text-[11px] font-medium uppercase tracking-wider text-slate-400">
                     {t("chat.assistantName")}
                   </span>
                   <StatusIndicator status="in_progress" />
@@ -280,9 +273,6 @@ export function ChatThread({
 
         {approvalError && (
           <div className="flex items-start gap-3">
-            <div className="w-7 h-7 rounded-full bg-rose-500/20 flex items-center justify-center flex-shrink-0 mt-0.5">
-              <AlertCircle className="w-4 h-4 text-rose-400" />
-            </div>
             <div className="flex-1 min-w-0">
               <div className="bg-rose-500/10 border border-rose-500/20 rounded-2xl rounded-tl-sm px-4 py-3 text-sm text-rose-300">
                 {t("approval.error", { message: approvalError })}
