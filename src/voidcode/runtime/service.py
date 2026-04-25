@@ -1835,15 +1835,14 @@ class VoidCodeRuntime:
         return self._background_task_supervisor.cancel_background_task(task_id)
 
     def session_result(self, *, session_id: str) -> RuntimeSessionResult:
-        validate_session_id(session_id)
-        result = self._session_store.load_session_result(
-            workspace=self._workspace,
-            session_id=session_id,
-        )
-        self._validate_session_workspace(result.session, session_id=session_id)
+        _ = self._load_session_result(session_id=session_id)
         self._background_task_supervisor.reconcile_parent_background_task_events_for_session(
             parent_session_id=session_id
         )
+        return self._load_session_result(session_id=session_id)
+
+    def _load_session_result(self, *, session_id: str) -> RuntimeSessionResult:
+        validate_session_id(session_id)
         result = self._session_store.load_session_result(
             workspace=self._workspace,
             session_id=session_id,
@@ -1855,7 +1854,7 @@ class VoidCodeRuntime:
         validate_session_id(session_id)
         active = self._is_active_session_id(session_id)
         try:
-            result = self.session_result(session_id=session_id)
+            result = self._load_session_result(session_id=session_id)
         except UnknownSessionError:
             if not active:
                 raise

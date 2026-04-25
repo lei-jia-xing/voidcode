@@ -2014,6 +2014,94 @@ def test_runtime_reconciles_persisted_child_terminal_truth_and_backfills_parent_
     )
 
 
+def test_runtime_session_debug_snapshot_does_not_reconcile_parent_background_events(
+    tmp_path: Path,
+) -> None:
+    initial_runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    _ = initial_runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+    store = _private_attr(initial_runtime, "_session_store")
+    task_module = importlib.import_module("voidcode.runtime.task")
+    store.create_background_task(
+        workspace=tmp_path,
+        task=task_module.BackgroundTaskState(
+            task=task_module.BackgroundTaskRef(id="task-debug-inspect"),
+            status="running",
+            request=task_module.BackgroundTaskRequestSnapshot(
+                prompt="background child",
+                parent_session_id="leader-session",
+            ),
+            session_id="child-session",
+            created_at=1,
+            updated_at=1,
+            started_at=1,
+        ),
+    )
+    store.save_run(
+        workspace=tmp_path,
+        request=RuntimeRequest(
+            prompt="background child",
+            session_id="child-session",
+            parent_session_id="leader-session",
+            metadata={
+                "background_run": True,
+                "background_task_id": "task-debug-inspect",
+            },
+        ),
+        response=RuntimeResponse(
+            session=SessionState(
+                session=runtime_service_module.SessionRef(
+                    id="child-session",
+                    parent_id="leader-session",
+                ),
+                status="completed",
+                turn=1,
+                metadata={
+                    "background_run": True,
+                    "background_task_id": "task-debug-inspect",
+                },
+            ),
+            events=(
+                EventEnvelope(
+                    session_id="child-session",
+                    sequence=1,
+                    event_type="runtime.request_received",
+                    source="runtime",
+                    payload={"prompt": "background child"},
+                ),
+                EventEnvelope(
+                    session_id="child-session",
+                    sequence=2,
+                    event_type="graph.response_ready",
+                    source="graph",
+                    payload={},
+                ),
+            ),
+            output="background child",
+        ),
+    )
+
+    resumed_runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+
+    snapshot = resumed_runtime.session_debug_snapshot(session_id="leader-session")
+    before_resume = resumed_runtime._session_store.load_session_result(  # pyright: ignore[reportPrivateUsage]
+        workspace=tmp_path,
+        session_id="leader-session",
+    )
+    resumed = resumed_runtime.resume("leader-session")
+
+    assert snapshot.current_status == "completed"
+    assert (
+        sum(
+            event.event_type == RUNTIME_BACKGROUND_TASK_COMPLETED
+            for event in before_resume.transcript
+        )
+        == 0
+    )
+    assert (
+        sum(event.event_type == RUNTIME_BACKGROUND_TASK_COMPLETED for event in resumed.events) == 1
+    )
+
+
 def test_runtime_resume_does_not_fail_unrelated_background_tasks(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
     store = _private_attr(runtime, "_session_store")
