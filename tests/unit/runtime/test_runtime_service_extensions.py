@@ -6535,19 +6535,20 @@ def test_runtime_effective_runtime_config_uses_request_metadata_max_steps_for_ne
         "lsp": {"mode": "disabled", "configured_enabled": False, "servers": []},
         "mcp": {"mode": "disabled", "configured_enabled": False, "servers": []},
     }
-    assert response.session.metadata["runtime_state"] == {
-        "acp": {
-            "mode": "disabled",
-            "configured_enabled": False,
-            "status": "disconnected",
-            "available": False,
-            "last_delegation": None,
-            "last_error": None,
-            "last_event_type": None,
-            "last_request_id": None,
-            "last_request_type": None,
-        }
+    runtime_state = cast(dict[str, object], response.session.metadata["runtime_state"])
+    assert runtime_state["acp"] == {
+        "mode": "disabled",
+        "configured_enabled": False,
+        "status": "disconnected",
+        "available": False,
+        "last_delegation": None,
+        "last_error": None,
+        "last_event_type": None,
+        "last_request_id": None,
+        "last_request_type": None,
     }
+    assert isinstance(runtime_state.get("run_id"), str)
+    assert cast(str, runtime_state["run_id"])
 
 
 def test_runtime_custom_plan_contributor_can_patch_prompt_and_metadata(tmp_path: Path) -> None:

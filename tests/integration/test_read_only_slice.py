@@ -1213,19 +1213,20 @@ def test_provider_runtime_executes_read_path_and_persists_config(tmp_path: Path)
         },
         "tool_timeout_seconds": None,
     }
-    assert result.session.metadata["runtime_state"] == {
-        "acp": {
-            "available": False,
-            "configured_enabled": False,
-            "last_delegation": None,
-            "last_error": None,
-            "last_event_type": None,
-            "last_request_id": None,
-            "last_request_type": None,
-            "mode": "disabled",
-            "status": "disconnected",
-        }
+    runtime_state = cast(dict[str, object], result.session.metadata["runtime_state"])
+    assert runtime_state["acp"] == {
+        "available": False,
+        "configured_enabled": False,
+        "last_delegation": None,
+        "last_error": None,
+        "last_event_type": None,
+        "last_request_id": None,
+        "last_request_type": None,
+        "mode": "disabled",
+        "status": "disconnected",
     }
+    assert isinstance(runtime_state.get("run_id"), str)
+    assert cast(str, runtime_state["run_id"])
     assert result.events[3].payload["mode"] == "provider"
     assert replay.output == result.output
 
@@ -1967,19 +1968,20 @@ def test_runtime_resume_uses_persisted_runtime_config_over_fresh_resume_override
             ],
         },
     }
-    assert replay.session.metadata["runtime_state"] == {
-        "acp": {
-            "available": False,
-            "configured_enabled": False,
-            "last_delegation": None,
-            "last_error": None,
-            "last_event_type": None,
-            "last_request_id": None,
-            "last_request_type": None,
-            "mode": "disabled",
-            "status": "disconnected",
-        }
+    runtime_state = cast(dict[str, object], replay.session.metadata["runtime_state"])
+    assert runtime_state["acp"] == {
+        "available": False,
+        "configured_enabled": False,
+        "last_delegation": None,
+        "last_error": None,
+        "last_event_type": None,
+        "last_request_id": None,
+        "last_request_type": None,
+        "mode": "disabled",
+        "status": "disconnected",
     }
+    assert isinstance(runtime_state.get("run_id"), str)
+    assert cast(str, runtime_state["run_id"])
 
 
 def test_runtime_resume_accepts_legacy_sessions_without_runtime_config_metadata(
@@ -2015,28 +2017,28 @@ def test_runtime_resume_accepts_legacy_sessions_without_runtime_config_metadata(
 
     assert replay.session.status == response.session.status
     assert replay.output == response.output
-    assert replay.session.metadata == {
-        "workspace": str(tmp_path),
-        "runtime_state": {
-            "acp": {
-                "available": False,
-                "configured_enabled": False,
-                "last_delegation": None,
-                "last_error": None,
-                "last_event_type": None,
-                "last_request_id": None,
-                "last_request_type": None,
-                "mode": "disabled",
-                "status": "disconnected",
-            }
-        },
-        "context_window": {
-            "compacted": False,
-            "compaction_reason": None,
-            "original_tool_result_count": 1,
-            "retained_tool_result_count": 1,
-            "max_tool_result_count": 4,
-        },
+    replay_metadata = cast(dict[str, object], replay.session.metadata)
+    assert replay_metadata["workspace"] == str(tmp_path)
+    runtime_state = cast(dict[str, object], replay_metadata["runtime_state"])
+    assert runtime_state["acp"] == {
+        "available": False,
+        "configured_enabled": False,
+        "last_delegation": None,
+        "last_error": None,
+        "last_event_type": None,
+        "last_request_id": None,
+        "last_request_type": None,
+        "mode": "disabled",
+        "status": "disconnected",
+    }
+    assert isinstance(runtime_state.get("run_id"), str)
+    assert cast(str, runtime_state["run_id"])
+    assert replay_metadata["context_window"] == {
+        "compacted": False,
+        "compaction_reason": None,
+        "original_tool_result_count": 1,
+        "retained_tool_result_count": 1,
+        "max_tool_result_count": 4,
     }
 
 
@@ -2075,19 +2077,20 @@ def test_runtime_resume_repairs_legacy_non_dict_runtime_state_metadata(tmp_path:
 
     assert replay.session.status == "completed"
     assert replay.output == "approved later"
-    assert replay.session.metadata["runtime_state"] == {
-        "acp": {
-            "available": False,
-            "configured_enabled": False,
-            "last_delegation": None,
-            "last_error": None,
-            "last_event_type": None,
-            "last_request_id": None,
-            "last_request_type": None,
-            "mode": "disabled",
-            "status": "disconnected",
-        }
+    runtime_state = cast(dict[str, object], replay.session.metadata["runtime_state"])
+    assert runtime_state["acp"] == {
+        "available": False,
+        "configured_enabled": False,
+        "last_delegation": None,
+        "last_error": None,
+        "last_event_type": None,
+        "last_request_id": None,
+        "last_request_type": None,
+        "mode": "disabled",
+        "status": "disconnected",
     }
+    assert isinstance(runtime_state.get("run_id"), str)
+    assert cast(str, runtime_state["run_id"])
 
 
 def test_runtime_denies_non_read_only_tool_on_resume(tmp_path: Path) -> None:
