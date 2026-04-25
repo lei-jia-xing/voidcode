@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -68,6 +69,23 @@ def test_read_file_tool_rejects_workspace_escape(tmp_path: Path) -> None:
             ToolCall(tool_name="read_file", arguments={"filePath": "../escape.txt"}),
             workspace=tmp_path,
         )
+
+
+def test_read_file_tool_sniffs_text_with_bounded_stream_read(tmp_path: Path) -> None:
+    sample = tmp_path / "sample.txt"
+    _ = sample.write_text("alpha\nbeta\n", encoding="utf-8")
+    tool = ReadFileTool()
+
+    with patch.object(
+        Path, "read_bytes", side_effect=AssertionError("read_bytes should not be used")
+    ):
+        result = tool.invoke(
+            ToolCall(tool_name="read_file", arguments={"filePath": "sample.txt"}),
+            workspace=tmp_path,
+        )
+
+    assert result.status == "ok"
+    assert "1: alpha" in (result.content or "")
 
 
 def test_tools_package_and_default_registry_export_read_file_tool() -> None:

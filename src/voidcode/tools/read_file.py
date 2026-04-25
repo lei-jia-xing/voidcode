@@ -17,6 +17,7 @@ from .contracts import ToolCall, ToolDefinition, ToolResult
 DEFAULT_READ_LIMIT = 2000
 MAX_LINE_LENGTH = 2000
 MAX_BYTES = 50 * 1024
+BINARY_SNIFF_BYTES = 4096
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,7 +67,8 @@ def _is_binary_file(path: Path) -> bool:
         return True
 
     try:
-        sample = path.read_bytes()[:4096]
+        with path.open("rb") as fh:
+            sample = fh.read(BINARY_SNIFF_BYTES)
     except OSError:
         return False
 
