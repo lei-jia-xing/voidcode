@@ -32,6 +32,14 @@ class ToolResult:
     content: str | None = None
     data: dict[str, object] = field(default_factory=dict)
     error: str | None = None
+    truncated: bool = False
+    partial: bool = False
+    attachment: dict[str, object] | None = None
+    timeout_seconds: int | None = None
+    source: str | None = None
+    fallback_reason: str | None = None
+    reference: str | None = None
+    error_kind: str | None = None
 
     def __post_init__(self) -> None:
         if self.status == "error" and self.error is None:

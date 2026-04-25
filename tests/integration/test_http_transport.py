@@ -635,7 +635,7 @@ def test_transport_replays_session_as_json_runtime_response(tmp_path: Path) -> N
     payload = cast(dict[str, object], response.json())
 
     assert response.status == 200
-    assert payload["output"] == "http replay\n"
+    assert payload["output"] == "http replay"
     assert payload["session"] == {
         "session": {"id": "transport-session"},
         "status": stored.session.status,
@@ -674,7 +674,7 @@ def test_transport_reads_session_result_with_transcript(tmp_path: Path) -> None:
     assert payload["prompt"] == "read sample.txt"
     assert payload["status"] == "completed"
     assert payload["summary"] == "Completed: result payload"
-    assert payload["output"] == "result payload\n"
+    assert payload["output"] == "result payload"
     assert payload["error"] is None
     assert payload["last_event_sequence"] == stored.events[-1].sequence
     assert [
@@ -1057,9 +1057,8 @@ def test_transport_resumes_multi_step_loop_and_persists_replay_over_http(tmp_pat
         cast(dict[str, object], approve_payload["session"])["metadata"],
         workspace=tmp_path,
     )
-    assert (
-        approve_payload["output"]
-        == "Found 1 match(es) for 'copied' in copied.txt\n1: copied marker"
+    assert approve_payload["output"] == (
+        "Found 1 match(es) for 'copied' in copied.txt\ncopied.txt:1: copied marker"
     )
     assert [
         event["event_type"] for event in cast(list[dict[str, object]], approve_payload["events"])
@@ -1732,7 +1731,7 @@ def test_transport_persists_streamed_run_for_session_listing_and_replay(tmp_path
         cast(dict[str, object], replay_payload["session"])["metadata"],
         workspace=tmp_path,
     )
-    assert replay_payload["output"] == "stream replay\n"
+    assert replay_payload["output"] == "stream replay"
     assert [
         event["event_type"] for event in cast(list[dict[str, object]], replay_payload["events"])
     ] == [
@@ -1823,8 +1822,8 @@ def test_transport_allocates_distinct_anonymous_stream_sessions(tmp_path: Path) 
         cast(dict[str, object], second_replay_payload["session"])["metadata"],
         workspace=tmp_path,
     )
-    assert first_replay_payload["output"] == "anonymous stream\n"
-    assert second_replay_payload["output"] == "anonymous stream\n"
+    assert first_replay_payload["output"] == "anonymous stream"
+    assert second_replay_payload["output"] == "anonymous stream"
 
 
 def test_transport_stream_preserves_failed_chunk_before_termination() -> None:

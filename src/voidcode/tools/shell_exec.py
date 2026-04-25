@@ -120,4 +120,7 @@ class ShellExecTool:
                 "timeout": timeout_seconds,
                 "truncated": content_truncated or stdout_truncated or stderr_truncated,
             },
+            truncated=content_truncated or stdout_truncated or stderr_truncated,
+            partial=content_truncated or stdout_truncated or stderr_truncated,
+            timeout_seconds=timeout_seconds,
         )

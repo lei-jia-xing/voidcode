@@ -1175,7 +1175,7 @@ def test_runtime_executes_deterministic_graph_and_emits_events(tmp_path: Path) -
     ]
     assert result.events[1].payload == {"skills": []}
     assert result.session.status == "completed"
-    assert result.output == "alpha\nbeta\n"
+    assert result.output == "alpha\nbeta"
 
 
 def test_provider_runtime_executes_read_path_and_persists_config(tmp_path: Path) -> None:
@@ -1187,7 +1187,7 @@ def test_provider_runtime_executes_read_path_and_persists_config(tmp_path: Path)
     replay = runtime.resume("single-agent-read")
 
     assert result.session.status == "completed"
-    assert result.output == "alpha\nbeta\n"
+    assert result.output == "alpha\nbeta"
     assert result.session.metadata["runtime_config"] == {
         "approval_mode": "allow",
         "execution_engine": "provider",
@@ -1412,18 +1412,42 @@ def test_runtime_executes_grep_deterministic_graph_and_emits_events(tmp_path: Pa
     assert result.events[8].payload == {
         "tool": "grep",
         "status": "ok",
-        "content": "Found 2 match(es) for 'alpha' in sample.txt\n1: alpha\n2: beta alpha",
+        "content": (
+            "Found 2 match(es) for 'alpha' in sample.txt\n"
+            "sample.txt:1: alpha\n"
+            "sample.txt:2: beta alpha"
+        ),
         "error": None,
         "path": "sample.txt",
         "pattern": "alpha",
+        "regex": False,
+        "context": 0,
         "match_count": 2,
+        "truncated": False,
+        "partial": False,
         "matches": [
-            {"line": 1, "text": "alpha", "columns": [1]},
-            {"line": 2, "text": "beta alpha", "columns": [6]},
+            {
+                "file": "sample.txt",
+                "line": 1,
+                "text": "alpha",
+                "columns": [1],
+                "before": [],
+                "after": [],
+            },
+            {
+                "file": "sample.txt",
+                "line": 2,
+                "text": "beta alpha",
+                "columns": [6],
+                "before": [],
+                "after": [],
+            },
         ],
     }
     assert result.session.status == "completed"
-    assert result.output == "Found 2 match(es) for 'alpha' in sample.txt\n1: alpha\n2: beta alpha"
+    assert result.output == (
+        "Found 2 match(es) for 'alpha' in sample.txt\nsample.txt:1: alpha\nsample.txt:2: beta alpha"
+    )
 
 
 def test_runtime_allows_non_read_only_tool_after_explicit_resume_approval(tmp_path: Path) -> None:
@@ -1684,7 +1708,9 @@ def test_runtime_resumes_multi_step_loop_with_approval_and_stable_replay(tmp_pat
         "graph.response_ready",
     ]
     assert [event.sequence for event in resumed.events] == list(range(1, 31))
-    assert resumed.output == "Found 1 match(es) for 'copied' in copied.txt\n1: copied marker"
+    assert resumed.output == (
+        "Found 1 match(es) for 'copied' in copied.txt\ncopied.txt:1: copied marker"
+    )
     assert replay.output == resumed.output
     assert [event.sequence for event in replay.events] == list(range(1, 31))
     assert [(event.sequence, event.event_type, event.payload) for event in replay.events] == [
@@ -1693,12 +1719,25 @@ def test_runtime_resumes_multi_step_loop_with_approval_and_stable_replay(tmp_pat
     assert resumed.events[27].payload == {
         "tool": "grep",
         "status": "ok",
-        "content": "Found 1 match(es) for 'copied' in copied.txt\n1: copied marker",
+        "content": ("Found 1 match(es) for 'copied' in copied.txt\ncopied.txt:1: copied marker"),
         "error": None,
         "path": "copied.txt",
         "pattern": "copied",
+        "regex": False,
+        "context": 0,
         "match_count": 1,
-        "matches": [{"line": 1, "text": "copied marker", "columns": [1]}],
+        "truncated": False,
+        "partial": False,
+        "matches": [
+            {
+                "file": "copied.txt",
+                "line": 1,
+                "text": "copied marker",
+                "columns": [1],
+                "before": [],
+                "after": [],
+            }
+        ],
     }
     assert [event.event_type for event in resumed.events].count("runtime.approval_requested") == 1
     assert [event.event_type for event in resumed.events].count("runtime.approval_resolved") == 1
@@ -2492,7 +2531,7 @@ def test_runtime_stream_exposes_ordered_events_and_final_output(tmp_path: Path) 
         "completed",
         "completed",
     ]
-    assert [chunk.output for chunk in output_chunks] == ["stream proof\n"]
+    assert [chunk.output for chunk in output_chunks] == ["stream proof"]
     assert len(output_chunks) == 1
 
 
@@ -2562,7 +2601,7 @@ def test_runtime_stream_yields_before_tool_completion(tmp_path: Path) -> None:
             chunk.event.event_type for chunk in remaining_chunks if chunk.event is not None
         ] == ["graph.loop_step", "graph.response_ready"]
         assert [chunk.output for chunk in remaining_chunks if chunk.kind == "output"] == [
-            "delayed stream\n"
+            "delayed stream"
         ]
         assert all(chunk.session.status == "completed" for chunk in remaining_chunks)
 

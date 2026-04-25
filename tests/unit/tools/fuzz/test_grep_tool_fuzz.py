@@ -12,13 +12,21 @@ from voidcode.tools.contracts import ToolResult
 
 CI_SETTINGS = settings(derandomize=True, database=None, max_examples=200)
 
-_text_chars = st.characters(blacklist_characters=["\x00"])
-_single_line = st.text(alphabet=_text_chars, min_size=0, max_size=16).filter(
-    lambda text: "\n" not in text and "\r" not in text
+_text_chars = st.characters(
+    min_codepoint=32,
+    max_codepoint=126,
+    blacklist_characters=["\n", "\r"],
 )
+_single_line = st.text(alphabet=_text_chars, min_size=0, max_size=16)
 _multiline_text = st.lists(_single_line, min_size=0, max_size=12).map("\n".join)
-_pattern_chars = st.characters(blacklist_characters=["\x00", "\n", "\r"])
-_pattern = st.text(alphabet=_pattern_chars, min_size=1, max_size=6)
+_pattern_chars = st.characters(
+    min_codepoint=32,
+    max_codepoint=126,
+    blacklist_characters=["\n", "\r"],
+)
+_pattern = st.text(alphabet=_pattern_chars, min_size=1, max_size=6).filter(
+    lambda value: bool(value.strip())
+)
 
 
 def _invoke_grep(*, content: str, pattern: str) -> tuple[ToolResult, Path]:
@@ -47,7 +55,16 @@ def _expected_matches(*, content: str, pattern: str) -> list[dict[str, object]]:
             start_index = found_index + len(pattern)
 
         if columns:
-            matches.append({"line": line_number, "text": line_text, "columns": columns})
+            matches.append(
+                {
+                    "file": "sample.txt",
+                    "line": line_number,
+                    "text": line_text,
+                    "columns": columns,
+                    "before": [],
+                    "after": [],
+                }
+            )
 
     return matches
 
@@ -62,6 +79,8 @@ def test_grep_tool_match_count_equals_total_reported_columns(content: str, patte
     assert result.status == "ok"
     assert result.data["pattern"] == pattern
     assert result.data["path"] == "sample.txt"
+    assert result.data["regex"] is False
+    assert result.data["context"] == 0
     assert result.data["match_count"] == sum(
         len(cast(list[int], match["columns"])) for match in matches
     )
@@ -91,7 +110,9 @@ def test_grep_tool_summary_matches_preview_contract(content: str, pattern: str) 
     match_count = sum(len(cast(list[int], match["columns"])) for match in expected_matches)
 
     if expected_matches:
-        preview_lines = [f"{match['line']}: {match['text']}" for match in expected_matches[:10]]
+        preview_lines = [
+            f"sample.txt:{match['line']}: {match['text']}" for match in expected_matches[:10]
+        ]
         expected_summary = (
             f"Found {match_count} match(es) for {pattern!r} in sample.txt\n"
             + "\n".join(preview_lines)

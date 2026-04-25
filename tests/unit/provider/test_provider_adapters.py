@@ -735,7 +735,7 @@ def test_provider_adapter_propose_turn_returns_tool_call_when_model_requests_too
             {
                 "function": {
                     "name": "read_file",
-                    "arguments": '{"path":"sample.txt"}',
+                    "arguments": '{"filePath":"sample.txt"}',
                 }
             }
         ],
@@ -745,7 +745,7 @@ def test_provider_adapter_propose_turn_returns_tool_call_when_model_requests_too
 
     assert result.tool_call is not None
     assert result.tool_call.tool_name == "read_file"
-    assert result.tool_call.arguments == {"path": "sample.txt"}
+    assert result.tool_call.arguments == {"filePath": "sample.txt"}
 
 
 def test_google_provider_api_key_uses_google_auth_header(
@@ -793,7 +793,7 @@ def test_provider_adapter_stream_turn_emits_tool_event_when_model_streams_tool_r
                         "index": 0,
                         "function": {
                             "name": "read_file",
-                            "arguments": '{"path":"sample.txt"}',
+                            "arguments": '{"filePath":"sample.txt"}',
                         },
                     }
                 ],
@@ -809,7 +809,7 @@ def test_provider_adapter_stream_turn_emits_tool_event_when_model_streams_tool_r
         ProviderStreamEvent(
             kind="content",
             channel="tool",
-            text='{"tool_name": "read_file", "arguments": {"path": "sample.txt"}}',
+            text='{"tool_name": "read_file", "arguments": {"filePath": "sample.txt"}}',
         ),
         ProviderStreamEvent(kind="done", done_reason="completed"),
     ]
@@ -832,7 +832,7 @@ def test_provider_adapter_stream_turn_emits_repeated_tool_snapshots_for_updates(
                         "index": 0,
                         "function": {
                             "name": "read_file",
-                            "arguments": '{"path":',
+                            "arguments": '{"filePath":',
                         },
                     }
                 ],
@@ -864,7 +864,7 @@ def test_provider_adapter_stream_turn_emits_repeated_tool_snapshots_for_updates(
         ProviderStreamEvent(
             kind="content",
             channel="tool",
-            text='{"tool_name": "read_file", "arguments": {"path": "sample.txt"}}',
+            text='{"tool_name": "read_file", "arguments": {"filePath": "sample.txt"}}',
         ),
         ProviderStreamEvent(kind="done", done_reason="completed"),
     ]

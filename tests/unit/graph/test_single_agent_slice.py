@@ -48,7 +48,7 @@ class _MixedNonStreamingTurnProvider:
     def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
         _ = request
         return ProviderTurnResult(
-            tool_call=ToolCall(tool_name="read_file", arguments={"path": "sample.txt"}),
+            tool_call=ToolCall(tool_name="read_file", arguments={"filePath": "sample.txt"}),
             output="done",
         )
 

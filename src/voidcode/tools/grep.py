@@ -1,12 +1,37 @@
 from __future__ import annotations
 
+import fnmatch
+import re
+from dataclasses import dataclass
 from pathlib import Path
-from typing import ClassVar, final
+from typing import ClassVar, cast, final
 
 from pydantic import ValidationError
 
 from ._pydantic_args import GrepArgs
+from ._workspace import resolve_workspace_path
 from .contracts import ToolCall, ToolDefinition, ToolResult
+
+MAX_MATCHES = 200
+DEFAULT_IGNORE_PATTERNS = frozenset(
+    (
+        ".git",
+        "node_modules",
+        "__pycache__",
+        "dist",
+        "build",
+    )
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _GrepMatch:
+    file: str
+    line: int
+    text: str
+    columns: list[int]
+    before: list[dict[str, object]]
+    after: list[dict[str, object]]
 
 
 @final
@@ -14,11 +39,78 @@ class GrepTool:
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="grep",
         description=(
-            "Search for a literal pattern in a UTF-8 text file inside the current workspace."
+            "Search for a literal or regex pattern in files inside the current workspace."
         ),
-        input_schema={"pattern": {"type": "string"}, "path": {"type": "string"}},
+        input_schema={
+            "pattern": {"type": "string"},
+            "path": {"type": "string"},
+            "regex": {"type": "boolean"},
+            "context": {"type": "integer"},
+            "include": {"type": "array", "items": {"type": "string"}},
+            "exclude": {"type": "array", "items": {"type": "string"}},
+        },
         read_only=True,
     )
+
+    @staticmethod
+    def _matches_glob(path: str, pattern: str) -> bool:
+        if fnmatch.fnmatch(path, pattern):
+            return True
+        if pattern.startswith("**/"):
+            return fnmatch.fnmatch(path, pattern[3:])
+        return False
+
+    @staticmethod
+    def _collect_targets(
+        root: Path,
+        *,
+        include: list[str] | None,
+        exclude: list[str] | None,
+    ) -> list[Path]:
+        targets: list[Path] = []
+        include_patterns = include or []
+        exclude_patterns = exclude or []
+        if root.is_file():
+            return [root]
+
+        for candidate in root.rglob("*"):
+            if not candidate.is_file():
+                continue
+            rel = candidate.relative_to(root).as_posix()
+            if any(part in DEFAULT_IGNORE_PATTERNS for part in candidate.relative_to(root).parts):
+                continue
+            if include_patterns and not any(
+                GrepTool._matches_glob(rel, pat) for pat in include_patterns
+            ):
+                continue
+            if any(GrepTool._matches_glob(rel, pat) for pat in exclude_patterns):
+                continue
+            targets.append(candidate)
+        targets.sort(key=lambda path: path.relative_to(root).as_posix())
+        return targets
+
+    @staticmethod
+    def _read_lines(path: Path) -> list[str] | None:
+        try:
+            with path.open("r", encoding="utf-8", newline="") as fh:
+                return [line.rstrip("\r\n") for line in fh]
+        except (UnicodeDecodeError, OSError):
+            return None
+
+    @staticmethod
+    def _context_lines(
+        lines: list[str], start: int, end: int, *, context: int
+    ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+        context = max(0, context)
+        before = [
+            cast(dict[str, object], {"line": line_no + 1, "text": lines[line_no]})
+            for line_no in range(max(0, start - context), start)
+        ]
+        after = [
+            cast(dict[str, object], {"line": line_no + 1, "text": lines[line_no]})
+            for line_no in range(end + 1, min(len(lines), end + 1 + context))
+        ]
+        return before, after
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
         try:
@@ -26,6 +118,10 @@ class GrepTool:
                 {
                     "pattern": call.arguments.get("pattern"),
                     "path": call.arguments.get("path"),
+                    "regex": call.arguments.get("regex", False),
+                    "context": call.arguments.get("context", 0),
+                    "include": call.arguments.get("include"),
+                    "exclude": call.arguments.get("exclude"),
                 }
             )
         except ValidationError as exc:
@@ -37,66 +133,77 @@ class GrepTool:
                 raise ValueError("grep pattern must not be empty") from exc
             raise ValueError("grep requires a string pattern argument") from exc
 
-        relative_path = Path(args.path)
-        workspace_root = workspace.resolve()
-        candidate = (workspace_root / relative_path).resolve()
+        candidate, relative_path = resolve_workspace_path(workspace=workspace, raw_path=args.path)
 
-        if not candidate.is_relative_to(workspace_root):
-            raise ValueError("grep only allows paths inside the workspace")
-
-        if not candidate.is_file():
+        if not candidate.exists():
             raise ValueError(f"grep target does not exist: {args.path}")
 
-        try:
-            content = candidate.read_text(encoding="utf-8")
-        except UnicodeDecodeError as exc:
-            raise ValueError("grep only supports UTF-8 text files") from exc
+        pattern = re.compile(args.pattern if args.regex else re.escape(args.pattern))
+        targets = self._collect_targets(candidate, include=args.include, exclude=args.exclude)
 
-        if "\x00" in content:
-            raise ValueError("grep only supports UTF-8 text files")
-
-        matches: list[dict[str, object]] = []
-        total_occurrences = 0
-
-        for line_number, line_text in enumerate(content.splitlines(), start=1):
-            columns: list[int] = []
-            start_index = 0
-
-            while True:
-                found_index = line_text.find(args.pattern, start_index)
-                if found_index < 0:
-                    break
-                columns.append(found_index + 1)
-                total_occurrences += 1
-                start_index = found_index + len(args.pattern)
-
-            if columns:
-                matches.append(
-                    {
-                        "line": line_number,
-                        "text": line_text,
-                        "columns": columns,
-                    }
+        matches: list[_GrepMatch] = []
+        for target in targets:
+            lines = self._read_lines(target)
+            if lines is None:
+                continue
+            for line_index, line_text in enumerate(lines):
+                columns = [match.start() + 1 for match in pattern.finditer(line_text)]
+                if not columns:
+                    continue
+                before, after = self._context_lines(
+                    lines,
+                    line_index,
+                    line_index,
+                    context=args.context,
                 )
+                matches.append(
+                    _GrepMatch(
+                        file=target.relative_to(workspace.resolve()).as_posix(),
+                        line=line_index + 1,
+                        text=line_text,
+                        columns=columns,
+                        before=before,
+                        after=after,
+                    )
+                )
+                if len(matches) >= MAX_MATCHES:
+                    break
+            if len(matches) >= MAX_MATCHES:
+                break
 
-        relative_result_path = candidate.relative_to(workspace_root).as_posix()
-        if matches:
-            preview_lines = [f"{match['line']}: {match['text']}" for match in matches[:10]]
-            summary = (
-                f"Found {total_occurrences} match(es) for {args.pattern!r} in "
-                f"{relative_result_path}\n" + "\n".join(preview_lines)
-            )
-        else:
-            summary = f"Found 0 match(es) for {args.pattern!r} in {relative_result_path}"
+        total_occurrences = sum(len(match.columns) for match in matches)
+        preview_lines: list[str] = []
+        for match in matches[:10]:
+            preview_lines.append(f"{match.file}:{match.line}: {match.text}")
+
+        summary = f"Found {total_occurrences} match(es) for {args.pattern!r} in {relative_path}"
+        if preview_lines:
+            summary = summary + "\n" + "\n".join(preview_lines)
 
         return ToolResult(
             tool_name=self.definition.name,
             status="ok",
             content=summary,
             data={
-                "path": relative_result_path,
+                "path": relative_path,
                 "pattern": args.pattern,
+                "regex": args.regex,
+                "context": args.context,
                 "match_count": total_occurrences,
-                "matches": matches,
+                "truncated": len(matches) >= MAX_MATCHES,
+                "partial": len(matches) >= MAX_MATCHES,
+                "matches": [
+                    {
+                        "file": match.file,
+                        "line": match.line,
+                        "text": match.text,
+                        "columns": match.columns,
+                        "before": match.before,
+                        "after": match.after,
+                    }
+                    for match in matches
+                ],
             },
+            truncated=len(matches) >= MAX_MATCHES,
+            partial=len(matches) >= MAX_MATCHES,
         )

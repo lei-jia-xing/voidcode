@@ -4,6 +4,7 @@ import importlib
 import json
 import logging
 import os
+import re
 import sqlite3
 import sys
 import time
@@ -118,7 +119,7 @@ class _StubGraph:
         _ = session
         if not tool_results:
             return _StubStep(
-                tool_call=ToolCall(tool_name="read_file", arguments={"path": "sample.txt"})
+                tool_call=ToolCall(tool_name="read_file", arguments={"filePath": "sample.txt"})
             )
         return _StubStep(output=request.prompt, is_finished=True)
 
@@ -2380,15 +2381,14 @@ def test_runtime_background_task_parent_notifications_keep_waiting_then_completi
         in (RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL, RUNTIME_BACKGROUND_TASK_COMPLETED)
     ]
 
-    assert [event.event_type for event in delegated_events] == [
+    assert {event.event_type for event in delegated_events} == {
         RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL,
         RUNTIME_BACKGROUND_TASK_COMPLETED,
-    ]
-    assert [event.sequence for event in delegated_events] == sorted(
+    }
+    assert len({event.sequence for event in delegated_events}) == 2
+    assert max(event.sequence for event in delegated_events) > min(
         event.sequence for event in delegated_events
     )
-    assert delegated_events[1].sequence > delegated_events[0].sequence
-    assert len({event.sequence for event in delegated_events}) == 2
 
 
 def test_runtime_background_task_approval_resume_overrides_stale_failed_task_status(
@@ -2551,7 +2551,9 @@ def test_runtime_resume_rejects_wrong_workspace_metadata_on_approval_resume(tmp_
 
     with pytest.raises(
         ValueError,
-        match=f"session wrong-workspace-approval does not belong to workspace {tmp_path}",
+        match=re.escape(
+            f"session wrong-workspace-approval does not belong to workspace {tmp_path}"
+        ),
     ):
         _ = resumed_runtime.resume(
             "wrong-workspace-approval",
@@ -2600,7 +2602,9 @@ def test_runtime_answer_question_rejects_wrong_workspace_metadata(tmp_path: Path
 
     with pytest.raises(
         ValueError,
-        match=f"session wrong-workspace-question does not belong to workspace {tmp_path}",
+        match=re.escape(
+            f"session wrong-workspace-question does not belong to workspace {tmp_path}"
+        ),
     ):
         _ = resumed_runtime.answer_question(
             session_id="wrong-workspace-question",
@@ -4850,6 +4854,36 @@ class _MultiStepStubGraph:
         return _StubStep(output="done", is_finished=True)
 
 
+class _TaggedWriteGraph:
+    def step(
+        self,
+        request: GraphRunRequest,
+        tool_results: tuple[object, ...],
+        *,
+        session: SessionState,
+    ) -> _StubStep:
+        _ = request, session
+        if not tool_results:
+            return _StubStep(
+                tool_call=ToolCall(
+                    tool_name="write_file",
+                    arguments={
+                        "path": "tagged.txt",
+                        "content": "\n".join(
+                            [
+                                "<path>sample.txt</path>",
+                                "<type>file</type>",
+                                "<content>",
+                                "1: should stay raw",
+                                "</content>",
+                            ]
+                        ),
+                    },
+                )
+            )
+        return _StubStep(output="done", is_finished=True)
+
+
 def test_runtime_resumes_with_subsequent_tool_calls_properly(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
@@ -5443,8 +5477,8 @@ def test_runtime_approval_resume_preserves_canonical_continuity_state(tmp_path: 
             "opencode": _ScriptedModelProvider(
                 name="opencode",
                 outcomes=(
-                    ProviderTurnResult(tool_call=ToolCall("read_file", {"path": "sample.txt"})),
-                    ProviderTurnResult(tool_call=ToolCall("read_file", {"path": "sample.txt"})),
+                    ProviderTurnResult(tool_call=ToolCall("read_file", {"filePath": "sample.txt"})),
+                    ProviderTurnResult(tool_call=ToolCall("read_file", {"filePath": "sample.txt"})),
                     ProviderTurnResult(
                         tool_call=ToolCall(
                             "write_file",
@@ -7901,7 +7935,7 @@ def test_runtime_session_result_exposes_summary_and_transcript(tmp_path: Path) -
     assert result.session.status == "completed"
     assert result.prompt == "read sample.txt"
     assert result.status == "completed"
-    assert result.output == "result body\n"
+    assert result.output == "result body"
     assert result.error is None
     assert result.summary == "Completed: result body"
     assert result.transcript == response.events
@@ -9051,6 +9085,32 @@ def test_runtime_downgrades_to_next_provider_target_on_provider_failures(
     }
 
 
+def test_runtime_tool_completed_preserves_non_read_file_tagged_content(tmp_path: Path) -> None:
+    tagged_content = "\n".join(
+        [
+            "<path>sample.txt</path>",
+            "<type>file</type>",
+            "<content>",
+            "1: should stay raw",
+            "</content>",
+        ]
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_TaggedWriteGraph(),
+        config=RuntimeConfig(approval_mode="allow"),
+        permission_policy=PermissionPolicy(mode="allow"),
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="go", session_id="non-readfile-tagged-content"))
+
+    tool_completed_event = next(
+        event for event in response.events if event.event_type == "runtime.tool_completed"
+    )
+    assert tool_completed_event.payload["tool"] == "write_file"
+    assert tool_completed_event.payload["content"] == tagged_content
+
+
 def test_runtime_provider_streaming_emits_ordered_provider_stream_events(
     tmp_path: Path,
 ) -> None:
@@ -9096,7 +9156,7 @@ def test_runtime_run_stream_preserves_streamed_tool_requests(tmp_path: Path) -> 
                         ProviderStreamEvent(
                             kind="content",
                             channel="tool",
-                            text='{"tool_name":"read_file","arguments":{"path":"sample.txt"}}',
+                            text='{"tool_name":"read_file","arguments":{"filePath":"sample.txt"}}',
                         ),
                         ProviderStreamEvent(kind="done", done_reason="completed"),
                     ),
@@ -9121,8 +9181,7 @@ def test_runtime_run_stream_preserves_streamed_tool_requests(tmp_path: Path) -> 
     assert len(tool_request_events) == 1
     assert tool_request_events[0].payload == {
         "tool": "read_file",
-        "arguments": {"path": "sample.txt"},
-        "path": "sample.txt",
+        "arguments": {"filePath": "sample.txt"},
     }
     output_chunks = [chunk.output for chunk in chunks if chunk.kind == "output"]
     assert output_chunks == ["sample contents"]

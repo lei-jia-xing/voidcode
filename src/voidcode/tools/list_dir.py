@@ -4,6 +4,7 @@ import fnmatch
 from pathlib import Path
 from typing import ClassVar, cast
 
+from ._workspace import resolve_workspace_path
 from .contracts import ToolCall, ToolDefinition, ToolResult
 
 IGNORE_PATTERNS = frozenset(
@@ -108,12 +109,7 @@ class ListTool:
         search_path: Path
 
         if isinstance(path_value, str):
-            relative_path = Path(path_value)
-            workspace_root = workspace.resolve()
-            search_path = (workspace_root / relative_path).resolve()
-
-            if not search_path.is_relative_to(workspace_root):
-                raise ValueError("list path must be inside the workspace")
+            search_path, _ = resolve_workspace_path(workspace=workspace, raw_path=path_value)
 
             if not search_path.exists():
                 raise ValueError(f"list path does not exist: {path_value}")
@@ -188,4 +184,6 @@ class ListTool:
                 "count": file_count,
                 "truncated": truncated,
             },
+            truncated=truncated,
+            partial=truncated,
         )
