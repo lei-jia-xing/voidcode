@@ -37,20 +37,17 @@ describe("Composer", () => {
   it("renders agent selector with leader option", () => {
     render(<Composer {...baseProps} />);
 
-    const agentSelect = screen.getByLabelText("Agent");
-    expect(agentSelect).toBeInTheDocument();
-    expect(agentSelect).toHaveValue("leader");
+    const agentTrigger = screen.getByRole("button", { name: "Agent" });
+    expect(agentTrigger).toBeInTheDocument();
+    expect(agentTrigger).toHaveTextContent("Leader");
   });
 
   it("renders model selector grouped by provider", () => {
     render(<Composer {...baseProps} />);
 
-    const modelSelect = screen.getByLabelText("Model");
-    expect(modelSelect).toBeInTheDocument();
-    expect(modelSelect).toHaveValue("opencode-go/glm-5.1");
-
-    expect(screen.getByText("opencode-go/glm-5.1")).toBeInTheDocument();
-    expect(screen.getByText("opencode-go/glm-5.2")).toBeInTheDocument();
+    const modelTrigger = screen.getByRole("button", { name: "Model" });
+    expect(modelTrigger).toBeInTheDocument();
+    expect(modelTrigger).toHaveTextContent("OpenCode / glm-5.1");
   });
 
   it("calls onProviderModelChange when model is changed", () => {
@@ -59,10 +56,8 @@ describe("Composer", () => {
       <Composer {...baseProps} onProviderModelChange={onProviderModelChange} />,
     );
 
-    const modelSelect = screen.getByLabelText("Model");
-    fireEvent.change(modelSelect, {
-      target: { value: "opencode-go/glm-5.2" },
-    });
+    fireEvent.click(screen.getByRole("button", { name: "Model" }));
+    fireEvent.click(screen.getByRole("button", { name: "glm-5.2" }));
 
     expect(onProviderModelChange).toHaveBeenCalledWith("opencode-go/glm-5.2");
   });
@@ -73,8 +68,8 @@ describe("Composer", () => {
       <Composer {...baseProps} onAgentPresetChange={onAgentPresetChange} />,
     );
 
-    const agentSelect = screen.getByLabelText("Agent");
-    fireEvent.change(agentSelect, { target: { value: "leader" } });
+    fireEvent.click(screen.getByRole("button", { name: "Agent" }));
+    fireEvent.click(screen.getByRole("button", { name: "Leader" }));
 
     expect(onAgentPresetChange).toHaveBeenCalledWith("leader");
   });
@@ -140,8 +135,7 @@ describe("Composer", () => {
       />,
     );
 
-    expect(screen.getByText(/Configured:/i)).toBeInTheDocument();
-    expect(screen.getByText("opencode-go/kimi-k2.6")).toBeInTheDocument();
+    expect(screen.getByText("OpenCode / kimi-k2.6")).toBeInTheDocument();
     expect(screen.queryByLabelText("Model")).not.toBeInTheDocument();
     expect(
       screen.getByPlaceholderText("Ask VoidCode to do something..."),
@@ -177,8 +171,8 @@ describe("Composer", () => {
   it("disables controls when disabled prop is true", () => {
     render(<Composer {...baseProps} disabled />);
 
-    expect(screen.getByLabelText("Agent")).toBeDisabled();
-    expect(screen.getByLabelText("Model")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Agent" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Model" })).toBeDisabled();
     expect(
       screen.getByPlaceholderText("Ask VoidCode to do something..."),
     ).toBeDisabled();
@@ -225,7 +219,9 @@ describe("Composer", () => {
       />,
     );
 
-    expect(screen.getByText("opencode-go/glm-5.1")).toBeInTheDocument();
-    expect(screen.getByText("glm/glm-5")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Model" }));
+
+    expect(screen.getByText("glm-5.1")).toBeInTheDocument();
+    expect(screen.getByText("glm-5")).toBeInTheDocument();
   });
 });
