@@ -17,6 +17,7 @@ from .contracts import ToolCall, ToolDefinition, ToolResult
 DEFAULT_READ_LIMIT = 2000
 MAX_LINE_LENGTH = 2000
 MAX_BYTES = 50 * 1024
+MAX_ATTACHMENT_BYTES = 50 * 1024
 BINARY_SNIFF_BYTES = 4096
 
 
@@ -87,6 +88,12 @@ def _is_binary_file(path: Path) -> bool:
 def _render_file(candidate: Path, *, relative_path: str, offset: int, limit: int) -> _ReadOutcome:
     mime, _ = mimetypes.guess_type(candidate.name)
     if mime and (mime.startswith("image/") or mime == "application/pdf"):
+        attachment_size = candidate.stat().st_size
+        if attachment_size > MAX_ATTACHMENT_BYTES:
+            raise ValueError(
+                "read_file attachment exceeds the maximum supported size "
+                f"({MAX_ATTACHMENT_BYTES} bytes): {relative_path}"
+            )
         raw = candidate.read_bytes()
         data_uri = f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
         label = "Image" if mime.startswith("image/") else "PDF"
@@ -230,6 +237,8 @@ class ReadFileTool:
             suggestions = suggest_workspace_paths(workspace=workspace, raw_path=args.filePath)
             suffix = f" Did you mean: {', '.join(suggestions)}?" if suggestions else ""
             raise ValueError(f"read_file does not support directories: {args.filePath}.{suffix}")
+        if not candidate.is_file():
+            raise ValueError(f"read_file only supports regular files: {args.filePath}")
 
         outcome = _render_file(candidate, relative_path=relative_path, offset=offset, limit=limit)
 

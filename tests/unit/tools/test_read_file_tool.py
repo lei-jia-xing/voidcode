@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -7,6 +8,7 @@ import pytest
 
 from voidcode.runtime.service import ToolRegistry
 from voidcode.tools import ReadFileTool, ToolCall
+from voidcode.tools.read_file import MAX_ATTACHMENT_BYTES
 
 
 def test_read_file_tool_reads_text_file_with_offset_and_limit(tmp_path: Path) -> None:
@@ -86,6 +88,36 @@ def test_read_file_tool_sniffs_text_with_bounded_stream_read(tmp_path: Path) -> 
 
     assert result.status == "ok"
     assert "1: alpha" in (result.content or "")
+
+
+def test_read_file_tool_rejects_non_regular_target(tmp_path: Path) -> None:
+    if not hasattr(os, "mkfifo"):
+        pytest.skip("mkfifo is not available on this platform")
+
+    fifo_path = tmp_path / "sample.fifo"
+    os.mkfifo(fifo_path)
+    tool = ReadFileTool()
+
+    with pytest.raises(ValueError, match="only supports regular files"):
+        tool.invoke(
+            ToolCall(tool_name="read_file", arguments={"filePath": "sample.fifo"}),
+            workspace=tmp_path,
+        )
+
+
+def test_read_file_tool_rejects_oversized_attachment_before_read_bytes(tmp_path: Path) -> None:
+    image = tmp_path / "image.png"
+    _ = image.write_bytes(b"\x89PNG\r\n\x1a\n" + (b"x" * MAX_ATTACHMENT_BYTES))
+    tool = ReadFileTool()
+
+    with patch.object(
+        Path, "read_bytes", side_effect=AssertionError("read_bytes should not be used")
+    ):
+        with pytest.raises(ValueError, match="attachment exceeds the maximum supported size"):
+            tool.invoke(
+                ToolCall(tool_name="read_file", arguments={"filePath": "image.png"}),
+                workspace=tmp_path,
+            )
 
 
 def test_tools_package_and_default_registry_export_read_file_tool() -> None:
