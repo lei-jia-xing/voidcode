@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 # pyright: reportMissingTypeStubs=false
-import re
 from dataclasses import dataclass
 from typing import Protocol, cast
 
 from langgraph.graph import END, START, StateGraph
 
+from ..command.resolver import resolve_tool_instruction
 from ..runtime.context_window import normalize_read_file_output
 from ..runtime.events import (
     GRAPH_LOOP_STEP,
@@ -16,11 +16,6 @@ from ..runtime.events import (
 from ..runtime.session import SessionState
 from ..tools.contracts import ToolCall, ToolDefinition, ToolResult
 from .contracts import GraphEvent, GraphLoopState, GraphRunRequest
-
-READ_REQUEST_PATTERN = re.compile(r"^(read|show)\s+(?P<path>.+)$", re.IGNORECASE)
-GREP_REQUEST_PATTERN = re.compile(r"^grep\s+(?P<pattern>.+?)\s+(?P<path>\S+)$", re.IGNORECASE)
-RUN_REQUEST_PATTERN = re.compile(r"^run\s+(?P<command>.+)$", re.IGNORECASE)
-WRITE_REQUEST_PATTERN = re.compile(r"^write\s+(?P<path>\S+)\s+(?P<content>.+)$", re.IGNORECASE)
 
 
 class _CompiledGraphApp(Protocol):
@@ -225,62 +220,12 @@ class DeterministicGraph:
         if step_index >= len(commands):
             return None
 
-        trimmed_prompt = commands[step_index]
-
-        read_match = READ_REQUEST_PATTERN.match(trimmed_prompt)
-        if read_match is not None:
-            path_text = read_match.group("path").strip()
-            if not path_text:
-                raise ValueError("request path must not be empty")
-
-            self._ensure_read_tool_available(available_tools)
-            return ToolCall(tool_name="read_file", arguments={"filePath": path_text})
-
-        grep_match = GREP_REQUEST_PATTERN.match(trimmed_prompt)
-        if grep_match is not None:
-            pattern_text = grep_match.group("pattern").strip()
-            path_text = grep_match.group("path").strip()
-            if not pattern_text:
-                raise ValueError("request pattern must not be empty")
-            if not path_text:
-                raise ValueError("request path must not be empty")
-
-            self._ensure_grep_tool_available(available_tools)
-            return ToolCall(
-                tool_name="grep",
-                arguments={"pattern": pattern_text, "path": path_text},
-            )
-
-        run_match = RUN_REQUEST_PATTERN.match(trimmed_prompt)
-        if run_match is not None:
-            command_text = run_match.group("command").strip()
-            if not command_text:
-                raise ValueError("request command must not be empty")
-
-            self._ensure_shell_exec_tool_available(available_tools)
-            return ToolCall(tool_name="shell_exec", arguments={"command": command_text})
-
-        write_match = WRITE_REQUEST_PATTERN.match(trimmed_prompt)
-        if write_match is not None:
-            path_text = write_match.group("path").strip()
-            content_text = write_match.group("content")
-            if not path_text:
-                raise ValueError("request path must not be empty")
-            if not content_text:
-                raise ValueError("request content must not be empty")
-
-            self._ensure_write_tool_available(available_tools)
-            return ToolCall(
-                tool_name="write_file",
-                arguments={"path": path_text, "content": content_text},
-            )
-
-        msg = (
-            "unsupported request: use 'read <relative-path>', 'show <relative-path>', "
-            "'grep <pattern> <relative-path>', 'run <command>', or "
-            "'write <relative-path> <content>'"
+        resolution = resolve_tool_instruction(
+            commands[step_index],
+            available_tools,
+            unavailable_message_suffix="graph execution",
         )
-        raise ValueError(msg)
+        return resolution.tool_call
 
     @staticmethod
     def _graph_event(event_type: str, payload: dict[str, object]) -> GraphEvent:
@@ -289,23 +234,3 @@ class DeterministicGraph:
             source="graph",
             payload=payload,
         )
-
-    def _ensure_read_tool_available(self, tools: tuple[ToolDefinition, ...]) -> None:
-        if any(tool.name == "read_file" and tool.read_only for tool in tools):
-            return
-        raise ValueError("read_file tool is not registered for graph execution")
-
-    def _ensure_grep_tool_available(self, tools: tuple[ToolDefinition, ...]) -> None:
-        if any(tool.name == "grep" and tool.read_only for tool in tools):
-            return
-        raise ValueError("grep tool is not registered for graph execution")
-
-    def _ensure_write_tool_available(self, tools: tuple[ToolDefinition, ...]) -> None:
-        if any(tool.name == "write_file" and not tool.read_only for tool in tools):
-            return
-        raise ValueError("write_file tool is not registered for graph execution")
-
-    def _ensure_shell_exec_tool_available(self, tools: tuple[ToolDefinition, ...]) -> None:
-        if any(tool.name == "shell_exec" and not tool.read_only for tool in tools):
-            return
-        raise ValueError("shell_exec tool is not registered for graph execution")

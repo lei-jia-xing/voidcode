@@ -9,17 +9,11 @@ from textual.fuzzy import Matcher
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, OptionList, Static
 
+from ..command.ui import DEFAULT_TUI_COMMANDS
 from ..runtime.events import EventEnvelope
 from ..runtime.session import StoredSessionSummary
 
-COMMAND_PALETTE_COMMANDS: tuple[str, ...] = (
-    "session: new",
-    "session: resume",
-    "theme: switch",
-    "theme: mode",
-    "view: wrap",
-    "view: sidebar",
-)
+COMMAND_PALETTE_COMMANDS = DEFAULT_TUI_COMMANDS
 
 
 class ApprovalModal(ModalScreen[Literal["allow", "deny"]]):
@@ -111,7 +105,9 @@ class CommandPalette(ModalScreen[str | None]):
         with Vertical(id="palette-dialog"):
             yield Label("Command Palette", classes="sidebar-header")
             yield Input(placeholder="Search commands...", id="palette-input")
-            yield OptionList(*COMMAND_PALETTE_COMMANDS, id="palette-options")
+            yield OptionList(
+                *(command.title for command in COMMAND_PALETTE_COMMANDS), id="palette-options"
+            )
 
     def on_mount(self) -> None:
         self.query_one(Input).focus()
@@ -121,14 +117,14 @@ class CommandPalette(ModalScreen[str | None]):
         options.clear_options()
         query = event.value.strip()
         if not query:
-            options.add_options(COMMAND_PALETTE_COMMANDS)
+            options.add_options(command.title for command in COMMAND_PALETTE_COMMANDS)
         else:
             matcher = Matcher(query)
             matches: list[tuple[float, str]] = []
-            for cmd in COMMAND_PALETTE_COMMANDS:
-                score = matcher.match(cmd)
+            for command in COMMAND_PALETTE_COMMANDS:
+                score = matcher.match(command.title)
                 if score > 0:
-                    matches.append((score, cmd))
+                    matches.append((score, command.title))
             matches.sort(key=lambda x: x[0], reverse=True)
             options.add_options([cmd for _, cmd in matches])
 
@@ -138,13 +134,20 @@ class CommandPalette(ModalScreen[str | None]):
             idx = options.highlighted if options.highlighted is not None else 0
             if idx < options.option_count:
                 opt = options.get_option_at_index(idx)
-                self.dismiss(str(opt.prompt))
+                self.dismiss(_command_id_for_title(str(opt.prompt)))
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
-        self.dismiss(str(event.option.prompt))
+        self.dismiss(_command_id_for_title(str(event.option.prompt)))
 
     def action_dismiss_palette(self) -> None:
         self.dismiss(None)
+
+
+def _command_id_for_title(title: str) -> str | None:
+    for command in COMMAND_PALETTE_COMMANDS:
+        if command.title == title:
+            return command.id
+    return None
 
 
 class SessionListModal(ModalScreen[str | None]):
