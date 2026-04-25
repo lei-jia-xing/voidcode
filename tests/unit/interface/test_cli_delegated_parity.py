@@ -849,6 +849,42 @@ def test_cli_tasks_output_falls_back_when_child_session_lookup_fails(capsys: Any
     assert "RESULT\nFailed: delegated work" in captured.out
 
 
+def test_cli_tasks_output_preserves_empty_child_session_output(capsys: Any) -> None:
+    cli = importlib.import_module("voidcode.cli")
+    workspace = Path("/tmp/demo-workspace")
+    task_result = SimpleNamespace(
+        task_id="task-empty",
+        status="completed",
+        parent_session_id="leader-session",
+        requested_child_session_id="child-requested",
+        child_session_id="child-session",
+        approval_request_id=None,
+        question_request_id=None,
+        approval_blocked=False,
+        result_available=True,
+        summary_output="Completed: delegated work",
+        error=None,
+        routing=None,
+    )
+    session_result = SimpleNamespace(output="")
+
+    with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+        runtime = runtime_class.return_value
+        runtime.load_background_task_result.return_value = task_result
+        runtime.session_result.return_value = session_result
+        result = cli.main(["tasks", "output", "task-empty", "--workspace", str(workspace)])
+
+    captured = capsys.readouterr()
+
+    assert result == 0
+    runtime.load_background_task_result.assert_called_once_with("task-empty")
+    runtime.session_result.assert_called_once_with(session_id="child-session")
+    assert "TASK id=task-empty status=completed" in captured.out
+    assert "summary_output='Completed: delegated work'" in captured.out
+    assert captured.out.endswith("RESULT\n")
+    assert "Completed: delegated work" not in captured.out.split("RESULT\n", 1)[1]
+
+
 def test_cli_tasks_cancel_delegates_to_runtime_cancel_background_task(capsys: Any) -> None:
     cli = importlib.import_module("voidcode.cli")
     workspace = Path("/tmp/demo-workspace")

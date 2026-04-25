@@ -467,7 +467,7 @@ def _handle_tasks_output_command(args: argparse.Namespace) -> int:
     fallback_output = (
         task_result.summary_output if task_result.summary_output is not None else task_result.error
     )
-    _print_runtime_output(session_output or fallback_output)
+    _print_runtime_output(session_output if session_output is not None else fallback_output)
     return 0
 
 
