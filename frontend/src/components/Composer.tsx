@@ -87,21 +87,16 @@ export function Composer({
   return (
     <div className="border-t border-slate-800 bg-[#0c0c0e] px-4 py-3">
       <div className="max-w-3xl mx-auto">
-        {agentPresets && agentPresets.length > 0 && (
-          <div className="mb-3 grid gap-3 md:grid-cols-2">
-            <div className="space-y-1.5">
-              <label
-                className="text-xs font-medium text-slate-400"
-                htmlFor="composer-agent"
-              >
-                Agent
-              </label>
+        <div className="relative flex flex-col bg-slate-900 border border-slate-700 rounded-xl focus-within:border-indigo-500 focus-within:ring-1 focus-within:ring-indigo-500 transition-colors overflow-hidden">
+          {agentPresets && agentPresets.length > 0 && (
+            <div className="flex items-center gap-2 px-3 py-1.5 border-b border-slate-800/60 bg-slate-900/30 text-xs">
               <select
                 id="composer-agent"
+                aria-label="Agent"
                 value={agentPreset ?? "leader"}
                 onChange={(event) => onAgentPresetChange?.(event.target.value)}
                 disabled={disabled}
-                className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-200 disabled:opacity-50"
+                className="bg-transparent border-none text-slate-300 font-medium outline-none max-w-[150px] cursor-pointer appearance-none hover:text-white disabled:opacity-50"
               >
                 {agentPresets.map((agent) => (
                   <option key={agent.id} value={agent.id}>
@@ -109,42 +104,34 @@ export function Composer({
                   </option>
                 ))}
               </select>
-            </div>
 
-            {configuredProviders.length === 0 ? (
-              <div className="rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-xs text-slate-400 md:col-span-1">
-                No providers configured. Add an API key in Settings.
-              </div>
-            ) : availableModelGroups.length === 0 ? (
-              <div className="rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-xs text-slate-400 md:col-span-1">
-                {showConfiguredModelFallback ? (
-                  <>
-                    Using configured model{" "}
-                    <span className="font-mono text-slate-300">
-                      {selectedModel}
-                    </span>
-                    , catalog unavailable.
-                  </>
-                ) : (
-                  <>No models available.</>
-                )}
-              </div>
-            ) : (
-              <div className="space-y-1.5">
-                <label
-                  className="text-xs font-medium text-slate-400"
-                  htmlFor="composer-model"
-                >
-                  Model
-                </label>
+              <div className="w-px h-3 bg-slate-700" />
+
+              {configuredProviders.length === 0 ? (
+                <div className="text-slate-500 truncate flex-1">
+                  No providers configured.
+                </div>
+              ) : availableModelGroups.length === 0 ? (
+                <div className="text-slate-500 truncate flex-1">
+                  {showConfiguredModelFallback ? (
+                    <>
+                      Configured:{" "}
+                      <span className="font-mono">{selectedModel}</span>
+                    </>
+                  ) : (
+                    <>No models available.</>
+                  )}
+                </div>
+              ) : (
                 <select
                   id="composer-model"
+                  aria-label="Model"
                   value={selectedModelAvailable ? selectedModel : ""}
                   onChange={(event) =>
                     onProviderModelChange?.(event.target.value)
                   }
                   disabled={disabled}
-                  className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-200 disabled:opacity-50"
+                  className="bg-transparent border-none text-slate-400 outline-none flex-1 cursor-pointer appearance-none hover:text-slate-200 disabled:opacity-50 truncate"
                 >
                   {availableModelGroups.map(({ provider, models }) => (
                     <optgroup key={provider.name} label={provider.label}>
@@ -156,34 +143,34 @@ export function Composer({
                     </optgroup>
                   ))}
                 </select>
-              </div>
-            )}
-          </div>
-        )}
+              )}
+            </div>
+          )}
 
-        <div className="relative flex items-end gap-2 bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 focus-within:border-indigo-500 focus-within:ring-1 focus-within:ring-indigo-500 transition-colors">
-          <textarea
-            ref={textareaRef}
-            value={input}
-            onChange={handleChange}
-            onKeyDown={handleKeyDown}
-            placeholder={placeholder || t("chat.placeholder")}
-            disabled={disabled}
-            rows={1}
-            className="flex-1 bg-transparent text-sm text-slate-200 placeholder:text-slate-500 resize-none outline-none py-1.5 max-h-[200px] disabled:opacity-50"
-          />
-          <button
-            type="button"
-            onClick={handleSubmit}
-            disabled={disabled || !input.trim()}
-            className="flex-shrink-0 w-8 h-8 flex items-center justify-center rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed text-white transition-colors mb-0.5"
-          >
-            {isRunning ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
-            ) : (
-              <Send className="w-4 h-4" />
-            )}
-          </button>
+          <div className="flex items-end gap-2 px-3 py-2 bg-transparent">
+            <textarea
+              ref={textareaRef}
+              value={input}
+              onChange={handleChange}
+              onKeyDown={handleKeyDown}
+              placeholder={placeholder || t("chat.placeholder")}
+              disabled={disabled}
+              rows={1}
+              className="flex-1 bg-transparent text-sm text-slate-200 placeholder:text-slate-500 resize-none outline-none py-1.5 max-h-[200px] disabled:opacity-50"
+            />
+            <button
+              type="button"
+              onClick={handleSubmit}
+              disabled={disabled || !input.trim()}
+              className="flex-shrink-0 w-8 h-8 flex items-center justify-center rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed text-white transition-colors mb-0.5"
+            >
+              {isRunning ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Send className="w-4 h-4" />
+              )}
+            </button>
+          </div>
         </div>
         <p className="text-[11px] text-slate-600 mt-1.5 text-center">
           {t("chat.hint")}

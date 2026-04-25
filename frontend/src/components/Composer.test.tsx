@@ -94,9 +94,7 @@ describe("Composer", () => {
       />,
     );
 
-    expect(
-      screen.getByText("No providers configured. Add an API key in Settings."),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/No providers configured/i)).toBeInTheDocument();
     expect(screen.queryByLabelText("Model")).not.toBeInTheDocument();
   });
 
@@ -142,7 +140,7 @@ describe("Composer", () => {
       />,
     );
 
-    expect(screen.getByText(/Using configured model/i)).toBeInTheDocument();
+    expect(screen.getByText(/Configured:/i)).toBeInTheDocument();
     expect(screen.getByText("opencode-go/kimi-k2.6")).toBeInTheDocument();
     expect(screen.queryByLabelText("Model")).not.toBeInTheDocument();
     expect(
