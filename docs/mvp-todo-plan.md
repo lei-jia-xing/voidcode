@@ -176,7 +176,7 @@ VoidCode 已经拥有扎实的 pre-MVP 基础：
 
 - [x] 定义一个覆盖 运行时 + CLI + Web 客户端 的规范演示流程
 - [x] 为主要产品循环添加全栈测试覆盖
-- [ ] 针对常见失败和恢复记录操作员工作流
+- [x] 针对常见失败和恢复记录操作员工作流
 - [x] 通过 `#82` 定义 retention / compaction / checkpoint invalidation 语义，并保证 replay / resume 在该策略下继续成立
 - [ ] 添加调试实时会话所需的观测钩子/日志
 - [x] 更新 README 和贡献者文档以反映真实的 MVP 路径
@@ -247,5 +247,5 @@ VoidCode 已经拥有扎实的 pre-MVP 基础：
 - [x] 完成 issue #122：为外部工具与运行环境提供 capability doctor，降低首次使用门槛
 - [x] 完成 issue #120：让 edit 流程具备 formatter-aware 和 re-read aligned 行为
 - [x] 完成 issue #111：把默认 LSP 配置推进到主流项目开箱可用
-- [ ] 用 CLI + Web 主路径固化一条标准 demo flow，并把失败诊断/恢复路径写成可重复操作手册
+- [x] 用 CLI + Web 主路径固化一条标准 demo flow，并把失败诊断/恢复路径写成可重复操作手册
 - [ ] 在 runtime 主线稳定之后，再重新评估 TUI 特定 epic 和剩余客户端 polish 工作
