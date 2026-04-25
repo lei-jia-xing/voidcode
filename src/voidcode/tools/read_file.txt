@@ -1,9 +1,7 @@
-Read a file from the local workspace. If the path does not exist, an error is returned.
+Use this tool when you know the exact file you want to inspect inside the workspace.
 
-Usage:
-- The path parameter must be a workspace-relative file path.
-- This tool reads UTF-8 text files only.
-- The result content is the raw file contents.
-- Use list or glob when you do not yet know the exact path.
-- Use grep when you need literal matches inside one known file.
-- Call this tool in parallel when you already know multiple files you need to inspect.
+It is best for reading UTF-8 text files directly, and it can also return images and PDFs as attachments. For text files, the result is line-numbered and starts from the top of the file by default.
+
+If the file is large, continue reading it with a later offset instead of switching to shell commands. When you do not know the exact path yet, use `list` or `glob` first. When you need to search for text across a known file or directory target, use `grep` instead.
+
+This tool does not read directories.
