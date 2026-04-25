@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 from typing import cast
 
@@ -116,7 +117,7 @@ def test_background_task_storage_persists_delegated_correlation_and_routing_colu
 
     store.create_background_task(workspace=tmp_path, task=task)
 
-    with sqlite3.connect(database_path) as connection:
+    with closing(sqlite3.connect(database_path)) as connection:
         row = connection.execute(
             """
             SELECT requested_child_session_id, routing_mode, routing_category,
@@ -281,7 +282,7 @@ def test_background_task_storage_terminal_states_persist_result_availability_and
         error="operator cancelled",
     )
 
-    with sqlite3.connect(tmp_path / ".voidcode" / "sessions.sqlite3") as connection:
+    with closing(sqlite3.connect(tmp_path / ".voidcode" / "sessions.sqlite3")) as connection:
         rows = connection.execute(
             """
             SELECT task_id, result_available, cancellation_cause
@@ -308,7 +309,7 @@ def test_background_task_storage_cancel_semantics(tmp_path: Path) -> None:
     assert cancelled.status == "cancelled"
     assert cancelled.error == "cancelled before start"
 
-    with sqlite3.connect(tmp_path / ".voidcode" / "sessions.sqlite3") as connection:
+    with closing(sqlite3.connect(tmp_path / ".voidcode" / "sessions.sqlite3")) as connection:
         row = connection.execute(
             "SELECT cancellation_cause, result_available FROM background_tasks WHERE task_id = ?",
             ("task-c",),
@@ -464,7 +465,7 @@ def test_background_task_storage_persists_approval_and_question_request_correlat
     )
     store.save_run(workspace=tmp_path, request=approval_request, response=terminal_response)
 
-    with sqlite3.connect(tmp_path / ".voidcode" / "sessions.sqlite3") as connection:
+    with closing(sqlite3.connect(tmp_path / ".voidcode" / "sessions.sqlite3")) as connection:
         row = connection.execute(
             """
             SELECT requested_child_session_id, session_id, approval_request_id,
@@ -1038,7 +1039,7 @@ def test_background_task_storage_reconciliation_preserves_approval_blocked_child
         message="background task interrupted before completion",
     )
 
-    with sqlite3.connect(tmp_path / ".voidcode" / "sessions.sqlite3") as connection:
+    with closing(sqlite3.connect(tmp_path / ".voidcode" / "sessions.sqlite3")) as connection:
         row = connection.execute(
             """
             SELECT status, approval_request_id, requested_child_session_id,
