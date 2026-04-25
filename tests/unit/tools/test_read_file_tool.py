@@ -8,7 +8,7 @@ import pytest
 
 from voidcode.runtime.service import ToolRegistry
 from voidcode.tools import ReadFileTool, ToolCall
-from voidcode.tools.read_file import MAX_ATTACHMENT_BYTES
+from voidcode.tools.read_file import MAX_ATTACHMENT_BYTES, MAX_LINE_LENGTH
 
 
 def test_read_file_tool_reads_text_file_with_offset_and_limit(tmp_path: Path) -> None:
@@ -27,9 +27,11 @@ def test_read_file_tool_reads_text_file_with_offset_and_limit(tmp_path: Path) ->
     assert result.status == "ok"
     assert "2: beta" in (result.content or "")
     assert "3: gamma" in (result.content or "")
+    assert "Use offset=4 to continue." in (result.content or "")
     assert result.data["path"] == "sample.txt"
     assert result.data["offset"] == 2
     assert result.data["limit"] == 2
+    assert result.data["next_offset"] == 4
 
 
 def test_read_file_tool_rejects_directories_with_suggestions(tmp_path: Path) -> None:
@@ -118,6 +120,25 @@ def test_read_file_tool_rejects_oversized_attachment_before_read_bytes(tmp_path:
                 ToolCall(tool_name="read_file", arguments={"filePath": "image.png"}),
                 workspace=tmp_path,
             )
+
+
+def test_read_file_tool_does_not_emit_offset_guidance_for_clipped_line_only(tmp_path: Path) -> None:
+    sample = tmp_path / "sample.txt"
+    _ = sample.write_text("x" * (MAX_LINE_LENGTH + 5), encoding="utf-8")
+    tool = ReadFileTool()
+
+    result = tool.invoke(
+        ToolCall(tool_name="read_file", arguments={"filePath": "sample.txt"}),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert "line truncated to 2000 chars" in (result.content or "")
+    assert "Use offset=" not in (result.content or "")
+    assert "(End of file - total 1 lines)" in (result.content or "")
+    assert result.data["next_offset"] is None
+    assert result.data["truncated"] is True
+    assert result.data["partial"] is True
 
 
 def test_tools_package_and_default_registry_export_read_file_tool() -> None:

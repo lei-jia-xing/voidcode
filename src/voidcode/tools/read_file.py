@@ -120,7 +120,7 @@ def _render_file(candidate: Path, *, relative_path: str, offset: int, limit: int
     rendered_lines: list[str] = []
     total_lines = 0
     bytes_used = 0
-    truncated = False
+    content_truncated = False
     has_more = False
 
     try:
@@ -137,13 +137,13 @@ def _render_file(candidate: Path, *, relative_path: str, offset: int, limit: int
                 line_text, line_truncated = _truncate_line(line_text)
                 encoded_size = len(line_text.encode("utf-8")) + (1 if rendered_lines else 0)
                 if bytes_used + encoded_size > MAX_BYTES:
-                    truncated = True
+                    content_truncated = True
                     has_more = True
                     break
 
                 rendered_lines.append(f"{line_number}: {line_text}")
                 bytes_used += encoded_size
-                truncated = truncated or line_truncated
+                content_truncated = content_truncated or line_truncated
     except UnicodeDecodeError as exc:
         raise ValueError("read_file only supports UTF-8 text files") from exc
 
@@ -151,7 +151,7 @@ def _render_file(candidate: Path, *, relative_path: str, offset: int, limit: int
         raise ValueError(f"Offset {offset} is out of range for this file ({total_lines} lines)")
 
     next_offset = offset + len(rendered_lines)
-    truncated = truncated or has_more
+    content_truncated = content_truncated or has_more
 
     rendered: list[str] = [
         f"<path>{relative_path}</path>",
@@ -159,7 +159,7 @@ def _render_file(candidate: Path, *, relative_path: str, offset: int, limit: int
         "<content>",
     ]
     rendered.extend(rendered_lines)
-    if truncated:
+    if has_more:
         if bytes_used >= MAX_BYTES:
             rendered.append(
                 "(Output capped at "
@@ -184,9 +184,9 @@ def _render_file(candidate: Path, *, relative_path: str, offset: int, limit: int
             "line_count": total_lines,
             "offset": offset,
             "limit": limit,
-            "next_offset": next_offset if truncated else None,
-            "truncated": truncated,
-            "partial": truncated,
+            "next_offset": next_offset if has_more else None,
+            "truncated": content_truncated,
+            "partial": content_truncated,
             "byte_count": bytes_used,
         },
     )
