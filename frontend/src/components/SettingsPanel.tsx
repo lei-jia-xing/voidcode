@@ -1,15 +1,23 @@
 import { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { X, Save, Loader2, AlertCircle } from "lucide-react";
-import { RuntimeSettings, RuntimeSettingsUpdate } from "../lib/runtime/types";
+import {
+  ProviderSummary,
+  RuntimeSettings,
+  RuntimeSettingsUpdate,
+} from "../lib/runtime/types";
 
 interface SettingsPanelProps {
   isOpen: boolean;
   settings: RuntimeSettings | null;
   settingsStatus: string;
   settingsError: string | null;
+  providers?: ProviderSummary[];
+  providersStatus?: string;
+  providersError?: string | null;
   onClose: () => void;
   onLoad: () => void;
+  onLoadProviders?: () => void;
   onSave: (settings: RuntimeSettingsUpdate) => void;
 }
 
@@ -18,26 +26,29 @@ export function SettingsPanel({
   settings,
   settingsStatus,
   settingsError,
+  providers = [],
+  providersStatus,
+  providersError,
   onClose,
   onLoad,
+  onLoadProviders,
   onSave,
 }: SettingsPanelProps) {
   const { t } = useTranslation();
   const [provider, setProvider] = useState("");
   const [apiKey, setApiKey] = useState("");
-  const [model, setModel] = useState("");
 
   useEffect(() => {
     if (isOpen) {
       onLoad();
+      onLoadProviders?.();
     }
-  }, [isOpen, onLoad]);
+  }, [isOpen, onLoad, onLoadProviders]);
 
   useEffect(() => {
     if (settings) {
       setProvider(settings.provider || "");
       setApiKey("");
-      setModel(settings.model || "");
     }
   }, [settings]);
 
@@ -45,7 +56,7 @@ export function SettingsPanel({
     onSave({
       provider: provider || undefined,
       provider_api_key: apiKey || undefined,
-      model: model || undefined,
+      model: settings?.model || undefined,
     });
   };
 
@@ -83,6 +94,49 @@ export function SettingsPanel({
             </div>
           )}
 
+          {providersError && (
+            <div className="flex items-start gap-2 rounded-lg bg-rose-500/10 border border-rose-500/20 p-3 text-sm text-rose-300">
+              <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+              {providersError}
+            </div>
+          )}
+
+          <div className="space-y-2">
+            <div className="text-sm font-medium text-slate-300">Providers</div>
+            {providers.length === 0 && providersStatus !== "loading" ? (
+              <div className="rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-sm text-slate-400">
+                No providers available.
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {providers.map((provider) => (
+                  <div
+                    key={provider.name}
+                    className="flex items-center justify-between rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2"
+                  >
+                    <div>
+                      <div className="text-sm text-slate-200">
+                        {provider.label}
+                      </div>
+                      <div className="text-[11px] font-mono text-slate-500">
+                        {provider.name}
+                      </div>
+                    </div>
+                    <span
+                      className={`rounded-md border px-2 py-0.5 text-[11px] font-medium ${
+                        provider.configured
+                          ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-400"
+                          : "border-slate-700 bg-slate-800 text-slate-400"
+                      }`}
+                    >
+                      {provider.configured ? "Configured" : "Not configured"}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
           <div className="space-y-2">
             <label
               htmlFor="settings-provider"
@@ -118,24 +172,6 @@ export function SettingsPanel({
               className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-colors disabled:opacity-50"
             />
             <p className="text-xs text-slate-500">{t("settings.apiKeyHint")}</p>
-          </div>
-
-          <div className="space-y-2">
-            <label
-              htmlFor="settings-model"
-              className="text-sm font-medium text-slate-300"
-            >
-              {t("settings.model")}
-            </label>
-            <input
-              id="settings-model"
-              type="text"
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-              placeholder={t("settings.modelPlaceholder")}
-              disabled={isLoading}
-              className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-colors disabled:opacity-50"
-            />
           </div>
         </div>
 
