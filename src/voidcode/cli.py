@@ -32,7 +32,7 @@ from .runtime.permission import PermissionDecision, PermissionResolution
 from .runtime.service import VoidCodeRuntime
 from .runtime.session import SessionState, StoredSessionSummary
 from .runtime.task import BackgroundTaskState, StoredBackgroundTaskSummary
-from .server import serve
+from .server import serve, web
 
 Handler = Callable[[argparse.Namespace], int]
 
@@ -508,13 +508,14 @@ def _handle_tasks_list_command(args: argparse.Namespace) -> int:
     return 0
 
 
-def _handle_serve_command(args: argparse.Namespace) -> int:
+def _handle_server_command(args: argparse.Namespace) -> int:
     workspace = cast(Path, args.workspace)
     config = load_runtime_config(
         workspace,
         approval_mode=cast(PermissionDecision | None, getattr(args, "approval_mode", None)),
     )
-    serve(
+    server_entry = cast(Callable[..., None], args.server_entry)
+    server_entry(
         workspace=workspace,
         host=cast(str, args.host),
         port=cast(int, args.port),
@@ -780,7 +781,35 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("allow", "deny", "ask"),
         help="Override the runtime approval mode for this server process.",
     )
-    serve_parser.set_defaults(handler=_handle_serve_command)
+    serve_parser.set_defaults(handler=_handle_server_command, server_entry=serve)
+
+    web_parser = subparsers.add_parser(
+        "web",
+        help="Start the local web launcher entrypoint for the runtime transport.",
+    )
+    _ = web_parser.add_argument(
+        "--workspace",
+        type=Path,
+        default=Path.cwd(),
+        help="Workspace root used by the local runtime and session database.",
+    )
+    _ = web_parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Host interface for the local launcher server.",
+    )
+    _ = web_parser.add_argument(
+        "--port",
+        type=int,
+        default=8000,
+        help="Port for the local launcher server.",
+    )
+    _ = web_parser.add_argument(
+        "--approval-mode",
+        choices=("allow", "deny", "ask"),
+        help="Override the runtime approval mode for this launcher process.",
+    )
+    web_parser.set_defaults(handler=_handle_server_command, server_entry=web)
 
     sessions_parser = subparsers.add_parser("sessions", help="Inspect persisted local sessions.")
     sessions_subparsers = sessions_parser.add_subparsers(dest="sessions_command")

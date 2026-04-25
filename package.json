@@ -1,0 +1,8 @@
+{
+  "name": "voidcode-root",
+  "private": true,
+  "scripts": {
+    "vitest": "bun ./scripts/run-frontend-vitest.mjs",
+    "playwright": "bun ./scripts/run-frontend-playwright.mjs"
+  }
+}

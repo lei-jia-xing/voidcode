@@ -316,9 +316,11 @@ class RuntimeTransportApp:
         *,
         runtime_factory: Callable[[], RuntimeTransport],
         workspace_coordinator: SingleWorkspaceRuntimeCoordinator | None = None,
+        frontend_dist: Path | None = None,
     ) -> None:
         self._runtime_factory = runtime_factory
         self._workspace_coordinator = workspace_coordinator
+        self._frontend_dist = frontend_dist
 
     @staticmethod
     def _close_runtime(
@@ -716,6 +718,74 @@ class RuntimeTransportApp:
                 )
                 return
             await self._handle_get_review_diff(path=diff_path, send=send)
+            return
+
+        await self._handle_static_file(path, send)
+
+    @staticmethod
+    def _content_type_for_suffix(suffix: str) -> str:
+        _CONTENT_TYPES: dict[str, str] = {
+            ".html": "text/html; charset=utf-8",
+            ".js": "application/javascript; charset=utf-8",
+            ".css": "text/css; charset=utf-8",
+            ".json": "application/json; charset=utf-8",
+            ".png": "image/png",
+            ".svg": "image/svg+xml",
+            ".ico": "image/x-icon",
+            ".woff2": "font/woff2",
+            ".woff": "font/woff",
+            ".ttf": "font/ttf",
+            ".txt": "text/plain; charset=utf-8",
+            ".map": "application/octet-stream",
+            ".webp": "image/webp",
+            ".wasm": "application/wasm",
+        }
+        return _CONTENT_TYPES.get(suffix.lower(), "application/octet-stream")
+
+    async def _handle_static_file(self, path: str, send: Send) -> None:
+        if self._frontend_dist is None:
+            await self._json_response(send, status=404, payload={"error": "not found"})
+            return
+
+        normalized_path = path.lstrip("/")
+        if not normalized_path:
+            normalized_path = "index.html"
+
+        file_path = self._frontend_dist / normalized_path
+
+        # Prevent directory traversal
+        try:
+            resolved = file_path.resolve()
+            resolved.relative_to(self._frontend_dist.resolve())
+        except ValueError:
+            await self._json_response(send, status=404, payload={"error": "not found"})
+            return
+
+        if resolved.is_file():
+            content_type = self._content_type_for_suffix(resolved.suffix)
+            body = resolved.read_bytes()
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 200,
+                    "headers": [(b"content-type", content_type.encode("utf-8"))],
+                }
+            )
+            await send({"type": "http.response.body", "body": body, "more_body": False})
+            return
+
+        # SPA fallback — serve index.html for client-side routing
+        index_path = (self._frontend_dist / "index.html").resolve()
+        if index_path.is_file():
+            body = index_path.read_bytes()
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 200,
+                    "headers": [(b"content-type", b"text/html; charset=utf-8")],
+                }
+            )
+            await send({"type": "http.response.body", "body": body, "more_body": False})
             return
 
         await self._json_response(send, status=404, payload={"error": "not found"})
@@ -1774,14 +1844,16 @@ def create_runtime_app(
     workspace: Path,
     config: RuntimeConfig | None = None,
     runtime_factory: Callable[[], RuntimeTransport] | None = None,
+    frontend_dist: Path | None = None,
 ) -> RuntimeTransportApp:
     if runtime_factory is not None:
-        return RuntimeTransportApp(runtime_factory=runtime_factory)
+        return RuntimeTransportApp(runtime_factory=runtime_factory, frontend_dist=frontend_dist)
 
     resolved_workspace = workspace.resolve()
     if not resolved_workspace.is_dir():
         return RuntimeTransportApp(
-            runtime_factory=lambda: VoidCodeRuntime(workspace=resolved_workspace, config=config)
+            runtime_factory=lambda: VoidCodeRuntime(workspace=resolved_workspace, config=config),
+            frontend_dist=frontend_dist,
         )
 
     coordinator = SingleWorkspaceRuntimeCoordinator(
@@ -1799,4 +1871,5 @@ def create_runtime_app(
     return RuntimeTransportApp(
         runtime_factory=resolved_factory,
         workspace_coordinator=coordinator,
+        frontend_dist=frontend_dist,
     )

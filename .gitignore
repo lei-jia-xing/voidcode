@@ -29,3 +29,4 @@ htmlcov/
 .codex
 .voidcode.json
 .claude/
+playwright-report/

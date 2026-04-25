@@ -180,6 +180,73 @@ def test_console_script_help_works() -> None:
     assert "usage:" in result.stdout.lower()
 
 
+def test_web_command_help_works() -> None:
+    result = _run_module_cli("web", "--help")
+
+    assert result.returncode == 0
+    assert "launcher" in result.stdout.lower()
+    assert "web" in result.stdout.lower()
+
+
+def test_serve_command_help_works() -> None:
+    result = _run_module_cli("serve", "--help")
+
+    assert result.returncode == 0
+    assert "transport" in result.stdout.lower()
+
+
+def test_web_command_forwards_runtime_config_and_server_entry() -> None:
+    cli = importlib.import_module("voidcode.cli")
+    workspace = Path("/tmp/web-workspace")
+    config = SimpleNamespace(approval_mode="allow")
+
+    with patch.object(
+        cli, "load_runtime_config", autospec=True, return_value=config
+    ) as config_mock:
+        with patch.object(cli, "web", autospec=True) as web_mock:
+            result = cli.main([
+                "web",
+                "--workspace", str(workspace),
+                "--host", "127.0.0.1",
+                "--port", "8012",
+            ])
+
+    assert result == 0
+    config_mock.assert_called_once_with(workspace, approval_mode=None)
+    web_mock.assert_called_once_with(
+        workspace=workspace,
+        host="127.0.0.1",
+        port=8012,
+        config=config,
+    )
+
+
+def test_serve_command_forwards_runtime_config_and_server_entry() -> None:
+    cli = importlib.import_module("voidcode.cli")
+    workspace = Path("/tmp/serve-workspace")
+    config = SimpleNamespace(approval_mode="allow")
+
+    with patch.object(
+        cli, "load_runtime_config", autospec=True, return_value=config
+    ) as config_mock:
+        with patch.object(cli, "serve", autospec=True) as serve_mock:
+            result = cli.main([
+                "serve",
+                "--workspace", str(workspace),
+                "--host", "127.0.0.1",
+                "--port", "8013",
+            ])
+
+    assert result == 0
+    config_mock.assert_called_once_with(workspace, approval_mode=None)
+    serve_mock.assert_called_once_with(
+        workspace=workspace,
+        host="127.0.0.1",
+        port=8013,
+        config=config,
+    )
+
+
 def test_sessions_resume_rejects_partial_approval_flags() -> None:
     result = _run_module_cli(
         "sessions",
