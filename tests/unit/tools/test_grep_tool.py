@@ -126,6 +126,34 @@ def test_grep_tool_searches_top_level_files_in_directory_targets_by_default(tmp_
     ]
 
 
+def test_grep_tool_sorts_directory_targets_deterministically(tmp_path: Path) -> None:
+    src = tmp_path / "src"
+    nested = src / "nested"
+    nested.mkdir(parents=True)
+    _ = (nested / "zeta.py").write_text("alpha\n", encoding="utf-8")
+    _ = (src / "alpha.py").write_text("alpha\n", encoding="utf-8")
+    _ = (nested / "beta.py").write_text("alpha\n", encoding="utf-8")
+    tool = GrepTool()
+
+    result = tool.invoke(
+        ToolCall(tool_name="grep", arguments={"pattern": "alpha", "path": "src"}),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert [match["file"] for match in result.data["matches"]] == [
+        "src/alpha.py",
+        "src/nested/beta.py",
+        "src/nested/zeta.py",
+    ]
+    assert result.content == (
+        "Found 3 match(es) for 'alpha' in src\n"
+        "src/alpha.py:1: alpha\n"
+        "src/nested/beta.py:1: alpha\n"
+        "src/nested/zeta.py:1: alpha"
+    )
+
+
 def test_grep_tool_returns_zero_matches_summary(tmp_path: Path) -> None:
     sample_file = tmp_path / "sample.txt"
     _ = sample_file.write_text("alpha beta\n", encoding="utf-8")

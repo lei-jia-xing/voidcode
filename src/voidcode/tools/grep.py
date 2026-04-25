@@ -75,6 +75,7 @@ class GrepTool:
             if any(GrepTool._matches_glob(rel, pat) for pat in exclude_patterns):
                 continue
             targets.append(candidate)
+        targets.sort(key=lambda path: path.relative_to(root).as_posix())
         return targets
 
     @staticmethod
