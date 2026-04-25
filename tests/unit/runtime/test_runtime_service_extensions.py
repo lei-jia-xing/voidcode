@@ -6524,6 +6524,13 @@ def test_runtime_effective_runtime_config_uses_request_metadata_max_steps_for_ne
     response = runtime.run(RuntimeRequest(prompt="hello", metadata={"max_steps": 2}))
 
     assert response.session.status == "completed"
+    assert set(response.session.metadata) == {
+        "workspace",
+        "runtime_config",
+        "runtime_state",
+        "context_window",
+        "max_steps",
+    }
     assert response.session.metadata["runtime_config"] == {
         "approval_mode": "ask",
         "execution_engine": "deterministic",
@@ -6536,6 +6543,7 @@ def test_runtime_effective_runtime_config_uses_request_metadata_max_steps_for_ne
         "mcp": {"mode": "disabled", "configured_enabled": False, "servers": []},
     }
     runtime_state = cast(dict[str, object], response.session.metadata["runtime_state"])
+    assert set(runtime_state) == {"acp", "run_id"}
     assert runtime_state["acp"] == {
         "mode": "disabled",
         "configured_enabled": False,
