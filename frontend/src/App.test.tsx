@@ -20,6 +20,38 @@ describe("App", () => {
     providerModel: "opencode-go/glm-5.1",
     setAgentPreset: vi.fn(),
     setProviderModel: vi.fn(),
+    workspaces: null,
+    workspacesStatus: "idle",
+    workspacesError: null,
+    workspaceSwitchStatus: "idle",
+    workspaceSwitchError: null,
+    providers: [],
+    providersStatus: "idle",
+    providersError: null,
+    providerModels: {},
+    agentPresets: [],
+    loadWorkspaces: vi.fn(),
+    switchWorkspace: vi.fn(),
+    loadProviders: vi.fn(),
+    loadAgents: vi.fn(),
+    statusSnapshot: null,
+    statusStatus: "idle",
+    statusError: null,
+    mcpRetryStatus: "idle",
+    mcpRetryError: null,
+    loadStatus: vi.fn(),
+    retryMcpConnections: vi.fn(),
+    reviewSnapshot: null,
+    reviewStatus: "idle",
+    reviewError: null,
+    reviewSelectedPath: null,
+    reviewDiff: null,
+    reviewDiffStatus: "idle",
+    reviewDiffError: null,
+    reviewMode: "changes",
+    loadReview: vi.fn(),
+    selectReviewPath: vi.fn(),
+    setReviewMode: vi.fn(),
     sessions: [],
     currentSessionId: null,
     currentSessionState: null,
@@ -71,6 +103,21 @@ describe("App", () => {
   });
 
   it("renders composer and triggers runTask on submit", () => {
+    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      ...mockStore,
+      workspaces: {
+        current: {
+          path: "/workspace",
+          label: "workspace",
+          available: true,
+          current: true,
+          last_opened_at: 1,
+        },
+        recent: [],
+        candidates: [],
+      },
+    });
+
     render(<App />);
 
     const textarea = screen.getByPlaceholderText(
@@ -84,9 +131,45 @@ describe("App", () => {
     expect(mockStore.runTask).toHaveBeenCalledWith("read README.md");
   });
 
+  it("loads runtime-owned settings on startup", () => {
+    render(<App />);
+
+    expect(mockStore.loadSettings).toHaveBeenCalled();
+  });
+
+  it("renders project-picker-first empty state when no current workspace exists", () => {
+    render(<App />);
+
+    expect(
+      screen.getByText("Open a project to get started"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Choose a workspace first before using chat, review, or composer.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Open Project" }).length).toBe(
+      2,
+    );
+    expect(
+      screen.queryByPlaceholderText("Ask VoidCode to do something..."),
+    ).not.toBeInTheDocument();
+  });
+
   it("renders chat messages when current session has events", () => {
     (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
       ...mockStore,
+      workspaces: {
+        current: {
+          path: "/workspace",
+          label: "workspace",
+          available: true,
+          current: true,
+          last_opened_at: 1,
+        },
+        recent: [],
+        candidates: [],
+      },
       currentSessionEvents: [
         {
           session_id: "session-1",
@@ -129,6 +212,17 @@ describe("App", () => {
   it("renders thinking block only when reasoning events exist", () => {
     (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
       ...mockStore,
+      workspaces: {
+        current: {
+          path: "/workspace",
+          label: "workspace",
+          available: true,
+          current: true,
+          last_opened_at: 1,
+        },
+        recent: [],
+        candidates: [],
+      },
       currentSessionEvents: [
         {
           session_id: "session-1",
@@ -156,6 +250,17 @@ describe("App", () => {
   it("renders streamed assistant text before the final response event", () => {
     (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
       ...mockStore,
+      workspaces: {
+        current: {
+          path: "/workspace",
+          label: "workspace",
+          available: true,
+          current: true,
+          last_opened_at: 1,
+        },
+        recent: [],
+        candidates: [],
+      },
       currentSessionEvents: [
         {
           session_id: "session-1",
@@ -194,6 +299,17 @@ describe("App", () => {
       .mockImplementation(() => {});
     (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
       ...mockStore,
+      workspaces: {
+        current: {
+          path: "/workspace",
+          label: "workspace",
+          available: true,
+          current: true,
+          last_opened_at: 1,
+        },
+        recent: [],
+        candidates: [],
+      },
       currentSessionId: "session-2",
       currentSessionEvents: [
         {
@@ -234,6 +350,17 @@ describe("App", () => {
       .mockImplementation(() => {});
     (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
       ...mockStore,
+      workspaces: {
+        current: {
+          path: "/workspace",
+          label: "workspace",
+          available: true,
+          current: true,
+          last_opened_at: 1,
+        },
+        recent: [],
+        candidates: [],
+      },
       currentSessionId: "session-1",
       currentSessionEvents: [
         {
@@ -274,6 +401,17 @@ describe("App", () => {
   it("does not render thinking block when no reasoning events exist", () => {
     (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
       ...mockStore,
+      workspaces: {
+        current: {
+          path: "/workspace",
+          label: "workspace",
+          available: true,
+          current: true,
+          last_opened_at: 1,
+        },
+        recent: [],
+        candidates: [],
+      },
       currentSessionEvents: [
         {
           session_id: "session-1",
@@ -295,6 +433,17 @@ describe("App", () => {
     const resolveApproval = vi.fn();
     (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
       ...mockStore,
+      workspaces: {
+        current: {
+          path: "/workspace",
+          label: "workspace",
+          available: true,
+          current: true,
+          last_opened_at: 1,
+        },
+        recent: [],
+        candidates: [],
+      },
       currentSessionId: "session-1",
       currentSessionState: {
         session: { id: "session-1" },
@@ -337,6 +486,17 @@ describe("App", () => {
     const resolveApproval = vi.fn();
     (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
       ...mockStore,
+      workspaces: {
+        current: {
+          path: "/workspace",
+          label: "workspace",
+          available: true,
+          current: true,
+          last_opened_at: 1,
+        },
+        recent: [],
+        candidates: [],
+      },
       currentSessionId: "session-1",
       currentSessionState: {
         session: { id: "session-1" },
@@ -377,6 +537,17 @@ describe("App", () => {
   it("hides approval controls when session is not waiting", () => {
     (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
       ...mockStore,
+      workspaces: {
+        current: {
+          path: "/workspace",
+          label: "workspace",
+          available: true,
+          current: true,
+          last_opened_at: 1,
+        },
+        recent: [],
+        candidates: [],
+      },
       currentSessionState: {
         session: { id: "session-1" },
         status: "completed",
@@ -393,6 +564,17 @@ describe("App", () => {
   it("renders approval error and disables controls while submitting", () => {
     (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
       ...mockStore,
+      workspaces: {
+        current: {
+          path: "/workspace",
+          label: "workspace",
+          available: true,
+          current: true,
+          last_opened_at: 1,
+        },
+        recent: [],
+        candidates: [],
+      },
       currentSessionId: "session-1",
       currentSessionState: {
         session: { id: "session-1" },
@@ -435,6 +617,17 @@ describe("App", () => {
   it("renders the session list item with prompt-first title, status, and updated time", () => {
     (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
       ...mockStore,
+      workspaces: {
+        current: {
+          path: "/workspace",
+          label: "workspace",
+          available: true,
+          current: true,
+          last_opened_at: 1,
+        },
+        recent: [],
+        candidates: [],
+      },
       sessions: [
         {
           session: { id: "session-123456789" },
@@ -459,6 +652,17 @@ describe("App", () => {
   it("renders idle session status labels from contract-valid summaries", () => {
     (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
       ...mockStore,
+      workspaces: {
+        current: {
+          path: "/workspace",
+          label: "workspace",
+          available: true,
+          current: true,
+          last_opened_at: 1,
+        },
+        recent: [],
+        candidates: [],
+      },
       sessions: [
         {
           session: { id: "session-idle-123" },
@@ -480,6 +684,17 @@ describe("App", () => {
   it("renders the header with current session prompt", () => {
     (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
       ...mockStore,
+      workspaces: {
+        current: {
+          path: "/workspace",
+          label: "workspace",
+          available: true,
+          current: true,
+          last_opened_at: 1,
+        },
+        recent: [],
+        candidates: [],
+      },
       currentSessionId: "session-123456789",
       sessions: [
         {
@@ -502,6 +717,17 @@ describe("App", () => {
   it("falls back to the replayed request prompt in the header when summary prompt is unavailable", () => {
     (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
       ...mockStore,
+      workspaces: {
+        current: {
+          path: "/workspace",
+          label: "workspace",
+          available: true,
+          current: true,
+          last_opened_at: 1,
+        },
+        recent: [],
+        candidates: [],
+      },
       currentSessionId: "session-123456789",
       currentSessionEvents: [
         {
@@ -523,6 +749,17 @@ describe("App", () => {
   it("prefers the latest replayed request prompt in the header fallback", () => {
     (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
       ...mockStore,
+      workspaces: {
+        current: {
+          path: "/workspace",
+          label: "workspace",
+          available: true,
+          current: true,
+          last_opened_at: 1,
+        },
+        recent: [],
+        candidates: [],
+      },
       currentSessionId: "session-123456789",
       currentSessionEvents: [
         {
@@ -550,15 +787,45 @@ describe("App", () => {
   });
 
   it("renders model controls and updates provider model", () => {
+    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      ...mockStore,
+      workspaces: {
+        current: {
+          path: "/workspace",
+          label: "workspace",
+          available: true,
+          current: true,
+          last_opened_at: 1,
+        },
+        recent: [],
+        candidates: [],
+      },
+      agentPresets: [{ id: "leader", label: "Leader", description: null }],
+      providers: [
+        {
+          name: "opencode-go",
+          label: "OpenCode Go",
+          configured: true,
+          current: true,
+        },
+      ],
+      providerModels: {
+        "opencode-go": {
+          provider: "opencode-go",
+          configured: true,
+          models: ["opencode-go/glm-5.1", "new-model/v1"],
+          source: null,
+          last_refresh_status: null,
+          last_error: null,
+          discovery_mode: null,
+        },
+      },
+    });
+
     render(<App />);
 
-    const modelButton = screen.getByText("opencode-go/glm-5.1");
-    expect(modelButton).toBeInTheDocument();
-
-    fireEvent.click(modelButton);
-
     const modelInput = screen.getByLabelText("Model");
-    expect(modelInput).toBeInTheDocument();
+    expect(modelInput).toHaveValue("opencode-go/glm-5.1");
 
     fireEvent.change(modelInput, { target: { value: "new-model/v1" } });
     expect(mockStore.setProviderModel).toHaveBeenCalledWith("new-model/v1");
@@ -576,6 +843,17 @@ describe("App", () => {
   it("disables composer while running", () => {
     (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
       ...mockStore,
+      workspaces: {
+        current: {
+          path: "/workspace",
+          label: "workspace",
+          available: true,
+          current: true,
+          last_opened_at: 1,
+        },
+        recent: [],
+        candidates: [],
+      },
       runStatus: "running",
     });
 
@@ -590,6 +868,17 @@ describe("App", () => {
   it("renders run error banner when run fails", () => {
     (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
       ...mockStore,
+      workspaces: {
+        current: {
+          path: "/workspace",
+          label: "workspace",
+          available: true,
+          current: true,
+          last_opened_at: 1,
+        },
+        recent: [],
+        candidates: [],
+      },
       runError: "connection timeout",
     });
 
