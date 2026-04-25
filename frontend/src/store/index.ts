@@ -2,19 +2,52 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { RuntimeClient } from "../lib/runtime/client";
 import {
+  AgentSummary,
   ApprovalDecision,
+  AsyncStatus,
   StoredSessionSummary,
   SessionState,
   EventEnvelope,
+  ProviderModelsResult,
+  ProviderSummary,
+  RuntimeStatusSnapshot,
   RuntimeSettings,
   RuntimeSettingsUpdate,
+  ReviewFileDiff,
+  WorkspaceRegistrySnapshot,
+  WorkspaceReviewSnapshot,
 } from "../lib/runtime/types";
 
 interface AppState {
   language: "en" | "zh-CN";
 
-  agentPreset: "leader";
+  agentPreset: string;
   providerModel: string;
+  workspaces: WorkspaceRegistrySnapshot | null;
+  workspacesStatus: AsyncStatus;
+  workspacesError: string | null;
+  workspaceSwitchStatus: AsyncStatus;
+  workspaceSwitchError: string | null;
+  providers: ProviderSummary[];
+  providersStatus: AsyncStatus;
+  providersError: string | null;
+  providerModels: Record<string, ProviderModelsResult>;
+  agentPresets: AgentSummary[];
+  agentsStatus: AsyncStatus;
+  agentsError: string | null;
+  statusSnapshot: RuntimeStatusSnapshot | null;
+  statusStatus: AsyncStatus;
+  statusError: string | null;
+  mcpRetryStatus: AsyncStatus;
+  mcpRetryError: string | null;
+  reviewSnapshot: WorkspaceReviewSnapshot | null;
+  reviewStatus: AsyncStatus;
+  reviewError: string | null;
+  reviewSelectedPath: string | null;
+  reviewDiff: ReviewFileDiff | null;
+  reviewDiffStatus: AsyncStatus;
+  reviewDiffError: string | null;
+  reviewMode: "changes" | "files";
 
   sessions: StoredSessionSummary[];
   currentSessionId: string | null;
@@ -37,8 +70,17 @@ interface AppState {
   settingsError: string | null;
 
   setLanguage: (lang: "en" | "zh-CN") => void;
-  setAgentPreset: (preset: "leader") => void;
+  setAgentPreset: (preset: string) => void;
   setProviderModel: (model: string) => void;
+  loadWorkspaces: () => Promise<void>;
+  switchWorkspace: (path: string) => Promise<void>;
+  loadProviders: () => Promise<void>;
+  loadAgents: () => Promise<void>;
+  loadStatus: () => Promise<void>;
+  retryMcpConnections: () => Promise<void>;
+  loadReview: () => Promise<void>;
+  selectReviewPath: (path: string | null) => Promise<void>;
+  setReviewMode: (mode: "changes" | "files") => void;
   loadSessions: () => Promise<void>;
   selectSession: (sessionId: string) => Promise<void>;
   runTask: (
@@ -73,12 +115,98 @@ function getPendingApprovalRequestId(events: EventEnvelope[]): string | null {
   return null;
 }
 
+function firstTreeFilePath(
+  nodes: WorkspaceReviewSnapshot["tree"],
+): string | null {
+  for (const node of nodes) {
+    if (node.kind === "file") {
+      return node.path;
+    }
+    const childPath = firstTreeFilePath(node.children);
+    if (childPath) {
+      return childPath;
+    }
+  }
+
+  return null;
+}
+
+function treeContainsPath(
+  nodes: WorkspaceReviewSnapshot["tree"],
+  targetPath: string,
+): boolean {
+  for (const node of nodes) {
+    if (node.path === targetPath) {
+      return true;
+    }
+    if (treeContainsPath(node.children, targetPath)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function normalizeProviderModelReference(
+  model: string,
+  providers: ProviderSummary[],
+  providerModels: Record<string, ProviderModelsResult>,
+): string {
+  if (!model || model.includes("/")) {
+    return model;
+  }
+
+  const currentProviderName = providers.find(
+    (provider) => provider.current && provider.configured,
+  )?.name;
+  if (
+    currentProviderName &&
+    (providerModels[currentProviderName]?.models ?? []).includes(model)
+  ) {
+    return `${currentProviderName}/${model}`;
+  }
+
+  const matchingProviderNames = Object.entries(providerModels)
+    .filter(([, result]) => result.models.includes(model))
+    .map(([providerName]) => providerName);
+  if (matchingProviderNames.length === 1) {
+    return `${matchingProviderNames[0]}/${model}`;
+  }
+
+  return model;
+}
+
 export const useAppStore = create<AppState>()(
   persist(
     (set, get) => ({
       language: "en",
       agentPreset: "leader",
       providerModel: "opencode-go/glm-5.1",
+      workspaces: null,
+      workspacesStatus: "idle",
+      workspacesError: null,
+      workspaceSwitchStatus: "idle",
+      workspaceSwitchError: null,
+      providers: [],
+      providersStatus: "idle",
+      providersError: null,
+      providerModels: {},
+      agentPresets: [],
+      agentsStatus: "idle",
+      agentsError: null,
+      statusSnapshot: null,
+      statusStatus: "idle",
+      statusError: null,
+      mcpRetryStatus: "idle",
+      mcpRetryError: null,
+      reviewSnapshot: null,
+      reviewStatus: "idle",
+      reviewError: null,
+      reviewSelectedPath: null,
+      reviewDiff: null,
+      reviewDiffStatus: "idle",
+      reviewDiffError: null,
+      reviewMode: "changes",
 
       sessions: [],
       currentSessionId: null,
@@ -103,6 +231,276 @@ export const useAppStore = create<AppState>()(
       setLanguage: (language) => set({ language }),
       setAgentPreset: (agentPreset) => set({ agentPreset }),
       setProviderModel: (providerModel) => set({ providerModel }),
+
+      loadWorkspaces: async () => {
+        set({ workspacesStatus: "loading", workspacesError: null });
+        try {
+          const workspaces = await RuntimeClient.listWorkspaces();
+          set({
+            workspaces,
+            workspacesStatus: "success",
+            workspaceSwitchStatus:
+              get().workspaceSwitchStatus === "loading"
+                ? "success"
+                : get().workspaceSwitchStatus,
+            workspaceSwitchError: null,
+          });
+        } catch (err) {
+          set({
+            workspacesStatus: "error",
+            workspacesError: (err as Error).message,
+            workspaceSwitchStatus:
+              get().workspaceSwitchStatus === "loading"
+                ? "error"
+                : get().workspaceSwitchStatus,
+            workspaceSwitchError:
+              get().workspaceSwitchStatus === "loading"
+                ? (err as Error).message
+                : get().workspaceSwitchError,
+          });
+        }
+      },
+
+      switchWorkspace: async (path) => {
+        set({
+          workspaceSwitchStatus: "loading",
+          workspaceSwitchError: null,
+        });
+        try {
+          const workspaces = await RuntimeClient.openWorkspace(path);
+          set({
+            workspaces,
+            workspacesStatus: "success",
+            workspacesError: null,
+            workspaceSwitchStatus: "success",
+            workspaceSwitchError: null,
+            providers: [],
+            providersStatus: "idle",
+            providersError: null,
+            providerModels: {},
+            agentPresets: [],
+            agentsStatus: "idle",
+            agentsError: null,
+            currentSessionId: null,
+            currentSessionState: null,
+            currentSessionEvents: [],
+            currentSessionOutput: null,
+            replayStatus: "idle",
+            replayError: null,
+            runStatus: "idle",
+            runError: null,
+            approvalStatus: "idle",
+            approvalError: null,
+            reviewSnapshot: null,
+            reviewStatus: "idle",
+            reviewError: null,
+            reviewSelectedPath: null,
+            reviewDiff: null,
+            reviewDiffStatus: "idle",
+            reviewDiffError: null,
+            statusSnapshot: null,
+            statusStatus: "idle",
+            statusError: null,
+            mcpRetryStatus: "idle",
+            mcpRetryError: null,
+            sessions: [],
+            sessionsStatus: "idle",
+            sessionsError: null,
+          });
+          await Promise.all([
+            get().loadSessions(),
+            get().loadProviders(),
+            get().loadAgents(),
+            get().loadStatus(),
+            get().loadReview(),
+          ]);
+        } catch (err) {
+          set({
+            workspaceSwitchStatus: "error",
+            workspaceSwitchError: (err as Error).message,
+          });
+        }
+      },
+
+      loadProviders: async () => {
+        set({ providersStatus: "loading", providersError: null });
+        try {
+          const providers = await RuntimeClient.listProviders();
+          const configuredProviders = providers.filter(
+            (provider) => provider.configured,
+          );
+          const providerModelsEntries = await Promise.all(
+            configuredProviders.map(async (provider) => {
+              const result = await RuntimeClient.listProviderModels(
+                provider.name,
+              );
+              return [provider.name, result] as const;
+            }),
+          );
+          const providerModels = Object.fromEntries(providerModelsEntries);
+          const normalizedProviderModel = normalizeProviderModelReference(
+            get().providerModel,
+            providers,
+            providerModels,
+          );
+          set({
+            providers,
+            providersStatus: "success",
+            providersError: null,
+            providerModels,
+            providerModel: normalizedProviderModel,
+          });
+        } catch (err) {
+          set({
+            providersStatus: "error",
+            providersError: (err as Error).message,
+          });
+        }
+      },
+
+      loadAgents: async () => {
+        set({ agentsStatus: "loading", agentsError: null });
+        try {
+          const agentPresets = await RuntimeClient.listAgents();
+          set({
+            agentPresets,
+            agentsStatus: "success",
+            agentsError: null,
+            agentPreset: agentPresets.some(
+              (agent) => agent.id === get().agentPreset,
+            )
+              ? get().agentPreset
+              : ((agentPresets[0]?.id ?? "leader") as "leader"),
+          });
+        } catch (err) {
+          set({
+            agentsStatus: "error",
+            agentsError: (err as Error).message,
+          });
+        }
+      },
+
+      loadStatus: async () => {
+        set({ statusStatus: "loading", statusError: null });
+        try {
+          const statusSnapshot = await RuntimeClient.getStatus();
+          set({
+            statusSnapshot,
+            statusStatus: "success",
+            statusError: null,
+            mcpRetryStatus:
+              get().mcpRetryStatus === "loading"
+                ? "success"
+                : get().mcpRetryStatus,
+            mcpRetryError: null,
+          });
+        } catch (err) {
+          set({
+            statusStatus: "error",
+            statusError: (err as Error).message,
+            mcpRetryStatus:
+              get().mcpRetryStatus === "loading"
+                ? "error"
+                : get().mcpRetryStatus,
+            mcpRetryError:
+              get().mcpRetryStatus === "loading"
+                ? (err as Error).message
+                : get().mcpRetryError,
+          });
+        }
+      },
+
+      retryMcpConnections: async () => {
+        set({ mcpRetryStatus: "loading", mcpRetryError: null });
+        try {
+          const statusSnapshot = await RuntimeClient.retryMcpConnections();
+          set({
+            statusSnapshot,
+            statusStatus: "success",
+            statusError: null,
+            mcpRetryStatus: "success",
+            mcpRetryError: null,
+          });
+        } catch (err) {
+          set({
+            mcpRetryStatus: "error",
+            mcpRetryError: (err as Error).message,
+          });
+        }
+      },
+
+      loadReview: async () => {
+        set({ reviewStatus: "loading", reviewError: null });
+        try {
+          const reviewSnapshot = await RuntimeClient.getReview();
+          const selectedPath = get().reviewSelectedPath;
+          const treeFallbackPath = firstTreeFilePath(reviewSnapshot.tree);
+          const nextSelectedPath =
+            selectedPath &&
+            (reviewSnapshot.changed_files.some(
+              (item) => item.path === selectedPath,
+            ) ||
+              treeContainsPath(reviewSnapshot.tree, selectedPath))
+              ? selectedPath
+              : (reviewSnapshot.changed_files[0]?.path ?? treeFallbackPath);
+          set({
+            reviewSnapshot,
+            reviewStatus: "success",
+            reviewError: null,
+            reviewSelectedPath: nextSelectedPath,
+            reviewDiff: null,
+            reviewDiffStatus: nextSelectedPath ? "idle" : "success",
+            reviewDiffError: null,
+          });
+          if (nextSelectedPath) {
+            await get().selectReviewPath(nextSelectedPath);
+          }
+        } catch (err) {
+          set({
+            reviewStatus: "error",
+            reviewError: (err as Error).message,
+          });
+        }
+      },
+
+      selectReviewPath: async (path) => {
+        if (!path) {
+          set({
+            reviewSelectedPath: null,
+            reviewDiff: null,
+            reviewDiffStatus: "idle",
+            reviewDiffError: null,
+          });
+          return;
+        }
+        set({
+          reviewSelectedPath: path,
+          reviewDiffStatus: "loading",
+          reviewDiffError: null,
+        });
+        try {
+          const reviewDiff = await RuntimeClient.getReviewDiff(path);
+          if (get().reviewSelectedPath !== path) {
+            return;
+          }
+          set({
+            reviewDiff,
+            reviewDiffStatus: "success",
+            reviewDiffError: null,
+          });
+        } catch (err) {
+          if (get().reviewSelectedPath !== path) {
+            return;
+          }
+          set({
+            reviewDiff: null,
+            reviewDiffStatus: "error",
+            reviewDiffError: (err as Error).message,
+          });
+        }
+      },
+
+      setReviewMode: (reviewMode) => set({ reviewMode }),
 
       loadSessions: async () => {
         set({ sessionsStatus: "loading", sessionsError: null });
@@ -246,7 +644,11 @@ export const useAppStore = create<AppState>()(
           ...forwardMetadata,
           agent: {
             preset: get().agentPreset,
-            model: get().providerModel,
+            model: normalizeProviderModelReference(
+              get().providerModel,
+              get().providers,
+              get().providerModels,
+            ),
             ...forwardAgentMetadata,
           },
         };
@@ -278,7 +680,11 @@ export const useAppStore = create<AppState>()(
           }
 
           set({ runStatus: "success" });
-          get().loadSessions();
+          await Promise.all([
+            get().loadSessions(),
+            get().loadStatus(),
+            get().loadReview(),
+          ]);
         } catch (err) {
           set({ runStatus: "error", runError: (err as Error).message });
         }
@@ -332,7 +738,11 @@ export const useAppStore = create<AppState>()(
             approvalStatus: "success",
             approvalError: null,
           });
-          await loadSessions();
+          await Promise.all([
+            loadSessions(),
+            get().loadStatus(),
+            get().loadReview(),
+          ]);
           set({ approvalStatus: "idle" });
         } catch (err) {
           set({
@@ -366,6 +776,8 @@ export const useAppStore = create<AppState>()(
           if (updated.model) {
             set({ providerModel: updated.model });
           }
+          await get().loadProviders();
+          await get().loadStatus();
         } catch (err) {
           set({
             settingsStatus: "error",
@@ -381,6 +793,7 @@ export const useAppStore = create<AppState>()(
         agentPreset: state.agentPreset,
         providerModel: state.providerModel,
         currentSessionId: state.currentSessionId,
+        reviewMode: state.reviewMode,
       }),
     },
   ),

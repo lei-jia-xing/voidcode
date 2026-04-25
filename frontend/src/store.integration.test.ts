@@ -4,6 +4,7 @@ import type {
   ApprovalDecision,
   EventEnvelope,
   RuntimeResponse,
+  RuntimeStatusSnapshot,
   RuntimeStreamChunk,
   RuntimeSettings,
   SessionState,
@@ -47,6 +48,12 @@ Object.defineProperty(globalThis, "localStorage", {
 });
 
 let useAppStore: typeof import("./store").useAppStore;
+
+const emptyStatusSnapshot: RuntimeStatusSnapshot = {
+  git: { state: "git_ready", root: "/workspace", error: null },
+  lsp: { state: "stopped", error: null, details: {} },
+  mcp: { state: "stopped", error: null, details: {} },
+};
 
 function makeSessionState(
   sessionId: string,
@@ -131,6 +138,16 @@ const runtimeClientMocks = vi.hoisted(() => ({
   listSessionsMock: vi.fn<() => Promise<StoredSessionSummary[]>>(),
   getSessionReplayMock:
     vi.fn<(sessionId: string) => Promise<RuntimeResponse>>(),
+  getStatusMock: vi.fn<() => Promise<RuntimeStatusSnapshot>>(),
+  retryMcpConnectionsMock: vi.fn<() => Promise<RuntimeStatusSnapshot>>(),
+  getReviewMock: vi.fn<
+    () => Promise<{
+      root: string;
+      git: { state: string };
+      changed_files: [];
+      tree: [];
+    }>
+  >(),
   resolveApprovalMock:
     vi.fn<
       (
@@ -156,6 +173,9 @@ vi.mock("./lib/runtime/client", () => ({
   RuntimeClient: {
     listSessions: runtimeClientMocks.listSessionsMock,
     getSessionReplay: runtimeClientMocks.getSessionReplayMock,
+    getStatus: runtimeClientMocks.getStatusMock,
+    retryMcpConnections: runtimeClientMocks.retryMcpConnectionsMock,
+    getReview: runtimeClientMocks.getReviewMock,
     resolveApproval: runtimeClientMocks.resolveApprovalMock,
     getSettings: runtimeClientMocks.getSettingsMock,
     updateSettings: runtimeClientMocks.updateSettingsMock,
@@ -171,6 +191,20 @@ describe("useAppStore integration flow", () => {
     ({ useAppStore } = await import("./store"));
     useAppStore.setState({
       language: "en",
+      agentPreset: "leader",
+      providerModel: "opencode-go/glm-5.1",
+      workspaces: null,
+      workspacesStatus: "idle",
+      workspacesError: null,
+      workspaceSwitchStatus: "idle",
+      workspaceSwitchError: null,
+      providers: [],
+      providersStatus: "idle",
+      providersError: null,
+      providerModels: {},
+      agentPresets: [],
+      agentsStatus: "idle",
+      agentsError: null,
       sessions: [],
       currentSessionId: null,
       currentSessionState: null,
@@ -185,11 +219,34 @@ describe("useAppStore integration flow", () => {
       approvalStatus: "idle",
       approvalError: null,
       replayRequestId: 0,
+      statusSnapshot: null,
+      statusStatus: "idle",
+      statusError: null,
+      mcpRetryStatus: "idle",
+      mcpRetryError: null,
+      reviewSnapshot: null,
+      reviewStatus: "idle",
+      reviewError: null,
+      reviewSelectedPath: null,
+      reviewDiff: null,
+      reviewDiffStatus: "idle",
+      reviewDiffError: null,
+      reviewMode: "changes",
       settings: null,
       settingsStatus: "idle",
       settingsError: null,
     });
     runtimeClientMocks.listSessionsMock.mockResolvedValue([]);
+    runtimeClientMocks.getStatusMock.mockResolvedValue(emptyStatusSnapshot);
+    runtimeClientMocks.retryMcpConnectionsMock.mockResolvedValue(
+      emptyStatusSnapshot,
+    );
+    runtimeClientMocks.getReviewMock.mockResolvedValue({
+      root: "/workspace",
+      git: { state: "git_ready" },
+      changed_files: [],
+      tree: [],
+    });
     runtimeClientMocks.getSettingsMock.mockResolvedValue({});
     runtimeClientMocks.updateSettingsMock.mockResolvedValue({});
   });
@@ -565,6 +622,340 @@ describe("useAppStore integration flow", () => {
         },
       },
     });
+    expect(runtimeClientMocks.getStatusMock).toHaveBeenCalled();
+    expect(runtimeClientMocks.getReviewMock).toHaveBeenCalled();
+  });
+
+  it("normalizes a bare alias only when the current provider catalog owns it", async () => {
+    const sessionId = "session-current-provider-match";
+    const requestReceived = makeEvent(
+      1,
+      "runtime.request_received",
+      { prompt: "run current provider alias" },
+      "runtime",
+      sessionId,
+    );
+
+    async function* stream() {
+      yield makeStreamChunk(sessionId, "completed", requestReceived);
+      yield makeStreamChunk(sessionId, "completed", null, "ok");
+    }
+
+    runtimeClientMocks.runStreamMock.mockReturnValue(stream());
+    runtimeClientMocks.listSessionsMock.mockResolvedValue([
+      makeStoredSessionSummary(
+        sessionId,
+        "completed",
+        "run current provider alias",
+      ),
+    ]);
+    useAppStore.setState({
+      providerModel: "kimi-k2.6",
+      providers: [
+        {
+          name: "opencode-go",
+          label: "OpenCode Go",
+          configured: true,
+          current: true,
+        },
+        { name: "kimi", label: "Kimi", configured: true, current: false },
+      ],
+      providerModels: {
+        "opencode-go": {
+          provider: "opencode-go",
+          configured: true,
+          models: ["kimi-k2.6"],
+        },
+        kimi: {
+          provider: "kimi",
+          configured: true,
+          models: ["kimi-k2.6"],
+        },
+      },
+    });
+
+    await useAppStore.getState().runTask("run current provider alias");
+
+    expect(runtimeClientMocks.runStreamMock).toHaveBeenCalledWith({
+      prompt: "run current provider alias",
+      session_id: null,
+      metadata: {
+        agent: {
+          preset: "leader",
+          model: "opencode-go/kimi-k2.6",
+        },
+      },
+    });
+  });
+
+  it("uses a unique catalog match when the current provider does not own the bare alias", async () => {
+    const sessionId = "session-unique-provider-match";
+    const requestReceived = makeEvent(
+      1,
+      "runtime.request_received",
+      { prompt: "run unique alias" },
+      "runtime",
+      sessionId,
+    );
+
+    async function* stream() {
+      yield makeStreamChunk(sessionId, "completed", requestReceived);
+      yield makeStreamChunk(sessionId, "completed", null, "ok");
+    }
+
+    runtimeClientMocks.runStreamMock.mockReturnValue(stream());
+    runtimeClientMocks.listSessionsMock.mockResolvedValue([
+      makeStoredSessionSummary(sessionId, "completed", "run unique alias"),
+    ]);
+    useAppStore.setState({
+      providerModel: "kimi-k2.6",
+      providers: [
+        {
+          name: "opencode-go",
+          label: "OpenCode Go",
+          configured: true,
+          current: true,
+        },
+        { name: "kimi", label: "Kimi", configured: true, current: false },
+      ],
+      providerModels: {
+        "opencode-go": {
+          provider: "opencode-go",
+          configured: true,
+          models: ["glm-5.1"],
+        },
+        kimi: {
+          provider: "kimi",
+          configured: true,
+          models: ["kimi-k2.6"],
+        },
+      },
+    });
+
+    await useAppStore.getState().runTask("run unique alias");
+
+    expect(runtimeClientMocks.runStreamMock).toHaveBeenCalledWith({
+      prompt: "run unique alias",
+      session_id: null,
+      metadata: {
+        agent: {
+          preset: "leader",
+          model: "kimi/kimi-k2.6",
+        },
+      },
+    });
+  });
+
+  it("leaves an already-qualified model reference unchanged", async () => {
+    const sessionId = "session-qualified-model";
+    const requestReceived = makeEvent(
+      1,
+      "runtime.request_received",
+      { prompt: "run qualified alias" },
+      "runtime",
+      sessionId,
+    );
+
+    async function* stream() {
+      yield makeStreamChunk(sessionId, "completed", requestReceived);
+      yield makeStreamChunk(sessionId, "completed", null, "ok");
+    }
+
+    runtimeClientMocks.runStreamMock.mockReturnValue(stream());
+    runtimeClientMocks.listSessionsMock.mockResolvedValue([
+      makeStoredSessionSummary(sessionId, "completed", "run qualified alias"),
+    ]);
+    useAppStore.setState({
+      providerModel: "kimi/kimi-k2.6",
+      providers: [
+        {
+          name: "opencode-go",
+          label: "OpenCode Go",
+          configured: true,
+          current: true,
+        },
+        { name: "kimi", label: "Kimi", configured: true, current: false },
+      ],
+      providerModels: {
+        "opencode-go": {
+          provider: "opencode-go",
+          configured: true,
+          models: ["glm-5.1"],
+        },
+        kimi: {
+          provider: "kimi",
+          configured: true,
+          models: ["kimi-k2.6"],
+        },
+      },
+    });
+
+    await useAppStore.getState().runTask("run qualified alias");
+
+    expect(runtimeClientMocks.runStreamMock).toHaveBeenCalledWith({
+      prompt: "run qualified alias",
+      session_id: null,
+      metadata: {
+        agent: {
+          preset: "leader",
+          model: "kimi/kimi-k2.6",
+        },
+      },
+    });
+  });
+
+  it("leaves a bare alias unchanged when provider ownership is ambiguous or unknown", async () => {
+    const sessionId = "session-ambiguous-provider-match";
+    const requestReceived = makeEvent(
+      1,
+      "runtime.request_received",
+      { prompt: "run ambiguous alias" },
+      "runtime",
+      sessionId,
+    );
+
+    async function* stream() {
+      yield makeStreamChunk(sessionId, "completed", requestReceived);
+      yield makeStreamChunk(sessionId, "completed", null, "ok");
+    }
+
+    runtimeClientMocks.runStreamMock.mockReturnValue(stream());
+    runtimeClientMocks.listSessionsMock.mockResolvedValue([
+      makeStoredSessionSummary(sessionId, "completed", "run ambiguous alias"),
+    ]);
+    useAppStore.setState({
+      providerModel: "kimi-k2.6",
+      providers: [
+        {
+          name: "opencode-go",
+          label: "OpenCode Go",
+          configured: true,
+          current: true,
+        },
+        { name: "kimi", label: "Kimi", configured: true, current: false },
+        { name: "glm", label: "GLM", configured: true, current: false },
+      ],
+      providerModels: {
+        "opencode-go": {
+          provider: "opencode-go",
+          configured: true,
+          models: ["glm-5.1"],
+        },
+        kimi: {
+          provider: "kimi",
+          configured: true,
+          models: ["kimi-k2.6"],
+        },
+        glm: {
+          provider: "glm",
+          configured: true,
+          models: ["kimi-k2.6"],
+        },
+      },
+    });
+
+    await useAppStore.getState().runTask("run ambiguous alias");
+
+    expect(runtimeClientMocks.runStreamMock).toHaveBeenCalledWith({
+      prompt: "run ambiguous alias",
+      session_id: null,
+      metadata: {
+        agent: {
+          preset: "leader",
+          model: "kimi-k2.6",
+        },
+      },
+    });
+  });
+
+  it("leaves an unknown bare alias unchanged", async () => {
+    const sessionId = "session-unknown-provider-match";
+    const requestReceived = makeEvent(
+      1,
+      "runtime.request_received",
+      { prompt: "run unknown alias" },
+      "runtime",
+      sessionId,
+    );
+
+    async function* stream() {
+      yield makeStreamChunk(sessionId, "completed", requestReceived);
+      yield makeStreamChunk(sessionId, "completed", null, "ok");
+    }
+
+    runtimeClientMocks.runStreamMock.mockReturnValue(stream());
+    runtimeClientMocks.listSessionsMock.mockResolvedValue([
+      makeStoredSessionSummary(sessionId, "completed", "run unknown alias"),
+    ]);
+    useAppStore.setState({
+      providerModel: "mystery-model",
+      providers: [
+        {
+          name: "opencode-go",
+          label: "OpenCode Go",
+          configured: true,
+          current: true,
+        },
+        { name: "kimi", label: "Kimi", configured: true, current: false },
+      ],
+      providerModels: {
+        "opencode-go": {
+          provider: "opencode-go",
+          configured: true,
+          models: ["glm-5.1"],
+        },
+        kimi: {
+          provider: "kimi",
+          configured: true,
+          models: ["kimi-k2.6"],
+        },
+      },
+    });
+
+    await useAppStore.getState().runTask("run unknown alias");
+
+    expect(runtimeClientMocks.runStreamMock).toHaveBeenCalledWith({
+      prompt: "run unknown alias",
+      session_id: null,
+      metadata: {
+        agent: {
+          preset: "leader",
+          model: "mystery-model",
+        },
+      },
+    });
+  });
+
+  it("retries MCP connections and stores refreshed backend status", async () => {
+    const retrySnapshot: RuntimeStatusSnapshot = {
+      git: { state: "git_ready", root: "/workspace", error: null },
+      lsp: { state: "running", error: null, details: {} },
+      mcp: {
+        state: "failed",
+        error: "MCP[demo]: failed to start server",
+        details: {
+          retry_available: true,
+          servers: [
+            {
+              server: "demo",
+              status: "failed",
+              stage: "startup",
+              error: "MCP[demo]: failed to start server",
+              retry_available: true,
+            },
+          ],
+        },
+      },
+    };
+    runtimeClientMocks.retryMcpConnectionsMock.mockResolvedValue(retrySnapshot);
+
+    await useAppStore.getState().retryMcpConnections();
+
+    const state = useAppStore.getState();
+    expect(runtimeClientMocks.retryMcpConnectionsMock).toHaveBeenCalledOnce();
+    expect(state.statusSnapshot).toEqual(retrySnapshot);
+    expect(state.mcpRetryStatus).toBe("success");
+    expect(state.mcpRetryError).toBeNull();
   });
 
   it("respects explicit null sessionId and starts a fresh run", async () => {
@@ -658,6 +1049,121 @@ describe("useAppStore integration flow", () => {
       model: "glm/glm-5",
     });
     expect(state.providerModel).toBe("glm/glm-5");
+  });
+
+  it("uses the hydrated qualified settings model when providers still expose only a bare alias", async () => {
+    const sessionId = "session-hydrated-qualified-model";
+    const requestReceived = makeEvent(
+      1,
+      "runtime.request_received",
+      { prompt: "hydrated qualified model" },
+      "runtime",
+      sessionId,
+    );
+
+    async function* stream() {
+      yield makeStreamChunk(sessionId, "completed", requestReceived);
+      yield makeStreamChunk(sessionId, "completed", null, "ok");
+    }
+
+    runtimeClientMocks.getSettingsMock.mockResolvedValue({
+      provider: "opencode-go",
+      provider_api_key_present: true,
+      model: "opencode-go/kimi-k2.6",
+    });
+    runtimeClientMocks.runStreamMock.mockReturnValue(stream());
+    runtimeClientMocks.listSessionsMock.mockResolvedValue([
+      makeStoredSessionSummary(
+        sessionId,
+        "completed",
+        "hydrated qualified model",
+      ),
+    ]);
+    useAppStore.setState({
+      providerModel: "kimi-k2.6",
+      providers: [
+        {
+          name: "opencode-go",
+          label: "OpenCode Go",
+          configured: true,
+          current: true,
+        },
+      ],
+      providerModels: {
+        "opencode-go": {
+          provider: "opencode-go",
+          configured: true,
+          models: [],
+        },
+      },
+    });
+
+    await useAppStore.getState().loadSettings();
+    await useAppStore.getState().runTask("hydrated qualified model");
+
+    expect(useAppStore.getState().providerModel).toBe("opencode-go/kimi-k2.6");
+    expect(runtimeClientMocks.runStreamMock).toHaveBeenCalledWith({
+      prompt: "hydrated qualified model",
+      session_id: null,
+      metadata: {
+        agent: {
+          preset: "leader",
+          model: "opencode-go/kimi-k2.6",
+        },
+      },
+    });
+  });
+
+  it("runs with the configured settings model even when the provider catalog is empty", async () => {
+    const sessionId = "session-settings-model-fallback";
+    const requestReceived = makeEvent(
+      1,
+      "runtime.request_received",
+      { prompt: "use configured model" },
+      "runtime",
+      sessionId,
+    );
+
+    async function* stream() {
+      yield makeStreamChunk(sessionId, "completed", requestReceived);
+      yield makeStreamChunk(sessionId, "completed", null, "ok");
+    }
+
+    runtimeClientMocks.runStreamMock.mockReturnValue(stream());
+    runtimeClientMocks.listSessionsMock.mockResolvedValue([
+      makeStoredSessionSummary(sessionId, "completed", "use configured model"),
+    ]);
+    useAppStore.setState({
+      providerModel: "opencode-go/kimi-k2.6",
+      providers: [
+        {
+          name: "opencode-go",
+          label: "OpenCode Go",
+          configured: true,
+          current: true,
+        },
+      ],
+      providerModels: {
+        "opencode-go": {
+          provider: "opencode-go",
+          configured: true,
+          models: [],
+        },
+      },
+    });
+
+    await useAppStore.getState().runTask("use configured model");
+
+    expect(runtimeClientMocks.runStreamMock).toHaveBeenCalledWith({
+      prompt: "use configured model",
+      session_id: null,
+      metadata: {
+        agent: {
+          preset: "leader",
+          model: "opencode-go/kimi-k2.6",
+        },
+      },
+    });
   });
 
   it("updates runtime-owned settings without expecting provider_api_key in the response", async () => {
