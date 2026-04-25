@@ -55,10 +55,6 @@ export function Composer({
   const selectedModelAvailable = availableModelGroups.some((group) =>
     group.models.includes(selectedModel),
   );
-  const showConfiguredModelFallback =
-    selectedModel !== "" &&
-    configuredProviders.length > 0 &&
-    availableModelGroups.length === 0;
 
   const selectedAgentLabel = useMemo(() => {
     return (
@@ -75,20 +71,8 @@ export function Composer({
         return `${provider.label} / ${displayModelName(selectedModel, provider.name)}`;
       }
     }
-    if (showConfiguredModelFallback && selectedModel) {
-      const providerName = settingsProviderOfModel(selectedModel);
-      const providerLabel =
-        configuredProviders.find((provider) => provider.name === providerName)
-          ?.label ?? "Configured";
-      return `${providerLabel} / ${displayModelName(selectedModel, providerName)}`;
-    }
-    return selectedModel || "No models available.";
-  }, [
-    availableModelGroups,
-    configuredProviders,
-    selectedModel,
-    showConfiguredModelFallback,
-  ]);
+    return "Select model";
+  }, [availableModelGroups, selectedModel]);
 
   useEffect(() => {
     const handlePointerDown = (event: MouseEvent) => {
@@ -213,19 +197,7 @@ export function Composer({
                 )}
               </div>
 
-              {configuredProviders.length === 0 ? (
-                <div className="truncate text-slate-500">
-                  No providers configured.
-                </div>
-              ) : availableModelGroups.length === 0 ? (
-                <div className="truncate text-slate-500">
-                  {showConfiguredModelFallback ? (
-                    <>{selectedModelLabel}</>
-                  ) : (
-                    <>No models available.</>
-                  )}
-                </div>
-              ) : (
+              {availableModelGroups.length > 0 && (
                 <div className="relative min-w-0 flex-1" ref={modelMenuRef}>
                   <button
                     id="composer-model"
@@ -283,11 +255,6 @@ export function Composer({
       </div>
     </div>
   );
-}
-
-function settingsProviderOfModel(model: string): string | null {
-  const [provider] = model.split("/");
-  return provider || null;
 }
 
 function displayModelName(model: string, providerName: string | null): string {

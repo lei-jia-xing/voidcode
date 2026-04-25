@@ -89,8 +89,12 @@ describe("Composer", () => {
       />,
     );
 
-    expect(screen.getByText(/No providers configured/i)).toBeInTheDocument();
-    expect(screen.queryByLabelText("Model")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/No providers configured/i),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Model" }),
+    ).not.toBeInTheDocument();
   });
 
   it("shows empty state when no models are available for configured providers", () => {
@@ -112,11 +116,13 @@ describe("Composer", () => {
       />,
     );
 
-    expect(screen.getByText("No models available.")).toBeInTheDocument();
-    expect(screen.queryByLabelText("Model")).not.toBeInTheDocument();
+    expect(screen.queryByText("No models available.")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Model" }),
+    ).not.toBeInTheDocument();
   });
 
-  it("keeps configured model fallback visible when catalogs are empty", () => {
+  it("hides model switcher when catalogs are empty", () => {
     render(
       <Composer
         {...baseProps}
@@ -135,8 +141,10 @@ describe("Composer", () => {
       />,
     );
 
-    expect(screen.getByText("OpenCode / kimi-k2.6")).toBeInTheDocument();
-    expect(screen.queryByLabelText("Model")).not.toBeInTheDocument();
+    expect(screen.queryByText("OpenCode / kimi-k2.6")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Model" }),
+    ).not.toBeInTheDocument();
     expect(
       screen.getByPlaceholderText("Ask VoidCode to do something..."),
     ).not.toBeDisabled();
