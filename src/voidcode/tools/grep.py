@@ -13,6 +13,15 @@ from ._workspace import resolve_workspace_path
 from .contracts import ToolCall, ToolDefinition, ToolResult
 
 MAX_MATCHES = 200
+DEFAULT_IGNORE_PATTERNS = frozenset(
+    (
+        ".git",
+        "node_modules",
+        "__pycache__",
+        "dist",
+        "build",
+    )
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +77,8 @@ class GrepTool:
             if not candidate.is_file():
                 continue
             rel = candidate.relative_to(root).as_posix()
+            if any(part in DEFAULT_IGNORE_PATTERNS for part in candidate.relative_to(root).parts):
+                continue
             if include_patterns and not any(
                 GrepTool._matches_glob(rel, pat) for pat in include_patterns
             ):

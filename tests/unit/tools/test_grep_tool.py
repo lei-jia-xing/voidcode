@@ -154,6 +154,29 @@ def test_grep_tool_sorts_directory_targets_deterministically(tmp_path: Path) -> 
     )
 
 
+def test_grep_tool_ignores_common_directories_by_default(tmp_path: Path) -> None:
+    src = tmp_path / "src"
+    src.mkdir()
+    _ = (src / "keep.py").write_text("alpha\n", encoding="utf-8")
+
+    ignored_dirs = [".git", "node_modules", "__pycache__", "dist", "build"]
+    for dirname in ignored_dirs:
+        ignored_dir = tmp_path / dirname
+        ignored_dir.mkdir()
+        _ = (ignored_dir / "ignored.py").write_text("alpha\n", encoding="utf-8")
+
+    tool = GrepTool()
+    result = tool.invoke(
+        ToolCall(tool_name="grep", arguments={"pattern": "alpha", "path": "."}),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert [match["file"] for match in result.data["matches"]] == ["src/keep.py"]
+    assert ".git/ignored.py" not in (result.content or "")
+    assert "node_modules/ignored.py" not in (result.content or "")
+
+
 def test_grep_tool_returns_zero_matches_summary(tmp_path: Path) -> None:
     sample_file = tmp_path / "sample.txt"
     _ = sample_file.write_text("alpha beta\n", encoding="utf-8")
