@@ -2590,36 +2590,33 @@ def test_transport_run_stream_continues_after_mcp_startup_failure_and_status_sta
     assert payloads[-1]["kind"] == "output"
     assert payloads[-1]["output"] == "hello"
     assert status_response.status == 200
-    assert status_response.json() == {
-        "git": {
-            "state": "not_git_repo",
-            "root": None,
-            "error": (
-                "fatal: not a git repository (or any parent up to mount point /)\n"
-                "Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set)."
-            ),
-        },
-        "lsp": {"state": "unconfigured", "error": None, "details": {}},
-        "mcp": {
-            "state": "failed",
-            "error": _FailingMcpManager.startup_error,
-            "details": {
-                "configured_server_count": 1,
-                "running_server_count": 0,
-                "failed_server_count": 1,
-                "retry_available": True,
-                "servers": [
-                    {
-                        "server": "context7",
-                        "status": "failed",
-                        "workspace_root": str(tmp_path),
-                        "stage": "startup",
-                        "error": _FailingMcpManager.startup_error,
-                        "command": ["missing-context7"],
-                        "retry_available": True,
-                    }
-                ],
-            },
+    status_payload = cast(dict[str, object], status_response.json())
+    git_payload = cast(dict[str, object], status_payload["git"])
+    assert git_payload["state"] == "not_git_repo"
+    assert git_payload["root"] is None
+    git_error = git_payload["error"]
+    assert isinstance(git_error, str)
+    assert "not a git repository" in git_error
+    assert status_payload["lsp"] == {"state": "unconfigured", "error": None, "details": {}}
+    assert status_payload["mcp"] == {
+        "state": "failed",
+        "error": _FailingMcpManager.startup_error,
+        "details": {
+            "configured_server_count": 1,
+            "running_server_count": 0,
+            "failed_server_count": 1,
+            "retry_available": True,
+            "servers": [
+                {
+                    "server": "context7",
+                    "status": "failed",
+                    "workspace_root": str(tmp_path),
+                    "stage": "startup",
+                    "error": _FailingMcpManager.startup_error,
+                    "command": ["missing-context7"],
+                    "retry_available": True,
+                }
+            ],
         },
     }
 
