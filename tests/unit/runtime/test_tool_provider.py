@@ -7,9 +7,9 @@ from pathlib import Path
 from typing import cast
 from unittest.mock import patch
 
+from voidcode.graph.contracts import GraphEvent, GraphStep
 from voidcode.hook.config import RuntimeFormatterPresetConfig, RuntimeHooksConfig
 from voidcode.mcp import McpToolSafety
-from voidcode.runtime.events import EventEnvelope
 from voidcode.runtime.mcp import (
     McpConfigState,
     McpManagerState,
@@ -57,7 +57,7 @@ from voidcode.tools.guidance import guidance_filename_for_tool, guidance_for_too
 class _StubStep:
     tool_call: ToolCall | None = None
     output: str | None = None
-    events: tuple[EventEnvelope, ...] = ()
+    events: tuple[GraphEvent, ...] = ()
     is_finished: bool = False
 
 
@@ -65,10 +65,10 @@ class _StubGraph:
     def step(
         self,
         request: GraphRunRequest,
-        tool_results: tuple[object, ...],
+        tool_results: tuple[ToolResult, ...],
         *,
         session: SessionState,
-    ) -> _StubStep:
+    ) -> GraphStep:
         if not tool_results:
             return _StubStep(
                 tool_call=ToolCall(
@@ -82,10 +82,10 @@ class _StubMcpGraph:
     def step(
         self,
         request: GraphRunRequest,
-        tool_results: tuple[object, ...],
+        tool_results: tuple[ToolResult, ...],
         *,
         session: SessionState,
-    ) -> _StubStep:
+    ) -> GraphStep:
         _ = session
         if not tool_results:
             return _StubStep(
@@ -104,10 +104,10 @@ class _InjectedToolGraph:
     def step(
         self,
         request: GraphRunRequest,
-        tool_results: tuple[object, ...],
+        tool_results: tuple[ToolResult, ...],
         *,
         session: SessionState,
-    ) -> _StubStep:
+    ) -> GraphStep:
         _ = request, tool_results, session
         self._step_count += 1
         if self._step_count == 1:
@@ -499,6 +499,10 @@ def test_runtime_registry_includes_discovered_mcp_tools(tmp_path: Path) -> None:
         def drain_events(self):
             return ()
 
+        def retry_connections(self, *, workspace: Path) -> None:
+            _ = workspace
+            return None
+
     mcp_manager = _StubMcpManager()
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
@@ -561,6 +565,10 @@ def test_runtime_refresh_preserves_injected_tool_registry_entries(tmp_path: Path
 
         def drain_events(self):
             return ()
+
+        def retry_connections(self, *, workspace: Path) -> None:
+            _ = workspace
+            return None
 
     injected_tool = _InjectedTool()
     runtime = VoidCodeRuntime(

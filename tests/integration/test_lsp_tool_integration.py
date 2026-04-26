@@ -8,10 +8,11 @@ from typing import cast
 
 import pytest
 
+from voidcode.graph.contracts import GraphEvent
 from voidcode.runtime.config import RuntimeConfig, RuntimeLspConfig, RuntimeLspServerConfig
 from voidcode.runtime.contracts import RuntimeRequest
 from voidcode.runtime.service import GraphRunRequest, SessionState, VoidCodeRuntime
-from voidcode.tools.contracts import ToolCall
+from voidcode.tools.contracts import ToolCall, ToolResult
 from voidcode.tools.lsp import LspTool
 
 
@@ -112,7 +113,7 @@ def _build_runtime_with_lsp_script(tmp_path: Path, script_body: str) -> VoidCode
 class _StubLspStep:
     tool_call: ToolCall | None = None
     output: str | None = None
-    events: tuple[object, ...] = ()
+    events: tuple[GraphEvent, ...] = ()
     is_finished: bool = False
 
 
@@ -120,7 +121,7 @@ class _LspGraph:
     def step(
         self,
         request: GraphRunRequest,
-        tool_results: tuple[object, ...],
+        tool_results: tuple[ToolResult, ...],
         *,
         session: SessionState,
     ) -> _StubLspStep:
@@ -250,7 +251,7 @@ def test_runtime_managed_lsp_tool_uses_builtin_root_markers_for_workspace_select
         def step(
             self,
             request: GraphRunRequest,
-            tool_results: tuple[object, ...],
+            tool_results: tuple[ToolResult, ...],
             *,
             session: SessionState,
         ) -> _StubLspStep:
