@@ -760,6 +760,7 @@ def parse_provider_configs_payload(
             field_path=_nested_config_field(source, "grok"),
             env=environment,
             api_key_env_var=_XAI_API_KEY_ENV_VAR,
+            fallback_api_key_env_vars=(_GROK_API_KEY_ENV_VAR,),
         ),
         minimax=_parse_simplified_provider_config(
             payload.minimax,
@@ -1248,6 +1249,7 @@ def _parse_simplified_provider_config(
     field_path: str,
     env: Mapping[str, str],
     api_key_env_var: str,
+    fallback_api_key_env_vars: tuple[str, ...] = (),
 ) -> SimplifiedProviderConfig | None:
     if raw_value is None:
         return None
@@ -1267,7 +1269,10 @@ def _parse_simplified_provider_config(
         if api_key_env is not None:
             api_key = env.get(api_key_env)
         else:
-            api_key = env.get(api_key_env_var)
+            for candidate_env_var in (api_key_env_var, *fallback_api_key_env_vars):
+                api_key = env.get(candidate_env_var)
+                if api_key is not None:
+                    break
 
     return SimplifiedProviderConfig(
         api_key=api_key,

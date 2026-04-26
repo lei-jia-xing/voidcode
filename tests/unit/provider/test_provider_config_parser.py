@@ -312,6 +312,17 @@ def test_parse_grok_provider_config_from_env() -> None:
     assert parsed.grok == SimplifiedProviderConfig(api_key="xai-env-key")
 
 
+def test_parse_grok_provider_config_falls_back_to_grok_api_key() -> None:
+    parsed = parse_provider_configs_payload(
+        {"grok": {}},
+        source="runtime config field 'providers'",
+        env={"GROK_API_KEY": "grok-env-key"},
+    )
+
+    assert parsed is not None
+    assert parsed.grok == SimplifiedProviderConfig(api_key="grok-env-key")
+
+
 def test_parse_minimax_provider_config_from_env() -> None:
     parsed = parse_provider_configs_payload(
         {"minimax": {}},
