@@ -17,6 +17,18 @@ from typing import Any, cast
 from unittest.mock import Mock, patch
 
 
+def write_frontend_dist_fixture(tmp_path: Path) -> Path:
+    frontend_dist = tmp_path / "dist"
+    assets_dir = frontend_dist / "assets"
+    assets_dir.mkdir(parents=True)
+    (frontend_dist / "index.html").write_text(
+        "<!DOCTYPE html><html><head><title>VoidCode</title></head><body></body></html>",
+        encoding="utf-8",
+    )
+    (frontend_dist / "favicon.svg").write_text("<svg></svg>", encoding="utf-8")
+    return frontend_dist
+
+
 def test_web_prints_banner_and_url(capsys: Any) -> None:
     """Verify the web command prints the banner and a usable local URL."""
     server = importlib.import_module("voidcode.server")
@@ -95,12 +107,12 @@ def test_serve_remains_headless_and_uses_shared_runtime_server() -> None:
     )
 
 
-def test_frontend_root_returns_html_when_dist_configured() -> None:
+def test_frontend_root_returns_html_when_dist_configured(tmp_path: Path) -> None:
     """Verify that GET / returns the frontend HTML when frontend_dist is set."""
     http_module = importlib.import_module("voidcode.runtime.http")
     rt_app = http_module.RuntimeTransportApp(
         runtime_factory=Mock(),
-        frontend_dist=Path(__file__).resolve().parent.parent.parent / "frontend" / "dist",
+        frontend_dist=write_frontend_dist_fixture(tmp_path),
     )
 
     messages: list[dict[str, object]] = [
@@ -132,12 +144,12 @@ def test_frontend_root_returns_html_when_dist_configured() -> None:
     assert b"VoidCode" in body
 
 
-def test_frontend_serves_static_assets_when_dist_configured() -> None:
+def test_frontend_serves_static_assets_when_dist_configured(tmp_path: Path) -> None:
     """Verify that static assets under /assets/ are served correctly."""
     http_module = importlib.import_module("voidcode.runtime.http")
     rt_app = http_module.RuntimeTransportApp(
         runtime_factory=Mock(),
-        frontend_dist=Path(__file__).resolve().parent.parent.parent / "frontend" / "dist",
+        frontend_dist=write_frontend_dist_fixture(tmp_path),
     )
 
     messages: list[dict[str, object]] = [
