@@ -58,7 +58,7 @@ function ThinkingBlock({ thinking }: { thinking: string[] }) {
 function ToolIndicators({
   tools,
 }: {
-  tools: { name: string; status: string }[];
+  tools: { id?: string; name: string; label?: string; status: string }[];
 }) {
   if (tools.length === 0) return null;
 
@@ -66,7 +66,7 @@ function ToolIndicators({
     <div className="flex flex-wrap gap-1.5 mb-3">
       {tools.map((tool, idx) => (
         <span
-          key={`${tool.name}-${idx}`}
+          key={tool.id ?? `${tool.name}-${idx}`}
           className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium border ${
             tool.status === "running"
               ? "bg-indigo-500/10 text-indigo-400 border-indigo-500/20"
@@ -78,7 +78,7 @@ function ToolIndicators({
           }`}
         >
           <Wrench className="w-3 h-3" />
-          {tool.name}
+          {tool.label ?? tool.name}
           {tool.status === "running" && (
             <Loader2 className="w-3 h-3 animate-spin" />
           )}

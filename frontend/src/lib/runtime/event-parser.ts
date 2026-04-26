@@ -16,7 +16,9 @@ export interface ChatMessage {
   content: string;
   thinking: string[];
   tools: {
+    id?: string;
     name: string;
+    label?: string;
     status: "pending" | "running" | "completed" | "failed";
   }[];
   approval: {
@@ -26,6 +28,56 @@ export interface ChatMessage {
   } | null;
   status: "in_progress" | "completed" | "failed" | "waiting";
   sequence: number;
+}
+
+type ToolStatusPayload = {
+  invocation_id?: unknown;
+  tool_name?: unknown;
+  status?: unknown;
+  label?: unknown;
+};
+
+function getToolStatusPayload(event: EventEnvelope): ToolStatusPayload | null {
+  const toolStatus = event.payload?.tool_status;
+  if (!toolStatus || typeof toolStatus !== "object") return null;
+  return toolStatus as ToolStatusPayload;
+}
+
+function applyToolStatus(
+  currentAssistant: ChatMessage | null,
+  toolStatus: ToolStatusPayload,
+) {
+  if (!currentAssistant) return;
+
+  const name =
+    typeof toolStatus.tool_name === "string" ? toolStatus.tool_name : "unknown";
+  const id =
+    typeof toolStatus.invocation_id === "string"
+      ? toolStatus.invocation_id
+      : undefined;
+  const label =
+    typeof toolStatus.label === "string" ? toolStatus.label : undefined;
+  const status =
+    toolStatus.status === "pending" ||
+    toolStatus.status === "running" ||
+    toolStatus.status === "completed" ||
+    toolStatus.status === "failed"
+      ? toolStatus.status
+      : "running";
+
+  const existing = currentAssistant.tools.find((tool) =>
+    id ? tool.id === id : tool.name === name && tool.status === "running",
+  );
+
+  if (existing) {
+    existing.name = name;
+    existing.status = status;
+    existing.id = id ?? existing.id;
+    existing.label = label ?? existing.label;
+    return;
+  }
+
+  currentAssistant.tools.push({ id, name, label, status });
 }
 
 export function deriveTasksFromEvents(events: EventEnvelope[]): DerivedTask[] {
@@ -188,6 +240,7 @@ export function deriveChatMessages(
 
   for (const event of events) {
     const messageSessionId = event.session_id || fallbackSessionId || "session";
+    const toolStatus = getToolStatusPayload(event);
 
     if (event.event_type === "runtime.request_received") {
       requestOrdinal += 1;
@@ -259,6 +312,10 @@ export function deriveChatMessages(
       }
     } else if (event.event_type === "graph.tool_request_created") {
       if (currentAssistant) {
+        if (toolStatus) {
+          applyToolStatus(currentAssistant, toolStatus);
+          continue;
+        }
         const toolName =
           typeof event.payload?.tool === "string"
             ? event.payload.tool
@@ -267,6 +324,10 @@ export function deriveChatMessages(
       }
     } else if (event.event_type === "runtime.tool_completed") {
       if (currentAssistant) {
+        if (toolStatus) {
+          applyToolStatus(currentAssistant, toolStatus);
+          continue;
+        }
         const toolName =
           typeof event.payload?.tool === "string" ? event.payload.tool : null;
         if (toolName) {
@@ -310,6 +371,8 @@ export function deriveChatMessages(
       if (currentAssistant) {
         currentAssistant.status = "failed";
       }
+    } else if (toolStatus) {
+      applyToolStatus(currentAssistant, toolStatus);
     }
   }
 
