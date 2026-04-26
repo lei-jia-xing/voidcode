@@ -99,6 +99,7 @@ export interface RuntimeStatusSnapshot {
   git: GitStatusSnapshot;
   lsp: CapabilityStatusSnapshot;
   mcp: CapabilityStatusSnapshot;
+  acp?: CapabilityStatusSnapshot;
 }
 
 export interface ReviewChangedFile {

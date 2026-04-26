@@ -47,10 +47,10 @@ describe("Tool Status Contract", () => {
     const messages = deriveChatMessages(events, null);
     const assistantMessage = messages.find((m) => m.role === "assistant");
     expect(assistantMessage).toBeDefined();
-    
+
     expect(assistantMessage!.tools).toHaveLength(1);
     const tool = assistantMessage!.tools[0];
-    
+
     expect(tool.id).toBe("call_abc");
     expect(tool.name).toBe("read");
     expect(tool.label).toBe("Read 10 lines");

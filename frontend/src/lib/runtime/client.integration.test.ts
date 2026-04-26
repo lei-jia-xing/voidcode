@@ -8,36 +8,43 @@ describe("RuntimeClient integration contract", () => {
   });
 
   it("loads runtime-owned status snapshots from /api/status", async () => {
-    const fetchMock = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValue({
-        ok: true,
-        json: async () => ({
-          git: { state: "git_ready", root: "/workspace", error: null },
-          lsp: { state: "running", error: null, details: {} },
-          mcp: {
-            state: "failed",
-            error: "MCP[demo]: failed to initialize server",
-            details: {
-              configured_server_count: 1,
-              running_server_count: 0,
-              failed_server_count: 1,
-              retry_available: true,
-              servers: [
-                {
-                  server: "demo",
-                  status: "failed",
-                  workspace_root: "/workspace",
-                  stage: "startup",
-                  error: "MCP[demo]: failed to initialize server",
-                  command: ["demo"],
-                  retry_available: true,
-                },
-              ],
-            },
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        git: { state: "git_ready", root: "/workspace", error: null },
+        lsp: { state: "running", error: null, details: {} },
+        mcp: {
+          state: "failed",
+          error: "MCP[demo]: failed to initialize server",
+          details: {
+            configured_server_count: 1,
+            running_server_count: 0,
+            failed_server_count: 1,
+            retry_available: true,
+            servers: [
+              {
+                server: "demo",
+                status: "failed",
+                workspace_root: "/workspace",
+                stage: "startup",
+                error: "MCP[demo]: failed to initialize server",
+                command: ["demo"],
+                retry_available: true,
+              },
+            ],
           },
-        }),
-      } as Response);
+        },
+        acp: {
+          state: "running",
+          error: null,
+          details: {
+            mode: "managed",
+            status: "connected",
+            last_request_type: "handshake",
+          },
+        },
+      }),
+    } as Response);
 
     const snapshot = await RuntimeClient.getStatus();
 
@@ -53,6 +60,7 @@ describe("RuntimeClient integration contract", () => {
         retry_available: true,
       },
     ]);
+    expect(snapshot.acp?.details?.last_request_type).toBe("handshake");
   });
 
   it("parses streamed SSE chunks and preserves backend tool status payloads", async () => {
@@ -79,7 +87,9 @@ describe("RuntimeClient integration contract", () => {
     } as Response);
 
     const chunks = [];
-    for await (const chunk of RuntimeClient.runStream({ prompt: "read README.md" })) {
+    for await (const chunk of RuntimeClient.runStream({
+      prompt: "read README.md",
+    })) {
       chunks.push(chunk);
     }
 
