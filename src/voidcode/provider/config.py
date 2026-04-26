@@ -158,7 +158,9 @@ class _ProviderConfigsPayload(_ProviderPayloadModel):
     google: _GoogleProviderConfigPayload | None = None
     copilot: _CopilotProviderConfigPayload | None = None
     litellm: _LiteLLMProviderConfigPayload | None = None
+    deepseek: _SimplifiedProviderConfigPayload | None = None
     glm: _SimplifiedProviderConfigPayload | None = None
+    grok: _SimplifiedProviderConfigPayload | None = None
     minimax: _SimplifiedProviderConfigPayload | None = None
     kimi: _SimplifiedProviderConfigPayload | None = None
     opencode_go: _SimplifiedProviderConfigPayload | None = Field(default=None, alias="opencode-go")
@@ -194,10 +196,21 @@ class SimplifiedProviderConfig:
 
 
 _SIMPLIFIED_DEFAULTS: dict[str, tuple[str, str | None, dict[str, str]]] = {
+    "deepseek": (
+        "https://api.deepseek.com",
+        "https://api.deepseek.com",
+        {
+            "deepseek-v4-flash": "deepseek-v4-flash",
+            "deepseek-v4-pro": "deepseek-v4-pro",
+            "deepseek-chat": "deepseek-chat",
+            "deepseek-reasoner": "deepseek-reasoner",
+        },
+    ),
     "glm": (
         "https://open.bigmodel.cn/api/paas/v4",
         "https://open.bigmodel.cn/api/paas/v4",
         {
+            "glm-5.1": "glm-5.1",
             "glm-4-flash": "glm-4-flash",
             "glm-4-plus": "glm-4-plus",
             "glm-4": "glm-4-flash",
@@ -205,13 +218,28 @@ _SIMPLIFIED_DEFAULTS: dict[str, tuple[str, str | None, dict[str, str]]] = {
             "glm-5-turbo": "glm-5-turbo",
         },
     ),
+    "grok": (
+        "https://api.x.ai",
+        "https://api.x.ai",
+        {
+            "grok-4-1-fast-reasoning": "grok-4-1-fast-reasoning",
+            "grok-4-1-fast-non-reasoning": "grok-4-1-fast-non-reasoning",
+            "grok-4-fast-reasoning": "grok-4-fast-reasoning",
+            "grok-4-fast-non-reasoning": "grok-4-fast-non-reasoning",
+            "grok-4": "grok-4",
+            "grok-code-fast-1": "grok-code-fast-1",
+        },
+    ),
     "minimax": (
         "https://api.minimax.io",
         "",
         {
             "minimax-m2.7": "MiniMax-M2.7",
+            "minimax-m2.7-highspeed": "MiniMax-M2.7-highspeed",
             "minimax-m2.5": "MiniMax-M2.5",
+            "minimax-m2.5-highspeed": "MiniMax-M2.5-highspeed",
             "minimax-m2.1": "MiniMax-M2.1",
+            "minimax-m2.1-highspeed": "MiniMax-M2.1-highspeed",
             "minimax-m2": "MiniMax-M2",
         },
     ),
@@ -219,16 +247,25 @@ _SIMPLIFIED_DEFAULTS: dict[str, tuple[str, str | None, dict[str, str]]] = {
         "https://api.moonshot.ai",
         "https://api.moonshot.ai/v1",
         {
+            "kimi-k2.6": "kimi-k2.6",
             "kimi-k2.5": "kimi-k2.5",
+            "kimi-k2-0905-preview": "kimi-k2-0905-preview",
+            "kimi-k2-0711-preview": "kimi-k2-0711-preview",
             "kimi-k2": "kimi-k2",
             "kimi-k2-turbo": "kimi-k2-turbo-preview",
             "kimi-k2-thinking": "kimi-k2-thinking",
+            "kimi-k2-thinking-turbo": "kimi-k2-thinking-turbo",
+            "moonshot-v1-8k": "moonshot-v1-8k",
+            "moonshot-v1-32k": "moonshot-v1-32k",
+            "moonshot-v1-128k": "moonshot-v1-128k",
         },
     ),
     "opencode-go": (
         "https://opencode.ai/zen/go",
         "",
         {
+            "deepseek-v4-flash": "deepseek-v4-flash",
+            "deepseek-v4-pro": "deepseek-v4-pro",
             "glm-5": "glm-5",
             "glm-5.1": "glm-5.1",
             "kimi-k2.5": "kimi-k2.5",
@@ -240,18 +277,36 @@ _SIMPLIFIED_DEFAULTS: dict[str, tuple[str, str | None, dict[str, str]]] = {
             "minimax-m2.5": "minimax-m2.5",
             "minimax-m2.7": "minimax-m2.7",
             "qwen3.5-plus": "qwen3.5-plus",
+            "qwen3.5-flash": "qwen3.5-flash",
             "qwen3.6-plus": "qwen3.6-plus",
+            "qwen3.6-flash": "qwen3.6-flash",
+            "qwen3.6-max-preview": "qwen3.6-max-preview",
         },
     ),
     "qwen": (
         "https://dashscope.aliyuncs.com/compatible-mode",
         "https://dashscope.aliyuncs.com/compatible-mode/v1",
         {
+            "qwen3.6-plus": "qwen3.6-plus",
+            "qwen3.6-plus-2026-04-02": "qwen3.6-plus-2026-04-02",
+            "qwen3.6-flash": "qwen3.6-flash",
+            "qwen3.6-flash-2026-04-16": "qwen3.6-flash-2026-04-16",
+            "qwen3.6-max-preview": "qwen3.6-max-preview",
+            "qwen3.5-plus": "qwen3.5-plus",
+            "qwen3.5-plus-2026-02-15": "qwen3.5-plus-2026-02-15",
+            "qwen3.5-flash": "qwen3.5-flash",
+            "qwen3.5-flash-2026-02-23": "qwen3.5-flash-2026-02-23",
+            "qwen3.5-397b-a17b": "qwen3.5-397b-a17b",
+            "qwen3.5-122b-a10b": "qwen3.5-122b-a10b",
+            "qwen3.5-35b-a3b": "qwen3.5-35b-a3b",
+            "qwen3.5-27b": "qwen3.5-27b",
+            "qwen3-coder-plus": "qwen3-coder-plus",
+            "qwen3-coder-flash": "qwen3-coder-flash",
+            "qwen-plus-us": "qwen-plus-us",
+            "qwen-flash-us": "qwen-flash-us",
             "qwen-plus": "qwen-plus",
             "qwen-max": "qwen-max",
             "qwen-flash": "qwen-flash",
-            "qwen3.5-plus": "qwen3.5-plus",
-            "qwen3.5-flash": "qwen3.5-flash",
             "qwq-plus": "qwq-plus",
         },
     ),
@@ -304,6 +359,9 @@ def simplified_config_to_litellm(
 _GLM_API_KEY_ENV_VAR = "GLM_API_KEY"
 _GLM_ZAI_API_KEY_ENV_VAR = "ZAI_API_KEY"
 _GLM_ZHIPU_API_KEY_ENV_VAR = "ZHIPU_API_KEY"
+_DEEPSEEK_API_KEY_ENV_VAR = "DEEPSEEK_API_KEY"
+_GROK_API_KEY_ENV_VAR = "GROK_API_KEY"
+_XAI_API_KEY_ENV_VAR = "XAI_API_KEY"
 _MINIMAX_API_KEY_ENV_VAR = "MINIMAX_API_KEY"
 _KIMI_API_KEY_ENV_VAR = "KIMI_API_KEY"
 _OPENCODE_API_KEY_ENV_VAR = "OPENCODE_API_KEY"
@@ -393,7 +451,9 @@ class ProviderConfigs:
     google: GoogleProviderConfig | None = None
     copilot: CopilotProviderConfig | None = None
     litellm: LiteLLMProviderConfig | None = None
+    deepseek: SimplifiedProviderConfig | None = None
     glm: SimplifiedProviderConfig | None = None
+    grok: SimplifiedProviderConfig | None = None
     minimax: SimplifiedProviderConfig | None = None
     kimi: SimplifiedProviderConfig | None = None
     opencode_go: SimplifiedProviderConfig | None = None
@@ -429,7 +489,9 @@ _BUILTIN_PROVIDER_NAMES: frozenset[str] = frozenset(
         "copilot",
         "litellm",
         "opencode",
+        "deepseek",
         "glm",
+        "grok",
         "minimax",
         "kimi",
         "opencode-go",
@@ -477,11 +539,17 @@ def provider_configs_from_env(env: Mapping[str, str]) -> ProviderConfigs | None:
             else None
         ),
         litellm=_litellm_provider_config_from_env(env),
+        deepseek=_simplified_provider_config_from_env(env, _DEEPSEEK_API_KEY_ENV_VAR),
         glm=_simplified_provider_config_from_env(
             env,
             _GLM_ZAI_API_KEY_ENV_VAR,
             _GLM_ZHIPU_API_KEY_ENV_VAR,
             _GLM_API_KEY_ENV_VAR,
+        ),
+        grok=_simplified_provider_config_from_env(
+            env,
+            _XAI_API_KEY_ENV_VAR,
+            _GROK_API_KEY_ENV_VAR,
         ),
         minimax=_simplified_provider_config_from_env(env, _MINIMAX_API_KEY_ENV_VAR),
         kimi=_simplified_provider_config_from_env(env, _KIMI_API_KEY_ENV_VAR),
@@ -508,7 +576,9 @@ def merge_provider_configs(
         google=primary.google or fallback.google,
         copilot=primary.copilot or fallback.copilot,
         litellm=primary.litellm or fallback.litellm,
+        deepseek=primary.deepseek or fallback.deepseek,
         glm=primary.glm or fallback.glm,
+        grok=primary.grok or fallback.grok,
         minimax=primary.minimax or fallback.minimax,
         kimi=primary.kimi or fallback.kimi,
         opencode_go=primary.opencode_go or fallback.opencode_go,
@@ -544,7 +614,9 @@ def _provider_configs_has_entries(providers: ProviderConfigs) -> bool:
             providers.google,
             providers.copilot,
             providers.litellm,
+            providers.deepseek,
             providers.glm,
+            providers.grok,
             providers.minimax,
             providers.kimi,
             providers.opencode_go,
@@ -671,11 +743,23 @@ def parse_provider_configs_payload(
             field_path=_nested_config_field(source, "litellm"),
             env=environment,
         ),
+        deepseek=_parse_simplified_provider_config(
+            payload.deepseek,
+            field_path=_nested_config_field(source, "deepseek"),
+            env=environment,
+            api_key_env_var=_DEEPSEEK_API_KEY_ENV_VAR,
+        ),
         glm=_parse_simplified_provider_config(
             payload.glm,
             field_path=_nested_config_field(source, "glm"),
             env=environment,
             api_key_env_var=_GLM_API_KEY_ENV_VAR,
+        ),
+        grok=_parse_simplified_provider_config(
+            payload.grok,
+            field_path=_nested_config_field(source, "grok"),
+            env=environment,
+            api_key_env_var=_XAI_API_KEY_ENV_VAR,
         ),
         minimax=_parse_simplified_provider_config(
             payload.minimax,
@@ -742,9 +826,19 @@ def serialize_provider_configs(
             providers.litellm,
             include_secrets=include_secrets,
         )
+    if providers.deepseek is not None:
+        serialized["deepseek"] = _serialize_simplified_provider_config(
+            providers.deepseek,
+            include_secrets=include_secrets,
+        )
     if providers.glm is not None:
         serialized["glm"] = _serialize_simplified_provider_config(
             providers.glm,
+            include_secrets=include_secrets,
+        )
+    if providers.grok is not None:
+        serialized["grok"] = _serialize_simplified_provider_config(
+            providers.grok,
             include_secrets=include_secrets,
         )
     if providers.minimax is not None:

@@ -24,6 +24,7 @@ from .config import (
     serialize_provider_fallback_config,
 )
 from .copilot import CopilotModelProvider
+from .deepseek import DeepSeekModelProvider
 from .errors import (
     SingleAgentContextLimitError,
     SingleAgentProviderError,
@@ -33,6 +34,7 @@ from .errors import (
 )
 from .glm import GLMModelProvider
 from .google import GoogleModelProvider
+from .grok import GrokModelProvider
 from .kimi import KimiModelProvider
 from .litellm import LiteLLMModelProvider
 from .minimax import MiniMaxModelProvider
@@ -75,7 +77,9 @@ from .snapshot import (
 __all__ = [
     "AnthropicModelProvider",
     "CopilotModelProvider",
+    "DeepSeekModelProvider",
     "GoogleModelProvider",
+    "GrokModelProvider",
     "LiteLLMModelProvider",
     "ModelTurnProvider",
     "ProviderModelCatalog",

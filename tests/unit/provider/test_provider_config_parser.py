@@ -244,8 +244,19 @@ def test_parse_provider_fallback_payload_rejects_duplicate_chain_models() -> Non
 
 
 # =============================================================================
-# Simplified Provider Config Tests (GLM, MiniMax, Kimi, OpenCode Go, Qwen)
+# Simplified Provider Config Tests
 # =============================================================================
+
+
+def test_parse_deepseek_provider_config_from_env() -> None:
+    parsed = parse_provider_configs_payload(
+        {"deepseek": {}},
+        source="runtime config field 'providers'",
+        env={"DEEPSEEK_API_KEY": "deepseek-env-key"},
+    )
+
+    assert parsed is not None
+    assert parsed.deepseek == SimplifiedProviderConfig(api_key="deepseek-env-key")
 
 
 def test_parse_glm_provider_config_from_env() -> None:
@@ -288,6 +299,17 @@ def test_parse_glm_provider_config_with_base_url_and_model_map() -> None:
         base_url="https://custom.glm.cn",
         model_map={"glm4": "glm-4-flash", "glm4-plus": "glm-4-plus"},
     )
+
+
+def test_parse_grok_provider_config_from_env() -> None:
+    parsed = parse_provider_configs_payload(
+        {"grok": {}},
+        source="runtime config field 'providers'",
+        env={"XAI_API_KEY": "xai-env-key"},
+    )
+
+    assert parsed is not None
+    assert parsed.grok == SimplifiedProviderConfig(api_key="xai-env-key")
 
 
 def test_parse_minimax_provider_config_from_env() -> None:
@@ -429,7 +451,9 @@ def test_parse_qwen_provider_config_with_base_url() -> None:
 def test_parse_multiple_simplified_providers_together() -> None:
     parsed = parse_provider_configs_payload(
         {
+            "deepseek": {"api_key": "deepseek-key"},
             "glm": {"api_key": "glm-key"},
+            "grok": {"api_key": "grok-key"},
             "minimax": {"api_key": "minimax-key"},
             "kimi": {"api_key": "kimi-key"},
             "opencode-go": {"api_key": "opencode-go-key"},
@@ -439,7 +463,9 @@ def test_parse_multiple_simplified_providers_together() -> None:
     )
 
     assert parsed is not None
+    assert parsed.deepseek == SimplifiedProviderConfig(api_key="deepseek-key")
     assert parsed.glm == SimplifiedProviderConfig(api_key="glm-key")
+    assert parsed.grok == SimplifiedProviderConfig(api_key="grok-key")
     assert parsed.minimax == SimplifiedProviderConfig(api_key="minimax-key")
     assert parsed.kimi == SimplifiedProviderConfig(api_key="kimi-key")
     assert parsed.opencode_go == SimplifiedProviderConfig(api_key="opencode-go-key")
@@ -467,15 +493,18 @@ def test_parse_simplified_provider_with_api_key_env_var_override() -> None:
 
 def test_reject_unknown_simplified_provider() -> None:
     with pytest.raises(
-        ValueError, match="runtime config field 'providers.deepseek' is not supported"
+        ValueError, match="runtime config field 'providers.unknown_cn' is not supported"
     ):
         _ = parse_provider_configs_payload(
-            {"deepseek": {"api_key": "key"}},
+            {"unknown_cn": {"api_key": "key"}},
             source="runtime config field 'providers'",
         )
 
 
-@pytest.mark.parametrize("provider_name", ["glm", "minimax", "kimi", "opencode-go", "qwen"])
+@pytest.mark.parametrize(
+    "provider_name",
+    ["deepseek", "glm", "grok", "minimax", "kimi", "opencode-go", "qwen"],
+)
 def test_simplified_provider_not_allowed_in_custom_block(provider_name: str) -> None:
     with pytest.raises(
         ValueError,
@@ -496,6 +525,20 @@ def test_provider_configs_from_env_builds_opencode_go_without_repo_provider_bloc
 
     assert parsed is not None
     assert parsed.opencode_go == SimplifiedProviderConfig(api_key="opencode-go-env-key")
+
+
+def test_provider_configs_from_env_builds_deepseek_without_repo_provider_block() -> None:
+    parsed = provider_configs_from_env({"DEEPSEEK_API_KEY": "deepseek-env-key"})
+
+    assert parsed is not None
+    assert parsed.deepseek == SimplifiedProviderConfig(api_key="deepseek-env-key")
+
+
+def test_provider_configs_from_env_builds_grok_with_xai_api_key() -> None:
+    parsed = provider_configs_from_env({"XAI_API_KEY": "xai-env-key"})
+
+    assert parsed is not None
+    assert parsed.grok == SimplifiedProviderConfig(api_key="xai-env-key")
 
 
 def test_provider_configs_from_env_builds_glm_with_zai_api_key() -> None:

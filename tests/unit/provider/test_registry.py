@@ -11,8 +11,10 @@ from voidcode.provider.config import (
     SimplifiedProviderConfig,
 )
 from voidcode.provider.copilot import CopilotModelProvider
+from voidcode.provider.deepseek import DeepSeekModelProvider
 from voidcode.provider.glm import GLMModelProvider
 from voidcode.provider.google import GoogleModelProvider
+from voidcode.provider.grok import GrokModelProvider
 from voidcode.provider.kimi import KimiModelProvider
 from voidcode.provider.litellm import LiteLLMModelProvider
 from voidcode.provider.minimax import MiniMaxModelProvider
@@ -185,6 +187,15 @@ def test_registry_google_provider_config_uses_google_api_key_header_for_api_key_
         discovery_base_url="https://generativelanguage.googleapis.com",
         auth_header="x-goog-api-key",
         auth_scheme="token",
+        model_map={
+            "gemini-3-pro-preview": "gemini-3-pro-preview",
+            "gemini-3-flash-preview": "gemini-3-flash-preview",
+            "gemini-2.5-pro": "gemini-2.5-pro",
+            "gemini-2.5-flash": "gemini-2.5-flash",
+            "gemini-2.5-flash-lite": "gemini-2.5-flash-lite",
+            "gemini-3.1-flash-live-preview": "gemini-3.1-flash-live-preview",
+            "gemini-3.1-flash-tts-preview": "gemini-3.1-flash-tts-preview",
+        },
     )
 
 
@@ -198,6 +209,7 @@ def test_registry_openai_provider_config_sets_default_discovery_base_url() -> No
     assert config is not None
     assert config.api_key == "sk-openai"
     assert config.discovery_base_url == "https://api.openai.com"
+    assert config.model_map["gpt-5.5"] == "gpt-5.5"
 
 
 def test_registry_openai_provider_config_with_custom_base_url_disables_default_discovery() -> None:
@@ -215,6 +227,7 @@ def test_registry_openai_provider_config_with_custom_base_url_disables_default_d
     assert config is not None
     assert config.base_url == "https://proxy.example.com/v1"
     assert config.discovery_base_url is None
+    assert config.model_map["gpt-5.5"] == "gpt-5.5"
 
 
 def test_registry_anthropic_provider_config_sets_default_discovery_base_url() -> None:
@@ -227,6 +240,7 @@ def test_registry_anthropic_provider_config_sets_default_discovery_base_url() ->
     assert config is not None
     assert config.api_key == "sk-anthropic"
     assert config.discovery_base_url == "https://api.anthropic.com"
+    assert config.model_map["claude-opus-4-7"] == "claude-opus-4-7"
 
 
 def test_registry_litellm_provider_config_sets_default_discovery_base_url() -> None:
@@ -256,6 +270,40 @@ def test_registry_registers_glm_provider() -> None:
     assert config.base_url == "https://open.bigmodel.cn/api/paas/v4"
     assert config.discovery_base_url == "https://open.bigmodel.cn/api/paas/v4"
     assert "glm-4-flash" in config.model_map
+
+
+def test_registry_registers_deepseek_provider() -> None:
+    registry = ModelProviderRegistry.with_defaults(
+        provider_configs=ProviderConfigs(deepseek=SimplifiedProviderConfig(api_key="deepseek-key"))
+    )
+
+    resolved = registry.resolve("deepseek")
+
+    assert isinstance(resolved, DeepSeekModelProvider)
+    assert resolved.name == "deepseek"
+    config = registry.provider_config("deepseek")
+    assert config is not None
+    assert config.api_key == "deepseek-key"
+    assert config.base_url == "https://api.deepseek.com"
+    assert config.discovery_base_url == "https://api.deepseek.com"
+    assert "deepseek-v4-pro" in config.model_map.values()
+
+
+def test_registry_registers_grok_provider() -> None:
+    registry = ModelProviderRegistry.with_defaults(
+        provider_configs=ProviderConfigs(grok=SimplifiedProviderConfig(api_key="grok-key"))
+    )
+
+    resolved = registry.resolve("grok")
+
+    assert isinstance(resolved, GrokModelProvider)
+    assert resolved.name == "grok"
+    config = registry.provider_config("grok")
+    assert config is not None
+    assert config.api_key == "grok-key"
+    assert config.base_url == "https://api.x.ai"
+    assert config.discovery_base_url == "https://api.x.ai"
+    assert "grok-4-1-fast-reasoning" in config.model_map.values()
 
 
 def test_registry_registers_minimax_provider() -> None:
@@ -315,7 +363,8 @@ def test_registry_registers_opencode_go_provider() -> None:
     assert "qwen-plus" not in config.model_map
     assert "qwen-max" not in config.model_map
     assert "qwen-flash" not in config.model_map
-    assert "qwen3.5-flash" not in config.model_map
+    assert "qwen3.5-flash" in config.model_map
+    assert "qwen3.6-plus" in config.model_map
 
 
 def test_registry_registers_qwen_provider() -> None:
@@ -359,7 +408,9 @@ def test_registry_glm_provider_config_with_base_url_and_model_map() -> None:
 def test_registry_simplified_provider_uses_default_base_url_when_not_set() -> None:
     registry = ModelProviderRegistry.with_defaults(
         provider_configs=ProviderConfigs(
+            deepseek=SimplifiedProviderConfig(api_key="deepseek-key"),
             glm=SimplifiedProviderConfig(api_key="glm-key"),
+            grok=SimplifiedProviderConfig(api_key="grok-key"),
             minimax=SimplifiedProviderConfig(api_key="minimax-key"),
             kimi=SimplifiedProviderConfig(api_key="kimi-key"),
             opencode_go=SimplifiedProviderConfig(api_key="opencode-go-key"),
@@ -367,11 +418,23 @@ def test_registry_simplified_provider_uses_default_base_url_when_not_set() -> No
         )
     )
 
+    deepseek_config = registry.provider_config("deepseek")
+    assert deepseek_config is not None
+    assert deepseek_config.base_url == "https://api.deepseek.com"
+    assert deepseek_config.discovery_base_url == "https://api.deepseek.com"
+    assert deepseek_config.model_map.get("deepseek-v4-flash") == "deepseek-v4-flash"
+
     glm_config = registry.provider_config("glm")
     assert glm_config is not None
     assert glm_config.base_url == "https://open.bigmodel.cn/api/paas/v4"
     assert glm_config.discovery_base_url == "https://open.bigmodel.cn/api/paas/v4"
     assert glm_config.model_map.get("glm-4-flash") == "glm-4-flash"
+
+    grok_config = registry.provider_config("grok")
+    assert grok_config is not None
+    assert grok_config.base_url == "https://api.x.ai"
+    assert grok_config.discovery_base_url == "https://api.x.ai"
+    assert grok_config.model_map.get("grok-4-1-fast-reasoning") == ("grok-4-1-fast-reasoning")
 
     minimax_config = registry.provider_config("minimax")
     assert minimax_config is not None
@@ -436,7 +499,9 @@ def test_registry_simplified_provider_user_base_url_overrides_default() -> None:
 def test_registry_all_chinese_providers_resolve_correctly() -> None:
     registry = ModelProviderRegistry.with_defaults(
         provider_configs=ProviderConfigs(
+            deepseek=SimplifiedProviderConfig(api_key="deepseek-key"),
             glm=SimplifiedProviderConfig(api_key="glm-key"),
+            grok=SimplifiedProviderConfig(api_key="grok-key"),
             minimax=SimplifiedProviderConfig(api_key="minimax-key"),
             kimi=SimplifiedProviderConfig(api_key="kimi-key"),
             opencode_go=SimplifiedProviderConfig(api_key="opencode-go-key"),
@@ -444,7 +509,9 @@ def test_registry_all_chinese_providers_resolve_correctly() -> None:
         )
     )
 
+    assert isinstance(registry.resolve("deepseek"), DeepSeekModelProvider)
     assert isinstance(registry.resolve("glm"), GLMModelProvider)
+    assert isinstance(registry.resolve("grok"), GrokModelProvider)
     assert isinstance(registry.resolve("minimax"), MiniMaxModelProvider)
     assert isinstance(registry.resolve("kimi"), KimiModelProvider)
     assert isinstance(registry.resolve("opencode-go"), OpenCodeGoModelProvider)

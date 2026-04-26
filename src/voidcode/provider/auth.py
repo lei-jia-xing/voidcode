@@ -130,7 +130,9 @@ class ProviderAuthResolver:
 
     def _simplified_provider_config(self, provider: str) -> SimplifiedProviderConfig | None:
         provider_map = {
+            "deepseek": self._providers.deepseek,
             "glm": self._providers.glm,
+            "grok": self._providers.grok,
             "minimax": self._providers.minimax,
             "kimi": self._providers.kimi,
             "opencode-go": self._providers.opencode_go,

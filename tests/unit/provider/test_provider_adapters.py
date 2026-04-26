@@ -156,6 +156,14 @@ class _StubStreamChunk:
         return payload
 
 
+class _StubStreamUsageChunk:
+    def __init__(self, usage: dict[str, object]) -> None:
+        self._usage = usage
+
+    def model_dump(self) -> dict[str, object]:
+        return {"choices": [], "usage": self._usage}
+
+
 class _StubCompletionResponse:
     def __init__(
         self,
@@ -200,6 +208,7 @@ def _patch_litellm_completion(
     completion_content: str = "hello world",
     stream_chunks: tuple[tuple[str | None, str | None], ...] = (),
     stream_tool_chunks: tuple[tuple[list[dict[str, object]] | None, str | None], ...] = (),
+    stream_usage_tail: bool = False,
     api_error: _StubAPIError | None = None,
     tool_calls: list[dict[str, object]] | None = None,
     usage: dict[str, object] | None = None,
@@ -217,7 +226,7 @@ def _patch_litellm_completion(
                 str(api_error), status_code=api_error.status_code, code=api_error.code
             )
         if mode == "stream":
-            chunks: list[_StubStreamChunk] = [
+            chunks: list[object] = [
                 _StubStreamChunk(
                     text=text,
                     finish_reason=finish,
@@ -229,6 +238,8 @@ def _patch_litellm_completion(
                 _StubStreamChunk(text=None, finish_reason=finish, tool_calls=tool_calls_chunk)
                 for tool_calls_chunk, finish in stream_tool_chunks
             )
+            if stream_usage_tail and usage is not None:
+                chunks.append(_StubStreamUsageChunk(usage))
             return iter(chunks)
         return _StubCompletionResponse(
             content=completion_content,
@@ -383,6 +394,31 @@ def test_provider_adapter_stream_turn_returns_final_token_usage(
         monkeypatch,
         mode="stream",
         stream_chunks=((None, "stop"),),
+        usage={"prompt_tokens": 10, "completion_tokens": 2},
+    )
+
+    events = list(provider.stream_turn(_build_turn_request(model_name="openai")))
+
+    assert events == [
+        ProviderStreamEvent(
+            kind="done",
+            done_reason="completed",
+            usage=ProviderTokenUsage(input_tokens=10, output_tokens=2),
+        )
+    ]
+
+
+def test_provider_adapter_stream_turn_consumes_trailing_usage_chunk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = OpenAIModelProvider().turn_provider()
+    assert isinstance(provider, StreamableTurnProvider)
+
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="stream",
+        stream_chunks=((None, "stop"),),
+        stream_usage_tail=True,
         usage={"prompt_tokens": 10, "completion_tokens": 2},
     )
 

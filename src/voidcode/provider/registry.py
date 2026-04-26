@@ -12,8 +12,10 @@ from .config import (
     simplified_config_to_litellm,
 )
 from .copilot import CopilotModelProvider
+from .deepseek import DeepSeekModelProvider
 from .glm import GLMModelProvider
 from .google import GoogleModelProvider
+from .grok import GrokModelProvider
 from .kimi import KimiModelProvider
 from .litellm import LiteLLMModelProvider
 from .minimax import MiniMaxModelProvider
@@ -31,6 +33,42 @@ _DEFAULT_DISCOVERY_BASE_URLS: dict[str, str] = {
     "litellm": "http://127.0.0.1:4000",
 }
 
+_DEFAULT_MODEL_MAPS: dict[str, dict[str, str]] = {
+    "openai": {
+        "gpt-5.5": "gpt-5.5",
+        "gpt-5.4": "gpt-5.4",
+        "gpt-5.4-mini": "gpt-5.4-mini",
+        "gpt-5.4-nano": "gpt-5.4-nano",
+        "gpt-5.2": "gpt-5.2",
+        "gpt-5.2-pro": "gpt-5.2-pro",
+        "gpt-5.2-codex": "gpt-5.2-codex",
+        "gpt-5.1": "gpt-5.1",
+        "gpt-5.1-codex": "gpt-5.1-codex",
+        "gpt-5.1-codex-max": "gpt-5.1-codex-max",
+        "gpt-5": "gpt-5",
+        "gpt-5-mini": "gpt-5-mini",
+        "gpt-5-nano": "gpt-5-nano",
+        "gpt-4.1": "gpt-4.1",
+        "gpt-4.1-mini": "gpt-4.1-mini",
+        "gpt-4.1-nano": "gpt-4.1-nano",
+    },
+    "anthropic": {
+        "claude-opus-4-7": "claude-opus-4-7",
+        "claude-sonnet-4-6": "claude-sonnet-4-6",
+        "claude-haiku-4-5": "claude-haiku-4-5",
+        "claude-haiku-4-5-20251001": "claude-haiku-4-5-20251001",
+    },
+    "google": {
+        "gemini-3-pro-preview": "gemini-3-pro-preview",
+        "gemini-3-flash-preview": "gemini-3-flash-preview",
+        "gemini-2.5-pro": "gemini-2.5-pro",
+        "gemini-2.5-flash": "gemini-2.5-flash",
+        "gemini-2.5-flash-lite": "gemini-2.5-flash-lite",
+        "gemini-3.1-flash-live-preview": "gemini-3.1-flash-live-preview",
+        "gemini-3.1-flash-tts-preview": "gemini-3.1-flash-tts-preview",
+    },
+}
+
 
 def _default_discovery_base_url(
     provider_name: str,
@@ -46,7 +84,9 @@ def _default_discovery_base_url(
 
 
 _SIMPLIFIED_PROVIDER_MAP: dict[str, type] = {
+    "deepseek": DeepSeekModelProvider,
     "glm": GLMModelProvider,
+    "grok": GrokModelProvider,
     "minimax": MiniMaxModelProvider,
     "kimi": KimiModelProvider,
     "opencode-go": OpenCodeGoModelProvider,
@@ -90,7 +130,9 @@ class ModelProviderRegistry:
                 "google": GoogleModelProvider(config=configs.google),
                 "copilot": CopilotModelProvider(config=configs.copilot),
                 "litellm": LiteLLMModelProvider(config=configs.litellm),
+                "deepseek": DeepSeekModelProvider(config=configs.deepseek),
                 "glm": GLMModelProvider(config=configs.glm),
+                "grok": GrokModelProvider(config=configs.grok),
                 "minimax": MiniMaxModelProvider(config=configs.minimax),
                 "kimi": KimiModelProvider(config=configs.kimi),
                 "opencode-go": OpenCodeGoModelProvider(config=configs.opencode_go),
@@ -152,6 +194,7 @@ class ModelProviderRegistry:
                     timeout_seconds=None
                     if provider.config is None
                     else provider.config.timeout_seconds,
+                    model_map=dict(_DEFAULT_MODEL_MAPS["openai"]),
                 )
         if provider_name == "anthropic":
             provider = self.providers.get("anthropic")
@@ -175,6 +218,7 @@ class ModelProviderRegistry:
                     timeout_seconds=None
                     if provider.config is None
                     else provider.config.timeout_seconds,
+                    model_map=dict(_DEFAULT_MODEL_MAPS["anthropic"]),
                 )
         if provider_name == "google":
             provider = self.providers.get("google")
@@ -210,6 +254,7 @@ class ModelProviderRegistry:
                     timeout_seconds=None
                     if provider.config is None
                     else provider.config.timeout_seconds,
+                    model_map=dict(_DEFAULT_MODEL_MAPS["google"]),
                 )
         if provider_name == "copilot":
             provider = self.providers.get("copilot")

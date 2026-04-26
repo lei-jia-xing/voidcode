@@ -79,6 +79,32 @@ def test_discover_available_models_includes_known_model_budget_metadata() -> Non
     assert "unknown-model" not in result.model_metadata
 
 
+@pytest.mark.parametrize(
+    ("provider", "model", "context_window", "max_output_tokens"),
+    [
+        ("openai", "gpt-5.5", 1_000_000, 128_000),
+        ("anthropic", "claude-opus-4-7", 1_000_000, 64_000),
+        ("google", "gemini-3-pro-preview", 1_048_576, 65_536),
+        ("deepseek", "deepseek-v4-pro", 1_000_000, 384_000),
+        ("qwen", "qwen3.6-plus", 1_000_000, 64_000),
+        ("glm", "glm-5.1", 198_000, 128_000),
+        ("kimi", "kimi-k2.6", 256_000, 96_000),
+        ("minimax", "MiniMax-M2.5", 192_000, 32_000),
+        ("grok", "grok-4-1-fast-reasoning", 2_000_000, 30_000),
+    ],
+)
+def test_infer_model_metadata_covers_current_frontier_provider_models(
+    provider: str,
+    model: str,
+    context_window: int,
+    max_output_tokens: int,
+) -> None:
+    assert infer_model_metadata(provider, model) == ProviderModelMetadata(
+        context_window=context_window,
+        max_output_tokens=max_output_tokens,
+    )
+
+
 def test_infer_model_metadata_returns_none_for_unknown_models() -> None:
     assert infer_model_metadata("custom", "local-demo") is None
 

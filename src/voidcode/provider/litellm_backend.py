@@ -363,13 +363,6 @@ class LiteLLMBackendSingleAgentProvider:
                 latest_usage = _extract_token_usage(chunk_payload) or latest_usage
                 raw_choices = chunk_payload.get("choices")
                 if not isinstance(raw_choices, list) or not raw_choices:
-                    if latest_usage is not None:
-                        yield ProviderStreamEvent(
-                            kind="done",
-                            done_reason="completed",
-                            usage=latest_usage,
-                        )
-                        return
                     continue
                 choices = cast(list[object], raw_choices)
                 first_choice_obj = choices[0]
@@ -444,12 +437,7 @@ class LiteLLMBackendSingleAgentProvider:
                                 )
                 finish_reason = first_choice.get("finish_reason")
                 if isinstance(finish_reason, str) and finish_reason:
-                    yield ProviderStreamEvent(
-                        kind="done",
-                        done_reason="completed",
-                        usage=latest_usage,
-                    )
-                    return
+                    continue
         except Exception as exc:
             raise self._map_exception(
                 exc,
@@ -457,4 +445,8 @@ class LiteLLMBackendSingleAgentProvider:
                 model_name=request.model_name or "unknown",
             ) from exc
 
-        yield ProviderStreamEvent(kind="done", done_reason="completed")
+        yield ProviderStreamEvent(
+            kind="done",
+            done_reason="completed",
+            usage=latest_usage,
+        )
