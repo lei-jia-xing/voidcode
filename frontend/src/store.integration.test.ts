@@ -53,6 +53,7 @@ const emptyStatusSnapshot: RuntimeStatusSnapshot = {
   git: { state: "git_ready", root: "/workspace", error: null },
   lsp: { state: "stopped", error: null, details: {} },
   mcp: { state: "stopped", error: null, details: {} },
+  acp: { state: "unconfigured", error: null, details: {} },
 };
 
 function makeSessionState(

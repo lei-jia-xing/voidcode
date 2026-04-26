@@ -132,6 +132,40 @@ describe("App", () => {
     expect(mockStore.loadSettings).toHaveBeenCalled();
   });
 
+  it("renders ACP status details in the runtime status popover", () => {
+    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      ...mockStore,
+      workspaces: {
+        current: {
+          path: "/workspace",
+          label: "workspace",
+          available: true,
+          current: true,
+          last_opened_at: 1,
+        },
+        recent: [],
+        candidates: [],
+      },
+      statusStatus: "success",
+      statusSnapshot: {
+        git: { state: "git_ready", root: "/workspace", error: null },
+        lsp: { state: "running", error: null, details: {} },
+        mcp: { state: "stopped", error: null, details: {} },
+        acp: {
+          state: "running",
+          error: null,
+          details: { status: "connected", last_request_type: "handshake" },
+        },
+      },
+    });
+
+    render(<App />);
+    fireEvent.click(screen.getByLabelText("Toggle runtime status"));
+
+    expect(screen.getByText("ACP")).toBeInTheDocument();
+    expect(screen.getByText(/last request: handshake/)).toBeInTheDocument();
+  });
+
   it("renders project-picker-first empty state when no current workspace exists", () => {
     render(<App />);
 
