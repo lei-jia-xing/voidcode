@@ -41,11 +41,14 @@ from voidcode.runtime.config import (
     RuntimeTuiPreferences,
     RuntimeTuiReadingPreferences,
     RuntimeTuiThemePreferences,
+    RuntimeWebSettings,
     effective_runtime_tui_preferences,
+    load_global_web_settings,
     load_runtime_config,
     parse_runtime_agent_payload,
     runtime_config_path,
     save_global_tui_preferences,
+    save_global_web_settings,
     save_workspace_tui_preferences,
     serialize_runtime_agent_config,
     user_runtime_config_path,
@@ -1980,6 +1983,42 @@ def test_save_global_tui_preferences_preserves_unrelated_global_config_fields(
         "theme": {"name": "textual-light", "mode": "light"},
         "reading": {"wrap": True, "sidebar_collapsed": False},
     }
+
+
+@pytest.mark.parametrize("provider", ["deepseek", "grok"])
+def test_save_global_web_settings_writes_simplified_builtin_provider_api_keys(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: str
+) -> None:
+    global_config_dir = tmp_path / "global-config"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(global_config_dir))
+
+    save_global_web_settings(
+        RuntimeWebSettings(provider=provider, provider_api_key=f"{provider}-key")
+    )
+
+    payload = json.loads(user_runtime_config_path().read_text(encoding="utf-8"))
+    assert payload["web"] == {"provider": provider}
+    assert payload["providers"][provider] == {"api_key": f"{provider}-key"}
+    assert "custom" not in payload["providers"]
+    settings = load_global_web_settings(env={"XDG_CONFIG_HOME": str(global_config_dir)})
+    assert settings == RuntimeWebSettings(provider=provider, provider_api_key_present=True)
+
+
+@pytest.mark.parametrize(
+    ("provider", "env"),
+    [
+        ("deepseek", {"DEEPSEEK_API_KEY": "deepseek-env-key"}),
+        ("grok", {"XAI_API_KEY": "xai-env-key"}),
+    ],
+)
+def test_load_global_web_settings_detects_simplified_builtin_provider_env_keys(
+    tmp_path: Path, provider: str, env: dict[str, str]
+) -> None:
+    settings = load_global_web_settings(
+        env={"XDG_CONFIG_HOME": str(tmp_path / "global-config"), **env}
+    )
+
+    assert settings == RuntimeWebSettings(provider=provider, provider_api_key_present=True)
 
 
 def test_effective_runtime_tui_preferences_resolves_invalid_theme_name_to_mode_default() -> None:

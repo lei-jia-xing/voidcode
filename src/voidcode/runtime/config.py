@@ -305,6 +305,9 @@ def load_global_tui_preferences(
 def load_global_web_settings(env: Mapping[str, str] | None = None) -> RuntimeWebSettings:
     environment: Mapping[str, str] = os.environ if env is None else env
     global_config = _load_user_config(environment)
+    providers = merge_provider_configs(
+        global_config.providers, provider_configs_from_env(environment)
+    )
     payload = _read_json_object(_user_runtime_config_path_from_env(environment))
     raw_web = payload.get("web")
     configured_provider: str | None = None
@@ -312,10 +315,10 @@ def load_global_web_settings(env: Mapping[str, str] | None = None) -> RuntimeWeb
         raw_provider = cast(dict[str, object], raw_web).get("provider")
         if isinstance(raw_provider, str):
             configured_provider = raw_provider
-    provider = configured_provider or _first_configured_provider_name(global_config.providers)
+    provider = configured_provider or _first_configured_provider_name(providers)
     return RuntimeWebSettings(
         provider=provider,
-        provider_api_key_present=_provider_api_key_present(global_config.providers, provider),
+        provider_api_key_present=_provider_api_key_present(providers, provider),
     )
 
 
@@ -1563,7 +1566,9 @@ def _first_configured_provider_name(providers: RuntimeProvidersConfig | None) ->
         ("google", providers.google),
         ("copilot", providers.copilot),
         ("litellm", providers.litellm),
+        ("deepseek", providers.deepseek),
         ("glm", providers.glm),
+        ("grok", providers.grok),
         ("minimax", providers.minimax),
         ("kimi", providers.kimi),
         ("opencode-go", providers.opencode_go),
@@ -1592,8 +1597,12 @@ def _provider_api_key_present(
         return bool(providers.copilot and providers.copilot.auth and providers.copilot.auth.token)
     if provider == "litellm":
         return bool(providers.litellm and providers.litellm.api_key)
+    if provider == "deepseek":
+        return bool(providers.deepseek and providers.deepseek.api_key)
     if provider == "glm":
         return bool(providers.glm and providers.glm.api_key)
+    if provider == "grok":
+        return bool(providers.grok and providers.grok.api_key)
     if provider == "minimax":
         return bool(providers.minimax and providers.minimax.api_key)
     if provider == "kimi":
@@ -1612,7 +1621,7 @@ def _set_provider_api_key_payload(
     providers_payload = (
         dict(cast(dict[str, object], raw_providers)) if isinstance(raw_providers, dict) else {}
     )
-    if provider in {"glm", "minimax", "kimi", "opencode-go", "qwen"}:
+    if provider in {"deepseek", "glm", "grok", "minimax", "kimi", "opencode-go", "qwen"}:
         nested = providers_payload.get(provider)
         nested_payload = dict(cast(dict[str, object], nested)) if isinstance(nested, dict) else {}
         nested_payload["api_key"] = api_key
