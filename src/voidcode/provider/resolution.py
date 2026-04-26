@@ -99,7 +99,7 @@ def resolve_provider_config(
 
 def _parse_model_reference(raw_model: str) -> tuple[str, str]:
     provider_name, separator, model_name = raw_model.partition("/")
-    if separator != "/" or "/" in model_name or not provider_name or not model_name:
+    if separator != "/" or not provider_name or not model_name:
         raise ValueError("model must use provider/model format")
     return provider_name, model_name
 

@@ -38,10 +38,19 @@ def test_resolve_provider_model_parses_known_provider_reference() -> None:
     )
 
     assert resolved.selection.raw_model == "opencode/gpt-5.4"
-    assert resolved.selection.provider == "opencode"
-    assert resolved.selection.model == "gpt-5.4"
+
+
+def test_resolve_provider_model_allows_slashes_inside_model_id() -> None:
+    resolved = resolve_provider_model(
+        "litellm/openrouter/openai/gpt-4o",
+        registry=ModelProviderRegistry.with_defaults(),
+    )
+
+    assert resolved.selection.provider == "litellm"
+    assert resolved.selection.model == "openrouter/openai/gpt-4o"
+    assert resolved.selection.raw_model == "litellm/openrouter/openai/gpt-4o"
     assert resolved.provider is not None
-    assert resolved.provider.name == "opencode"
+    assert resolved.provider.name == "litellm"
     assert resolved.resolution.source == "builtin"
     assert resolved.resolution.configured is True
 
@@ -157,7 +166,7 @@ def test_resolve_provider_chain_rejects_duplicate_targets_even_without_parser() 
         )
 
 
-@pytest.mark.parametrize("raw_model", ["", "provider", "/model", "provider/", "a/b/c"])
+@pytest.mark.parametrize("raw_model", ["", "provider", "/model", "provider/"])
 def test_resolve_provider_model_rejects_malformed_reference(raw_model: str) -> None:
     with pytest.raises(ValueError, match="provider/model"):
         _ = resolve_provider_model(raw_model, registry=ModelProviderRegistry.with_defaults())
