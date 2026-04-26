@@ -10,6 +10,7 @@ import time
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Protocol, cast
 from unittest.mock import patch
 
@@ -389,10 +390,16 @@ def test_transport_reads_runtime_web_settings_as_json(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "global-config"))
+    service_module = importlib.import_module("voidcode.runtime.service")
     create_runtime_app = _load_transport_app_factory()
     app = create_runtime_app(workspace=tmp_path)
 
-    response = _run_app(app, method="GET", path="/api/settings")
+    with patch.object(
+        service_module,
+        "load_global_web_settings",
+        return_value=SimpleNamespace(provider=None, provider_api_key_present=False),
+    ):
+        response = _run_app(app, method="GET", path="/api/settings")
     payload = cast(dict[str, object], response.json())
 
     assert response.status == 200
