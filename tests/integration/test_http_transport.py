@@ -444,6 +444,84 @@ def test_transport_updates_runtime_web_settings_and_hides_api_key_on_read(
     assert read_payload == update_payload
 
 
+def test_transport_reports_configured_opencode_go_validation_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "global-config"))
+    create_runtime_app = _load_transport_app_factory()
+    app = create_runtime_app(workspace=tmp_path)
+
+    _ = _run_app(
+        app,
+        method="POST",
+        path="/api/settings",
+        body=json.dumps(
+            {
+                "provider": "opencode-go",
+                "provider_api_key": "secret-key",
+                "model": "opencode-go/glm-5.1",
+            }
+        ).encode("utf-8"),
+    )
+    response = _run_app(app, method="POST", path="/api/providers/opencode-go/validate")
+    payload = cast(dict[str, object], response.json())
+
+    assert response.status == 409
+    assert payload == {
+        "provider": "opencode-go",
+        "configured": True,
+        "ok": False,
+        "status": "skipped",
+        "message": "Provider credentials are configured; remote validation is unavailable.",
+        "source": "fallback",
+        "last_error": "provider model discovery disabled by config",
+        "discovery_mode": "disabled",
+    }
+
+
+def test_transport_lists_only_explicit_provider_configs_as_configured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "global-config"))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENCODE_API_KEY", raising=False)
+    create_runtime_app = _load_transport_app_factory()
+    app = create_runtime_app(workspace=tmp_path)
+
+    response = _run_app(app, method="GET", path="/api/providers")
+    providers = {
+        cast(str, item["name"]): cast(bool, item["configured"])
+        for item in cast(list[dict[str, object]], response.json())
+    }
+
+    assert response.status == 200
+    assert providers["openai"] is False
+    assert providers["opencode-go"] is False
+
+
+def test_transport_rejects_unconfigured_provider_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "global-config"))
+    monkeypatch.delenv("OPENCODE_API_KEY", raising=False)
+    create_runtime_app = _load_transport_app_factory()
+    app = create_runtime_app(workspace=tmp_path)
+
+    response = _run_app(app, method="POST", path="/api/providers/opencode-go/validate")
+
+    assert response.status == 409
+    assert response.json() == {
+        "provider": "opencode-go",
+        "configured": False,
+        "ok": False,
+        "status": "unconfigured",
+        "message": "Provider is not configured.",
+        "source": None,
+        "last_error": None,
+        "discovery_mode": None,
+    }
+
+
 @pytest.mark.parametrize(
     ("body", "expected_error"),
     [

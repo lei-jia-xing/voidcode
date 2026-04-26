@@ -91,6 +91,7 @@ from .contracts import (
     ProviderModelMetadata,
     ProviderModelsResult,
     ProviderSummary,
+    ProviderValidationResult,
     ReviewFileDiff,
     RuntimeNotification,
     RuntimeRequest,
@@ -2104,8 +2105,11 @@ class VoidCodeRuntime:
         return tuple(providers)
 
     def provider_models_result(self, provider_name: str) -> ProviderModelsResult:
-        catalog = self.provider_model_catalog(provider_name)
         configured = self._provider_is_configured(provider_name)
+        catalog = self.provider_model_catalog(provider_name)
+        if configured and catalog is None:
+            _ = self.refresh_provider_models(provider_name)
+            catalog = self.provider_model_catalog(provider_name)
         if catalog is None:
             return ProviderModelsResult(
                 provider=provider_name,
@@ -2135,6 +2139,50 @@ class VoidCodeRuntime:
             last_refresh_status=cast(str | None, catalog["last_refresh_status"]),
             last_error=cast(str | None, catalog["last_error"]),
             discovery_mode=cast(str | None, catalog["discovery_mode"]),
+        )
+
+    def validate_provider_credentials(self, provider_name: str) -> ProviderValidationResult:
+        if not provider_name or "/" in provider_name:
+            raise ValueError("provider_name must be a non-empty provider id without '/'")
+        result = self.provider_models_result(provider_name)
+        if not result.configured:
+            return ProviderValidationResult(
+                provider=provider_name,
+                configured=False,
+                ok=False,
+                status="unconfigured",
+                message="Provider is not configured.",
+                source=result.source,
+                last_error=result.last_error,
+                discovery_mode=result.discovery_mode,
+            )
+        if result.last_refresh_status == "failed":
+            return ProviderValidationResult(
+                provider=provider_name,
+                configured=True,
+                ok=False,
+                status="failed",
+                message=result.last_error or "Provider credential validation failed.",
+                source=result.source,
+                last_error=result.last_error,
+                discovery_mode=result.discovery_mode,
+            )
+        status = result.last_refresh_status or "ok"
+        ok = status == "ok"
+        message = (
+            "Remote provider validation succeeded."
+            if ok
+            else "Provider credentials are configured; remote validation is unavailable."
+        )
+        return ProviderValidationResult(
+            provider=provider_name,
+            configured=True,
+            ok=ok,
+            status=status,
+            message=message,
+            source=result.source,
+            last_error=result.last_error,
+            discovery_mode=result.discovery_mode,
         )
 
     @staticmethod
@@ -2309,7 +2357,34 @@ class VoidCodeRuntime:
         }.get(provider_name, provider_name)
 
     def _provider_is_configured(self, provider_name: str) -> bool:
-        return self._model_provider_registry.provider_config(provider_name) is not None
+        providers = self._config.providers
+        if providers is None:
+            return False
+        if provider_name == "openai":
+            return providers.openai is not None
+        if provider_name == "anthropic":
+            return providers.anthropic is not None
+        if provider_name == "google":
+            return providers.google is not None
+        if provider_name == "copilot":
+            return providers.copilot is not None
+        if provider_name == "litellm":
+            return providers.litellm is not None
+        if provider_name == "deepseek":
+            return providers.deepseek is not None
+        if provider_name == "glm":
+            return providers.glm is not None
+        if provider_name == "grok":
+            return providers.grok is not None
+        if provider_name == "minimax":
+            return providers.minimax is not None
+        if provider_name == "kimi":
+            return providers.kimi is not None
+        if provider_name == "opencode-go":
+            return providers.opencode_go is not None
+        if provider_name == "qwen":
+            return providers.qwen is not None
+        return provider_name in providers.custom
 
     def web_settings(self) -> dict[str, object]:
         settings = load_global_web_settings()

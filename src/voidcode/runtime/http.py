@@ -21,6 +21,7 @@ from .contracts import (
     NoPendingQuestionError,
     ProviderModelsResult,
     ProviderSummary,
+    ProviderValidationResult,
     ReviewChangedFile,
     ReviewFileDiff,
     ReviewTreeNode,
@@ -88,6 +89,8 @@ class RuntimeTransport(Protocol):
     def list_provider_summaries(self) -> tuple[ProviderSummary, ...]: ...
 
     def provider_models_result(self, provider_name: str) -> ProviderModelsResult: ...
+
+    def validate_provider_credentials(self, provider_name: str) -> ProviderValidationResult: ...
 
     def list_agent_summaries(self) -> tuple[AgentSummary, ...]: ...
 
@@ -687,21 +690,31 @@ class RuntimeTransportApp:
         provider_prefix = "/api/providers/"
         if path.startswith(provider_prefix):
             provider_path = path.removeprefix(provider_prefix)
-            if not provider_path.endswith("/models"):
+            is_models_route = provider_path.endswith("/models")
+            is_validate_route = provider_path.endswith("/validate")
+            if not is_models_route and not is_validate_route:
                 await self._json_response(send, status=404, payload={"error": "not found"})
                 return
-            provider_name = provider_path.removesuffix("/models")
+            provider_name = (
+                provider_path.removesuffix("/models")
+                if is_models_route
+                else provider_path.removesuffix("/validate")
+            )
             if not provider_name:
                 await self._json_response(send, status=404, payload={"error": "not found"})
                 return
-            if method != "GET":
+            expected_method = "GET" if is_models_route else "POST"
+            if method != expected_method:
                 await self._json_response(
                     send,
                     status=405,
                     payload={"error": "method not allowed"},
                 )
                 return
-            await self._handle_provider_models(provider_name=provider_name, send=send)
+            if is_models_route:
+                await self._handle_provider_models(provider_name=provider_name, send=send)
+            else:
+                await self._handle_provider_validation(provider_name=provider_name, send=send)
             return
 
         review_diff_prefix = "/api/review/diff/"
@@ -1108,6 +1121,21 @@ class RuntimeTransportApp:
         status = 200 if result.configured else 409
         await self._json_response(
             send, status=status, payload=self._serialize_provider_models_result(result)
+        )
+
+    async def _handle_provider_validation(self, *, provider_name: str, send: Send) -> None:
+        with self._active_request_scope():
+            runtime = self._runtime_factory()
+            try:
+                result = runtime.validate_provider_credentials(provider_name)
+            except ValueError as exc:
+                await self._json_response(send, status=400, payload={"error": str(exc)})
+                return
+            finally:
+                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
+        status = 200 if result.ok else 409
+        await self._json_response(
+            send, status=status, payload=self._serialize_provider_validation_result(result)
         )
 
     async def _handle_list_agents(self, send: Send) -> None:
@@ -1690,6 +1718,21 @@ class RuntimeTransportApp:
             },
             "source": result.source,
             "last_refresh_status": result.last_refresh_status,
+            "last_error": result.last_error,
+            "discovery_mode": result.discovery_mode,
+        }
+
+    @staticmethod
+    def _serialize_provider_validation_result(
+        result: ProviderValidationResult,
+    ) -> dict[str, object]:
+        return {
+            "provider": result.provider,
+            "configured": result.configured,
+            "ok": result.ok,
+            "status": result.status,
+            "message": result.message,
+            "source": result.source,
             "last_error": result.last_error,
             "discovery_mode": result.discovery_mode,
         }

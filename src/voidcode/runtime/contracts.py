@@ -501,6 +501,18 @@ class ProviderModelsResult:
 
 
 @dataclass(frozen=True, slots=True)
+class ProviderValidationResult:
+    provider: str
+    configured: bool
+    ok: bool
+    status: str
+    message: str
+    source: str | None = None
+    last_error: str | None = None
+    discovery_mode: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class AgentSummary:
     id: str
     label: str
