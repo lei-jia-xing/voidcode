@@ -720,6 +720,10 @@ class RuntimeTransportApp:
             await self._handle_get_review_diff(path=diff_path, send=send)
             return
 
+        if path == "/api" or path.startswith("/api/"):
+            await self._json_response(send, status=404, payload={"error": "not found"})
+            return
+
         await self._handle_static_file(path, send)
 
     @staticmethod

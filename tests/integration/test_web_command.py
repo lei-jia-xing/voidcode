@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -176,6 +177,42 @@ def test_frontend_serves_static_assets_when_dist_configured(tmp_path: Path) -> N
         if cast(str, m["type"]) == "http.response.body"
     )
     assert len(body) > 0
+
+
+def test_frontend_does_not_spa_fallback_unknown_api_routes(tmp_path: Path) -> None:
+    """Verify unknown API paths keep JSON 404 semantics with frontend_dist set."""
+    http_module = importlib.import_module("voidcode.runtime.http")
+    rt_app = http_module.RuntimeTransportApp(
+        runtime_factory=Mock(),
+        frontend_dist=write_frontend_dist_fixture(tmp_path),
+    )
+
+    messages: list[dict[str, object]] = [
+        {"type": "http.request", "body": b"", "more_body": False},
+    ]
+    sent: list[dict[str, object]] = []
+
+    async def receive() -> dict[str, object]:
+        if messages:
+            return messages.pop(0)
+        return {"type": "http.disconnect"}
+
+    async def send(message: dict[str, object]) -> None:
+        sent.append(message)
+
+    scope: dict[str, object] = {"type": "http", "method": "GET", "path": "/api/not-real"}
+    asyncio.run(rt_app(scope, receive, send))
+
+    start = cast_start(sent)
+    assert start["status"] == 404
+    headers = decode_headers(start)
+    assert "application/json" in headers.get("content-type", "")
+    body = b"".join(
+        cast(bytes, m.get("body", b""))
+        for m in sent
+        if cast(str, m["type"]) == "http.response.body"
+    )
+    assert json.loads(body.decode("utf-8")) == {"error": "not found"}
 
 
 def test_frontend_returns_404_when_no_dist_configured() -> None:

@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { spawn, ChildProcess } from 'child_process';
 import * as path from 'path';
+import { fileURLToPath } from 'url';
 
 let proc: ChildProcess;
 let launcherUrl: string;
@@ -10,9 +11,9 @@ let stderrData = '';
 
 test.describe('VoidCode Web Launcher', () => {
   test.beforeAll(async () => {
-    const rootDir = path.resolve(process.cwd(), '..');
+    const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
     const port = Math.floor(Math.random() * 50000) + 10000;
-    
+
     proc = spawn('uv', ['run', 'voidcode', 'web', '--port', port.toString(), '--workspace', rootDir], {
       cwd: rootDir,
       env: { ...process.env, PYTHONUNBUFFERED: '1' },
@@ -64,24 +65,24 @@ test.describe('VoidCode Web Launcher', () => {
 
   test('should run a task using env-backed key without browser-side API key entry', async ({ page }) => {
     test.skip(!process.env.OPENCODE_API_KEY, 'Skipping live smoke test because OPENCODE_API_KEY is not set in environment.');
-    
+
     await page.goto(launcherUrl);
     await expect(page).toHaveTitle(/VoidCode/i);
-    
+
     const settingsModal = page.locator('div[role="dialog"]');
     await expect(settingsModal).not.toBeVisible();
-    
+
     const input = page.locator('textarea');
     await expect(input).toBeVisible({ timeout: 20000 });
     await input.fill('read README.md');
     await input.press('Enter');
-    
+
     await expect(page.getByText('Agent Busy')).toBeVisible({ timeout: 10000 });
     await expect(page.getByText('Agent Idle')).toBeVisible({ timeout: 60000 });
-    
+
     const runErrorBanner = page.locator('div.flex-shrink-0[class*="bg-rose-500/10"]');
     await expect(runErrorBanner).not.toBeVisible();
-    
+
     await expect(page.getByText('Assistant').first()).toBeVisible();
   });
 });
