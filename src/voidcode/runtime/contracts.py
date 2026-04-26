@@ -483,10 +483,17 @@ class ProviderSummary:
 
 
 @dataclass(frozen=True, slots=True)
+class ProviderModelMetadata:
+    context_window: int | None = None
+    max_output_tokens: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ProviderModelsResult:
     provider: str
     configured: bool
     models: tuple[str, ...] = ()
+    model_metadata: dict[str, ProviderModelMetadata] = field(default_factory=dict)
     source: str | None = None
     last_refresh_status: str | None = None
     last_error: str | None = None

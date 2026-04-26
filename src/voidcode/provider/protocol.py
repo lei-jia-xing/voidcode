@@ -50,9 +50,35 @@ class ProviderTurnRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class ProviderTokenUsage:
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_creation_tokens: int = 0
+    cache_read_tokens: int = 0
+
+    def metadata_payload(self) -> dict[str, int]:
+        return {
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "cache_creation_tokens": self.cache_creation_tokens,
+            "cache_read_tokens": self.cache_read_tokens,
+        }
+
+    @property
+    def total_tokens(self) -> int:
+        return (
+            self.input_tokens
+            + self.output_tokens
+            + self.cache_creation_tokens
+            + self.cache_read_tokens
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class ProviderTurnResult:
     tool_call: ToolCall | None = None
     output: str | None = None
+    usage: ProviderTokenUsage | None = None
 
 
 @runtime_checkable
@@ -78,6 +104,7 @@ class ProviderStreamEvent:
         | None
     ) = None
     done_reason: ProviderDoneReason | None = None
+    usage: ProviderTokenUsage | None = None
 
 
 def normalize_provider_stream_event(event: ProviderStreamEvent) -> ProviderStreamEvent:
@@ -90,6 +117,7 @@ def normalize_provider_stream_event(event: ProviderStreamEvent) -> ProviderStrea
             kind="done",
             channel=event.channel,
             done_reason="completed",
+            usage=event.usage,
         )
     return event
 

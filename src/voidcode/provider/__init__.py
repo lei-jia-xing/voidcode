@@ -36,7 +36,12 @@ from .google import GoogleModelProvider
 from .kimi import KimiModelProvider
 from .litellm import LiteLLMModelProvider
 from .minimax import MiniMaxModelProvider
-from .model_catalog import ProviderModelCatalog, discover_available_models
+from .model_catalog import (
+    ProviderModelCatalog,
+    ProviderModelMetadata,
+    discover_available_models,
+    infer_model_metadata,
+)
 from .models import (
     ProviderModelSelection,
     ProviderResolutionMetadata,
@@ -49,6 +54,7 @@ from .opencode_go import OpenCodeGoModelProvider
 from .protocol import (
     ModelTurnProvider,
     ProviderExecutionError,
+    ProviderTokenUsage,
     ProviderTurnRequest,
     ProviderTurnResult,
     StubTurnProvider,
@@ -73,6 +79,7 @@ __all__ = [
     "LiteLLMModelProvider",
     "ModelTurnProvider",
     "ProviderModelCatalog",
+    "ProviderModelMetadata",
     "ModelProviderRegistry",
     "OpenAIModelProvider",
     "ProviderAuthAuthorizeRequest",
@@ -86,6 +93,7 @@ __all__ = [
     "ProviderAuthResolver",
     "ProviderConfigs",
     "ProviderExecutionError",
+    "ProviderTokenUsage",
     "ProviderFallbackConfig",
     "ProviderModelSelection",
     "ProviderResolutionMetadata",
@@ -118,6 +126,7 @@ __all__ = [
     "resolve_provider_model",
     "resolved_provider_snapshot",
     "discover_available_models",
+    "infer_model_metadata",
     "serialize_provider_configs",
     "serialize_provider_fallback_config",
 ]

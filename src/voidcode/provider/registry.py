@@ -275,6 +275,7 @@ class ModelProviderRegistry:
                 provider=provider_name,
                 models=discovery.models,
                 refreshed=True,
+                model_metadata=discovery.model_metadata,
                 source=discovery.source,
                 last_refresh_status=discovery.last_refresh_status,
                 last_error=discovery.last_error,

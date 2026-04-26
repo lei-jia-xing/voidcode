@@ -124,6 +124,23 @@ def test_registry_refresh_available_models_prefers_model_map_aliases() -> None:
     assert models[:2] == ("gpt-4o", "coder")
     assert "openrouter/openai/gpt-4o" in models
     assert "ollama/qwen2.5-coder:latest" in models
+
+
+def test_registry_refresh_available_models_stores_model_metadata() -> None:
+    litellm_config = LiteLLMProviderConfig(
+        discovery_base_url="",
+        model_map={"gpt-4o": "openrouter/openai/gpt-4o"},
+    )
+    registry = ModelProviderRegistry.with_defaults(
+        provider_configs=ProviderConfigs(litellm=litellm_config)
+    )
+
+    models = registry.refresh_available_models("litellm")
+    catalog = registry.provider_catalog("litellm")
+
+    assert "gpt-4o" in models
+    assert catalog is not None
+    assert catalog.model_metadata["gpt-4o"].context_window == 128_000
     assert registry.available_models("litellm") == models
     catalog = registry.provider_catalog("litellm")
     assert catalog is not None

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 
 from ..tools.contracts import ToolResult
@@ -52,6 +53,8 @@ class RuntimeContextWindow:
     retained_tool_result_count: int = 0
     max_tool_result_count: int = 0
     continuity_state: RuntimeContinuityState | None = None
+    summary_anchor: str | None = None
+    summary_source: dict[str, int] | None = None
 
     def metadata_payload(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -63,6 +66,10 @@ class RuntimeContextWindow:
         }
         if self.continuity_state is not None:
             payload["continuity_state"] = self.continuity_state.metadata_payload()
+        if self.summary_anchor is not None:
+            payload["summary_anchor"] = self.summary_anchor
+        if self.summary_source is not None:
+            payload["summary_source"] = dict(self.summary_source)
         return payload
 
 
@@ -154,6 +161,17 @@ def _build_continuity_state(
     )
 
 
+def _summary_anchor(
+    summary_text: str | None, *, dropped_count: int, retained_count: int
+) -> str | None:
+    if not summary_text:
+        return None
+    digest = hashlib.sha256(
+        f"{dropped_count}:{retained_count}:{summary_text}".encode()
+    ).hexdigest()[:16]
+    return f"continuity:{digest}"
+
+
 def prepare_provider_context(
     *,
     prompt: str,
@@ -174,6 +192,25 @@ def prepare_provider_context(
     compacted = retained_count < original_count
     dropped_results = tool_results[: original_count - retained_count]
 
+    continuity_state = (
+        _build_continuity_state(
+            dropped_results=dropped_results,
+            retained_count=retained_count,
+            preview_item_limit=effective_policy.continuity_preview_items,
+            preview_char_limit=effective_policy.continuity_preview_chars,
+        )
+        if compacted
+        else None
+    )
+    summary_anchor = (
+        _summary_anchor(
+            None if continuity_state is None else continuity_state.summary_text,
+            dropped_count=len(dropped_results),
+            retained_count=retained_count,
+        )
+        if compacted
+        else None
+    )
     return RuntimeContextWindow(
         prompt=prompt,
         tool_results=retained_results,
@@ -182,14 +219,11 @@ def prepare_provider_context(
         original_tool_result_count=original_count,
         retained_tool_result_count=retained_count,
         max_tool_result_count=effective_policy.max_tool_results,
-        continuity_state=(
-            _build_continuity_state(
-                dropped_results=dropped_results,
-                retained_count=retained_count,
-                preview_item_limit=effective_policy.continuity_preview_items,
-                preview_char_limit=effective_policy.continuity_preview_chars,
-            )
-            if compacted
+        continuity_state=continuity_state,
+        summary_anchor=summary_anchor,
+        summary_source=(
+            {"tool_result_start": 0, "tool_result_end": len(dropped_results)}
+            if summary_anchor is not None
             else None
         ),
     )

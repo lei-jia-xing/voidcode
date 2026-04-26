@@ -59,6 +59,9 @@ def test_prepare_provider_context_compacts_old_results_and_reports_metadata() ->
     assert "Compacted 2 earlier tool results:" in context.continuity_state.summary_text
     assert 'content_preview="content-1"' in context.continuity_state.summary_text
     assert 'content_preview="content-2"' in context.continuity_state.summary_text
+    assert context.summary_anchor is not None
+    assert context.summary_anchor.startswith("continuity:")
+    assert context.summary_source == {"tool_result_start": 0, "tool_result_end": 2}
     assert context.metadata_payload()["continuity_state"] == {
         "summary_text": context.continuity_state.summary_text,
         "dropped_tool_result_count": 2,
@@ -66,6 +69,8 @@ def test_prepare_provider_context_compacts_old_results_and_reports_metadata() ->
         "source": "tool_result_window",
         "version": 1,
     }
+    assert context.metadata_payload()["summary_anchor"] == context.summary_anchor
+    assert context.metadata_payload()["summary_source"] == context.summary_source
 
 
 def test_prepare_provider_context_uses_explicit_continuity_preview_policy() -> None:

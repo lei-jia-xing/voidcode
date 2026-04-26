@@ -36,6 +36,7 @@ from ..provider.models import (
     ResolvedProviderConfig,
     ResolvedProviderModel,
 )
+from ..provider.protocol import ProviderTokenUsage
 from ..provider.registry import ModelProviderRegistry
 from ..provider.resolution import resolve_provider_config
 from ..provider.snapshot import (
@@ -87,6 +88,7 @@ from .contracts import (
     BackgroundTaskResult,
     CapabilityStatusSnapshot,
     GitStatusSnapshot,
+    ProviderModelMetadata,
     ProviderModelsResult,
     ProviderSummary,
     ReviewFileDiff,
@@ -2075,6 +2077,10 @@ class VoidCodeRuntime:
         return {
             "provider": catalog.provider,
             "models": list(catalog.models),
+            "model_metadata": {
+                model: metadata.payload()
+                for model, metadata in catalog.model_metadata.items()
+            },
             "refreshed": catalog.refreshed,
             "source": catalog.source,
             "last_refresh_status": catalog.last_refresh_status,
@@ -2110,11 +2116,32 @@ class VoidCodeRuntime:
             provider=provider_name,
             configured=configured,
             models=tuple(cast(list[str], catalog["models"])),
+            model_metadata={
+                model: ProviderModelMetadata(
+                    context_window=VoidCodeRuntime._optional_positive_int(
+                        payload.get("context_window")
+                    ),
+                    max_output_tokens=VoidCodeRuntime._optional_positive_int(
+                        payload.get("max_output_tokens")
+                    ),
+                )
+                for model, raw_payload in cast(
+                    dict[str, object], catalog.get("model_metadata", {})
+                ).items()
+                if isinstance(raw_payload, dict)
+                for payload in (cast(dict[str, object], raw_payload),)
+            },
             source=cast(str | None, catalog["source"]),
             last_refresh_status=cast(str | None, catalog["last_refresh_status"]),
             last_error=cast(str | None, catalog["last_error"]),
             discovery_mode=cast(str | None, catalog["discovery_mode"]),
         )
+
+    @staticmethod
+    def _optional_positive_int(value: object) -> int | None:
+        if isinstance(value, bool) or not isinstance(value, int):
+            return None
+        return value if value > 0 else None
 
     def list_agent_summaries(self) -> tuple[AgentSummary, ...]:
         return tuple(
@@ -3553,6 +3580,14 @@ class VoidCodeRuntime:
             if context_window.continuity_state is not None
             else None
         )
+        continuity_summary_payload = (
+            {
+                "anchor": context_window.summary_anchor,
+                "source": context_window.summary_source,
+            }
+            if context_window.summary_anchor is not None
+            else None
+        )
         return SessionState(
             session=session.session,
             status=session.status,
@@ -3565,6 +3600,58 @@ class VoidCodeRuntime:
                     **(
                         {"continuity": continuity_payload} if continuity_payload is not None else {}
                     ),
+                    **(
+                        {"continuity_summary": continuity_summary_payload}
+                        if continuity_summary_payload is not None
+                        else {}
+                    ),
+                },
+            },
+        )
+
+    @staticmethod
+    def _session_with_provider_usage_metadata(
+        session: SessionState, usage: ProviderTokenUsage | None
+    ) -> SessionState:
+        if usage is None:
+            return session
+        usage_payload = usage.metadata_payload()
+        raw_provider_usage = session.metadata.get("provider_usage")
+        provider_usage = (
+            dict(cast(dict[str, object], raw_provider_usage))
+            if isinstance(raw_provider_usage, dict)
+            else {}
+        )
+        raw_cumulative = provider_usage.get("cumulative")
+        cumulative = (
+            dict(cast(dict[str, object], raw_cumulative))
+            if isinstance(raw_cumulative, dict)
+            else {}
+        )
+
+        def _int_value(key: str) -> int:
+            raw_value = cumulative.get(key, 0)
+            if isinstance(raw_value, int) and not isinstance(raw_value, bool):
+                return raw_value
+            return 0
+
+        cumulative_payload = {
+            key: _int_value(key) + value for key, value in usage_payload.items()
+        }
+        raw_turn_count = provider_usage.get("turn_count", 0)
+        turn_count = 0
+        if isinstance(raw_turn_count, int) and not isinstance(raw_turn_count, bool):
+            turn_count = raw_turn_count
+        return SessionState(
+            session=session.session,
+            status=session.status,
+            turn=session.turn,
+            metadata={
+                **session.metadata,
+                "provider_usage": {
+                    "latest": usage_payload,
+                    "cumulative": cumulative_payload,
+                    "turn_count": turn_count + 1,
                 },
             },
         )

@@ -54,6 +54,13 @@ export interface ProviderModelsResult {
   provider: string;
   configured: boolean;
   models: string[];
+  model_metadata?: Record<
+    string,
+    {
+      context_window?: number | null;
+      max_output_tokens?: number | null;
+    }
+  >;
   source?: string | null;
   last_refresh_status?: string | null;
   last_error?: string | null;

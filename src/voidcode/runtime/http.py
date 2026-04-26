@@ -1597,6 +1597,17 @@ class RuntimeTransportApp:
             "provider": result.provider,
             "configured": result.configured,
             "models": list(result.models),
+            "model_metadata": {
+                model: {
+                    key: value
+                    for key, value in {
+                        "context_window": metadata.context_window,
+                        "max_output_tokens": metadata.max_output_tokens,
+                    }.items()
+                    if value is not None
+                }
+                for model, metadata in result.model_metadata.items()
+            },
             "source": result.source,
             "last_refresh_status": result.last_refresh_status,
             "last_error": result.last_error,

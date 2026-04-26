@@ -78,6 +78,7 @@ from voidcode.runtime.permission import PermissionPolicy
 from voidcode.runtime.provider_protocol import (
     ProviderExecutionError,
     ProviderStreamEvent,
+    ProviderTokenUsage,
     ProviderTurnRequest,
     ProviderTurnResult,
 )
@@ -403,10 +404,22 @@ class _ScriptedTurnProvider:
             return iter(
                 (
                     ProviderStreamEvent(kind="delta", channel="text", text=turn_result.output),
-                    ProviderStreamEvent(kind="done", done_reason="completed"),
+                    ProviderStreamEvent(
+                        kind="done",
+                        done_reason="completed",
+                        usage=turn_result.usage,
+                    ),
                 )
             )
-        return iter((ProviderStreamEvent(kind="done", done_reason="completed"),))
+        return iter(
+            (
+                ProviderStreamEvent(
+                    kind="done",
+                    done_reason="completed",
+                    usage=turn_result.usage,
+                ),
+            )
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -6933,11 +6946,18 @@ def test_runtime_provider_compaction_emits_continuity_state_and_persists_metadat
 
     assert response.session.status == "completed"
     assert len(memory_events) == 1
+    summary_anchor = memory_events[0].payload["summary_anchor"]
+    summary_source = memory_events[0].payload["summary_source"]
+    assert isinstance(summary_anchor, str)
+    assert summary_anchor.startswith("continuity:")
+    assert summary_source == {"tool_result_start": 0, "tool_result_end": 1}
     assert memory_events[0].payload == {
         "reason": "tool_result_window",
         "original_tool_result_count": 2,
         "retained_tool_result_count": 1,
         "compacted": True,
+        "summary_anchor": summary_anchor,
+        "summary_source": summary_source,
         "continuity_state": expected_continuity,
     }
     assert response.session.metadata["context_window"] == {
@@ -6947,11 +6967,59 @@ def test_runtime_provider_compaction_emits_continuity_state_and_persists_metadat
         "retained_tool_result_count": 1,
         "max_tool_result_count": 1,
         "continuity_state": expected_continuity,
+        "summary_anchor": summary_anchor,
+        "summary_source": summary_source,
     }
     runtime_state = cast(dict[str, object], response.session.metadata["runtime_state"])
     assert runtime_state["continuity"] == expected_continuity
+    assert runtime_state["continuity_summary"] == {
+        "anchor": summary_anchor,
+        "source": summary_source,
+    }
     replay_runtime_state = cast(dict[str, object], replay.session.metadata["runtime_state"])
     assert replay_runtime_state["continuity"] == expected_continuity
+
+
+def test_runtime_provider_turn_usage_is_persisted_in_session_metadata(tmp_path: Path) -> None:
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(
+                    ProviderTurnResult(
+                        output="done",
+                        usage=ProviderTokenUsage(input_tokens=10, output_tokens=3),
+                    ),
+                ),
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+        model_provider_registry=registry,
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="summarize", session_id="usage-session"))
+    replay = runtime.resume("usage-session")
+
+    expected_usage = {
+        "latest": {
+            "input_tokens": 10,
+            "output_tokens": 3,
+            "cache_creation_tokens": 0,
+            "cache_read_tokens": 0,
+        },
+        "cumulative": {
+            "input_tokens": 10,
+            "output_tokens": 3,
+            "cache_creation_tokens": 0,
+            "cache_read_tokens": 0,
+        },
+        "turn_count": 1,
+    }
+    assert response.session.metadata["provider_usage"] == expected_usage
+    assert replay.session.metadata["provider_usage"] == expected_usage
 
 
 def test_runtime_rejects_provider_engine_without_model(tmp_path: Path) -> None:
