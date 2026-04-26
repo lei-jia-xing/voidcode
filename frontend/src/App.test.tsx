@@ -29,10 +29,14 @@ describe("App", () => {
     providersStatus: "idle",
     providersError: null,
     providerModels: {},
+    providerValidationResults: {},
+    providerValidationStatus: {},
+    providerValidationError: {},
     agentPresets: [],
     loadWorkspaces: vi.fn(),
     switchWorkspace: vi.fn(),
     loadProviders: vi.fn(),
+    validateProviderCredentials: vi.fn(),
     loadAgents: vi.fn(),
     statusSnapshot: null,
     statusStatus: "idle",
@@ -858,7 +862,9 @@ describe("App", () => {
 
     fireEvent.click(modelInput);
     fireEvent.click(screen.getByRole("button", { name: "new-model/v1" }));
-    expect(mockStore.setProviderModel).toHaveBeenCalledWith("new-model/v1");
+    expect(mockStore.setProviderModel).toHaveBeenCalledWith(
+      "opencode-go/new-model/v1",
+    );
   });
 
   it("renders settings panel when settings button is clicked", () => {

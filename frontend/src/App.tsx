@@ -35,10 +35,14 @@ function App() {
     providersStatus,
     providersError,
     providerModels,
+    providerValidationResults,
+    providerValidationStatus,
+    providerValidationError,
     agentPresets,
     loadWorkspaces,
     switchWorkspace,
     loadProviders,
+    validateProviderCredentials,
     loadAgents,
     statusSnapshot,
     statusStatus,
@@ -398,11 +402,16 @@ function App() {
         providers={providers}
         providersStatus={providersStatus}
         providersError={providersError}
+        providerModels={providerModels}
+        providerValidationResults={providerValidationResults}
+        providerValidationStatus={providerValidationStatus}
+        providerValidationError={providerValidationError}
         language={language}
         onToggleLanguage={() => setLanguage(language === "en" ? "zh-CN" : "en")}
         onClose={() => setShowSettings(false)}
         onLoad={loadSettings}
         onLoadProviders={loadProviders}
+        onValidateProvider={validateProviderCredentials}
         onSave={updateSettings}
       />
 
