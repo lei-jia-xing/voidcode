@@ -262,6 +262,10 @@ class RuntimeRunLoopCoordinator:
                 getattr(graph_step, "is_finished", False)
                 or getattr(graph_step, "output", None) is not None
             )
+            session = runtime._session_with_provider_usage_metadata(
+                session,
+                getattr(graph_step, "usage", None),
+            )
             current_chunk_session = session
             if is_final_step:
                 current_chunk_session = runtime._session_with_plan_state(

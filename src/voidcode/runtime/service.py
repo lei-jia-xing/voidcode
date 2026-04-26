@@ -36,6 +36,7 @@ from ..provider.models import (
     ResolvedProviderConfig,
     ResolvedProviderModel,
 )
+from ..provider.protocol import ProviderTokenUsage
 from ..provider.registry import ModelProviderRegistry
 from ..provider.resolution import resolve_provider_config
 from ..provider.snapshot import (
@@ -3565,6 +3566,56 @@ class VoidCodeRuntime:
                     **(
                         {"continuity": continuity_payload} if continuity_payload is not None else {}
                     ),
+                },
+            },
+        )
+
+    @staticmethod
+    def _session_with_provider_usage_metadata(
+        session: SessionState, usage: ProviderTokenUsage | None
+    ) -> SessionState:
+        # Referenced via extracted run-loop collaborator.
+        if usage is None:
+            return session
+
+        latest = usage.metadata_payload()
+        raw_provider_usage = session.metadata.get("provider_usage")
+        provider_usage = (
+            dict(cast(dict[str, object], raw_provider_usage))
+            if isinstance(raw_provider_usage, dict)
+            else {}
+        )
+        raw_cumulative = provider_usage.get("cumulative")
+        cumulative = (
+            dict(cast(dict[str, object], raw_cumulative))
+            if isinstance(raw_cumulative, dict)
+            else {}
+        )
+
+        def cumulative_int(key: str) -> int:
+            value = cumulative.get(key, 0)
+            if isinstance(value, bool) or not isinstance(value, int):
+                return 0
+            return max(0, value)
+
+        cumulative_payload = {
+            key: cumulative_int(key) + token_count for key, token_count in latest.items()
+        }
+        raw_turn_count = provider_usage.get("turn_count")
+        turn_count = raw_turn_count if isinstance(raw_turn_count, int) else 0
+        if isinstance(turn_count, bool) or turn_count < 0:
+            turn_count = 0
+
+        return SessionState(
+            session=session.session,
+            status=session.status,
+            turn=session.turn,
+            metadata={
+                **session.metadata,
+                "provider_usage": {
+                    "latest": latest,
+                    "cumulative": cumulative_payload,
+                    "turn_count": turn_count + 1,
                 },
             },
         )

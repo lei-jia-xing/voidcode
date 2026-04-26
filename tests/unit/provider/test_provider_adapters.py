@@ -24,6 +24,7 @@ from voidcode.provider.protocol import (
     ModelProvider,
     ProviderExecutionError,
     ProviderStreamEvent,
+    ProviderTokenUsage,
     ProviderTurnRequest,
     StreamableTurnProvider,
     TurnProvider,
@@ -130,12 +131,14 @@ class _StubStreamChunk:
         tool_calls: list[dict[str, object]] | None = None,
         reasoning_content: str | None = None,
         thinking_blocks: list[dict[str, object]] | None = None,
+        usage: dict[str, object] | None = None,
     ) -> None:
         self._text = text
         self._finish_reason = finish_reason
         self._tool_calls = tool_calls
         self._reasoning_content = reasoning_content
         self._thinking_blocks = thinking_blocks
+        self._usage = usage
 
     def model_dump(self) -> dict[str, object]:
         choice: dict[str, object] = {
@@ -147,7 +150,10 @@ class _StubStreamChunk:
             },
             "finish_reason": self._finish_reason,
         }
-        return {"choices": [choice]}
+        payload: dict[str, object] = {"choices": [choice]}
+        if self._usage is not None:
+            payload["usage"] = self._usage
+        return payload
 
 
 class _StubCompletionResponse:
@@ -156,12 +162,14 @@ class _StubCompletionResponse:
         *,
         content: str | None = "hello world",
         tool_calls: list[dict[str, object]] | None = None,
+        usage: dict[str, object] | None = None,
     ) -> None:
         self._content = content
         self._tool_calls = tool_calls
+        self._usage = usage
 
     def model_dump(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "choices": [
                 {
                     "message": {
@@ -171,6 +179,9 @@ class _StubCompletionResponse:
                 }
             ]
         }
+        if self._usage is not None:
+            payload["usage"] = self._usage
+        return payload
 
 
 class _StubAPIError(Exception):
@@ -191,6 +202,7 @@ def _patch_litellm_completion(
     stream_tool_chunks: tuple[tuple[list[dict[str, object]] | None, str | None], ...] = (),
     api_error: _StubAPIError | None = None,
     tool_calls: list[dict[str, object]] | None = None,
+    usage: dict[str, object] | None = None,
 ) -> None:
     import voidcode.provider.litellm_backend as backend_module
 
@@ -205,15 +217,26 @@ def _patch_litellm_completion(
                 str(api_error), status_code=api_error.status_code, code=api_error.code
             )
         if mode == "stream":
-            chunks: list[_StubStreamChunk] = [
-                _StubStreamChunk(text=text, finish_reason=finish) for text, finish in stream_chunks
-            ]
+            chunks: list[_StubStreamChunk] = []
+            last_index = len(stream_chunks) - 1
+            for index, (text, finish) in enumerate(stream_chunks):
+                chunks.append(
+                    _StubStreamChunk(
+                        text=text,
+                        finish_reason=finish,
+                        usage=usage if usage is not None and index == last_index else None,
+                    )
+                )
             chunks.extend(
                 _StubStreamChunk(text=None, finish_reason=finish, tool_calls=tool_calls_chunk)
                 for tool_calls_chunk, finish in stream_tool_chunks
             )
             return iter(chunks)
-        return _StubCompletionResponse(content=completion_content, tool_calls=tool_calls)
+        return _StubCompletionResponse(
+            content=completion_content,
+            tool_calls=tool_calls,
+            usage=usage,
+        )
 
     monkeypatch.setattr(backend_module, "APIError", _PatchedAPIError)
     if backend_module.litellm_module is None:
@@ -325,6 +348,75 @@ def test_provider_adapter_propose_turn_returns_text_output(
     result = turn_provider.propose_turn(_build_turn_request(model_name=provider_name))
 
     assert result.output == "hello world"
+
+
+def test_provider_adapter_propose_turn_returns_token_usage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = OpenAIModelProvider().turn_provider()
+
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        completion_content="hello world",
+        usage={
+            "prompt_tokens": 11,
+            "completion_tokens": 7,
+            "prompt_tokens_details": {"cached_tokens": 3},
+            "cache_creation_input_tokens": 2,
+        },
+    )
+
+    result = provider.propose_turn(_build_turn_request(model_name="openai"))
+
+    assert result.usage == ProviderTokenUsage(
+        input_tokens=11,
+        output_tokens=7,
+        cache_creation_tokens=2,
+        cache_read_tokens=3,
+    )
+
+
+def test_provider_adapter_propose_turn_allows_missing_token_usage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = OpenAIModelProvider().turn_provider()
+
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        completion_content="hello world",
+    )
+
+    result = provider.propose_turn(_build_turn_request(model_name="openai"))
+
+    assert result.usage is None
+
+
+def test_provider_adapter_stream_turn_reports_final_token_usage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = OpenAIModelProvider().turn_provider()
+    assert isinstance(provider, StreamableTurnProvider)
+
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="stream",
+        stream_chunks=(("hello", None), (None, "stop")),
+        usage={
+            "prompt_tokens": 5,
+            "completion_tokens": 2,
+            "cache_read_input_tokens": 4,
+        },
+    )
+
+    events = list(provider.stream_turn(_build_turn_request(model_name="openai")))
+
+    assert events[-1] == ProviderStreamEvent(
+        kind="done",
+        done_reason="completed",
+        usage=ProviderTokenUsage(input_tokens=5, output_tokens=2, cache_read_tokens=4),
+    )
 
 
 @pytest.mark.parametrize(

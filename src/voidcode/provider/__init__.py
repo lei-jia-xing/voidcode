@@ -49,6 +49,7 @@ from .opencode_go import OpenCodeGoModelProvider
 from .protocol import (
     ModelTurnProvider,
     ProviderExecutionError,
+    ProviderTokenUsage,
     ProviderTurnRequest,
     ProviderTurnResult,
     StubTurnProvider,
@@ -86,6 +87,7 @@ __all__ = [
     "ProviderAuthResolver",
     "ProviderConfigs",
     "ProviderExecutionError",
+    "ProviderTokenUsage",
     "ProviderFallbackConfig",
     "ProviderModelSelection",
     "ProviderResolutionMetadata",

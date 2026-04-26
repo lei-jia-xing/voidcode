@@ -78,6 +78,7 @@ from voidcode.runtime.permission import PermissionPolicy
 from voidcode.runtime.provider_protocol import (
     ProviderExecutionError,
     ProviderStreamEvent,
+    ProviderTokenUsage,
     ProviderTurnRequest,
     ProviderTurnResult,
 )
@@ -403,7 +404,11 @@ class _ScriptedTurnProvider:
             return iter(
                 (
                     ProviderStreamEvent(kind="delta", channel="text", text=turn_result.output),
-                    ProviderStreamEvent(kind="done", done_reason="completed"),
+                    ProviderStreamEvent(
+                        kind="done",
+                        done_reason="completed",
+                        usage=turn_result.usage,
+                    ),
                 )
             )
         return iter((ProviderStreamEvent(kind="done", done_reason="completed"),))
@@ -6868,6 +6873,77 @@ def test_runtime_initializes_provider_graph_from_config(tmp_path: Path) -> None:
     graph = _private_attr(runtime, "_graph")
 
     assert graph.__class__.__name__ == "ProviderGraph"
+
+
+def test_runtime_persists_provider_token_usage_metadata(tmp_path: Path) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("alpha\n", encoding="utf-8")
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(
+                    ProviderTurnResult(
+                        tool_call=ToolCall("read_file", {"filePath": "sample.txt"}),
+                        usage=ProviderTokenUsage(input_tokens=10, output_tokens=1),
+                    ),
+                    ProviderTurnResult(
+                        output="done",
+                        usage=ProviderTokenUsage(
+                            input_tokens=8,
+                            output_tokens=3,
+                            cache_creation_tokens=2,
+                            cache_read_tokens=4,
+                        ),
+                    ),
+                ),
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+        model_provider_registry=registry,
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="read sample.txt", session_id="usage-session"))
+
+    assert response.session.status == "completed"
+    assert response.session.metadata["provider_usage"] == {
+        "latest": {
+            "input_tokens": 8,
+            "output_tokens": 3,
+            "cache_creation_tokens": 2,
+            "cache_read_tokens": 4,
+        },
+        "cumulative": {
+            "input_tokens": 18,
+            "output_tokens": 4,
+            "cache_creation_tokens": 2,
+            "cache_read_tokens": 4,
+        },
+        "turn_count": 2,
+    }
+
+
+def test_runtime_leaves_provider_usage_metadata_absent_when_missing(tmp_path: Path) -> None:
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(ProviderTurnResult(output="done"),),
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+        model_provider_registry=registry,
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="hello"))
+
+    assert "provider_usage" not in response.session.metadata
 
 
 def test_runtime_classifies_provider_context_limit_failures(tmp_path: Path) -> None:

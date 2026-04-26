@@ -11,6 +11,7 @@ from ..provider.protocol import (
     ProviderContextWindow,
     ProviderExecutionError,
     ProviderStreamEvent,
+    ProviderTokenUsage,
     ProviderTurnRequest,
     StreamableTurnProvider,
     TurnProvider,
@@ -26,6 +27,7 @@ class ProviderStep:
     events: tuple[GraphEvent, ...] = ()
     tool_call: ToolCall | None = None
     output: str | None = None
+    usage: ProviderTokenUsage | None = None
     is_finished: bool = False
 
     def __post_init__(self) -> None:
@@ -175,6 +177,7 @@ class ProviderGraph:
             return ProviderStep(
                 events=finalize_events,
                 output=turn_result.output,
+                usage=turn_result.usage,
                 is_finished=True,
             )
 
@@ -189,7 +192,11 @@ class ProviderGraph:
                 },
             )
 
-        return ProviderStep(events=planning_events, tool_call=turn_result.tool_call)
+        return ProviderStep(
+            events=planning_events,
+            tool_call=turn_result.tool_call,
+            usage=turn_result.usage,
+        )
 
     def _step_streaming(
         self,
@@ -203,6 +210,7 @@ class ProviderGraph:
         output_parts: list[str] = []
         tool_payload_parts: list[str] = []
         done_reason: str | None = None
+        final_usage: ProviderTokenUsage | None = None
 
         for stream_event in stream_provider.stream_turn(turn_request):
             stream_events.append(self._stream_event_to_graph_event(stream_event))
@@ -256,6 +264,7 @@ class ProviderGraph:
                 )
             if stream_event.kind == "done":
                 done_reason = stream_event.done_reason
+                final_usage = stream_event.usage
                 break
 
         if done_reason is None:
@@ -301,6 +310,7 @@ class ProviderGraph:
             return ProviderStep(
                 events=planning_events + tuple(stream_events),
                 tool_call=streamed_tool_call,
+                usage=final_usage,
             )
 
         finalize_events = (
@@ -318,7 +328,12 @@ class ProviderGraph:
                 self._graph_event(GRAPH_RESPONSE_READY, {"output_preview": output}),
             )
         )
-        return ProviderStep(events=finalize_events, output=output, is_finished=True)
+        return ProviderStep(
+            events=finalize_events,
+            output=output,
+            usage=final_usage,
+            is_finished=True,
+        )
 
     def _parse_streamed_tool_call(
         self,
@@ -426,6 +441,8 @@ class ProviderGraph:
             payload["error_kind"] = stream_event.error_kind
         if stream_event.done_reason is not None:
             payload["done_reason"] = stream_event.done_reason
+        if stream_event.usage is not None:
+            payload["usage"] = stream_event.usage.metadata_payload()
         return GraphEvent(event_type="graph.provider_stream", source="graph", payload=payload)
 
     @staticmethod

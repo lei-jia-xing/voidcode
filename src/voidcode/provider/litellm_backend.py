@@ -27,6 +27,7 @@ from .errors import provider_execution_error_from_api_payload
 from .protocol import (
     ProviderExecutionError,
     ProviderStreamEvent,
+    ProviderTokenUsage,
     ProviderTurnRequest,
     ProviderTurnResult,
 )
@@ -198,6 +199,45 @@ class LiteLLMBackendSingleAgentProvider:
         return ToolCall(tool_name=tool_name_obj, arguments=parsed_arguments)
 
     @staticmethod
+    def _positive_int(value: object) -> int:
+        if isinstance(value, bool) or not isinstance(value, int):
+            return 0
+        return max(0, value)
+
+    @classmethod
+    def _usage_from_payload(cls, payload: dict[str, object]) -> ProviderTokenUsage | None:
+        usage_obj = payload.get("usage")
+        if not isinstance(usage_obj, dict):
+            return None
+        usage = cast(dict[str, object], usage_obj)
+        input_tokens = cls._positive_int(usage.get("prompt_tokens"))
+        output_tokens = cls._positive_int(usage.get("completion_tokens"))
+        cache_creation_tokens = cls._positive_int(usage.get("cache_creation_input_tokens"))
+        cache_read_tokens = cls._positive_int(usage.get("cache_read_input_tokens"))
+
+        prompt_details_obj = usage.get("prompt_tokens_details")
+        if isinstance(prompt_details_obj, dict):
+            prompt_details = cast(dict[str, object], prompt_details_obj)
+            cache_read_tokens += cls._positive_int(prompt_details.get("cached_tokens"))
+
+        completion_details_obj = usage.get("completion_tokens_details")
+        if isinstance(completion_details_obj, dict):
+            completion_details = cast(dict[str, object], completion_details_obj)
+            cache_creation_tokens += cls._positive_int(
+                completion_details.get("cache_creation_tokens")
+            )
+
+        token_usage = ProviderTokenUsage(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_creation_tokens=cache_creation_tokens,
+            cache_read_tokens=cache_read_tokens,
+        )
+        if token_usage.total_tokens == 0:
+            return None
+        return token_usage
+
+    @staticmethod
     def _map_exception(
         exc: Exception, *, provider_name: str, model_name: str
     ) -> ProviderExecutionError:
@@ -258,26 +298,27 @@ class LiteLLMBackendSingleAgentProvider:
         try:
             response = self._call_litellm_completion(cast(dict[str, Any], payload))
             response_payload = cast(dict[str, object], response.model_dump())
+            usage = self._usage_from_payload(response_payload)
             raw_choices = response_payload.get("choices")
             if not isinstance(raw_choices, list) or not raw_choices:
-                return ProviderTurnResult(output="")
+                return ProviderTurnResult(output="", usage=usage)
             choices = cast(list[object], raw_choices)
             first_choice_obj = choices[0]
             if not isinstance(first_choice_obj, dict):
-                return ProviderTurnResult(output="")
+                return ProviderTurnResult(output="", usage=usage)
             message_obj = cast(dict[str, object], first_choice_obj).get("message")
             if not isinstance(message_obj, dict):
-                return ProviderTurnResult(output="")
+                return ProviderTurnResult(output="", usage=usage)
             message = cast(dict[str, object], message_obj)
 
             tool_call = self._extract_first_tool_call(message)
             if tool_call is not None:
-                return ProviderTurnResult(tool_call=tool_call)
+                return ProviderTurnResult(tool_call=tool_call, usage=usage)
 
             content_obj = message.get("content")
             if isinstance(content_obj, str):
-                return ProviderTurnResult(output=content_obj)
-            return ProviderTurnResult(output="")
+                return ProviderTurnResult(output=content_obj, usage=usage)
+            return ProviderTurnResult(output="", usage=usage)
         except Exception as exc:
             raise self._map_exception(
                 exc,
@@ -312,6 +353,7 @@ class LiteLLMBackendSingleAgentProvider:
             )
             streamed_tool_name: str | None = None
             streamed_tool_arguments = ""
+            final_usage: ProviderTokenUsage | None = None
             for chunk in stream:
                 if request.abort_signal is not None and request.abort_signal.cancelled:
                     yield ProviderStreamEvent(
@@ -323,6 +365,9 @@ class LiteLLMBackendSingleAgentProvider:
                     yield ProviderStreamEvent(kind="done", done_reason="cancelled")
                     return
                 chunk_payload = cast(dict[str, object], chunk.model_dump())
+                chunk_usage = self._usage_from_payload(chunk_payload)
+                if chunk_usage is not None:
+                    final_usage = chunk_usage
                 raw_choices = chunk_payload.get("choices")
                 if not isinstance(raw_choices, list) or not raw_choices:
                     continue
@@ -399,7 +444,9 @@ class LiteLLMBackendSingleAgentProvider:
                                 )
                 finish_reason = first_choice.get("finish_reason")
                 if isinstance(finish_reason, str) and finish_reason:
-                    yield ProviderStreamEvent(kind="done", done_reason="completed")
+                    yield ProviderStreamEvent(
+                        kind="done", done_reason="completed", usage=final_usage
+                    )
                     return
         except Exception as exc:
             raise self._map_exception(
