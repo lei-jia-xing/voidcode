@@ -7,11 +7,17 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from voidcode.runtime.contracts import BackgroundTaskResult
+from voidcode.runtime.contracts import (
+    BackgroundTaskResult,
+    RuntimeRequest,
+    RuntimeResponse,
+    RuntimeSessionResult,
+)
 from voidcode.runtime.task import (
     BackgroundTaskRef,
     BackgroundTaskRequestSnapshot,
     BackgroundTaskState,
+    StoredBackgroundTaskSummary,
 )
 from voidcode.skills.models import SkillMetadata
 from voidcode.tools import (
@@ -64,7 +70,7 @@ class _RecordingBackgroundOutputRuntime:
             result_available=True,
         )
 
-    def session_result(self, *, session_id: str) -> object:
+    def session_result(self, *, session_id: str) -> RuntimeSessionResult:
         raise AssertionError(session_id)
 
 
@@ -82,22 +88,22 @@ class _RecordingBackgroundCancelRuntime:
 
 
 class _UnusedTaskRuntime:
-    def run(self, request: object) -> object:
+    def run(self, request: RuntimeRequest) -> RuntimeResponse:
         raise AssertionError(request)
 
-    def start_background_task(self, request: object) -> object:
+    def start_background_task(self, request: RuntimeRequest) -> BackgroundTaskState:
         raise AssertionError(request)
 
-    def load_background_task_result(self, task_id: str) -> object:
+    def load_background_task_result(self, task_id: str) -> BackgroundTaskResult:
         raise AssertionError(task_id)
 
-    def cancel_background_task(self, task_id: str) -> object:
+    def cancel_background_task(self, task_id: str) -> BackgroundTaskState:
         raise AssertionError(task_id)
 
-    def list_background_tasks(self) -> tuple[object, ...]:
+    def list_background_tasks(self) -> tuple[StoredBackgroundTaskSummary, ...]:
         raise AssertionError("list_background_tasks should not be called")
 
-    def session_result(self, *, session_id: str) -> object:
+    def session_result(self, *, session_id: str) -> RuntimeSessionResult:
         raise AssertionError(session_id)
 
 

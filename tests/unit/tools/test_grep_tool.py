@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -141,7 +142,8 @@ def test_grep_tool_sorts_directory_targets_deterministically(tmp_path: Path) -> 
     )
 
     assert result.status == "ok"
-    assert [match["file"] for match in result.data["matches"]] == [
+    matches = cast(list[dict[str, object]], result.data["matches"])
+    assert [match["file"] for match in matches] == [
         "src/alpha.py",
         "src/nested/beta.py",
         "src/nested/zeta.py",
@@ -172,7 +174,8 @@ def test_grep_tool_ignores_common_directories_by_default(tmp_path: Path) -> None
     )
 
     assert result.status == "ok"
-    assert [match["file"] for match in result.data["matches"]] == ["src/keep.py"]
+    matches = cast(list[dict[str, object]], result.data["matches"])
+    assert [match["file"] for match in matches] == ["src/keep.py"]
     assert ".git/ignored.py" not in (result.content or "")
     assert "node_modules/ignored.py" not in (result.content or "")
 
