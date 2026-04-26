@@ -2078,8 +2078,7 @@ class VoidCodeRuntime:
             "provider": catalog.provider,
             "models": list(catalog.models),
             "model_metadata": {
-                model: metadata.payload()
-                for model, metadata in catalog.model_metadata.items()
+                model: metadata.payload() for model, metadata in catalog.model_metadata.items()
             },
             "refreshed": catalog.refreshed,
             "source": catalog.source,
@@ -3635,9 +3634,7 @@ class VoidCodeRuntime:
                 return raw_value
             return 0
 
-        cumulative_payload = {
-            key: _int_value(key) + value for key, value in usage_payload.items()
-        }
+        cumulative_payload = {key: _int_value(key) + value for key, value in usage_payload.items()}
         raw_turn_count = provider_usage.get("turn_count", 0)
         turn_count = 0
         if isinstance(raw_turn_count, int) and not isinstance(raw_turn_count, bool):

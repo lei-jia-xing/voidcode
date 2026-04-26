@@ -51,9 +51,7 @@ def _extract_token_usage(payload: dict[str, object]) -> ProviderTokenUsage | Non
     )
     completion_details = usage.get("completion_tokens_details")
     completion_details_payload = (
-        cast(dict[str, object], completion_details)
-        if isinstance(completion_details, dict)
-        else {}
+        cast(dict[str, object], completion_details) if isinstance(completion_details, dict) else {}
     )
     parsed = ProviderTokenUsage(
         input_tokens=_usage_int(usage.get("prompt_tokens"))
