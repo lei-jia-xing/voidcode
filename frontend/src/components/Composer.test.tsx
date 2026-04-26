@@ -62,6 +62,33 @@ describe("Composer", () => {
     expect(onProviderModelChange).toHaveBeenCalledWith("opencode-go/glm-5.2");
   });
 
+  it("canonicalizes bare grouped model aliases before storing selection", () => {
+    const onProviderModelChange = vi.fn();
+    render(
+      <Composer
+        {...baseProps}
+        providerModel=""
+        providerModels={{
+          "opencode-go": {
+            provider: "opencode-go",
+            configured: true,
+            models: ["glm-5.1"],
+            source: null,
+            last_refresh_status: null,
+            last_error: null,
+            discovery_mode: null,
+          },
+        }}
+        onProviderModelChange={onProviderModelChange}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Model" }));
+    fireEvent.click(screen.getByRole("button", { name: "glm-5.1" }));
+
+    expect(onProviderModelChange).toHaveBeenCalledWith("opencode-go/glm-5.1");
+  });
+
   it("calls onAgentPresetChange when agent is changed", () => {
     const onAgentPresetChange = vi.fn();
     render(

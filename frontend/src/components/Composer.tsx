@@ -53,7 +53,10 @@ export function Composer({
     }))
     .filter((group) => group.models.length > 0);
   const selectedModelAvailable = availableModelGroups.some((group) =>
-    group.models.includes(selectedModel),
+    group.models.some(
+      (model) =>
+        canonicalModelReference(group.provider.name, model) === selectedModel,
+    ),
   );
 
   const selectedAgentLabel = useMemo(() => {
@@ -67,8 +70,12 @@ export function Composer({
 
   const selectedModelLabel = useMemo(() => {
     for (const { provider, models } of availableModelGroups) {
-      if (models.includes(selectedModel)) {
-        return `${provider.label} / ${displayModelName(selectedModel, provider.name)}`;
+      const matchedModel = models.find(
+        (model) =>
+          canonicalModelReference(provider.name, model) === selectedModel,
+      );
+      if (matchedModel) {
+        return `${provider.label} / ${displayModelName(matchedModel, provider.name)}`;
       }
     }
     return "Select model";
@@ -224,12 +231,16 @@ export function Composer({
                             {provider.label}
                           </div>
                           {models.map((model) => {
-                            const active = model === selectedModel;
+                            const value = canonicalModelReference(
+                              provider.name,
+                              model,
+                            );
+                            const active = value === selectedModel;
                             return (
                               <button
-                                key={model}
+                                key={`${provider.name}:${model}`}
                                 type="button"
-                                onClick={() => handleModelSelect(model)}
+                                onClick={() => handleModelSelect(value)}
                                 className={`block w-full px-3 py-1.5 text-left text-sm ${
                                   active
                                     ? "bg-slate-800 text-slate-100"
@@ -262,4 +273,10 @@ function displayModelName(model: string, providerName: string | null): string {
     return model.slice(providerName.length + 1);
   }
   return model;
+}
+
+function canonicalModelReference(providerName: string, model: string): string {
+  return model.startsWith(`${providerName}/`)
+    ? model
+    : `${providerName}/${model}`;
 }
