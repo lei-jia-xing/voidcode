@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, ValidationIn
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from ..agent import AgentManifestId, get_builtin_agent_manifest, list_builtin_agent_manifests
+from ..agent.prompts import has_builtin_prompt_profile
 from ..hook.config import FormatterCwdPolicy, RuntimeFormatterPresetConfig, RuntimeHooksConfig
 from ..lsp import LspServerConfigOverride as RuntimeLspServerConfig
 from ..lsp import derive_workspace_lsp_defaults, has_builtin_lsp_server_preset
@@ -40,6 +41,7 @@ _VALID_APPROVAL_MODES = ("allow", "deny", "ask")
 _VALID_TUI_COMMANDS = ("command_palette", "session_new", "session_resume")
 type ExecutionEngineName = Literal["deterministic", "provider"]
 type RuntimeAgentPresetId = AgentManifestId
+type RuntimeAgentPromptSource = Literal["builtin"]
 
 _VALID_EXECUTION_ENGINES: tuple[ExecutionEngineName, ...] = ("deterministic", "provider")
 _TOP_LEVEL_ENV_VARS = (
@@ -204,6 +206,9 @@ class RuntimePlanConfig:
 class RuntimeAgentConfig:
     preset: RuntimeAgentPresetId
     prompt_profile: str | None = None
+    prompt_ref: str | None = None
+    prompt_source: RuntimeAgentPromptSource | None = None
+    hook_refs: tuple[str, ...] = ()
     model: str | None = None
     execution_engine: ExecutionEngineName | None = None
     tools: RuntimeToolsConfig | None = None
@@ -477,9 +482,9 @@ def _load_repo_local_config(
     raw_plan = payload.get("plan")
     plan = _parse_plan_config(raw_plan)
     raw_agent = payload.get("agent")
-    agent = _parse_agent_config(raw_agent)
+    agent = _parse_agent_config(raw_agent, hooks=hooks)
     raw_agents = payload.get("agents")
-    agents = _parse_agents_config(raw_agents)
+    agents = _parse_agents_config(raw_agents, hooks=hooks)
 
     raw_approval_mode = payload.get("approval_mode")
     parsed_approval_mode = _parse_approval_mode(
@@ -1267,7 +1272,11 @@ def _parse_plan_config(raw_plan: object) -> RuntimePlanConfig | None:
     )
 
 
-def _parse_agent_config(raw_agent: object) -> RuntimeAgentConfig | None:
+def _parse_agent_config(
+    raw_agent: object,
+    *,
+    hooks: RuntimeHooksConfig | None = None,
+) -> RuntimeAgentConfig | None:
     if raw_agent is None:
         return None
     if not isinstance(raw_agent, dict):
@@ -1303,6 +1312,24 @@ def _parse_agent_config(raw_agent: object) -> RuntimeAgentConfig | None:
     ):
         raise ValueError("runtime config field 'agent.prompt_profile' must be a non-empty string")
 
+    prompt_ref = payload.get("prompt_ref")
+    if prompt_ref is not None and (not isinstance(prompt_ref, str) or not prompt_ref.strip()):
+        raise ValueError("runtime config field 'agent.prompt_ref' must be a non-empty string")
+
+    prompt_source = payload.get("prompt_source")
+    if prompt_source is not None and prompt_source != "builtin":
+        raise ValueError("runtime config field 'agent.prompt_source' must be one of: builtin")
+    if prompt_source is not None and prompt_ref is None:
+        raise ValueError("runtime config field 'agent.prompt_ref' is required with prompt_source")
+    normalized_prompt_ref = prompt_ref.strip() if isinstance(prompt_ref, str) else None
+    if normalized_prompt_ref is not None and not has_builtin_prompt_profile(normalized_prompt_ref):
+        raise ValueError(
+            "runtime config field 'agent.prompt_ref' references unknown prompt profile"
+        )
+    normalized_prompt_source = "builtin" if normalized_prompt_ref is not None else None
+
+    hook_refs = _parse_agent_hook_refs(payload.get("hook_refs"), hooks=hooks)
+
     model = payload.get("model")
     if model is not None and (not isinstance(model, str) or not model.strip()):
         raise ValueError("runtime config field 'agent.model' must be a non-empty string")
@@ -1322,7 +1349,12 @@ def _parse_agent_config(raw_agent: object) -> RuntimeAgentConfig | None:
 
     return RuntimeAgentConfig(
         preset=cast(RuntimeAgentPresetId, raw_preset),
-        prompt_profile=prompt_profile.strip() if isinstance(prompt_profile, str) else None,
+        prompt_profile=(
+            prompt_profile.strip() if isinstance(prompt_profile, str) else normalized_prompt_ref
+        ),
+        prompt_ref=normalized_prompt_ref,
+        prompt_source=cast(RuntimeAgentPromptSource, normalized_prompt_source),
+        hook_refs=hook_refs,
         model=model.strip() if isinstance(model, str) else None,
         execution_engine=execution_engine,
         tools=_parse_tools_config(payload.get("tools")),
@@ -1339,6 +1371,9 @@ def _resolve_agent_config(agent: RuntimeAgentConfig | None) -> RuntimeAgentConfi
         return RuntimeAgentConfig(
             preset=agent.preset,
             prompt_profile=agent.prompt_profile or manifest.prompt_profile,
+            prompt_ref=agent.prompt_ref,
+            prompt_source=agent.prompt_source,
+            hook_refs=agent.hook_refs,
             model=agent.model or manifest.model_preference,
             execution_engine=agent.execution_engine or manifest.execution_engine,
             tools=agent.tools,
@@ -1348,11 +1383,32 @@ def _resolve_agent_config(agent: RuntimeAgentConfig | None) -> RuntimeAgentConfi
     return agent
 
 
+def _parse_agent_hook_refs(
+    raw_hook_refs: object,
+    *,
+    hooks: RuntimeHooksConfig | None,
+) -> tuple[str, ...]:
+    hook_refs = _parse_string_list(raw_hook_refs, field_path="agent.hook_refs")
+    if not hook_refs:
+        return ()
+    available_hook_refs = set((hooks or RuntimeHooksConfig()).formatter_presets)
+    for hook_ref in hook_refs:
+        if hook_ref not in available_hook_refs:
+            valid_refs = ", ".join(sorted(available_hook_refs))
+            raise ValueError(
+                "runtime config field 'agent.hook_refs' references unknown hook preset: "
+                f"{hook_ref}; valid presets are: {valid_refs}"
+            )
+    return hook_refs
+
+
 _AGENTS_MAP_KEY_PATTERN = re.compile(r"^[a-z][a-z0-9_-]*$")
 
 
 def _parse_agents_config(
     raw_agents: object,
+    *,
+    hooks: RuntimeHooksConfig | None = None,
 ) -> Mapping[str, RuntimeAgentConfig] | None:
     if raw_agents is None:
         return None
@@ -1381,7 +1437,7 @@ def _parse_agents_config(
                 )
 
         try:
-            parsed_entry = _parse_agent_config(entry_payload)
+            parsed_entry = _parse_agent_config(entry_payload, hooks=hooks)
         except ValueError as exc:
             message = (
                 str(exc).replace("agent.", f"agents.{key}.").replace("'agent'", f"'agents.{key}'")
@@ -1415,18 +1471,26 @@ def parse_runtime_plan_payload(raw_plan: object, *, source: str) -> RuntimePlanC
         raise ValueError(f"{source}: {exc}") from exc
 
 
-def parse_runtime_agent_payload(raw_agent: object, *, source: str) -> RuntimeAgentConfig | None:
+def parse_runtime_agent_payload(
+    raw_agent: object,
+    *,
+    source: str,
+    hooks: RuntimeHooksConfig | None = None,
+) -> RuntimeAgentConfig | None:
     try:
-        return _resolve_agent_config(_parse_agent_config(raw_agent))
+        return _resolve_agent_config(_parse_agent_config(raw_agent, hooks=hooks))
     except ValueError as exc:
         raise ValueError(f"{source}: {exc}") from exc
 
 
 def parse_runtime_agents_payload(
-    raw_agents: object, *, source: str
+    raw_agents: object,
+    *,
+    source: str,
+    hooks: RuntimeHooksConfig | None = None,
 ) -> Mapping[str, RuntimeAgentConfig] | None:
     try:
-        return _parse_agents_config(raw_agents)
+        return _parse_agents_config(raw_agents, hooks=hooks)
     except ValueError as exc:
         raise ValueError(f"{source}: {exc}") from exc
 
@@ -1452,6 +1516,12 @@ def serialize_runtime_agent_config(agent: RuntimeAgentConfig | None) -> dict[str
     payload: dict[str, object] = {"preset": agent.preset}
     if agent.prompt_profile is not None:
         payload["prompt_profile"] = agent.prompt_profile
+    if agent.prompt_ref is not None:
+        payload["prompt_ref"] = agent.prompt_ref
+    if agent.prompt_source is not None:
+        payload["prompt_source"] = agent.prompt_source
+    if agent.hook_refs:
+        payload["hook_refs"] = list(agent.hook_refs)
     if agent.model is not None:
         payload["model"] = agent.model
     if agent.execution_engine is not None:

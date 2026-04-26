@@ -1026,6 +1026,49 @@ def test_runtime_agent_payload_accepts_future_role_presets_without_execution_map
     )
 
 
+def test_runtime_agent_payload_parses_prompt_and_hook_references() -> None:
+    agent = parse_runtime_agent_payload(
+        {
+            "preset": "leader",
+            "prompt_ref": "advisor",
+            "prompt_source": "builtin",
+            "hook_refs": ["python", "typescript"],
+        },
+        source="test payload",
+    )
+
+    assert agent == RuntimeAgentConfig(
+        preset="leader",
+        prompt_profile="advisor",
+        prompt_ref="advisor",
+        prompt_source="builtin",
+        hook_refs=("python", "typescript"),
+        execution_engine="provider",
+    )
+
+
+def test_runtime_agent_payload_rejects_unknown_prompt_reference() -> None:
+    with pytest.raises(
+        ValueError,
+        match=r"runtime config field 'agent.prompt_ref' references unknown prompt profile",
+    ):
+        _ = parse_runtime_agent_payload(
+            {"preset": "leader", "prompt_ref": "unknown"},
+            source="test payload",
+        )
+
+
+def test_runtime_agent_payload_rejects_unknown_hook_reference() -> None:
+    with pytest.raises(
+        ValueError,
+        match=r"runtime config field 'agent.hook_refs' references unknown hook preset",
+    ):
+        _ = parse_runtime_agent_payload(
+            {"preset": "leader", "hook_refs": ["unknown"]},
+            source="test payload",
+        )
+
+
 def test_runtime_config_parses_agents_map_with_builtin_keys(tmp_path: Path) -> None:
     runtime_config_path(tmp_path).write_text(
         json.dumps(
@@ -1085,6 +1128,60 @@ def test_runtime_config_parses_agents_map_with_custom_keys(tmp_path: Path) -> No
     assert config.agents["code-finder"] == RuntimeAgentConfig(
         preset="explore",
         prompt_profile="explore",
+        execution_engine="provider",
+    )
+
+
+def test_runtime_config_parses_agent_references_against_workspace_hooks(
+    tmp_path: Path,
+) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "formatter_presets": {
+                        "customfmt": {
+                            "command": ["customfmt", "--write"],
+                            "extensions": [".custom"],
+                        }
+                    }
+                },
+                "agent": {
+                    "leader": {
+                        "prompt_ref": "researcher",
+                        "prompt_source": "builtin",
+                        "hook_refs": ["customfmt"],
+                    }
+                },
+                "agents": {
+                    "my_helper": {
+                        "preset": "advisor",
+                        "prompt_ref": "advisor",
+                        "hook_refs": ["customfmt"],
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.agent == RuntimeAgentConfig(
+        preset="leader",
+        prompt_profile="researcher",
+        prompt_ref="researcher",
+        prompt_source="builtin",
+        hook_refs=("customfmt",),
+        execution_engine="provider",
+    )
+    assert config.agents is not None
+    assert config.agents["my_helper"] == RuntimeAgentConfig(
+        preset="advisor",
+        prompt_profile="advisor",
+        prompt_ref="advisor",
+        prompt_source="builtin",
+        hook_refs=("customfmt",),
         execution_engine="provider",
     )
 
@@ -1180,7 +1277,12 @@ def test_runtime_config_agents_payload_round_trips(tmp_path: Path) -> None:
         json.dumps(
             {
                 "agents": {
-                    "leader": {"model": "opencode/gpt-5.4"},
+                    "leader": {
+                        "model": "opencode/gpt-5.4",
+                        "prompt_ref": "leader",
+                        "prompt_source": "builtin",
+                        "hook_refs": ["python"],
+                    },
                     "researcher": {"preset": "researcher"},
                 }
             }
@@ -1196,6 +1298,9 @@ def test_runtime_config_agents_payload_round_trips(tmp_path: Path) -> None:
         "leader": {
             "preset": "leader",
             "prompt_profile": "leader",
+            "prompt_ref": "leader",
+            "prompt_source": "builtin",
+            "hook_refs": ["python"],
             "model": "opencode/gpt-5.4",
             "execution_engine": "provider",
         },
