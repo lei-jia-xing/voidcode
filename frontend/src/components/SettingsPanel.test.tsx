@@ -47,6 +47,90 @@ describe("SettingsPanel", () => {
     expect(screen.getByTitle("Not configured")).toBeInTheDocument();
   });
 
+  it("groups configured provider models and saves canonical model references", () => {
+    const onSave = vi.fn();
+    render(
+      <SettingsPanel
+        {...baseProps}
+        settings={{
+          provider: "glm",
+          model: "",
+          provider_api_key_present: true,
+        }}
+        providerModels={{
+          glm: {
+            provider: "glm",
+            configured: true,
+            models: ["glm-5", "nested/model"],
+            last_refresh_status: "ok",
+            discovery_mode: "configured_endpoint",
+          },
+          openai: {
+            provider: "openai",
+            configured: false,
+            models: ["gpt-5"],
+          },
+        }}
+        onSave={onSave}
+      />,
+    );
+
+    expect(screen.getByText("Configured providers")).toBeInTheDocument();
+    expect(screen.getByText("Unconfigured providers")).toBeInTheDocument();
+
+    const modelSelect = screen.getByLabelText("Model");
+    fireEvent.change(modelSelect, { target: { value: "glm/nested/model" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save Settings" }));
+
+    expect(onSave).toHaveBeenCalledWith({
+      provider: "glm",
+      provider_api_key: undefined,
+      model: "glm/nested/model",
+    });
+  });
+
+  it("tests selected provider credentials and shows validation result", () => {
+    const onValidateProvider = vi.fn();
+    render(
+      <SettingsPanel
+        {...baseProps}
+        settings={{ provider: "glm", model: "glm/glm-5" }}
+        providerModels={{
+          glm: {
+            provider: "glm",
+            configured: true,
+            models: ["glm-5"],
+            last_refresh_status: "failed",
+            last_error: "remote model discovery failed",
+            discovery_mode: "configured_endpoint",
+          },
+        }}
+        providerValidationResults={{
+          glm: {
+            provider: "glm",
+            configured: true,
+            ok: false,
+            status: "failed",
+            message: "Provider credential validation failed.",
+          },
+        }}
+        providerValidationStatus={{ glm: "error" }}
+        onValidateProvider={onValidateProvider}
+      />,
+    );
+
+    expect(
+      screen.getByText("remote model discovery failed"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Provider credential validation failed."),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Test credentials" }));
+
+    expect(onValidateProvider).toHaveBeenCalledWith("glm");
+  });
+
   it("shows empty state when no providers are available", () => {
     render(<SettingsPanel {...baseProps} providers={[]} />);
 
