@@ -2259,6 +2259,7 @@ def test_transport_retries_mcp_and_returns_status_snapshot(tmp_path: Path) -> No
                         ],
                     },
                 ),
+                acp=CapabilityStatusSnapshot(state="unconfigured", error=None, details={}),
             )
 
         def review_snapshot(self) -> object:
@@ -2324,6 +2325,7 @@ def test_transport_retries_mcp_and_returns_status_snapshot(tmp_path: Path) -> No
                 ],
             },
         },
+        "acp": {"state": "unconfigured", "error": None, "details": {}},
     }
 
 
@@ -2694,6 +2696,17 @@ def test_transport_run_stream_continues_after_mcp_startup_failure_and_status_sta
             ],
         },
     }
+    assert status_payload["acp"] == {
+        "state": "unconfigured",
+        "error": None,
+        "details": {
+            "mode": "disabled",
+            "configured": False,
+            "configured_enabled": False,
+            "available": False,
+            "status": "disconnected",
+        },
+    }
 
 
 def test_transport_status_preserves_mcp_failed_state_across_fresh_requests(
@@ -2754,6 +2767,7 @@ def test_transport_status_preserves_mcp_failed_state_across_fresh_requests(
     assert status_response.status == 200
     assert cast(dict[str, object], status_payload["git"])["state"] == "not_git_repo"
     assert cast(dict[str, object], status_payload["lsp"])["state"] == "unconfigured"
+    assert cast(dict[str, object], status_payload["acp"])["state"] == "unconfigured"
     assert mcp_payload["state"] == "failed"
     assert isinstance(mcp_payload["error"], str)
     assert mcp_payload["error"]

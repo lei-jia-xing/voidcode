@@ -435,6 +435,7 @@ class VoidCodeRuntime:
             initial_agent = parse_runtime_agent_payload(
                 serialize_runtime_agent_config(initial_agent),
                 source="runtime config agent",
+                hooks=self._config.hooks,
             )
             assert initial_agent is not None
             self._validate_runtime_agent_for_execution(
@@ -2157,6 +2158,7 @@ class VoidCodeRuntime:
         git = self._git_status_snapshot()
         lsp_state = self.current_lsp_state()
         mcp_state = self.current_mcp_state()
+        acp_state = self.current_acp_state()
         lsp_servers = tuple(lsp_state.servers.values())
         lsp_status = (
             "unconfigured"
@@ -2211,6 +2213,39 @@ class VoidCodeRuntime:
                     ],
                 },
             ),
+            acp=self._acp_status_snapshot(acp_state),
+        )
+
+    @staticmethod
+    def _acp_status_snapshot(acp_state: AcpAdapterState) -> CapabilityStatusSnapshot:
+        acp_status = (
+            "unconfigured"
+            if acp_state.mode != "managed" or not acp_state.configuration.configured_enabled
+            else "failed"
+            if acp_state.status == "failed"
+            else "running"
+            if acp_state.available and acp_state.status == "connected"
+            else "stopped"
+        )
+        details: dict[str, object] = {
+            "mode": acp_state.mode,
+            "configured": acp_state.configured,
+            "configured_enabled": acp_state.configuration.configured_enabled,
+            "available": acp_state.available,
+            "status": acp_state.status,
+        }
+        if acp_state.last_request_type is not None:
+            details["last_request_type"] = acp_state.last_request_type
+        if acp_state.last_request_id is not None:
+            details["last_request_id"] = acp_state.last_request_id
+        if acp_state.last_event_type is not None:
+            details["last_event_type"] = acp_state.last_event_type
+        if acp_state.last_delegation is not None:
+            details["last_delegation"] = acp_state.last_delegation.as_payload()
+        return CapabilityStatusSnapshot(
+            state=acp_status,
+            error=acp_state.last_error,
+            details=details,
         )
 
     def retry_mcp_connections(self) -> RuntimeStatusSnapshot:
@@ -2329,6 +2364,7 @@ class VoidCodeRuntime:
             initial_agent = parse_runtime_agent_payload(
                 serialize_runtime_agent_config(initial_agent),
                 source="runtime config agent",
+                hooks=self._config.hooks,
             )
             assert initial_agent is not None
             self._validate_runtime_agent_for_execution(
@@ -4006,7 +4042,11 @@ class VoidCodeRuntime:
         *,
         allow_subagent_presets: bool = False,
     ) -> EffectiveRuntimeConfig:
-        agent = parse_runtime_agent_payload(raw_agent, source="request metadata 'agent'")
+        agent = parse_runtime_agent_payload(
+            raw_agent,
+            source="request metadata 'agent'",
+            hooks=self._config.hooks,
+        )
         if agent is None:
             raise ValueError("request metadata 'agent' must be an object when provided")
         assert agent is not None
@@ -4034,6 +4074,27 @@ class VoidCodeRuntime:
                 else resolved.agent.prompt_profile
                 if resolved.agent is not None
                 else None
+            ),
+            prompt_ref=(
+                agent.prompt_ref
+                if agent.prompt_ref is not None
+                else resolved.agent.prompt_ref
+                if resolved.agent is not None
+                else None
+            ),
+            prompt_source=(
+                agent.prompt_source
+                if agent.prompt_source is not None
+                else resolved.agent.prompt_source
+                if resolved.agent is not None
+                else None
+            ),
+            hook_refs=(
+                agent.hook_refs
+                if agent.hook_refs
+                else resolved.agent.hook_refs
+                if resolved.agent is not None
+                else ()
             ),
             model=model,
             execution_engine=execution_engine,
@@ -4122,10 +4183,15 @@ class VoidCodeRuntime:
                     "execution_engine": resolved_route.execution_engine,
                 },
                 source="delegation.selected_preset",
+                hooks=self._config.hooks,
             )
             assert agent is not None
         else:
-            agent = parse_runtime_agent_payload(raw_agent, source="request metadata 'agent'")
+            agent = parse_runtime_agent_payload(
+                raw_agent,
+                source="request metadata 'agent'",
+                hooks=self._config.hooks,
+            )
             if agent is None:
                 raise RuntimeRequestError(
                     "request metadata 'agent' must be an object when provided"
@@ -4463,6 +4529,7 @@ class VoidCodeRuntime:
             agent = parse_runtime_agent_payload(
                 serialize_runtime_agent_config(agent),
                 source="runtime config agent",
+                hooks=self._config.hooks,
             )
             assert agent is not None
             self._validate_runtime_agent_for_execution(
@@ -4575,6 +4642,7 @@ class VoidCodeRuntime:
             agent = parse_runtime_agent_payload(
                 runtime_config.get("agent"),
                 source="persisted runtime_config.agent",
+                hooks=self._config.hooks,
             )
             if agent is not None:
                 self._validate_runtime_agent_for_execution(

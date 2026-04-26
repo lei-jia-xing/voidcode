@@ -37,6 +37,7 @@ from voidcode.runtime.config import (
     RuntimeAcpConfig,
     RuntimeAgentConfig,
     RuntimeConfig,
+    RuntimeFormatterPresetConfig,
     RuntimeHooksConfig,
     RuntimeLspConfig,
     RuntimeLspServerConfig,
@@ -1043,6 +1044,44 @@ def test_runtime_task_tool_starts_background_task_with_skill_metadata(tmp_path: 
         },
     }
     assert task.request.prompt.startswith("Delegated runtime task.")
+
+
+def test_runtime_constructs_with_custom_agent_hook_refs(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_BackgroundTaskSuccessGraph(),
+        config=RuntimeConfig(
+            agent=RuntimeAgentConfig(
+                preset="leader",
+                prompt_profile="researcher",
+                prompt_ref="researcher",
+                prompt_source="builtin",
+                hook_refs=("customfmt",),
+                execution_engine="provider",
+            ),
+            hooks=RuntimeHooksConfig(
+                formatter_presets={
+                    "customfmt": RuntimeFormatterPresetConfig(
+                        command=("customfmt", "--write"),
+                        extensions=(".custom",),
+                    )
+                }
+            ),
+        ),
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="custom hook refs", session_id="hook-refs"))
+
+    runtime_config = response.session.metadata["runtime_config"]
+    assert isinstance(runtime_config, dict)
+    assert runtime_config["agent"] == {
+        "preset": "leader",
+        "prompt_profile": "researcher",
+        "prompt_ref": "researcher",
+        "prompt_source": "builtin",
+        "hook_refs": ["customfmt"],
+        "execution_engine": "provider",
+    }
 
 
 def test_runtime_category_routing_resolves_real_child_agent_and_persists_identity(
@@ -3677,15 +3716,22 @@ def test_runtime_exposes_managed_acp_connect_disconnect_and_request(tmp_path: Pa
     assert [event.event_type for event in connect_events] == ["runtime.acp_connected"]
     assert runtime.current_acp_state().status == "connected"
     assert runtime.current_acp_state().available is True
+    connected_status = runtime.current_status().acp
+    assert connected_status.state == "running"
+    assert connected_status.error is None
+    assert connected_status.details["mode"] == "managed"
+    assert connected_status.details["status"] == "connected"
 
     response = runtime.request_acp(request_type="ping", payload={"demo": True})
     assert response.status == "ok"
     assert response.payload == {"request_type": "ping", "accepted": True, "demo": True}
     assert runtime.current_acp_state().last_request_type == "ping"
+    assert runtime.current_status().acp.details["last_request_type"] == "ping"
 
     disconnect_events = runtime.disconnect_acp()
     assert [event.event_type for event in disconnect_events] == ["runtime.acp_disconnected"]
     assert runtime.current_acp_state().status == "disconnected"
+    assert runtime.current_status().acp.state == "stopped"
 
 
 def test_runtime_acp_request_before_connect_returns_error_without_failing_adapter(

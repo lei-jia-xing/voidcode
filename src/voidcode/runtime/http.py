@@ -1728,6 +1728,7 @@ class RuntimeTransportApp:
             "git": RuntimeTransportApp._serialize_git_status_snapshot(snapshot.git),
             "lsp": RuntimeTransportApp._serialize_capability_status_snapshot(snapshot.lsp),
             "mcp": RuntimeTransportApp._serialize_capability_status_snapshot(snapshot.mcp),
+            "acp": RuntimeTransportApp._serialize_capability_status_snapshot(snapshot.acp),
         }
 
     @staticmethod

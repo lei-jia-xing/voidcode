@@ -526,6 +526,7 @@ class RuntimeStatusSnapshot:
     git: GitStatusSnapshot
     lsp: CapabilityStatusSnapshot
     mcp: CapabilityStatusSnapshot
+    acp: CapabilityStatusSnapshot
 
 
 @dataclass(frozen=True, slots=True)
