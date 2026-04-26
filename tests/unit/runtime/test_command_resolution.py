@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
+from typing import cast
 
 from voidcode.command import COMMAND_RESOLVED
 from voidcode.graph.contracts import GraphEvent, GraphRunRequest
@@ -33,7 +35,7 @@ class _EchoPromptGraph:
         return _FinishedStep(output=request.prompt)
 
 
-def test_runtime_resolves_project_prompt_command_before_graph_execution(tmp_path) -> None:
+def test_runtime_resolves_project_prompt_command_before_graph_execution(tmp_path: Path) -> None:
     commands_dir = tmp_path / "commands"
     commands_dir.mkdir()
     (commands_dir / "echo.md").write_text(
@@ -45,7 +47,7 @@ def test_runtime_resolves_project_prompt_command_before_graph_execution(tmp_path
     response = runtime.run(RuntimeRequest(prompt="/echo target.py --flag"))
 
     assert response.output == "expanded target.py from target.py --flag"
-    assert response.session.metadata["command"] == {
+    assert response.session.metadata.get("command") == {
         "name": "echo",
         "source": "project",
         "arguments": ["target.py", "--flag"],
@@ -72,10 +74,13 @@ def test_runtime_command_metadata_validates_structured_shape() -> None:
         }
     )
 
-    assert metadata["command"]["name"] == "review"
+    command_metadata = cast(dict[str, object], metadata.get("command"))
+    assert command_metadata["name"] == "review"
 
 
-def test_runtime_ignores_malformed_command_files_for_non_slash_prompt(tmp_path) -> None:
+def test_runtime_ignores_malformed_command_files_for_non_slash_prompt(
+    tmp_path: Path,
+) -> None:
     commands_dir = tmp_path / "commands"
     commands_dir.mkdir()
     (commands_dir / "broken.md").write_text(
@@ -90,7 +95,7 @@ def test_runtime_ignores_malformed_command_files_for_non_slash_prompt(tmp_path) 
     assert "command" not in response.session.metadata
 
 
-def test_runtime_still_validates_command_files_for_slash_prompt(tmp_path) -> None:
+def test_runtime_still_validates_command_files_for_slash_prompt(tmp_path: Path) -> None:
     commands_dir = tmp_path / "commands"
     commands_dir.mkdir()
     (commands_dir / "broken.md").write_text(

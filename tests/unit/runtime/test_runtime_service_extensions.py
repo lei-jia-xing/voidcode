@@ -49,7 +49,11 @@ from voidcode.runtime.config import (
     RuntimeToolsBuiltinConfig,
     RuntimeToolsConfig,
 )
-from voidcode.runtime.context_window import ContextWindowPolicy, RuntimeContinuityState
+from voidcode.runtime.context_window import (
+    ContextWindowPolicy,
+    RuntimeContextWindow,
+    RuntimeContinuityState,
+)
 from voidcode.runtime.contracts import RuntimeRequestError
 from voidcode.runtime.events import (
     RUNTIME_BACKGROUND_TASK_CANCELLED,
@@ -6061,13 +6065,11 @@ def test_runtime_approval_resume_preserves_canonical_continuity_state(tmp_path: 
         RuntimeContinuityState | None,
         created_providers[-1].requests[-1].context_window.continuity_state,
     )
+    context_window = cast(RuntimeContextWindow, created_providers[-1].requests[-1].context_window)
     assert continuity_state is not None
     assert continuity_state.metadata_payload() == expected_resumed_continuity
-    assert (
-        created_providers[-1].requests[-1].context_window.summary_anchor
-        == (resumed_continuity_summary["anchor"])
-    )
-    assert created_providers[-1].requests[-1].context_window.summary_source == {
+    assert context_window.summary_anchor == (resumed_continuity_summary["anchor"])
+    assert context_window.summary_source == {
         "tool_result_start": 0,
         "tool_result_end": 2,
     }

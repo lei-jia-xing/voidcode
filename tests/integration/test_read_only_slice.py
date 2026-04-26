@@ -2027,7 +2027,7 @@ def test_runtime_resume_accepts_legacy_sessions_without_runtime_config_metadata(
 
     assert replay.session.status == response.session.status
     assert replay.output == response.output
-    replay_metadata = cast(dict[str, object], replay.session.metadata)
+    replay_metadata = replay.session.metadata
     assert set(replay_metadata) == {"workspace", "runtime_state", "context_window"}
     assert replay_metadata["workspace"] == str(tmp_path)
     runtime_state = cast(dict[str, object], replay_metadata["runtime_state"])

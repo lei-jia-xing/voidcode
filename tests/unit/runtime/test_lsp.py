@@ -35,7 +35,7 @@ LspConfigState: Any
 LspMessageBoundsError: Any
 LspProtocolError: Any
 ManagedLspManager: Any
-MAX_LSP_MESSAGE_BYTES: int
+max_lsp_message_bytes: int
 LspRequest: Any
 build_lsp_manager: Any
 (
@@ -44,7 +44,7 @@ build_lsp_manager: Any
     LspMessageBoundsError,
     LspProtocolError,
     ManagedLspManager,
-    MAX_LSP_MESSAGE_BYTES,
+    max_lsp_message_bytes,
     LspRequest,
     build_lsp_manager,
 ) = _load_lsp_symbols()
@@ -226,7 +226,10 @@ def test_managed_lsp_manager_marks_failed_startup_when_command_is_missing(tmp_pa
 def test_read_message_rejects_oversized_content_length() -> None:
     read_fd, write_fd = os.pipe()
     try:
-        os.write(write_fd, f"Content-Length: {MAX_LSP_MESSAGE_BYTES + 1}\r\n\r\n".encode("ascii"))
+        os.write(
+            write_fd,
+            f"Content-Length: {max_lsp_message_bytes + 1}\r\n\r\n".encode("ascii"),
+        )
 
         class _FakeProcess:
             def __init__(self, stdout: Any) -> None:
@@ -309,7 +312,9 @@ def test_send_request_matches_generated_request_id(monkeypatch: pytest.MonkeyPat
 
     def _fake_write_message(*, process: object, message: dict[str, object]) -> None:
         _ = process
-        sent_ids.append(int(message["id"]))
+        message_id = message["id"]
+        assert isinstance(message_id, int)
+        sent_ids.append(message_id)
 
     def _fake_read_message(*, process: object, timeout: float = 30.0) -> dict[str, object] | None:
         _ = process, timeout

@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import json
+from typing import Protocol, cast
 
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from voidcode.runtime.http import RuntimeTransportApp
+from voidcode.runtime.http import RuntimeTransport, RuntimeTransportApp
+from voidcode.runtime.question import QuestionResponse
+
+
+class _QuestionAnswerParser(Protocol):
+    def __call__(self, body: bytes) -> tuple[str, tuple[QuestionResponse, ...]]: ...
+
 
 pytestmark = pytest.mark.filterwarnings(
     "ignore:unclosed database in <sqlite3.Connection object.*:ResourceWarning"
@@ -45,7 +52,12 @@ _invalid_request_id = st.one_of(
 
 
 def _app() -> RuntimeTransportApp:
-    return RuntimeTransportApp(runtime_factory=lambda: None)
+    return RuntimeTransportApp(runtime_factory=lambda: cast(RuntimeTransport, object()))
+
+
+def _question_answer_parser() -> _QuestionAnswerParser:
+    parser_name = "_parse_question_answer_request"
+    return cast(_QuestionAnswerParser, getattr(_app(), parser_name))
 
 
 @CI_SETTINGS
@@ -59,7 +71,7 @@ def test_parse_question_answer_request_accepts_valid_payloads(
     header: str,
     answers: list[str],
 ) -> None:
-    parsed_request_id, responses = _app()._parse_question_answer_request(
+    parsed_request_id, responses = _question_answer_parser()(
         json.dumps(
             {
                 "request_id": request_id,
@@ -78,7 +90,7 @@ def test_parse_question_answer_request_accepts_valid_payloads(
 @given(request_id=_invalid_request_id)
 def test_parse_question_answer_request_rejects_invalid_request_ids(request_id: object) -> None:
     with pytest.raises(ValueError, match="request_id must be a non-empty string"):
-        _app()._parse_question_answer_request(
+        _question_answer_parser()(
             json.dumps(
                 {
                     "request_id": request_id,
@@ -122,11 +134,11 @@ def test_parse_question_answer_request_rejects_invalid_response_payloads(
     responses: object,
 ) -> None:
     with pytest.raises(ValueError):
-        _app()._parse_question_answer_request(
+        _question_answer_parser()(
             json.dumps({"request_id": "question-1", "responses": responses}).encode("utf-8")
         )
 
 
 def test_parse_question_answer_request_rejects_non_json_payloads() -> None:
     with pytest.raises(ValueError, match="request body must be valid JSON"):
-        _app()._parse_question_answer_request(b"{not-json")
+        _question_answer_parser()(b"{not-json")
