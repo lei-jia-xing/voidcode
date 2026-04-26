@@ -10,6 +10,7 @@ import {
   EventEnvelope,
   ProviderModelsResult,
   ProviderSummary,
+  ProviderValidationResult,
   RuntimeStatusSnapshot,
   RuntimeSettings,
   RuntimeSettingsUpdate,
@@ -32,6 +33,9 @@ interface AppState {
   providersStatus: AsyncStatus;
   providersError: string | null;
   providerModels: Record<string, ProviderModelsResult>;
+  providerValidationResults: Record<string, ProviderValidationResult>;
+  providerValidationStatus: Record<string, AsyncStatus>;
+  providerValidationError: Record<string, string | null>;
   agentPresets: AgentSummary[];
   agentsStatus: AsyncStatus;
   agentsError: string | null;
@@ -75,6 +79,7 @@ interface AppState {
   loadWorkspaces: () => Promise<void>;
   switchWorkspace: (path: string) => Promise<void>;
   loadProviders: () => Promise<void>;
+  validateProviderCredentials: (providerName: string) => Promise<void>;
   loadAgents: () => Promise<void>;
   loadStatus: () => Promise<void>;
   retryMcpConnections: () => Promise<void>;
@@ -191,6 +196,9 @@ export const useAppStore = create<AppState>()(
       providersStatus: "idle",
       providersError: null,
       providerModels: {},
+      providerValidationResults: {},
+      providerValidationStatus: {},
+      providerValidationError: {},
       agentPresets: [],
       agentsStatus: "idle",
       agentsError: null,
@@ -278,6 +286,9 @@ export const useAppStore = create<AppState>()(
             providersStatus: "idle",
             providersError: null,
             providerModels: {},
+            providerValidationResults: {},
+            providerValidationStatus: {},
+            providerValidationError: {},
             agentPresets: [],
             agentsStatus: "idle",
             agentsError: null,
@@ -377,6 +388,49 @@ export const useAppStore = create<AppState>()(
             agentsStatus: "error",
             agentsError: (err as Error).message,
           });
+        }
+      },
+
+      validateProviderCredentials: async (providerName) => {
+        if (!providerName) return;
+        set((state) => ({
+          providerValidationStatus: {
+            ...state.providerValidationStatus,
+            [providerName]: "loading",
+          },
+          providerValidationError: {
+            ...state.providerValidationError,
+            [providerName]: null,
+          },
+        }));
+        try {
+          const result =
+            await RuntimeClient.validateProviderCredentials(providerName);
+          set((state) => ({
+            providerValidationResults: {
+              ...state.providerValidationResults,
+              [providerName]: result,
+            },
+            providerValidationStatus: {
+              ...state.providerValidationStatus,
+              [providerName]: result.ok ? "success" : "error",
+            },
+            providerValidationError: {
+              ...state.providerValidationError,
+              [providerName]: result.ok ? null : result.message,
+            },
+          }));
+        } catch (err) {
+          set((state) => ({
+            providerValidationStatus: {
+              ...state.providerValidationStatus,
+              [providerName]: "error",
+            },
+            providerValidationError: {
+              ...state.providerValidationError,
+              [providerName]: (err as Error).message,
+            },
+          }));
         }
       },
 
@@ -772,7 +826,13 @@ export const useAppStore = create<AppState>()(
         set({ settingsStatus: "loading", settingsError: null });
         try {
           const updated = await RuntimeClient.updateSettings(settings);
-          set({ settings: updated, settingsStatus: "success" });
+          set({
+            settings: updated,
+            settingsStatus: "success",
+            providerValidationResults: {},
+            providerValidationStatus: {},
+            providerValidationError: {},
+          });
           if (updated.model) {
             set({ providerModel: updated.model });
           }

@@ -160,6 +160,15 @@ const runtimeClientMocks = vi.hoisted(() => ({
   getSettingsMock: vi.fn<() => Promise<RuntimeSettings>>(),
   updateSettingsMock:
     vi.fn<(settings: Record<string, unknown>) => Promise<RuntimeSettings>>(),
+  validateProviderCredentialsMock: vi.fn<
+    (providerName: string) => Promise<{
+      provider: string;
+      configured: boolean;
+      ok: boolean;
+      status: string;
+      message: string;
+    }>
+  >(),
   runStreamMock:
     vi.fn<
       (request: {
@@ -180,6 +189,8 @@ vi.mock("./lib/runtime/client", () => ({
     resolveApproval: runtimeClientMocks.resolveApprovalMock,
     getSettings: runtimeClientMocks.getSettingsMock,
     updateSettings: runtimeClientMocks.updateSettingsMock,
+    validateProviderCredentials:
+      runtimeClientMocks.validateProviderCredentialsMock,
     runStream: runtimeClientMocks.runStreamMock,
   },
 }));
@@ -203,6 +214,9 @@ describe("useAppStore integration flow", () => {
       providersStatus: "idle",
       providersError: null,
       providerModels: {},
+      providerValidationResults: {},
+      providerValidationStatus: {},
+      providerValidationError: {},
       agentPresets: [],
       agentsStatus: "idle",
       agentsError: null,
@@ -250,6 +264,13 @@ describe("useAppStore integration flow", () => {
     });
     runtimeClientMocks.getSettingsMock.mockResolvedValue({});
     runtimeClientMocks.updateSettingsMock.mockResolvedValue({});
+    runtimeClientMocks.validateProviderCredentialsMock.mockResolvedValue({
+      provider: "opencode-go",
+      configured: true,
+      ok: true,
+      status: "ok",
+      message: "Remote provider validation succeeded.",
+    });
   });
 
   it("handles run -> waiting approval -> allow -> replay through the real store", async () => {
@@ -1192,5 +1213,61 @@ describe("useAppStore integration flow", () => {
       model: "opencode-go/glm-5.1",
     });
     expect(state.providerModel).toBe("opencode-go/glm-5.1");
+  });
+
+  it("records provider credential validation results by provider", async () => {
+    runtimeClientMocks.validateProviderCredentialsMock.mockResolvedValue({
+      provider: "opencode-go",
+      configured: true,
+      ok: false,
+      status: "skipped",
+      message:
+        "Provider credentials are configured; remote validation is unavailable.",
+    });
+
+    await useAppStore.getState().validateProviderCredentials("opencode-go");
+
+    const state = useAppStore.getState();
+    expect(
+      runtimeClientMocks.validateProviderCredentialsMock,
+    ).toHaveBeenCalledWith("opencode-go");
+    expect(state.providerValidationStatus["opencode-go"]).toBe("error");
+    expect(state.providerValidationResults["opencode-go"]).toMatchObject({
+      provider: "opencode-go",
+      ok: false,
+      status: "skipped",
+    });
+  });
+
+  it("clears stale provider validation state after settings updates", async () => {
+    runtimeClientMocks.updateSettingsMock.mockResolvedValue({
+      provider: "opencode-go",
+      provider_api_key_present: true,
+      model: "opencode-go/glm-5.1",
+    });
+    useAppStore.setState({
+      providerValidationResults: {
+        "opencode-go": {
+          provider: "opencode-go",
+          configured: true,
+          ok: true,
+          status: "ok",
+          message: "Remote provider validation succeeded.",
+        },
+      },
+      providerValidationStatus: { "opencode-go": "success" },
+      providerValidationError: { "opencode-go": null },
+    });
+
+    await useAppStore.getState().updateSettings({
+      provider: "opencode-go",
+      provider_api_key: "new-secret-key",
+      model: "opencode-go/glm-5.1",
+    });
+
+    const state = useAppStore.getState();
+    expect(state.providerValidationResults).toEqual({});
+    expect(state.providerValidationStatus).toEqual({});
+    expect(state.providerValidationError).toEqual({});
   });
 });

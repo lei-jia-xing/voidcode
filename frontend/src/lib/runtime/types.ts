@@ -67,6 +67,17 @@ export interface ProviderModelsResult {
   discovery_mode?: string | null;
 }
 
+export interface ProviderValidationResult {
+  provider: string;
+  configured: boolean;
+  ok: boolean;
+  status: string;
+  message: string;
+  source?: string | null;
+  last_error?: string | null;
+  discovery_mode?: string | null;
+}
+
 export interface AgentSummary {
   id: string;
   label: string;

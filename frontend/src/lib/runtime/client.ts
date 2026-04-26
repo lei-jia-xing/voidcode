@@ -7,6 +7,7 @@ import {
   ApprovalDecision,
   ProviderModelsResult,
   ProviderSummary,
+  ProviderValidationResult,
   RuntimeSettings,
   RuntimeSettingsUpdate,
   RuntimeStatusSnapshot,
@@ -53,6 +54,19 @@ export class RuntimeClient {
     );
     if (!res.ok && res.status !== 409) {
       throw new Error(`Failed to load provider models: ${res.statusText}`);
+    }
+    return res.json();
+  }
+
+  static async validateProviderCredentials(
+    providerName: string,
+  ): Promise<ProviderValidationResult> {
+    const res = await fetch(
+      `/api/providers/${encodeURIComponent(providerName)}/validate`,
+      { method: "POST" },
+    );
+    if (!res.ok && res.status !== 409) {
+      throw new Error(`Failed to validate provider: ${res.statusText}`);
     }
     return res.json();
   }
