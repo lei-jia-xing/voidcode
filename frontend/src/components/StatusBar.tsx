@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { GitBranch, Server, Boxes } from "lucide-react";
+import { GitBranch, Server, Boxes, Network } from "lucide-react";
 import type {
   McpServerStatusDetail,
   RuntimeStatusSnapshot,
@@ -42,6 +42,7 @@ export function StatusBar({
   const { t } = useTranslation();
   const [showDetail, setShowDetail] = useState(false);
   const mcpDetails = snapshot?.mcp.details;
+  const acpDetails = snapshot?.acp?.details;
   const mcpServers = useMemo(
     () =>
       Array.isArray(mcpDetails?.servers)
@@ -82,6 +83,13 @@ export function StatusBar({
             className={`w-1.5 h-1.5 rounded-full ${statusDotClass(snapshot?.mcp.state, "capability")}`}
           />
         </span>
+        <span className="w-px h-3 bg-slate-800" />
+        <span className="flex items-center gap-1">
+          <Network className="w-3 h-3" />
+          <span
+            className={`w-1.5 h-1.5 rounded-full ${statusDotClass(snapshot?.acp?.state, "capability")}`}
+          />
+        </span>
       </button>
 
       {showDetail && (
@@ -118,8 +126,34 @@ export function StatusBar({
               {snapshot?.mcp.state ?? t("status.unknown")}
             </span>
           </div>
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-slate-400 flex items-center gap-1.5">
+              <Network className="w-3 h-3" />
+              {t("status.acp")}
+            </span>
+            <span className="text-xs font-mono text-slate-300">
+              {snapshot?.acp?.state ?? t("status.unknown")}
+            </span>
+          </div>
           {snapshot?.mcp.error && (
             <div className="text-xs text-rose-400">{snapshot.mcp.error}</div>
+          )}
+          {snapshot?.acp?.error && (
+            <div className="text-xs text-rose-400">{snapshot.acp.error}</div>
+          )}
+          {acpDetails && Object.keys(acpDetails).length > 0 && (
+            <div className="rounded-md bg-slate-900/70 px-2 py-1.5 text-[10px] text-slate-500">
+              {typeof acpDetails.status === "string" && (
+                <div>
+                  {t("status.acpTransport")}: {acpDetails.status}
+                </div>
+              )}
+              {typeof acpDetails.last_request_type === "string" && (
+                <div>
+                  {t("status.acpLastRequest")}: {acpDetails.last_request_type}
+                </div>
+              )}
+            </div>
           )}
           {mcpServers.length > 0 && (
             <div className="space-y-1 border-t border-slate-800 pt-2">
