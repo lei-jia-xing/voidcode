@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -228,6 +229,7 @@ class RuntimeConfig:
     providers: RuntimeProvidersConfig | None = None
     plan: RuntimePlanConfig | None = None
     agent: RuntimeAgentConfig | None = None
+    agents: Mapping[str, RuntimeAgentConfig] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -249,6 +251,7 @@ class RuntimeConfigOverrides:
     providers: RuntimeProvidersConfig | None = None
     plan: RuntimePlanConfig | None = None
     agent: RuntimeAgentConfig | None = None
+    agents: Mapping[str, RuntimeAgentConfig] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -390,6 +393,7 @@ def load_runtime_config(
         providers=resolved_providers,
         plan=repo_local.plan,
         agent=resolved_agent,
+        agents=repo_local.agents,
     )
 
 
@@ -471,6 +475,8 @@ def _load_repo_local_config(
     plan = _parse_plan_config(raw_plan)
     raw_agent = payload.get("agent")
     agent = _parse_agent_config(raw_agent)
+    raw_agents = payload.get("agents")
+    agents = _parse_agents_config(raw_agents)
 
     raw_approval_mode = payload.get("approval_mode")
     parsed_approval_mode = _parse_approval_mode(
@@ -496,6 +502,7 @@ def _load_repo_local_config(
         providers=providers,
         plan=plan,
         agent=agent,
+        agents=agents,
     )
 
 
@@ -1338,6 +1345,66 @@ def _resolve_agent_config(agent: RuntimeAgentConfig | None) -> RuntimeAgentConfi
     return agent
 
 
+_AGENTS_MAP_KEY_PATTERN = re.compile(r"^[a-z][a-z0-9_-]*$")
+
+
+def _parse_agents_config(
+    raw_agents: object,
+) -> Mapping[str, RuntimeAgentConfig] | None:
+    if raw_agents is None:
+        return None
+    if not isinstance(raw_agents, dict):
+        raise ValueError("runtime config field 'agents' must be an object when provided")
+
+    raw_payload = cast(dict[object, object], raw_agents)
+    parsed: dict[str, RuntimeAgentConfig] = {}
+    for key, value in raw_payload.items():
+        if not isinstance(key, str) or not _AGENTS_MAP_KEY_PATTERN.fullmatch(key):
+            raise ValueError("runtime config field 'agents' keys must match '^[a-z][a-z0-9_-]*$'")
+        if not isinstance(value, dict):
+            raise ValueError(f"runtime config field 'agents.{key}' must be an object when provided")
+
+        entry_payload = dict(cast(dict[str, object], value))
+        is_builtin_key = get_builtin_agent_manifest(key) is not None
+        if "preset" not in entry_payload:
+            if is_builtin_key:
+                entry_payload["preset"] = key
+            else:
+                valid_presets = ", ".join(
+                    manifest.id for manifest in list_builtin_agent_manifests()
+                )
+                raise ValueError(
+                    f"runtime config field 'agents.{key}.preset' must be one of: {valid_presets}"
+                )
+
+        try:
+            parsed_entry = _parse_agent_config(entry_payload)
+        except ValueError as exc:
+            message = (
+                str(exc).replace("agent.", f"agents.{key}.").replace("'agent'", f"'agents.{key}'")
+            )
+            raise ValueError(message) from exc
+
+        resolved_entry = _resolve_agent_config(parsed_entry)
+        if resolved_entry is None:
+            raise ValueError(f"runtime config field 'agents.{key}' must resolve to a valid agent")
+        parsed[key] = resolved_entry
+    return parsed
+
+
+def serialize_runtime_agents_config(
+    agents: Mapping[str, RuntimeAgentConfig] | None,
+) -> dict[str, object] | None:
+    if agents is None:
+        return None
+    serialized: dict[str, object] = {}
+    for agent_id, agent in agents.items():
+        entry = serialize_runtime_agent_config(agent)
+        if entry is not None:
+            serialized[agent_id] = entry
+    return serialized
+
+
 def parse_runtime_plan_payload(raw_plan: object, *, source: str) -> RuntimePlanConfig | None:
     try:
         return _parse_plan_config(raw_plan)
@@ -1348,6 +1415,15 @@ def parse_runtime_plan_payload(raw_plan: object, *, source: str) -> RuntimePlanC
 def parse_runtime_agent_payload(raw_agent: object, *, source: str) -> RuntimeAgentConfig | None:
     try:
         return _resolve_agent_config(_parse_agent_config(raw_agent))
+    except ValueError as exc:
+        raise ValueError(f"{source}: {exc}") from exc
+
+
+def parse_runtime_agents_payload(
+    raw_agents: object, *, source: str
+) -> Mapping[str, RuntimeAgentConfig] | None:
+    try:
+        return _parse_agents_config(raw_agents)
     except ValueError as exc:
         raise ValueError(f"{source}: {exc}") from exc
 

@@ -44,10 +44,12 @@ from voidcode.runtime.config import (
     effective_runtime_tui_preferences,
     load_runtime_config,
     parse_runtime_agent_payload,
+    parse_runtime_agents_payload,
     runtime_config_path,
     save_global_tui_preferences,
     save_workspace_tui_preferences,
     serialize_runtime_agent_config,
+    serialize_runtime_agents_config,
     user_runtime_config_path,
 )
 from voidcode.runtime.service import RuntimeRequest, VoidCodeRuntime
@@ -1019,6 +1021,231 @@ def test_runtime_agent_payload_accepts_future_role_presets_without_execution_map
         prompt_profile="worker",
         execution_engine="provider",
     )
+
+
+def test_runtime_config_parses_agents_map_with_builtin_keys(tmp_path: Path) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps(
+            {
+                "agents": {
+                    "leader": {"model": "opencode/gpt-5.4"},
+                    "worker": {"model": "anthropic/claude-3-5-sonnet"},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.agents is not None
+    assert set(config.agents.keys()) == {"leader", "worker"}
+    assert config.agents["leader"] == RuntimeAgentConfig(
+        preset="leader",
+        prompt_profile="leader",
+        model="opencode/gpt-5.4",
+        execution_engine="provider",
+    )
+    assert config.agents["worker"] == RuntimeAgentConfig(
+        preset="worker",
+        prompt_profile="worker",
+        model="anthropic/claude-3-5-sonnet",
+        execution_engine="provider",
+    )
+
+
+def test_runtime_config_parses_agents_map_with_custom_keys(tmp_path: Path) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps(
+            {
+                "agents": {
+                    "my_helper": {
+                        "preset": "advisor",
+                        "model": "anthropic/claude-3-5-sonnet",
+                    },
+                    "code-finder": {"preset": "explore"},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.agents is not None
+    assert config.agents["my_helper"] == RuntimeAgentConfig(
+        preset="advisor",
+        prompt_profile="advisor",
+        model="anthropic/claude-3-5-sonnet",
+        execution_engine="provider",
+    )
+    assert config.agents["code-finder"] == RuntimeAgentConfig(
+        preset="explore",
+        prompt_profile="explore",
+        execution_engine="provider",
+    )
+
+
+@pytest.mark.parametrize(
+    "invalid_id",
+    ["Leader", "my agent", "1agent", "_helper", "agent.test", "AGENT"],
+)
+def test_runtime_config_rejects_agents_map_with_invalid_id(tmp_path: Path, invalid_id: str) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps({"agents": {invalid_id: {"preset": "leader"}}}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"runtime config field 'agents' keys must match",
+    ):
+        _ = load_runtime_config(tmp_path, env={})
+
+
+def test_runtime_config_rejects_agents_map_when_not_object(tmp_path: Path) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps({"agents": ["leader"]}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"runtime config field 'agents' must be an object when provided",
+    ):
+        _ = load_runtime_config(tmp_path, env={})
+
+
+def test_runtime_config_rejects_agents_entry_when_not_object(tmp_path: Path) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps({"agents": {"leader": "provider"}}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"runtime config field 'agents.leader' must be an object when provided",
+    ):
+        _ = load_runtime_config(tmp_path, env={})
+
+
+def test_runtime_config_rejects_agents_custom_key_without_preset(tmp_path: Path) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps({"agents": {"my_helper": {"model": "anthropic/claude-3"}}}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"runtime config field 'agents.my_helper.preset' must be one of:",
+    ):
+        _ = load_runtime_config(tmp_path, env={})
+
+
+def test_runtime_config_rejects_agents_custom_key_with_invalid_preset(
+    tmp_path: Path,
+) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps({"agents": {"my_helper": {"preset": "not_a_real_preset"}}}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"runtime config field 'agents.my_helper.preset' must be one of:",
+    ):
+        _ = load_runtime_config(tmp_path, env={})
+
+
+def test_runtime_config_rejects_agents_entry_with_malformed_field_type(
+    tmp_path: Path,
+) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps({"agents": {"leader": {"model": 123}}}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"runtime config field 'agents.leader.model' must be a non-empty string",
+    ):
+        _ = load_runtime_config(tmp_path, env={})
+
+
+def test_runtime_config_agents_payload_round_trips(tmp_path: Path) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps(
+            {
+                "agents": {
+                    "leader": {"model": "opencode/gpt-5.4"},
+                    "researcher": {"preset": "researcher"},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.agents is not None
+    serialized = serialize_runtime_agents_config(config.agents)
+    assert serialized == {
+        "leader": {
+            "preset": "leader",
+            "prompt_profile": "leader",
+            "model": "opencode/gpt-5.4",
+            "execution_engine": "provider",
+        },
+        "researcher": {
+            "preset": "researcher",
+            "prompt_profile": "researcher",
+            "execution_engine": "provider",
+        },
+    }
+
+
+def test_runtime_config_allows_agent_and_agents_to_coexist(tmp_path: Path) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps(
+            {
+                "agent": {"leader": {"model": "opencode/gpt-5.4"}},
+                "agents": {
+                    "advisor": {"model": "anthropic/claude-3-5-sonnet"},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.agent == RuntimeAgentConfig(
+        preset="leader",
+        prompt_profile="leader",
+        model="opencode/gpt-5.4",
+        execution_engine="provider",
+    )
+    assert config.agents is not None
+    assert config.agents["advisor"] == RuntimeAgentConfig(
+        preset="advisor",
+        prompt_profile="advisor",
+        model="anthropic/claude-3-5-sonnet",
+        execution_engine="provider",
+    )
+
+
+def test_runtime_config_parses_agents_payload_via_helper() -> None:
+    parsed = parse_runtime_agents_payload(
+        {
+            "leader": {"model": "opencode/gpt-5.4"},
+            "my_assistant": {"preset": "advisor"},
+        },
+        source="test payload",
+    )
+
+    assert parsed is not None
+    assert parsed["leader"].preset == "leader"
+    assert parsed["my_assistant"].preset == "advisor"
 
 
 def test_runtime_config_parses_repo_local_max_steps(tmp_path: Path) -> None:
