@@ -5975,6 +5975,13 @@ def test_runtime_approval_resume_preserves_canonical_continuity_state(tmp_path: 
     assert waiting.session.status == "waiting"
     waiting_runtime_state = cast(dict[str, object], waiting.session.metadata["runtime_state"])
     assert waiting_runtime_state["continuity"] == initial_continuity
+    initial_continuity_summary = cast(
+        dict[str, object], waiting_runtime_state["continuity_summary"]
+    )
+    assert initial_continuity_summary["source"] == {
+        "tool_result_start": 0,
+        "tool_result_end": 1,
+    }
 
     approval_request_id = str(waiting.events[-1].payload["request_id"])
     resumed = runtime.resume(
@@ -5996,12 +6003,28 @@ def test_runtime_approval_resume_preserves_canonical_continuity_state(tmp_path: 
     }
     resumed_runtime_state = cast(dict[str, object], resumed.session.metadata["runtime_state"])
     assert resumed_runtime_state["continuity"] == expected_resumed_continuity
+    resumed_continuity_summary = cast(
+        dict[str, object], resumed_runtime_state["continuity_summary"]
+    )
+    assert resumed_continuity_summary["anchor"] != initial_continuity_summary["anchor"]
+    assert resumed_continuity_summary["source"] == {
+        "tool_result_start": 0,
+        "tool_result_end": 2,
+    }
     continuity_state = cast(
         RuntimeContinuityState | None,
         created_providers[-1].requests[-1].context_window.continuity_state,
     )
     assert continuity_state is not None
     assert continuity_state.metadata_payload() == expected_resumed_continuity
+    assert (
+        created_providers[-1].requests[-1].context_window.summary_anchor
+        == (resumed_continuity_summary["anchor"])
+    )
+    assert created_providers[-1].requests[-1].context_window.summary_source == {
+        "tool_result_start": 0,
+        "tool_result_end": 2,
+    }
     resumed_event_types = [event.event_type for event in resumed.events]
     assert resumed_event_types.count("runtime.approval_requested") == 1
     assert resumed_event_types.count("runtime.approval_resolved") == 1

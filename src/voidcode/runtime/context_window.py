@@ -172,6 +172,25 @@ def _summary_anchor(
     return f"continuity:{digest}"
 
 
+def continuity_summary_metadata(
+    continuity_state: RuntimeContinuityState,
+) -> tuple[str | None, dict[str, int] | None]:
+    summary_anchor = _summary_anchor(
+        continuity_state.summary_text,
+        dropped_count=continuity_state.dropped_tool_result_count,
+        retained_count=continuity_state.retained_tool_result_count,
+    )
+    summary_source = (
+        {
+            "tool_result_start": 0,
+            "tool_result_end": continuity_state.dropped_tool_result_count,
+        }
+        if summary_anchor is not None and continuity_state.source == "tool_result_window"
+        else None
+    )
+    return summary_anchor, summary_source
+
+
 def prepare_provider_context(
     *,
     prompt: str,
@@ -202,14 +221,10 @@ def prepare_provider_context(
         if compacted
         else None
     )
-    summary_anchor = (
-        _summary_anchor(
-            None if continuity_state is None else continuity_state.summary_text,
-            dropped_count=len(dropped_results),
-            retained_count=retained_count,
-        )
-        if compacted
-        else None
+    summary_anchor, summary_source = (
+        continuity_summary_metadata(continuity_state)
+        if continuity_state is not None
+        else (None, None)
     )
     return RuntimeContextWindow(
         prompt=prompt,
@@ -221,9 +236,5 @@ def prepare_provider_context(
         max_tool_result_count=effective_policy.max_tool_results,
         continuity_state=continuity_state,
         summary_anchor=summary_anchor,
-        summary_source=(
-            {"tool_result_start": 0, "tool_result_end": len(dropped_results)}
-            if summary_anchor is not None
-            else None
-        ),
+        summary_source=summary_source,
     )

@@ -19,6 +19,7 @@ from ..tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_t
 from .context_window import (
     RuntimeContextWindow,
     RuntimeContinuityState,
+    continuity_summary_metadata,
     normalize_tool_result_content,
 )
 from .contracts import RuntimeStreamChunk
@@ -68,6 +69,7 @@ class RuntimeRunLoopCoordinator:
             )
             reinjected_continuity = continuity_to_reinject
             if reinjected_continuity is not None:
+                summary_anchor, summary_source = continuity_summary_metadata(reinjected_continuity)
                 context_window = RuntimeContextWindow(
                     prompt=base_context.prompt,
                     tool_results=base_context.tool_results,
@@ -77,8 +79,8 @@ class RuntimeRunLoopCoordinator:
                     retained_tool_result_count=base_context.retained_tool_result_count,
                     max_tool_result_count=base_context.max_tool_result_count,
                     continuity_state=reinjected_continuity,
-                    summary_anchor=base_context.summary_anchor,
-                    summary_source=base_context.summary_source,
+                    summary_anchor=summary_anchor,
+                    summary_source=summary_source,
                 )
             else:
                 context_window = base_context

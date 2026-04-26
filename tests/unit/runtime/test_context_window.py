@@ -4,6 +4,8 @@ from typing import Literal
 
 from voidcode.runtime.context_window import (
     ContextWindowPolicy,
+    RuntimeContinuityState,
+    continuity_summary_metadata,
     normalize_read_file_output,
     prepare_provider_context,
 )
@@ -91,6 +93,28 @@ def test_prepare_provider_context_uses_explicit_continuity_preview_policy() -> N
         '1. read_file ok content_preview="conte..."\n'
         "... and 2 more"
     )
+
+
+def test_continuity_summary_metadata_is_derived_from_state() -> None:
+    first = RuntimeContinuityState(
+        summary_text="one",
+        dropped_tool_result_count=1,
+        retained_tool_result_count=3,
+    )
+    second = RuntimeContinuityState(
+        summary_text="one",
+        dropped_tool_result_count=2,
+        retained_tool_result_count=3,
+    )
+
+    first_anchor, first_source = continuity_summary_metadata(first)
+    second_anchor, second_source = continuity_summary_metadata(second)
+
+    assert first_anchor is not None
+    assert second_anchor is not None
+    assert first_anchor != second_anchor
+    assert first_source == {"tool_result_start": 0, "tool_result_end": 1}
+    assert second_source == {"tool_result_start": 0, "tool_result_end": 2}
 
 
 def _continuity_tool_result(
