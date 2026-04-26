@@ -778,6 +778,12 @@ class RuntimeTransportApp:
             await send({"type": "http.response.body", "body": body, "more_body": False})
             return
 
+        # SPA fallback is only for route-like paths. Missing assets should
+        # stay 404 so browsers do not try to parse index.html as JS/CSS/etc.
+        if resolved.suffix:
+            await self._json_response(send, status=404, payload={"error": "not found"})
+            return
+
         # SPA fallback — serve index.html for client-side routing
         index_path = (self._frontend_dist / "index.html").resolve()
         if index_path.is_file():

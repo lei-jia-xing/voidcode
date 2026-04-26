@@ -48,6 +48,16 @@ _BANNER = """\
 _FRONTEND_DIST = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
 
 
+def _resolve_frontend_dist() -> Path:
+    if not _FRONTEND_DIST.is_dir() or not (_FRONTEND_DIST / "index.html").is_file():
+        raise SystemExit(
+            "error: frontend web bundle not found. "
+            "Run `mise run frontend:build` before `voidcode web`, "
+            "or install a package that includes the built frontend assets."
+        )
+    return _FRONTEND_DIST
+
+
 def web(
     *,
     workspace: Path,
@@ -56,12 +66,11 @@ def web(
     config: RuntimeConfig | None = None,
 ) -> None:
     url = f"http://{host}:{port}"
+    frontend_dist = _resolve_frontend_dist()
 
     print(_BANNER)
     print(f"  Local server running at: {url}")
     print()
-
-    frontend_dist = _FRONTEND_DIST if _FRONTEND_DIST.is_dir() else None
 
     try:
         webbrowser.open(url)
