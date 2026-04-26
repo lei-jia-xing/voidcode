@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Protocol, cast
+
 import pytest
 
 from voidcode.agent import (
@@ -11,6 +13,19 @@ from voidcode.agent import (
 from voidcode.agent import prompts as prompt_module
 from voidcode.agent.builtin import validate_builtin_agent_manifests
 from voidcode.agent.models import AgentManifest
+
+
+class _PromptCacheInfo(Protocol):
+    @property
+    def currsize(self) -> int: ...
+
+
+class _CachedPromptRenderer(Protocol):
+    def __call__(self, prompt_profile: str) -> str | None: ...
+
+    def cache_clear(self) -> None: ...
+
+    def cache_info(self) -> _PromptCacheInfo: ...
 
 
 def test_builtin_agent_manifests_have_materialized_prompt_profiles_and_execution_engines() -> None:
@@ -63,16 +78,21 @@ def test_builtin_prompt_lookup_rejects_non_builtin_profile_before_file_access() 
 
 
 def test_non_builtin_prompt_profiles_do_not_grow_builtin_prompt_cache() -> None:
-    prompt_module._render_known_builtin_prompt_profile.cache_clear()
+    renderer_name = "_render_known_builtin_prompt_profile"
+    renderer = cast(
+        _CachedPromptRenderer,
+        getattr(prompt_module, renderer_name),
+    )
+    renderer.cache_clear()
 
     assert render_builtin_prompt_profile("leader") is not None
-    cache_info = prompt_module._render_known_builtin_prompt_profile.cache_info()
+    cache_info = renderer.cache_info()
     assert cache_info.currsize == 1
 
     assert render_builtin_prompt_profile("custom-review") is None
     assert render_builtin_prompt_profile("another-custom-profile") is None
 
-    cache_info = prompt_module._render_known_builtin_prompt_profile.cache_info()
+    cache_info = renderer.cache_info()
     assert cache_info.currsize == 1
 
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from voidcode.command import (
@@ -13,7 +15,9 @@ from voidcode.command import (
 from voidcode.tools.contracts import ToolDefinition
 
 
-def test_project_markdown_command_overrides_builtin_and_renders_arguments(tmp_path) -> None:
+def test_project_markdown_command_overrides_builtin_and_renders_arguments(
+    tmp_path: Path,
+) -> None:
     commands_dir = tmp_path / "commands"
     commands_dir.mkdir()
     (commands_dir / "review.md").write_text(
@@ -39,7 +43,7 @@ def test_project_markdown_command_overrides_builtin_and_renders_arguments(tmp_pa
     )
 
 
-def test_load_markdown_commands_rejects_invalid_frontmatter(tmp_path) -> None:
+def test_load_markdown_commands_rejects_invalid_frontmatter(tmp_path: Path) -> None:
     commands_dir = tmp_path / "commands"
     commands_dir.mkdir()
     (commands_dir / "bad.md").write_text(
