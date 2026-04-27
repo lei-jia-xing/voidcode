@@ -61,6 +61,7 @@ from .runtime.contracts import (
     BackgroundTaskResult,
     ProviderInspectResult,
     ProviderModelMetadata,
+    ProviderReadinessResult,
     RuntimeRequest,
     RuntimeSessionDebugSnapshot,
     RuntimeStreamChunk,
@@ -718,6 +719,7 @@ def _handle_config_show_command(args: argparse.Namespace) -> int:
     try:
         try:
             effective_config = runtime.effective_runtime_config(session_id=session_id)
+            readiness = runtime.provider_readiness(session_id=session_id)
         except ValueError as exc:
             raise SystemExit(f"error: {exc}") from None
     finally:
@@ -738,6 +740,11 @@ def _handle_config_show_command(args: argparse.Namespace) -> int:
             "resolved_provider": resolved_provider_snapshot(
                 getattr(effective_config, "resolved_provider", None)
             ),
+            "provider_readiness": _provider_readiness_payload(readiness),
+            "context_budget": {
+                "context_window": readiness.context_window,
+                "max_output_tokens": readiness.max_output_tokens,
+            },
         }
     )
     return EXIT_SUCCESS
@@ -951,6 +958,23 @@ def _provider_model_metadata_payload(
     }
 
 
+def _provider_readiness_payload(readiness: ProviderReadinessResult) -> dict[str, object]:
+    return {
+        "provider": readiness.provider,
+        "model": readiness.model,
+        "configured": readiness.configured,
+        "ok": readiness.ok,
+        "status": readiness.status,
+        "guidance": readiness.guidance,
+        "auth_present": readiness.auth_present,
+        "streaming_configured": readiness.streaming_configured,
+        "streaming_supported": readiness.streaming_supported,
+        "context_window": readiness.context_window,
+        "max_output_tokens": readiness.max_output_tokens,
+        "fallback_chain": list(readiness.fallback_chain),
+    }
+
+
 def _provider_inspect_payload(
     result: ProviderInspectResult, *, workspace: Path
 ) -> dict[str, object]:
@@ -984,7 +1008,12 @@ def _provider_inspect_payload(
             "source": result.validation.source,
             "last_error": result.validation.last_error,
             "discovery_mode": result.validation.discovery_mode,
+            "failure_kind": result.validation.failure_kind,
+            "guidance": result.validation.guidance,
         },
+        "readiness": (
+            _provider_readiness_payload(result.readiness) if result.readiness is not None else None
+        ),
         "current_model": result.current_model,
         "current_model_metadata": (
             None

@@ -28,6 +28,7 @@
 | 数据库损坏或 schema 不匹配 | 启动任何命令即报 `sqlite runtime schema mismatch` | 不可用 | `.voidcode/sessions.sqlite3` 文件是否存在、schema 是否与代码中 `_CANONICAL_SCHEMA` 一致 |
 | 工作区路径错误 | 命令报 `workspace does not exist` | 不可用 | `--workspace` 参数指向的目录是否存在 |
 | 配置解析失败 | `doctor` 返回非零退出码，或 `config show` 报错 | 不可用 | `.voidcode/config.json`（如存在）是否为合法 JSON |
+| Provider / model 未就绪 | `doctor` 报 `provider.readiness`，`runtime.failed` 含 `provider_error_kind` | `failed` 或不可用 | `voidcode config show` 的 `provider_readiness` 与 `context_budget` |
 | HTTP 服务未启动 | `curl` 连接被拒绝 | 不适用 | `voidcode serve` 进程是否在运行、端口是否被占用 |
 
 ---
@@ -147,6 +148,30 @@ uv run voidcode sessions resume <session-id> --workspace .
 ```
 
 `sessions list` 的输出直接反映 SQLite 中 `sessions` 表的 `status`、`turn`、`prompt`、`updated_at` 列。
+
+### 3.2.1 Provider / model / context readiness
+
+Provider-first execution failures should be diagnosed from the shared runtime metadata instead of client-specific string matching:
+
+```bash
+uv run voidcode doctor --workspace . --verbose
+uv run voidcode config show --workspace .
+```
+
+Key JSON fields:
+
+- `provider_readiness.status`: `ready`, `missing_auth`, `unconfigured`, `missing_model`, or a provider feature/readiness status.
+- `provider_readiness.guidance`: user-facing recovery step safe for CLI/Web/ACP display.
+- `provider_readiness.fallback_chain`: effective primary + fallback provider/model targets.
+- `context_budget.context_window` / `max_output_tokens`: model/catalog or configured budget metadata used to explain compaction/context-limit behavior.
+- `runtime.failed.provider_error_kind`: structured provider failure kind such as `missing_auth`, `invalid_model`, `rate_limit`, `transient_failure`, `context_limit`, `unsupported_feature`, or `stream_tool_feedback_shape`.
+
+Common recovery actions:
+
+- `missing_auth`: configure the provider API key via environment variable or `.voidcode.json`.
+- `invalid_model`: fix the provider/model name or model access permissions.
+- `context_limit`: reduce prompt/tool context, rely on compaction, or switch to a larger-context model.
+- `unsupported_feature`: disable streaming/tool features for that provider or switch provider/model.
 
 ### 3.3 SQLite 直接检查
 

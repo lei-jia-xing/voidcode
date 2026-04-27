@@ -1339,6 +1339,21 @@ def test_config_show_outputs_workspace_effective_config() -> None:
                 }
             ],
         },
+        "provider_readiness": {
+            "provider": "repo",
+            "model": "model",
+            "configured": False,
+            "ok": False,
+            "status": "invalid_model",
+            "guidance": "provider auth provider 'repo' is not supported",
+            "auth_present": False,
+            "streaming_configured": None,
+            "streaming_supported": None,
+            "context_window": None,
+            "max_output_tokens": None,
+            "fallback_chain": ["repo/model"],
+        },
+        "context_budget": {"context_window": None, "max_output_tokens": None},
     }
     assert "Traceback" not in result.stderr
 
@@ -1403,6 +1418,9 @@ def test_config_show_uses_opencode_go_environment_without_leaking_key() -> None:
             }
         ],
     }
+    assert payload["provider_readiness"]["provider"] == "opencode-go"
+    assert payload["provider_readiness"]["auth_present"] is True
+    assert payload["context_budget"]["context_window"] == 200_000
     assert "opencode-go-secret" not in result.stdout
     assert "Traceback" not in result.stderr
 
@@ -1463,6 +1481,21 @@ def test_config_show_outputs_resumed_session_effective_config() -> None:
                 }
             ],
         },
+        "provider_readiness": {
+            "provider": "repo",
+            "model": "model",
+            "configured": False,
+            "ok": False,
+            "status": "invalid_model",
+            "guidance": "provider auth provider 'repo' is not supported",
+            "auth_present": False,
+            "streaming_configured": None,
+            "streaming_supported": None,
+            "context_window": None,
+            "max_output_tokens": None,
+            "fallback_chain": ["repo/model"],
+        },
+        "context_budget": {"context_window": None, "max_output_tokens": None},
     }
     assert "Traceback" not in result.stderr
 
@@ -1495,6 +1528,17 @@ def test_config_show_delegates_to_runtime_effective_config(capsys: Any) -> None:
         workspace = Path(tmp)
         with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
             runtime_class.return_value.effective_runtime_config.return_value = runtime_config
+            readiness = cli.ProviderReadinessResult(
+                provider="runtime",
+                model="model",
+                configured=False,
+                ok=False,
+                status="unconfigured",
+                guidance="Add provider credentials in environment variables or .voidcode.json.",
+                auth_present=False,
+                fallback_chain=("runtime/model",),
+            )
+            runtime_class.return_value.provider_readiness.return_value = readiness
             result = cli.main(
                 [
                     "config",
@@ -1536,6 +1580,21 @@ def test_config_show_delegates_to_runtime_effective_config(capsys: Any) -> None:
                 }
             ],
         },
+        "provider_readiness": {
+            "provider": "runtime",
+            "model": "model",
+            "configured": False,
+            "ok": False,
+            "status": "unconfigured",
+            "guidance": "Add provider credentials in environment variables or .voidcode.json.",
+            "auth_present": False,
+            "streaming_configured": None,
+            "streaming_supported": None,
+            "context_window": None,
+            "max_output_tokens": None,
+            "fallback_chain": ["runtime/model"],
+        },
+        "context_budget": {"context_window": None, "max_output_tokens": None},
     }
 
 
