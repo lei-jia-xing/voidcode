@@ -31,6 +31,7 @@ from ..hook.executor import (
 )
 from ..provider.auth import ProviderAuthResolver
 from ..provider.errors import format_invalid_provider_config_error
+from ..provider.model_catalog import infer_model_metadata
 from ..provider.models import (
     ResolvedProviderChain,
     ResolvedProviderConfig,
@@ -62,6 +63,7 @@ from .config import (
     ExecutionEngineName,
     RuntimeAgentConfig,
     RuntimeConfig,
+    RuntimeContextWindowConfig,
     RuntimeHooksConfig,
     RuntimePlanConfig,
     RuntimeProviderFallbackConfig,
@@ -71,10 +73,12 @@ from .config import (
     load_runtime_config,
     parse_provider_fallback_payload,
     parse_runtime_agent_payload,
+    parse_runtime_context_window_payload,
     parse_runtime_plan_payload,
     save_global_web_settings,
     serialize_provider_fallback_config,
     serialize_runtime_agent_config,
+    serialize_runtime_context_window_config,
     serialize_runtime_plan_config,
 )
 from .context_window import (
@@ -403,6 +407,7 @@ class VoidCodeRuntime:
     _plan_contributor: PlanContributor
     _background_task_threads: dict[str, threading.Thread]
     _background_tasks_reconciled: bool
+    _context_window_config_override: RuntimeContextWindowConfig | None
     _run_loop_coordinator: RuntimeRunLoopCoordinator
     _resume_coordinator: RuntimeResumeCoordinator
     _background_task_supervisor: RuntimeBackgroundTaskSupervisor
@@ -489,6 +494,10 @@ class VoidCodeRuntime:
         self._tool_registry = self._base_tool_registry
         self._graph_override = graph
         self._graph_cache = {}
+        self._context_window_config_override = self._context_window_config_from_policy(
+            context_window_policy
+        )
+        initial_context_window = self._context_window_config_override or self._config.context_window
         self._initial_effective_config = EffectiveRuntimeConfig(
             approval_mode=self._config.approval_mode,
             model=initial_model,
@@ -499,6 +508,7 @@ class VoidCodeRuntime:
             plan=self._config.plan,
             resolved_provider=self._resolved_provider_config,
             agent=initial_agent,
+            context_window=initial_context_window,
         )
         self._graph = graph or self._build_graph_for_engine_from_config(
             self._initial_effective_config
@@ -511,7 +521,10 @@ class VoidCodeRuntime:
         self._plan_contributor = build_plan_contributor(self._workspace, self._config.plan)
         self._background_task_threads = {}
         self._background_tasks_reconciled = False
-        self._default_context_window_policy = context_window_policy or ContextWindowPolicy()
+        self._default_context_window_policy = self._context_window_policy_from_config(
+            initial_context_window,
+            resolved_provider=self._resolved_provider_config,
+        )
         self._run_loop_coordinator = RuntimeRunLoopCoordinator(self)
         self._resume_coordinator = RuntimeResumeCoordinator(self)
         self._background_task_supervisor = RuntimeBackgroundTaskSupervisor(self)
@@ -831,6 +844,7 @@ class VoidCodeRuntime:
                 plan=resolved.plan,
                 resolved_provider=resolved.resolved_provider,
                 agent=resolved.agent,
+                context_window=resolved.context_window,
             )
         return resolved
 
@@ -2537,6 +2551,7 @@ class VoidCodeRuntime:
             plan=self._config.plan,
             resolved_provider=self._resolved_provider_config,
             agent=initial_agent,
+            context_window=self._config.context_window,
         )
         self._graph_cache = {}
         self._graph = self._graph_override or self._build_graph_for_engine_from_config(
@@ -3684,6 +3699,62 @@ class VoidCodeRuntime:
         raw_provider_attempt = metadata.get("provider_attempt", 0)
         return raw_provider_attempt if isinstance(raw_provider_attempt, int) else 0
 
+    @staticmethod
+    def _context_window_config_from_policy(
+        policy: ContextWindowPolicy | None,
+    ) -> RuntimeContextWindowConfig | None:
+        if policy is None:
+            return None
+        return RuntimeContextWindowConfig(
+            auto_compaction=policy.auto_compaction,
+            max_tool_results=policy.max_tool_results,
+            max_tool_result_tokens=policy.max_tool_result_tokens,
+            max_context_ratio=policy.max_context_ratio,
+            model_context_window_tokens=policy.model_context_window_tokens,
+            reserved_output_tokens=policy.reserved_output_tokens,
+            minimum_retained_tool_results=policy.minimum_retained_tool_results,
+            recent_tool_result_count=policy.recent_tool_result_count,
+            recent_tool_result_tokens=policy.recent_tool_result_tokens,
+            default_tool_result_tokens=policy.default_tool_result_tokens,
+            per_tool_result_tokens=dict(policy.per_tool_result_tokens),
+            tokenizer_model=policy.tokenizer_model,
+            continuity_preview_items=policy.continuity_preview_items,
+            continuity_preview_chars=policy.continuity_preview_chars,
+        )
+
+    @staticmethod
+    def _context_window_policy_from_config(
+        config: RuntimeContextWindowConfig | None,
+        *,
+        resolved_provider: ResolvedProviderConfig | None,
+    ) -> ContextWindowPolicy:
+        if config is None:
+            return ContextWindowPolicy()
+        model_context_window_tokens = config.model_context_window_tokens
+        if model_context_window_tokens is None and resolved_provider is not None:
+            provider = resolved_provider.active_target.selection.provider
+            model = resolved_provider.active_target.selection.model
+            if provider is not None and model is not None:
+                metadata = infer_model_metadata(provider, model)
+                if metadata is not None:
+                    model_context_window_tokens = metadata.context_window
+        return ContextWindowPolicy(
+            auto_compaction=config.auto_compaction,
+            max_tool_results=config.max_tool_results,
+            max_tool_result_tokens=config.max_tool_result_tokens,
+            max_context_ratio=config.max_context_ratio,
+            model_context_window_tokens=model_context_window_tokens,
+            reserved_output_tokens=config.reserved_output_tokens,
+            minimum_retained_tool_results=config.minimum_retained_tool_results,
+            recent_tool_result_count=config.recent_tool_result_count,
+            recent_tool_result_tokens=config.recent_tool_result_tokens,
+            default_tool_result_tokens=config.default_tool_result_tokens,
+            per_tool_result_tokens=dict(config.per_tool_result_tokens),
+            tokenizer_model=config.tokenizer_model,
+            continuity_preview_items=config.continuity_preview_items,
+            continuity_preview_chars=config.continuity_preview_chars,
+        )
+
     def _prepare_provider_context_window(
         self,
         *,
@@ -3692,6 +3763,12 @@ class VoidCodeRuntime:
         session_metadata: dict[str, object],
         policy: ContextWindowPolicy | None = None,
     ) -> RuntimeContextWindow:
+        if policy is None:
+            effective_config = self._effective_runtime_config_from_metadata(session_metadata)
+            policy = self._context_window_policy_from_config(
+                effective_config.context_window,
+                resolved_provider=effective_config.resolved_provider,
+            )
         return prepare_provider_context(
             prompt=prompt,
             tool_results=tool_results,
@@ -4177,6 +4254,11 @@ class VoidCodeRuntime:
             "resolved_provider": resolved_provider_snapshot(effective_config.resolved_provider),
             "plan": serialize_runtime_plan_config(effective_config.plan),
         }
+        serialized_context_window = serialize_runtime_context_window_config(
+            effective_config.context_window
+        )
+        if serialized_context_window is not None:
+            runtime_config_metadata["context_window"] = serialized_context_window
         if effective_config.model is not None:
             runtime_config_metadata["model"] = effective_config.model
         serialized_agent = serialize_runtime_agent_config(effective_config.agent)
@@ -4290,6 +4372,7 @@ class VoidCodeRuntime:
             plan=resolved.plan,
             resolved_provider=resolved_provider,
             agent=merged_agent,
+            context_window=resolved.context_window,
         )
 
     @staticmethod
@@ -4681,6 +4764,7 @@ class VoidCodeRuntime:
         provider_fallback = self._config.provider_fallback
         plan = self._config.plan
         agent = self._config.agent
+        context_window = self._context_window_config_override or self._config.context_window
         allow_persisted_subagent_presets = False
         if metadata is not None:
             allow_persisted_subagent_presets = (
@@ -4730,6 +4814,7 @@ class VoidCodeRuntime:
                 plan=plan,
                 resolved_provider=resolved_provider,
                 agent=agent,
+                context_window=context_window,
             )
 
         persisted_runtime_config = metadata.get("runtime_config")
@@ -4744,6 +4829,7 @@ class VoidCodeRuntime:
                 plan=plan,
                 resolved_provider=resolved_provider,
                 agent=agent,
+                context_window=context_window,
             )
 
         runtime_config = cast(dict[str, object], persisted_runtime_config)
@@ -4813,6 +4899,19 @@ class VoidCodeRuntime:
                 )
         else:
             agent = None
+        if "context_window" in runtime_config:
+            try:
+                context_window = parse_runtime_context_window_payload(
+                    runtime_config.get("context_window"),
+                    source="persisted runtime_config.context_window",
+                )
+            except ValueError as exc:
+                raise ValueError(
+                    format_invalid_provider_config_error(
+                        "persisted runtime_config.context_window",
+                        str(exc),
+                    )
+                ) from exc
         persisted_execution_engine = runtime_config.get("execution_engine")
         if persisted_execution_engine in ("deterministic", "provider"):
             execution_engine = persisted_execution_engine
@@ -4841,6 +4940,7 @@ class VoidCodeRuntime:
             plan=plan,
             resolved_provider=resolved_provider,
             agent=agent,
+            context_window=context_window,
         )
 
     def _provider_chain_for_session_metadata(
@@ -4863,6 +4963,7 @@ class VoidCodeRuntime:
             and effective_config.provider_fallback
             == self._initial_effective_config.provider_fallback
             and effective_config.agent == self._initial_effective_config.agent
+            and effective_config.context_window == self._initial_effective_config.context_window
         ):
             return self._graph
 
@@ -4935,6 +5036,7 @@ class EffectiveRuntimeConfig:
     plan: RuntimePlanConfig | None = None
     resolved_provider: ResolvedProviderConfig = field(default_factory=ResolvedProviderConfig)
     agent: RuntimeAgentConfig | None = None
+    context_window: RuntimeContextWindowConfig | None = None
 
 
 @dataclass(frozen=True, slots=True)
