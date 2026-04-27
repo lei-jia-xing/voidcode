@@ -15,7 +15,11 @@ from .config import (
 
 type ProviderAuthProvider = str
 type ProviderErrorKind = Literal[
-    "rate_limit", "context_limit", "invalid_model", "transient_failure"
+    "missing_auth",
+    "rate_limit",
+    "context_limit",
+    "invalid_model",
+    "transient_failure",
 ]
 
 
@@ -299,7 +303,7 @@ class ProviderAuthResolver:
             raise self._error(
                 provider=provider_name,
                 code="missing_credentials",
-                kind="invalid_model",
+                kind="missing_auth",
                 message=(
                     f"provider auth field '{provider_name}.api_key' must be provided "
                     f"for {provider_name} api_key auth"
@@ -499,7 +503,7 @@ class ProviderAuthResolver:
                 raise self._error(
                     provider="google",
                     code="missing_credentials",
-                    kind="invalid_model",
+                    kind="missing_auth",
                     message=(
                         "provider auth field 'google.service_account_json_path' "
                         "must be provided for google service_account auth"
@@ -574,7 +578,7 @@ class ProviderAuthResolver:
                 raise self._error(
                     provider="copilot",
                     code="missing_credentials",
-                    kind="invalid_model",
+                    kind="missing_auth",
                     message=(
                         "provider auth field 'copilot.token' "
                         "must be provided for copilot token auth"
@@ -642,7 +646,7 @@ class ProviderAuthResolver:
         raise self._error(
             provider=provider,
             code="missing_credentials",
-            kind="invalid_model",
+            kind="missing_auth",
             message=(
                 f"provider auth field '{provider}.{field_name}' "
                 f"must be provided for {provider} api_key auth"
@@ -723,7 +727,7 @@ class ProviderAuthResolver:
             raise self._error(
                 provider=provider,
                 code="missing_credentials",
-                kind="invalid_model",
+                kind="missing_auth",
                 message=f"{field_path} must be provided",
             )
         return value
