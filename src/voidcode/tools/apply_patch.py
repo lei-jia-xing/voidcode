@@ -6,11 +6,13 @@ import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import ClassVar
+from typing import ClassVar, cast
 
 from unidiff import PatchSet
 from unidiff.errors import UnidiffParseError
 
+from ..hook.config import RuntimeHooksConfig
+from ._formatter import FormatterExecutor, formatter_diagnostics, formatter_payload
 from .contracts import ToolCall, ToolDefinition, ToolResult
 
 
@@ -256,7 +258,9 @@ def _derive_marker_update_content(file_path: Path, chunks: tuple[_MarkerChunk, .
             line_index = context_index + 1
 
         if not chunk.old_lines:
-            replacements.append((len(original_lines), 0, chunk.new_lines))
+            insert_index = len(original_lines) if chunk.is_end_of_file else line_index
+            replacements.append((insert_index, 0, chunk.new_lines))
+            line_index = insert_index
             continue
 
         pattern = chunk.old_lines
@@ -465,7 +469,7 @@ def _run_git_command(args: list[str], cwd: Path) -> subprocess.CompletedProcess[
 
 
 def _format_patch_error(error: str, patch_text: str) -> str:
-    match = re.search(r":(\d+)(?:\n|$)", error)
+    match = re.search(r"(?:line\s+|:)(\d+)(?:\n|$)", error)
     if match is None:
         return error
     line_number = int(match.group(1))
@@ -481,6 +485,77 @@ def _format_patch_error(error: str, patch_text: str) -> str:
             "*** Begin Patch / *** Add File envelope to avoid manual hunk counts."
         )
     return f"{error}\nPatch context near line {line_number}:\n{context}{hint}"
+
+
+def _formatter_feedback_for_changes(
+    changes: list[dict[str, object]],
+    *,
+    workspace: Path,
+    hooks_config: RuntimeHooksConfig | None,
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    if hooks_config is None:
+        return [], []
+
+    executor = FormatterExecutor(hooks_config, workspace)
+    formatter_results: list[dict[str, object]] = []
+    diagnostics: list[dict[str, object]] = []
+    for change in changes:
+        if change.get("status") not in {"A", "M", "R"}:
+            continue
+        path_value = change.get("path")
+        if not isinstance(path_value, str):
+            continue
+        candidate = (workspace / path_value).resolve()
+        if not candidate.is_relative_to(workspace) or not candidate.is_file():
+            continue
+        result = executor.run(candidate)
+        if result.status != "not_configured":
+            payload = formatter_payload(result)
+            payload["path"] = path_value
+            formatter_results.append(payload)
+        for diagnostic in formatter_diagnostics(result):
+            diagnostic["path"] = path_value
+            diagnostics.append(diagnostic)
+    return formatter_results, diagnostics
+
+
+def _with_formatter_feedback(
+    result: ToolResult,
+    *,
+    workspace: Path,
+    hooks_config: RuntimeHooksConfig | None,
+) -> ToolResult:
+    raw_changes = result.data.get("changes")
+    if not isinstance(raw_changes, list):
+        return result
+    changes: list[dict[str, object]] = []
+    for item in cast(list[object], raw_changes):
+        if isinstance(item, dict):
+            changes.append(cast(dict[str, object], item))
+    formatter_results, diagnostics = _formatter_feedback_for_changes(
+        changes,
+        workspace=workspace,
+        hooks_config=hooks_config,
+    )
+    if not formatter_results and not diagnostics:
+        return result
+
+    data = dict(result.data)
+    if formatter_results:
+        data["formatters"] = formatter_results
+    if diagnostics:
+        data["diagnostics"] = diagnostics
+
+    content = result.content
+    if content is not None and diagnostics:
+        content += f"\nFormatter warning: {diagnostics[0]['message']}"
+
+    return ToolResult(
+        tool_name=result.tool_name,
+        status=result.status,
+        content=content,
+        data=data,
+    )
 
 
 def _looks_like_mode_only_patch(patch_text: str) -> bool:
@@ -641,13 +716,21 @@ class ApplyPatchTool:
         read_only=False,
     )
 
+    def __init__(self, *, hooks_config: RuntimeHooksConfig | None = None) -> None:
+        self._hooks_config = hooks_config
+
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
         patch_text = call.arguments.get("patch")
         if not isinstance(patch_text, str):
             raise ValueError("apply_patch requires a string 'patch' argument")
 
         if _looks_like_marker_patch(patch_text):
-            return _apply_marker_patch(patch_text, workspace=workspace)
+            result = _apply_marker_patch(patch_text, workspace=workspace)
+            return _with_formatter_feedback(
+                result,
+                workspace=workspace.resolve(),
+                hooks_config=self._hooks_config,
+            )
 
         normalized_patch = _normalize_patch_text(patch_text)
         patch_path = workspace / ".voidcode_apply_patch.patch"
@@ -712,11 +795,16 @@ class ApplyPatchTool:
                 if isinstance(old_path_value, str):
                     _assert_within_workspace(workspace, Path(old_path_value))
 
-            return ToolResult(
+            result = ToolResult(
                 tool_name=self.definition.name,
                 status="ok",
                 content=content,
                 data={"changes": changes, "count": len(changes)},
+            )
+            return _with_formatter_feedback(
+                result,
+                workspace=workspace.resolve(),
+                hooks_config=self._hooks_config,
             )
         finally:
             try:

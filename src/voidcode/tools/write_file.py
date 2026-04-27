@@ -5,6 +5,8 @@ from typing import ClassVar, final
 
 from pydantic import ValidationError
 
+from ..hook.config import RuntimeHooksConfig
+from ._formatter import FormatterExecutor, formatter_diagnostics, formatter_payload
 from ._pydantic_args import WriteFileArgs
 from .contracts import ToolCall, ToolDefinition, ToolResult
 
@@ -17,6 +19,9 @@ class WriteFileTool:
         input_schema={"path": {"type": "string"}, "content": {"type": "string"}},
         read_only=False,
     )
+
+    def __init__(self, *, hooks_config: RuntimeHooksConfig | None = None) -> None:
+        self._hooks_config = hooks_config
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
         try:
@@ -43,12 +48,27 @@ class WriteFileTool:
         candidate.parent.mkdir(parents=True, exist_ok=True)
         candidate.write_text(args.content, encoding="utf-8")
 
+        formatter_result = None
+        if self._hooks_config is not None:
+            formatter_result = FormatterExecutor(self._hooks_config, workspace_root).run(candidate)
+
+        diagnostics = formatter_diagnostics(formatter_result)
+        content = f"Wrote file successfully: {candidate.relative_to(workspace_root).as_posix()}"
+        if diagnostics:
+            content += f" Formatter warning: {diagnostics[0]['message']}"
+
+        data: dict[str, object] = {
+            "path": candidate.relative_to(workspace_root).as_posix(),
+            "byte_count": candidate.stat().st_size,
+        }
+        if formatter_result is not None and formatter_result.status != "not_configured":
+            data["formatter"] = formatter_payload(formatter_result)
+        if diagnostics:
+            data["diagnostics"] = diagnostics
+
         return ToolResult(
             tool_name=self.definition.name,
             status="ok",
-            content=f"Wrote file successfully: {candidate.relative_to(workspace_root).as_posix()}",
-            data={
-                "path": candidate.relative_to(workspace_root).as_posix(),
-                "byte_count": len(args.content.encode("utf-8")),
-            },
+            content=content,
+            data=data,
         )

@@ -105,7 +105,7 @@ class BuiltinToolProvider:
             ShellExecTool(),
             WebFetchTool(),
             WebSearchTool(),
-            WriteFileTool(),
+            WriteFileTool(hooks_config=self._hooks_config),
         ]
 
         if self._lsp_tool is not None:
@@ -136,7 +136,7 @@ class BuiltinToolProvider:
 
         # Add optional tools if available.
         if _ApplyPatchTool is not None:
-            tools.append(_ApplyPatchTool())
+            tools.append(_ApplyPatchTool(hooks_config=self._hooks_config))
         if _AstGrepSearchTool is not None:
             tools.append(_AstGrepSearchTool())
         if _AstGrepPreviewTool is not None:

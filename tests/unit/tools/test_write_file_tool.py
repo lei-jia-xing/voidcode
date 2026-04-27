@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import sys
+import textwrap
 from pathlib import Path
 
 import pytest
 
+from voidcode.hook.config import RuntimeFormatterPresetConfig, RuntimeHooksConfig
 from voidcode.runtime.service import ToolRegistry
 from voidcode.tools import ToolCall, WriteFileTool
 
@@ -56,6 +59,50 @@ def test_write_file_tool_rejects_paths_outside_workspace(tmp_path: Path) -> None
             ),
             workspace=tmp_path,
         )
+
+
+def test_write_file_tool_runs_formatter_after_writing(tmp_path: Path) -> None:
+    formatter_script = tmp_path / "formatter.py"
+    formatter_script.write_text(
+        textwrap.dedent(
+            """
+            import pathlib
+            import sys
+
+            pathlib.Path(sys.argv[-1]).write_text("print( 'formatted' )\\n", encoding="utf-8")
+            """
+        ),
+        encoding="utf-8",
+    )
+    tool = WriteFileTool(
+        hooks_config=RuntimeHooksConfig(
+            formatter_presets={
+                "python": RuntimeFormatterPresetConfig(
+                    command=(sys.executable, str(formatter_script)),
+                    extensions=(".py",),
+                )
+            }
+        )
+    )
+
+    result = tool.invoke(
+        ToolCall(
+            tool_name="write_file",
+            arguments={"path": "main.py", "content": "print('raw')\n"},
+        ),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert (tmp_path / "main.py").read_text(encoding="utf-8") == "print( 'formatted' )\n"
+    assert result.data["formatter"] == {
+        "status": "formatted",
+        "language": "python",
+        "cwd": str(tmp_path),
+        "command": [sys.executable, str(formatter_script), str(tmp_path / "main.py")],
+        "attempted_commands": [[sys.executable, str(formatter_script), str(tmp_path / "main.py")]],
+    }
+    assert result.data["byte_count"] == len(b"print( 'formatted' )\n")
 
 
 def test_tools_package_and_default_registry_export_write_file_tool() -> None:

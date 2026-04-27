@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import difflib
+import sys
+import textwrap
 from pathlib import Path
 
 import pytest
 
+from voidcode.hook.config import RuntimeFormatterPresetConfig, RuntimeHooksConfig
 from voidcode.tools import ApplyPatchTool, ToolCall
 
 
@@ -149,6 +152,32 @@ def test_apply_patch_accepts_structured_update_delete_and_move(tmp_path: Path) -
     ]
 
 
+def test_apply_patch_structured_insert_only_update_uses_matched_context(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "sample.txt"
+    target.write_text("before\nanchor\nafter\n", encoding="utf-8")
+
+    patch_text = "\n".join(
+        [
+            "*** Begin Patch",
+            "*** Update File: sample.txt",
+            "@@ anchor",
+            "+inserted",
+            "*** End Patch",
+        ]
+    )
+
+    result = ApplyPatchTool().invoke(
+        ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert target.read_text(encoding="utf-8") == "before\nanchor\ninserted\nafter\n"
+    assert result.data["changes"] == [{"path": "sample.txt", "status": "M"}]
+
+
 def test_apply_patch_reports_context_for_corrupt_unified_diff(tmp_path: Path) -> None:
     _init_git_repo(tmp_path)
     patch_text = "\n".join(
@@ -178,6 +207,59 @@ def test_apply_patch_reports_context_for_corrupt_unified_diff(tmp_path: Path) ->
     assert "corrupt patch" in error
     assert "Patch context near line" in error
     assert "structured *** Begin Patch / *** Add File envelope" in error
+
+
+def test_apply_patch_runs_formatter_for_structured_changed_files(tmp_path: Path) -> None:
+    formatter_script = tmp_path / "formatter.py"
+    formatter_script.write_text(
+        textwrap.dedent(
+            """
+            import pathlib
+            import sys
+
+            pathlib.Path(sys.argv[-1]).write_text("print( 'formatted' )\\n", encoding="utf-8")
+            """
+        ),
+        encoding="utf-8",
+    )
+    patch_text = "\n".join(
+        [
+            "*** Begin Patch",
+            "*** Add File: main.py",
+            "+print('raw')",
+            "*** End Patch",
+        ]
+    )
+    tool = ApplyPatchTool(
+        hooks_config=RuntimeHooksConfig(
+            formatter_presets={
+                "python": RuntimeFormatterPresetConfig(
+                    command=(sys.executable, str(formatter_script)),
+                    extensions=(".py",),
+                )
+            }
+        )
+    )
+
+    result = tool.invoke(
+        ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert (tmp_path / "main.py").read_text(encoding="utf-8") == "print( 'formatted' )\n"
+    assert result.data["formatters"] == [
+        {
+            "status": "formatted",
+            "language": "python",
+            "cwd": str(tmp_path),
+            "command": [sys.executable, str(formatter_script), str(tmp_path / "main.py")],
+            "attempted_commands": [
+                [sys.executable, str(formatter_script), str(tmp_path / "main.py")]
+            ],
+            "path": "main.py",
+        }
+    ]
 
 
 def test_apply_patch_raises_on_invalid_patch(tmp_path: Path) -> None:
