@@ -6146,7 +6146,7 @@ def test_runtime_approval_resume_preserves_token_budget_context_metadata(
     context_window = cast(RuntimeContextWindow, created_providers[-1].requests[-1].context_window)
 
     assert context_window.token_budget == 1
-    assert context_window.token_estimate_source == "approx_chars_per_4"
+    assert context_window.token_estimate_source == "unicode_aware_chars"
     assert context_window.original_tool_result_tokens is not None
     assert context_window.retained_tool_result_tokens is not None
     assert context_window.dropped_tool_result_tokens is not None
