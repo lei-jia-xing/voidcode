@@ -123,7 +123,7 @@ def fallback_graph_for_provider_error(
 ) -> RuntimeGraphSelection | None:
     next_attempt = provider_attempt + 1
     next_target = provider_chain.target_at(next_attempt)
-    if error.kind not in {"rate_limit", "invalid_model", "transient_failure"}:
+    if error.kind not in {"missing_auth", "rate_limit", "invalid_model", "transient_failure"}:
         return None
     if next_target is None:
         return None

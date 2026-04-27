@@ -1065,11 +1065,11 @@ def test_runtime_session_debug_snapshot_preserves_fresh_terminal_state_while_act
     response = runtime.run(RuntimeRequest(prompt="terminal debug", session_id="terminal-debug"))
     try:
         assert deferred_unregister_session_id == "terminal-debug"
-        snapshot = runtime.session_debug_snapshot(session_id="terminal-debug")
+        snapshot = runtime.session_debug_snapshot(session_id="terminal-debug")  # pyright: ignore[reportUnreachable]
     finally:
         original_unregister("terminal-debug")
 
-    assert response.session.status == "completed"
+    assert response.session.status == "completed"  # pyright: ignore[reportUnreachable]
     assert snapshot.prompt == "terminal debug"
     assert snapshot.active is True
     assert snapshot.persisted_status == "completed"
@@ -9979,10 +9979,13 @@ def test_runtime_resume_fallback_preserves_successful_null_tool_content(
     assert tool_completed_events[0].payload["content"] is None
 
 
-@pytest.mark.parametrize("error_kind", ["rate_limit", "invalid_model", "transient_failure"])
+@pytest.mark.parametrize(
+    "error_kind",
+    ["missing_auth", "rate_limit", "invalid_model", "transient_failure"],
+)
 def test_runtime_downgrades_to_next_provider_target_on_provider_failures(
     tmp_path: Path,
-    error_kind: Literal["rate_limit", "invalid_model", "transient_failure"],
+    error_kind: Literal["missing_auth", "rate_limit", "invalid_model", "transient_failure"],
 ) -> None:
     registry = ModelProviderRegistry(
         providers={
@@ -10272,6 +10275,9 @@ def test_runtime_provider_stream_json_error_payload_maps_to_context_limit_withou
         },
         "source": "stream",
         "error_code": "context_length_exceeded",
+        "guidance": (
+            "Reduce prompt/tool-result context or switch to a model with a larger context window."
+        ),
     }
     fallback_events = [
         event for event in response.events if event.event_type == "runtime.provider_fallback"

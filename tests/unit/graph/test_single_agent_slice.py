@@ -485,6 +485,7 @@ def test_provider_provider_graph_preserves_stream_error_details() -> None:
         "prompt": "secret",
         "source": "stream",
         "error_code": "rate_limit_exceeded",
+        "guidance": "Retry later, reduce request volume, or configure a fallback model.",
     }
     assert exc_info.value.kind == "rate_limit"
 

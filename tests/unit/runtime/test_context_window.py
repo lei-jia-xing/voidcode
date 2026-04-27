@@ -10,6 +10,7 @@ from voidcode.runtime.context_window import (
     RuntimeContinuityState,
     context_window_policy_from_payload,
     continuity_summary_metadata,
+    count_text_tokens,
     normalize_read_file_output,
     prepare_provider_context,
 )
@@ -267,6 +268,26 @@ def test_prepare_provider_context_keeps_count_policy_when_budget_missing() -> No
     assert tuple(result.data["index"] for result in context.tool_results) == (2, 3)
     assert context.token_budget is None
     assert context.original_tool_result_tokens is None
+
+
+def test_count_text_tokens_reports_estimated_fallback_metadata() -> None:
+    counted = count_text_tokens("abcd你")
+
+    assert counted.tokens == 2
+    assert counted.method == "estimated"
+    assert counted.source == "unicode_aware_chars"
+    assert counted.exact is False
+
+
+def test_count_text_tokens_reports_tiktoken_metadata() -> None:
+    fake_tiktoken = _FakeTiktokenModule()
+    with patch.dict(sys.modules, {"tiktoken": fake_tiktoken}):
+        counted = count_text_tokens("abcd", tokenizer_model="gpt-test")
+
+    assert counted.tokens == 4
+    assert counted.method == "tiktoken"
+    assert counted.source == "tiktoken:gpt-test"
+    assert counted.exact is True
 
 
 def test_prepare_provider_context_honors_reserved_output_budget() -> None:
