@@ -7402,10 +7402,17 @@ def test_runtime_provider_turn_usage_is_persisted_in_session_metadata(tmp_path: 
 
 
 def test_runtime_rejects_provider_engine_without_model(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(execution_engine="provider"),
+    )
+
     with pytest.raises(ValueError, match="requires a configured provider/model"):
-        _ = VoidCodeRuntime(
-            workspace=tmp_path,
-            config=RuntimeConfig(execution_engine="provider"),
+        _ = runtime.run(
+            RuntimeRequest(
+                prompt="read sample.txt",
+                session_id="missing-provider-model",
+            )
         )
 
 

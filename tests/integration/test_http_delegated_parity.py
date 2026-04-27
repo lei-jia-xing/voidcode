@@ -22,11 +22,14 @@ from __future__ import annotations
 import asyncio
 import importlib
 import json
+import os
 import sys
 import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, Protocol, cast
+
+_ = os.environ.setdefault("VOIDCODE_EXECUTION_ENGINE", "deterministic")
 
 
 class SessionRefLike(Protocol):

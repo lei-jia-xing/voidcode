@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 import textwrap
 from dataclasses import dataclass
@@ -52,6 +53,8 @@ from voidcode.tools import (
 )
 from voidcode.tools.contracts import ToolDefinition, ToolResult
 from voidcode.tools.guidance import guidance_filename_for_tool, guidance_for_tool
+
+_ = os.environ.setdefault("VOIDCODE_EXECUTION_ENGINE", "deterministic")
 
 
 @dataclass(slots=True)
