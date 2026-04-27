@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Protocol, cast
-from unittest.mock import ANY, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -2175,21 +2175,14 @@ def test_transport_persists_failed_stream_for_replay(tmp_path: Path) -> None:
     assert payloads[8]["event"] == {
         "session_id": "failed-stream-session",
         "sequence": 9,
-        "event_type": "runtime.tool_completed",
-        "source": "tool",
-        "payload": {
-            "arguments": {"filePath": "sample.txt"},
-            "content": None,
-            "error": "boom from transport stream",
-            "status": "error",
-            "tool": "read_file",
-            "tool_call_id": ANY,
-        },
+        "event_type": "runtime.failed",
+        "source": "runtime",
+        "payload": {"error": "boom from transport stream"},
     }
     assert list_response.json() == [
         {
             "session": {"id": "failed-stream-session"},
-            "status": "completed",
+            "status": "failed",
             "turn": 1,
             "prompt": "read sample.txt",
             "updated_at": 1,
@@ -2199,13 +2192,13 @@ def test_transport_persists_failed_stream_for_replay(tmp_path: Path) -> None:
     assert cast(dict[str, object], replay_payload["session"])["session"] == {
         "id": "failed-stream-session"
     }
-    assert cast(dict[str, object], replay_payload["session"])["status"] == "completed"
+    assert cast(dict[str, object], replay_payload["session"])["status"] == "failed"
     assert cast(dict[str, object], replay_payload["session"])["turn"] == 1
     _assert_runtime_session_metadata(
         cast(dict[str, object], replay_payload["session"])["metadata"],
         workspace=tmp_path,
     )
-    assert replay_payload["output"] == ""
+    assert replay_payload["output"] is None
     assert [
         event["event_type"] for event in cast(list[dict[str, object]], replay_payload["events"])
     ] == [
@@ -2217,9 +2210,7 @@ def test_transport_persists_failed_stream_for_replay(tmp_path: Path) -> None:
         "runtime.tool_lookup_succeeded",
         "runtime.permission_resolved",
         "runtime.tool_started",
-        "runtime.tool_completed",
-        "graph.loop_step",
-        "graph.response_ready",
+        "runtime.failed",
     ]
 
 
