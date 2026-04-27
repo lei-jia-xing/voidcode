@@ -31,6 +31,7 @@ bun run preview
 - `bun run test` - 使用 Vitest 运行测试
 - `bun run test:run` - 运行一次测试（不进入监听模式）
 - `bun run test:coverage` - 运行测试并生成覆盖率报告
+- `bun run test:e2e` - 使用 Playwright 运行 Web launcher 端到端测试
 
 ### 技术栈
 
@@ -84,6 +85,15 @@ frontend/
 OPENCODE_API_KEY=<your-key> uv run voidcode serve --workspace . --port 8000
 ```
 
+如果需要启动完整 Web launcher，则先构建前端资源，然后运行：
+
+```bash
+mise run frontend:build
+uv run voidcode web --workspace . --port 8000
+```
+
+自动化测试或脚本应使用 `uv run voidcode web --no-open ...`，避免 launcher 在 Playwright 或 CI 流程中额外弹出浏览器窗口。
+
 ## 贡献
 
 请遵循与主项目相同的指南：
@@ -91,4 +101,5 @@ OPENCODE_API_KEY=<your-key> uv run voidcode serve --workspace . --port 8000
 - 提交前运行 `bun run lint`
 - 运行 `bun run typecheck` 以确保类型安全
 - 针对组件覆盖率变更运行 `bun run test:run`
+- 针对 launcher / 浏览器路径变更运行 `bun run test:e2e`
 - 遵循现有的代码风格

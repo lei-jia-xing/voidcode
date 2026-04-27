@@ -23,6 +23,7 @@ This is not a parity checklist. Each concern is deliberately classified as one o
   - Keep `voidcode serve` as the advanced/headless server surface
   - Print banner + usable URL
   - Best-effort browser open must not be fatal
+  - Support `voidcode web --no-open` for Playwright, CI, and other automation that must not spawn extra browser windows
 
 ### 2. CLI modularity
 
@@ -189,6 +190,7 @@ This is not a parity checklist. Each concern is deliberately classified as one o
 - **VoidCode target**:
   - Extend pytest/Vitest around the new launcher/config/status seams
   - Add Playwright for the actual `voidcode web` user path
+  - Start launcher-backed Playwright tests with `voidcode web --no-open` so browser ownership stays with Playwright
   - Keep `.env`-backed live smoke narrow and skippable when credentials are absent
 
 ## Summary Decisions
