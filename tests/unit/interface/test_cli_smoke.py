@@ -487,7 +487,7 @@ def test_run_command_loads_config_and_forwards_it_to_runtime() -> None:
     runtime_class.return_value.resume.assert_not_called()
 
 
-def test_run_command_accepts_skills_max_steps_and_provider_stream_flags() -> None:
+def test_run_command_accepts_agent_skills_max_steps_and_provider_stream_flags() -> None:
     cli = importlib.import_module("voidcode.cli")
     workspace = Path("/tmp/demo-workspace")
     config = SimpleNamespace(approval_mode="allow")
@@ -509,6 +509,8 @@ def test_run_command_accepts_skills_max_steps_and_provider_stream_flags() -> Non
                     "read README.md",
                     "--workspace",
                     str(workspace),
+                    "--agent",
+                    "product",
                     "--skills",
                     "demo",
                     "review",
@@ -522,6 +524,7 @@ def test_run_command_accepts_skills_max_steps_and_provider_stream_flags() -> Non
     runtime_class.return_value.run_stream.assert_called_once()
     request = runtime_class.return_value.run_stream.call_args.args[0]
     assert request.prompt == "read README.md"
+    assert request.metadata["agent"] == {"preset": "product"}
     assert request.metadata["skills"] == ["demo", "review"]
     assert request.metadata["max_steps"] == 7
     assert request.metadata["provider_stream"] is True
@@ -1091,6 +1094,7 @@ def test_config_show_outputs_workspace_effective_config() -> None:
         "model": "repo/model",
         "execution_engine": "deterministic",
         "max_steps": None,
+        "agent": None,
         "provider_fallback": None,
         "resolved_provider": {
             "active_target": {
@@ -1134,6 +1138,8 @@ def test_config_show_uses_opencode_go_environment_without_leaking_key() -> None:
     assert result.returncode == 0
     assert payload["model"] == "opencode-go/glm-5"
     assert payload["execution_engine"] == "provider"
+    assert payload["agent"]["preset"] == "leader"
+    assert payload["agent"]["prompt_profile"] == "leader"
     assert payload["resolved_provider"] == {
         "active_target": {
             "raw_model": "opencode-go/glm-5",
@@ -1192,6 +1198,7 @@ def test_config_show_outputs_resumed_session_effective_config() -> None:
         "model": "repo/model",
         "execution_engine": "deterministic",
         "max_steps": None,
+        "agent": None,
         "provider_fallback": None,
         "resolved_provider": {
             "active_target": {
@@ -1266,6 +1273,7 @@ def test_config_show_delegates_to_runtime_effective_config(capsys: Any) -> None:
                 "model": "runtime/model",
                 "execution_engine": "deterministic",
                 "max_steps": 9,
+                "agent": None,
                 "provider_fallback": None,
                 "resolved_provider": {
                     "active_target": {

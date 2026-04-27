@@ -9,6 +9,7 @@ from typing import Protocol, cast
 
 from . import __version__
 from .acp.stdio import StdioAcpServer
+from .agent.builtin import list_top_level_selectable_agent_manifests
 from .doctor import (
     CapabilityCheckResult,
     CapabilityCheckStatus,
@@ -25,6 +26,7 @@ from .runtime.config import (
     RuntimeConfig,
     load_runtime_config,
     serialize_provider_fallback_config,
+    serialize_runtime_agent_config,
 )
 from .runtime.config_schema import (
     apply_config_migrations,
@@ -54,6 +56,10 @@ from .server import serve, web
 Handler = Callable[[argparse.Namespace], int]
 
 
+class TuiAppProtocol(Protocol):
+    def run(self) -> None: ...
+
+
 def _format_event(event_type: str, source: str, data: dict[str, object]) -> str:
     suffix = " ".join(f"{key}={value}" for key, value in sorted(data.items()))
     if suffix:
@@ -77,6 +83,8 @@ def _handle_run_command(args: argparse.Namespace) -> int:
     runtime = VoidCodeRuntime(workspace=workspace, config=config)
     try:
         metadata: dict[str, object] = {}
+        if getattr(args, "agent", None) is not None:
+            metadata["agent"] = {"preset": cast(str, args.agent)}
         if getattr(args, "skills", None):
             metadata["skills"] = cast(list[str], args.skills)
         if getattr(args, "max_steps", None) is not None:
@@ -589,6 +597,7 @@ def _handle_config_show_command(args: argparse.Namespace) -> int:
                 "model": effective_config.model,
                 "execution_engine": effective_config.execution_engine,
                 "max_steps": effective_config.max_steps,
+                "agent": serialize_runtime_agent_config(getattr(effective_config, "agent", None)),
                 "provider_fallback": serialize_provider_fallback_config(
                     getattr(effective_config, "provider_fallback", None)
                 ),
@@ -819,7 +828,7 @@ def _handle_tui_command(args: argparse.Namespace) -> int:
 
     from .tui import VoidCodeTUI
 
-    app = VoidCodeTUI(workspace=workspace, approval_mode=approval_mode)
+    app = cast(TuiAppProtocol, VoidCodeTUI(workspace=workspace, approval_mode=approval_mode))
     app.run()
     return 0
 
@@ -927,6 +936,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--approval-mode",
         choices=("allow", "deny", "ask"),
         help="Override the runtime approval mode for this invocation.",
+    )
+    _selectable_agent_ids = tuple(
+        manifest.id for manifest in list_top_level_selectable_agent_manifests()
+    )
+    _ = run_parser.add_argument(
+        "--agent",
+        choices=_selectable_agent_ids,
+        help="Select a top-level agent preset for this run.",
     )
     _ = run_parser.add_argument(
         "--skills",
