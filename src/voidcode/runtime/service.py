@@ -2445,6 +2445,7 @@ class VoidCodeRuntime:
             guidance = auth_message or guidance_for_provider_error_kind("missing_auth")
         elif streaming_supported is False:
             validation_status = "streaming_unsupported"
+            ok = False
             guidance = guidance_for_provider_error_kind("unsupported_feature")
         return ProviderReadinessResult(
             provider=provider_name,
@@ -2569,6 +2570,9 @@ class VoidCodeRuntime:
     ) -> tuple[bool | None, str | None, str | None]:
         if provider_name is None:
             return None, None, None
+        oauth_presence = self._oauth_provider_auth_presence(provider_name)
+        if oauth_presence is not None:
+            return oauth_presence
         try:
             result = self._provider_auth_resolver.authorize(
                 ProviderAuthAuthorizeRequest(provider=provider_name)
@@ -2578,6 +2582,38 @@ class VoidCodeRuntime:
                 return False, "missing_auth", str(exc)
             return False, exc.provider_error_kind, str(exc)
         return result.status == "authorized", None, None
+
+    def _oauth_provider_auth_presence(
+        self, provider_name: str
+    ) -> tuple[bool | None, str | None, str | None] | None:
+        providers = self._config.providers
+        if providers is None:
+            return None
+        if provider_name == "google":
+            config = providers.google
+            auth = None if config is None else config.auth
+            if auth is None or auth.method != "oauth":
+                return None
+            if auth.access_token:
+                return True, None, None
+            return (
+                False,
+                "missing_auth",
+                "provider auth field 'google.access_token' must be provided for google oauth auth",
+            )
+        if provider_name == "copilot":
+            config = providers.copilot
+            auth = None if config is None else config.auth
+            if auth is None or auth.method != "oauth":
+                return None
+            if auth.token or (auth.token_env_var and os.environ.get(auth.token_env_var)):
+                return True, None, None
+            return (
+                False,
+                "missing_auth",
+                "provider auth field 'copilot.token' must be provided for copilot oauth auth",
+            )
+        return None
 
     @staticmethod
     def _optional_positive_int(value: object) -> int | None:

@@ -11,7 +11,7 @@ import sys
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, cast
 from unittest.mock import Mock
 
 import pytest
@@ -27,6 +27,7 @@ from voidcode.provider.config import (
     LiteLLMProviderConfig,
 )
 from voidcode.provider.model_catalog import ProviderModelCatalog, ProviderModelMetadata
+from voidcode.provider.protocol import ProviderErrorKind
 from voidcode.provider.registry import ModelProviderRegistry
 from voidcode.runtime.acp import (
     AcpAdapterState,
@@ -475,13 +476,13 @@ class _ScriptedModelProvider:
 
 
 class _AlwaysFailingModelProvider:
-    _error_kind: Literal["rate_limit", "context_limit", "invalid_model", "transient_failure"]
+    _error_kind: ProviderErrorKind
 
     def __init__(
         self,
         *,
         name: str,
-        error_kind: Literal["rate_limit", "context_limit", "invalid_model", "transient_failure"],
+        error_kind: ProviderErrorKind,
     ) -> None:
         self.name = name
         self._error_kind = error_kind
@@ -493,7 +494,7 @@ class _AlwaysFailingModelProvider:
 @dataclass(slots=True)
 class _AlwaysFailingTurnProvider:
     name: str
-    error_kind: Literal["rate_limit", "context_limit", "invalid_model", "transient_failure"]
+    error_kind: ProviderErrorKind
 
     def propose_turn(self, request: object) -> ProviderTurnResult:
         _ = request
@@ -9981,11 +9982,18 @@ def test_runtime_resume_fallback_preserves_successful_null_tool_content(
 
 @pytest.mark.parametrize(
     "error_kind",
-    ["missing_auth", "rate_limit", "invalid_model", "transient_failure"],
+    [
+        "missing_auth",
+        "rate_limit",
+        "invalid_model",
+        "transient_failure",
+        "unsupported_feature",
+        "stream_tool_feedback_shape",
+    ],
 )
 def test_runtime_downgrades_to_next_provider_target_on_provider_failures(
     tmp_path: Path,
-    error_kind: Literal["missing_auth", "rate_limit", "invalid_model", "transient_failure"],
+    error_kind: ProviderErrorKind,
 ) -> None:
     registry = ModelProviderRegistry(
         providers={
