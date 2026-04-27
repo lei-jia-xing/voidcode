@@ -34,7 +34,7 @@ The roadmap remains intentionally narrow: ship a stable, demoable single-agent M
 
 The recommended setup uses `uv` for Python and Bun for the frontend. Supported Python version: **3.13**.
 
-> **Current state:** the repository already has a real CLI → runtime → single-agent loop with multi-step execution, session persistence and resume, and inline approval in TTY mode. The compatibility default remains the deterministic local reference engine for no-key demos and tests, while configured provider-backed execution is the product-primary path. It also exposes a minimal local HTTP/SSE transport. The TUI and web frontend both exist, but neither is yet at full CLI parity.
+> **Current state:** the repository already has a real CLI → runtime → single-agent loop with multi-step execution, session persistence and resume, and inline approval in TTY mode. Provider-backed execution is the product path by default. Deterministic execution remains available as an explicit test/dev/no-key harness. It also exposes a minimal local HTTP/SSE transport. The TUI and web frontend both exist, but neither is yet at full CLI parity.
 
 ```bash
 # Install toolchain and Python dependencies
@@ -47,8 +47,11 @@ mise run frontend:install
 # Explore the CLI
 uv run voidcode --help
 
-# Run a no-key local read task through the compatibility engine
+# Run a local read task through the runtime
 uv run voidcode run "read README.md" --workspace .
+
+# Run deterministic explicitly for test/dev/no-key harness workflows
+VOIDCODE_EXECUTION_ENGINE=deterministic uv run voidcode run "read README.md" --workspace .
 
 # Run a write task that requires approval
 uv run voidcode run "write hello.txt hello world" --workspace . --approval-mode ask
