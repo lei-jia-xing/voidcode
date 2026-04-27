@@ -14,10 +14,14 @@ test.describe('VoidCode Web Launcher', () => {
     const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
     const port = Math.floor(Math.random() * 50000) + 10000;
 
-    proc = spawn('uv', ['run', 'voidcode', 'web', '--port', port.toString(), '--workspace', rootDir], {
-      cwd: rootDir,
-      env: { ...process.env, PYTHONUNBUFFERED: '1' },
-    });
+    proc = spawn(
+      'uv',
+      ['run', 'voidcode', 'web', '--no-open', '--port', port.toString(), '--workspace', rootDir],
+      {
+        cwd: rootDir,
+        env: { ...process.env, PYTHONUNBUFFERED: '1' },
+      },
+    );
 
     stdoutData = '';
     stderrData = '';
