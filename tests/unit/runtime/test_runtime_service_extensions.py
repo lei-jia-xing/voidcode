@@ -105,6 +105,13 @@ from voidcode.skills import SkillRegistry
 from voidcode.tools import ToolCall
 from voidcode.tools.contracts import ToolDefinition, ToolResult
 
+pytestmark = pytest.mark.usefixtures("_force_deterministic_engine_default")
+
+
+@pytest.fixture
+def _force_deterministic_engine_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("VOIDCODE_EXECUTION_ENGINE", "deterministic")
+
 
 def test_runtime_top_level_agent_allowlist_matches_manifest_selectability() -> None:
     top_level_manifest_ids = {
@@ -7395,7 +7402,7 @@ def test_runtime_provider_turn_usage_is_persisted_in_session_metadata(tmp_path: 
 
 
 def test_runtime_rejects_provider_engine_without_model(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="requires a configured model"):
+    with pytest.raises(ValueError, match="requires a configured provider/model"):
         _ = VoidCodeRuntime(
             workspace=tmp_path,
             config=RuntimeConfig(execution_engine="provider"),

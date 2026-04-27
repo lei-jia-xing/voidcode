@@ -20,6 +20,13 @@ from unittest.mock import ANY, patch
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("_force_deterministic_engine_default")
+
+
+@pytest.fixture
+def _force_deterministic_engine_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("VOIDCODE_EXECUTION_ENGINE", "deterministic")
+
 
 def _cwd_command() -> str:
     return f'"{sys.executable}" -c "import os; print(os.getcwd())"'
