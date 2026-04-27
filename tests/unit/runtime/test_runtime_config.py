@@ -28,6 +28,7 @@ from voidcode.runtime.config import (
     TOOL_TIMEOUT_ENV_VAR,
     RuntimeAgentConfig,
     RuntimeConfig,
+    RuntimeContextWindowConfig,
     RuntimeFormatterPresetConfig,
     RuntimeHooksConfig,
     RuntimeLspConfig,
@@ -47,12 +48,14 @@ from voidcode.runtime.config import (
     load_runtime_config,
     parse_runtime_agent_payload,
     parse_runtime_agents_payload,
+    parse_runtime_context_window_payload,
     runtime_config_path,
     save_global_tui_preferences,
     save_global_web_settings,
     save_workspace_tui_preferences,
     serialize_runtime_agent_config,
     serialize_runtime_agents_config,
+    serialize_runtime_context_window_config,
     user_runtime_config_path,
 )
 from voidcode.runtime.service import RuntimeRequest, VoidCodeRuntime
@@ -232,6 +235,86 @@ def test_runtime_config_supports_provider_first_opt_in_with_stub_model(
 
     assert config.execution_engine == "provider"
     assert config.model == "opencode/gpt-5.4"
+
+
+def test_runtime_config_loads_context_window_policy_from_repo_file(tmp_path: Path) -> None:
+    config_path = tmp_path / RUNTIME_CONFIG_FILE_NAME
+    config_path.write_text(
+        json.dumps(
+            {
+                "context_window": {
+                    "auto_compaction": False,
+                    "max_tool_results": 6,
+                    "max_tool_result_tokens": 2_000,
+                    "max_context_ratio": 0.25,
+                    "model_context_window_tokens": 128_000,
+                    "reserved_output_tokens": 20_000,
+                    "minimum_retained_tool_results": 2,
+                    "recent_tool_result_count": 3,
+                    "recent_tool_result_tokens": 8_000,
+                    "default_tool_result_tokens": 1_000,
+                    "per_tool_result_tokens": {"grep": 500},
+                    "tokenizer_model": "gpt-4o",
+                    "continuity_preview_items": 4,
+                    "continuity_preview_chars": 120,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.context_window == RuntimeContextWindowConfig(
+        auto_compaction=False,
+        max_tool_results=6,
+        max_tool_result_tokens=2_000,
+        max_context_ratio=0.25,
+        model_context_window_tokens=128_000,
+        reserved_output_tokens=20_000,
+        minimum_retained_tool_results=2,
+        recent_tool_result_count=3,
+        recent_tool_result_tokens=8_000,
+        default_tool_result_tokens=1_000,
+        per_tool_result_tokens={"grep": 500},
+        tokenizer_model="gpt-4o",
+        continuity_preview_items=4,
+        continuity_preview_chars=120,
+    )
+
+
+def test_runtime_context_window_config_serializes_for_session_resume() -> None:
+    config = RuntimeContextWindowConfig(
+        max_tool_results=5,
+        reserved_output_tokens=100,
+        per_tool_result_tokens={"shell_exec": 400},
+    )
+
+    payload = serialize_runtime_context_window_config(config)
+    parsed = parse_runtime_context_window_payload(
+        payload,
+        source="test runtime_config.context_window",
+    )
+
+    assert parsed == config
+
+
+def test_runtime_persists_context_window_config_for_resume(tmp_path: Path) -> None:
+    context_window = RuntimeContextWindowConfig(
+        max_tool_results=5,
+        reserved_output_tokens=100,
+        per_tool_result_tokens={"shell_exec": 400},
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(context_window=context_window),
+    )
+
+    payload = runtime._runtime_config_metadata()
+    restored = runtime._effective_runtime_config_from_metadata({"runtime_config": payload})
+
+    assert payload["context_window"] == serialize_runtime_context_window_config(context_window)
+    assert restored.context_window == context_window
 
 
 def test_runtime_config_uses_environment_when_repo_file_missing(tmp_path: Path) -> None:

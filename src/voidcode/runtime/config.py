@@ -129,6 +129,30 @@ class RuntimeSkillsConfig:
     paths: tuple[str, ...] = ()
 
 
+def _empty_context_window_tool_limits() -> dict[str, int]:
+    return {}
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeContextWindowConfig:
+    auto_compaction: bool = True
+    max_tool_results: int = 4
+    max_tool_result_tokens: int | None = None
+    max_context_ratio: float | None = None
+    model_context_window_tokens: int | None = None
+    reserved_output_tokens: int | None = None
+    minimum_retained_tool_results: int = 1
+    recent_tool_result_count: int = 1
+    recent_tool_result_tokens: int | None = None
+    default_tool_result_tokens: int | None = None
+    per_tool_result_tokens: Mapping[str, int] = field(
+        default_factory=_empty_context_window_tool_limits
+    )
+    tokenizer_model: str | None = None
+    continuity_preview_items: int = 3
+    continuity_preview_chars: int = 80
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeLspConfig:
     enabled: bool | None = None
@@ -226,6 +250,7 @@ class RuntimeConfig:
     hooks: RuntimeHooksConfig | None = None
     tools: RuntimeToolsConfig | None = None
     skills: RuntimeSkillsConfig | None = None
+    context_window: RuntimeContextWindowConfig | None = None
     lsp: RuntimeLspConfig | None = None
     acp: RuntimeAcpConfig | None = None
     mcp: RuntimeMcpConfig | None = None
@@ -248,6 +273,7 @@ class RuntimeConfigOverrides:
     hooks: RuntimeHooksConfig | None = None
     tools: RuntimeToolsConfig | None = None
     skills: RuntimeSkillsConfig | None = None
+    context_window: RuntimeContextWindowConfig | None = None
     lsp: RuntimeLspConfig | None = None
     acp: RuntimeAcpConfig | None = None
     mcp: RuntimeMcpConfig | None = None
@@ -394,6 +420,7 @@ def load_runtime_config(
         hooks=repo_local.hooks,
         tools=repo_local.tools,
         skills=repo_local.skills,
+        context_window=repo_local.context_window,
         lsp=resolved_lsp,
         mcp=repo_local.mcp,
         tui=resolved_tui,
@@ -464,6 +491,9 @@ def _load_repo_local_config(
     raw_skills = payload.get("skills")
     skills = _parse_skills_config(raw_skills)
 
+    raw_context_window = payload.get("context_window")
+    context_window = _parse_context_window_config(raw_context_window)
+
     raw_lsp = payload.get("lsp")
     lsp = _parse_lsp_config(raw_lsp)
 
@@ -503,6 +533,7 @@ def _load_repo_local_config(
         hooks=hooks,
         tools=tools,
         skills=skills,
+        context_window=context_window,
         lsp=lsp,
         mcp=mcp,
         tui=tui,
@@ -783,6 +814,170 @@ class _RuntimeSkillsValidationModel(BaseModel):
 
     def to_runtime_config(self) -> RuntimeSkillsConfig:
         return RuntimeSkillsConfig(enabled=self.enabled, paths=self.paths)
+
+
+def _parse_optional_positive_int(value: object, *, field_path: str) -> int | None:
+    if value is None:
+        return None
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ValueError(f"runtime config field '{field_path}' must be an integer when provided")
+    if value < 1:
+        raise ValueError(f"runtime config field '{field_path}' must be greater than or equal to 1")
+    return value
+
+
+class _RuntimeContextWindowValidationModel(BaseModel):
+    model_config = ConfigDict(validate_default=True)
+
+    auto_compaction: bool = True
+    max_tool_results: int = 4
+    max_tool_result_tokens: int | None = None
+    max_context_ratio: float | None = None
+    model_context_window_tokens: int | None = None
+    reserved_output_tokens: int | None = None
+    minimum_retained_tool_results: int = 1
+    recent_tool_result_count: int = 1
+    recent_tool_result_tokens: int | None = None
+    default_tool_result_tokens: int | None = None
+    per_tool_result_tokens: dict[str, int] = Field(default_factory=dict)
+    tokenizer_model: str | None = None
+    continuity_preview_items: int = 3
+    continuity_preview_chars: int = 80
+
+    @field_validator("auto_compaction", mode="before")
+    @classmethod
+    def _validate_auto_compaction(cls, value: object) -> bool:
+        parsed = _parse_optional_bool(value, field_path="context_window.auto_compaction")
+        return True if parsed is None else parsed
+
+    @field_validator(
+        "max_tool_results",
+        "minimum_retained_tool_results",
+        "recent_tool_result_count",
+        mode="before",
+    )
+    @classmethod
+    def _validate_non_negative_int(cls, value: object, info: ValidationInfo) -> int:
+        field_name = info.field_name or "unknown"
+        field_path = f"context_window.{field_name}"
+        if value is None:
+            defaults = RuntimeContextWindowConfig()
+            return cast(int, getattr(defaults, field_name))
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise ValueError(f"runtime config field '{field_path}' must be an integer")
+        if value < 0:
+            raise ValueError(
+                f"runtime config field '{field_path}' must be greater than or equal to 0"
+            )
+        return value
+
+    @field_validator(
+        "max_tool_result_tokens",
+        "model_context_window_tokens",
+        "recent_tool_result_tokens",
+        "default_tool_result_tokens",
+        "continuity_preview_items",
+        "continuity_preview_chars",
+        mode="before",
+    )
+    @classmethod
+    def _validate_optional_positive_int(cls, value: object, info: ValidationInfo) -> int | None:
+        field_name = info.field_name or "unknown"
+        field_path = f"context_window.{field_name}"
+        parsed = _parse_optional_positive_int(value, field_path=field_path)
+        if parsed is None and field_name in {
+            "continuity_preview_items",
+            "continuity_preview_chars",
+        }:
+            defaults = RuntimeContextWindowConfig()
+            return cast(int, getattr(defaults, field_name))
+        return parsed
+
+    @field_validator("reserved_output_tokens", mode="before")
+    @classmethod
+    def _validate_reserved_output_tokens(cls, value: object) -> int | None:
+        if value is None:
+            return None
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise ValueError(
+                "runtime config field 'context_window.reserved_output_tokens' must be an integer"
+            )
+        if value < 0:
+            raise ValueError(
+                "runtime config field 'context_window.reserved_output_tokens' must be "
+                "greater than or equal to 0"
+            )
+        return value
+
+    @field_validator("max_context_ratio", mode="before")
+    @classmethod
+    def _validate_max_context_ratio(cls, value: object) -> float | None:
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, int | float):
+            raise ValueError(
+                "runtime config field 'context_window.max_context_ratio' must be a number"
+            )
+        parsed = float(value)
+        if not 0 < parsed <= 1:
+            raise ValueError(
+                "runtime config field 'context_window.max_context_ratio' must be greater "
+                "than 0 and less than or equal to 1"
+            )
+        return parsed
+
+    @field_validator("per_tool_result_tokens", mode="before")
+    @classmethod
+    def _validate_per_tool_result_tokens(cls, value: object) -> dict[str, int]:
+        if value is None:
+            return {}
+        if not isinstance(value, dict):
+            raise ValueError(
+                "runtime config field 'context_window.per_tool_result_tokens' must be an object"
+            )
+        parsed: dict[str, int] = {}
+        for raw_key, raw_limit in cast(dict[object, object], value).items():
+            if not isinstance(raw_key, str) or not raw_key:
+                raise ValueError(
+                    "runtime config field 'context_window.per_tool_result_tokens' keys "
+                    "must be non-empty strings"
+                )
+            limit = _parse_optional_positive_int(
+                raw_limit,
+                field_path=f"context_window.per_tool_result_tokens.{raw_key}",
+            )
+            assert limit is not None
+            parsed[raw_key] = limit
+        return parsed
+
+    @field_validator("tokenizer_model", mode="before")
+    @classmethod
+    def _validate_tokenizer_model(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(
+                "runtime config field 'context_window.tokenizer_model' must be a non-empty string"
+            )
+        return value.strip()
+
+    def to_runtime_config(self) -> RuntimeContextWindowConfig:
+        return RuntimeContextWindowConfig(
+            auto_compaction=self.auto_compaction,
+            max_tool_results=self.max_tool_results,
+            max_tool_result_tokens=self.max_tool_result_tokens,
+            max_context_ratio=self.max_context_ratio,
+            model_context_window_tokens=self.model_context_window_tokens,
+            reserved_output_tokens=self.reserved_output_tokens,
+            minimum_retained_tool_results=self.minimum_retained_tool_results,
+            recent_tool_result_count=self.recent_tool_result_count,
+            recent_tool_result_tokens=self.recent_tool_result_tokens,
+            default_tool_result_tokens=self.default_tool_result_tokens,
+            per_tool_result_tokens=dict(self.per_tool_result_tokens),
+            tokenizer_model=self.tokenizer_model,
+            continuity_preview_items=self.continuity_preview_items,
+            continuity_preview_chars=self.continuity_preview_chars,
+        )
 
 
 def _validation_context_field_path(info: ValidationInfo, *, default: str) -> str:
@@ -1114,6 +1309,23 @@ def _parse_skills_config(raw_skills: object) -> RuntimeSkillsConfig | None:
             skills_payload,
             field_path="skills",
             model_type=_RuntimeSkillsValidationModel,
+        ),
+    )
+
+
+def _parse_context_window_config(raw_context_window: object) -> RuntimeContextWindowConfig | None:
+    if raw_context_window is None:
+        return None
+    if not isinstance(raw_context_window, dict):
+        raise ValueError("runtime config field 'context_window' must be an object when provided")
+
+    context_window_payload = cast(dict[str, object], raw_context_window)
+    return cast(
+        RuntimeContextWindowConfig | None,
+        _parse_runtime_config_section(
+            context_window_payload,
+            field_path="context_window",
+            model_type=_RuntimeContextWindowValidationModel,
         ),
     )
 
@@ -1493,6 +1705,50 @@ def parse_runtime_agents_payload(
         return _parse_agents_config(raw_agents, hooks=hooks)
     except ValueError as exc:
         raise ValueError(f"{source}: {exc}") from exc
+
+
+def parse_runtime_context_window_payload(
+    raw_context_window: object,
+    *,
+    source: str,
+) -> RuntimeContextWindowConfig | None:
+    try:
+        return _parse_context_window_config(raw_context_window)
+    except ValueError as exc:
+        raise ValueError(f"{source}: {exc}") from exc
+
+
+def serialize_runtime_context_window_config(
+    context_window: RuntimeContextWindowConfig | None,
+) -> dict[str, object] | None:
+    if context_window is None:
+        return None
+    payload: dict[str, object] = {
+        "version": 1,
+        "auto_compaction": context_window.auto_compaction,
+        "max_tool_results": context_window.max_tool_results,
+        "minimum_retained_tool_results": context_window.minimum_retained_tool_results,
+        "recent_tool_result_count": context_window.recent_tool_result_count,
+        "continuity_preview_items": context_window.continuity_preview_items,
+        "continuity_preview_chars": context_window.continuity_preview_chars,
+    }
+    if context_window.max_tool_result_tokens is not None:
+        payload["max_tool_result_tokens"] = context_window.max_tool_result_tokens
+    if context_window.max_context_ratio is not None:
+        payload["max_context_ratio"] = context_window.max_context_ratio
+    if context_window.model_context_window_tokens is not None:
+        payload["model_context_window_tokens"] = context_window.model_context_window_tokens
+    if context_window.reserved_output_tokens is not None:
+        payload["reserved_output_tokens"] = context_window.reserved_output_tokens
+    if context_window.recent_tool_result_tokens is not None:
+        payload["recent_tool_result_tokens"] = context_window.recent_tool_result_tokens
+    if context_window.default_tool_result_tokens is not None:
+        payload["default_tool_result_tokens"] = context_window.default_tool_result_tokens
+    if context_window.per_tool_result_tokens:
+        payload["per_tool_result_tokens"] = dict(context_window.per_tool_result_tokens)
+    if context_window.tokenizer_model is not None:
+        payload["tokenizer_model"] = context_window.tokenizer_model
+    return payload
 
 
 def serialize_runtime_plan_config(plan: RuntimePlanConfig | None) -> dict[str, object] | None:

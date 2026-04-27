@@ -37,6 +37,7 @@ from voidcode.runtime.config import (
     RuntimeAcpConfig,
     RuntimeAgentConfig,
     RuntimeConfig,
+    RuntimeContextWindowConfig,
     RuntimeFormatterPresetConfig,
     RuntimeHooksConfig,
     RuntimeLspConfig,
@@ -6730,6 +6731,31 @@ def test_runtime_graph_selection_seam_uses_provider_attempt_target(tmp_path: Pat
     assert selection.provider_target.selection.provider == "fallback"
     assert selection.provider_target.selection.model == "model-b"
     assert created_providers[-1].name == "fallback"
+
+
+def test_runtime_context_window_policy_uses_fallback_attempt_model_metadata(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            provider_fallback=RuntimeProviderFallbackConfig(
+                preferred_model="opencode/gpt-5.4",
+                fallback_models=("kimi/moonshot-v1-8k",),
+            ),
+            context_window=RuntimeContextWindowConfig(max_context_ratio=0.5),
+        ),
+    )
+
+    context_window = runtime._prepare_provider_context_window(  # pyright: ignore[reportPrivateUsage]
+        prompt="read sample.txt",
+        tool_results=(),
+        session_metadata={"provider_attempt": 1},
+    )
+
+    assert context_window.token_budget == 4_000
 
 
 def test_runtime_provider_fallback_seam_returns_next_graph_selection(tmp_path: Path) -> None:

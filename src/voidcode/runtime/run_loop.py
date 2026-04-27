@@ -83,6 +83,8 @@ class RuntimeRunLoopCoordinator:
                     dropped_tool_result_tokens=base_context.dropped_tool_result_tokens,
                     token_budget=base_context.token_budget,
                     token_estimate_source=base_context.token_estimate_source,
+                    reserved_output_tokens=base_context.reserved_output_tokens,
+                    truncated_tool_result_count=base_context.truncated_tool_result_count,
                     continuity_state=reinjected_continuity,
                     summary_anchor=summary_anchor,
                     summary_source=summary_source,

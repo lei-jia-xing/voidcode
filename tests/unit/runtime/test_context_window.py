@@ -1,15 +1,43 @@
 from __future__ import annotations
 
+import sys
+from types import ModuleType
 from typing import Literal
+from unittest.mock import patch
 
 from voidcode.runtime.context_window import (
     ContextWindowPolicy,
     RuntimeContinuityState,
+    context_window_policy_from_payload,
     continuity_summary_metadata,
     normalize_read_file_output,
     prepare_provider_context,
 )
 from voidcode.tools.contracts import ToolResult
+
+
+class _FakeEncoding:
+    def encode(self, value: str, *, disallowed_special: tuple[object, ...]) -> list[str]:
+        _ = disallowed_special
+        return list(value)
+
+
+class _FakeTiktokenModule(ModuleType):
+    def __init__(self) -> None:
+        super().__init__("tiktoken")
+        self.encoding_for_model_calls = 0
+        self.get_encoding_calls = 0
+        self._encoding = _FakeEncoding()
+
+    def encoding_for_model(self, model: str) -> _FakeEncoding:
+        _ = model
+        self.encoding_for_model_calls += 1
+        return self._encoding
+
+    def get_encoding(self, name: str) -> _FakeEncoding:
+        _ = name
+        self.get_encoding_calls += 1
+        return self._encoding
 
 
 def _tool_result(index: int) -> ToolResult:
@@ -239,6 +267,163 @@ def test_prepare_provider_context_keeps_count_policy_when_budget_missing() -> No
     assert tuple(result.data["index"] for result in context.tool_results) == (2, 3)
     assert context.token_budget is None
     assert context.original_tool_result_tokens is None
+
+
+def test_prepare_provider_context_honors_reserved_output_budget() -> None:
+    context = prepare_provider_context(
+        prompt="read sample.txt",
+        tool_results=(
+            _sized_tool_result(1, content_size=240),
+            _sized_tool_result(2, content_size=20),
+        ),
+        session_metadata={},
+        policy=ContextWindowPolicy(
+            model_context_window_tokens=120,
+            reserved_output_tokens=40,
+        ),
+    )
+
+    assert tuple(result.data["index"] for result in context.tool_results) == (2,)
+    assert context.token_budget == 80
+    assert context.reserved_output_tokens == 40
+    assert context.metadata_payload()["reserved_output_tokens"] == 40
+
+
+def test_prepare_provider_context_truncates_old_tool_outputs_by_tool_policy() -> None:
+    context = prepare_provider_context(
+        prompt="search",
+        tool_results=(
+            ToolResult(tool_name="grep", status="ok", content="x" * 200, data={"index": 1}),
+            ToolResult(tool_name="grep", status="ok", content="latest" * 20, data={"index": 2}),
+        ),
+        session_metadata={},
+        policy=ContextWindowPolicy(
+            max_tool_results=2,
+            per_tool_result_tokens={"grep": 30},
+            recent_tool_result_count=1,
+        ),
+    )
+
+    first, latest = context.tool_results
+    assert first.truncated is True
+    assert first.partial is True
+    assert first.data["context_window_truncated"] is True
+    assert "Tool output truncated by context window policy" in (first.content or "")
+    assert latest.truncated is False
+    assert latest.content == "latest" * 20
+    assert context.truncated_tool_result_count == 1
+    assert context.metadata_payload()["truncated_tool_result_count"] == 1
+
+
+def test_prepare_provider_context_keeps_truncation_message_inside_tool_cap() -> None:
+    context = prepare_provider_context(
+        prompt="search",
+        tool_results=(
+            ToolResult(tool_name="grep", status="ok", content="x" * 80, data={"index": 1}),
+        ),
+        session_metadata={},
+        policy=ContextWindowPolicy(
+            max_tool_results=1,
+            minimum_retained_tool_results=0,
+            recent_tool_result_count=0,
+            per_tool_result_tokens={"grep": 1},
+        ),
+    )
+
+    (result,) = context.tool_results
+    assert result.truncated is True
+    assert result.content is not None
+    assert len(result.content) <= 4
+
+
+def test_prepare_provider_context_applies_recent_tool_result_token_cap() -> None:
+    context = prepare_provider_context(
+        prompt="search",
+        tool_results=(
+            ToolResult(tool_name="grep", status="ok", content="older", data={"index": 1}),
+            ToolResult(tool_name="grep", status="ok", content="x" * 80, data={"index": 2}),
+        ),
+        session_metadata={},
+        policy=ContextWindowPolicy(
+            max_tool_results=1,
+            recent_tool_result_count=1,
+            recent_tool_result_tokens=5,
+            default_tool_result_tokens=None,
+        ),
+    )
+
+    (latest,) = context.tool_results
+    assert latest.data["index"] == 2
+    assert latest.truncated is True
+    assert latest.content is not None
+    assert len(latest.content) <= 20
+    assert context.truncated_tool_result_count == 1
+
+
+def test_prepare_provider_context_reuses_tokenizer_encoding_when_clipping() -> None:
+    fake_tiktoken = _FakeTiktokenModule()
+    with patch.dict(sys.modules, {"tiktoken": fake_tiktoken}):
+        context = prepare_provider_context(
+            prompt="search",
+            tool_results=(
+                ToolResult(tool_name="grep", status="ok", content="x" * 80, data={"index": 1}),
+            ),
+            session_metadata={},
+            policy=ContextWindowPolicy(
+                max_tool_results=1,
+                minimum_retained_tool_results=0,
+                recent_tool_result_count=0,
+                per_tool_result_tokens={"grep": 20},
+                tokenizer_model="cache-test-model",
+            ),
+        )
+
+    (result,) = context.tool_results
+    assert result.truncated is True
+    assert result.content is not None
+    assert fake_tiktoken.encoding_for_model_calls == 1
+    assert fake_tiktoken.get_encoding_calls == 0
+
+
+def test_prepare_provider_context_preserves_recent_results_over_count_cap() -> None:
+    context = prepare_provider_context(
+        prompt="read sample.txt",
+        tool_results=(_tool_result(1), _tool_result(2), _tool_result(3)),
+        session_metadata={},
+        policy=ContextWindowPolicy(max_tool_results=1, recent_tool_result_count=2),
+    )
+
+    assert tuple(result.data["index"] for result in context.tool_results) == (2, 3)
+    assert context.retained_tool_result_count == 2
+
+
+def test_prepare_provider_context_auto_compaction_false_retains_all_results() -> None:
+    context = prepare_provider_context(
+        prompt="read sample.txt",
+        tool_results=(_tool_result(1), _tool_result(2), _tool_result(3)),
+        session_metadata={},
+        policy=ContextWindowPolicy(auto_compaction=False, max_tool_results=1),
+    )
+
+    assert tuple(result.data["index"] for result in context.tool_results) == (1, 2, 3)
+    assert context.compacted is False
+
+
+def test_context_window_policy_metadata_round_trips() -> None:
+    policy = ContextWindowPolicy(
+        auto_compaction=False,
+        max_tool_results=6,
+        max_tool_result_tokens=200,
+        reserved_output_tokens=20,
+        recent_tool_result_count=2,
+        default_tool_result_tokens=30,
+        per_tool_result_tokens={"grep": 10},
+        tokenizer_model="gpt-4o",
+    )
+
+    parsed = context_window_policy_from_payload(policy.metadata_payload())
+
+    assert parsed == policy
 
 
 def test_continuity_summary_metadata_is_derived_from_state() -> None:
