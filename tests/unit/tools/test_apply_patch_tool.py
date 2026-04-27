@@ -110,6 +110,55 @@ def test_apply_patch_accepts_structured_add_file_patch(tmp_path: Path) -> None:
     assert result.content == "A src/main.py\nA README.md"
 
 
+def test_apply_patch_rejects_structured_add_file_when_destination_exists(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "README.md"
+    target.write_text("original\n", encoding="utf-8")
+    patch_text = "\n".join(
+        [
+            "*** Begin Patch",
+            "*** Add File: README.md",
+            "+# Replacement",
+            "*** End Patch",
+        ]
+    )
+
+    with pytest.raises(ValueError, match="Add File destination already exists"):
+        ApplyPatchTool().invoke(
+            ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
+            workspace=tmp_path,
+        )
+
+    assert target.read_text(encoding="utf-8") == "original\n"
+
+
+def test_apply_patch_rejects_structured_add_file_before_partial_writes(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "README.md"
+    target.write_text("original\n", encoding="utf-8")
+    patch_text = "\n".join(
+        [
+            "*** Begin Patch",
+            "*** Add File: new.txt",
+            "+new file",
+            "*** Add File: README.md",
+            "+# Replacement",
+            "*** End Patch",
+        ]
+    )
+
+    with pytest.raises(ValueError, match="Add File destination already exists"):
+        ApplyPatchTool().invoke(
+            ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
+            workspace=tmp_path,
+        )
+
+    assert not (tmp_path / "new.txt").exists()
+    assert target.read_text(encoding="utf-8") == "original\n"
+
+
 def test_apply_patch_accepts_structured_update_delete_and_move(tmp_path: Path) -> None:
     target = tmp_path / "app.py"
     target.write_text("def greet():\n    print('hi')\n", encoding="utf-8")

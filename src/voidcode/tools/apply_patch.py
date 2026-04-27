@@ -288,12 +288,17 @@ def _derive_marker_update_content(file_path: Path, chunks: tuple[_MarkerChunk, .
 def _apply_marker_patch(patch_text: str, *, workspace: Path) -> ToolResult:
     hunks = _parse_marker_patch(patch_text)
     prepared: list[_PreparedMarkerChange] = []
+    planned_add_paths: set[str] = set()
     for hunk in hunks:
         _assert_within_workspace(workspace, Path(hunk.path))
         if hunk.move_path is not None:
             _assert_within_workspace(workspace, Path(hunk.move_path))
 
         if hunk.action == "add":
+            target = workspace / hunk.path
+            if target.exists() or hunk.path in planned_add_paths:
+                raise ValueError(f"Add File destination already exists: {hunk.path}")
+            planned_add_paths.add(hunk.path)
             prepared.append(
                 _PreparedMarkerChange(status="A", path=hunk.path, content=hunk.contents or "")
             )
