@@ -196,7 +196,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_EXECUTABLE_AGENT_PRESETS = frozenset({"leader"})
+_EXECUTABLE_AGENT_PRESETS = frozenset({"leader", "product"})
 _EXECUTABLE_SUBAGENT_PRESETS = frozenset({"advisor", "explore", "product", "researcher", "worker"})
 _ACP_CONNECTIVITY_ERRORS = frozenset(
     {
@@ -2488,7 +2488,7 @@ class VoidCodeRuntime:
                 agent_config.execution_engine
                 if agent_config is not None and agent_config.execution_engine is not None
                 else manifest.execution_engine
-                if agent_config is not None and manifest.execution_engine is not None
+                if manifest.execution_engine is not None
                 else self._config.execution_engine
             )
             agent_model = agent_config.model if agent_config is not None else None
@@ -5055,6 +5055,17 @@ class VoidCodeRuntime:
         if agent is not None:
             agent = parse_runtime_agent_payload(
                 serialize_runtime_agent_config(agent),
+                source="runtime config agent",
+                hooks=self._config.hooks,
+            )
+            assert agent is not None
+            self._validate_runtime_agent_for_execution(
+                agent,
+                source="runtime config agent",
+            )
+        elif execution_engine == "provider":
+            agent = parse_runtime_agent_payload(
+                serialize_runtime_agent_config(RuntimeAgentConfig(preset="leader")),
                 source="runtime config agent",
                 hooks=self._config.hooks,
             )

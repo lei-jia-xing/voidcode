@@ -7232,15 +7232,15 @@ def test_runtime_agent_summary_exposes_stable_agent_and_model_fields(tmp_path: P
 
     default_summary = default_runtime.list_agent_summaries()
 
-    assert len(default_summary) == 1
-    assert default_summary[0].id == "leader"
-    assert default_summary[0].mode == "primary"
-    assert default_summary[0].selectable is True
-    assert default_summary[0].configured is False
-    assert default_summary[0].execution_engine == "deterministic"
-    assert default_summary[0].model is None
-    assert default_summary[0].model_label is None
-    assert default_summary[0].provider is None
+    assert [summary.id for summary in default_summary] == ["leader", "product"]
+    for summary in default_summary:
+        assert summary.mode == "primary"
+        assert summary.selectable is True
+        assert summary.configured is False
+        assert summary.execution_engine == "provider"
+        assert summary.model is None
+        assert summary.model_label is None
+        assert summary.provider is None
 
     configured_runtime = VoidCodeRuntime(
         workspace=tmp_path,
@@ -7250,7 +7250,7 @@ def test_runtime_agent_summary_exposes_stable_agent_and_model_fields(tmp_path: P
     configured_summary = configured_runtime.list_agent_summaries()[0]
 
     assert configured_summary.configured is True
-    assert configured_summary.execution_engine == "deterministic"
+    assert configured_summary.execution_engine == "provider"
     assert configured_summary.model == "opencode/gpt-5.4"
     assert configured_summary.model_label == "gpt-5.4"
     assert configured_summary.model_source == "configured"
@@ -7480,6 +7480,57 @@ def test_runtime_agent_config_selects_provider_graph_and_persists_agent_metadata
     assert effective.agent == RuntimeAgentConfig(
         preset="leader",
         prompt_profile="leader",
+        model="opencode/gpt-5.4",
+        execution_engine="provider",
+    )
+
+
+def test_runtime_product_agent_config_is_top_level_selectable_and_persisted(
+    tmp_path: Path,
+) -> None:
+    created_providers: list[_ScriptedTurnProvider] = []
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(ProviderTurnResult(output="plan complete"),),
+                created_providers=created_providers,
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            agent=RuntimeAgentConfig(
+                preset="product",
+                model="opencode/gpt-5.4",
+            )
+        ),
+        model_provider_registry=registry,
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="shape the issue", session_id="product-agent"))
+    effective = runtime.effective_runtime_config(session_id="product-agent")
+
+    assert response.session.status == "completed"
+    assert response.output == "plan complete"
+    assert created_providers[0].requests[0].agent_preset == {
+        "preset": "product",
+        "prompt_profile": "product",
+        "prompt_materialization": {
+            "profile": "product",
+            "version": 2,
+            "source": "builtin",
+            "format": "text",
+        },
+        "model": "opencode/gpt-5.4",
+        "execution_engine": "provider",
+    }
+    runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
+    assert runtime_config["agent"] == created_providers[0].requests[0].agent_preset
+    assert effective.agent == RuntimeAgentConfig(
+        preset="product",
+        prompt_profile="product",
         model="opencode/gpt-5.4",
         execution_engine="provider",
     )
@@ -8581,6 +8632,12 @@ def test_runtime_resume_preserves_provider_attempt_and_target_across_pending_app
     assert runtime_config["max_steps"] is None
     assert runtime_config["tool_timeout_seconds"] is None
     assert runtime_config["model"] == "opencode/gpt-5.4"
+    assert runtime_config["agent"] == {
+        "preset": "leader",
+        "prompt_profile": "leader",
+        "prompt_materialization": _prompt_materialization_payload("leader"),
+        "execution_engine": "provider",
+    }
     assert runtime_config["provider_fallback"] == {
         "preferred_model": "opencode/gpt-5.4",
         "fallback_models": ["custom/demo"],
