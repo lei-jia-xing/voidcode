@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Protocol, cast
 
 from . import __version__
+from .acp.stdio import StdioAcpServer
 from .doctor import (
     CapabilityCheckResult,
     CapabilityCheckStatus,
@@ -102,6 +103,20 @@ def _handle_run_command(args: argparse.Namespace) -> int:
     finally:
         _close_runtime(runtime)
     return 0
+
+
+def _handle_acp_command(args: argparse.Namespace) -> int:
+    workspace = cast(Path, args.workspace)
+    config = load_runtime_config(
+        workspace,
+        approval_mode=cast(PermissionDecision | None, getattr(args, "approval_mode", None)),
+    )
+    runtime = VoidCodeRuntime(workspace=workspace, config=config)
+    try:
+        server = StdioAcpServer(runtime=runtime, workspace=workspace)
+        return server.serve()
+    finally:
+        _close_runtime(runtime)
 
 
 def _run_with_inline_approval(
@@ -938,6 +953,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run_parser.set_defaults(provider_stream=None)
     run_parser.set_defaults(handler=_handle_run_command)
+
+    acp_parser = subparsers.add_parser(
+        "acp",
+        help="Run the minimal external-facing ACP stdio JSON-RPC facade.",
+    )
+    _ = acp_parser.add_argument(
+        "--workspace",
+        type=Path,
+        default=Path.cwd(),
+        help="Workspace root used by the ACP-backed runtime session database.",
+    )
+    _ = acp_parser.add_argument(
+        "--approval-mode",
+        choices=("allow", "deny", "ask"),
+        help="Override the runtime approval mode for this ACP process.",
+    )
+    acp_parser.set_defaults(handler=_handle_acp_command)
 
     serve_parser = subparsers.add_parser(
         "serve",
