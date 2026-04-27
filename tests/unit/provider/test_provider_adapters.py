@@ -371,6 +371,61 @@ def test_provider_adapter_wraps_internal_tool_property_schema(
     }
 
 
+def test_provider_adapter_preserves_object_schema_without_explicit_type(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = OpenAIModelProvider().turn_provider()
+    request = _build_turn_request(model_name="openai")
+    request = ProviderTurnRequest(
+        prompt=request.prompt,
+        available_tools=(
+            ToolDefinition(
+                name="mcp_search",
+                description="search MCP data",
+                input_schema={
+                    "properties": {
+                        "query": {"type": "string"},
+                    },
+                    "required": ["query"],
+                    "additionalProperties": False,
+                },
+                read_only=True,
+            ),
+        ),
+        tool_results=request.tool_results,
+        context_window=request.context_window,
+        applied_skills=request.applied_skills,
+        raw_model=request.raw_model,
+        provider_name=request.provider_name,
+        model_name=request.model_name,
+    )
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        completion_content="hello world",
+    )
+
+    _ = provider.propose_turn(request)
+
+    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+    assert isinstance(payload_obj, dict)
+    payload = cast(dict[str, object], payload_obj)
+    tools_obj = payload.get("tools")
+    assert isinstance(tools_obj, list)
+    tool_payload = cast(dict[str, object], tools_obj[0])
+    function_obj = tool_payload.get("function")
+    assert isinstance(function_obj, dict)
+    function = cast(dict[str, object], function_obj)
+    assert function["parameters"] == {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string"},
+        },
+        "required": ["query"],
+        "additionalProperties": False,
+    }
+
+
 @pytest.mark.parametrize(
     ("provider_name", "provider"),
     [
@@ -706,12 +761,149 @@ def test_provider_adapter_includes_tool_result_context(
     payload = cast(dict[str, object], payload_obj)
     messages_obj = payload.get("messages")
     assert isinstance(messages_obj, list)
-    messages = cast(list[dict[str, str]], messages_obj)
-    assert messages[0]["role"] == "user"
-    assert "Runtime tool results from earlier steps" in messages[0]["content"]
-    assert "read_file status=ok" in messages[0]["content"]
-    assert "hello world" in messages[0]["content"]
-    assert messages[1] == {"role": "user", "content": "read sample.txt"}
+    messages = cast(list[dict[str, object]], messages_obj)
+    assert messages[0] == {"role": "user", "content": "read sample.txt"}
+    assert messages[1] == {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [
+            {
+                "id": "voidcode_tool_1",
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "arguments": "{}",
+                },
+            }
+        ],
+    }
+    assert messages[2]["role"] == "tool"
+    assert messages[2]["tool_call_id"] == "voidcode_tool_1"
+    tool_content = messages[2]["content"]
+    assert isinstance(tool_content, str)
+    assert '"status": "ok"' in tool_content
+    assert '"content": "hello world"' in tool_content
+
+
+def test_provider_adapter_includes_truncated_tool_reference_without_full_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = OpenAIModelProvider().turn_provider()
+    request = _build_turn_request(model_name="openai")
+    tool_results = (
+        ToolResult(
+            tool_name="web_fetch",
+            status="ok",
+            content=(
+                "small preview\n\n[Tool output truncated: Full output saved to: "
+                ".voidcode/tool-output/web_fetch.txt]"
+            ),
+            data={
+                "url": "https://example.com",
+                "truncated": True,
+                "output_path": ".voidcode/tool-output/web_fetch.txt",
+            },
+            truncated=True,
+            partial=True,
+            reference=".voidcode/tool-output/web_fetch.txt",
+        ),
+    )
+    request = ProviderTurnRequest(
+        prompt=request.prompt,
+        available_tools=request.available_tools,
+        tool_results=tool_results,
+        context_window=_StubContextWindow(
+            prompt=request.context_window.prompt,
+            tool_results=tool_results,
+        ),
+        applied_skills=request.applied_skills,
+        raw_model=request.raw_model,
+        provider_name=request.provider_name,
+        model_name=request.model_name,
+        attempt=request.attempt,
+        abort_signal=request.abort_signal,
+    )
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        completion_content="done",
+    )
+
+    _ = provider.propose_turn(request)
+
+    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+    assert isinstance(payload_obj, dict)
+    payload = cast(dict[str, object], payload_obj)
+    messages_obj = payload.get("messages")
+    assert isinstance(messages_obj, list)
+    messages = cast(list[dict[str, object]], messages_obj)
+    tool_content = messages[2]["content"]
+    assert isinstance(tool_content, str)
+    assert '"truncated": true' in tool_content
+    assert ".voidcode/tool-output/web_fetch.txt" in tool_content
+    assert "FULL WEBSITE BODY" not in tool_content
+
+
+def test_provider_adapter_sanitizes_tool_arguments_and_inline_blobs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = OpenAIModelProvider().turn_provider()
+    request = _build_turn_request(model_name="openai")
+    raw_content = "RAW FILE CONTENT SHOULD NOT REACH MODEL"
+    raw_data_uri = "data:image/png;base64," + "A" * 64
+    tool_results = (
+        ToolResult(
+            tool_name="write_file",
+            status="ok",
+            content="Wrote file successfully: out.txt",
+            data={
+                "tool_call_id": "call-write",
+                "arguments": {"path": "out.txt", "content": raw_content},
+                "attachment": {"mime": "image/png", "data_uri": raw_data_uri},
+            },
+        ),
+    )
+    request = ProviderTurnRequest(
+        prompt=request.prompt,
+        available_tools=request.available_tools,
+        tool_results=tool_results,
+        context_window=_StubContextWindow(
+            prompt=request.context_window.prompt,
+            tool_results=tool_results,
+        ),
+        applied_skills=request.applied_skills,
+        raw_model=request.raw_model,
+        provider_name=request.provider_name,
+        model_name=request.model_name,
+        attempt=request.attempt,
+        abort_signal=request.abort_signal,
+    )
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        completion_content="done",
+    )
+
+    _ = provider.propose_turn(request)
+
+    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+    assert isinstance(payload_obj, dict)
+    payload = cast(dict[str, object], payload_obj)
+    messages_obj = payload.get("messages")
+    assert isinstance(messages_obj, list)
+    messages = cast(list[dict[str, object]], messages_obj)
+    assistant_call = messages[1]
+    tool_calls = cast(list[dict[str, object]], assistant_call["tool_calls"])
+    function = cast(dict[str, object], tool_calls[0]["function"])
+    tool_content = messages[2]["content"]
+    assert isinstance(tool_content, str)
+    raw_arguments = function["arguments"]
+    assert isinstance(raw_arguments, str)
+    assert raw_content not in raw_arguments
+    assert raw_content not in tool_content
+    assert raw_data_uri not in tool_content
+    assert '"omitted": true' in raw_arguments
+    assert '"data_uri": {"byte_count"' in tool_content
 
 
 def test_provider_adapter_includes_tool_result_errors(
@@ -750,11 +942,193 @@ def test_provider_adapter_includes_tool_result_errors(
     payload = cast(dict[str, object], payload_obj)
     messages_obj = payload.get("messages")
     assert isinstance(messages_obj, list)
-    messages = cast(list[dict[str, str]], messages_obj)
-    assert messages[0]["role"] == "user"
-    assert "read_file status=error" in messages[0]["content"]
-    assert "error:\nsample.txt not found" in messages[0]["content"]
-    assert messages[1] == {"role": "user", "content": "read sample.txt"}
+    messages = cast(list[dict[str, object]], messages_obj)
+    assert messages[0] == {"role": "user", "content": "read sample.txt"}
+    assert messages[1]["role"] == "assistant"
+    assert messages[2]["role"] == "tool"
+    assert messages[2]["tool_call_id"] == "voidcode_tool_1"
+    tool_content = messages[2]["content"]
+    assert isinstance(tool_content, str)
+    assert '"status": "error"' in tool_content
+    assert '"error": "sample.txt not found"' in tool_content
+
+
+def test_provider_adapter_preserves_tool_call_id_and_arguments_in_tool_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = OpenAIModelProvider().turn_provider()
+    request = _build_turn_request(model_name="openai")
+    tool_results = (
+        ToolResult(
+            tool_name="list",
+            status="ok",
+            content="./\n  CMakeLists.txt",
+            data={
+                "tool_call_id": "call-list-1",
+                "arguments": {"path": "."},
+                "path": "/workspace",
+            },
+        ),
+    )
+    request = ProviderTurnRequest(
+        prompt=request.prompt,
+        available_tools=request.available_tools,
+        tool_results=tool_results,
+        context_window=_StubContextWindow(
+            prompt=request.context_window.prompt,
+            tool_results=tool_results,
+        ),
+        applied_skills=request.applied_skills,
+        raw_model=request.raw_model,
+        provider_name=request.provider_name,
+        model_name=request.model_name,
+        attempt=request.attempt,
+        abort_signal=request.abort_signal,
+    )
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        completion_content="done",
+    )
+
+    _ = provider.propose_turn(request)
+
+    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+    assert isinstance(payload_obj, dict)
+    payload = cast(dict[str, object], payload_obj)
+    messages_obj = payload.get("messages")
+    assert isinstance(messages_obj, list)
+    messages = cast(list[dict[str, object]], messages_obj)
+    assert messages[1] == {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [
+            {
+                "id": "call-list-1",
+                "type": "function",
+                "function": {
+                    "name": "list",
+                    "arguments": '{"path": "."}',
+                },
+            }
+        ],
+    }
+    assert messages[2]["tool_call_id"] == "call-list-1"
+    tool_content = messages[2]["content"]
+    assert isinstance(tool_content, str)
+    assert '"path": "/workspace"' in tool_content
+    assert "tool_call_id" not in tool_content
+
+
+def test_opencode_go_provider_uses_user_tool_feedback_for_compatibility(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = OpenCodeGoModelProvider().turn_provider()
+    request = _build_turn_request(model_name="opencode-go")
+    tool_results = (
+        ToolResult(
+            tool_name="list",
+            status="ok",
+            content="./\n  .voidcode.json",
+            data={"tool_call_id": "list_0", "arguments": {"path": "."}},
+        ),
+    )
+    request = ProviderTurnRequest(
+        prompt=request.prompt,
+        available_tools=request.available_tools,
+        tool_results=tool_results,
+        context_window=_StubContextWindow(
+            prompt=request.context_window.prompt,
+            tool_results=tool_results,
+        ),
+        applied_skills=request.applied_skills,
+        raw_model="opencode-go/kimi-k2.6",
+        provider_name="opencode-go",
+        model_name="kimi-k2.6",
+        attempt=request.attempt,
+        abort_signal=request.abort_signal,
+    )
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        completion_content="done",
+    )
+
+    _ = provider.propose_turn(request)
+
+    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+    assert isinstance(payload_obj, dict)
+    payload = cast(dict[str, object], payload_obj)
+    messages_obj = payload.get("messages")
+    assert isinstance(messages_obj, list)
+    messages = cast(list[dict[str, object]], messages_obj)
+    assert messages[0] == {"role": "user", "content": "read sample.txt"}
+    assert messages[1]["role"] == "user"
+    feedback = messages[1]["content"]
+    assert isinstance(feedback, str)
+    assert "tool calls have already completed" in feedback
+    assert '"tool_name": "list"' in feedback
+    assert '"arguments": {"path": "."}' in feedback
+    assert "tool_calls" not in messages[1]
+
+
+def test_opencode_go_provider_sanitizes_user_tool_feedback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = OpenCodeGoModelProvider().turn_provider()
+    request = _build_turn_request(model_name="opencode-go")
+    raw_content = "RAW FILE CONTENT SHOULD NOT REACH OPENCODE GO"
+    raw_patch = "diff --git a/a b/a\n" + "SECRET PATCH CONTENT"
+    raw_data_uri = "data:image/png;base64," + "A" * 64
+    tool_results = (
+        ToolResult(
+            tool_name="write_file",
+            status="ok",
+            content="Wrote file successfully: out.txt",
+            data={
+                "tool_call_id": "write_0",
+                "arguments": {"path": "out.txt", "content": raw_content, "patch": raw_patch},
+                "attachment": {"mime": "image/png", "data_uri": raw_data_uri},
+            },
+        ),
+    )
+    request = ProviderTurnRequest(
+        prompt=request.prompt,
+        available_tools=request.available_tools,
+        tool_results=tool_results,
+        context_window=_StubContextWindow(
+            prompt=request.context_window.prompt,
+            tool_results=tool_results,
+        ),
+        applied_skills=request.applied_skills,
+        raw_model="opencode-go/glm-5.1",
+        provider_name="opencode-go",
+        model_name="glm-5.1",
+        attempt=request.attempt,
+        abort_signal=request.abort_signal,
+    )
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        completion_content="done",
+    )
+
+    _ = provider.propose_turn(request)
+
+    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+    assert isinstance(payload_obj, dict)
+    payload = cast(dict[str, object], payload_obj)
+    messages_obj = payload.get("messages")
+    assert isinstance(messages_obj, list)
+    messages = cast(list[dict[str, object]], messages_obj)
+    assert messages[1]["role"] == "user"
+    feedback = messages[1]["content"]
+    assert isinstance(feedback, str)
+    assert raw_content not in feedback
+    assert raw_patch not in feedback
+    assert raw_data_uri not in feedback
+    assert '"omitted": true' in feedback
+    assert '"data_uri": {"byte_count"' in feedback
 
 
 @pytest.mark.parametrize(
@@ -1044,6 +1418,7 @@ def test_opencode_go_provider_routes_model_families_to_required_sdk_adapter(
     )
     assert payload["api_base"] == expected_api_base
     assert payload["api_key"] == "opencode-go-key"
+    assert payload["timeout"] == 300.0
     if model_name in {"minimax-m2.7", "minimax-m2.5"}:
         assert payload["extra_headers"] == {
             "anthropic-version": "2023-06-01",
@@ -1085,10 +1460,11 @@ def test_provider_adapter_propose_turn_returns_tool_call_when_model_requests_too
         mode="completion",
         tool_calls=[
             {
+                "id": "read:file:1",
                 "function": {
                     "name": "read_file",
                     "arguments": '{"filePath":"sample.txt"}',
-                }
+                },
             }
         ],
     )
@@ -1098,6 +1474,7 @@ def test_provider_adapter_propose_turn_returns_tool_call_when_model_requests_too
     assert result.tool_call is not None
     assert result.tool_call.tool_name == "read_file"
     assert result.tool_call.arguments == {"filePath": "sample.txt"}
+    assert result.tool_call.tool_call_id == "read_file_1"
 
 
 def test_google_provider_api_key_uses_google_auth_header(
@@ -1161,13 +1538,16 @@ def test_provider_adapter_stream_turn_emits_tool_event_when_model_streams_tool_r
         ProviderStreamEvent(
             kind="content",
             channel="tool",
-            text='{"tool_name": "read_file", "arguments": {"filePath": "sample.txt"}}',
+            text=(
+                '{"tool_name": "read_file", "arguments": {"filePath": "sample.txt"}, '
+                '"tool_call_id": "read_file"}'
+            ),
         ),
         ProviderStreamEvent(kind="done", done_reason="completed"),
     ]
 
 
-def test_provider_adapter_stream_turn_emits_repeated_tool_snapshots_for_updates(
+def test_provider_adapter_stream_turn_emits_final_tool_snapshot_for_updates(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     provider = OpenAIModelProvider()
@@ -1211,12 +1591,60 @@ def test_provider_adapter_stream_turn_emits_repeated_tool_snapshots_for_updates(
         ProviderStreamEvent(
             kind="content",
             channel="tool",
-            text='{"tool_name": "read_file", "arguments": {}}',
+            text=(
+                '{"tool_name": "read_file", "arguments": {"filePath": "sample.txt"}, '
+                '"tool_call_id": "read_file"}'
+            ),
         ),
+        ProviderStreamEvent(kind="done", done_reason="completed"),
+    ]
+
+
+def test_provider_adapter_stream_turn_coalesces_tool_arguments_by_index(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = OpenAIModelProvider().turn_provider()
+    assert isinstance(provider, StreamableTurnProvider)
+
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="stream",
+        stream_tool_chunks=(
+            (
+                [
+                    {
+                        "index": 0,
+                        "function": {"name": "write_file", "arguments": '{"path":'},
+                    },
+                    {
+                        "index": 1,
+                        "function": {"name": "read_file", "arguments": '{"filePath":'},
+                    },
+                ],
+                None,
+            ),
+            (
+                [
+                    {"index": 1, "function": {"arguments": '"sample.txt"}'}},
+                    {"index": 0, "function": {"arguments": '"out.txt","content":"ok"}'}},
+                ],
+                None,
+            ),
+            (None, "tool_calls"),
+        ),
+    )
+
+    events = list(provider.stream_turn(_build_turn_request(model_name="openai")))
+
+    assert events == [
         ProviderStreamEvent(
             kind="content",
             channel="tool",
-            text='{"tool_name": "read_file", "arguments": {"filePath": "sample.txt"}}',
+            text=(
+                '{"tool_name": "write_file", '
+                '"arguments": {"path": "out.txt", "content": "ok"}, '
+                '"tool_call_id": "write_file"}'
+            ),
         ),
         ProviderStreamEvent(kind="done", done_reason="completed"),
     ]
