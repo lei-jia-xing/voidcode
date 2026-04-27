@@ -52,16 +52,20 @@ def test_builtin_agent_manifests_have_materialized_prompt_profiles_and_execution
 def test_builtin_agent_manifests_declare_top_level_selectability() -> None:
     manifests = list_builtin_agent_manifests()
 
-    assert [manifest.id for manifest in manifests if manifest.top_level_selectable] == ["leader"]
+    assert [manifest.id for manifest in manifests if manifest.top_level_selectable] == [
+        "leader",
+        "product",
+    ]
     assert is_agent_top_level_selectable("leader") is True
+    assert is_agent_top_level_selectable("product") is True
     assert is_agent_top_level_selectable("worker") is False
     assert is_agent_top_level_selectable("advisor") is False
     assert is_agent_top_level_selectable("explore") is False
     assert is_agent_top_level_selectable("researcher") is False
-    assert is_agent_top_level_selectable("product") is False
     assert is_agent_top_level_selectable("missing") is False
     assert tuple(manifest.id for manifest in list_top_level_selectable_agent_manifests()) == (
         "leader",
+        "product",
     )
 
 

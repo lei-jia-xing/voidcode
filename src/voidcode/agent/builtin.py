@@ -141,18 +141,29 @@ RESEARCHER_AGENT_MANIFEST = AgentManifest(
     ),
 )
 
+_PRODUCT_TOOL_ALLOWLIST = (
+    *_READ_ONLY_WORKSPACE_TOOLS,
+    "todo_write",
+    "web_search",
+    "web_fetch",
+    "code_search",
+)
+
 PRODUCT_AGENT_MANIFEST = AgentManifest(
     id="product",
     name="Product",
-    mode="subagent",
-    description="Requirements-alignment preset for scope, acceptance, and product intent review.",
+    mode="primary",
+    description=(
+        "Planning agent preset for requirement discussion, scope shaping, "
+        "acceptance criteria, and issue drafting."
+    ),
     prompt_profile="product",
     execution_engine="provider",
-    tool_allowlist=("read_file", "list", "glob", "grep"),
-    top_level_selectable=False,
+    tool_allowlist=_PRODUCT_TOOL_ALLOWLIST,
+    top_level_selectable=True,
     prompt_materialization=AgentPromptMaterialization(
         profile="product",
-        version=_BUILTIN_PROMPT_MATERIALIZATION_VERSION,
+        version=2,
         source="builtin",
         format="text",
         model_family_overrides=MappingProxyType({}),
