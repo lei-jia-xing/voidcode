@@ -48,6 +48,7 @@ bun run dev
 bun run lint
 bun run typecheck
 bun run test:run
+bun run test:e2e
 bun run build
 ```
 
