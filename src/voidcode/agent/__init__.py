@@ -6,7 +6,9 @@ from .builtin import (
     RESEARCHER_AGENT_MANIFEST,
     WORKER_AGENT_MANIFEST,
     get_builtin_agent_manifest,
+    is_agent_top_level_selectable,
     list_builtin_agent_manifests,
+    list_top_level_selectable_agent_manifests,
     validate_builtin_agent_manifests,
 )
 from .leader import render_leader_prompt
@@ -16,8 +18,16 @@ from .models import (
     AgentManifestFieldSemantic,
     AgentManifestId,
     AgentMode,
+    AgentPromptFormat,
+    AgentPromptMaterialization,
+    AgentPromptSource,
 )
-from .prompts import is_builtin_prompt_profile, render_agent_prompt, render_builtin_prompt_profile
+from .prompts import (
+    is_builtin_prompt_profile,
+    render_agent_prompt,
+    render_builtin_prompt_profile,
+    select_prompt_profile_for_manifest,
+)
 
 __all__ = [
     "AgentExecutionEngineName",
@@ -25,6 +35,9 @@ __all__ = [
     "AgentManifestFieldSemantic",
     "AgentManifestId",
     "AgentMode",
+    "AgentPromptFormat",
+    "AgentPromptMaterialization",
+    "AgentPromptSource",
     "ADVISOR_AGENT_MANIFEST",
     "EXPLORE_AGENT_MANIFEST",
     "LEADER_AGENT_MANIFEST",
@@ -32,10 +45,13 @@ __all__ = [
     "RESEARCHER_AGENT_MANIFEST",
     "WORKER_AGENT_MANIFEST",
     "get_builtin_agent_manifest",
+    "is_agent_top_level_selectable",
     "is_builtin_prompt_profile",
     "list_builtin_agent_manifests",
+    "list_top_level_selectable_agent_manifests",
     "validate_builtin_agent_manifests",
     "render_agent_prompt",
     "render_builtin_prompt_profile",
     "render_leader_prompt",
+    "select_prompt_profile_for_manifest",
 ]

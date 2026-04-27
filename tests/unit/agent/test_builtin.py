@@ -5,14 +5,18 @@ from typing import Protocol, cast
 import pytest
 
 from voidcode.agent import (
+    get_builtin_agent_manifest,
+    is_agent_top_level_selectable,
     is_builtin_prompt_profile,
     list_builtin_agent_manifests,
+    list_top_level_selectable_agent_manifests,
     render_agent_prompt,
     render_builtin_prompt_profile,
+    select_prompt_profile_for_manifest,
 )
 from voidcode.agent import prompts as prompt_module
 from voidcode.agent.builtin import validate_builtin_agent_manifests
-from voidcode.agent.models import AgentManifest
+from voidcode.agent.models import AgentManifest, AgentPromptMaterialization
 
 
 class _PromptCacheInfo(Protocol):
@@ -34,10 +38,74 @@ def test_builtin_agent_manifests_have_materialized_prompt_profiles_and_execution
     assert manifests
     for manifest in manifests:
         assert manifest.prompt_profile is not None
+        assert manifest.prompt_materialization is not None
+        assert manifest.prompt_materialization.profile == manifest.prompt_profile
+        assert manifest.prompt_materialization.source == "builtin"
+        assert manifest.prompt_materialization.format == "text"
+        assert manifest.prompt_materialization.version >= 1
         assert manifest.execution_engine == "provider"
         prompt = render_builtin_prompt_profile(manifest.prompt_profile)
         assert prompt is not None
         assert prompt
+
+
+def test_builtin_agent_manifests_declare_top_level_selectability() -> None:
+    manifests = list_builtin_agent_manifests()
+
+    assert [manifest.id for manifest in manifests if manifest.top_level_selectable] == ["leader"]
+    assert is_agent_top_level_selectable("leader") is True
+    assert is_agent_top_level_selectable("worker") is False
+    assert is_agent_top_level_selectable("advisor") is False
+    assert is_agent_top_level_selectable("explore") is False
+    assert is_agent_top_level_selectable("researcher") is False
+    assert is_agent_top_level_selectable("product") is False
+    assert is_agent_top_level_selectable("missing") is False
+    assert tuple(manifest.id for manifest in list_top_level_selectable_agent_manifests()) == (
+        "leader",
+    )
+
+
+def test_prompt_profile_selection_uses_materialization_fallback() -> None:
+    manifest = get_builtin_agent_manifest("leader")
+
+    assert manifest is not None
+    assert select_prompt_profile_for_manifest(manifest) == "leader"
+    assert select_prompt_profile_for_manifest(manifest, model_family="unknown") == "leader"
+
+
+def test_prompt_profile_selection_supports_model_family_overrides() -> None:
+    manifest = AgentManifest(
+        id="leader",
+        name="Leader",
+        mode="primary",
+        description="Primary preset",
+        prompt_profile="leader",
+        execution_engine="provider",
+        prompt_materialization=AgentPromptMaterialization(
+            profile="leader",
+            model_family_overrides={"compact": "worker"},
+        ),
+    )
+
+    assert select_prompt_profile_for_manifest(manifest, model_family="compact") == "worker"
+    assert select_prompt_profile_for_manifest(manifest, model_family="unknown") == "leader"
+
+
+def test_render_agent_prompt_uses_model_family_materialization_override() -> None:
+    prompt = render_agent_prompt(
+        {
+            "preset": "leader",
+            "prompt_profile": "leader",
+            "prompt_materialization": AgentPromptMaterialization(
+                profile="leader",
+                model_family_overrides={"compact": "worker"},
+            ),
+        },
+        model_family="compact",
+    )
+
+    assert prompt is not None
+    assert "VoidCode's worker agent" in prompt
 
 
 @pytest.mark.parametrize(
@@ -108,6 +176,8 @@ def test_agent_manifest_exposes_live_default_vs_intent_field_semantics() -> None
         tool_allowlist=("read_file",),
         skill_refs=("demo",),
         routing_hints={"tier": "primary"},
+        top_level_selectable=True,
+        prompt_materialization=AgentPromptMaterialization(profile="leader"),
     )
 
     assert manifest.live_default_fields == (
@@ -116,9 +186,13 @@ def test_agent_manifest_exposes_live_default_vs_intent_field_semantics() -> None
         "model_preference",
         "tool_allowlist",
         "skill_refs",
+        "top_level_selectable",
+        "prompt_materialization",
     )
     assert manifest.intent_fields == ("routing_hints",)
     assert manifest.field_semantic("prompt_profile") == "live_default"
+    assert manifest.field_semantic("top_level_selectable") == "live_default"
+    assert manifest.field_semantic("prompt_materialization") == "live_default"
     assert manifest.field_semantic("routing_hints") == "intent"
 
 
@@ -133,6 +207,63 @@ def test_validate_builtin_agent_manifests_rejects_unknown_prompt_profile() -> No
                     description="Primary preset",
                     prompt_profile="missing-profile",
                     execution_engine="provider",
+                ),
+            )
+        )
+
+
+def test_validate_builtin_agent_manifests_rejects_top_level_subagent() -> None:
+    with pytest.raises(ValueError, match="subagent.*top_level_selectable"):
+        _ = validate_builtin_agent_manifests(
+            (
+                AgentManifest(
+                    id="worker",
+                    name="Worker",
+                    mode="subagent",
+                    description="Worker preset",
+                    prompt_profile="worker",
+                    execution_engine="provider",
+                    top_level_selectable=True,
+                    prompt_materialization=AgentPromptMaterialization(profile="worker"),
+                ),
+            )
+        )
+
+
+def test_validate_builtin_agent_manifests_rejects_unknown_materialized_profile() -> None:
+    with pytest.raises(ValueError, match="prompt_materialization.profile"):
+        _ = validate_builtin_agent_manifests(
+            (
+                AgentManifest(
+                    id="leader",
+                    name="Leader",
+                    mode="primary",
+                    description="Primary preset",
+                    prompt_profile="leader",
+                    execution_engine="provider",
+                    top_level_selectable=True,
+                    prompt_materialization=AgentPromptMaterialization(profile="missing-profile"),
+                ),
+            )
+        )
+
+
+def test_validate_builtin_agent_manifests_rejects_unknown_model_family_override() -> None:
+    with pytest.raises(ValueError, match="model_family_overrides"):
+        _ = validate_builtin_agent_manifests(
+            (
+                AgentManifest(
+                    id="leader",
+                    name="Leader",
+                    mode="primary",
+                    description="Primary preset",
+                    prompt_profile="leader",
+                    execution_engine="provider",
+                    top_level_selectable=True,
+                    prompt_materialization=AgentPromptMaterialization(
+                        profile="leader",
+                        model_family_overrides={"unknown": "missing-profile"},
+                    ),
                 ),
             )
         )

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from .models import AgentManifest, AgentManifestId
+from types import MappingProxyType
+
+from .models import AgentManifest, AgentManifestId, AgentPromptMaterialization
 from .prompts import render_builtin_prompt_profile
 
 _READ_ONLY_WORKSPACE_TOOLS = (
@@ -34,6 +36,8 @@ _LEADER_TOOL_ALLOWLIST = (
     "mcp/*",
 )
 
+_BUILTIN_PROMPT_MATERIALIZATION_VERSION = 1
+
 LEADER_AGENT_MANIFEST = AgentManifest(
     id="leader",
     name="Leader",
@@ -42,6 +46,14 @@ LEADER_AGENT_MANIFEST = AgentManifest(
     prompt_profile="leader",
     execution_engine="provider",
     tool_allowlist=_LEADER_TOOL_ALLOWLIST,
+    top_level_selectable=True,
+    prompt_materialization=AgentPromptMaterialization(
+        profile="leader",
+        version=_BUILTIN_PROMPT_MATERIALIZATION_VERSION,
+        source="builtin",
+        format="text",
+        model_family_overrides=MappingProxyType({}),
+    ),
 )
 
 WORKER_AGENT_MANIFEST = AgentManifest(
@@ -61,6 +73,14 @@ WORKER_AGENT_MANIFEST = AgentManifest(
         "format_file",
         "task",
     ),
+    top_level_selectable=False,
+    prompt_materialization=AgentPromptMaterialization(
+        profile="worker",
+        version=_BUILTIN_PROMPT_MATERIALIZATION_VERSION,
+        source="builtin",
+        format="text",
+        model_family_overrides=MappingProxyType({}),
+    ),
 )
 
 ADVISOR_AGENT_MANIFEST = AgentManifest(
@@ -71,6 +91,14 @@ ADVISOR_AGENT_MANIFEST = AgentManifest(
     prompt_profile="advisor",
     execution_engine="provider",
     tool_allowlist=_READ_ONLY_WORKSPACE_TOOLS,
+    top_level_selectable=False,
+    prompt_materialization=AgentPromptMaterialization(
+        profile="advisor",
+        version=_BUILTIN_PROMPT_MATERIALIZATION_VERSION,
+        source="builtin",
+        format="text",
+        model_family_overrides=MappingProxyType({}),
+    ),
 )
 
 EXPLORE_AGENT_MANIFEST = AgentManifest(
@@ -83,6 +111,14 @@ EXPLORE_AGENT_MANIFEST = AgentManifest(
     prompt_profile="explore",
     execution_engine="provider",
     tool_allowlist=_READ_ONLY_WORKSPACE_TOOLS,
+    top_level_selectable=False,
+    prompt_materialization=AgentPromptMaterialization(
+        profile="explore",
+        version=_BUILTIN_PROMPT_MATERIALIZATION_VERSION,
+        source="builtin",
+        format="text",
+        model_family_overrides=MappingProxyType({}),
+    ),
 )
 
 RESEARCHER_AGENT_MANIFEST = AgentManifest(
@@ -95,6 +131,14 @@ RESEARCHER_AGENT_MANIFEST = AgentManifest(
     prompt_profile="researcher",
     execution_engine="provider",
     tool_allowlist=("web_search", "web_fetch", "code_search"),
+    top_level_selectable=False,
+    prompt_materialization=AgentPromptMaterialization(
+        profile="researcher",
+        version=_BUILTIN_PROMPT_MATERIALIZATION_VERSION,
+        source="builtin",
+        format="text",
+        model_family_overrides=MappingProxyType({}),
+    ),
 )
 
 PRODUCT_AGENT_MANIFEST = AgentManifest(
@@ -105,6 +149,14 @@ PRODUCT_AGENT_MANIFEST = AgentManifest(
     prompt_profile="product",
     execution_engine="provider",
     tool_allowlist=("read_file", "list", "glob", "grep"),
+    top_level_selectable=False,
+    prompt_materialization=AgentPromptMaterialization(
+        profile="product",
+        version=_BUILTIN_PROMPT_MATERIALIZATION_VERSION,
+        source="builtin",
+        format="text",
+        model_family_overrides=MappingProxyType({}),
+    ),
 )
 
 
@@ -141,6 +193,39 @@ def validate_builtin_agent_manifests(
             raise ValueError(
                 f"builtin agent manifest '{manifest.id}' must not contain duplicate tool patterns"
             )
+        if manifest.mode == "primary" and not manifest.top_level_selectable:
+            raise ValueError(
+                f"builtin agent manifest '{manifest.id}' has mode='primary' but is not "
+                "marked top_level_selectable"
+            )
+        if manifest.mode == "subagent" and manifest.top_level_selectable:
+            raise ValueError(
+                f"builtin agent manifest '{manifest.id}' has mode='subagent' but is marked "
+                "top_level_selectable; subagent presets must not be top-level selectable"
+            )
+        if manifest.prompt_materialization is None:
+            raise ValueError(
+                f"builtin agent manifest '{manifest.id}' must declare prompt_materialization"
+            )
+        materialization = manifest.prompt_materialization
+        if render_builtin_prompt_profile(materialization.profile) is None:
+            raise ValueError(
+                f"builtin agent manifest '{manifest.id}' prompt_materialization.profile "
+                f"references unknown prompt profile '{materialization.profile}'"
+            )
+        if materialization.profile != manifest.prompt_profile:
+            raise ValueError(
+                f"builtin agent manifest '{manifest.id}' prompt_materialization.profile "
+                f"'{materialization.profile}' must match prompt_profile "
+                f"'{manifest.prompt_profile}'"
+            )
+        for family, override_profile in materialization.model_family_overrides.items():
+            if render_builtin_prompt_profile(override_profile) is None:
+                raise ValueError(
+                    f"builtin agent manifest '{manifest.id}' prompt_materialization "
+                    f"model_family_overrides[{family!r}] references unknown prompt profile "
+                    f"'{override_profile}'"
+                )
     return manifests
 
 
@@ -168,3 +253,16 @@ def get_builtin_agent_manifest(agent_id: str) -> AgentManifest | None:
 
 def list_builtin_agent_manifests() -> tuple[AgentManifest, ...]:
     return tuple(_BUILTIN_AGENT_MANIFESTS.values())
+
+
+def is_agent_top_level_selectable(agent_id: str) -> bool:
+    manifest = get_builtin_agent_manifest(agent_id)
+    if manifest is None:
+        return False
+    return manifest.top_level_selectable
+
+
+def list_top_level_selectable_agent_manifests() -> tuple[AgentManifest, ...]:
+    return tuple(
+        manifest for manifest in _BUILTIN_AGENT_MANIFESTS.values() if manifest.top_level_selectable
+    )
