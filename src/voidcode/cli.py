@@ -597,12 +597,15 @@ def _handle_config_init_command(args: argparse.Namespace) -> int:
     if not workspace.exists() or not workspace.is_dir():
         raise SystemExit(f"error: workspace does not exist: {workspace}")
 
-    payload = generate_starter_runtime_config(
-        approval_mode=cast(str, args.approval_mode),
-        execution_engine=cast(str | None, getattr(args, "execution_engine", None)),
-        max_steps=cast(int | None, getattr(args, "max_steps", None)),
-        include_examples=cast(bool, args.with_examples),
-    )
+    try:
+        payload = generate_starter_runtime_config(
+            approval_mode=cast(str, args.approval_mode),
+            execution_engine=cast(str | None, getattr(args, "execution_engine", None)),
+            max_steps=cast(int | None, getattr(args, "max_steps", None)),
+            include_examples=cast(bool, args.with_examples),
+        )
+    except ValueError as exc:
+        raise SystemExit(f"error: {exc}") from None
     if cast(bool, args.print):
         print(format_starter_runtime_config_json(payload), end="")
         return 0

@@ -1413,12 +1413,30 @@ def test_config_init_writes_starter_config_and_refuses_overwrite() -> None:
     assert "already exists" in second.stderr
 
 
-def test_config_migrate_dry_run_reports_removed_agent_field() -> None:
+def test_config_init_invalid_max_steps_returns_error_without_traceback() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        result = _run_module_cli(
+            "config",
+            "init",
+            "--workspace",
+            str(workspace),
+            "--max-steps",
+            "0",
+        )
+
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert "error: max_steps must be an integer greater than or equal to 1" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_config_migrate_dry_run_reports_no_current_migrations() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         workspace = Path(tmp)
         config_path = workspace / ".voidcode.json"
         config_path.write_text(
-            json.dumps({"agent": {"preset": "leader", "leader_mode": "legacy"}}),
+            json.dumps({"approval_mode": "ask"}),
             encoding="utf-8",
         )
 
@@ -1428,25 +1446,17 @@ def test_config_migrate_dry_run_reports_removed_agent_field() -> None:
     payload = json.loads(result.stdout)
     assert result.returncode == 0
     assert payload["dry_run"] is True
-    assert payload["migrations"] == [
-        {
-            "action": "remove",
-            "field_path": "agent.leader_mode",
-            "reason": (
-                "agent.leader_mode has been removed; use the default leader execution flow instead"
-            ),
-        }
-    ]
-    assert payload["updated_config"] == {"agent": {"preset": "leader"}}
-    assert disk_payload == {"agent": {"preset": "leader", "leader_mode": "legacy"}}
+    assert payload["migrations"] == []
+    assert payload["updated_config"] is None
+    assert disk_payload == {"approval_mode": "ask"}
 
 
-def test_config_migrate_write_updates_config() -> None:
+def test_config_migrate_write_noop_keeps_current_config() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         workspace = Path(tmp)
         config_path = workspace / ".voidcode.json"
         config_path.write_text(
-            json.dumps({"agent": {"preset": "leader", "leader_mode": "legacy"}}),
+            json.dumps({"approval_mode": "deny"}),
             encoding="utf-8",
         )
 
@@ -1462,8 +1472,9 @@ def test_config_migrate_write_updates_config() -> None:
     payload = json.loads(result.stdout)
     assert result.returncode == 0
     assert payload["dry_run"] is False
-    assert payload["updated_config"] == {"agent": {"preset": "leader"}}
-    assert disk_payload == {"agent": {"preset": "leader"}}
+    assert payload["migrations"] == []
+    assert payload["updated_config"] is None
+    assert disk_payload == {"approval_mode": "deny"}
 
 
 def test_config_migrate_invalid_json_returns_error() -> None:
