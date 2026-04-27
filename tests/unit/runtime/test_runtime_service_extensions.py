@@ -1100,7 +1100,7 @@ def test_runtime_constructs_with_custom_agent_hook_refs(tmp_path: Path) -> None:
     assert runtime_config["agent"] == {
         "preset": "leader",
         "prompt_profile": "researcher",
-        "prompt_materialization": _prompt_materialization_payload("leader"),
+        "prompt_materialization": _prompt_materialization_payload("researcher"),
         "prompt_ref": "researcher",
         "prompt_source": "builtin",
         "hook_refs": ["customfmt"],
