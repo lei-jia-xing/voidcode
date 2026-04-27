@@ -195,6 +195,14 @@ def test_serve_command_help_works() -> None:
     assert "transport" in result.stdout.lower()
 
 
+def test_top_level_help_includes_examples() -> None:
+    result = _run_module_cli("--help")
+
+    assert result.returncode == 0
+    assert "Examples:" in result.stdout
+    assert "voidcode commands list" in result.stdout
+
+
 def test_web_command_forwards_runtime_config_and_server_entry() -> None:
     cli = importlib.import_module("voidcode.cli")
     workspace = Path("/tmp/web-workspace")
@@ -381,6 +389,38 @@ def test_sessions_debug_outputs_json_snapshot() -> None:
     assert "Traceback" not in debug_result.stderr
 
 
+def test_sessions_list_outputs_json() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        (workspace / "sample.txt").write_text("sample\n", encoding="utf-8")
+        env = with_src_pythonpath(os.environ.copy())
+
+        setup_result = _run_module_cli(
+            "run",
+            "read sample.txt",
+            "--workspace",
+            str(workspace),
+            "--session-id",
+            "list-json-session",
+            env=env,
+        )
+        list_result = _run_module_cli(
+            "sessions",
+            "list",
+            "--workspace",
+            str(workspace),
+            "--json",
+            env=env,
+        )
+
+    payload = json.loads(list_result.stdout)
+    assert setup_result.returncode == 0
+    assert list_result.returncode == 0
+    assert payload["workspace"] == str(workspace)
+    assert payload["sessions"][0]["id"] == "list-json-session"
+    assert payload["sessions"][0]["prompt"] == "read sample.txt"
+
+
 def test_sessions_debug_missing_session_returns_clean_error() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         workspace = Path(tmp)
@@ -395,7 +435,7 @@ def test_sessions_debug_missing_session_returns_clean_error() -> None:
             env=env,
         )
 
-    assert result.returncode == 1
+    assert result.returncode == 16
     assert result.stdout == ""
     assert "error: unknown session: missing-session" in result.stderr
     assert "Traceback" not in result.stderr
@@ -556,16 +596,21 @@ def test_run_command_prints_request_observability_event(capsys: Any) -> None:
                     "read README.md",
                     "--workspace",
                     str(workspace),
+                    "--json",
                 ]
             )
 
     captured = capsys.readouterr()
+    payload = json.loads(captured.out)
 
     assert result == 0
-    assert (
-        "EVENT runtime.request_received source=runtime "
-        "agent_preset=leader prompt=read README.md" in captured.out
-    )
+    assert payload["events"] == [
+        {
+            "event_type": "runtime.request_received",
+            "source": "runtime",
+            "payload": {"agent_preset": "leader", "prompt": "read README.md"},
+        }
+    ]
 
 
 def test_run_command_real_cli_reports_current_request_truth_without_agent_preset() -> None:
@@ -581,11 +626,30 @@ def test_run_command_real_cli_reports_current_request_truth_without_agent_preset
             env=env,
         )
 
-    assert result.returncode == 1
-    assert "EVENT runtime.request_received source=runtime prompt=read README.md" in result.stdout
-    assert "EVENT runtime.plan_created source=runtime" not in result.stdout
-    assert "read_file target does not exist: README.md" in result.stdout
-    assert result.stderr == "error: read_file target does not exist: README.md\n"
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert "EVENT runtime.request_received" not in result.stdout
+    assert "EVENT runtime.plan_created" not in result.stdout
+    assert "read_file target does not exist: README.md" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_run_command_missing_config_named_file_is_runtime_error() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        env = with_src_pythonpath(os.environ.copy())
+
+        result = _run_module_cli(
+            "run",
+            "read config.md",
+            "--workspace",
+            str(workspace),
+            env=env,
+        )
+
+    assert result.returncode == 12
+    assert result.stdout == ""
+    assert "read_file target does not exist: config.md" in result.stderr
     assert "Traceback" not in result.stderr
 
 
@@ -1034,10 +1098,176 @@ def test_run_command_does_not_prompt_or_resume_when_not_interactive(capsys: Any)
 
     captured = capsys.readouterr()
 
-    assert result == 0
+    assert result == 13
     runtime.resume_stream.assert_not_called()
-    assert "EVENT runtime.approval_requested" in captured.out
-    assert captured.out.rstrip().endswith("RESULT")
+    assert captured.out == ""
+    assert stderr.writes == [
+        "error: approval required for write_file for sample.txt; "
+        "resume session demo-session with approval request req-1",
+        "\n",
+    ]
+    assert captured.err == ""
+
+
+def test_run_command_json_reports_non_interactive_approval_block(capsys: Any) -> None:
+    cli = importlib.import_module("voidcode.cli")
+    workspace = Path("/tmp/demo-workspace")
+    config = SimpleNamespace(approval_mode="ask")
+    first_stream = (
+        _make_chunk(
+            session_id="demo-session",
+            status="running",
+            event=_runtime_event("runtime.request_received", prompt="write sample.txt hi"),
+        ),
+        _make_chunk(
+            session_id="demo-session",
+            status="waiting",
+            event=_approval_requested_event(),
+        ),
+    )
+    stderr = _StubNonInteractiveStderr()
+
+    with patch.object(cli, "load_runtime_config", autospec=True, return_value=config):
+        with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+            runtime = runtime_class.return_value
+            runtime.run_stream.return_value = iter(first_stream)
+            with patch.object(cli.sys, "stdin", _StubNonInteractiveInput()):
+                with patch.object(cli.sys, "stderr", stderr):
+                    result = cli.main(
+                        [
+                            "run",
+                            "write sample.txt hi",
+                            "--workspace",
+                            str(workspace),
+                            "--json",
+                        ]
+                    )
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+
+    assert result == 13
+    runtime.resume_stream.assert_not_called()
+    assert payload["session"]["status"] == "waiting"
+    assert payload["blocked"] == {
+        "kind": "approval_required",
+        "request_id": "req-1",
+        "session_id": "demo-session",
+        "target_summary": "sample.txt",
+        "tool": "write_file",
+    }
+    assert stderr.writes == []
+    assert captured.err == ""
+
+
+def test_run_command_non_interactive_question_block_returns_failure(capsys: Any) -> None:
+    cli = importlib.import_module("voidcode.cli")
+    workspace = Path("/tmp/demo-workspace")
+    config = SimpleNamespace(approval_mode="ask")
+    questions: list[dict[str, object]] = [
+        {
+            "header": "Confirm",
+            "question": "Proceed?",
+            "multiple": False,
+            "options": [],
+        }
+    ]
+    first_stream = (
+        _make_chunk(
+            session_id="question-session",
+            status="running",
+            event=_runtime_event("runtime.request_received", prompt="ask user"),
+        ),
+        _make_chunk(
+            session_id="question-session",
+            status="waiting",
+            event=_runtime_event(
+                "runtime.question_requested",
+                request_id="question-1",
+                tool="question",
+                question_count=1,
+                questions=questions,
+            ),
+        ),
+    )
+    stderr = _StubNonInteractiveStderr()
+
+    with patch.object(cli, "load_runtime_config", autospec=True, return_value=config):
+        with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+            runtime = runtime_class.return_value
+            runtime.run_stream.return_value = iter(first_stream)
+            with patch.object(cli.sys, "stdin", _StubNonInteractiveInput()):
+                with patch.object(cli.sys, "stderr", stderr):
+                    result = cli.main(["run", "ask user", "--workspace", str(workspace)])
+
+    captured = capsys.readouterr()
+
+    assert result == 12
+    runtime.resume_stream.assert_not_called()
+    assert captured.out == ""
+    assert stderr.writes == [
+        "error: question response required for question; "
+        "resume session question-session with question request question-1",
+        "\n",
+    ]
+    assert captured.err == ""
+
+
+def test_run_command_json_reports_non_interactive_question_block(capsys: Any) -> None:
+    cli = importlib.import_module("voidcode.cli")
+    workspace = Path("/tmp/demo-workspace")
+    config = SimpleNamespace(approval_mode="ask")
+    questions: list[dict[str, object]] = [
+        {
+            "header": "Confirm",
+            "question": "Proceed?",
+            "multiple": False,
+            "options": [],
+        }
+    ]
+    question_payload: dict[str, object] = {
+        "request_id": "question-1",
+        "tool": "question",
+        "question_count": 1,
+        "questions": questions,
+    }
+    first_stream = (
+        _make_chunk(
+            session_id="question-session",
+            status="waiting",
+            event=_runtime_event(
+                "runtime.question_requested",
+                request_id="question-1",
+                tool="question",
+                question_count=1,
+                questions=questions,
+            ),
+        ),
+    )
+    stderr = _StubNonInteractiveStderr()
+
+    with patch.object(cli, "load_runtime_config", autospec=True, return_value=config):
+        with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+            runtime = runtime_class.return_value
+            runtime.run_stream.return_value = iter(first_stream)
+            with patch.object(cli.sys, "stdin", _StubNonInteractiveInput()):
+                with patch.object(cli.sys, "stderr", stderr):
+                    result = cli.main(["run", "ask user", "--workspace", str(workspace), "--json"])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+
+    assert result == 12
+    runtime.resume_stream.assert_not_called()
+    assert payload["session"]["status"] == "waiting"
+    assert payload["blocked"] == {
+        "kind": "question_required",
+        "question_count": 1,
+        "questions": question_payload["questions"],
+        "request_id": "question-1",
+        "session_id": "question-session",
+        "tool": "question",
+    }
     assert stderr.writes == []
     assert captured.err == ""
 
@@ -1064,8 +1294,7 @@ def test_run_command_uses_repo_local_config_to_allow_write_request() -> None:
         written = (workspace / "danger.txt").read_text(encoding="utf-8")
 
     assert result.returncode == 0
-    assert "EVENT runtime.approval_resolved" in result.stdout
-    assert "decision=allow" in result.stdout
+    assert "EVENT runtime.approval_resolved" not in result.stdout
     assert written == "config approved"
 
 
@@ -1112,6 +1341,26 @@ def test_config_show_outputs_workspace_effective_config() -> None:
         },
     }
     assert "Traceback" not in result.stderr
+
+
+def test_config_show_accepts_json_flag() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        env = with_src_pythonpath(os.environ.copy())
+
+        result = _run_module_cli(
+            "config",
+            "show",
+            "--workspace",
+            str(workspace),
+            "--json",
+            env=env,
+        )
+
+    payload = json.loads(result.stdout)
+    assert result.returncode == 0
+    assert payload["workspace"] == str(workspace)
+    assert payload["approval_mode"] == "ask"
 
 
 def test_config_show_uses_opencode_go_environment_without_leaking_key() -> None:
@@ -1264,35 +1513,30 @@ def test_config_show_delegates_to_runtime_effective_config(capsys: Any) -> None:
     runtime_class.return_value.effective_runtime_config.assert_called_once_with(
         session_id="config-session"
     )
-    assert captured.out == (
-        json.dumps(
-            {
-                "workspace": str(workspace),
-                "session_id": "config-session",
-                "approval_mode": "allow",
-                "model": "runtime/model",
-                "execution_engine": "deterministic",
-                "max_steps": 9,
-                "agent": None,
-                "provider_fallback": None,
-                "resolved_provider": {
-                    "active_target": {
-                        "raw_model": "runtime/model",
-                        "provider": "runtime",
-                        "model": "model",
-                    },
-                    "targets": [
-                        {
-                            "raw_model": "runtime/model",
-                            "provider": "runtime",
-                            "model": "model",
-                        }
-                    ],
-                },
-            }
-        )
-        + "\n"
-    )
+    assert json.loads(captured.out) == {
+        "workspace": str(workspace),
+        "session_id": "config-session",
+        "approval_mode": "allow",
+        "model": "runtime/model",
+        "execution_engine": "deterministic",
+        "max_steps": 9,
+        "agent": None,
+        "provider_fallback": None,
+        "resolved_provider": {
+            "active_target": {
+                "raw_model": "runtime/model",
+                "provider": "runtime",
+                "model": "model",
+            },
+            "targets": [
+                {
+                    "raw_model": "runtime/model",
+                    "provider": "runtime",
+                    "model": "model",
+                }
+            ],
+        },
+    }
 
 
 def test_config_show_invalid_workspace_returns_error() -> None:
@@ -1495,6 +1739,79 @@ def test_config_migrate_invalid_json_returns_error() -> None:
     assert result.returncode != 0
     assert result.stdout == ""
     assert "must contain valid JSON" in result.stderr
+
+
+def test_commands_list_outputs_discovered_project_commands_json() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        commands_dir = workspace / "commands"
+        commands_dir.mkdir()
+        (commands_dir / "explain.md").write_text(
+            "---\ndescription: Explain a target\n---\nExplain $ARGUMENTS\n",
+            encoding="utf-8",
+        )
+
+        result = _run_module_cli(
+            "commands",
+            "list",
+            "--workspace",
+            str(workspace),
+            "--json",
+        )
+
+    payload = json.loads(result.stdout)
+    command_names = {command["name"] for command in payload["commands"]}
+    assert result.returncode == 0
+    assert payload["workspace"] == str(workspace)
+    assert {"help", "review", "explain"}.issubset(command_names)
+
+
+def test_commands_show_outputs_project_command_json() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        commands_dir = workspace / ".voidcode" / "commands"
+        commands_dir.mkdir(parents=True)
+        (commands_dir / "review.md").write_text(
+            "---\n"
+            "description: Project review override\n"
+            "agent: reviewer\n"
+            "---\n"
+            "Review locally: $ARGUMENTS\n",
+            encoding="utf-8",
+        )
+
+        result = _run_module_cli(
+            "commands",
+            "show",
+            "/review",
+            "--workspace",
+            str(workspace),
+            "--json",
+        )
+
+    payload = json.loads(result.stdout)
+    assert result.returncode == 0
+    assert payload["name"] == "review"
+    assert payload["source"] == "project"
+    assert payload["description"] == "Project review override"
+    assert payload["agent"] == "reviewer"
+    assert payload["template"] == "Review locally: $ARGUMENTS\n"
+
+
+def test_commands_show_missing_command_returns_clean_error() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        result = _run_module_cli(
+            "commands",
+            "show",
+            "missing",
+            "--workspace",
+            tmp,
+        )
+
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert "error: unknown command: /missing" in result.stderr
+    assert "Traceback" not in result.stderr
 
 
 def test_provider_models_command_outputs_refreshed_provider_model_list() -> None:

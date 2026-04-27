@@ -10,6 +10,26 @@ from typing import Protocol, cast
 from . import __version__
 from .acp.stdio import StdioAcpServer
 from .agent.builtin import list_top_level_selectable_agent_manifests
+from .cli_support import (
+    EXIT_APPROVAL_DENIED,
+    EXIT_CONFIG_ERROR,
+    EXIT_GENERAL_ERROR,
+    EXIT_INVALID_COMMAND,
+    EXIT_INVALID_RESOURCE,
+    EXIT_PROVIDER_ERROR,
+    EXIT_RUNTIME_ERROR,
+    EXIT_SUCCESS,
+    RuntimeStreamResult,
+    format_event,
+    print_json,
+    serialize_command_definition,
+    serialize_command_summary,
+    serialize_event,
+    serialize_session_state,
+    serialize_stored_session_summary,
+)
+from .command.loader import load_command_registry
+from .command.registry import CommandRegistry
 from .doctor import (
     CapabilityCheckResult,
     CapabilityCheckStatus,
@@ -60,13 +80,6 @@ class TuiAppProtocol(Protocol):
     def run(self) -> None: ...
 
 
-def _format_event(event_type: str, source: str, data: dict[str, object]) -> str:
-    suffix = " ".join(f"{key}={value}" for key, value in sorted(data.items()))
-    if suffix:
-        return f"EVENT {event_type} source={source} {suffix}"
-    return f"EVENT {event_type} source={source}"
-
-
 def _close_runtime(runtime: object) -> None:
     exit_method = getattr(runtime, "__exit__", None)
     if callable(exit_method):
@@ -76,6 +89,7 @@ def _close_runtime(runtime: object) -> None:
 def _handle_run_command(args: argparse.Namespace) -> int:
     workspace = cast(Path, args.workspace)
     request_text = cast(str, args.request)
+    json_output = cast(bool, getattr(args, "json", False))
     config = load_runtime_config(
         workspace,
         approval_mode=cast(PermissionDecision | None, getattr(args, "approval_mode", None)),
@@ -98,19 +112,28 @@ def _handle_run_command(args: argparse.Namespace) -> int:
         )
         interactive = sys.stdin.isatty() and sys.stderr.isatty()
         try:
-            output = _run_with_inline_approval(
+            result = _run_with_inline_approval(
                 runtime,
                 request,
                 interactive=interactive,
+                emit_events=interactive and not json_output,
             )
         except ValueError as exc:
             raise SystemExit(f"error: {exc}") from None
 
-        if not interactive:
-            _print_runtime_output(output)
+        blocked_event = _pending_blocked_event(result.session, _last_event(result))
+        if json_output:
+            print_json(_runtime_stream_payload(result, workspace=workspace))
+            if not interactive and blocked_event is not None:
+                return _blocked_exit_code(blocked_event)
+        elif not interactive:
+            if blocked_event is not None:
+                _print_noninteractive_blocked(result, blocked_event)
+                return _blocked_exit_code(blocked_event)
+            _print_plain_runtime_output(result.output)
     finally:
         _close_runtime(runtime)
-    return 0
+    return EXIT_SUCCESS
 
 
 def _handle_acp_command(args: argparse.Namespace) -> int:
@@ -132,49 +155,65 @@ def _run_with_inline_approval(
     request: RuntimeRequest,
     *,
     interactive: bool,
-) -> str | None:
-    output, final_session, last_event = _consume_runtime_stream(runtime.run_stream(request))
+    emit_events: bool,
+) -> RuntimeStreamResult:
+    result = _consume_runtime_stream(runtime.run_stream(request), emit_events=emit_events)
 
     while interactive:
-        approval_event = _pending_approval_event(final_session, last_event)
+        approval_event = _pending_approval_event(result.session, _last_event(result))
         if approval_event is None:
             break
-        output, final_session, last_event = _consume_runtime_stream(
+        resumed_result = _consume_runtime_stream(
             runtime.resume_stream(
-                session_id=final_session.session.id,
+                session_id=result.session.session.id,
                 approval_request_id=_approval_request_id(approval_event),
                 approval_decision=_prompt_for_approval(approval_event),
-            )
+            ),
+            emit_events=emit_events,
+        )
+        result = RuntimeStreamResult(
+            output=resumed_result.output,
+            session=resumed_result.session,
+            events=(*result.events, *resumed_result.events),
         )
 
+    if interactive and not emit_events:
+        return result
     if interactive:
-        _print_runtime_output(output)
+        _print_runtime_output(result.output)
 
-    return output
+    return result
 
 
 def _consume_runtime_stream(
     chunks: Iterator[RuntimeStreamChunk],
-) -> tuple[str | None, SessionState, EventEnvelope | None]:
+    *,
+    emit_events: bool,
+) -> RuntimeStreamResult:
     output: str | None = None
     final_session: SessionState | None = None
-    last_event = cast(EventEnvelope | None, None)
+    events: list[EventEnvelope] = []
 
     for chunk in chunks:
         final_session = chunk.session
         if chunk.event is not None:
-            print(
-                _format_event(chunk.event.event_type, chunk.event.source, chunk.event.payload),
-                flush=True,
-            )
-            last_event = chunk.event
+            if emit_events:
+                print(
+                    format_event(chunk.event.event_type, chunk.event.source, chunk.event.payload),
+                    flush=True,
+                )
+            events.append(chunk.event)
         if chunk.kind == "output":
             output = chunk.output
 
     if final_session is None:
         raise ValueError("runtime stream emitted no chunks")
 
-    return output, final_session, last_event
+    return RuntimeStreamResult(output=output, session=final_session, events=tuple(events))
+
+
+def _last_event(result: RuntimeStreamResult) -> EventEnvelope | None:
+    return result.events[-1] if result.events else None
 
 
 def _pending_approval_event(
@@ -186,6 +225,30 @@ def _pending_approval_event(
     if event is None or event.event_type != "runtime.approval_requested":
         return None
     return event
+
+
+def _pending_question_event(
+    session: SessionState,
+    event: EventEnvelope | None,
+) -> EventEnvelope | None:
+    if session.status != "waiting":
+        return None
+    if event is None or event.event_type != "runtime.question_requested":
+        return None
+    return event
+
+
+def _pending_blocked_event(
+    session: SessionState,
+    event: EventEnvelope | None,
+) -> EventEnvelope | None:
+    return _pending_approval_event(session, event) or _pending_question_event(session, event)
+
+
+def _blocked_exit_code(event: EventEnvelope) -> int:
+    if event.event_type == "runtime.approval_requested":
+        return EXIT_APPROVAL_DENIED
+    return EXIT_RUNTIME_ERROR
 
 
 def _approval_request_id(event: EventEnvelope) -> str:
@@ -217,7 +280,7 @@ def _print_runtime_response(
     typed_result = cast("RuntimeResponseLike", result)
 
     for event in typed_result.events[event_offset:]:
-        print(_format_event(event.event_type, event.source, event.payload), flush=True)
+        print(format_event(event.event_type, event.source, event.payload), flush=True)
 
     if include_result:
         _print_runtime_output(typed_result.output)
@@ -231,18 +294,90 @@ def _print_runtime_output(output: str | None) -> None:
         print(flush=True)
 
 
+def _print_plain_runtime_output(output: str | None) -> None:
+    if output is None:
+        return
+    print(output, end="", flush=True)
+    if not output.endswith("\n"):
+        print(flush=True)
+
+
+def _runtime_stream_payload(result: RuntimeStreamResult, *, workspace: Path) -> dict[str, object]:
+    blocked_event = _pending_blocked_event(result.session, _last_event(result))
+    payload: dict[str, object] = {
+        "workspace": str(workspace),
+        "session": serialize_session_state(result.session),
+        "output": result.output,
+        "events": [serialize_event(event) for event in result.events],
+    }
+    if blocked_event is not None:
+        payload["blocked"] = _blocked_payload(result, blocked_event)
+    return payload
+
+
+def _blocked_payload(result: RuntimeStreamResult, event: EventEnvelope) -> dict[str, object]:
+    if event.event_type == "runtime.approval_requested":
+        return {
+            "kind": "approval_required",
+            "session_id": result.session.session.id,
+            "request_id": _approval_request_id(event),
+            "tool": event.payload.get("tool"),
+            "target_summary": event.payload.get("target_summary"),
+        }
+    return {
+        "kind": "question_required",
+        "session_id": result.session.session.id,
+        "request_id": str(event.payload["request_id"]),
+        "tool": event.payload.get("tool"),
+        "question_count": event.payload.get("question_count"),
+        "questions": event.payload.get("questions"),
+    }
+
+
+def _print_noninteractive_blocked(result: RuntimeStreamResult, event: EventEnvelope) -> None:
+    if event.event_type == "runtime.question_requested":
+        print(
+            "error: question response required"
+            f" for {event.payload.get('tool')}; resume session {result.session.session.id} "
+            f"with question request {event.payload.get('request_id')}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return
+    tool = event.payload.get("tool")
+    target_summary = event.payload.get("target_summary")
+    target_suffix = f" for {target_summary}" if isinstance(target_summary, str) else ""
+    print(
+        "error: approval required"
+        f" for {tool}{target_suffix}; resume session {result.session.session.id} "
+        f"with approval request {_approval_request_id(event)}",
+        file=sys.stderr,
+        flush=True,
+    )
+
+
 def _handle_sessions_list_command(args: argparse.Namespace) -> int:
     workspace = cast(Path, args.workspace)
+    json_output = cast(bool, getattr(args, "json", False))
     runtime = VoidCodeRuntime(workspace=workspace)
     try:
         sessions = runtime.list_sessions()
     finally:
         _close_runtime(runtime)
 
+    if json_output:
+        print_json(
+            {
+                "workspace": str(workspace),
+                "sessions": [serialize_stored_session_summary(session) for session in sessions],
+            }
+        )
+        return EXIT_SUCCESS
+
     for session in sessions:
         print(_format_session_summary(session))
 
-    return 0
+    return EXIT_SUCCESS
 
 
 def _format_session_summary(session: StoredSessionSummary) -> str:
@@ -588,26 +723,92 @@ def _handle_config_show_command(args: argparse.Namespace) -> int:
     finally:
         _close_runtime(runtime)
 
-    print(
-        json.dumps(
+    print_json(
+        {
+            "workspace": str(workspace),
+            "session_id": session_id,
+            "approval_mode": effective_config.approval_mode,
+            "model": effective_config.model,
+            "execution_engine": effective_config.execution_engine,
+            "max_steps": effective_config.max_steps,
+            "agent": serialize_runtime_agent_config(getattr(effective_config, "agent", None)),
+            "provider_fallback": serialize_provider_fallback_config(
+                getattr(effective_config, "provider_fallback", None)
+            ),
+            "resolved_provider": resolved_provider_snapshot(
+                getattr(effective_config, "resolved_provider", None)
+            ),
+        }
+    )
+    return EXIT_SUCCESS
+
+
+def _handle_commands_list_command(args: argparse.Namespace) -> int:
+    workspace = cast(Path, args.workspace)
+    registry = _load_cli_command_registry(args, workspace=workspace)
+    commands = registry.list(
+        include_hidden=cast(bool, args.include_hidden),
+        include_disabled=cast(bool, args.include_disabled),
+    )
+
+    if cast(bool, args.json):
+        print_json(
             {
                 "workspace": str(workspace),
-                "session_id": session_id,
-                "approval_mode": effective_config.approval_mode,
-                "model": effective_config.model,
-                "execution_engine": effective_config.execution_engine,
-                "max_steps": effective_config.max_steps,
-                "agent": serialize_runtime_agent_config(getattr(effective_config, "agent", None)),
-                "provider_fallback": serialize_provider_fallback_config(
-                    getattr(effective_config, "provider_fallback", None)
-                ),
-                "resolved_provider": resolved_provider_snapshot(
-                    getattr(effective_config, "resolved_provider", None)
-                ),
+                "commands": [serialize_command_summary(command) for command in commands],
             }
         )
-    )
-    return 0
+        return EXIT_SUCCESS
+
+    for command in commands:
+        print(
+            _format_named_record(
+                "COMMAND",
+                [
+                    ("name", f"/{command.name}"),
+                    ("source", command.source),
+                    ("enabled", command.enabled),
+                    ("description", repr(command.description)),
+                ],
+            )
+        )
+    return EXIT_SUCCESS
+
+
+def _handle_commands_show_command(args: argparse.Namespace) -> int:
+    workspace = cast(Path, args.workspace)
+    registry = _load_cli_command_registry(args, workspace=workspace)
+    command_name = cast(str, args.name)
+    command = registry.get(command_name)
+    if command is None:
+        raise SystemExit(f"error: unknown command: /{command_name.removeprefix('/')}")
+    if command.hidden and not cast(bool, args.include_hidden):
+        raise SystemExit(f"error: unknown command: /{command.name}")
+    if not command.enabled and not cast(bool, args.include_disabled):
+        raise SystemExit(f"error: command is disabled: /{command.name}")
+
+    payload = serialize_command_definition(command)
+    if cast(bool, args.json):
+        print_json(payload)
+        return EXIT_SUCCESS
+
+    print(f"/{command.name}")
+    print(f"Source: {command.source}")
+    print(f"Enabled: {command.enabled}")
+    print(f"Description: {command.description}")
+    if command.path is not None:
+        print(f"Path: {command.path}")
+    print("Template:")
+    print(command.template, end="" if command.template.endswith("\n") else "\n")
+    return EXIT_SUCCESS
+
+
+def _load_cli_command_registry(args: argparse.Namespace, *, workspace: Path) -> CommandRegistry:
+    user_commands_dir = cast(Path | None, getattr(args, "user_commands_dir", None))
+    try:
+        return load_command_registry(workspace=workspace, user_commands_dir=user_commands_dir)
+    except ValueError as exc:
+        raise SystemExit(f"error: {exc}") from None
 
 
 def _handle_config_schema_command(args: argparse.Namespace) -> int:
@@ -882,13 +1083,74 @@ def _handle_doctor_command(args: argparse.Namespace) -> int:
         print(format_report(report, verbose=verbose))
 
     # Return 0 only when healthy and runtime config parsed successfully.
-    return 0 if (report.is_healthy and config_error is None) else 1
+    return EXIT_SUCCESS if (report.is_healthy and config_error is None) else EXIT_RUNTIME_ERROR
+
+
+def _classify_cli_error(message: str) -> int:
+    normalized = message.lower()
+    if "unknown command" in normalized or "command is disabled" in normalized:
+        return EXIT_INVALID_COMMAND
+    if (
+        "unknown session" in normalized
+        or "unknown task" in normalized
+        or "workspace does not exist" in normalized
+    ):
+        return EXIT_INVALID_RESOURCE
+    if "provider" in normalized and (
+        "requires a configured model" in normalized
+        or "not configured" in normalized
+        or "unreachable" in normalized
+    ):
+        return EXIT_PROVIDER_ERROR
+    if (
+        normalized.startswith("error: runtime config")
+        or ".voidcode.json" in normalized
+        or "voidcode/config.json" in normalized
+    ):
+        return EXIT_CONFIG_ERROR
+    return EXIT_RUNTIME_ERROR
+
+
+def _handle_cli_system_exit(exc: SystemExit) -> int:
+    code = exc.code
+    if code is None:
+        return EXIT_SUCCESS
+    if isinstance(code, int):
+        return code
+    message = str(code)
+    print(message, file=sys.stderr)
+    if message.startswith("error:"):
+        return _classify_cli_error(message)
+    return EXIT_GENERAL_ERROR
+
+
+def _add_command_discovery_arguments(parser: argparse.ArgumentParser) -> None:
+    _ = parser.add_argument(
+        "--workspace",
+        type=Path,
+        default=Path.cwd(),
+        help="Workspace root used to discover project-local commands.",
+    )
+    _ = parser.add_argument(
+        "--user-commands-dir",
+        type=Path,
+        help="Optional user command directory to merge before project commands.",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="voidcode",
         description="Voidcode command-line interface.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  voidcode run 'read README.md' --workspace .\n"
+            "  voidcode run 'read README.md' --json --workspace .\n"
+            "  voidcode sessions list --json --workspace .\n"
+            "  voidcode commands list --workspace .\n"
+            "  voidcode commands show /review --json --workspace ."
+        ),
     )
     _ = parser.add_argument(
         "--version",
@@ -954,6 +1216,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-steps",
         type=int,
         help="Optional max graph steps override for this run.",
+    )
+    _ = run_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Output a structured JSON payload with session, events, and final output.",
     )
     stream_group = run_parser.add_mutually_exclusive_group()
     _ = stream_group.add_argument(
@@ -1063,6 +1330,11 @@ def build_parser() -> argparse.ArgumentParser:
     provider_parser = subparsers.add_parser("provider", help="Inspect provider metadata.")
     provider_subparsers = provider_parser.add_subparsers(dest="provider_command")
 
+    commands_parser = subparsers.add_parser(
+        "commands", help="Discover prompt commands available to runtime requests."
+    )
+    commands_subparsers = commands_parser.add_subparsers(dest="commands_command")
+
     config_show_parser = config_subparsers.add_parser(
         "show", help="Show effective runtime config for a workspace or session."
     )
@@ -1077,7 +1349,58 @@ def build_parser() -> argparse.ArgumentParser:
         dest="session_id",
         help="Optional persisted session identifier used to show resumed effective config.",
     )
+    _ = config_show_parser.add_argument(
+        "--json",
+        action="store_true",
+        default=True,
+        help="Output JSON effective config (default).",
+    )
     config_show_parser.set_defaults(handler=_handle_config_show_command)
+
+    commands_list_parser = commands_subparsers.add_parser(
+        "list", help="List enabled prompt commands discovered for a workspace."
+    )
+    _add_command_discovery_arguments(commands_list_parser)
+    _ = commands_list_parser.add_argument(
+        "--include-hidden",
+        action="store_true",
+        help="Include commands marked hidden in discovery output.",
+    )
+    _ = commands_list_parser.add_argument(
+        "--include-disabled",
+        action="store_true",
+        help="Include disabled commands in discovery output.",
+    )
+    _ = commands_list_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Output discovered commands as JSON.",
+    )
+    commands_list_parser.set_defaults(handler=_handle_commands_list_command)
+
+    commands_show_parser = commands_subparsers.add_parser(
+        "show", help="Show one prompt command definition and rendered template source."
+    )
+    _ = commands_show_parser.add_argument(
+        "name", help="Command name, with or without leading slash."
+    )
+    _add_command_discovery_arguments(commands_show_parser)
+    _ = commands_show_parser.add_argument(
+        "--include-hidden",
+        action="store_true",
+        help="Allow showing hidden commands explicitly by name.",
+    )
+    _ = commands_show_parser.add_argument(
+        "--include-disabled",
+        action="store_true",
+        help="Allow showing disabled commands explicitly by name.",
+    )
+    _ = commands_show_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Output the command definition as JSON.",
+    )
+    commands_show_parser.set_defaults(handler=_handle_commands_show_command)
 
     config_schema_parser = config_subparsers.add_parser(
         "schema", help="Print the JSON Schema for .voidcode.json."
@@ -1181,6 +1504,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=Path.cwd(),
         help="Workspace root used to resolve the local session database.",
+    )
+    _ = list_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Output persisted sessions as JSON.",
     )
     list_parser.set_defaults(handler=_handle_sessions_list_command)
 
@@ -1314,5 +1642,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     handler = cast(Handler | None, getattr(args, "handler", None))
     if handler is None:
         parser.print_help()
-        return 0
-    return handler(args)
+        return EXIT_SUCCESS
+    try:
+        return handler(args)
+    except SystemExit as exc:
+        return _handle_cli_system_exit(exc)

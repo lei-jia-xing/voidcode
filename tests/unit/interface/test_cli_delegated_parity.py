@@ -565,10 +565,10 @@ def test_cli_run_non_interactive_skips_approval_loop(capsys: Any) -> None:
                         ["run", "write x.txt hi", "--workspace", "/tmp/demo-workspace"]
                     )
 
-    assert result == 0
+    assert result == 13
     runtime.resume_stream.assert_not_called()
     captured = capsys.readouterr()
-    assert "EVENT runtime.approval_requested" in captured.out
+    assert captured.out == ""
 
 
 # ---------------------------------------------------------------------------

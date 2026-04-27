@@ -843,9 +843,10 @@ def test_runtime_skips_hooks_for_nested_hook_launched_runtime_invocations(tmp_pa
     result = runtime.run(runtime_request(prompt=prompt, session_id="outer-hook-recursion-session"))
 
     assert marker_path.read_text(encoding="utf-8") == "1"
-    assert "EVENT runtime.request_received" in nested_output_path.read_text(encoding="utf-8")
-    assert "runtime.tool_hook_pre" not in nested_output_path.read_text(encoding="utf-8")
-    assert "runtime.tool_hook_post" not in nested_output_path.read_text(encoding="utf-8")
+    nested_output = nested_output_path.read_text(encoding="utf-8")
+    assert nested_output == "nested hook read\n"
+    assert "runtime.tool_hook_pre" not in nested_output
+    assert "runtime.tool_hook_post" not in nested_output
     assert [event.event_type for event in result.events].count("runtime.tool_hook_pre") == 1
 
 
@@ -2384,7 +2385,7 @@ def test_runtime_preserves_pending_approval_when_terminal_save_fails(tmp_path: P
     assert cast(str, replay.events[-1].payload["request_id"]) == approval_request_id
 
 
-def test_cli_run_command_prints_events_and_file_contents(tmp_path: Path) -> None:
+def test_cli_run_command_prints_clean_file_contents_by_default(tmp_path: Path) -> None:
     sample_file = tmp_path / "sample.txt"
     _ = sample_file.write_text("slice proof\n", encoding="utf-8")
 
@@ -2408,10 +2409,42 @@ def test_cli_run_command_prints_events_and_file_contents(tmp_path: Path) -> None
     )
 
     assert result.returncode == 0
-    assert "EVENT runtime.request_received" in result.stdout
-    assert "EVENT runtime.tool_completed" in result.stdout
-    assert "RESULT" in result.stdout
-    assert "slice proof" in result.stdout
+    assert result.stdout == "slice proof\n"
+    assert result.stderr == ""
+
+
+def test_cli_run_command_json_outputs_events_and_file_contents(tmp_path: Path) -> None:
+    sample_file = tmp_path / "sample.txt"
+    _ = sample_file.write_text("slice proof\n", encoding="utf-8")
+
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[2] / "src")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "voidcode",
+            "run",
+            "read sample.txt",
+            "--workspace",
+            str(tmp_path),
+            "--json",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+
+    payload = json.loads(result.stdout)
+    event_types = [event["event_type"] for event in payload["events"]]
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+    assert "runtime.request_received" in event_types
+    assert "runtime.tool_completed" in event_types
+    assert payload["output"] == "slice proof"
 
 
 def test_cli_run_command_approval_allow_writes_file_under_tty_and_replays_session(
