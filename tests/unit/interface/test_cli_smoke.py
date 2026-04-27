@@ -1352,6 +1352,143 @@ def test_config_show_session_workspace_mismatch_returns_error() -> None:
     assert "error:" in result.stderr
 
 
+def test_config_schema_outputs_json_schema() -> None:
+    result = _run_module_cli("config", "schema")
+
+    payload = json.loads(result.stdout)
+    assert result.returncode == 0
+    assert payload["$id"] == "https://voidcode.dev/schemas/runtime-config.schema.json"
+    assert payload["properties"]["approval_mode"]["enum"] == ["allow", "deny", "ask"]
+
+
+def test_config_init_prints_starter_config_without_writing() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        result = _run_module_cli(
+            "config",
+            "init",
+            "--workspace",
+            str(workspace),
+            "--approval-mode",
+            "deny",
+            "--execution-engine",
+            "provider",
+            "--max-steps",
+            "8",
+            "--with-examples",
+            "--print",
+        )
+
+        assert not (workspace / ".voidcode.json").exists()
+
+    payload = json.loads(result.stdout)
+    assert result.returncode == 0
+    assert payload == {
+        "$schema": "https://voidcode.dev/schemas/runtime-config.schema.json",
+        "approval_mode": "deny",
+        "execution_engine": "provider",
+        "max_steps": 8,
+        "tools": {"builtin": {"enabled": True}},
+        "skills": {"enabled": True},
+    }
+    assert "api_key" not in result.stdout
+
+
+def test_config_init_writes_starter_config_and_refuses_overwrite() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        first = _run_module_cli("config", "init", "--workspace", str(workspace))
+        second = _run_module_cli("config", "init", "--workspace", str(workspace))
+
+        written_payload = json.loads((workspace / ".voidcode.json").read_text(encoding="utf-8"))
+
+    assert first.returncode == 0
+    assert json.loads(first.stdout)["config_path"].endswith(".voidcode.json")
+    assert written_payload == {
+        "$schema": "https://voidcode.dev/schemas/runtime-config.schema.json",
+        "approval_mode": "ask",
+    }
+    assert second.returncode != 0
+    assert second.stdout == ""
+    assert "already exists" in second.stderr
+
+
+def test_config_init_invalid_max_steps_returns_error_without_traceback() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        result = _run_module_cli(
+            "config",
+            "init",
+            "--workspace",
+            str(workspace),
+            "--max-steps",
+            "0",
+        )
+
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert "error: max_steps must be an integer greater than or equal to 1" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_config_migrate_dry_run_reports_no_current_migrations() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        config_path = workspace / ".voidcode.json"
+        config_path.write_text(
+            json.dumps({"approval_mode": "ask"}),
+            encoding="utf-8",
+        )
+
+        result = _run_module_cli("config", "migrate", "--workspace", str(workspace))
+        disk_payload = json.loads(config_path.read_text(encoding="utf-8"))
+
+    payload = json.loads(result.stdout)
+    assert result.returncode == 0
+    assert payload["dry_run"] is True
+    assert payload["migrations"] == []
+    assert payload["updated_config"] is None
+    assert disk_payload == {"approval_mode": "ask"}
+
+
+def test_config_migrate_write_noop_keeps_current_config() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        config_path = workspace / ".voidcode.json"
+        config_path.write_text(
+            json.dumps({"approval_mode": "deny"}),
+            encoding="utf-8",
+        )
+
+        result = _run_module_cli(
+            "config",
+            "migrate",
+            "--workspace",
+            str(workspace),
+            "--write",
+        )
+        disk_payload = json.loads(config_path.read_text(encoding="utf-8"))
+
+    payload = json.loads(result.stdout)
+    assert result.returncode == 0
+    assert payload["dry_run"] is False
+    assert payload["migrations"] == []
+    assert payload["updated_config"] is None
+    assert disk_payload == {"approval_mode": "deny"}
+
+
+def test_config_migrate_invalid_json_returns_error() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        (workspace / ".voidcode.json").write_text("{", encoding="utf-8")
+
+        result = _run_module_cli("config", "migrate", "--workspace", str(workspace))
+
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert "must contain valid JSON" in result.stderr
+
+
 def test_provider_models_command_outputs_refreshed_provider_model_list() -> None:
     cli = importlib.import_module("voidcode.cli")
     models = ("alias", "provider/model")

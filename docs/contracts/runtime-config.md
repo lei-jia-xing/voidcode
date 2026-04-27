@@ -30,6 +30,7 @@
 - hooks 继续保持 runtime-owned，但当前已不再只限 `pre_tool` / `post_tool`，而是同时包含 `session_start`、`session_end`、`session_idle`、`background_task_completed`、`background_task_failed`、`background_task_cancelled` 与 `delegated_result_available` 等已解析的 lifecycle hook phases
 - 显式 / 仓库本地 / 环境 / 默认值这条完整优先级链当前适用于 `approval_mode`、`model`、`execution_engine` 和 `max_steps`
 - 单一可见检查面为 CLI：`voidcode config show --workspace <path> [--session <id>]`
+- 当前 schema-backed 配置 UX 还包含 `voidcode config schema`、`voidcode config init` 与 `voidcode config migrate`
 - 恢复会话的配置覆盖仍存放在 `SessionState.metadata["runtime_config"]`，并继续覆盖新的 runtime 默认值
 
 ## MVP 配置领域
@@ -350,9 +351,12 @@ workspace 本地覆盖路径保持为：
 
 ```bash
 voidcode config show --workspace <path> [--session <id>]
+voidcode config schema
+voidcode config init --workspace <path> [--force] [--print] [--with-examples]
+voidcode config migrate --workspace <path> [--write]
 ```
 
-成功输出必须是 JSON，且当前至少包含：
+`config show` 成功输出必须是 JSON，且当前至少包含：
 
 - `workspace`
 - `session_id`
@@ -362,6 +366,24 @@ voidcode config show --workspace <path> [--session <id>]
 - `max_steps`
 - `provider_fallback`
 - `resolved_provider`
+
+`config schema` 成功输出必须是 JSON Schema 文档，用于描述仓库本地 `.voidcode.json` 的当前公共形状。schema 的稳定 `$id` 为：
+
+```text
+https://voidcode.dev/schemas/runtime-config.schema.json
+```
+
+`config init` 生成不含 secrets 的 starter workspace 配置。默认写入 `<workspace>/.voidcode.json`，并在文件已存在时失败；`--force` 显式覆盖，`--print` 只输出 JSON 而不写入文件，`--with-examples` 会加入最小 `tools` / `skills` 示例块。生成配置默认包含 `$schema` 与 `approval_mode: "ask"`，不会生成 `providers` 或任何 `api_key` / token 字段。
+
+`config migrate` 默认 dry-run，读取 `<workspace>/.voidcode.json` 后输出 JSON：
+
+- `workspace`
+- `config_path`
+- `dry_run`
+- `migrations`
+- `updated_config`
+
+当存在已知重命名或废弃字段时，`updated_config` 表示迁移后的配置；只有传入 `--write` 才会写回磁盘。当前已知迁移为移除已废弃的 `agent.leader_mode`，并提示使用默认 leader execution flow。
 
 失败契约锁定为：
 
