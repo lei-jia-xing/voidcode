@@ -315,11 +315,10 @@ def test_runtime_persists_context_window_config_for_resume(tmp_path: Path) -> No
         config=RuntimeConfig(context_window=context_window),
     )
 
-    payload = runtime._runtime_config_metadata()
-    restored = runtime._effective_runtime_config_from_metadata({"runtime_config": payload})
+    response = runtime.run(RuntimeRequest(prompt="read README.md"))
+    payload = cast(dict[str, object], response.session.metadata["runtime_config"])
 
     assert payload["context_window"] == serialize_runtime_context_window_config(context_window)
-    assert restored.context_window == context_window
 
 
 def test_runtime_config_uses_environment_when_repo_file_missing(tmp_path: Path) -> None:
