@@ -210,6 +210,30 @@ def test_runtime_config_defaults_to_ask_without_file_or_env(tmp_path: Path) -> N
     assert config.hooks is None
 
 
+def test_runtime_config_keeps_deterministic_as_no_key_compatibility_default(
+    tmp_path: Path,
+) -> None:
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.execution_engine == "deterministic"
+    assert config.model is None
+
+
+def test_runtime_config_supports_provider_first_opt_in_with_stub_model(
+    tmp_path: Path,
+) -> None:
+    config = load_runtime_config(
+        tmp_path,
+        env={
+            EXECUTION_ENGINE_ENV_VAR: "provider",
+            MODEL_ENV_VAR: "opencode/gpt-5.4",
+        },
+    )
+
+    assert config.execution_engine == "provider"
+    assert config.model == "opencode/gpt-5.4"
+
+
 def test_runtime_config_uses_environment_when_repo_file_missing(tmp_path: Path) -> None:
     config = load_runtime_config(tmp_path, env={APPROVAL_MODE_ENV_VAR: "deny"})
 

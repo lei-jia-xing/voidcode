@@ -1176,6 +1176,9 @@ def test_runtime_executes_deterministic_graph_and_emits_events(tmp_path: Path) -
     assert result.events[1].payload == {"skills": []}
     assert result.session.status == "completed"
     assert result.output == "alpha\nbeta"
+    runtime_config = cast(dict[str, object], result.session.metadata["runtime_config"])
+    assert runtime_config["execution_engine"] == "deterministic"
+    assert "model" not in runtime_config
 
 
 def test_provider_runtime_executes_read_path_and_persists_config(tmp_path: Path) -> None:
