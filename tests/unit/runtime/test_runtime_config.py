@@ -213,17 +213,17 @@ def test_runtime_config_defaults_to_ask_without_file_or_env(tmp_path: Path) -> N
 
     assert config.approval_mode == "ask"
     assert config.model is None
-    assert config.execution_engine == "deterministic"
+    assert config.execution_engine == "provider"
     assert config.max_steps is None
     assert config.hooks is None
 
 
-def test_runtime_config_keeps_deterministic_as_no_key_compatibility_default(
+def test_runtime_config_defaults_to_provider_for_product_runs(
     tmp_path: Path,
 ) -> None:
     config = load_runtime_config(tmp_path, env={})
 
-    assert config.execution_engine == "deterministic"
+    assert config.execution_engine == "provider"
     assert config.model is None
 
 
