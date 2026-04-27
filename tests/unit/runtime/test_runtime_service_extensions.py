@@ -6090,6 +6090,87 @@ def test_runtime_approval_resume_preserves_canonical_continuity_state(tmp_path: 
     assert (tmp_path / "beta.txt").read_text(encoding="utf-8") == "2"
 
 
+def test_runtime_approval_resume_preserves_token_budget_context_metadata(
+    tmp_path: Path,
+) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("x" * 300, encoding="utf-8")
+    created_providers: list[_ScriptedTurnProvider] = []
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(
+                    ProviderTurnResult(tool_call=ToolCall("read_file", {"filePath": "sample.txt"})),
+                    ProviderTurnResult(tool_call=ToolCall("read_file", {"filePath": "sample.txt"})),
+                    ProviderTurnResult(
+                        tool_call=ToolCall(
+                            "write_file",
+                            {"path": "beta.txt", "content": "2"},
+                        )
+                    ),
+                    ProviderTurnResult(output="done"),
+                ),
+                created_providers=created_providers,
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            approval_mode="ask",
+        ),
+        permission_policy=PermissionPolicy(mode="ask"),
+        model_provider_registry=registry,
+        context_window_policy=ContextWindowPolicy(max_tool_result_tokens=1),
+    )
+
+    waiting = runtime.run(
+        RuntimeRequest(
+            prompt="read sample.txt\nread sample.txt\nwrite beta.txt 2",
+            session_id="token-continuity-approval",
+        )
+    )
+    approval_request_id = str(waiting.events[-1].payload["request_id"])
+    resumed = runtime.resume(
+        session_id="token-continuity-approval",
+        approval_request_id=approval_request_id,
+        approval_decision="allow",
+    )
+
+    resumed_runtime_state = cast(dict[str, object], resumed.session.metadata["runtime_state"])
+    resumed_continuity = cast(dict[str, object], resumed_runtime_state["continuity"])
+    persisted_context_window = cast(dict[str, object], resumed.session.metadata["context_window"])
+    context_window = cast(RuntimeContextWindow, created_providers[-1].requests[-1].context_window)
+
+    assert context_window.token_budget == 1
+    assert context_window.token_estimate_source == "approx_chars_per_4"
+    assert context_window.original_tool_result_tokens is not None
+    assert context_window.retained_tool_result_tokens is not None
+    assert context_window.dropped_tool_result_tokens is not None
+    assert resumed_continuity["token_budget"] == context_window.token_budget
+    assert resumed_continuity["token_estimate_source"] == context_window.token_estimate_source
+    assert isinstance(resumed_continuity["original_tool_result_tokens"], int)
+    assert isinstance(resumed_continuity["retained_tool_result_tokens"], int)
+    assert isinstance(resumed_continuity["dropped_tool_result_tokens"], int)
+    assert (
+        persisted_context_window["original_tool_result_tokens"]
+        == context_window.original_tool_result_tokens
+    )
+    assert (
+        persisted_context_window["retained_tool_result_tokens"]
+        == context_window.retained_tool_result_tokens
+    )
+    assert (
+        persisted_context_window["dropped_tool_result_tokens"]
+        == context_window.dropped_tool_result_tokens
+    )
+    assert persisted_context_window["token_budget"] == context_window.token_budget
+    assert persisted_context_window["token_estimate_source"] == context_window.token_estimate_source
+
+
 def test_runtime_resume_falls_back_to_fresh_policy_for_legacy_sessions_without_runtime_config(
     tmp_path: Path,
 ) -> None:
@@ -6158,6 +6239,64 @@ def test_runtime_rejects_boolean_continuity_version_in_session_metadata() -> Non
                     "retained_tool_result_count": 1,
                     "source": "tool_result_window",
                     "version": True,
+                }
+            }
+        }
+    )
+
+    assert continuity is None
+
+
+def test_runtime_restores_token_budget_continuity_metadata() -> None:
+    continuity_from_metadata = _private_attr(
+        VoidCodeRuntime, "_continuity_state_from_session_metadata"
+    )
+    continuity = continuity_from_metadata(
+        {
+            "runtime_state": {
+                "continuity": {
+                    "summary_text": "summary",
+                    "dropped_tool_result_count": 2,
+                    "retained_tool_result_count": 1,
+                    "source": "tool_result_window",
+                    "version": 1,
+                    "original_tool_result_tokens": 300,
+                    "retained_tool_result_tokens": 80,
+                    "dropped_tool_result_tokens": 220,
+                    "token_budget": 100,
+                    "token_estimate_source": "approx_chars_per_4",
+                }
+            }
+        }
+    )
+
+    assert continuity == RuntimeContinuityState(
+        summary_text="summary",
+        dropped_tool_result_count=2,
+        retained_tool_result_count=1,
+        source="tool_result_window",
+        original_tool_result_tokens=300,
+        retained_tool_result_tokens=80,
+        dropped_tool_result_tokens=220,
+        token_budget=100,
+        token_estimate_source="approx_chars_per_4",
+        version=1,
+    )
+
+
+def test_runtime_rejects_invalid_token_budget_continuity_metadata() -> None:
+    continuity_from_metadata = _private_attr(
+        VoidCodeRuntime, "_continuity_state_from_session_metadata"
+    )
+    continuity = continuity_from_metadata(
+        {
+            "runtime_state": {
+                "continuity": {
+                    "summary_text": "summary",
+                    "dropped_tool_result_count": 2,
+                    "retained_tool_result_count": 1,
+                    "source": "tool_result_window",
+                    "token_budget": True,
                 }
             }
         }
