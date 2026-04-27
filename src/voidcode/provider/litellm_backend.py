@@ -164,7 +164,19 @@ class LiteLLMBackendSingleAgentProvider:
 
     @classmethod
     def _agent_profile_system_message(cls, request: ProviderTurnRequest) -> str | None:
-        return render_agent_prompt(request.agent_preset)
+        return render_agent_prompt(
+            request.agent_preset,
+            model_family=cls._model_family_hint(request),
+        )
+
+    @staticmethod
+    def _model_family_hint(request: ProviderTurnRequest) -> str | None:
+        if request.provider_name is not None and request.provider_name.strip():
+            return request.provider_name.strip()
+        if request.raw_model is None or "/" not in request.raw_model:
+            return None
+        provider_name, _model_name = request.raw_model.split("/", 1)
+        return provider_name.strip() or None
 
     @staticmethod
     def _continuity_system_message(request: ProviderTurnRequest) -> str | None:

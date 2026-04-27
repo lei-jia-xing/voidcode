@@ -68,6 +68,22 @@ def _build_turn_request(*, model_name: str) -> ProviderTurnRequest:
     )
 
 
+def _prompt_materialization_payload(
+    profile: str,
+    *,
+    model_family_overrides: dict[str, str] | None = None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "profile": profile,
+        "version": 1,
+        "source": "builtin",
+        "format": "text",
+    }
+    if model_family_overrides is not None:
+        payload["model_family_overrides"] = model_family_overrides
+    return payload
+
+
 def _build_turn_request_with_skill(*, model_name: str) -> ProviderTurnRequest:
     tool_results = (ToolResult(tool_name="read_file", status="ok", content="hello world"),)
     return ProviderTurnRequest(
@@ -611,6 +627,7 @@ def test_provider_adapter_omits_continuity_message_without_summary_text(
             {
                 "preset": "leader",
                 "prompt_profile": "leader",
+                "prompt_materialization": _prompt_materialization_payload("leader"),
                 "model": "openai/demo",
                 "execution_engine": "provider",
             },
@@ -620,6 +637,7 @@ def test_provider_adapter_omits_continuity_message_without_summary_text(
             {
                 "preset": "worker",
                 "prompt_profile": "worker",
+                "prompt_materialization": _prompt_materialization_payload("worker"),
                 "model": "openai/demo",
                 "execution_engine": "provider",
             },
@@ -664,6 +682,53 @@ def test_provider_adapter_materializes_builtin_agent_prompt_profiles(
     messages = cast(list[dict[str, str]], messages_obj)
     assert messages[0]["role"] == "system"
     assert expected_fragment in messages[0]["content"]
+    assert messages[1] == {"role": "user", "content": "read sample.txt"}
+
+
+def test_provider_adapter_applies_serialized_model_family_prompt_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = OpenAIModelProvider()
+    provider = provider.turn_provider()
+    request = _build_turn_request(model_name="openai")
+    request = ProviderTurnRequest(
+        prompt=request.prompt,
+        available_tools=request.available_tools,
+        tool_results=request.tool_results,
+        context_window=request.context_window,
+        applied_skills=request.applied_skills,
+        raw_model=request.raw_model,
+        provider_name=request.provider_name,
+        model_name=request.model_name,
+        agent_preset={
+            "preset": "leader",
+            "prompt_profile": "leader",
+            "prompt_materialization": _prompt_materialization_payload(
+                "leader",
+                model_family_overrides={"openai": "worker"},
+            ),
+            "model": "openai/demo",
+            "execution_engine": "provider",
+        },
+        attempt=request.attempt,
+        abort_signal=request.abort_signal,
+    )
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        completion_content="hello world",
+    )
+
+    _ = provider.propose_turn(request)
+
+    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+    assert isinstance(payload_obj, dict)
+    payload = cast(dict[str, object], payload_obj)
+    messages_obj = payload.get("messages")
+    assert isinstance(messages_obj, list)
+    messages = cast(list[dict[str, str]], messages_obj)
+    assert messages[0]["role"] == "system"
+    assert "VoidCode's worker agent" in messages[0]["content"]
     assert messages[1] == {"role": "user", "content": "read sample.txt"}
 
 
