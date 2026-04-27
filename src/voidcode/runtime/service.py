@@ -2435,6 +2435,10 @@ class VoidCodeRuntime:
             validation_status = "missing_model"
             ok = False
             guidance = "Configure a provider/model, for example model: 'openai/gpt-4o'."
+        elif auth_present is False and auth_failure_kind == "invalid_model":
+            validation_status = auth_failure_kind
+            ok = False
+            guidance = auth_message or guidance_for_provider_error_kind("invalid_model")
         elif not configured:
             validation_status = "unconfigured"
             ok = False
