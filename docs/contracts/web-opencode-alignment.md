@@ -131,14 +131,15 @@ This is not a parity checklist. Each concern is deliberately classified as one o
   - Make status updates correlate to one tool call deterministically
   - Keep subagent/delegation contracts separate from per-tool identity
 
-### 10. Leader-only top-level execution
+### 10. Intentional top-level agent selection
 
 - **OpenCode reference**: `https://github.com/anomalyco/opencode/blob/4877eccc0d06c747624bf61aaa6f3e65cea9cc8d/packages/opencode/src/agent/agent.ts`
 - **Local seams**: `src/voidcode/runtime/service.py`, `src/voidcode/agent/builtin.py`
-- **Decision**: **Adopt**
-- **Why**: OpenCode has a clear distinction between primary agents and subagents. VoidCode already enforces `leader` as the only top-level executable preset, which should remain intact for the MVP.
+- **Decision**: **Adapt**
+- **Why**: OpenCode has a clear distinction between primary agents and subagents. VoidCode keeps that boundary, but product planning is now an intentional top-level mode rather than hidden behind the default execution agent.
 - **VoidCode target**:
-  - Preserve `leader` as the only web-top-level execution surface
+  - Preserve `leader` as the default web/runtime execution surface
+  - Allow explicit `product` selection for planning, requirement shaping, acceptance criteria, and issue drafting
   - Continue allowing internal delegated subagent execution where already supported
 
 ### 11. Category route surface
@@ -169,7 +170,7 @@ This is not a parity checklist. Each concern is deliberately classified as one o
 
 ### Delegation policy after Task 7
 
-- Top-level web/runtime execution remains `leader`-only.
+- Top-level web/runtime execution defaults to `leader` and may explicitly select `product` for planning workflows.
 - Public HTTP and browser request contracts must not accept `delegation.category`.
 - Public delegated payloads must describe child execution with `subagent_type` when explicitly requested, otherwise with resolved delegation fields such as `selected_preset` / `selected_execution_engine`.
 - Category-to-preset mapping may remain as a private runtime/storage implementation detail for internal delegation and reconciliation only.
@@ -199,7 +200,7 @@ This is not a parity checklist. Each concern is deliberately classified as one o
 
 - Separate `web` launcher from headless `serve`
 - Keep one server/control-plane path underneath both commands
-- Preserve leader-only top-level execution
+- Preserve intentional top-level agent selection (`leader` default, `product` planning)
 - Treat launcher/config/status changes as contract-level, testable work
 
 ### Adapt
