@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass
 
 from ..tools.contracts import ToolResult
@@ -12,6 +13,11 @@ class RuntimeContinuityState:
     dropped_tool_result_count: int = 0
     retained_tool_result_count: int = 0
     source: str = "tool_result_window"
+    original_tool_result_tokens: int | None = None
+    retained_tool_result_tokens: int | None = None
+    dropped_tool_result_tokens: int | None = None
+    token_budget: int | None = None
+    token_estimate_source: str | None = None
     # Lightweight versioning for continuity state to aid reinjection/refresh
     # semantics. This is incremented when the shape evolves and is included
     # in the serialized payload so consumers can decide how to handle newer
@@ -19,24 +25,47 @@ class RuntimeContinuityState:
     version: int = 1
 
     def metadata_payload(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "summary_text": self.summary_text,
             "dropped_tool_result_count": self.dropped_tool_result_count,
             "retained_tool_result_count": self.retained_tool_result_count,
             "source": self.source,
             "version": self.version,
         }
+        if self.original_tool_result_tokens is not None:
+            payload["original_tool_result_tokens"] = self.original_tool_result_tokens
+        if self.retained_tool_result_tokens is not None:
+            payload["retained_tool_result_tokens"] = self.retained_tool_result_tokens
+        if self.dropped_tool_result_tokens is not None:
+            payload["dropped_tool_result_tokens"] = self.dropped_tool_result_tokens
+        if self.token_budget is not None:
+            payload["token_budget"] = self.token_budget
+        if self.token_estimate_source is not None:
+            payload["token_estimate_source"] = self.token_estimate_source
+        return payload
 
 
 @dataclass(frozen=True, slots=True)
 class ContextWindowPolicy:
     max_tool_results: int = 4
+    max_tool_result_tokens: int | None = None
+    max_context_ratio: float | None = None
+    model_context_window_tokens: int | None = None
+    minimum_retained_tool_results: int = 1
     continuity_preview_items: int = 3
     continuity_preview_chars: int = 80
 
     def __post_init__(self) -> None:
         if self.max_tool_results < 0:
             raise ValueError("max_tool_results must be >= 0")
+        if self.max_tool_result_tokens is not None and self.max_tool_result_tokens < 1:
+            raise ValueError("max_tool_result_tokens must be >= 1 when provided")
+        if self.max_context_ratio is not None and not 0 < self.max_context_ratio <= 1:
+            raise ValueError("max_context_ratio must be > 0 and <= 1 when provided")
+        if self.model_context_window_tokens is not None and self.model_context_window_tokens < 1:
+            raise ValueError("model_context_window_tokens must be >= 1 when provided")
+        if self.minimum_retained_tool_results < 0:
+            raise ValueError("minimum_retained_tool_results must be >= 0")
         if self.continuity_preview_items < 1:
             raise ValueError("continuity_preview_items must be >= 1")
         if self.continuity_preview_chars < 1:
@@ -52,6 +81,11 @@ class RuntimeContextWindow:
     original_tool_result_count: int = 0
     retained_tool_result_count: int = 0
     max_tool_result_count: int = 0
+    original_tool_result_tokens: int | None = None
+    retained_tool_result_tokens: int | None = None
+    dropped_tool_result_tokens: int | None = None
+    token_budget: int | None = None
+    token_estimate_source: str | None = None
     continuity_state: RuntimeContinuityState | None = None
     summary_anchor: str | None = None
     summary_source: dict[str, int] | None = None
@@ -64,6 +98,16 @@ class RuntimeContextWindow:
             "retained_tool_result_count": self.retained_tool_result_count,
             "max_tool_result_count": self.max_tool_result_count,
         }
+        if self.original_tool_result_tokens is not None:
+            payload["original_tool_result_tokens"] = self.original_tool_result_tokens
+        if self.retained_tool_result_tokens is not None:
+            payload["retained_tool_result_tokens"] = self.retained_tool_result_tokens
+        if self.dropped_tool_result_tokens is not None:
+            payload["dropped_tool_result_tokens"] = self.dropped_tool_result_tokens
+        if self.token_budget is not None:
+            payload["token_budget"] = self.token_budget
+        if self.token_estimate_source is not None:
+            payload["token_estimate_source"] = self.token_estimate_source
         if self.continuity_state is not None:
             payload["continuity_state"] = self.continuity_state.metadata_payload()
         if self.summary_anchor is not None:
@@ -95,6 +139,57 @@ def _tool_result_preview(result: ToolResult, *, max_preview_chars: int) -> str:
         preview_label = "content_preview" if content else "error_preview"
         parts.append(f'{preview_label}="{clipped}"')
     return " ".join(parts)
+
+
+_TOKEN_ESTIMATE_SOURCE = "approx_chars_per_4"
+
+
+def _estimated_token_count(value: str) -> int:
+    if not value:
+        return 0
+    return max(1, (len(value) + 3) // 4)
+
+
+def _tool_result_token_estimate(result: ToolResult) -> int:
+    payload = {
+        "tool_name": result.tool_name,
+        "status": result.status,
+        "content": normalize_tool_result_content(result.content),
+        "error": result.error,
+        "data": result.data,
+    }
+    serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    return _estimated_token_count(serialized)
+
+
+def _policy_token_budget(policy: ContextWindowPolicy) -> int | None:
+    if policy.max_tool_result_tokens is not None:
+        return policy.max_tool_result_tokens
+    if policy.max_context_ratio is None or policy.model_context_window_tokens is None:
+        return None
+    return max(1, int(policy.model_context_window_tokens * policy.max_context_ratio))
+
+
+def _retain_results_within_token_budget(
+    tool_results: tuple[ToolResult, ...],
+    *,
+    token_budget: int,
+    minimum_retained_results: int,
+) -> tuple[ToolResult, ...]:
+    if not tool_results:
+        return ()
+
+    retained_reversed: list[ToolResult] = []
+    retained_tokens = 0
+    minimum_count = min(minimum_retained_results, len(tool_results))
+    for result in reversed(tool_results):
+        estimate = _tool_result_token_estimate(result)
+        must_retain = len(retained_reversed) < minimum_count
+        if not must_retain and retained_tokens + estimate > token_budget:
+            break
+        retained_reversed.append(result)
+        retained_tokens += estimate
+    return tuple(reversed(retained_reversed))
 
 
 def normalize_tool_result_content(content: str | None) -> str | None:
@@ -138,10 +233,22 @@ def _build_continuity_state(
     retained_count: int,
     preview_item_limit: int,
     preview_char_limit: int,
+    original_tokens: int | None = None,
+    retained_tokens: int | None = None,
+    dropped_tokens: int | None = None,
+    token_budget: int | None = None,
+    token_estimate_source: str | None = None,
 ) -> RuntimeContinuityState:
     dropped_count = len(dropped_results)
     if dropped_count == 0:
-        return RuntimeContinuityState(retained_tool_result_count=retained_count)
+        return RuntimeContinuityState(
+            retained_tool_result_count=retained_count,
+            original_tool_result_tokens=original_tokens,
+            retained_tool_result_tokens=retained_tokens,
+            dropped_tool_result_tokens=dropped_tokens,
+            token_budget=token_budget,
+            token_estimate_source=token_estimate_source,
+        )
 
     preview_count = min(preview_item_limit, dropped_count)
     lines = [f"Compacted {dropped_count} earlier tool results:"]
@@ -158,6 +265,11 @@ def _build_continuity_state(
         dropped_tool_result_count=dropped_count,
         retained_tool_result_count=retained_count,
         source="tool_result_window",
+        original_tool_result_tokens=original_tokens,
+        retained_tool_result_tokens=retained_tokens,
+        dropped_tool_result_tokens=dropped_tokens,
+        token_budget=token_budget,
+        token_estimate_source=token_estimate_source,
     )
 
 
@@ -201,8 +313,15 @@ def prepare_provider_context(
     _ = session_metadata
     effective_policy = policy or ContextWindowPolicy()
     original_count = len(tool_results)
+    token_budget = _policy_token_budget(effective_policy)
 
-    if effective_policy.max_tool_results == 0:
+    if token_budget is not None:
+        retained_results = _retain_results_within_token_budget(
+            tool_results,
+            token_budget=token_budget,
+            minimum_retained_results=effective_policy.minimum_retained_tool_results,
+        )
+    elif effective_policy.max_tool_results == 0:
         retained_results: tuple[ToolResult, ...] = ()
     else:
         retained_results = tool_results[-effective_policy.max_tool_results :]
@@ -210,6 +329,15 @@ def prepare_provider_context(
     retained_count = len(retained_results)
     compacted = retained_count < original_count
     dropped_results = tool_results[: original_count - retained_count]
+    original_tokens = None
+    retained_tokens = None
+    dropped_tokens = None
+    token_estimate_source = None
+    if token_budget is not None:
+        original_tokens = sum(_tool_result_token_estimate(result) for result in tool_results)
+        retained_tokens = sum(_tool_result_token_estimate(result) for result in retained_results)
+        dropped_tokens = original_tokens - retained_tokens
+        token_estimate_source = _TOKEN_ESTIMATE_SOURCE
 
     continuity_state = (
         _build_continuity_state(
@@ -217,6 +345,11 @@ def prepare_provider_context(
             retained_count=retained_count,
             preview_item_limit=effective_policy.continuity_preview_items,
             preview_char_limit=effective_policy.continuity_preview_chars,
+            original_tokens=original_tokens,
+            retained_tokens=retained_tokens,
+            dropped_tokens=dropped_tokens,
+            token_budget=token_budget,
+            token_estimate_source=token_estimate_source,
         )
         if compacted
         else None
@@ -234,6 +367,11 @@ def prepare_provider_context(
         original_tool_result_count=original_count,
         retained_tool_result_count=retained_count,
         max_tool_result_count=effective_policy.max_tool_results,
+        original_tool_result_tokens=original_tokens,
+        retained_tool_result_tokens=retained_tokens,
+        dropped_tool_result_tokens=dropped_tokens,
+        token_budget=token_budget,
+        token_estimate_source=token_estimate_source,
         continuity_state=continuity_state,
         summary_anchor=summary_anchor,
         summary_source=summary_source,

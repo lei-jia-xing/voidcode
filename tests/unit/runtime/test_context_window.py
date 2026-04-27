@@ -21,6 +21,15 @@ def _tool_result(index: int) -> ToolResult:
     )
 
 
+def _sized_tool_result(index: int, *, content_size: int) -> ToolResult:
+    return ToolResult(
+        tool_name="read_file",
+        content=f"content-{index}-" + ("x" * content_size),
+        status="ok",
+        data={"index": index, "path": f"sample-{index}.txt"},
+    )
+
+
 def test_prepare_provider_context_keeps_results_within_limit() -> None:
     context = prepare_provider_context(
         prompt="read sample.txt",
@@ -93,6 +102,87 @@ def test_prepare_provider_context_uses_explicit_continuity_preview_policy() -> N
         '1. read_file ok content_preview="conte..."\n'
         "... and 2 more"
     )
+
+
+def test_prepare_provider_context_compacts_by_absolute_token_budget() -> None:
+    context = prepare_provider_context(
+        prompt="read sample.txt",
+        tool_results=(
+            _sized_tool_result(1, content_size=240),
+            _sized_tool_result(2, content_size=40),
+            _sized_tool_result(3, content_size=40),
+        ),
+        session_metadata={},
+        policy=ContextWindowPolicy(max_tool_result_tokens=90),
+    )
+
+    assert tuple(result.data["index"] for result in context.tool_results) == (2, 3)
+    assert context.compacted is True
+    assert context.compaction_reason == "tool_result_window"
+    assert context.token_budget == 90
+    assert context.token_estimate_source == "approx_chars_per_4"
+    assert context.original_tool_result_tokens is not None
+    assert context.retained_tool_result_tokens is not None
+    assert context.dropped_tool_result_tokens is not None
+    assert context.retained_tool_result_tokens <= 90
+    assert context.dropped_tool_result_tokens > 0
+    assert context.continuity_state is not None
+    assert (
+        context.continuity_state.original_tool_result_tokens == context.original_tool_result_tokens
+    )
+    assert (
+        context.continuity_state.retained_tool_result_tokens == context.retained_tool_result_tokens
+    )
+    assert context.continuity_state.dropped_tool_result_tokens == context.dropped_tool_result_tokens
+    assert context.continuity_state.token_budget == 90
+    assert context.metadata_payload()["token_budget"] == 90
+
+
+def test_prepare_provider_context_derives_budget_from_context_ratio() -> None:
+    context = prepare_provider_context(
+        prompt="read sample.txt",
+        tool_results=(
+            _sized_tool_result(1, content_size=160),
+            _sized_tool_result(2, content_size=32),
+        ),
+        session_metadata={},
+        policy=ContextWindowPolicy(
+            max_context_ratio=0.1,
+            model_context_window_tokens=500,
+        ),
+    )
+
+    assert tuple(result.data["index"] for result in context.tool_results) == (2,)
+    assert context.token_budget == 50
+    assert context.retained_tool_result_tokens is not None
+    assert context.retained_tool_result_tokens <= 50
+
+
+def test_prepare_provider_context_preserves_latest_result_over_budget() -> None:
+    context = prepare_provider_context(
+        prompt="read sample.txt",
+        tool_results=(_sized_tool_result(1, content_size=400),),
+        session_metadata={},
+        policy=ContextWindowPolicy(max_tool_result_tokens=1),
+    )
+
+    assert tuple(result.data["index"] for result in context.tool_results) == (1,)
+    assert context.compacted is False
+    assert context.retained_tool_result_tokens is not None
+    assert context.retained_tool_result_tokens > 1
+
+
+def test_prepare_provider_context_keeps_count_policy_when_budget_missing() -> None:
+    context = prepare_provider_context(
+        prompt="read sample.txt",
+        tool_results=(_tool_result(1), _tool_result(2), _tool_result(3)),
+        session_metadata={},
+        policy=ContextWindowPolicy(max_tool_results=2),
+    )
+
+    assert tuple(result.data["index"] for result in context.tool_results) == (2, 3)
+    assert context.token_budget is None
+    assert context.original_tool_result_tokens is None
 
 
 def test_continuity_summary_metadata_is_derived_from_state() -> None:
