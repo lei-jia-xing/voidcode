@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import sys
+from types import ModuleType
 from typing import Literal
+from unittest.mock import patch
 
 from voidcode.runtime.context_window import (
     ContextWindowPolicy,
@@ -11,6 +14,30 @@ from voidcode.runtime.context_window import (
     prepare_provider_context,
 )
 from voidcode.tools.contracts import ToolResult
+
+
+class _FakeEncoding:
+    def encode(self, value: str, *, disallowed_special: tuple[object, ...]) -> list[str]:
+        _ = disallowed_special
+        return list(value)
+
+
+class _FakeTiktokenModule(ModuleType):
+    def __init__(self) -> None:
+        super().__init__("tiktoken")
+        self.encoding_for_model_calls = 0
+        self.get_encoding_calls = 0
+        self._encoding = _FakeEncoding()
+
+    def encoding_for_model(self, model: str) -> _FakeEncoding:
+        _ = model
+        self.encoding_for_model_calls += 1
+        return self._encoding
+
+    def get_encoding(self, name: str) -> _FakeEncoding:
+        _ = name
+        self.get_encoding_calls += 1
+        return self._encoding
 
 
 def _tool_result(index: int) -> ToolResult:
@@ -331,6 +358,31 @@ def test_prepare_provider_context_applies_recent_tool_result_token_cap() -> None
     assert latest.content is not None
     assert len(latest.content) <= 20
     assert context.truncated_tool_result_count == 1
+
+
+def test_prepare_provider_context_reuses_tokenizer_encoding_when_clipping() -> None:
+    fake_tiktoken = _FakeTiktokenModule()
+    with patch.dict(sys.modules, {"tiktoken": fake_tiktoken}):
+        context = prepare_provider_context(
+            prompt="search",
+            tool_results=(
+                ToolResult(tool_name="grep", status="ok", content="x" * 80, data={"index": 1}),
+            ),
+            session_metadata={},
+            policy=ContextWindowPolicy(
+                max_tool_results=1,
+                minimum_retained_tool_results=0,
+                recent_tool_result_count=0,
+                per_tool_result_tokens={"grep": 20},
+                tokenizer_model="cache-test-model",
+            ),
+        )
+
+    (result,) = context.tool_results
+    assert result.truncated is True
+    assert result.content is not None
+    assert fake_tiktoken.encoding_for_model_calls == 1
+    assert fake_tiktoken.get_encoding_calls == 0
 
 
 def test_prepare_provider_context_preserves_recent_results_over_count_cap() -> None:

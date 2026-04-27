@@ -5,6 +5,7 @@ import importlib
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Any, NamedTuple, cast
 
 from ..tools.contracts import ToolResult
@@ -213,17 +214,21 @@ class _TokenEstimate(NamedTuple):
     source: str
 
 
+@lru_cache(maxsize=32)
+def _tiktoken_encoding_for_model(tokenizer_model: str) -> Any:
+    tiktoken = cast(Any, importlib.import_module("tiktoken"))
+    try:
+        return tiktoken.encoding_for_model(tokenizer_model)
+    except KeyError:
+        return tiktoken.get_encoding("cl100k_base")
+
+
 def _estimated_token_count(value: str, *, tokenizer_model: str | None = None) -> _TokenEstimate:
     if not value:
         return _TokenEstimate(0, _UNICODE_TOKEN_ESTIMATE_SOURCE)
     if tokenizer_model is not None:
         try:
-            tiktoken = cast(Any, importlib.import_module("tiktoken"))
-
-            try:
-                encoding = tiktoken.encoding_for_model(tokenizer_model)
-            except KeyError:
-                encoding = tiktoken.get_encoding("cl100k_base")
+            encoding = _tiktoken_encoding_for_model(tokenizer_model)
             return _TokenEstimate(
                 len(encoding.encode(value, disallowed_special=())),
                 f"tiktoken:{tokenizer_model}",
