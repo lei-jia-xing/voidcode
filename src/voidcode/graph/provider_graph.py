@@ -70,9 +70,9 @@ class ProviderGraph:
         *,
         provider: TurnProvider,
         provider_model: ResolvedProviderModel,
-        max_steps: int = 4,
+        max_steps: int | None = None,
     ) -> None:
-        if max_steps < 1:
+        if max_steps is not None and max_steps < 1:
             raise ValueError("max_steps must be at least 1")
         self._provider = provider
         self._provider_model = provider_model
@@ -91,7 +91,7 @@ class ProviderGraph:
     ) -> ProviderStep:
         _ = session
         current_turn = len(tool_results) + 1
-        if current_turn > self._max_steps:
+        if self._max_steps is not None and current_turn > self._max_steps:
             raise ValueError(f"graph exceeded max steps: {self._max_steps}")
 
         provider_stream = request.metadata.get("provider_stream", False)
@@ -155,15 +155,11 @@ class ProviderGraph:
             )
 
         turn_result = self._provider.propose_turn(turn_request)
-        if turn_result.output is not None and turn_result.tool_call is not None:
-            raise self._provider_execution_error(
-                kind="transient_failure",
-                model_name=turn_request.model_name,
-                message="provider turn produced both output and a tool call",
-                details={
-                    "source": "graph_nonstream",
-                    "reason": "mixed_terminal_outcome",
-                },
+        if turn_result.tool_call is not None:
+            return ProviderStep(
+                events=planning_events,
+                tool_call=turn_result.tool_call,
+                provider_usage=turn_result.usage,
             )
 
         if turn_result.output is not None:
@@ -295,17 +291,6 @@ class ProviderGraph:
         )
         output = "".join(output_parts)
 
-        if streamed_tool_call is not None and output:
-            raise self._provider_execution_error(
-                kind="transient_failure",
-                model_name=turn_request.model_name,
-                message="provider stream produced both text output and a tool call",
-                details={
-                    "source": "graph_stream",
-                    "reason": "mixed_terminal_outcome",
-                },
-            )
-
         if streamed_tool_call is not None:
             return ProviderStep(
                 events=planning_events + tuple(stream_events),
@@ -373,6 +358,7 @@ class ProviderGraph:
             )
 
         tool_payload = cast(dict[str, Any], raw_tool_payload)
+        tool_call_id_obj = tool_payload.get("tool_call_id")
         tool_name_obj = tool_payload.get("tool_name")
         arguments_obj = tool_payload.get("arguments")
         if not isinstance(tool_name_obj, str) or not tool_name_obj.strip():
@@ -399,6 +385,7 @@ class ProviderGraph:
         return ToolCall(
             tool_name=tool_name_obj,
             arguments=cast(dict[str, object], arguments_obj),
+            tool_call_id=tool_call_id_obj if isinstance(tool_call_id_obj, str) else None,
         )
 
     def _provider_execution_error(
