@@ -698,6 +698,70 @@ def test_provider_provider_graph_forwards_bounded_context_window_to_provider() -
     )
 
 
+def test_provider_graph_forwards_explicit_lsp_tool_feedback_to_provider() -> None:
+    provider_model = resolve_provider_model(
+        "opencode/gpt-5.4",
+        registry=ModelProviderRegistry.with_defaults(),
+    )
+    provider = _CapturingTurnProvider()
+    graph = ProviderGraph(provider=provider, provider_model=provider_model)
+    lsp_result = ToolResult(
+        tool_name="lsp",
+        status="ok",
+        content="definition found",
+        data={"operation": "definition", "response": {"uri": "file:///workspace/main.py"}},
+    )
+
+    _ = graph.step(
+        request=GraphRunRequest(
+            session=_session(),
+            prompt="use lsp feedback",
+            available_tools=_tool_definitions(),
+            context_window=RuntimeContextWindow(
+                prompt="use lsp feedback",
+                tool_results=(lsp_result,),
+            ),
+        ),
+        tool_results=(lsp_result,),
+        session=_session(),
+    )
+
+    assert provider.requests[0].tool_results == (lsp_result,)
+    assert provider.requests[0].context_window.tool_results == (lsp_result,)
+
+
+def test_provider_graph_forwards_mcp_tool_feedback_to_provider() -> None:
+    provider_model = resolve_provider_model(
+        "opencode/gpt-5.4",
+        registry=ModelProviderRegistry.with_defaults(),
+    )
+    provider = _CapturingTurnProvider()
+    graph = ProviderGraph(provider=provider, provider_model=provider_model)
+    mcp_result = ToolResult(
+        tool_name="mcp/echo/echo",
+        status="ok",
+        content="echo: hello",
+        data={"server": "echo", "tool": "echo", "is_error": False},
+    )
+
+    _ = graph.step(
+        request=GraphRunRequest(
+            session=_session(),
+            prompt="use mcp feedback",
+            available_tools=_tool_definitions(),
+            context_window=RuntimeContextWindow(
+                prompt="use mcp feedback",
+                tool_results=(mcp_result,),
+            ),
+        ),
+        tool_results=(mcp_result,),
+        session=_session(),
+    )
+
+    assert provider.requests[0].tool_results == (mcp_result,)
+    assert provider.requests[0].context_window.tool_results == (mcp_result,)
+
+
 def test_provider_provider_graph_enforces_configured_max_steps() -> None:
     provider_model = resolve_provider_model(
         "opencode/gpt-5.4",
