@@ -31,9 +31,15 @@ uv run voidcode --help
 uv run voidcode run "write hello.txt hello" --workspace . --approval-mode ask
 # 显式进入产品规划模式，用于需求澄清、范围收敛和验收标准
 uv run voidcode run --agent product "shape an issue for improving session replay" --workspace .
+uv run voidcode run --json "read README.md" --workspace .
 uv run voidcode sessions list --workspace .
+uv run voidcode sessions list --json --workspace .
 uv run voidcode sessions resume <session-id> --workspace .
+uv run voidcode commands list --workspace .
+uv run voidcode commands show review --workspace .
 ```
+
+CLI 的默认输出面向人工阅读：`run` 会隐藏原始事件转储，只展示关键进度、最终结果和 session id。需要脚本消费时使用 `--json`；在 JSON 模式下，stdout 仅保留机器可解析的 JSON，进度/诊断信息输出到 stderr。
 
 ## mise 任务
 
