@@ -78,9 +78,9 @@ class AgentPromptMaterialization:
             return self.profile
         return self.model_family_overrides.get(normalized, self.profile)
 
-    def to_payload(self) -> dict[str, object]:
+    def to_payload(self, *, profile: str | None = None) -> dict[str, object]:
         payload: dict[str, object] = {
-            "profile": self.profile,
+            "profile": self.profile if profile is None else profile,
             "version": self.version,
             "source": self.source,
             "format": self.format,

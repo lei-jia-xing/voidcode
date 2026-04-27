@@ -995,6 +995,27 @@ def test_runtime_agent_payload_round_trips_through_serialization() -> None:
     }
 
 
+def test_runtime_agent_serialization_materialization_preserves_prompt_profile_override() -> None:
+    agent = parse_runtime_agent_payload(
+        {
+            "preset": "leader",
+            "prompt_ref": "researcher",
+            "prompt_source": "builtin",
+        },
+        source="test payload",
+    )
+
+    assert agent is not None
+    assert serialize_runtime_agent_config(agent) == {
+        "preset": "leader",
+        "prompt_profile": "researcher",
+        "prompt_materialization": _prompt_materialization_payload("researcher"),
+        "prompt_ref": "researcher",
+        "prompt_source": "builtin",
+        "execution_engine": "provider",
+    }
+
+
 def test_runtime_agent_payload_round_trips_explicit_empty_tool_boundaries() -> None:
     agent = parse_runtime_agent_payload(
         {

@@ -1518,7 +1518,12 @@ def serialize_runtime_agent_config(agent: RuntimeAgentConfig | None) -> dict[str
     if agent.prompt_profile is not None:
         payload["prompt_profile"] = agent.prompt_profile
     if manifest is not None and manifest.prompt_materialization is not None:
-        payload["prompt_materialization"] = manifest.prompt_materialization.to_payload()
+        prompt_materialization_profile = (
+            agent.prompt_profile or manifest.prompt_materialization.profile
+        )
+        payload["prompt_materialization"] = manifest.prompt_materialization.to_payload(
+            profile=prompt_materialization_profile,
+        )
     if agent.prompt_ref is not None:
         payload["prompt_ref"] = agent.prompt_ref
     if agent.prompt_source is not None:
