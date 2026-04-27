@@ -688,10 +688,15 @@ export const useAppStore = create<AppState>()(
           rawMetadata.agent && typeof rawMetadata.agent === "object"
             ? (rawMetadata.agent as Record<string, unknown>)
             : {};
+        const requestedMaxSteps = rawMetadata.max_steps;
+        const maxSteps =
+          typeof requestedMaxSteps === "number" &&
+          Number.isInteger(requestedMaxSteps) &&
+          requestedMaxSteps > 0
+            ? requestedMaxSteps
+            : 16;
         const forwardMetadata = Object.fromEntries(
-          Object.entries(rawMetadata).filter(
-            ([key]) => key !== "max_steps" && key !== "agent",
-          ),
+          Object.entries(rawMetadata).filter(([key]) => key !== "agent"),
         );
         const forwardAgentMetadata = Object.fromEntries(
           Object.entries(rawAgentMetadata),
@@ -699,6 +704,7 @@ export const useAppStore = create<AppState>()(
 
         const metadata = {
           ...forwardMetadata,
+          max_steps: maxSteps,
           agent: {
             preset: get().agentPreset,
             model: normalizeProviderModelReference(
@@ -707,6 +713,7 @@ export const useAppStore = create<AppState>()(
               get().providerModels,
             ),
             ...forwardAgentMetadata,
+            execution_engine: "provider",
           },
         };
 
