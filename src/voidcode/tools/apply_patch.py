@@ -312,6 +312,10 @@ def _apply_marker_patch(patch_text: str, *, workspace: Path) -> ToolResult:
             if hunk.move_path is None:
                 prepared.append(_PreparedMarkerChange(status="M", path=hunk.path, content=content))
             else:
+                source_path = (workspace / hunk.path).resolve()
+                destination_path = (workspace / hunk.move_path).resolve()
+                if source_path == destination_path:
+                    raise ValueError(f"Move destination must differ from source: {hunk.move_path}")
                 prepared.append(
                     _PreparedMarkerChange(
                         status="R",

@@ -201,6 +201,32 @@ def test_apply_patch_accepts_structured_update_delete_and_move(tmp_path: Path) -
     ]
 
 
+def test_apply_patch_rejects_structured_same_path_move_without_deleting_file(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "app.py"
+    target.write_text("print('before')\n", encoding="utf-8")
+    patch_text = "\n".join(
+        [
+            "*** Begin Patch",
+            "*** Update File: ./app.py",
+            "*** Move to: app.py",
+            "@@",
+            "-print('before')",
+            "+print('after')",
+            "*** End Patch",
+        ]
+    )
+
+    with pytest.raises(ValueError, match="Move destination must differ from source"):
+        ApplyPatchTool().invoke(
+            ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
+            workspace=tmp_path,
+        )
+
+    assert target.read_text(encoding="utf-8") == "print('before')\n"
+
+
 def test_apply_patch_structured_insert_only_update_uses_matched_context(
     tmp_path: Path,
 ) -> None:

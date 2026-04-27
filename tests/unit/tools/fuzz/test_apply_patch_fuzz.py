@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import importlib
+import tempfile
 from collections.abc import Callable
+from pathlib import Path
 from typing import cast
 
+import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
+
+from voidcode.tools import ApplyPatchTool, ToolCall
 
 _apply_patch = importlib.import_module("voidcode.tools.apply_patch")
 _changes_from_patch = cast(
@@ -140,3 +145,38 @@ def test_changes_from_patch_preserves_rename_metadata(paths: tuple[str, str]) ->
     assert _changes_from_patch(patch_text) == [
         {"path": new_path, "old_path": old_path, "status": "R"}
     ]
+
+
+@CI_SETTINGS
+@given(path=_slash_path, before_line=_line_text, after_line=_line_text)
+def test_structured_same_path_move_never_deletes_target(
+    path: str,
+    before_line: str,
+    after_line: str,
+) -> None:
+    before = before_line or "before"
+    after = after_line or "after"
+    with tempfile.TemporaryDirectory() as workspace_dir:
+        workspace = Path(workspace_dir)
+        target = workspace / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(f"{before}\n", encoding="utf-8")
+        patch_text = "\n".join(
+            [
+                "*** Begin Patch",
+                f"*** Update File: {path}",
+                f"*** Move to: {path}",
+                "@@",
+                f"-{before}",
+                f"+{after}",
+                "*** End Patch",
+            ]
+        )
+
+        with pytest.raises(ValueError, match="Move destination must differ from source"):
+            ApplyPatchTool().invoke(
+                ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
+                workspace=workspace,
+            )
+
+        assert target.read_text(encoding="utf-8") == f"{before}\n"
