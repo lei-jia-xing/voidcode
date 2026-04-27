@@ -3727,13 +3727,17 @@ class VoidCodeRuntime:
         config: RuntimeContextWindowConfig | None,
         *,
         resolved_provider: ResolvedProviderConfig | None,
+        provider_attempt: int = 0,
     ) -> ContextWindowPolicy:
         if config is None:
             return ContextWindowPolicy()
         model_context_window_tokens = config.model_context_window_tokens
         if model_context_window_tokens is None and resolved_provider is not None:
-            provider = resolved_provider.active_target.selection.provider
-            model = resolved_provider.active_target.selection.model
+            provider_target = resolved_provider.target_chain.target_at(provider_attempt)
+            if provider_target is None:
+                provider_target = resolved_provider.active_target
+            provider = provider_target.selection.provider
+            model = provider_target.selection.model
             if provider is not None and model is not None:
                 metadata = infer_model_metadata(provider, model)
                 if metadata is not None:
@@ -3765,9 +3769,11 @@ class VoidCodeRuntime:
     ) -> RuntimeContextWindow:
         if policy is None:
             effective_config = self._effective_runtime_config_from_metadata(session_metadata)
+            provider_attempt = self._provider_attempt_from_metadata(session_metadata)
             policy = self._context_window_policy_from_config(
                 effective_config.context_window,
                 resolved_provider=effective_config.resolved_provider,
+                provider_attempt=provider_attempt,
             )
         return prepare_provider_context(
             prompt=prompt,
