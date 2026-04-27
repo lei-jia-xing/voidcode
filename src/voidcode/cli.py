@@ -22,6 +22,8 @@ from .provider.snapshot import resolved_provider_snapshot
 from .runtime.config import RuntimeConfig, load_runtime_config, serialize_provider_fallback_config
 from .runtime.contracts import (
     BackgroundTaskResult,
+    ProviderInspectResult,
+    ProviderModelMetadata,
     RuntimeRequest,
     RuntimeSessionDebugSnapshot,
     RuntimeStreamChunk,
@@ -577,37 +579,115 @@ def _handle_provider_models_command(args: argparse.Namespace) -> int:
     runtime = VoidCodeRuntime(workspace=workspace)
     try:
         try:
-            models = (
-                runtime.refresh_provider_models(provider)
-                if refresh
-                else runtime.provider_models(provider)
-            )
+            if refresh:
+                _ = runtime.refresh_provider_models(provider)
+            result = runtime.provider_models_result(provider)
         except ValueError as exc:
             raise SystemExit(f"error: {exc}") from None
     finally:
         _close_runtime(runtime)
 
-    catalog = runtime.provider_model_catalog(provider)
     payload: dict[str, object] = {
         "workspace": str(workspace),
         "provider": provider,
         "refreshed": refresh,
-        "models": list(models),
+        "models": list(result.models),
+        "model_metadata": {
+            model: _provider_model_metadata_payload(metadata)
+            for model, metadata in result.model_metadata.items()
+        },
+        "source": result.source,
+        "last_refresh_status": result.last_refresh_status,
+        "last_error": result.last_error,
+        "discovery_mode": result.discovery_mode,
     }
-    if catalog is not None:
-        payload["source"] = catalog.get("source")
-        payload["last_refresh_status"] = catalog.get("last_refresh_status")
-        payload["last_error"] = catalog.get("last_error")
-        if refresh and catalog.get("source") == "fallback":
-            refresh_error = catalog.get("last_error")
-            print(
-                "WARN provider.models.refresh "
-                f"provider={provider} source=fallback reason={refresh_error}",
-                file=sys.stderr,
-                flush=True,
-            )
+    if refresh and result.source == "fallback":
+        print(
+            "WARN provider.models.refresh "
+            f"provider={provider} source=fallback reason={result.last_error}",
+            file=sys.stderr,
+            flush=True,
+        )
 
     print(json.dumps(payload))
+    return 0
+
+
+def _provider_model_metadata_payload(
+    metadata: ProviderModelMetadata,
+) -> dict[str, object]:
+    return {
+        key: value
+        for key, value in {
+            "context_window": metadata.context_window,
+            "max_input_tokens": metadata.max_input_tokens,
+            "max_output_tokens": metadata.max_output_tokens,
+            "supports_tools": metadata.supports_tools,
+            "supports_vision": metadata.supports_vision,
+            "supports_streaming": metadata.supports_streaming,
+            "supports_reasoning": metadata.supports_reasoning,
+            "supports_json_mode": metadata.supports_json_mode,
+        }.items()
+        if value is not None
+    }
+
+
+def _provider_inspect_payload(
+    result: ProviderInspectResult, *, workspace: Path
+) -> dict[str, object]:
+    return {
+        "workspace": str(workspace),
+        "provider": {
+            "name": result.summary.name,
+            "label": result.summary.label,
+            "configured": result.summary.configured,
+            "current": result.summary.current,
+        },
+        "models": {
+            "provider": result.models.provider,
+            "configured": result.models.configured,
+            "models": list(result.models.models),
+            "model_metadata": {
+                model: _provider_model_metadata_payload(metadata)
+                for model, metadata in result.models.model_metadata.items()
+            },
+            "source": result.models.source,
+            "last_refresh_status": result.models.last_refresh_status,
+            "last_error": result.models.last_error,
+            "discovery_mode": result.models.discovery_mode,
+        },
+        "validation": {
+            "provider": result.validation.provider,
+            "configured": result.validation.configured,
+            "ok": result.validation.ok,
+            "status": result.validation.status,
+            "message": result.validation.message,
+            "source": result.validation.source,
+            "last_error": result.validation.last_error,
+            "discovery_mode": result.validation.discovery_mode,
+        },
+        "current_model": result.current_model,
+        "current_model_metadata": (
+            None
+            if result.current_model_metadata is None
+            else _provider_model_metadata_payload(result.current_model_metadata)
+        ),
+    }
+
+
+def _handle_provider_inspect_command(args: argparse.Namespace) -> int:
+    workspace = cast(Path, args.workspace)
+    provider = cast(str, args.provider)
+    runtime = VoidCodeRuntime(workspace=workspace)
+    try:
+        try:
+            result = runtime.inspect_provider(provider)
+        except ValueError as exc:
+            raise SystemExit(f"error: {exc}") from None
+    finally:
+        _close_runtime(runtime)
+
+    print(json.dumps(_provider_inspect_payload(result, workspace=workspace), sort_keys=True))
     return 0
 
 
@@ -874,6 +954,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="Refresh model list from provider endpoint before printing.",
     )
     provider_models_parser.set_defaults(handler=_handle_provider_models_command)
+
+    provider_inspect_parser = provider_subparsers.add_parser(
+        "inspect", help="Show configured status, model limits, and model capabilities."
+    )
+    _ = provider_inspect_parser.add_argument(
+        "provider", help="Provider name, e.g. openai or litellm."
+    )
+    _ = provider_inspect_parser.add_argument(
+        "--workspace",
+        type=Path,
+        default=Path.cwd(),
+        help="Workspace root used to resolve runtime config.",
+    )
+    provider_inspect_parser.set_defaults(handler=_handle_provider_inspect_command)
 
     list_parser = sessions_subparsers.add_parser("list", help="List persisted sessions.")
     _ = list_parser.add_argument(

@@ -1360,14 +1360,24 @@ def test_provider_models_command_outputs_refreshed_provider_model_list() -> None
         workspace = Path(tmp)
         with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
             runtime_class.return_value.refresh_provider_models.return_value = models
-            runtime_class.return_value.provider_model_catalog.return_value = {
-                "provider": "litellm",
-                "models": list(models),
-                "refreshed": True,
-                "source": "remote",
-                "last_refresh_status": "ok",
-                "last_error": None,
-            }
+            contracts = importlib.import_module("voidcode.runtime.contracts")
+            runtime_class.return_value.provider_models_result.return_value = (
+                contracts.ProviderModelsResult(
+                    provider="litellm",
+                    configured=True,
+                    models=models,
+                    model_metadata={
+                        "provider/model": contracts.ProviderModelMetadata(
+                            context_window=128_000,
+                            max_input_tokens=111_616,
+                            max_output_tokens=16_384,
+                            supports_tools=True,
+                        )
+                    },
+                    source="remote",
+                    last_refresh_status="ok",
+                )
+            )
             result = cli.main(
                 [
                     "provider",
@@ -1382,4 +1392,72 @@ def test_provider_models_command_outputs_refreshed_provider_model_list() -> None
     assert result == 0
     runtime_class.assert_called_once_with(workspace=workspace)
     runtime_class.return_value.refresh_provider_models.assert_called_once_with("litellm")
-    runtime_class.return_value.provider_model_catalog.assert_called_once_with("litellm")
+    runtime_class.return_value.provider_models_result.assert_called_once_with("litellm")
+
+
+def test_provider_inspect_command_outputs_provider_capabilities() -> None:
+    cli = importlib.import_module("voidcode.cli")
+    contracts = importlib.import_module("voidcode.runtime.contracts")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        inspect_result = contracts.ProviderInspectResult(
+            summary=contracts.ProviderSummary(
+                name="openai", label="OpenAI", configured=True, current=True
+            ),
+            models=contracts.ProviderModelsResult(
+                provider="openai",
+                configured=True,
+                models=("gpt-4o",),
+                model_metadata={
+                    "gpt-4o": contracts.ProviderModelMetadata(
+                        context_window=128_000,
+                        max_input_tokens=111_616,
+                        max_output_tokens=16_384,
+                        supports_tools=True,
+                        supports_vision=True,
+                    )
+                },
+                source="remote",
+                last_refresh_status="ok",
+                discovery_mode="configured_endpoint",
+            ),
+            validation=contracts.ProviderValidationResult(
+                provider="openai",
+                configured=True,
+                ok=True,
+                status="ok",
+                message="Remote provider validation succeeded.",
+                source="remote",
+                discovery_mode="configured_endpoint",
+            ),
+            current_model="gpt-4o",
+            current_model_metadata=contracts.ProviderModelMetadata(
+                context_window=128_000,
+                max_input_tokens=111_616,
+                max_output_tokens=16_384,
+                supports_tools=True,
+                supports_vision=True,
+            ),
+        )
+        with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+            runtime_class.return_value.inspect_provider.return_value = inspect_result
+            with patch.object(cli, "print") as print_fn:
+                result = cli.main(
+                    [
+                        "provider",
+                        "inspect",
+                        "openai",
+                        "--workspace",
+                        str(workspace),
+                    ]
+                )
+
+    assert result == 0
+    runtime_class.assert_called_once_with(workspace=workspace)
+    runtime_class.return_value.inspect_provider.assert_called_once_with("openai")
+    payload = json.loads(print_fn.call_args.args[0])
+    assert payload["provider"]["name"] == "openai"
+    assert payload["current_model"] == "gpt-4o"
+    assert payload["current_model_metadata"]["max_input_tokens"] == 111_616
+    assert payload["current_model_metadata"]["supports_tools"] is True
