@@ -20,7 +20,7 @@ The `agent` key in `.voidcode.json` configures the agent preset for the current 
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `preset` | string | Yes | Agent preset identifier. `leader` is the only executable top-level preset. |
+| `preset` | string | Yes | Agent preset identifier. `leader` and `product` are executable top-level presets. |
 | `prompt_profile` | string | No | Prompt profile name. Must be a built-in profile. |
 | `model` | string | No | Model override for this agent. |
 | `execution_engine` | string | No | Execution engine. Default is `provider`. |
@@ -32,12 +32,12 @@ The `agent` key in `.voidcode.json` configures the agent preset for the current 
 
 | Preset | Mode | Description |
 |-------|------|-------------|
-| `leader` | **primary** | Primary user-facing agent. The only preset executable as top-level active execution. |
+| `leader` | **primary** | Default execution/coding agent. Executable as top-level active execution. |
 | `worker` | subagent | Focused executor for narrow tasks. Available via runtime delegation only. |
 | `advisor` | subagent | Read-only advisory for architecture and review. Available via runtime delegation only. |
 | `explore` | subagent | Workspace-bound exploration for code structure. Available via runtime delegation only. |
 | `researcher` | subagent | External research for docs and examples. Available via runtime delegation only. |
-| `product` | subagent | Requirements alignment and scope review. Available via runtime delegation only. |
+| `product` | **primary** | Planning agent for requirements alignment, scope shaping, acceptance criteria, and issue drafting. Executable as top-level active execution. |
 
 ### Examples
 
@@ -243,7 +243,7 @@ If you specify a non-existent preset or try to use a subagent preset as top-leve
 Error: Unknown agent preset 'unknown'. Valid presets: leader, worker, advisor, explore, researcher, product
 ```
 
-Subagent presets (`worker`, `advisor`, `explore`, `researcher`, `product`) can only be executed via runtime-owned delegation, not as top-level active execution.
+Top-level selectable presets are `leader` and `product`. Other subagent presets (`worker`, `advisor`, `explore`, `researcher`) can only be executed via runtime-owned delegation, not as top-level active execution.
 
 ### Invalid Model
 
