@@ -34,28 +34,6 @@ from .protocol import (
 )
 
 _DEFAULT_COMPLETION_TIMEOUT_SECONDS = 300.0
-_OBJECT_SCHEMA_KEYWORDS = frozenset(
-    {
-        "$defs",
-        "$schema",
-        "additionalProperties",
-        "allOf",
-        "anyOf",
-        "dependentRequired",
-        "dependentSchemas",
-        "description",
-        "maxProperties",
-        "minProperties",
-        "oneOf",
-        "patternProperties",
-        "properties",
-        "propertyNames",
-        "required",
-        "title",
-        "type",
-        "unevaluatedProperties",
-    }
-)
 
 
 def _usage_int(raw: object) -> int:
@@ -98,7 +76,28 @@ def _is_object_json_schema(schema: dict[str, object]) -> bool:
         return True
     if schema_type is not None:
         return False
-    return any(key in _OBJECT_SCHEMA_KEYWORDS for key in schema)
+    properties = schema.get("properties")
+    if isinstance(properties, dict):
+        return True
+    return any(
+        key in schema
+        for key in (
+            "$defs",
+            "$schema",
+            "additionalProperties",
+            "allOf",
+            "anyOf",
+            "dependentRequired",
+            "dependentSchemas",
+            "maxProperties",
+            "minProperties",
+            "oneOf",
+            "patternProperties",
+            "propertyNames",
+            "required",
+            "unevaluatedProperties",
+        )
+    )
 
 
 def _normalize_tool_call_id(value: str | None, *, fallback: str) -> str:

@@ -30,6 +30,7 @@ from voidcode.provider.protocol import (
     TurnProvider,
 )
 from voidcode.tools.contracts import ToolDefinition, ToolResult
+from voidcode.tools.task import TaskTool
 
 
 @dataclass(frozen=True, slots=True)
@@ -369,6 +370,97 @@ def test_provider_adapter_wraps_internal_tool_property_schema(
         },
         "additionalProperties": True,
     }
+
+
+def test_provider_adapter_wraps_property_schema_with_description_argument(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = OpenAIModelProvider().turn_provider()
+    request = _build_turn_request(model_name="openai")
+    request = ProviderTurnRequest(
+        prompt=request.prompt,
+        available_tools=(
+            ToolDefinition(
+                name="demo_tool",
+                description="demo",
+                input_schema={"description": {"type": "string"}},
+                read_only=True,
+            ),
+        ),
+        tool_results=request.tool_results,
+        context_window=request.context_window,
+        applied_skills=request.applied_skills,
+        raw_model=request.raw_model,
+        provider_name=request.provider_name,
+        model_name=request.model_name,
+    )
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        completion_content="hello world",
+    )
+
+    _ = provider.propose_turn(request)
+
+    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+    assert isinstance(payload_obj, dict)
+    payload = cast(dict[str, object], payload_obj)
+    tools_obj = payload.get("tools")
+    assert isinstance(tools_obj, list)
+    tool_payload = cast(dict[str, object], tools_obj[0])
+    function_obj = tool_payload.get("function")
+    assert isinstance(function_obj, dict)
+    function = cast(dict[str, object], function_obj)
+    assert function["parameters"] == {
+        "type": "object",
+        "properties": {"description": {"type": "string"}},
+        "additionalProperties": True,
+    }
+
+
+def test_provider_adapter_wraps_task_tool_description_argument(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = OpenAIModelProvider().turn_provider()
+    request = _build_turn_request(model_name="openai")
+    request = ProviderTurnRequest(
+        prompt=request.prompt,
+        available_tools=(TaskTool.definition,),
+        tool_results=request.tool_results,
+        context_window=request.context_window,
+        applied_skills=request.applied_skills,
+        raw_model=request.raw_model,
+        provider_name=request.provider_name,
+        model_name=request.model_name,
+    )
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        completion_content="hello world",
+    )
+
+    _ = provider.propose_turn(request)
+
+    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+    assert isinstance(payload_obj, dict)
+    payload = cast(dict[str, object], payload_obj)
+    tools_obj = payload.get("tools")
+    assert isinstance(tools_obj, list)
+    tool_payload = cast(dict[str, object], tools_obj[0])
+    function_obj = tool_payload.get("function")
+    assert isinstance(function_obj, dict)
+    function = cast(dict[str, object], function_obj)
+    parameters_obj = function.get("parameters")
+    assert isinstance(parameters_obj, dict)
+    parameters = cast(dict[str, object], parameters_obj)
+    properties_obj = parameters.get("properties")
+    assert isinstance(properties_obj, dict)
+    properties = cast(dict[str, object], properties_obj)
+
+    assert parameters["type"] == "object"
+    assert "description" not in parameters
+    assert properties["description"] == {"type": "string"}
+    assert properties["prompt"] == {"type": "string"}
 
 
 def test_provider_adapter_preserves_object_schema_without_explicit_type(
