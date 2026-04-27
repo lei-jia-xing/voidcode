@@ -305,6 +305,29 @@ def test_notification_style_requests_write_no_result_or_error() -> None:
     assert messages == []
 
 
+def test_malformed_request_id_is_rejected_without_side_effects() -> None:
+    runtime = _StubRuntime()
+    messages, _ = _run_server(
+        runtime,
+        json.dumps({"jsonrpc": "2.0", "id": True, "method": "session/new", "params": {}}),
+        _request("session/prompt", 1, {"sessionId": "acp-session-any", "prompt": "hello"}),
+    )
+
+    assert messages[0] == {
+        "jsonrpc": "2.0",
+        "id": None,
+        "error": {
+            "code": -32600,
+            "message": "id must be a string, integer, null, or omitted",
+        },
+    }
+    assert messages[1]["error"] == {
+        "code": -32602,
+        "message": "unknown ACP session id: acp-session-any",
+    }
+    assert runtime.requests == []
+
+
 def test_cancel_request_during_prompt_returns_cancelled_stop_reason() -> None:
     with patch("voidcode.acp.stdio.uuid4", return_value=SimpleNamespace(hex="abc")):
         messages, _ = _run_server(

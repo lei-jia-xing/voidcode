@@ -95,7 +95,15 @@ class StdioAcpServer:
             )
             return
         payload = cast(dict[object, object], request)
-        request_id = _request_id(payload.get("id"))
+        request_id, invalid_request_id = _request_id(payload.get("id"))
+        if invalid_request_id:
+            self._write_error(
+                None,
+                _ERROR_INVALID_REQUEST,
+                "id must be a string, integer, null, or omitted",
+                respond_without_id=True,
+            )
+            return
         if payload.get("jsonrpc") != JSON_RPC_VERSION:
             self._write_error(request_id, _ERROR_INVALID_REQUEST, "jsonrpc must be '2.0'")
             return
@@ -406,12 +414,12 @@ class StdioAcpServer:
         self.stderr.flush()
 
 
-def _request_id(value: object) -> JsonRpcId:
+def _request_id(value: object) -> tuple[JsonRpcId, bool]:
     if value is None or isinstance(value, str):
-        return value
+        return value, False
     if isinstance(value, int) and not isinstance(value, bool):
-        return value
-    return None
+        return value, False
+    return None, True
 
 
 def _required_string(params: Mapping[str, object], name: str) -> str:
