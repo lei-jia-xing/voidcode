@@ -385,9 +385,10 @@ def load_runtime_config(
     resolved_lsp = repo_local.lsp or _derive_workspace_lsp_config(resolved_workspace)
     resolved_agent = _resolve_agent_config(repo_local.agent)
 
+    env_providers = provider_configs_from_env(environment)
     resolved_providers = merge_provider_configs(
         repo_local.providers,
-        merge_provider_configs(global_config.providers, provider_configs_from_env(environment)),
+        merge_provider_configs(env_providers, global_config.providers),
     )
 
     return RuntimeConfig(

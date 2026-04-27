@@ -571,19 +571,129 @@ def merge_provider_configs(
     if fallback is None:
         return primary
     return ProviderConfigs(
-        openai=primary.openai or fallback.openai,
-        anthropic=primary.anthropic or fallback.anthropic,
-        google=primary.google or fallback.google,
-        copilot=primary.copilot or fallback.copilot,
-        litellm=primary.litellm or fallback.litellm,
-        deepseek=primary.deepseek or fallback.deepseek,
-        glm=primary.glm or fallback.glm,
-        grok=primary.grok or fallback.grok,
-        minimax=primary.minimax or fallback.minimax,
-        kimi=primary.kimi or fallback.kimi,
-        opencode_go=primary.opencode_go or fallback.opencode_go,
-        qwen=primary.qwen or fallback.qwen,
+        openai=_merge_openai_provider_config(primary.openai, fallback.openai),
+        anthropic=_merge_anthropic_provider_config(primary.anthropic, fallback.anthropic),
+        google=_merge_google_provider_config(primary.google, fallback.google),
+        copilot=_merge_copilot_provider_config(primary.copilot, fallback.copilot),
+        litellm=_merge_litellm_provider_config(primary.litellm, fallback.litellm),
+        deepseek=_merge_simplified_provider_config(primary.deepseek, fallback.deepseek),
+        glm=_merge_simplified_provider_config(primary.glm, fallback.glm),
+        grok=_merge_simplified_provider_config(primary.grok, fallback.grok),
+        minimax=_merge_simplified_provider_config(primary.minimax, fallback.minimax),
+        kimi=_merge_simplified_provider_config(primary.kimi, fallback.kimi),
+        opencode_go=_merge_simplified_provider_config(
+            primary.opencode_go,
+            fallback.opencode_go,
+        ),
+        qwen=_merge_simplified_provider_config(primary.qwen, fallback.qwen),
         custom={**fallback.custom, **primary.custom},
+    )
+
+
+def _merge_openai_provider_config(
+    primary: OpenAIProviderConfig | None,
+    fallback: OpenAIProviderConfig | None,
+) -> OpenAIProviderConfig | None:
+    if primary is None:
+        return fallback
+    if fallback is None:
+        return primary
+    return OpenAIProviderConfig(
+        api_key=primary.api_key or fallback.api_key,
+        base_url=primary.base_url or fallback.base_url,
+        discovery_base_url=primary.discovery_base_url or fallback.discovery_base_url,
+        organization=primary.organization or fallback.organization,
+        project=primary.project or fallback.project,
+        timeout_seconds=primary.timeout_seconds or fallback.timeout_seconds,
+    )
+
+
+def _merge_anthropic_provider_config(
+    primary: AnthropicProviderConfig | None,
+    fallback: AnthropicProviderConfig | None,
+) -> AnthropicProviderConfig | None:
+    if primary is None:
+        return fallback
+    if fallback is None:
+        return primary
+    return AnthropicProviderConfig(
+        api_key=primary.api_key or fallback.api_key,
+        base_url=primary.base_url or fallback.base_url,
+        discovery_base_url=primary.discovery_base_url or fallback.discovery_base_url,
+        version=primary.version or fallback.version,
+        beta_headers=primary.beta_headers or fallback.beta_headers,
+        timeout_seconds=primary.timeout_seconds or fallback.timeout_seconds,
+    )
+
+
+def _merge_google_provider_config(
+    primary: GoogleProviderConfig | None,
+    fallback: GoogleProviderConfig | None,
+) -> GoogleProviderConfig | None:
+    if primary is None:
+        return fallback
+    if fallback is None:
+        return primary
+    return GoogleProviderConfig(
+        auth=primary.auth or fallback.auth,
+        base_url=primary.base_url or fallback.base_url,
+        discovery_base_url=primary.discovery_base_url or fallback.discovery_base_url,
+        project=primary.project or fallback.project,
+        region=primary.region or fallback.region,
+        timeout_seconds=primary.timeout_seconds or fallback.timeout_seconds,
+    )
+
+
+def _merge_copilot_provider_config(
+    primary: CopilotProviderConfig | None,
+    fallback: CopilotProviderConfig | None,
+) -> CopilotProviderConfig | None:
+    if primary is None:
+        return fallback
+    if fallback is None:
+        return primary
+    return CopilotProviderConfig(
+        auth=primary.auth or fallback.auth,
+        base_url=primary.base_url or fallback.base_url,
+        timeout_seconds=primary.timeout_seconds or fallback.timeout_seconds,
+    )
+
+
+def _merge_litellm_provider_config(
+    primary: LiteLLMProviderConfig | None,
+    fallback: LiteLLMProviderConfig | None,
+) -> LiteLLMProviderConfig | None:
+    if primary is None:
+        return fallback
+    if fallback is None:
+        return primary
+    return LiteLLMProviderConfig(
+        api_key=primary.api_key or fallback.api_key,
+        api_key_env_var=primary.api_key_env_var or fallback.api_key_env_var,
+        base_url=primary.base_url or fallback.base_url,
+        discovery_base_url=primary.discovery_base_url or fallback.discovery_base_url,
+        auth_header=primary.auth_header or fallback.auth_header,
+        auth_scheme=primary.auth_scheme or fallback.auth_scheme,
+        timeout_seconds=primary.timeout_seconds or fallback.timeout_seconds,
+        model_map={**fallback.model_map, **primary.model_map},
+    )
+
+
+def _merge_simplified_provider_config(
+    primary: SimplifiedProviderConfig | None,
+    fallback: SimplifiedProviderConfig | None,
+) -> SimplifiedProviderConfig | None:
+    if primary is None:
+        return fallback
+    if fallback is None:
+        return primary
+    return SimplifiedProviderConfig(
+        api_key=primary.api_key or fallback.api_key,
+        api_key_env_var=primary.api_key_env_var or fallback.api_key_env_var,
+        base_url=primary.base_url or fallback.base_url,
+        discovery_base_url=primary.discovery_base_url or fallback.discovery_base_url,
+        timeout_seconds=primary.timeout_seconds or fallback.timeout_seconds,
+        model_map={**fallback.model_map, **primary.model_map},
     )
 
 
