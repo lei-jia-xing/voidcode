@@ -55,7 +55,13 @@ run = "uv run ruff format ."
 run = "uv run basedpyright --warnings src"
 
 [tasks.test]
-run = "uv run pytest"
+run = "uv run pytest -n auto"
+
+[tasks."test:fast"]
+run = "uv run pytest -n auto tests/unit --ignore=tests/unit/tools/fuzz --ignore=tests/unit/runtime/test_http_question_payload_fuzz.py --ignore=tests/unit/runtime/test_runtime_service_extensions.py"
+
+[tasks."test:coverage"]
+run = "uv run pytest -n auto --cov=voidcode --cov-report=term-missing"
 
 [tasks.build]
 run = "uv build"
@@ -64,7 +70,7 @@ run = "uv build"
 run = "mise run lint && mise run typecheck && mise run test && mise run frontend:check"
 
 [tasks.ci]
-run = "mise run check && mise run build && mise run frontend:build"
+run = "mise run lint && mise run typecheck && mise run test:coverage && mise run build && mise run frontend:check && mise run frontend:build"
 
 [tasks.pre-commit]
 run = "uv run pre-commit run --all-files"

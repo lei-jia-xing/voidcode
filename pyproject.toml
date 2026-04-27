@@ -48,6 +48,7 @@ dev = [
   "pre-commit",
   "pytest",
   "pytest-cov",
+  "pytest-xdist>=3.8.0",
   "ruff",
 ]
 
@@ -87,7 +88,12 @@ root = "."
 extraPaths = ["src"]
 
 [tool.pytest.ini_options]
-addopts = "--cov=src --cov-report=term-missing"
+addopts = ""
+markers = [
+  "slow: tests that are useful locally but too slow for the fast feedback loop",
+  "integration: tests that exercise cross-module/runtime integration paths",
+  "fuzz: property-based or fuzz-style tests that can be more expensive than example tests",
+]
 pythonpath = ["src"]
 testpaths = ["tests"]
 

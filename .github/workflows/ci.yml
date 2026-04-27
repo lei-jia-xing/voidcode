@@ -37,7 +37,7 @@ jobs:
         run: uv run basedpyright --warnings src
 
       - name: Run tests with coverage
-        run: uv run pytest --cov=voidcode --cov-report=xml
+        run: uv run pytest -n auto --cov=voidcode --cov-report=xml
 
       - name: Build package
         run: uv build
