@@ -1,8 +1,30 @@
-Apply unified diff patches to files inside the local workspace.
+Apply patches to files inside the local workspace.
 
 Usage:
-- The patch parameter is required and must be a unified diff string that git apply can validate.
-- Use this tool for multi-file edits, renames, deletions, or patch-shaped changes that are clearer as a diff.
-- Prefer edit or multi_edit for small local replacements in a single file.
-- Read the relevant files first so the patch is grounded in real context.
-- Use the returned changes and affected paths as the source of truth for follow-up verification.
+- The patch parameter is required and contains the full patch text.
+- The preferred format is the structured patch envelope below. It is file-oriented, easy to parse, and avoids manual unified-diff line counts when creating files.
+- Unified diffs that `git apply` can validate are also accepted for compatibility.
+- Use this tool for multi-file edits, renames, deletions, or patch-shaped changes that are clearer as a patch.
+- Prefer edit or multi_edit for small replacements in one known file.
+- If the tool returns status=ok, its content/data list the affected paths. Use that result as the source of truth for follow-up verification.
+- If the tool returns status=error, read the error text and retry with a corrected patch instead of assuming any files changed.
+
+Structured patch shape:
+*** Begin Patch
+*** Add File: path/to/file
++first line
++second line
++third line
+*** Update File: src/app.py
+*** Move to: src/main.py
+@@ def greet():
+-print("Hi")
++print("Hello, world!")
+*** Delete File: obsolete.txt
+*** End Patch
+
+Rules:
+- Include exactly one Begin Patch / End Patch envelope.
+- Each file operation starts with Add File, Update File, or Delete File.
+- Add File content lines must start with +.
+- Update File hunks use lines prefixed with space for context, - for removed text, and + for added text.

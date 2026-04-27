@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import importlib
+import tempfile
 from collections.abc import Callable
+from pathlib import Path
 from typing import cast
 
+import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
+
+from voidcode.tools import ApplyPatchTool, ToolCall
 
 _apply_patch = importlib.import_module("voidcode.tools.apply_patch")
 _changes_from_patch = cast(
@@ -13,6 +18,7 @@ _changes_from_patch = cast(
 )
 _format_diff_git_line = cast(Callable[[str, str], str], _apply_patch._format_diff_git_line)
 _looks_like_mode_only_patch = cast(Callable[[str], bool], _apply_patch._looks_like_mode_only_patch)
+_looks_like_marker_patch = cast(Callable[[str], bool], _apply_patch._looks_like_marker_patch)
 _normalize_patch_text = cast(Callable[[str], str], _apply_patch._normalize_patch_text)
 _parse_diff_git_paths = cast(
     Callable[[str], tuple[str, str] | None], _apply_patch._parse_diff_git_paths
@@ -140,3 +146,62 @@ def test_changes_from_patch_preserves_rename_metadata(paths: tuple[str, str]) ->
     assert _changes_from_patch(patch_text) == [
         {"path": new_path, "old_path": old_path, "status": "R"}
     ]
+
+
+@CI_SETTINGS
+@given(path=_slash_path, before_line=_line_text, after_line=_line_text)
+def test_structured_same_path_move_never_deletes_target(
+    path: str,
+    before_line: str,
+    after_line: str,
+) -> None:
+    before = before_line or "before"
+    after = after_line or "after"
+    with tempfile.TemporaryDirectory() as workspace_dir:
+        workspace = Path(workspace_dir)
+        target = workspace / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(f"{before}\n", encoding="utf-8")
+        patch_text = "\n".join(
+            [
+                "*** Begin Patch",
+                f"*** Update File: {path}",
+                f"*** Move to: {path}",
+                "@@",
+                f"-{before}",
+                f"+{after}",
+                "*** End Patch",
+            ]
+        )
+
+        with pytest.raises(ValueError, match="Move destination must differ from source"):
+            ApplyPatchTool().invoke(
+                ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
+                workspace=workspace,
+            )
+
+        assert target.read_text(encoding="utf-8") == f"{before}\n"
+
+
+@CI_SETTINGS
+@given(path=_slash_path, context_line=_line_text)
+def test_unified_diff_context_marker_literals_are_not_marker_patches(
+    path: str,
+    context_line: str,
+) -> None:
+    context = context_line or "context"
+    patch_text = "\n".join(
+        [
+            f"--- a/{path}",
+            f"+++ b/{path}",
+            "@@ -1,4 +1,4 @@",
+            " *** Begin Patch",
+            f" {context}",
+            " *** End Patch",
+            "-old",
+            "+new",
+            "",
+        ]
+    )
+
+    assert _looks_like_marker_patch(patch_text) is False

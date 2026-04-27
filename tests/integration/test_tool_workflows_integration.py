@@ -182,7 +182,9 @@ def test_todo_write_tool_persists_summary_integration(tmp_path: Path) -> None:
     assert summary.get("pending") == 1
     assert summary.get("in_progress") == 1
     assert summary.get("completed") == 1
-    assert (tmp_path / ".voidcode" / "todos.json").exists()
+    assert not (tmp_path / ".voidcode" / "todos.json").exists()
+    todos_raw = result.data.get("todos")
+    assert isinstance(todos_raw, list)
 
 
 def test_glob_and_list_tools_handle_paths_and_ignores_integration(tmp_path: Path) -> None:

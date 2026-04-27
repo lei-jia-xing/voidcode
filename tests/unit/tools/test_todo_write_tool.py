@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import cast
 
@@ -9,7 +8,7 @@ import pytest
 from voidcode.tools import TodoWriteTool, ToolCall
 
 
-def test_todo_write_persists_todos_json(tmp_path: Path) -> None:
+def test_todo_write_returns_session_metadata_without_workspace_artifact(tmp_path: Path) -> None:
     tool = TodoWriteTool()
     result = tool.invoke(
         ToolCall(
@@ -25,8 +24,10 @@ def test_todo_write_persists_todos_json(tmp_path: Path) -> None:
     )
 
     store = tmp_path / ".voidcode" / "todos.json"
-    assert store.exists()
-    payload = json.loads(store.read_text(encoding="utf-8"))
+    assert not store.exists()
+    payload_raw = result.data["todos"]
+    assert isinstance(payload_raw, list)
+    payload = cast(list[dict[str, str]], payload_raw)
     assert payload[0]["content"] == "task-a"
     assert payload[1]["status"] == "completed"
     assert result.status == "ok"

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import difflib
+import sys
+import textwrap
 from pathlib import Path
 
 import pytest
 
+from voidcode.hook.config import RuntimeFormatterPresetConfig, RuntimeHooksConfig
 from voidcode.tools import ApplyPatchTool, ToolCall
 
 
@@ -78,6 +81,398 @@ def test_apply_patch_reports_file_addition_from_unified_diff(tmp_path: Path) -> 
     assert (tmp_path / "new.txt").read_text(encoding="utf-8") == "hello\n"
     assert result.data["changes"] == [{"path": "new.txt", "status": "A"}]
     assert result.content == "A new.txt"
+
+
+def test_apply_patch_treats_unified_diff_marker_literals_as_unified_diff(
+    tmp_path: Path,
+) -> None:
+    _init_git_repo(tmp_path)
+    target = tmp_path / "sample.txt"
+    target.write_text(
+        "before\n*** Begin Patch\n*** End Patch\nold\n",
+        encoding="utf-8",
+    )
+    _commit_all(tmp_path, "baseline")
+    old = target.read_text(encoding="utf-8").splitlines(keepends=True)
+    new = ["before\n", "*** Begin Patch\n", "*** End Patch\n", "new\n"]
+    patch_text = "".join(
+        difflib.unified_diff(old, new, fromfile="a/sample.txt", tofile="b/sample.txt")
+    )
+
+    result = ApplyPatchTool().invoke(
+        ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert target.read_text(encoding="utf-8") == "before\n*** Begin Patch\n*** End Patch\nnew\n"
+    assert result.content == "M sample.txt"
+
+
+def test_apply_patch_accepts_structured_add_file_patch(tmp_path: Path) -> None:
+    patch_text = "\n".join(
+        [
+            "*** Begin Patch",
+            "*** Add File: src/main.py",
+            "+print('hello')",
+            "*** Add File: README.md",
+            "+# Demo",
+            "*** End Patch",
+        ]
+    )
+
+    result = ApplyPatchTool().invoke(
+        ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert (tmp_path / "src/main.py").read_text(encoding="utf-8") == "print('hello')"
+    assert (tmp_path / "README.md").read_text(encoding="utf-8") == "# Demo"
+    assert result.data["changes"] == [
+        {"path": "src/main.py", "status": "A"},
+        {"path": "README.md", "status": "A"},
+    ]
+    assert result.content == "A src/main.py\nA README.md"
+
+
+def test_apply_patch_rejects_malformed_structured_add_file_line(
+    tmp_path: Path,
+) -> None:
+    patch_text = "\n".join(
+        [
+            "*** Begin Patch",
+            "*** Add File: README.md",
+            "+# Demo",
+            "missing plus prefix",
+            "*** End Patch",
+        ]
+    )
+
+    with pytest.raises(ValueError, match=r"Add File content lines must start with '\+'"):
+        ApplyPatchTool().invoke(
+            ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
+            workspace=tmp_path,
+        )
+
+    assert not (tmp_path / "README.md").exists()
+
+
+def test_apply_patch_rejects_structured_add_file_when_destination_exists(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "README.md"
+    target.write_text("original\n", encoding="utf-8")
+    patch_text = "\n".join(
+        [
+            "*** Begin Patch",
+            "*** Add File: README.md",
+            "+# Replacement",
+            "*** End Patch",
+        ]
+    )
+
+    with pytest.raises(ValueError, match="Add File destination already exists"):
+        ApplyPatchTool().invoke(
+            ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
+            workspace=tmp_path,
+        )
+
+    assert target.read_text(encoding="utf-8") == "original\n"
+
+
+def test_apply_patch_rejects_structured_add_file_before_partial_writes(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "README.md"
+    target.write_text("original\n", encoding="utf-8")
+    patch_text = "\n".join(
+        [
+            "*** Begin Patch",
+            "*** Add File: new.txt",
+            "+new file",
+            "*** Add File: README.md",
+            "+# Replacement",
+            "*** End Patch",
+        ]
+    )
+
+    with pytest.raises(ValueError, match="Add File destination already exists"):
+        ApplyPatchTool().invoke(
+            ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
+            workspace=tmp_path,
+        )
+
+    assert not (tmp_path / "new.txt").exists()
+    assert target.read_text(encoding="utf-8") == "original\n"
+
+
+def test_apply_patch_accepts_structured_update_delete_and_move(tmp_path: Path) -> None:
+    target = tmp_path / "app.py"
+    target.write_text("def greet():\n    print('hi')\n", encoding="utf-8")
+    obsolete = tmp_path / "obsolete.txt"
+    obsolete.write_text("remove me\n", encoding="utf-8")
+    moved = tmp_path / "old.txt"
+    moved.write_text("old name\n", encoding="utf-8")
+
+    patch_text = "\n".join(
+        [
+            "*** Begin Patch",
+            "*** Update File: app.py",
+            "@@ def greet():",
+            "-    print('hi')",
+            "+    print('hello')",
+            "*** Delete File: obsolete.txt",
+            "*** Update File: old.txt",
+            "*** Move to: new.txt",
+            "@@",
+            "-old name",
+            "+new name",
+            "*** End Patch",
+        ]
+    )
+
+    result = ApplyPatchTool().invoke(
+        ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert target.read_text(encoding="utf-8") == "def greet():\n    print('hello')\n"
+    assert not obsolete.exists()
+    assert not moved.exists()
+    assert (tmp_path / "new.txt").read_text(encoding="utf-8") == "new name\n"
+    assert result.data["changes"] == [
+        {"path": "app.py", "status": "M"},
+        {"path": "obsolete.txt", "status": "D"},
+        {"path": "new.txt", "old_path": "old.txt", "status": "R"},
+    ]
+
+
+def test_apply_patch_repeated_structured_updates_use_staged_content(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "app.py"
+    target.write_text("alpha\nbeta\n", encoding="utf-8")
+    patch_text = "\n".join(
+        [
+            "*** Begin Patch",
+            "*** Update File: app.py",
+            "@@",
+            "-alpha",
+            "+alpha-one",
+            "*** Update File: app.py",
+            "@@",
+            "-beta",
+            "+beta-two",
+            "*** End Patch",
+        ]
+    )
+
+    result = ApplyPatchTool().invoke(
+        ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert target.read_text(encoding="utf-8") == "alpha-one\nbeta-two\n"
+
+
+def test_apply_patch_rejects_structured_same_path_move_without_deleting_file(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "app.py"
+    target.write_text("print('before')\n", encoding="utf-8")
+    patch_text = "\n".join(
+        [
+            "*** Begin Patch",
+            "*** Update File: ./app.py",
+            "*** Move to: app.py",
+            "@@",
+            "-print('before')",
+            "+print('after')",
+            "*** End Patch",
+        ]
+    )
+
+    with pytest.raises(ValueError, match="Move destination must differ from source"):
+        ApplyPatchTool().invoke(
+            ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
+            workspace=tmp_path,
+        )
+
+    assert target.read_text(encoding="utf-8") == "print('before')\n"
+
+
+def test_apply_patch_rejects_structured_move_when_destination_exists(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "old.txt"
+    destination = tmp_path / "new.txt"
+    source.write_text("old\n", encoding="utf-8")
+    destination.write_text("existing\n", encoding="utf-8")
+    patch_text = "\n".join(
+        [
+            "*** Begin Patch",
+            "*** Update File: old.txt",
+            "*** Move to: new.txt",
+            "@@",
+            "-old",
+            "+moved",
+            "*** End Patch",
+        ]
+    )
+
+    with pytest.raises(ValueError, match="Move destination already exists"):
+        ApplyPatchTool().invoke(
+            ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
+            workspace=tmp_path,
+        )
+
+    assert source.read_text(encoding="utf-8") == "old\n"
+    assert destination.read_text(encoding="utf-8") == "existing\n"
+
+
+def test_apply_patch_rejects_structured_move_before_partial_writes(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "old.txt"
+    destination = tmp_path / "new.txt"
+    source.write_text("old\n", encoding="utf-8")
+    destination.write_text("existing\n", encoding="utf-8")
+    patch_text = "\n".join(
+        [
+            "*** Begin Patch",
+            "*** Add File: created.txt",
+            "+created",
+            "*** Update File: old.txt",
+            "*** Move to: new.txt",
+            "@@",
+            "-old",
+            "+moved",
+            "*** End Patch",
+        ]
+    )
+
+    with pytest.raises(ValueError, match="Move destination already exists"):
+        ApplyPatchTool().invoke(
+            ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
+            workspace=tmp_path,
+        )
+
+    assert not (tmp_path / "created.txt").exists()
+    assert source.read_text(encoding="utf-8") == "old\n"
+    assert destination.read_text(encoding="utf-8") == "existing\n"
+
+
+def test_apply_patch_structured_insert_only_update_uses_matched_context(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "sample.txt"
+    target.write_text("before\nanchor\nafter\n", encoding="utf-8")
+
+    patch_text = "\n".join(
+        [
+            "*** Begin Patch",
+            "*** Update File: sample.txt",
+            "@@ anchor",
+            "+inserted",
+            "*** End Patch",
+        ]
+    )
+
+    result = ApplyPatchTool().invoke(
+        ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert target.read_text(encoding="utf-8") == "before\nanchor\ninserted\nafter\n"
+    assert result.data["changes"] == [{"path": "sample.txt", "status": "M"}]
+
+
+def test_apply_patch_reports_context_for_corrupt_unified_diff(tmp_path: Path) -> None:
+    _init_git_repo(tmp_path)
+    patch_text = "\n".join(
+        [
+            "diff --git a/one.txt b/one.txt",
+            "new file mode 100644",
+            "--- /dev/null",
+            "+++ b/one.txt",
+            "@@ -0,0 +2 @@",
+            "diff --git a/two.txt b/two.txt",
+            "new file mode 100644",
+            "--- /dev/null",
+            "+++ b/two.txt",
+            "@@ -0,0 +1 @@",
+            "+second",
+            "",
+        ]
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        ApplyPatchTool().invoke(
+            ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
+            workspace=tmp_path,
+        )
+
+    error = str(exc_info.value)
+    assert "corrupt patch" in error
+    assert "Patch context near line" in error
+    assert "structured *** Begin Patch / *** Add File envelope" in error
+
+
+def test_apply_patch_runs_formatter_for_structured_changed_files(tmp_path: Path) -> None:
+    formatter_script = tmp_path / "formatter.py"
+    formatter_script.write_text(
+        textwrap.dedent(
+            """
+            import pathlib
+            import sys
+
+            pathlib.Path(sys.argv[-1]).write_text("print( 'formatted' )\\n", encoding="utf-8")
+            """
+        ),
+        encoding="utf-8",
+    )
+    patch_text = "\n".join(
+        [
+            "*** Begin Patch",
+            "*** Add File: main.py",
+            "+print('raw')",
+            "*** End Patch",
+        ]
+    )
+    tool = ApplyPatchTool(
+        hooks_config=RuntimeHooksConfig(
+            formatter_presets={
+                "python": RuntimeFormatterPresetConfig(
+                    command=(sys.executable, str(formatter_script)),
+                    extensions=(".py",),
+                )
+            }
+        )
+    )
+
+    result = tool.invoke(
+        ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert (tmp_path / "main.py").read_text(encoding="utf-8") == "print( 'formatted' )\n"
+    assert result.data["formatters"] == [
+        {
+            "status": "formatted",
+            "language": "python",
+            "cwd": str(tmp_path),
+            "command": [sys.executable, str(formatter_script), str(tmp_path / "main.py")],
+            "attempted_commands": [
+                [sys.executable, str(formatter_script), str(tmp_path / "main.py")]
+            ],
+            "path": "main.py",
+        }
+    ]
 
 
 def test_apply_patch_raises_on_invalid_patch(tmp_path: Path) -> None:

@@ -7,6 +7,7 @@
 Usage notes:
   - The URL must be a fully-formed valid http or https URL
   - localhost, private-network, metadata, and other blocked internal targets are rejected
-  - Format options: "markdown" (default), "text", or "html"
-  - This tool is read-only and does not modify any files
-  - Use web_search first when you do not yet know the URL
+- Format options: "markdown" (default), "text", or "html"
+- This tool is read-only and does not modify any files
+- If the exact URL is unknown, use web_search or another available source to discover candidate URLs.
+- Large text outputs are capped by the runtime tool-output policy; when truncated, the full output is saved to a workspace-local reference path in the result metadata.

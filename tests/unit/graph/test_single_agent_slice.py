@@ -53,6 +53,28 @@ class _MixedNonStreamingTurnProvider:
         )
 
 
+class _MixedStreamingTurnProvider:
+    name = "opencode"
+
+    def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
+        _ = request
+        return ProviderTurnResult(output="should-not-be-used")
+
+    def stream_turn(self, request: ProviderTurnRequest):
+        _ = request
+        return iter(
+            (
+                ProviderStreamEvent(kind="delta", channel="text", text="I will read it."),
+                ProviderStreamEvent(
+                    kind="content",
+                    channel="tool",
+                    text='{"tool_name":"read_file","arguments":{"path":"sample.txt"}}',
+                ),
+                ProviderStreamEvent(kind="done", done_reason="completed"),
+            )
+        )
+
+
 class _EmptyNonStreamingTurnProvider:
     name = "opencode"
 
@@ -277,7 +299,7 @@ def test_provider_provider_graph_requests_tool_on_first_turn() -> None:
     assert step.output is None
     assert step.is_finished is False
     assert [event.event_type for event in step.events] == ["graph.loop_step", "graph.model_turn"]
-    assert step.events[0].payload == {"step": 1, "phase": "plan", "max_steps": 4}
+    assert step.events[0].payload == {"step": 1, "phase": "plan", "max_steps": None}
     assert step.events[1].payload == {
         "turn": 1,
         "mode": "provider",
@@ -336,7 +358,7 @@ def test_provider_provider_graph_finalizes_after_tool_result() -> None:
         "graph.loop_step",
         "graph.response_ready",
     ]
-    assert step.events[0].payload == {"step": 2, "phase": "plan", "max_steps": 4}
+    assert step.events[0].payload == {"step": 2, "phase": "plan", "max_steps": None}
     assert step.events[1].payload == {
         "turn": 2,
         "mode": "provider",
@@ -346,11 +368,11 @@ def test_provider_provider_graph_finalizes_after_tool_result() -> None:
         "streaming": False,
         "prompt": "read sample.txt",
     }
-    assert step.events[2].payload == {"step": 3, "phase": "finalize", "max_steps": 4}
+    assert step.events[2].payload == {"step": 3, "phase": "finalize", "max_steps": None}
     assert step.events[3].payload == {"output_preview": "alpha\n"}
 
 
-def test_provider_provider_graph_rejects_nonstream_mixed_output_and_tool_call() -> None:
+def test_provider_provider_graph_prefers_nonstream_tool_call_over_text() -> None:
     provider_model = resolve_provider_model(
         "opencode/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
@@ -360,19 +382,20 @@ def test_provider_provider_graph_rejects_nonstream_mixed_output_and_tool_call() 
         provider_model=provider_model,
     )
 
-    with pytest.raises(ProviderExecutionError, match="both output and a tool call") as exc_info:
-        _ = graph.step(
-            request=GraphRunRequest(
-                session=_session(),
-                prompt="read sample.txt",
-                available_tools=_tool_definitions(),
-                context_window=RuntimeContextWindow(prompt="read sample.txt"),
-            ),
-            tool_results=(),
+    step = graph.step(
+        request=GraphRunRequest(
             session=_session(),
-        )
+            prompt="read sample.txt",
+            available_tools=_tool_definitions(),
+            context_window=RuntimeContextWindow(prompt="read sample.txt"),
+        ),
+        tool_results=(),
+        session=_session(),
+    )
 
-    assert exc_info.value.kind == "transient_failure"
+    assert step.tool_call is not None
+    assert step.tool_call.tool_name == "read_file"
+    assert step.output is None
 
 
 def test_provider_provider_graph_rejects_nonstream_missing_terminal_outcome() -> None:
@@ -675,6 +698,70 @@ def test_provider_provider_graph_forwards_bounded_context_window_to_provider() -
     )
 
 
+def test_provider_graph_forwards_explicit_lsp_tool_feedback_to_provider() -> None:
+    provider_model = resolve_provider_model(
+        "opencode/gpt-5.4",
+        registry=ModelProviderRegistry.with_defaults(),
+    )
+    provider = _CapturingTurnProvider()
+    graph = ProviderGraph(provider=provider, provider_model=provider_model)
+    lsp_result = ToolResult(
+        tool_name="lsp",
+        status="ok",
+        content="definition found",
+        data={"operation": "definition", "response": {"uri": "file:///workspace/main.py"}},
+    )
+
+    _ = graph.step(
+        request=GraphRunRequest(
+            session=_session(),
+            prompt="use lsp feedback",
+            available_tools=_tool_definitions(),
+            context_window=RuntimeContextWindow(
+                prompt="use lsp feedback",
+                tool_results=(lsp_result,),
+            ),
+        ),
+        tool_results=(lsp_result,),
+        session=_session(),
+    )
+
+    assert provider.requests[0].tool_results == (lsp_result,)
+    assert provider.requests[0].context_window.tool_results == (lsp_result,)
+
+
+def test_provider_graph_forwards_mcp_tool_feedback_to_provider() -> None:
+    provider_model = resolve_provider_model(
+        "opencode/gpt-5.4",
+        registry=ModelProviderRegistry.with_defaults(),
+    )
+    provider = _CapturingTurnProvider()
+    graph = ProviderGraph(provider=provider, provider_model=provider_model)
+    mcp_result = ToolResult(
+        tool_name="mcp/echo/echo",
+        status="ok",
+        content="echo: hello",
+        data={"server": "echo", "tool": "echo", "is_error": False},
+    )
+
+    _ = graph.step(
+        request=GraphRunRequest(
+            session=_session(),
+            prompt="use mcp feedback",
+            available_tools=_tool_definitions(),
+            context_window=RuntimeContextWindow(
+                prompt="use mcp feedback",
+                tool_results=(mcp_result,),
+            ),
+        ),
+        tool_results=(mcp_result,),
+        session=_session(),
+    )
+
+    assert provider.requests[0].tool_results == (mcp_result,)
+    assert provider.requests[0].context_window.tool_results == (mcp_result,)
+
+
 def test_provider_provider_graph_enforces_configured_max_steps() -> None:
     provider_model = resolve_provider_model(
         "opencode/gpt-5.4",
@@ -792,6 +879,33 @@ def test_provider_provider_graph_returns_streamed_tool_call() -> None:
     assert step.tool_call.arguments == {"path": "sample.txt"}
 
 
+def test_provider_provider_graph_prefers_streamed_tool_call_over_text() -> None:
+    provider_model = resolve_provider_model(
+        "opencode/gpt-5.4",
+        registry=ModelProviderRegistry.with_defaults(),
+    )
+    graph = ProviderGraph(
+        provider=_MixedStreamingTurnProvider(),
+        provider_model=provider_model,
+    )
+
+    step = graph.step(
+        request=GraphRunRequest(
+            session=_session(),
+            prompt="read sample.txt",
+            available_tools=_tool_definitions(),
+            context_window=RuntimeContextWindow(prompt="read sample.txt"),
+            metadata={"provider_stream": True},
+        ),
+        tool_results=(),
+        session=_session(),
+    )
+
+    assert step.tool_call is not None
+    assert step.tool_call.tool_name == "read_file"
+    assert step.output is None
+
+
 def test_provider_provider_graph_reconstructs_chunked_streamed_tool_call() -> None:
     provider_model = resolve_provider_model(
         "opencode/gpt-5.4",
@@ -902,7 +1016,7 @@ def test_provider_provider_graph_requires_done_event_for_stream_completion() -> 
     assert exc_info.value.kind == "transient_failure"
 
 
-def test_provider_provider_graph_rejects_mixed_text_and_tool_terminal_output() -> None:
+def test_provider_provider_graph_prefers_mixed_stream_tool_terminal_output() -> None:
     provider_model = resolve_provider_model(
         "opencode/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
@@ -912,23 +1026,21 @@ def test_provider_provider_graph_rejects_mixed_text_and_tool_terminal_output() -
         provider_model=provider_model,
     )
 
-    with pytest.raises(
-        ProviderExecutionError,
-        match="both text output and a tool call",
-    ) as exc_info:
-        _ = graph.step(
-            request=GraphRunRequest(
-                session=_session(),
-                prompt="read sample.txt",
-                available_tools=_tool_definitions(),
-                context_window=RuntimeContextWindow(prompt="read sample.txt"),
-                metadata={"provider_stream": True},
-            ),
-            tool_results=(),
+    step = graph.step(
+        request=GraphRunRequest(
             session=_session(),
-        )
+            prompt="read sample.txt",
+            available_tools=_tool_definitions(),
+            context_window=RuntimeContextWindow(prompt="read sample.txt"),
+            metadata={"provider_stream": True},
+        ),
+        tool_results=(),
+        session=_session(),
+    )
 
-    assert exc_info.value.kind == "transient_failure"
+    assert step.tool_call is not None
+    assert step.tool_call.tool_name == "read_file"
+    assert step.output is None
 
 
 def test_provider_provider_graph_stream_error_maps_to_provider_execution_error() -> None:

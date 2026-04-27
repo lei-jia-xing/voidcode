@@ -59,10 +59,10 @@ def build_runtime_graph(
     *,
     engine_name: ExecutionEngineName,
     provider_model: ResolvedProviderModel,
-    max_steps: int,
+    max_steps: int | None,
 ) -> RuntimeGraph:
     if engine_name == "deterministic":
-        return DeterministicGraph(max_steps=max_steps)
+        return DeterministicGraph(max_steps=max_steps or 4)
     if provider_model.provider is None:
         raise ValueError("provider execution engine requires a configured model")
     return ProviderGraph(

@@ -395,7 +395,7 @@ def test_sessions_debug_missing_session_returns_clean_error() -> None:
             env=env,
         )
 
-    assert result.returncode != 0
+    assert result.returncode == 1
     assert result.stdout == ""
     assert "error: unknown session: missing-session" in result.stderr
     assert "Traceback" not in result.stderr
@@ -578,11 +578,11 @@ def test_run_command_real_cli_reports_current_request_truth_without_agent_preset
             env=env,
         )
 
-    assert result.returncode != 0
+    assert result.returncode == 1
     assert "EVENT runtime.request_received source=runtime prompt=read README.md" in result.stdout
     assert "EVENT runtime.plan_created source=runtime" not in result.stdout
     assert "read_file target does not exist: README.md" in result.stdout
-    assert "read_file target does not exist: README.md" in result.stderr
+    assert result.stderr == "error: read_file target does not exist: README.md\n"
     assert "Traceback" not in result.stderr
 
 
@@ -1090,7 +1090,7 @@ def test_config_show_outputs_workspace_effective_config() -> None:
         "approval_mode": "deny",
         "model": "repo/model",
         "execution_engine": "deterministic",
-        "max_steps": 4,
+        "max_steps": None,
         "provider_fallback": None,
         "resolved_provider": {
             "active_target": {
@@ -1191,7 +1191,7 @@ def test_config_show_outputs_resumed_session_effective_config() -> None:
         "approval_mode": "allow",
         "model": "repo/model",
         "execution_engine": "deterministic",
-        "max_steps": 4,
+        "max_steps": None,
         "provider_fallback": None,
         "resolved_provider": {
             "active_target": {

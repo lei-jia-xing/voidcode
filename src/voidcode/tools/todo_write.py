@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import ClassVar, Literal, cast
 
@@ -71,6 +70,7 @@ class TodoWriteTool:
     )
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
+        _ = workspace
         todos_value = call.arguments.get("todos", [])
         if not isinstance(todos_value, list):
             raise ValueError("todo_write requires todos array")
@@ -79,14 +79,6 @@ class TodoWriteTool:
         normalized: list[dict[str, str]] = []
         for idx, item in enumerate(todos, start=1):
             normalized.append(_parse_todo_item(item, idx=idx))
-
-        store_dir = workspace / ".voidcode"
-        store_dir.mkdir(parents=True, exist_ok=True)
-        store_path = store_dir / "todos.json"
-        store_path.write_text(
-            json.dumps(normalized, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
 
         summary = {
             "total": len(normalized),
@@ -101,7 +93,7 @@ class TodoWriteTool:
             status="ok",
             content=f"Updated {len(normalized)} todos",
             data={
-                "path": store_path.relative_to(workspace.resolve()).as_posix(),
+                "todos": normalized,
                 "summary": summary,
             },
         )

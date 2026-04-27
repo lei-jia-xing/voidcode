@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterator
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -14,6 +15,11 @@ from ..provider.errors import (
     format_fallback_exhausted_error,
 )
 from ..tools.contracts import RuntimeTimeoutAwareTool, RuntimeToolTimeoutError, ToolResult
+from ..tools.output import (
+    cap_tool_result_output,
+    sanitize_tool_arguments,
+    sanitize_tool_result_data,
+)
 from ..tools.question import QuestionTool
 from ..tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
 from .context_window import (
@@ -37,6 +43,13 @@ if TYPE_CHECKING:
     from .service import ToolRegistry, VoidCodeRuntime
 
 logger = logging.getLogger(__name__)
+
+
+def _is_tool_timeout_like_exception(exc: Exception) -> bool:
+    if isinstance(exc, TimeoutError):
+        return True
+    message = str(exc).lower()
+    return "timeout" in message or "timed out" in message
 
 
 class RuntimeRunLoopCoordinator:
@@ -137,6 +150,10 @@ class RuntimeRunLoopCoordinator:
                         },
                     ),
                 )
+            tool_exception_recovery_enabled = (
+                runtime._effective_runtime_config_from_metadata(session.metadata).execution_engine
+                == "provider"
+            )
             try:
                 graph_step = graph.step(
                     graph_request,
@@ -327,7 +344,26 @@ class RuntimeRunLoopCoordinator:
                 )
                 raise ValueError("graph step did not produce a tool call or output")
 
+            explicit_tool_call_id = plan_tool_call.tool_call_id
+            tool_call_id = explicit_tool_call_id or f"runtime-tool-{uuid4().hex}"
             sequence += 1
+            tool_request_payload: dict[str, object] = {
+                "tool": plan_tool_call.tool_name,
+                "arguments": dict(plan_tool_call.arguments),
+                **(
+                    {"path": path}
+                    if isinstance((path := plan_tool_call.arguments.get("path")), str)
+                    else {}
+                ),
+            }
+            if (
+                explicit_tool_call_id is not None
+                or runtime._effective_runtime_config_from_metadata(
+                    session.metadata
+                ).execution_engine
+                == "provider"
+            ):
+                tool_request_payload["tool_call_id"] = tool_call_id
             yield RuntimeStreamChunk(
                 kind="event",
                 session=session,
@@ -336,15 +372,7 @@ class RuntimeRunLoopCoordinator:
                     sequence=sequence,
                     event_type="graph.tool_request_created",
                     source="graph",
-                    payload={
-                        "tool": plan_tool_call.tool_name,
-                        "arguments": dict(plan_tool_call.arguments),
-                        **(
-                            {"path": path}
-                            if isinstance((path := plan_tool_call.arguments.get("path")), str)
-                            else {}
-                        ),
-                    },
+                    payload=tool_request_payload,
                 ),
             )
 
@@ -485,8 +513,27 @@ class RuntimeRunLoopCoordinator:
                         session=session, sequence=sequence + 1, error=str(exc)
                     )
                     return
-                yield runtime._failed_chunk(session=session, sequence=sequence + 1, error=str(exc))
-                raise
+                if not tool_exception_recovery_enabled and not _is_tool_timeout_like_exception(exc):
+                    yield runtime._failed_chunk(
+                        session=session, sequence=sequence + 1, error=str(exc)
+                    )
+                    raise
+                tool_result = ToolResult(
+                    tool_name=plan_tool_call.tool_name,
+                    status="error",
+                    error=str(exc),
+                    data={
+                        "tool_call_id": tool_call_id,
+                        "arguments": dict(plan_tool_call.arguments),
+                    },
+                )
+
+            sanitized_arguments = sanitize_tool_arguments(dict(plan_tool_call.arguments))
+            tool_result = cap_tool_result_output(tool_result, workspace=runtime._workspace)
+            tool_result = replace(
+                tool_result,
+                data=sanitize_tool_result_data(tool_result.data),
+            )
 
             drained_chunks, session, sequence = self._drain_runtime_events(
                 session=session,
@@ -494,7 +541,10 @@ class RuntimeRunLoopCoordinator:
             )
             yield from drained_chunks
 
-            if plan_tool_call.tool_name == QuestionTool.definition.name:
+            if (
+                plan_tool_call.tool_name == QuestionTool.definition.name
+                and tool_result.status == "ok"
+            ):
                 pending_question = PendingQuestion(
                     request_id=f"question-{uuid4().hex}",
                     tool_name=plan_tool_call.tool_name,
@@ -544,6 +594,20 @@ class RuntimeRunLoopCoordinator:
                 )
                 return
 
+            completed_payload = {
+                **tool_result.data,
+                "tool_call_id": tool_call_id,
+                "arguments": sanitized_arguments,
+                "status": tool_result.status,
+                "content": (
+                    normalize_tool_result_content(tool_result.content)
+                    if tool_result.tool_name == "read_file"
+                    else tool_result.content
+                ),
+                "error": tool_result.error,
+            }
+            completed_payload.setdefault("tool", tool_result.tool_name)
+
             sequence += 1
             yield RuntimeStreamChunk(
                 kind="event",
@@ -553,37 +617,37 @@ class RuntimeRunLoopCoordinator:
                     sequence=sequence,
                     event_type="runtime.tool_completed",
                     source="tool",
-                    payload={
-                        "tool": tool_result.tool_name,
-                        "status": tool_result.status,
-                        "content": (
-                            normalize_tool_result_content(tool_result.content)
-                            if tool_result.tool_name == "read_file"
-                            else tool_result.content
-                        ),
-                        "error": tool_result.error,
-                        **tool_result.data,
-                    },
+                    payload=completed_payload,
                 ),
             )
 
-            post_hook_outcome = runtime._run_tool_hooks(
-                session=session,
-                sequence=sequence,
-                tool_name=plan_tool_call.tool_name,
-                phase="post",
-            )
-            yield from post_hook_outcome.chunks
-            sequence = post_hook_outcome.last_sequence
-            if post_hook_outcome.failed_error is not None:
-                yield runtime._failed_chunk(
+            if tool_result.status == "ok":
+                post_hook_outcome = runtime._run_tool_hooks(
                     session=session,
-                    sequence=sequence + 1,
-                    error=post_hook_outcome.failed_error,
+                    sequence=sequence,
+                    tool_name=plan_tool_call.tool_name,
+                    phase="post",
                 )
-                raise RuntimeError(post_hook_outcome.failed_error)
+                yield from post_hook_outcome.chunks
+                sequence = post_hook_outcome.last_sequence
+                if post_hook_outcome.failed_error is not None:
+                    yield runtime._failed_chunk(
+                        session=session,
+                        sequence=sequence + 1,
+                        error=post_hook_outcome.failed_error,
+                    )
+                    raise RuntimeError(post_hook_outcome.failed_error)
 
-            tool_results.append(tool_result)
+            tool_results.append(
+                replace(
+                    tool_result,
+                    data={
+                        **tool_result.data,
+                        "tool_call_id": tool_call_id,
+                        "arguments": sanitized_arguments,
+                    },
+                )
+            )
 
     def _drain_runtime_events(
         self,

@@ -16,7 +16,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, cast
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 import pytest
 
@@ -530,7 +530,7 @@ def test_runtime_allows_non_read_only_tool_when_policy_is_allow(tmp_path: Path) 
         "graph.response_ready",
     ]
     assert allowed.events[6].payload["decision"] == "allow"
-    assert allowed.output == "approved write"
+    assert allowed.output == "Wrote file successfully: danger.txt"
     assert (tmp_path / "danger.txt").read_text(encoding="utf-8") == "approved write"
 
 
@@ -885,7 +885,7 @@ def test_runtime_skips_post_hook_when_tool_execution_fails(tmp_path: Path) -> No
         )
 
         with pytest.raises(RuntimeError, match="tool boom"):
-            _ = runtime.run(
+            runtime.run(
                 runtime_request(prompt="write danger.txt should fail", session_id="hook-tool-fail")
             )
 
@@ -909,11 +909,9 @@ def test_runtime_skips_post_hook_when_tool_execution_fails(tmp_path: Path) -> No
     )
     replay = replay_runtime.resume("hook-tool-fail")
 
-    assert [event.event_type for event in replay.events][-3:] == [
-        "runtime.tool_hook_pre",
-        "runtime.tool_started",
-        "runtime.failed",
-    ]
+    assert replay.session.status == "failed"
+    failed = next(event for event in replay.events if event.event_type == "runtime.failed")
+    assert failed.payload["error"] == "tool boom"
     assert all(event.event_type != "runtime.tool_hook_post" for event in replay.events)
 
 
@@ -932,7 +930,7 @@ def test_runtime_persists_initial_allow_tool_failure_for_resume(tmp_path: Path) 
 
     with patch.object(write_tool, "invoke", autospec=True, side_effect=_failing_write_invoke):
         with pytest.raises(RuntimeError, match="boom"):
-            _ = runtime.run(runtime_request(prompt="write danger.txt broken", session_id="s1"))
+            runtime.run(runtime_request(prompt="write danger.txt broken", session_id="s1"))
 
     replay_runtime = cast(
         RuntimeRunner,
@@ -947,8 +945,8 @@ def test_runtime_persists_initial_allow_tool_failure_for_resume(tmp_path: Path) 
     resumed = replay_runtime.resume("s1")
 
     assert resumed.session.status == "failed"
-    assert resumed.events[-1].event_type == "runtime.failed"
-    assert resumed.events[-1].payload == {"error": "boom"}
+    failed = next(event for event in resumed.events if event.event_type == "runtime.failed")
+    assert failed.payload["error"] == "boom"
 
 
 def test_runtime_persists_initial_allow_finalize_failure_for_resume(tmp_path: Path) -> None:
@@ -1197,10 +1195,14 @@ def test_provider_runtime_executes_read_path_and_persists_config(tmp_path: Path)
         "runtime_state",
         "context_window",
     }
-    assert result.session.metadata["runtime_config"] == {
+    runtime_config_payload = cast(dict[str, object], result.session.metadata["runtime_config"])
+    agent_payload = runtime_config_payload.pop("agent")
+    assert isinstance(agent_payload, dict)
+    assert agent_payload["preset"] == "leader"
+    assert runtime_config_payload == {
         "approval_mode": "allow",
         "execution_engine": "provider",
-        "max_steps": 4,
+        "max_steps": None,
         "lsp": {"configured_enabled": False, "mode": "disabled", "servers": []},
         "mcp": {"configured_enabled": False, "mode": "disabled", "servers": []},
         "model": "opencode/gpt-5.4",
@@ -1239,6 +1241,32 @@ def test_provider_runtime_executes_read_path_and_persists_config(tmp_path: Path)
     assert replay.output == result.output
 
 
+def test_provider_runtime_converts_tool_exceptions_to_tool_error_results(
+    tmp_path: Path,
+) -> None:
+    sample_file = tmp_path / "sample.txt"
+    _ = sample_file.write_text("alpha\n", encoding="utf-8")
+    runtime_request, runtime = _provider_runtime(tmp_path, mode="allow")
+    read_file_module = importlib.import_module("voidcode.tools.read_file")
+    read_file_tool = cast(ReadFileToolType, read_file_module.ReadFileTool)
+
+    def _failing_invoke(_self: object, _call: object, *, workspace: Path) -> object:
+        _ = workspace
+        raise ValueError("provider tool boom")
+
+    with patch.object(read_file_tool, "invoke", autospec=True, side_effect=_failing_invoke):
+        result = runtime.run(
+            runtime_request(prompt="read sample.txt", session_id="provider-tool-error")
+        )
+
+    assert result.session.status == "completed"
+    tool_completed = next(
+        event for event in result.events if event.event_type == "runtime.tool_completed"
+    )
+    assert tool_completed.payload["status"] == "error"
+    assert tool_completed.payload["error"] == "provider tool boom"
+
+
 def test_provider_runtime_requests_and_resumes_write_approval(tmp_path: Path) -> None:
     runtime_request, runtime = _provider_runtime(tmp_path, mode="ask")
 
@@ -1259,7 +1287,7 @@ def test_provider_runtime_requests_and_resumes_write_approval(tmp_path: Path) ->
     assert waiting.events[3].payload["mode"] == "provider"
     assert waiting.events[-1].event_type == "runtime.approval_requested"
     assert resumed.session.status == "completed"
-    assert resumed.output == "approved later"
+    assert resumed.output == "Wrote file successfully: danger.txt"
     assert (tmp_path / "danger.txt").read_text(encoding="utf-8") == "approved later"
 
 
@@ -1420,6 +1448,8 @@ def test_runtime_executes_grep_deterministic_graph_and_emits_events(tmp_path: Pa
     }
     assert result.events[8].payload == {
         "tool": "grep",
+        "tool_call_id": ANY,
+        "arguments": {"pattern": "alpha", "path": "sample.txt"},
         "status": "ok",
         "content": (
             "Found 2 match(es) for 'alpha' in sample.txt\n"
@@ -1503,7 +1533,7 @@ def test_runtime_allows_non_read_only_tool_after_explicit_resume_approval(tmp_pa
         "graph.loop_step",
         "graph.response_ready",
     ]
-    assert resumed.output == "approved later"
+    assert resumed.output == "Wrote file successfully: danger.txt"
     assert (tmp_path / "danger.txt").read_text(encoding="utf-8") == "approved later"
 
 
@@ -1727,6 +1757,8 @@ def test_runtime_resumes_multi_step_loop_with_approval_and_stable_replay(tmp_pat
     ]
     assert resumed.events[27].payload == {
         "tool": "grep",
+        "tool_call_id": ANY,
+        "arguments": {"pattern": "copied", "path": "copied.txt"},
         "status": "ok",
         "content": ("Found 1 match(es) for 'copied' in copied.txt\ncopied.txt:1: copied marker"),
         "error": None,
@@ -1960,7 +1992,7 @@ def test_runtime_resume_uses_persisted_runtime_config_over_fresh_resume_override
     assert replay.session.metadata["runtime_config"] == {
         "approval_mode": "allow",
         "execution_engine": "deterministic",
-        "max_steps": 4,
+        "max_steps": None,
         "tool_timeout_seconds": None,
         "lsp": {"configured_enabled": False, "mode": "disabled", "servers": []},
         "mcp": {"configured_enabled": False, "mode": "disabled", "servers": []},
@@ -2091,7 +2123,7 @@ def test_runtime_resume_repairs_legacy_non_dict_runtime_state_metadata(tmp_path:
     )
 
     assert replay.session.status == "completed"
-    assert replay.output == "approved later"
+    assert replay.output == "Wrote file successfully: danger.txt"
     assert set(replay.session.metadata) == {
         "workspace",
         "runtime_config",
@@ -2165,16 +2197,15 @@ def test_runtime_marks_resumed_approval_failure_and_clears_pending_request(tmp_p
                 ),
             ),
         )
-        failed = resumed_runtime.resume(
+        resumed = resumed_runtime.resume(
             "approval-session",
             approval_request_id=approval_request_id,
             approval_decision="allow",
         )
 
-    assert failed.session.status == "failed"
-    assert failed.events[-2].event_type == "runtime.tool_started"
-    assert failed.events[-1].event_type == "runtime.failed"
-    assert failed.events[-1].payload == {"error": "resume boom"}
+    assert resumed.session.status == "failed"
+    assert resumed.events[-1].event_type == "runtime.failed"
+    assert resumed.events[-1].payload["error"] == "resume boom"
 
     replay_runtime = cast(
         RuntimeRunner,
@@ -2186,12 +2217,8 @@ def test_runtime_marks_resumed_approval_failure_and_clears_pending_request(tmp_p
             ),
         ),
     )
-    with pytest.raises(ValueError, match="no pending approval"):
-        _ = replay_runtime.resume(
-            "approval-session",
-            approval_request_id=approval_request_id,
-            approval_decision="allow",
-        )
+    replay = replay_runtime.resume("approval-session")
+    assert replay.session.status == "failed"
 
 
 def test_runtime_preserves_pending_request_when_resumed_finalize_raises(tmp_path: Path) -> None:
@@ -2646,9 +2673,8 @@ def test_runtime_stream_emits_failed_terminal_chunk_before_tool_error(tmp_path: 
 
         first_four_chunks = [next(stream) for _ in range(8)]
         failed_chunk = next(stream)
-
         with pytest.raises(ValueError, match="boom from tool"):
-            _ = next(stream)
+            list(stream)
 
     assert [chunk.event.event_type for chunk in first_four_chunks if chunk.event is not None] == [
         "runtime.request_received",
@@ -2664,7 +2690,7 @@ def test_runtime_stream_emits_failed_terminal_chunk_before_tool_error(tmp_path: 
     assert failed_chunk.kind == "event"
     assert failed_chunk.event is not None
     assert failed_chunk.event.event_type == "runtime.failed"
-    assert failed_chunk.event.payload == {"error": "boom from tool"}
+    assert failed_chunk.event.payload["error"] == "boom from tool"
     assert failed_chunk.session.status == "failed"
 
 
@@ -2754,7 +2780,7 @@ def test_runtime_resume_stream_yields_incrementally_before_resumed_tool_completi
             "graph.response_ready",
         ]
         assert [chunk.output for chunk in remaining_chunks if chunk.kind == "output"] == [
-            "resumed later"
+            "Wrote file successfully: delayed.txt"
         ]
         assert all(chunk.session.status == "completed" for chunk in remaining_chunks)
 

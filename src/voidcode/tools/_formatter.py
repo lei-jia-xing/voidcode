@@ -168,3 +168,44 @@ class FormatterExecutor:
         if isinstance(stream, bytes):
             return stream.decode("utf-8", errors="replace")
         return stream or ""
+
+
+def formatter_payload(result: FormatterExecutionResult) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "status": result.status,
+    }
+    if result.language is not None:
+        payload["language"] = result.language
+    if result.cwd is not None:
+        payload["cwd"] = str(result.cwd)
+    if result.command is not None:
+        payload["command"] = list(result.command)
+    if result.attempted_commands:
+        payload["attempted_commands"] = [list(cmd) for cmd in result.attempted_commands]
+    if result.stdout is not None:
+        payload["stdout"] = result.stdout
+    if result.stderr is not None:
+        payload["stderr"] = result.stderr
+    if result.error is not None:
+        payload["error"] = result.error
+    return payload
+
+
+def formatter_diagnostics(result: FormatterExecutionResult | None) -> list[dict[str, object]]:
+    if result is None or result.status in {"not_configured", "formatted"} or result.error is None:
+        return []
+
+    diagnostic: dict[str, object] = {
+        "source": "formatter",
+        "severity": "warning",
+        "message": result.error,
+    }
+    if result.language is not None:
+        diagnostic["language"] = result.language
+    if result.cwd is not None:
+        diagnostic["cwd"] = str(result.cwd)
+    if result.command is not None:
+        diagnostic["command"] = list(result.command)
+    if result.attempted_commands:
+        diagnostic["attempted_commands"] = [list(cmd) for cmd in result.attempted_commands]
+    return [diagnostic]

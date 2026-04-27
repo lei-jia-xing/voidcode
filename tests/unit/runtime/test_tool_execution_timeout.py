@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
-
-import pytest
+from typing import Any, cast
 
 from voidcode.runtime.config import RuntimeConfig
 from voidcode.runtime.contracts import RuntimeRequest
@@ -19,6 +18,38 @@ class _InstantTool:
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
         return ToolResult(tool_name=self.definition.name, status="ok", content="done")
+
+
+class _LargeOutputTool:
+    definition = ToolDefinition(name="large_output_tool", description="Returns large output.")
+
+    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
+        return ToolResult(
+            tool_name=self.definition.name,
+            status="ok",
+            content="".join(f"line-{index}\n" for index in range(2100)),
+        )
+
+
+class _SensitiveContextTool:
+    definition = ToolDefinition(name="sensitive_context_tool", description="Returns metadata.")
+
+    def __init__(self, *, data_uri: str, raw_data_content: str) -> None:
+        self._data_uri = data_uri
+        self._raw_data_content = raw_data_content
+
+    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
+        _ = call, workspace
+        return ToolResult(
+            tool_name=self.definition.name,
+            status="ok",
+            content="metadata captured",
+            data={
+                "arguments": {"content": self._raw_data_content},
+                "attachment": {"mime": "image/png", "data_uri": self._data_uri},
+                "status": "tool-data-status-must-not-win",
+            },
+        )
 
 
 class _HangingTool:
@@ -47,6 +78,41 @@ class _ToolNativeTimeoutErrorTool:
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
         raise TimeoutError("tool-native timeout")
+
+
+@dataclass(frozen=True, slots=True)
+class _StaticGraphStep:
+    tool_call: ToolCall | None
+    output: str | None
+    events: tuple[Any, ...] = ()
+    is_finished: bool = False
+
+
+class _SingleToolCallWithArgumentsGraph:
+    def __init__(self, tool_name: str, arguments: dict[str, object]) -> None:
+        self._tool_name = tool_name
+        self._arguments = arguments
+        self.seen_tool_results: tuple[ToolResult, ...] = ()
+
+    def step(
+        self,
+        request: Any,
+        tool_results: tuple[ToolResult, ...],
+        *,
+        session: Any,
+    ) -> Any:
+        _ = request, session
+        self.seen_tool_results = tool_results
+        if not tool_results:
+            return _StaticGraphStep(
+                tool_call=ToolCall(
+                    tool_name=self._tool_name,
+                    arguments=self._arguments,
+                    tool_call_id="sensitive-context-call",
+                ),
+                output=None,
+            )
+        return _StaticGraphStep(tool_call=None, output="completed", is_finished=True)
 
 
 class _SingleToolCallGraph:
@@ -231,6 +297,109 @@ def test_runtime_timeout_unset_does_not_emit_runtime_tool_timeout(tmp_path: Path
     assert "runtime.tool_timeout" not in event_types
 
 
+def test_runtime_caps_large_tool_output_before_feedback(tmp_path: Path) -> None:
+    runtime = _make_runtime(tmp_path, _LargeOutputTool(), tool_timeout_seconds=None)
+
+    chunks = list(runtime.run_stream(RuntimeRequest(prompt="go")))
+    completed_events = [
+        chunk.event
+        for chunk in chunks
+        if chunk.kind == "event"
+        and chunk.event is not None
+        and chunk.event.event_type == "runtime.tool_completed"
+    ]
+
+    assert len(completed_events) == 1
+    payload = completed_events[0].payload
+    assert payload["truncated"] is True
+    assert isinstance(payload["output_path"], str)
+    assert isinstance(payload["content"], str)
+    assert "Tool output truncated" in payload["content"]
+    assert "line-2099" not in payload["content"]
+    assert (tmp_path / payload["output_path"]).read_text(encoding="utf-8").endswith("line-2099\n")
+
+
+def test_runtime_sanitizes_tool_arguments_and_data_before_events_and_feedback(
+    tmp_path: Path,
+) -> None:
+    raw_argument_content = "RAW FILE CONTENT SHOULD NOT BE MODEL VISIBLE"
+    raw_data_content = "RAW TOOL DATA CONTENT SHOULD NOT BE MODEL VISIBLE"
+    raw_old_string = "old secret"
+    raw_new_string = "new secret"
+    data_uri = "data:image/png;base64," + "A" * 64
+    tool = _SensitiveContextTool(data_uri=data_uri, raw_data_content=raw_data_content)
+    graph = _SingleToolCallWithArgumentsGraph(
+        tool.definition.name,
+        {
+            "path": "out.txt",
+            "content": raw_argument_content,
+            "edits": [{"oldString": raw_old_string, "newString": raw_new_string}],
+        },
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        tool_registry=ToolRegistry.from_tools([tool]),
+        graph=graph,
+        config=RuntimeConfig(),
+    )
+
+    chunks = list(runtime.run_stream(RuntimeRequest(prompt="go")))
+    completed_events = [
+        chunk.event
+        for chunk in chunks
+        if chunk.kind == "event"
+        and chunk.event is not None
+        and chunk.event.event_type == "runtime.tool_completed"
+    ]
+
+    assert len(completed_events) == 1
+    payload = completed_events[0].payload
+    assert payload["status"] == "ok"
+    arguments_obj = payload["arguments"]
+    assert isinstance(arguments_obj, dict)
+    arguments = cast(dict[str, object], arguments_obj)
+    assert arguments["path"] == "out.txt"
+    assert arguments["content"] == {
+        "omitted": True,
+        "byte_count": len(raw_argument_content.encode("utf-8")),
+        "line_count": 1,
+    }
+    edits = arguments["edits"]
+    assert isinstance(edits, list)
+    edit_items = cast(list[object], edits)
+    assert edit_items[0] == {
+        "oldString": {
+            "omitted": True,
+            "byte_count": len(raw_old_string.encode("utf-8")),
+            "line_count": 1,
+        },
+        "newString": {
+            "omitted": True,
+            "byte_count": len(raw_new_string.encode("utf-8")),
+            "line_count": 1,
+        },
+    }
+    attachment = payload["attachment"]
+    assert isinstance(attachment, dict)
+    assert attachment["data_uri"] == {
+        "omitted": True,
+        "byte_count": len(data_uri.encode("utf-8")),
+        "line_count": 1,
+    }
+    completed_payload_text = str(payload)
+    assert raw_argument_content not in completed_payload_text
+    assert raw_data_content not in completed_payload_text
+    assert raw_old_string not in completed_payload_text
+    assert raw_new_string not in completed_payload_text
+    assert data_uri not in completed_payload_text
+
+    assert len(graph.seen_tool_results) == 1
+    feedback_payload_text = str(graph.seen_tool_results[0].data)
+    assert raw_argument_content not in feedback_payload_text
+    assert raw_data_content not in feedback_payload_text
+    assert data_uri not in feedback_payload_text
+
+
 def test_session_status_is_failed_after_timeout(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
@@ -282,15 +451,18 @@ def test_shell_exec_timeout_wins_when_shorter_than_runtime_timeout(tmp_path: Pat
         config=RuntimeConfig(approval_mode="allow", tool_timeout_seconds=10),
     )
 
-    with pytest.raises(ValueError, match="shell_exec command timed out after 1s"):
-        _ = list(runtime.run_stream(RuntimeRequest(prompt="go", session_id=session_id)))
+    _ = list(runtime.run_stream(RuntimeRequest(prompt="go", session_id=session_id)))
 
     replay = runtime.resume(session_id)
     event_types = [event.event_type for event in replay.events]
+    completed_events = [
+        event for event in replay.events if event.event_type == "runtime.tool_completed"
+    ]
 
     assert "runtime.tool_timeout" not in event_types
-    assert replay.events[-1].event_type == "runtime.failed"
-    assert replay.events[-1].payload == {"error": "shell_exec command timed out after 1s"}
+    assert len(completed_events) == 1
+    assert completed_events[0].payload["status"] == "error"
+    assert completed_events[0].payload["error"] == "shell_exec command timed out after 1s"
 
 
 def test_runtime_timeout_wins_when_shorter_than_shell_exec_timeout(tmp_path: Path) -> None:
@@ -346,15 +518,18 @@ def test_tool_native_timeout_error_does_not_emit_runtime_tool_timeout_without_ru
 ) -> None:
     runtime = _make_runtime(tmp_path, _ToolNativeTimeoutErrorTool(), tool_timeout_seconds=None)
 
-    with pytest.raises(TimeoutError, match="tool-native timeout"):
-        _ = list(runtime.run_stream(RuntimeRequest(prompt="go", session_id="tool-native-timeout")))
+    _ = list(runtime.run_stream(RuntimeRequest(prompt="go", session_id="tool-native-timeout")))
 
     replay = runtime.resume("tool-native-timeout")
     event_types = [event.event_type for event in replay.events]
+    completed_events = [
+        event for event in replay.events if event.event_type == "runtime.tool_completed"
+    ]
 
     assert "runtime.tool_timeout" not in event_types
-    assert replay.events[-1].event_type == "runtime.failed"
-    assert replay.events[-1].payload == {"error": "tool-native timeout"}
+    assert len(completed_events) == 1
+    assert completed_events[0].payload["status"] == "error"
+    assert completed_events[0].payload["error"] == "tool-native timeout"
 
 
 def test_tool_native_timeout_error_before_runtime_cap_does_not_emit_runtime_tool_timeout(
@@ -362,16 +537,17 @@ def test_tool_native_timeout_error_before_runtime_cap_does_not_emit_runtime_tool
 ) -> None:
     runtime = _make_runtime(tmp_path, _ToolNativeTimeoutErrorTool(), tool_timeout_seconds=10)
 
-    with pytest.raises(TimeoutError, match="tool-native timeout"):
-        _ = list(
-            runtime.run_stream(
-                RuntimeRequest(prompt="go", session_id="tool-native-timeout-with-cap")
-            )
-        )
+    _ = list(
+        runtime.run_stream(RuntimeRequest(prompt="go", session_id="tool-native-timeout-with-cap"))
+    )
 
     replay = runtime.resume("tool-native-timeout-with-cap")
     event_types = [event.event_type for event in replay.events]
+    completed_events = [
+        event for event in replay.events if event.event_type == "runtime.tool_completed"
+    ]
 
     assert "runtime.tool_timeout" not in event_types
-    assert replay.events[-1].event_type == "runtime.failed"
-    assert replay.events[-1].payload == {"error": "tool-native timeout"}
+    assert len(completed_events) == 1
+    assert completed_events[0].payload["status"] == "error"
+    assert completed_events[0].payload["error"] == "tool-native timeout"

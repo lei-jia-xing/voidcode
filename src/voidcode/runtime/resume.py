@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from ..graph.contracts import GraphRunRequest
 from ..tools.contracts import ToolResult, ToolResultStatus
+from ..tools.output import sanitize_tool_result_data
 from ..tools.question import QuestionTool
 from .config import serialize_runtime_agent_config
 from .contracts import NoPendingQuestionError, RuntimeRequest, RuntimeResponse, RuntimeStreamChunk
@@ -939,7 +940,7 @@ class RuntimeResumeCoordinator:
                     tool_name=tool_name,
                     content=content,
                     status=tool_status,
-                    data=cast(dict[str, object], data),
+                    data=sanitize_tool_result_data(cast(dict[str, object], data)),
                     error=error,
                 )
             )
@@ -1020,7 +1021,7 @@ class RuntimeResumeCoordinator:
                     tool_name=str(event.payload.get("tool", "unknown")),
                     content=str(raw_content) if raw_content is not None and not is_err else None,
                     status="error" if is_err else "ok",
-                    data=event.payload,
+                    data=sanitize_tool_result_data(event.payload),
                     error=str(error_value) if is_err else None,
                 )
             )

@@ -22,6 +22,7 @@ else:
 
 from ..agent import render_agent_prompt
 from ..tools.contracts import ToolCall, ToolDefinition
+from ..tools.output import sanitize_tool_arguments, sanitize_tool_result_data
 from .config import LiteLLMProviderConfig
 from .errors import provider_execution_error_from_api_payload
 from .protocol import (
@@ -31,6 +32,8 @@ from .protocol import (
     ProviderTurnRequest,
     ProviderTurnResult,
 )
+
+_DEFAULT_COMPLETION_TIMEOUT_SECONDS = 300.0
 
 
 def _usage_int(raw: object) -> int:
@@ -67,6 +70,49 @@ def _extract_token_usage(payload: dict[str, object]) -> ProviderTokenUsage | Non
     return parsed if parsed.total_tokens > 0 else None
 
 
+def _is_object_json_schema(schema: dict[str, object]) -> bool:
+    schema_type = schema.get("type")
+    if schema_type == "object":
+        return True
+    if schema_type is not None:
+        return False
+    properties = schema.get("properties")
+    if isinstance(properties, dict):
+        return True
+    return any(
+        key in schema
+        for key in (
+            "$defs",
+            "$schema",
+            "additionalProperties",
+            "allOf",
+            "anyOf",
+            "dependentRequired",
+            "dependentSchemas",
+            "maxProperties",
+            "minProperties",
+            "oneOf",
+            "patternProperties",
+            "propertyNames",
+            "required",
+            "unevaluatedProperties",
+        )
+    )
+
+
+def _normalize_tool_call_id(value: str | None, *, fallback: str) -> str:
+    raw = value if value is not None and value.strip() else fallback
+    normalized = re.sub(r"[^a-zA-Z0-9_-]", "_", raw.strip())
+    return normalized or fallback
+
+
+@dataclass(frozen=True, slots=True)
+class _StreamedToolCallAccumulator:
+    tool_call_id: str | None = None
+    tool_name: str | None = None
+    arguments: str = ""
+
+
 @dataclass(frozen=True, slots=True)
 class LiteLLMBackendSingleAgentProvider:
     name: str
@@ -76,11 +122,17 @@ class LiteLLMBackendSingleAgentProvider:
 
     @staticmethod
     def _to_tool_schema(tool: ToolDefinition) -> dict[str, object]:
-        parameters: dict[str, object] = tool.input_schema or {
-            "type": "object",
-            "properties": {},
-            "additionalProperties": True,
-        }
+        input_schema = tool.input_schema or {}
+        parameters: dict[str, object]
+        if _is_object_json_schema(input_schema):
+            parameters = dict(input_schema)
+            parameters.setdefault("type", "object")
+        else:
+            parameters = {
+                "type": "object",
+                "properties": input_schema,
+                "additionalProperties": True,
+            }
         return {
             "type": "function",
             "function": {
@@ -190,8 +242,111 @@ class LiteLLMBackendSingleAgentProvider:
 
         return f"Runtime continuity summary:\n{summary_text.strip()}"
 
-    def _build_messages(self, request: ProviderTurnRequest) -> list[dict[str, str]]:
-        messages: list[dict[str, str]] = []
+    @staticmethod
+    def _tool_result_messages(request: ProviderTurnRequest) -> list[dict[str, object]]:
+        messages: list[dict[str, object]] = []
+        for index, result in enumerate(request.context_window.tool_results, start=1):
+            sanitized_data = sanitize_tool_result_data(result.data)
+            raw_tool_call_id = result.data.get("tool_call_id")
+            tool_call_id = _normalize_tool_call_id(
+                raw_tool_call_id if isinstance(raw_tool_call_id, str) else None,
+                fallback=f"voidcode_tool_{index}",
+            )
+            raw_arguments = result.data.get("arguments")
+            arguments_payload = (
+                sanitize_tool_arguments(cast(dict[str, object], raw_arguments))
+                if isinstance(raw_arguments, dict)
+                else {}
+            )
+            arguments = json.dumps(
+                arguments_payload,
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            content = result.content or ""
+            result_payload = {
+                "tool_name": result.tool_name,
+                "status": result.status,
+                "content": content,
+                "error": result.error,
+                "data": {
+                    key: value
+                    for key, value in sanitized_data.items()
+                    if key not in {"tool_call_id", "arguments"}
+                },
+                "truncated": result.truncated,
+                "partial": result.partial,
+                "reference": result.reference,
+            }
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": tool_call_id,
+                            "type": "function",
+                            "function": {
+                                "name": result.tool_name,
+                                "arguments": arguments,
+                            },
+                        }
+                    ],
+                }
+            )
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tool_call_id,
+                    "content": json.dumps(
+                        result_payload,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                }
+            )
+        return messages
+
+    @staticmethod
+    def _tool_results_user_message(request: ProviderTurnRequest) -> str | None:
+        if not request.context_window.tool_results:
+            return None
+
+        lines = [
+            "The following tool calls have already completed for the current user request.",
+            "Use these results as the latest state. Do not repeat a completed tool call "
+            "unless a later error explicitly requires retrying it.",
+        ]
+        for index, result in enumerate(request.context_window.tool_results, start=1):
+            sanitized_data = sanitize_tool_result_data(result.data)
+            raw_arguments = result.data.get("arguments")
+            arguments_payload = (
+                sanitize_tool_arguments(cast(dict[str, object], raw_arguments))
+                if isinstance(raw_arguments, dict)
+                else {}
+            )
+            content = result.content or ""
+            payload = {
+                "index": index,
+                "tool_name": result.tool_name,
+                "arguments": arguments_payload,
+                "status": result.status,
+                "content": content,
+                "error": result.error,
+                "data": {
+                    key: value
+                    for key, value in sanitized_data.items()
+                    if key not in {"tool_call_id", "arguments"}
+                },
+                "truncated": result.truncated,
+                "partial": result.partial,
+                "reference": result.reference,
+            }
+            lines.append(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+        return "\n".join(lines)
+
+    def _build_messages(self, request: ProviderTurnRequest) -> list[dict[str, object]]:
+        messages: list[dict[str, object]] = []
         agent_profile_message = self._agent_profile_system_message(request)
         if agent_profile_message is not None:
             messages.append({"role": "system", "content": agent_profile_message})
@@ -202,6 +357,12 @@ class LiteLLMBackendSingleAgentProvider:
         if continuity_message is not None:
             messages.append({"role": "system", "content": continuity_message})
         messages.append({"role": "user", "content": request.prompt})
+        if request.provider_name == "opencode-go":
+            tool_results_message = self._tool_results_user_message(request)
+            if tool_results_message is not None:
+                messages.append({"role": "user", "content": tool_results_message})
+        else:
+            messages.extend(self._tool_result_messages(request))
         return messages
 
     def _auth_kwargs(self) -> dict[str, object]:
@@ -225,7 +386,8 @@ class LiteLLMBackendSingleAgentProvider:
         first_tool_call_obj = tool_calls[0]
         if not isinstance(first_tool_call_obj, dict):
             return None
-        function_obj = cast(dict[str, object], first_tool_call_obj).get("function")
+        first_tool_call = cast(dict[str, object], first_tool_call_obj)
+        function_obj = first_tool_call.get("function")
         if not isinstance(function_obj, dict):
             return None
         function = cast(dict[str, object], function_obj)
@@ -242,7 +404,16 @@ class LiteLLMBackendSingleAgentProvider:
             else:
                 if isinstance(decoded, dict):
                     parsed_arguments = cast(dict[str, object], decoded)
-        return ToolCall(tool_name=tool_name_obj, arguments=parsed_arguments)
+        tool_call_id_obj = first_tool_call.get("id")
+        tool_call_id = _normalize_tool_call_id(
+            tool_call_id_obj if isinstance(tool_call_id_obj, str) else None,
+            fallback=tool_name_obj,
+        )
+        return ToolCall(
+            tool_name=tool_name_obj,
+            arguments=parsed_arguments,
+            tool_call_id=tool_call_id,
+        )
 
     @staticmethod
     def _map_exception(
@@ -267,6 +438,10 @@ class LiteLLMBackendSingleAgentProvider:
             model_name=model_name,
             message=str(exc),
             retryable=True,
+            details={
+                "exception_type": type(exc).__name__,
+                "exception_message": str(exc),
+            },
         )
 
     @staticmethod
@@ -284,7 +459,7 @@ class LiteLLMBackendSingleAgentProvider:
     def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
         model_identifier = self._model_identifier(request)
         timeout_seconds = (
-            30.0
+            _DEFAULT_COMPLETION_TIMEOUT_SECONDS
             if self.config is None or self.config.timeout_seconds is None
             else self.config.timeout_seconds
         )
@@ -336,7 +511,7 @@ class LiteLLMBackendSingleAgentProvider:
     def stream_turn(self, request: ProviderTurnRequest) -> Iterator[ProviderStreamEvent]:
         model_identifier = self._model_identifier(request)
         timeout_seconds = (
-            30.0
+            _DEFAULT_COMPLETION_TIMEOUT_SECONDS
             if self.config is None or self.config.timeout_seconds is None
             else self.config.timeout_seconds
         )
@@ -358,8 +533,7 @@ class LiteLLMBackendSingleAgentProvider:
             stream = cast(
                 Iterator[Any], self._call_litellm_completion(cast(dict[str, Any], payload))
             )
-            streamed_tool_name: str | None = None
-            streamed_tool_arguments = ""
+            streamed_tool_calls: dict[int, _StreamedToolCallAccumulator] = {}
             latest_usage: ProviderTokenUsage | None = None
             for chunk in stream:
                 if request.abort_signal is not None and request.abort_signal.cancelled:
@@ -413,40 +587,32 @@ class LiteLLMBackendSingleAgentProvider:
                             if not isinstance(tool_call_obj, dict):
                                 continue
                             tool_call = cast(dict[str, object], tool_call_obj)
-                            function_obj = tool_call.get("function")
-                            if not isinstance(function_obj, dict):
-                                continue
-                            function = cast(dict[str, object], function_obj)
-                            name_obj = function.get("name")
-                            if isinstance(name_obj, str) and name_obj:
-                                streamed_tool_name = name_obj
-                            arguments_obj = function.get("arguments")
-                            if isinstance(arguments_obj, str) and arguments_obj:
-                                streamed_tool_arguments += arguments_obj
-                        if streamed_tool_name is not None:
-                            tool_payload = self._extract_first_tool_call(
-                                {
-                                    "tool_calls": [
-                                        {
-                                            "function": {
-                                                "name": streamed_tool_name,
-                                                "arguments": streamed_tool_arguments,
-                                            }
-                                        }
-                                    ]
-                                }
+                            index_obj = tool_call.get("index")
+                            index = index_obj if isinstance(index_obj, int) else 0
+                            accumulator = streamed_tool_calls.get(
+                                index,
+                                _StreamedToolCallAccumulator(),
                             )
-                            if tool_payload is not None:
-                                yield ProviderStreamEvent(
-                                    kind="content",
-                                    channel="tool",
-                                    text=json.dumps(
-                                        {
-                                            "tool_name": tool_payload.tool_name,
-                                            "arguments": tool_payload.arguments,
-                                        }
-                                    ),
-                                )
+                            tool_call_id_obj = tool_call.get("id")
+                            tool_call_id = accumulator.tool_call_id
+                            if isinstance(tool_call_id_obj, str) and tool_call_id_obj:
+                                tool_call_id = tool_call_id_obj
+                            function_obj = tool_call.get("function")
+                            tool_name = accumulator.tool_name
+                            arguments = accumulator.arguments
+                            if isinstance(function_obj, dict):
+                                function = cast(dict[str, object], function_obj)
+                                name_obj = function.get("name")
+                                if isinstance(name_obj, str) and name_obj:
+                                    tool_name = name_obj
+                                arguments_obj = function.get("arguments")
+                                if isinstance(arguments_obj, str) and arguments_obj:
+                                    arguments += arguments_obj
+                            streamed_tool_calls[index] = _StreamedToolCallAccumulator(
+                                tool_call_id=tool_call_id,
+                                tool_name=tool_name,
+                                arguments=arguments,
+                            )
                 finish_reason = first_choice.get("finish_reason")
                 if isinstance(finish_reason, str) and finish_reason:
                     continue
@@ -456,6 +622,39 @@ class LiteLLMBackendSingleAgentProvider:
                 provider_name=self.name,
                 model_name=request.model_name or "unknown",
             ) from exc
+
+        completed_tool_calls = [
+            (index, accumulator)
+            for index, accumulator in sorted(streamed_tool_calls.items())
+            if accumulator.tool_name is not None
+        ]
+        if completed_tool_calls:
+            _index, selected_tool = completed_tool_calls[0]
+            tool_payload = self._extract_first_tool_call(
+                {
+                    "tool_calls": [
+                        {
+                            "id": selected_tool.tool_call_id,
+                            "function": {
+                                "name": selected_tool.tool_name,
+                                "arguments": selected_tool.arguments,
+                            },
+                        }
+                    ]
+                }
+            )
+            if tool_payload is not None:
+                event_payload: dict[str, object] = {
+                    "tool_name": tool_payload.tool_name,
+                    "arguments": tool_payload.arguments,
+                }
+                if tool_payload.tool_call_id is not None:
+                    event_payload["tool_call_id"] = tool_payload.tool_call_id
+                yield ProviderStreamEvent(
+                    kind="content",
+                    channel="tool",
+                    text=json.dumps(event_payload),
+                )
 
         yield ProviderStreamEvent(
             kind="done",

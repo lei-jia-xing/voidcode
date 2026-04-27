@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import importlib
-import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Protocol, cast
@@ -62,13 +61,11 @@ def test_todo_write_summary_matches_normalized_status_counts(todos: list[dict[st
             workspace=workspace,
         )
 
-        stored = cast(
-            list[dict[str, str]],
-            json.loads((workspace / ".voidcode" / "todos.json").read_text(encoding="utf-8")),
-        )
+        stored = cast(list[dict[str, str]], result.data["todos"])
         summary = cast(dict[str, int], result.data["summary"])
 
         assert result.status == "ok"
+        assert not (workspace / ".voidcode" / "todos.json").exists()
         assert summary["total"] == len(stored)
         assert summary["pending"] == sum(1 for item in stored if item["status"] == "pending")
         assert summary["in_progress"] == sum(

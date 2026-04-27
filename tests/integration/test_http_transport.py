@@ -943,7 +943,7 @@ def test_transport_resolves_pending_approval_allow_over_http(tmp_path: Path) -> 
         cast(dict[str, object], payload["session"])["metadata"],
         workspace=tmp_path,
     )
-    assert payload["output"] == "approved later"
+    assert payload["output"] == "Wrote file successfully: danger.txt"
     assert [event["event_type"] for event in cast(list[dict[str, object]], payload["events"])] == [
         "runtime.request_received",
         "runtime.skills_loaded",
@@ -2172,7 +2172,7 @@ def test_transport_persists_failed_stream_for_replay(tmp_path: Path) -> None:
     replay_payload = cast(dict[str, object], replay_response.json())
 
     assert stream_response.status == 200
-    assert payloads[-1]["event"] == {
+    assert payloads[8]["event"] == {
         "session_id": "failed-stream-session",
         "sequence": 9,
         "event_type": "runtime.failed",

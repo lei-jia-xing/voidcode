@@ -57,7 +57,13 @@ def test_web_delegates_to_shared_runtime_server(tmp_path: Path) -> None:
 
     with patch.object(server, "_run_runtime_server", autospec=True) as run_mock:
         with patch.object(server, "_FRONTEND_DIST", frontend_dist):
-            server.web(workspace=workspace, host="127.0.0.1", port=8001, config=config)
+            server.web(
+                workspace=workspace,
+                host="127.0.0.1",
+                port=8001,
+                config=config,
+                open_browser=False,
+            )
 
     run_mock.assert_called_once_with(
         workspace=workspace,

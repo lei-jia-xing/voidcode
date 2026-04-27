@@ -245,7 +245,7 @@ class RuntimeConfig:
     approval_mode: PermissionDecision = "ask"
     model: str | None = None
     execution_engine: ExecutionEngineName = "deterministic"
-    max_steps: int = 4
+    max_steps: int | None = None
     tool_timeout_seconds: int | None = None
     hooks: RuntimeHooksConfig | None = None
     tools: RuntimeToolsConfig | None = None
@@ -385,9 +385,10 @@ def load_runtime_config(
     resolved_lsp = repo_local.lsp or _derive_workspace_lsp_config(resolved_workspace)
     resolved_agent = _resolve_agent_config(repo_local.agent)
 
+    env_providers = provider_configs_from_env(environment)
     resolved_providers = merge_provider_configs(
         repo_local.providers,
-        merge_provider_configs(global_config.providers, provider_configs_from_env(environment)),
+        merge_provider_configs(env_providers, global_config.providers),
     )
 
     return RuntimeConfig(
@@ -2310,7 +2311,7 @@ def _resolve_execution_engine(
 
 def _resolve_max_steps(
     *, explicit: int | None, repo_local: int | None, environment: int | None
-) -> int:
+) -> int | None:
     if explicit is not None:
         return explicit
     if repo_local is not None:

@@ -8,7 +8,12 @@ from typing import ClassVar
 from rapidfuzz.distance import Levenshtein
 
 from ..hook.config import RuntimeHooksConfig
-from ._formatter import FormatterExecutionResult, FormatterExecutor
+from ._formatter import (
+    FormatterExecutionResult,
+    FormatterExecutor,
+    formatter_diagnostics,
+    formatter_payload,
+)
 from .contracts import ToolCall, ToolDefinition, ToolResult
 
 
@@ -100,47 +105,6 @@ def summarize_diff(*, path: Path, before: str, after: str) -> tuple[str, int, in
         1 for line in diff.splitlines() if line.startswith("-") and not line.startswith("---")
     )
     return diff, additions, deletions
-
-
-def formatter_payload(result: FormatterExecutionResult) -> dict[str, object]:
-    payload: dict[str, object] = {
-        "status": result.status,
-    }
-    if result.language is not None:
-        payload["language"] = result.language
-    if result.cwd is not None:
-        payload["cwd"] = str(result.cwd)
-    if result.command is not None:
-        payload["command"] = list(result.command)
-    if result.attempted_commands:
-        payload["attempted_commands"] = [list(cmd) for cmd in result.attempted_commands]
-    if result.stdout is not None:
-        payload["stdout"] = result.stdout
-    if result.stderr is not None:
-        payload["stderr"] = result.stderr
-    if result.error is not None:
-        payload["error"] = result.error
-    return payload
-
-
-def formatter_diagnostics(result: FormatterExecutionResult | None) -> list[dict[str, object]]:
-    if result is None or result.status in {"not_configured", "formatted"} or result.error is None:
-        return []
-
-    diagnostic: dict[str, object] = {
-        "source": "formatter",
-        "severity": "warning",
-        "message": result.error,
-    }
-    if result.language is not None:
-        diagnostic["language"] = result.language
-    if result.cwd is not None:
-        diagnostic["cwd"] = str(result.cwd)
-    if result.command is not None:
-        diagnostic["command"] = list(result.command)
-    if result.attempted_commands:
-        diagnostic["attempted_commands"] = [list(cmd) for cmd in result.attempted_commands]
-    return [diagnostic]
 
 
 class SimpleReplacer:

@@ -80,6 +80,10 @@ BoundaryStringList = Annotated[tuple[str, ...], BeforeValidator(_parse_boundary_
 BoundaryStringMapping = Annotated[dict[str, str], BeforeValidator(_parse_boundary_string_mapping)]
 
 
+def _prefer_primary[T](primary: T | None, fallback: T | None) -> T | None:
+    return primary if primary is not None else fallback
+
+
 class _ProviderPayloadModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -138,7 +142,7 @@ class _LiteLLMProviderConfigPayload(_ProviderPayloadModel):
     base_url: BoundaryOptionalString = None
     discovery_base_url: BoundaryOptionalString = None
     auth_header: BoundaryOptionalString = None
-    auth_scheme: BoundaryOptionalString = "bearer"
+    auth_scheme: BoundaryOptionalString = None
     timeout_seconds: BoundaryOptionalTimeout = None
     model_map: BoundaryStringMapping = Field(default_factory=dict)
 
@@ -390,6 +394,11 @@ class AnthropicProviderConfig:
     version: str | None = None
     beta_headers: tuple[str, ...] = ()
     timeout_seconds: float | None = None
+    beta_headers_explicit: bool = field(default=False, compare=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.beta_headers and not self.beta_headers_explicit:
+            object.__setattr__(self, "beta_headers_explicit", True)
 
 
 type GoogleAuthMethod = Literal["api_key", "oauth", "service_account"]
@@ -442,6 +451,11 @@ class LiteLLMProviderConfig:
     auth_scheme: Literal["bearer", "token", "none"] = "bearer"
     timeout_seconds: float | None = None
     model_map: dict[str, str] = field(default_factory=dict)
+    auth_scheme_explicit: bool = field(default=False, compare=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.auth_scheme != "bearer" and not self.auth_scheme_explicit:
+            object.__setattr__(self, "auth_scheme_explicit", True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -571,19 +585,133 @@ def merge_provider_configs(
     if fallback is None:
         return primary
     return ProviderConfigs(
-        openai=primary.openai or fallback.openai,
-        anthropic=primary.anthropic or fallback.anthropic,
-        google=primary.google or fallback.google,
-        copilot=primary.copilot or fallback.copilot,
-        litellm=primary.litellm or fallback.litellm,
-        deepseek=primary.deepseek or fallback.deepseek,
-        glm=primary.glm or fallback.glm,
-        grok=primary.grok or fallback.grok,
-        minimax=primary.minimax or fallback.minimax,
-        kimi=primary.kimi or fallback.kimi,
-        opencode_go=primary.opencode_go or fallback.opencode_go,
-        qwen=primary.qwen or fallback.qwen,
+        openai=_merge_openai_provider_config(primary.openai, fallback.openai),
+        anthropic=_merge_anthropic_provider_config(primary.anthropic, fallback.anthropic),
+        google=_merge_google_provider_config(primary.google, fallback.google),
+        copilot=_merge_copilot_provider_config(primary.copilot, fallback.copilot),
+        litellm=_merge_litellm_provider_config(primary.litellm, fallback.litellm),
+        deepseek=_merge_simplified_provider_config(primary.deepseek, fallback.deepseek),
+        glm=_merge_simplified_provider_config(primary.glm, fallback.glm),
+        grok=_merge_simplified_provider_config(primary.grok, fallback.grok),
+        minimax=_merge_simplified_provider_config(primary.minimax, fallback.minimax),
+        kimi=_merge_simplified_provider_config(primary.kimi, fallback.kimi),
+        opencode_go=_merge_simplified_provider_config(
+            primary.opencode_go,
+            fallback.opencode_go,
+        ),
+        qwen=_merge_simplified_provider_config(primary.qwen, fallback.qwen),
         custom={**fallback.custom, **primary.custom},
+    )
+
+
+def _merge_openai_provider_config(
+    primary: OpenAIProviderConfig | None,
+    fallback: OpenAIProviderConfig | None,
+) -> OpenAIProviderConfig | None:
+    if primary is None:
+        return fallback
+    if fallback is None:
+        return primary
+    return OpenAIProviderConfig(
+        api_key=_prefer_primary(primary.api_key, fallback.api_key),
+        base_url=_prefer_primary(primary.base_url, fallback.base_url),
+        discovery_base_url=_prefer_primary(primary.discovery_base_url, fallback.discovery_base_url),
+        organization=_prefer_primary(primary.organization, fallback.organization),
+        project=_prefer_primary(primary.project, fallback.project),
+        timeout_seconds=_prefer_primary(primary.timeout_seconds, fallback.timeout_seconds),
+    )
+
+
+def _merge_anthropic_provider_config(
+    primary: AnthropicProviderConfig | None,
+    fallback: AnthropicProviderConfig | None,
+) -> AnthropicProviderConfig | None:
+    if primary is None:
+        return fallback
+    if fallback is None:
+        return primary
+    return AnthropicProviderConfig(
+        api_key=_prefer_primary(primary.api_key, fallback.api_key),
+        base_url=_prefer_primary(primary.base_url, fallback.base_url),
+        discovery_base_url=_prefer_primary(primary.discovery_base_url, fallback.discovery_base_url),
+        version=_prefer_primary(primary.version, fallback.version),
+        beta_headers=(
+            primary.beta_headers if primary.beta_headers_explicit else fallback.beta_headers
+        ),
+        beta_headers_explicit=primary.beta_headers_explicit or fallback.beta_headers_explicit,
+        timeout_seconds=_prefer_primary(primary.timeout_seconds, fallback.timeout_seconds),
+    )
+
+
+def _merge_google_provider_config(
+    primary: GoogleProviderConfig | None,
+    fallback: GoogleProviderConfig | None,
+) -> GoogleProviderConfig | None:
+    if primary is None:
+        return fallback
+    if fallback is None:
+        return primary
+    return GoogleProviderConfig(
+        auth=_prefer_primary(primary.auth, fallback.auth),
+        base_url=_prefer_primary(primary.base_url, fallback.base_url),
+        discovery_base_url=_prefer_primary(primary.discovery_base_url, fallback.discovery_base_url),
+        project=_prefer_primary(primary.project, fallback.project),
+        region=_prefer_primary(primary.region, fallback.region),
+        timeout_seconds=_prefer_primary(primary.timeout_seconds, fallback.timeout_seconds),
+    )
+
+
+def _merge_copilot_provider_config(
+    primary: CopilotProviderConfig | None,
+    fallback: CopilotProviderConfig | None,
+) -> CopilotProviderConfig | None:
+    if primary is None:
+        return fallback
+    if fallback is None:
+        return primary
+    return CopilotProviderConfig(
+        auth=_prefer_primary(primary.auth, fallback.auth),
+        base_url=_prefer_primary(primary.base_url, fallback.base_url),
+        timeout_seconds=_prefer_primary(primary.timeout_seconds, fallback.timeout_seconds),
+    )
+
+
+def _merge_litellm_provider_config(
+    primary: LiteLLMProviderConfig | None,
+    fallback: LiteLLMProviderConfig | None,
+) -> LiteLLMProviderConfig | None:
+    if primary is None:
+        return fallback
+    if fallback is None:
+        return primary
+    return LiteLLMProviderConfig(
+        api_key=_prefer_primary(primary.api_key, fallback.api_key),
+        api_key_env_var=_prefer_primary(primary.api_key_env_var, fallback.api_key_env_var),
+        base_url=_prefer_primary(primary.base_url, fallback.base_url),
+        discovery_base_url=_prefer_primary(primary.discovery_base_url, fallback.discovery_base_url),
+        auth_header=_prefer_primary(primary.auth_header, fallback.auth_header),
+        auth_scheme=(primary.auth_scheme if primary.auth_scheme_explicit else fallback.auth_scheme),
+        auth_scheme_explicit=primary.auth_scheme_explicit or fallback.auth_scheme_explicit,
+        timeout_seconds=_prefer_primary(primary.timeout_seconds, fallback.timeout_seconds),
+        model_map={**fallback.model_map, **primary.model_map},
+    )
+
+
+def _merge_simplified_provider_config(
+    primary: SimplifiedProviderConfig | None,
+    fallback: SimplifiedProviderConfig | None,
+) -> SimplifiedProviderConfig | None:
+    if primary is None:
+        return fallback
+    if fallback is None:
+        return primary
+    return SimplifiedProviderConfig(
+        api_key=_prefer_primary(primary.api_key, fallback.api_key),
+        api_key_env_var=_prefer_primary(primary.api_key_env_var, fallback.api_key_env_var),
+        base_url=_prefer_primary(primary.base_url, fallback.base_url),
+        discovery_base_url=_prefer_primary(primary.discovery_base_url, fallback.discovery_base_url),
+        timeout_seconds=_prefer_primary(primary.timeout_seconds, fallback.timeout_seconds),
+        model_map={**fallback.model_map, **primary.model_map},
     )
 
 
@@ -965,6 +1093,7 @@ def _parse_anthropic_provider_config(
         discovery_base_url=payload.discovery_base_url,
         version=payload.version,
         beta_headers=payload.beta_headers,
+        beta_headers_explicit="beta_headers" in payload.model_fields_set,
         timeout_seconds=payload.timeout_seconds,
     )
 
@@ -1238,6 +1367,7 @@ def _parse_litellm_provider_config(
         discovery_base_url=payload.discovery_base_url,
         auth_header=payload.auth_header,
         auth_scheme=auth_scheme,
+        auth_scheme_explicit=raw_auth_scheme is not None,
         timeout_seconds=payload.timeout_seconds,
         model_map=payload.model_map,
     )
@@ -1319,7 +1449,7 @@ def _serialize_anthropic_provider_config(
         payload["discovery_base_url"] = provider.discovery_base_url
     if provider.version is not None:
         payload["version"] = provider.version
-    if provider.beta_headers:
+    if provider.beta_headers or provider.beta_headers_explicit:
         payload["beta_headers"] = list(provider.beta_headers)
     if provider.timeout_seconds is not None:
         payload["timeout_seconds"] = provider.timeout_seconds

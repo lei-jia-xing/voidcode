@@ -17,6 +17,7 @@ from voidcode.provider.config import (
     parse_provider_configs_payload,
     parse_provider_fallback_payload,
     provider_configs_from_env,
+    serialize_provider_configs,
 )
 
 
@@ -107,6 +108,80 @@ def test_parse_provider_configs_payload_rejects_unknown_provider_block() -> None
             {"unknown": {}},
             source="runtime config field 'providers'",
         )
+
+
+def test_merge_provider_configs_preserves_fallback_litellm_none_auth_scheme() -> None:
+    primary = ProviderConfigs(litellm=LiteLLMProviderConfig(api_key="env-key"))
+    fallback = ProviderConfigs(litellm=LiteLLMProviderConfig(auth_scheme="none"))
+
+    merged = merge_provider_configs(primary, fallback)
+
+    assert merged is not None
+    assert merged.litellm == LiteLLMProviderConfig(
+        api_key="env-key",
+        auth_scheme="none",
+    )
+
+
+def test_merge_provider_configs_preserves_fallback_litellm_token_auth_scheme() -> None:
+    primary = ProviderConfigs(litellm=LiteLLMProviderConfig(api_key="env-key"))
+    fallback = ProviderConfigs(
+        litellm=LiteLLMProviderConfig(auth_scheme="token", auth_header="X-API-Key")
+    )
+
+    merged = merge_provider_configs(primary, fallback)
+
+    assert merged is not None
+    assert merged.litellm == LiteLLMProviderConfig(
+        api_key="env-key",
+        auth_header="X-API-Key",
+        auth_scheme="token",
+    )
+
+
+def test_merge_provider_configs_allows_empty_anthropic_beta_headers_override() -> None:
+    primary = parse_provider_configs_payload(
+        {"anthropic": {"beta_headers": []}},
+        source="runtime config field 'providers'",
+    )
+    fallback = ProviderConfigs(anthropic=AnthropicProviderConfig(beta_headers=("stale-beta",)))
+
+    merged = merge_provider_configs(primary, fallback)
+
+    assert merged is not None
+    assert merged.anthropic == AnthropicProviderConfig(
+        beta_headers=(),
+        beta_headers_explicit=True,
+    )
+
+
+def test_merge_provider_configs_preserves_anthropic_beta_headers_when_absent() -> None:
+    primary = parse_provider_configs_payload(
+        {"anthropic": {"api_key": "repo-key"}},
+        source="runtime config field 'providers'",
+    )
+    fallback = ProviderConfigs(anthropic=AnthropicProviderConfig(beta_headers=("fallback-beta",)))
+
+    merged = merge_provider_configs(primary, fallback)
+
+    assert merged is not None
+    assert merged.anthropic == AnthropicProviderConfig(
+        api_key="repo-key",
+        beta_headers=("fallback-beta",),
+    )
+
+
+def test_serialize_provider_configs_preserves_explicit_empty_anthropic_beta_headers() -> None:
+    payload = serialize_provider_configs(
+        ProviderConfigs(
+            anthropic=AnthropicProviderConfig(
+                beta_headers=(),
+                beta_headers_explicit=True,
+            )
+        )
+    )
+
+    assert payload == {"anthropic": {"beta_headers": []}}
 
 
 def test_parse_provider_configs_payload_rejects_invalid_openai_base_url_type() -> None:
@@ -574,3 +649,38 @@ def test_merge_provider_configs_keeps_repo_provider_over_environment_fallback() 
 
     assert merged is not None
     assert merged.opencode_go == SimplifiedProviderConfig(api_key="repo-key")
+
+
+def test_merge_provider_configs_preserves_empty_base_url_override() -> None:
+    merged = merge_provider_configs(
+        ProviderConfigs(
+            openai=OpenAIProviderConfig(base_url="", discovery_base_url=""),
+            litellm=LiteLLMProviderConfig(base_url="", discovery_base_url=""),
+            opencode_go=SimplifiedProviderConfig(base_url="", discovery_base_url=""),
+        ),
+        ProviderConfigs(
+            openai=OpenAIProviderConfig(
+                base_url="https://fallback.openai.example",
+                discovery_base_url="https://fallback.openai.example/v1",
+            ),
+            litellm=LiteLLMProviderConfig(
+                base_url="https://fallback.litellm.example",
+                discovery_base_url="https://fallback.litellm.example/v1",
+            ),
+            opencode_go=SimplifiedProviderConfig(
+                base_url="https://fallback.opencode.example",
+                discovery_base_url="https://fallback.opencode.example/v1",
+            ),
+        ),
+    )
+
+    assert merged is not None
+    assert merged.openai is not None
+    assert merged.openai.base_url == ""
+    assert merged.openai.discovery_base_url == ""
+    assert merged.litellm is not None
+    assert merged.litellm.base_url == ""
+    assert merged.litellm.discovery_base_url == ""
+    assert merged.opencode_go is not None
+    assert merged.opencode_go.base_url == ""
+    assert merged.opencode_go.discovery_base_url == ""

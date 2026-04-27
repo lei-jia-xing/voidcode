@@ -637,15 +637,53 @@ describe("useAppStore integration flow", () => {
       session_id: null,
       metadata: {
         skills: ["demo"],
+        max_steps: 5,
         provider_stream: true,
         agent: {
           preset: "leader",
           model: "opencode-go/glm-5.1",
+          execution_engine: "provider",
         },
       },
     });
     expect(runtimeClientMocks.getStatusMock).toHaveBeenCalled();
     expect(runtimeClientMocks.getReviewMock).toHaveBeenCalled();
+  });
+
+  it("uses a 16 step budget for web agent runs when no override is provided", async () => {
+    const sessionId = "session-default-steps";
+    const requestReceived = makeEvent(
+      1,
+      "runtime.request_received",
+      { prompt: "write hello.c" },
+      "runtime",
+      sessionId,
+    );
+
+    async function* stream() {
+      yield makeStreamChunk(sessionId, "completed", requestReceived);
+      yield makeStreamChunk(sessionId, "completed", null, "ok");
+    }
+
+    runtimeClientMocks.runStreamMock.mockReturnValue(stream());
+    runtimeClientMocks.listSessionsMock.mockResolvedValue([
+      makeStoredSessionSummary(sessionId, "completed", "write hello.c"),
+    ]);
+
+    await useAppStore.getState().runTask("write hello.c");
+
+    expect(runtimeClientMocks.runStreamMock).toHaveBeenCalledWith({
+      prompt: "write hello.c",
+      session_id: null,
+      metadata: {
+        max_steps: 16,
+        agent: {
+          preset: "leader",
+          model: "opencode-go/glm-5.1",
+          execution_engine: "provider",
+        },
+      },
+    });
   });
 
   it("normalizes a bare alias only when the current provider catalog owns it", async () => {
@@ -702,9 +740,11 @@ describe("useAppStore integration flow", () => {
       prompt: "run current provider alias",
       session_id: null,
       metadata: {
+        max_steps: 16,
         agent: {
           preset: "leader",
           model: "opencode-go/kimi-k2.6",
+          execution_engine: "provider",
         },
       },
     });
@@ -760,9 +800,11 @@ describe("useAppStore integration flow", () => {
       prompt: "run unique alias",
       session_id: null,
       metadata: {
+        max_steps: 16,
         agent: {
           preset: "leader",
           model: "kimi/kimi-k2.6",
+          execution_engine: "provider",
         },
       },
     });
@@ -818,9 +860,11 @@ describe("useAppStore integration flow", () => {
       prompt: "run qualified alias",
       session_id: null,
       metadata: {
+        max_steps: 16,
         agent: {
           preset: "leader",
           model: "kimi/kimi-k2.6",
+          execution_engine: "provider",
         },
       },
     });
@@ -882,9 +926,11 @@ describe("useAppStore integration flow", () => {
       prompt: "run ambiguous alias",
       session_id: null,
       metadata: {
+        max_steps: 16,
         agent: {
           preset: "leader",
           model: "kimi-k2.6",
+          execution_engine: "provider",
         },
       },
     });
@@ -940,9 +986,11 @@ describe("useAppStore integration flow", () => {
       prompt: "run unknown alias",
       session_id: null,
       metadata: {
+        max_steps: 16,
         agent: {
           preset: "leader",
           model: "mystery-model",
+          execution_engine: "provider",
         },
       },
     });
@@ -1007,9 +1055,11 @@ describe("useAppStore integration flow", () => {
       prompt: "new run",
       session_id: null,
       metadata: {
+        max_steps: 16,
         agent: {
           preset: "leader",
           model: "opencode-go/glm-5.1",
+          execution_engine: "provider",
         },
       },
     });
@@ -1046,9 +1096,11 @@ describe("useAppStore integration flow", () => {
       prompt: "start new",
       session_id: null,
       metadata: {
+        max_steps: 16,
         agent: {
           preset: "leader",
           model: "opencode-go/glm-5.1",
+          execution_engine: "provider",
         },
       },
     });
@@ -1128,9 +1180,11 @@ describe("useAppStore integration flow", () => {
       prompt: "hydrated qualified model",
       session_id: null,
       metadata: {
+        max_steps: 16,
         agent: {
           preset: "leader",
           model: "opencode-go/kimi-k2.6",
+          execution_engine: "provider",
         },
       },
     });
@@ -1180,9 +1234,11 @@ describe("useAppStore integration flow", () => {
       prompt: "use configured model",
       session_id: null,
       metadata: {
+        max_steps: 16,
         agent: {
           preset: "leader",
           model: "opencode-go/kimi-k2.6",
+          execution_engine: "provider",
         },
       },
     });
