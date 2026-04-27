@@ -394,6 +394,11 @@ class AnthropicProviderConfig:
     version: str | None = None
     beta_headers: tuple[str, ...] = ()
     timeout_seconds: float | None = None
+    beta_headers_explicit: bool = field(default=False, compare=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.beta_headers and not self.beta_headers_explicit:
+            object.__setattr__(self, "beta_headers_explicit", True)
 
 
 type GoogleAuthMethod = Literal["api_key", "oauth", "service_account"]
@@ -630,7 +635,10 @@ def _merge_anthropic_provider_config(
         base_url=_prefer_primary(primary.base_url, fallback.base_url),
         discovery_base_url=_prefer_primary(primary.discovery_base_url, fallback.discovery_base_url),
         version=_prefer_primary(primary.version, fallback.version),
-        beta_headers=primary.beta_headers or fallback.beta_headers,
+        beta_headers=(
+            primary.beta_headers if primary.beta_headers_explicit else fallback.beta_headers
+        ),
+        beta_headers_explicit=primary.beta_headers_explicit or fallback.beta_headers_explicit,
         timeout_seconds=_prefer_primary(primary.timeout_seconds, fallback.timeout_seconds),
     )
 
@@ -1085,6 +1093,7 @@ def _parse_anthropic_provider_config(
         discovery_base_url=payload.discovery_base_url,
         version=payload.version,
         beta_headers=payload.beta_headers,
+        beta_headers_explicit="beta_headers" in payload.model_fields_set,
         timeout_seconds=payload.timeout_seconds,
     )
 
@@ -1440,7 +1449,7 @@ def _serialize_anthropic_provider_config(
         payload["discovery_base_url"] = provider.discovery_base_url
     if provider.version is not None:
         payload["version"] = provider.version
-    if provider.beta_headers:
+    if provider.beta_headers or provider.beta_headers_explicit:
         payload["beta_headers"] = list(provider.beta_headers)
     if provider.timeout_seconds is not None:
         payload["timeout_seconds"] = provider.timeout_seconds

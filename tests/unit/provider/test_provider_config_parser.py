@@ -17,6 +17,7 @@ from voidcode.provider.config import (
     parse_provider_configs_payload,
     parse_provider_fallback_payload,
     provider_configs_from_env,
+    serialize_provider_configs,
 )
 
 
@@ -136,6 +137,51 @@ def test_merge_provider_configs_preserves_fallback_litellm_token_auth_scheme() -
         auth_header="X-API-Key",
         auth_scheme="token",
     )
+
+
+def test_merge_provider_configs_allows_empty_anthropic_beta_headers_override() -> None:
+    primary = parse_provider_configs_payload(
+        {"anthropic": {"beta_headers": []}},
+        source="runtime config field 'providers'",
+    )
+    fallback = ProviderConfigs(anthropic=AnthropicProviderConfig(beta_headers=("stale-beta",)))
+
+    merged = merge_provider_configs(primary, fallback)
+
+    assert merged is not None
+    assert merged.anthropic == AnthropicProviderConfig(
+        beta_headers=(),
+        beta_headers_explicit=True,
+    )
+
+
+def test_merge_provider_configs_preserves_anthropic_beta_headers_when_absent() -> None:
+    primary = parse_provider_configs_payload(
+        {"anthropic": {"api_key": "repo-key"}},
+        source="runtime config field 'providers'",
+    )
+    fallback = ProviderConfigs(anthropic=AnthropicProviderConfig(beta_headers=("fallback-beta",)))
+
+    merged = merge_provider_configs(primary, fallback)
+
+    assert merged is not None
+    assert merged.anthropic == AnthropicProviderConfig(
+        api_key="repo-key",
+        beta_headers=("fallback-beta",),
+    )
+
+
+def test_serialize_provider_configs_preserves_explicit_empty_anthropic_beta_headers() -> None:
+    payload = serialize_provider_configs(
+        ProviderConfigs(
+            anthropic=AnthropicProviderConfig(
+                beta_headers=(),
+                beta_headers_explicit=True,
+            )
+        )
+    )
+
+    assert payload == {"anthropic": {"beta_headers": []}}
 
 
 def test_parse_provider_configs_payload_rejects_invalid_openai_base_url_type() -> None:
