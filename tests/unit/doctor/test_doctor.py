@@ -146,3 +146,21 @@ class TestCreateDoctorForConfig:
         assert readiness.details["auth_present"] is False
         assert readiness.error_message is not None
         assert "openai.api_key" in readiness.error_message
+
+    def test_provider_readiness_runtime_error_is_structured_result(self, tmp_path: Path) -> None:
+        config = RuntimeConfig(
+            model="malformed-model",
+            execution_engine="provider",
+        )
+
+        doctor = create_doctor_for_config(tmp_path, config)
+
+        readiness = next(result for result in doctor.results if result.name == "provider.readiness")
+        assert readiness.check_type == DoctorCheckType.PROVIDER_READINESS.value
+        assert readiness.status == CapabilityCheckStatus.ERROR
+        assert readiness.details == {
+            "model": "malformed-model",
+            "status": "invalid_config",
+        }
+        assert readiness.error_message is not None
+        assert "provider/model" in readiness.error_message

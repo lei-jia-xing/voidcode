@@ -255,13 +255,29 @@ def create_doctor_for_config(
     if config.execution_engine == "provider" or config.model is not None:
         from ..runtime.service import VoidCodeRuntime
 
-        runtime = VoidCodeRuntime(workspace=workspace, config=config)
+        runtime: VoidCodeRuntime | None = None
         try:
+            runtime = VoidCodeRuntime(workspace=workspace, config=config)
             readiness = runtime.provider_readiness()
+        except ValueError as exc:
+            doctor.add_result(
+                CapabilityCheckResult(
+                    status=CapabilityCheckStatus.ERROR,
+                    name="provider.readiness",
+                    check_type=DoctorCheckType.PROVIDER_READINESS.value,
+                    details={
+                        "model": config.model,
+                        "status": "invalid_config",
+                    },
+                    error_message=str(exc),
+                )
+            )
+            return doctor
         finally:
-            exit_method = getattr(runtime, "__exit__", None)
-            if callable(exit_method):
-                exit_method(None, None, None)
+            if runtime is not None:
+                exit_method = getattr(runtime, "__exit__", None)
+                if callable(exit_method):
+                    exit_method(None, None, None)
         doctor.add_result(
             CapabilityCheckResult(
                 status=(
