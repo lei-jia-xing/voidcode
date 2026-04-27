@@ -485,7 +485,13 @@ class ProviderSummary:
 @dataclass(frozen=True, slots=True)
 class ProviderModelMetadata:
     context_window: int | None = None
+    max_input_tokens: int | None = None
     max_output_tokens: int | None = None
+    supports_tools: bool | None = None
+    supports_vision: bool | None = None
+    supports_streaming: bool | None = None
+    supports_reasoning: bool | None = None
+    supports_json_mode: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -498,6 +504,15 @@ class ProviderModelsResult:
     last_refresh_status: str | None = None
     last_error: str | None = None
     discovery_mode: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderInspectResult:
+    summary: ProviderSummary
+    models: ProviderModelsResult
+    validation: ProviderValidationResult
+    current_model: str | None = None
+    current_model_metadata: ProviderModelMetadata | None = None
 
 
 @dataclass(frozen=True, slots=True)

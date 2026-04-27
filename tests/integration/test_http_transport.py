@@ -526,6 +526,42 @@ def test_transport_reports_configured_opencode_go_validation_unavailable(
     }
 
 
+def test_transport_provider_inspect_exposes_model_capabilities(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "global-config"))
+    create_runtime_app = _load_transport_app_factory()
+    app = create_runtime_app(workspace=tmp_path)
+
+    _ = _run_app(
+        app,
+        method="POST",
+        path="/api/settings",
+        body=json.dumps(
+            {
+                "provider": "opencode-go",
+                "provider_api_key": "secret-key",
+                "model": "opencode-go/glm-5.1",
+            }
+        ).encode("utf-8"),
+    )
+    response = _run_app(app, method="GET", path="/api/providers/opencode-go/inspect")
+    payload = cast(dict[str, object], response.json())
+
+    assert response.status == 200
+    provider = cast(dict[str, object], payload["provider"])
+    models = cast(dict[str, object], payload["models"])
+    model_metadata = cast(dict[str, object], models["model_metadata"])
+    glm_metadata = cast(dict[str, object], model_metadata["glm-5.1"])
+    current_metadata = cast(dict[str, object], payload["current_model_metadata"])
+    assert provider["configured"] is True
+    assert payload["current_model"] == "glm-5.1"
+    assert glm_metadata["context_window"] == 198_000
+    assert glm_metadata["max_input_tokens"] == 70_000
+    assert glm_metadata["supports_tools"] is True
+    assert current_metadata["supports_reasoning"] is True
+
+
 def test_transport_lists_only_explicit_provider_configs_as_configured(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -19,6 +19,7 @@ from .contracts import (
     CapabilityStatusSnapshot,
     GitStatusSnapshot,
     NoPendingQuestionError,
+    ProviderInspectResult,
     ProviderModelsResult,
     ProviderSummary,
     ProviderValidationResult,
@@ -89,6 +90,8 @@ class RuntimeTransport(Protocol):
     def list_provider_summaries(self) -> tuple[ProviderSummary, ...]: ...
 
     def provider_models_result(self, provider_name: str) -> ProviderModelsResult: ...
+
+    def inspect_provider(self, provider_name: str) -> ProviderInspectResult: ...
 
     def validate_provider_credentials(self, provider_name: str) -> ProviderValidationResult: ...
 
@@ -691,19 +694,22 @@ class RuntimeTransportApp:
         if path.startswith(provider_prefix):
             provider_path = path.removeprefix(provider_prefix)
             is_models_route = provider_path.endswith("/models")
+            is_inspect_route = provider_path.endswith("/inspect")
             is_validate_route = provider_path.endswith("/validate")
-            if not is_models_route and not is_validate_route:
+            if not is_models_route and not is_inspect_route and not is_validate_route:
                 await self._json_response(send, status=404, payload={"error": "not found"})
                 return
             provider_name = (
                 provider_path.removesuffix("/models")
                 if is_models_route
+                else provider_path.removesuffix("/inspect")
+                if is_inspect_route
                 else provider_path.removesuffix("/validate")
             )
             if not provider_name:
                 await self._json_response(send, status=404, payload={"error": "not found"})
                 return
-            expected_method = "GET" if is_models_route else "POST"
+            expected_method = "POST" if is_validate_route else "GET"
             if method != expected_method:
                 await self._json_response(
                     send,
@@ -713,6 +719,8 @@ class RuntimeTransportApp:
                 return
             if is_models_route:
                 await self._handle_provider_models(provider_name=provider_name, send=send)
+            elif is_inspect_route:
+                await self._handle_provider_inspect(provider_name=provider_name, send=send)
             else:
                 await self._handle_provider_validation(provider_name=provider_name, send=send)
             return
@@ -1121,6 +1129,21 @@ class RuntimeTransportApp:
         status = 200 if result.configured else 409
         await self._json_response(
             send, status=status, payload=self._serialize_provider_models_result(result)
+        )
+
+    async def _handle_provider_inspect(self, *, provider_name: str, send: Send) -> None:
+        with self._active_request_scope():
+            runtime = self._runtime_factory()
+            try:
+                result = runtime.inspect_provider(provider_name)
+            except ValueError as exc:
+                await self._json_response(send, status=400, payload={"error": str(exc)})
+                return
+            finally:
+                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
+        status = 200 if result.summary.configured else 409
+        await self._json_response(
+            send, status=status, payload=self._serialize_provider_inspect_result(result)
         )
 
     async def _handle_provider_validation(self, *, provider_name: str, send: Send) -> None:
@@ -1710,7 +1733,13 @@ class RuntimeTransportApp:
                     key: value
                     for key, value in {
                         "context_window": metadata.context_window,
+                        "max_input_tokens": metadata.max_input_tokens,
                         "max_output_tokens": metadata.max_output_tokens,
+                        "supports_tools": metadata.supports_tools,
+                        "supports_vision": metadata.supports_vision,
+                        "supports_streaming": metadata.supports_streaming,
+                        "supports_reasoning": metadata.supports_reasoning,
+                        "supports_json_mode": metadata.supports_json_mode,
                     }.items()
                     if value is not None
                 }
@@ -1720,6 +1749,35 @@ class RuntimeTransportApp:
             "last_refresh_status": result.last_refresh_status,
             "last_error": result.last_error,
             "discovery_mode": result.discovery_mode,
+        }
+
+    @staticmethod
+    def _serialize_provider_inspect_result(result: ProviderInspectResult) -> dict[str, object]:
+        return {
+            "provider": RuntimeTransportApp._serialize_provider_summary(result.summary),
+            "models": RuntimeTransportApp._serialize_provider_models_result(result.models),
+            "validation": RuntimeTransportApp._serialize_provider_validation_result(
+                result.validation
+            ),
+            "current_model": result.current_model,
+            "current_model_metadata": (
+                None
+                if result.current_model_metadata is None
+                else {
+                    key: value
+                    for key, value in {
+                        "context_window": result.current_model_metadata.context_window,
+                        "max_input_tokens": result.current_model_metadata.max_input_tokens,
+                        "max_output_tokens": result.current_model_metadata.max_output_tokens,
+                        "supports_tools": result.current_model_metadata.supports_tools,
+                        "supports_vision": result.current_model_metadata.supports_vision,
+                        "supports_streaming": result.current_model_metadata.supports_streaming,
+                        "supports_reasoning": result.current_model_metadata.supports_reasoning,
+                        "supports_json_mode": result.current_model_metadata.supports_json_mode,
+                    }.items()
+                    if value is not None
+                }
+            ),
         }
 
     @staticmethod

@@ -26,6 +26,7 @@ from voidcode.provider.config import (
     CopilotProviderConfig,
     LiteLLMProviderConfig,
 )
+from voidcode.provider.model_catalog import ProviderModelCatalog, ProviderModelMetadata
 from voidcode.provider.registry import ModelProviderRegistry
 from voidcode.runtime.acp import (
     AcpAdapterState,
@@ -10332,6 +10333,95 @@ def test_runtime_refresh_provider_models_returns_catalog_with_model_map_fallback
     assert models[0] == "alias"
     assert "openrouter/openai/gpt-4o" in models
     assert runtime.provider_models("litellm") == models
+
+
+def test_runtime_persists_provider_model_catalog_cache(tmp_path: Path) -> None:
+    config = RuntimeConfig(
+        providers=RuntimeProvidersConfig(
+            litellm=LiteLLMProviderConfig(
+                discovery_base_url="",
+                auth_scheme="none",
+                model_map={"alias": "gpt-4o"},
+            )
+        )
+    )
+    first_runtime = VoidCodeRuntime(workspace=tmp_path, config=config)
+
+    models = first_runtime.refresh_provider_models("litellm")
+    second_runtime = VoidCodeRuntime(workspace=tmp_path, config=config)
+    result = second_runtime.provider_models_result("litellm")
+
+    assert (tmp_path / ".voidcode" / "provider-model-catalog.json").is_file()
+    assert result.models == models
+    assert result.source == "fallback"
+    assert result.last_refresh_status == "skipped"
+    assert result.model_metadata["gpt-4o"].max_input_tokens == 111_616
+
+
+def test_runtime_provider_models_result_exposes_capability_metadata(tmp_path: Path) -> None:
+    registry = ModelProviderRegistry.with_defaults()
+    registry.model_catalog = {
+        "openai": ProviderModelCatalog(
+            provider="openai",
+            models=("gpt-4o",),
+            refreshed=True,
+            model_metadata={
+                "gpt-4o": ProviderModelMetadata(
+                    context_window=128_000,
+                    max_output_tokens=16_384,
+                    supports_tools=True,
+                    supports_vision=True,
+                    supports_streaming=True,
+                    supports_reasoning=False,
+                    supports_json_mode=True,
+                )
+            },
+        )
+    }
+    runtime = VoidCodeRuntime(workspace=tmp_path, model_provider_registry=registry)
+
+    result = runtime.provider_models_result("openai")
+
+    assert result.model_metadata["gpt-4o"].context_window == 128_000
+    assert result.model_metadata["gpt-4o"].max_input_tokens == 111_616
+    assert result.model_metadata["gpt-4o"].supports_tools is True
+    assert result.model_metadata["gpt-4o"].supports_vision is True
+    assert result.model_metadata["gpt-4o"].supports_json_mode is True
+
+
+def test_runtime_inspect_provider_combines_status_models_and_validation(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(model="openai/gpt-4o"),
+    )
+
+    result = runtime.inspect_provider("openai")
+
+    assert result.summary.name == "openai"
+    assert result.summary.current is True
+    assert result.models.configured is False
+    assert result.validation.status == "unconfigured"
+    assert result.current_model == "gpt-4o"
+    assert result.current_model_metadata is not None
+    assert result.current_model_metadata.context_window == 128_000
+    assert result.current_model_metadata.max_input_tokens == 111_616
+    assert result.current_model_metadata.supports_tools is True
+
+
+def test_runtime_context_window_policy_uses_active_model_limit(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(model="openai/gpt-4o"),
+        context_window_policy=ContextWindowPolicy(max_context_ratio=0.01),
+    )
+
+    context = runtime._prepare_provider_context_window(
+        prompt="read sample.txt",
+        tool_results=(),
+        session_metadata={},
+    )
+
+    assert context.token_budget == 1_280
 
 
 def test_runtime_rejects_malformed_model_reference_during_initialization(tmp_path: Path) -> None:

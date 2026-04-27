@@ -31,7 +31,13 @@ from ..hook.executor import (
 )
 from ..provider.auth import ProviderAuthResolver
 from ..provider.errors import format_invalid_provider_config_error
-from ..provider.model_catalog import infer_model_metadata
+from ..provider.model_catalog import (
+    ProviderModelCatalog,
+    infer_model_metadata,
+)
+from ..provider.model_catalog import (
+    ProviderModelMetadata as CatalogProviderModelMetadata,
+)
 from ..provider.models import (
     ResolvedProviderChain,
     ResolvedProviderConfig,
@@ -92,6 +98,7 @@ from .contracts import (
     BackgroundTaskResult,
     CapabilityStatusSnapshot,
     GitStatusSnapshot,
+    ProviderInspectResult,
     ProviderModelMetadata,
     ProviderModelsResult,
     ProviderSummary,
@@ -436,6 +443,7 @@ class VoidCodeRuntime:
             model_provider_registry
             or ModelProviderRegistry.with_defaults(provider_configs=self._config.providers)
         )
+        self._hydrate_provider_model_catalog_cache()
         initial_agent = self._config.agent
         if initial_agent is not None:
             initial_agent = parse_runtime_agent_payload(
@@ -521,9 +529,11 @@ class VoidCodeRuntime:
         self._plan_contributor = build_plan_contributor(self._workspace, self._config.plan)
         self._background_task_threads = {}
         self._background_tasks_reconciled = False
-        self._default_context_window_policy = self._context_window_policy_from_config(
-            initial_context_window,
-            resolved_provider=self._resolved_provider_config,
+        self._default_context_window_policy = self._context_window_policy_for_active_model(
+            self._context_window_policy_from_config(
+                initial_context_window,
+                resolved_provider=self._resolved_provider_config,
+            )
         )
         self._run_loop_coordinator = RuntimeRunLoopCoordinator(self)
         self._resume_coordinator = RuntimeResumeCoordinator(self)
@@ -2077,7 +2087,9 @@ class VoidCodeRuntime:
         if not provider_name or "/" in provider_name:
             raise ValueError("provider_name must be a non-empty provider id without '/'")
         _ = self._model_provider_registry.resolve(provider_name)
-        return self._model_provider_registry.refresh_available_models(provider_name)
+        models = self._model_provider_registry.refresh_available_models(provider_name)
+        self._persist_provider_model_catalog_cache()
+        return models
 
     def provider_models(self, provider_name: str) -> tuple[str, ...]:
         if not provider_name or "/" in provider_name:
@@ -2102,6 +2114,196 @@ class VoidCodeRuntime:
             "last_error": catalog.last_error,
             "discovery_mode": catalog.discovery_mode,
         }
+
+    def _provider_model_catalog_cache_path(self) -> Path:
+        return self._workspace / ".voidcode" / "provider-model-catalog.json"
+
+    def _hydrate_provider_model_catalog_cache(self) -> None:
+        catalog = self._model_provider_registry.model_catalog
+        if catalog is None or catalog:
+            return
+        cache_path = self._provider_model_catalog_cache_path()
+        try:
+            raw_payload = json.loads(cache_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            return
+        if not isinstance(raw_payload, dict):
+            return
+        payload = cast(dict[str, object], raw_payload)
+        raw_providers = payload.get("providers")
+        if not isinstance(raw_providers, dict):
+            return
+
+        hydrated: dict[str, ProviderModelCatalog] = {}
+        for provider_name, raw_catalog in cast(dict[object, object], raw_providers).items():
+            if not isinstance(provider_name, str) or not provider_name or "/" in provider_name:
+                continue
+            if not isinstance(raw_catalog, dict):
+                continue
+            catalog_payload = cast(dict[str, object], raw_catalog)
+            raw_models = catalog_payload.get("models", [])
+            if not isinstance(raw_models, list):
+                continue
+            models = tuple(
+                raw_model
+                for raw_model in cast(list[object], raw_models)
+                if isinstance(raw_model, str) and raw_model
+            )
+            raw_metadata = catalog_payload.get("model_metadata", {})
+            metadata_payloads: dict[object, object] = (
+                cast(dict[object, object], raw_metadata) if isinstance(raw_metadata, dict) else {}
+            )
+            model_metadata = {
+                model: CatalogProviderModelMetadata(
+                    context_window=VoidCodeRuntime._optional_positive_int(
+                        payload.get("context_window")
+                    ),
+                    max_input_tokens=VoidCodeRuntime._optional_positive_int(
+                        payload.get("max_input_tokens")
+                    ),
+                    max_output_tokens=VoidCodeRuntime._optional_positive_int(
+                        payload.get("max_output_tokens")
+                    ),
+                    supports_tools=VoidCodeRuntime._optional_bool(payload.get("supports_tools")),
+                    supports_vision=VoidCodeRuntime._optional_bool(payload.get("supports_vision")),
+                    supports_streaming=VoidCodeRuntime._optional_bool(
+                        payload.get("supports_streaming")
+                    ),
+                    supports_reasoning=VoidCodeRuntime._optional_bool(
+                        payload.get("supports_reasoning")
+                    ),
+                    supports_json_mode=VoidCodeRuntime._optional_bool(
+                        payload.get("supports_json_mode")
+                    ),
+                )
+                for model, raw_payload in metadata_payloads.items()
+                if isinstance(model, str) and isinstance(raw_payload, dict)
+                for payload in (cast(dict[str, object], raw_payload),)
+            }
+            raw_source = catalog_payload.get("source")
+            source = raw_source if isinstance(raw_source, str) else "remote"
+            raw_status = catalog_payload.get("last_refresh_status")
+            last_refresh_status = raw_status if isinstance(raw_status, str) else "ok"
+            raw_discovery_mode = catalog_payload.get("discovery_mode")
+            discovery_mode = (
+                cast(
+                    Literal[
+                        "configured_endpoint",
+                        "configured_base_url",
+                        "disabled",
+                        "unavailable",
+                    ],
+                    raw_discovery_mode,
+                )
+                if raw_discovery_mode
+                in {"configured_endpoint", "configured_base_url", "disabled", "unavailable"}
+                else "unavailable"
+            )
+            hydrated[provider_name] = ProviderModelCatalog(
+                provider=provider_name,
+                models=models,
+                refreshed=bool(catalog_payload.get("refreshed", False)),
+                model_metadata=model_metadata,
+                source=source,
+                last_refresh_status=last_refresh_status,
+                last_error=(
+                    cast(str, catalog_payload["last_error"])
+                    if isinstance(catalog_payload.get("last_error"), str)
+                    else None
+                ),
+                discovery_mode=discovery_mode,
+            )
+        catalog.update(hydrated)
+
+    def _persist_provider_model_catalog_cache(self) -> None:
+        catalog = self._model_provider_registry.model_catalog
+        if catalog is None:
+            return
+        cache_path = self._provider_model_catalog_cache_path()
+        payload = {
+            "version": 1,
+            "providers": {
+                provider_name: {
+                    "provider": entry.provider,
+                    "models": list(entry.models),
+                    "model_metadata": {
+                        model: metadata.payload()
+                        for model, metadata in entry.model_metadata.items()
+                    },
+                    "refreshed": entry.refreshed,
+                    "source": entry.source,
+                    "last_refresh_status": entry.last_refresh_status,
+                    "last_error": entry.last_error,
+                    "discovery_mode": entry.discovery_mode,
+                }
+                for provider_name, entry in sorted(catalog.items())
+            },
+        }
+        try:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            cache_path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+        except OSError:
+            logger.debug("failed to persist provider model catalog cache", exc_info=True)
+
+    def _metadata_for_provider_model(
+        self, provider_name: str, model_name: str
+    ) -> ProviderModelMetadata | None:
+        catalog = self.provider_model_catalog(provider_name)
+        raw_metadata = None if catalog is None else catalog.get("model_metadata")
+        if isinstance(raw_metadata, dict):
+            metadata_payloads = cast(dict[str, object], raw_metadata)
+            raw_payload = metadata_payloads.get(model_name)
+            if isinstance(raw_payload, dict):
+                payload = cast(dict[str, object], raw_payload)
+                return ProviderModelMetadata(
+                    context_window=VoidCodeRuntime._optional_positive_int(
+                        payload.get("context_window")
+                    ),
+                    max_input_tokens=VoidCodeRuntime._optional_positive_int(
+                        payload.get("max_input_tokens")
+                    ),
+                    max_output_tokens=VoidCodeRuntime._optional_positive_int(
+                        payload.get("max_output_tokens")
+                    ),
+                    supports_tools=VoidCodeRuntime._optional_bool(payload.get("supports_tools")),
+                    supports_vision=VoidCodeRuntime._optional_bool(payload.get("supports_vision")),
+                    supports_streaming=VoidCodeRuntime._optional_bool(
+                        payload.get("supports_streaming")
+                    ),
+                    supports_reasoning=VoidCodeRuntime._optional_bool(
+                        payload.get("supports_reasoning")
+                    ),
+                    supports_json_mode=VoidCodeRuntime._optional_bool(
+                        payload.get("supports_json_mode")
+                    ),
+                )
+        inferred = infer_model_metadata(provider_name, model_name)
+        if inferred is None:
+            return None
+        return ProviderModelMetadata(
+            context_window=inferred.context_window,
+            max_input_tokens=inferred.max_input_tokens,
+            max_output_tokens=inferred.max_output_tokens,
+            supports_tools=inferred.supports_tools,
+            supports_vision=inferred.supports_vision,
+            supports_streaming=inferred.supports_streaming,
+            supports_reasoning=inferred.supports_reasoning,
+            supports_json_mode=inferred.supports_json_mode,
+        )
+
+    def _context_window_policy_for_active_model(
+        self, policy: ContextWindowPolicy
+    ) -> ContextWindowPolicy:
+        if policy.model_context_window_tokens is not None:
+            return policy
+        provider_name = self._provider_model.selection.provider
+        model_name = self._provider_model.selection.model
+        if provider_name is None or model_name is None:
+            return policy
+        metadata = self._metadata_for_provider_model(provider_name, model_name)
+        if metadata is None or metadata.context_window is None:
+            return policy
+        return replace(policy, model_context_window_tokens=metadata.context_window)
 
     def list_provider_summaries(self) -> tuple[ProviderSummary, ...]:
         current_provider = self._current_provider_name()
@@ -2139,8 +2341,22 @@ class VoidCodeRuntime:
                     context_window=VoidCodeRuntime._optional_positive_int(
                         payload.get("context_window")
                     ),
+                    max_input_tokens=VoidCodeRuntime._optional_positive_int(
+                        payload.get("max_input_tokens")
+                    ),
                     max_output_tokens=VoidCodeRuntime._optional_positive_int(
                         payload.get("max_output_tokens")
+                    ),
+                    supports_tools=VoidCodeRuntime._optional_bool(payload.get("supports_tools")),
+                    supports_vision=VoidCodeRuntime._optional_bool(payload.get("supports_vision")),
+                    supports_streaming=VoidCodeRuntime._optional_bool(
+                        payload.get("supports_streaming")
+                    ),
+                    supports_reasoning=VoidCodeRuntime._optional_bool(
+                        payload.get("supports_reasoning")
+                    ),
+                    supports_json_mode=VoidCodeRuntime._optional_bool(
+                        payload.get("supports_json_mode")
                     ),
                 )
                 for model, raw_payload in cast(
@@ -2153,6 +2369,42 @@ class VoidCodeRuntime:
             last_refresh_status=cast(str | None, catalog["last_refresh_status"]),
             last_error=cast(str | None, catalog["last_error"]),
             discovery_mode=cast(str | None, catalog["discovery_mode"]),
+        )
+
+    def inspect_provider(self, provider_name: str) -> ProviderInspectResult:
+        if not provider_name or "/" in provider_name:
+            raise ValueError("provider_name must be a non-empty provider id without '/'")
+        summary = next(
+            (
+                provider
+                for provider in self.list_provider_summaries()
+                if provider.name == provider_name
+            ),
+            ProviderSummary(
+                name=provider_name,
+                label=self._provider_label(provider_name),
+                configured=self._provider_is_configured(provider_name),
+                current=provider_name == self._current_provider_name(),
+            ),
+        )
+        models = self.provider_models_result(provider_name)
+        validation = self.validate_provider_credentials(provider_name)
+        current_model = (
+            self._provider_model.selection.model
+            if self._provider_model.selection.provider == provider_name
+            else None
+        )
+        current_metadata = (
+            self._metadata_for_provider_model(provider_name, current_model)
+            if current_model is not None
+            else None
+        )
+        return ProviderInspectResult(
+            summary=summary,
+            models=models,
+            validation=validation,
+            current_model=current_model,
+            current_model_metadata=current_metadata,
         )
 
     def validate_provider_credentials(self, provider_name: str) -> ProviderValidationResult:
@@ -2204,6 +2456,10 @@ class VoidCodeRuntime:
         if isinstance(value, bool) or not isinstance(value, int):
             return None
         return value if value > 0 else None
+
+    @staticmethod
+    def _optional_bool(value: object) -> bool | None:
+        return value if isinstance(value, bool) else None
 
     def list_agent_summaries(self) -> tuple[AgentSummary, ...]:
         summaries: list[AgentSummary] = []
