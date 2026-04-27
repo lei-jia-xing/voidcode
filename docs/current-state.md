@@ -21,7 +21,7 @@
 - [x] **依赖管理**：为本地开发完全配置了 `pyproject.toml` 和 `mise.toml`。
 - [x] **开发工具**：集成了 Ruff (lint/format)、basedpyright (types) 和 pytest (tests) 并可正常运行。
 - [x] **契约层**：代码中存在类型化的会话、事件、运行时、图和工具契约。
-- [x] **稳定的 deterministic execution engine**：CLI 可以通过运行时、图和工具边界执行受监管的本地确定性多步请求，并发出可观测事件。
+- [x] **稳定的 deterministic reference/debug engine**：CLI 可以通过运行时、图和工具边界执行受监管的本地确定性多步请求，并发出可观测事件。它保留为无凭据本地演示、测试和参考 harness；新产品行为优先沿 provider-backed execution path 演进。
 - [x] **扩展基础设施基础**：运行时现在包括工具、技能、LSP 和 ACP 的类型化配置和发现基础设施，并为 hooks/config MVP 提供了清晰的配置边界。
 - [x] **内置工具提供商**：专门的 `BuiltinToolProvider` 负责通过运行时边界注册 `grep`、`read_file`、`shell_exec` 和 `write_file`。
 - [x] **技能发现基础设施**：对 `.voidcode/skills/<name>/SKILL.md` 文件存在极简发现机制；运行时在每次运行时发出 `runtime.skills_loaded` 事件。
@@ -30,7 +30,7 @@
 - [x] **运行时配置分层**：运行时现在显式支持 `execution_engine`、`provider_fallback` 与 `max_steps`，并将恢复关键配置持久化到 `SessionState.metadata["runtime_config"]`，以保证 `config show`、resume 和 provider fallback 语义一致。
 
 ### 计划中 / 进行中
-- [x] **LangGraph 编排**：当前 deterministic execution engine 已稳定，支持顺序轮次执行、工具解析和中断/恢复。
+- [x] **LangGraph 编排**：当前 deterministic reference/debug engine 已稳定，支持顺序轮次执行、工具解析和中断/恢复。
 - [x] **运行时服务**：会话生命周期管理、SQLite 持久化支持以及审批-恢复连续性。
 - [x] **权限引擎**：受监管的执行，支持 `allow`、`deny` 和 `ask` 模式，并在 CLI 中具有仅限 TTY 的内联审批。
 - [x] **契约优先事件**：为轮次、工具和审批实现了规范事件模式，并具备跨会话恢复的一致性自动重新编号功能。

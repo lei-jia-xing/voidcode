@@ -53,9 +53,9 @@ VoidCode 使用 LangGraph 作为编排引擎，而不是整个产品运行时。
 
 - 直接调用 `SingleAgentProvider.propose_turn()`
 - 不依赖 LangGraph，由 runtime 直接驱动
-- 代表后续 provider-backed execution engine 的演进方向之一
+- 代表后续 provider-backed execution engine 的产品主路径方向
 
-**核心架构决策：** 运行时统一持有执行治理；LangGraph 当前仅覆盖 deterministic/read-only slice 的编排，provider-backed 执行路径由 runtime 直接驱动。未来如果 multi-agent workflow 扩展 graph 编排范围，runtime 仍保持系统控制面地位。ACP 是单独的控制面 / 协议边界，与 execution engine 是不同维度，不应混为一谈。
+**核心架构决策：** 运行时统一持有执行治理；LangGraph 当前仅覆盖 deterministic/read-only 参考与 debug slice 的编排，provider-backed 执行路径由 runtime 直接驱动，并代表真实 agent 行为的主推荐路径。未来如果 multi-agent workflow 扩展 graph 编排范围，runtime 仍保持系统控制面地位。ACP 是单独的控制面 / 协议边界，与 execution engine 是不同维度，不应混为一谈。
 
 ## 关键组件
 
@@ -69,7 +69,7 @@ VoidCode 使用 LangGraph 作为编排引擎，而不是整个产品运行时。
 
 graph 是执行引擎和编排层，当前包含两条并行路径：
 
-- `DeterministicReadOnlyGraph`：LangGraph-backed 确定性切片，通过正则匹配执行只读命令（read、grep、run、write），不调用外部模型。
+- `DeterministicReadOnlyGraph`：LangGraph-backed 确定性参考/debug 切片，通过正则匹配执行只读命令（read、grep、run、write），不调用外部模型，并继续用于无凭据 smoke test 与确定性回归测试。
 - `ProviderSingleAgentGraph`：provider-backed 执行引擎路径，由 runtime 直接驱动，调用 `SingleAgentProvider.propose_turn()` 实现模型推理。
 
 两条路径都由 runtime 统一选择和驱动，共享工具注册表、权限检查、钩子和检查点机制。后续 multi-agent workflow 扩展可以引入更复杂的编排拓扑，但不改变 runtime 作为控制面的前提。

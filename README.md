@@ -34,7 +34,7 @@ The roadmap remains intentionally narrow: ship a stable, demoable single-agent M
 
 The recommended setup uses `uv` for Python and Bun for the frontend. Supported Python version: **3.13**.
 
-> **Current state:** the repository already has a real deterministic CLI → runtime → single-agent loop with multi-step execution, session persistence and resume, and inline approval in TTY mode. It also exposes a minimal local HTTP/SSE transport. The TUI and web frontend both exist, but neither is yet at full CLI parity.
+> **Current state:** the repository already has a real CLI → runtime → single-agent loop with multi-step execution, session persistence and resume, and inline approval in TTY mode. The compatibility default remains the deterministic local reference engine for no-key demos and tests, while configured provider-backed execution is the product-primary path. It also exposes a minimal local HTTP/SSE transport. The TUI and web frontend both exist, but neither is yet at full CLI parity.
 
 ```bash
 # Install toolchain and Python dependencies
@@ -47,7 +47,7 @@ mise run frontend:install
 # Explore the CLI
 uv run voidcode --help
 
-# Run a deterministic read task
+# Run a no-key local read task through the compatibility engine
 uv run voidcode run "read README.md" --workspace .
 
 # Run a write task that requires approval
@@ -59,10 +59,10 @@ uv run voidcode sessions list --workspace .
 
 ## Architecture overview
 
-VoidCode uses a runtime-centric architecture: **runtime** is the system control plane, **graph** is the execution/orchestration layer, and LangGraph currently powers only one deterministic slice.
+VoidCode uses a runtime-centric architecture: **runtime** is the system control plane, **graph** is the execution/orchestration layer, and LangGraph currently powers only the deterministic reference/debug slice.
 
 - The runtime owns session state, permissions, tools, storage, streaming, and governance.
-- The graph advances execution state. Today that includes a LangGraph-backed deterministic slice and a runtime-driven provider-backed single-agent path.
+- The graph advances execution state. Today that includes a LangGraph-backed deterministic reference slice and a runtime-driven provider-backed single-agent path; new product behavior should prefer the provider-backed path when a model/provider is configured.
 - Clients such as the CLI, web frontend, and future integrations talk to the runtime rather than invoking tools or graph code directly.
 - The repository already contains `src/voidcode/agent/` as a declaration layer for agent presets, but true multi-agent execution semantics are still post-MVP.
 
