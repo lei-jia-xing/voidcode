@@ -18,6 +18,7 @@ _changes_from_patch = cast(
 )
 _format_diff_git_line = cast(Callable[[str, str], str], _apply_patch._format_diff_git_line)
 _looks_like_mode_only_patch = cast(Callable[[str], bool], _apply_patch._looks_like_mode_only_patch)
+_looks_like_marker_patch = cast(Callable[[str], bool], _apply_patch._looks_like_marker_patch)
 _normalize_patch_text = cast(Callable[[str], str], _apply_patch._normalize_patch_text)
 _parse_diff_git_paths = cast(
     Callable[[str], tuple[str, str] | None], _apply_patch._parse_diff_git_paths
@@ -180,3 +181,27 @@ def test_structured_same_path_move_never_deletes_target(
             )
 
         assert target.read_text(encoding="utf-8") == f"{before}\n"
+
+
+@CI_SETTINGS
+@given(path=_slash_path, context_line=_line_text)
+def test_unified_diff_context_marker_literals_are_not_marker_patches(
+    path: str,
+    context_line: str,
+) -> None:
+    context = context_line or "context"
+    patch_text = "\n".join(
+        [
+            f"--- a/{path}",
+            f"+++ b/{path}",
+            "@@ -1,4 +1,4 @@",
+            " *** Begin Patch",
+            f" {context}",
+            " *** End Patch",
+            "-old",
+            "+new",
+            "",
+        ]
+    )
+
+    assert _looks_like_marker_patch(patch_text) is False

@@ -83,6 +83,32 @@ def test_apply_patch_reports_file_addition_from_unified_diff(tmp_path: Path) -> 
     assert result.content == "A new.txt"
 
 
+def test_apply_patch_treats_unified_diff_marker_literals_as_unified_diff(
+    tmp_path: Path,
+) -> None:
+    _init_git_repo(tmp_path)
+    target = tmp_path / "sample.txt"
+    target.write_text(
+        "before\n*** Begin Patch\n*** End Patch\nold\n",
+        encoding="utf-8",
+    )
+    _commit_all(tmp_path, "baseline")
+    old = target.read_text(encoding="utf-8").splitlines(keepends=True)
+    new = ["before\n", "*** Begin Patch\n", "*** End Patch\n", "new\n"]
+    patch_text = "".join(
+        difflib.unified_diff(old, new, fromfile="a/sample.txt", tofile="b/sample.txt")
+    )
+
+    result = ApplyPatchTool().invoke(
+        ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert target.read_text(encoding="utf-8") == "before\n*** Begin Patch\n*** End Patch\nnew\n"
+    assert result.content == "M sample.txt"
+
+
 def test_apply_patch_accepts_structured_add_file_patch(tmp_path: Path) -> None:
     patch_text = "\n".join(
         [
@@ -225,6 +251,67 @@ def test_apply_patch_rejects_structured_same_path_move_without_deleting_file(
         )
 
     assert target.read_text(encoding="utf-8") == "print('before')\n"
+
+
+def test_apply_patch_rejects_structured_move_when_destination_exists(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "old.txt"
+    destination = tmp_path / "new.txt"
+    source.write_text("old\n", encoding="utf-8")
+    destination.write_text("existing\n", encoding="utf-8")
+    patch_text = "\n".join(
+        [
+            "*** Begin Patch",
+            "*** Update File: old.txt",
+            "*** Move to: new.txt",
+            "@@",
+            "-old",
+            "+moved",
+            "*** End Patch",
+        ]
+    )
+
+    with pytest.raises(ValueError, match="Move destination already exists"):
+        ApplyPatchTool().invoke(
+            ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
+            workspace=tmp_path,
+        )
+
+    assert source.read_text(encoding="utf-8") == "old\n"
+    assert destination.read_text(encoding="utf-8") == "existing\n"
+
+
+def test_apply_patch_rejects_structured_move_before_partial_writes(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "old.txt"
+    destination = tmp_path / "new.txt"
+    source.write_text("old\n", encoding="utf-8")
+    destination.write_text("existing\n", encoding="utf-8")
+    patch_text = "\n".join(
+        [
+            "*** Begin Patch",
+            "*** Add File: created.txt",
+            "+created",
+            "*** Update File: old.txt",
+            "*** Move to: new.txt",
+            "@@",
+            "-old",
+            "+moved",
+            "*** End Patch",
+        ]
+    )
+
+    with pytest.raises(ValueError, match="Move destination already exists"):
+        ApplyPatchTool().invoke(
+            ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
+            workspace=tmp_path,
+        )
+
+    assert not (tmp_path / "created.txt").exists()
+    assert source.read_text(encoding="utf-8") == "old\n"
+    assert destination.read_text(encoding="utf-8") == "existing\n"
 
 
 def test_apply_patch_structured_insert_only_update_uses_matched_context(

@@ -60,9 +60,12 @@ def _strip_heredoc(input_text: str) -> str:
 
 def _looks_like_marker_patch(patch_text: str) -> bool:
     lines = _strip_heredoc(patch_text.strip()).split("\n")
-    has_begin = any(line.strip() == "*** Begin Patch" for line in lines)
-    has_end = any(line.strip() == "*** End Patch" for line in lines)
-    return has_begin and has_end
+    envelope_lines = [line.strip() for line in lines if line.strip()]
+    return (
+        len(envelope_lines) >= 2
+        and envelope_lines[0] == "*** Begin Patch"
+        and envelope_lines[-1] == "*** End Patch"
+    )
 
 
 def _parse_marker_header(lines: list[str], index: int) -> tuple[str, str, str | None, int] | None:
@@ -143,15 +146,17 @@ def _parse_marker_update_chunks(
 
 def _parse_marker_patch(patch_text: str) -> tuple[_MarkerHunk, ...]:
     lines = _strip_heredoc(patch_text.strip()).split("\n")
-    begin_index = next(
-        (index for index, line in enumerate(lines) if line.strip() == "*** Begin Patch"),
-        -1,
-    )
+    begin_index = next((index for index, line in enumerate(lines) if line.strip()), -1)
     end_index = next(
-        (index for index, line in enumerate(lines) if line.strip() == "*** End Patch"),
+        (index for index in range(len(lines) - 1, -1, -1) if lines[index].strip()),
         -1,
     )
     if begin_index == -1 or end_index == -1 or begin_index >= end_index:
+        raise ValueError("Invalid patch format: missing Begin/End markers")
+    if (
+        lines[begin_index].strip() != "*** Begin Patch"
+        or lines[end_index].strip() != "*** End Patch"
+    ):
         raise ValueError("Invalid patch format: missing Begin/End markers")
 
     hunks: list[_MarkerHunk] = []
@@ -316,6 +321,8 @@ def _apply_marker_patch(patch_text: str, *, workspace: Path) -> ToolResult:
                 destination_path = (workspace / hunk.move_path).resolve()
                 if source_path == destination_path:
                     raise ValueError(f"Move destination must differ from source: {hunk.move_path}")
+                if destination_path.exists():
+                    raise ValueError(f"Move destination already exists: {hunk.move_path}")
                 prepared.append(
                     _PreparedMarkerChange(
                         status="R",
