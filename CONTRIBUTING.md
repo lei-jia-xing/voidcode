@@ -42,7 +42,9 @@ Run the standard checks with `mise`:
 mise run lint
 mise run format
 mise run typecheck
+mise run test:fast
 mise run test
+mise run test:coverage
 mise run build
 mise run frontend:lint
 mise run frontend:typecheck
@@ -59,7 +61,8 @@ When needed, you can also invoke the Python tooling directly:
 uv run ruff check .
 uv run ruff format .
 uv run basedpyright --warnings src
-uv run pytest
+uv run pytest -n auto
+uv run pytest -n auto --cov=voidcode --cov-report=term-missing
 uv run pre-commit run --all-files
 ```
 
@@ -68,6 +71,7 @@ uv run pre-commit run --all-files
 Please add or update tests when behavior changes.
 
 - Run the relevant local checks before opening a pull request.
+- Prefer `mise run test:fast` while iterating, then run the relevant full or coverage-bearing task before asking for review.
 - Keep linting and type checking clean.
 - If you change CLI, runtime, graph, tool, or transport behavior, add test coverage where an existing test surface already exists.
 - For frontend changes, run the relevant Bun-based checks as well.

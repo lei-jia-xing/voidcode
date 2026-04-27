@@ -42,10 +42,14 @@ uv run voidcode sessions resume <session-id> --workspace .
 - `mise run lint` → `uv run ruff check .`
 - `mise run format` → `uv run ruff format .`
 - `mise run typecheck` → `uv run basedpyright --warnings src`
-- `mise run test` → `uv run pytest`
+- `mise run test:fast` → 并行运行主要 unit tests，跳过 integration、fuzz-style tests 和大型 runtime extension 回归文件
+- `mise run test` → `uv run pytest -n auto`
+- `mise run test:coverage` → `uv run pytest -n auto --cov=voidcode --cov-report=term-missing`
 - `mise run build` → `uv build`
 
 Python 测试现在同时包含示例型测试和一小批基于 Hypothesis 的 property tests。当前这类覆盖刻意保持在 helper 层，主要用于验证像 `apply_patch`、`edit`、`todo_write`、`glob` 这类确定性字符串/patch/summary/路径规范化逻辑，而不是直接对 runtime 主循环做随机化测试。为了让 CI 行为稳定，这批测试使用有界 strategy，并通过 Hypothesis 设置保持可重复的 deterministic 运行。
+
+默认本地 Python 测试不再自动启用 coverage：`mise run test:fast` 用于高频迭代，跳过 integration、fuzz-style 单测和大型 runtime extension 回归文件；`mise run test` 使用 `pytest-xdist` 并行运行完整 pytest；`mise run test:coverage` 与 CI 的 Python 测试路径保持 coverage-bearing 验证。
 
 ### 前端 任务
 
@@ -61,7 +65,7 @@ Python 测试现在同时包含示例型测试和一小批基于 Hypothesis 的 
 
 - `mise run check` → 运行所有 Python 和前端静态/单元检查
 - `mise run frontend:check:e2e` → 运行前端静态/单元检查后再运行 Playwright E2E
-- `mise run ci` → 运行 `mise run check`，随后构建 Python 包和前端生产包，用于合并前的 CI parity 验证
+- `mise run ci` → 运行 Python lint/typecheck、coverage-bearing pytest、Python 构建、前端检查和前端生产构建，用于合并前的 CI parity 验证
 - `mise run pre-commit` → `uv run pre-commit run --all-files`
 
 当前 pre-commit 会直接执行仓库约定的 Python 质量门禁：`ruff check --fix` 会自动修复可安全修复的问题，`ruff format` 会直接格式化文件，随后再运行 `basedpyright` 做类型检查。

@@ -113,7 +113,9 @@ Common tasks from `mise.toml`:
 mise run lint
 mise run format
 mise run typecheck
+mise run test:fast
 mise run test
+mise run test:coverage
 mise run build
 
 # Frontend
@@ -133,7 +135,7 @@ mise run pre-commit
 uv run pre-commit install
 ```
 
-`mise` orchestrates tasks and loads the local virtual environment. `uv` remains the source of truth for Python dependency management and execution.
+`mise` orchestrates tasks and loads the local virtual environment. `uv` remains the source of truth for Python dependency management and execution. Use `mise run test:fast` for the tight local feedback loop, `mise run test` for parallel full pytest without coverage, and `mise run test:coverage` for coverage-bearing validation.
 Bun scripts are owned by `frontend/package.json`; the repository root intentionally has no `package.json` so root-level automation goes through `mise.toml`.
 
 ## Documentation map
