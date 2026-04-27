@@ -240,6 +240,20 @@ class _QuestionThenDoneGraph:
         return _StubStep(output="done", is_finished=True)
 
 
+class _MalformedQuestionThenDoneGraph:
+    def step(
+        self,
+        request: GraphRunRequest,
+        tool_results: tuple[object, ...],
+        *,
+        session: SessionState,
+    ) -> _StubStep:
+        _ = request, session
+        if not tool_results:
+            return _StubStep(tool_call=ToolCall(tool_name="question", arguments={"questions": []}))
+        return _StubStep(output="done", is_finished=True)
+
+
 class _QuestionThenApprovalGraph:
     def step(
         self,
@@ -843,6 +857,34 @@ def test_runtime_session_debug_snapshot_reports_pending_question_state(tmp_path:
     assert snapshot.last_relevant_event.event_type == "runtime.question_requested"
     assert snapshot.suggested_operator_action == "answer_question"
     assert "Answer pending question request" in snapshot.operator_guidance
+
+
+def test_runtime_does_not_wait_on_failed_question_tool_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from voidcode.tools.question import QuestionTool
+
+    def _failed_question_invoke(_self: object, _call: object, *, workspace: Path) -> ToolResult:
+        _ = workspace
+        return ToolResult(
+            tool_name="question",
+            status="error",
+            error="question requires a non-empty questions array",
+        )
+
+    monkeypatch.setattr(QuestionTool, "invoke", _failed_question_invoke)
+
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_MalformedQuestionThenDoneGraph())
+    response = runtime.run(RuntimeRequest(prompt="bad question", session_id="bad-question"))
+
+    assert response.session.status == "completed"
+    assert response.output == "done"
+    assert all(event.event_type != "runtime.question_requested" for event in response.events)
+    tool_completed = next(
+        event for event in response.events if event.event_type == "runtime.tool_completed"
+    )
+    assert tool_completed.payload["status"] == "error"
+    assert tool_completed.payload["error"] == "question requires a non-empty questions array"
 
 
 def test_runtime_session_debug_snapshot_reports_failure_classification_and_last_tool(
@@ -4454,17 +4496,15 @@ def test_runtime_persists_mcp_failed_before_terminal_failure_on_tool_call_abort(
         permission_policy=PermissionPolicy(mode="allow"),
     )
 
-    _ = list(runtime.run_stream(RuntimeRequest(prompt="go", session_id="mcp-call-failed")))
+    with pytest.raises(ValueError, match=_FailingMcpManager.call_error):
+        _ = list(runtime.run_stream(RuntimeRequest(prompt="go", session_id="mcp-call-failed")))
 
     replay = runtime.resume("mcp-call-failed")
-    completed_events = [
-        event for event in replay.events if event.event_type == "runtime.tool_completed"
-    ]
+    failed = next(event for event in replay.events if event.event_type == "runtime.failed")
 
     assert RUNTIME_MCP_SERVER_FAILED in [event.event_type for event in replay.events]
-    assert len(completed_events) == 1
-    assert completed_events[0].payload["status"] == "error"
-    assert completed_events[0].payload["error"] == _FailingMcpManager.call_error
+    assert replay.session.status == "failed"
+    assert failed.payload["error"] == _FailingMcpManager.call_error
 
 
 def test_runtime_metadata_includes_mcp_state_when_configured(tmp_path: Path) -> None:

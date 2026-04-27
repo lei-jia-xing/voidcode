@@ -45,6 +45,13 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _is_tool_timeout_like_exception(exc: Exception) -> bool:
+    if isinstance(exc, TimeoutError):
+        return True
+    message = str(exc).lower()
+    return "timeout" in message or "timed out" in message
+
+
 class RuntimeRunLoopCoordinator:
     def __init__(self, runtime: VoidCodeRuntime) -> None:
         self._runtime = runtime
@@ -143,6 +150,10 @@ class RuntimeRunLoopCoordinator:
                         },
                     ),
                 )
+            tool_exception_recovery_enabled = (
+                runtime._effective_runtime_config_from_metadata(session.metadata).execution_engine
+                == "provider"
+            )
             try:
                 graph_step = graph.step(
                     graph_request,
@@ -502,6 +513,11 @@ class RuntimeRunLoopCoordinator:
                         session=session, sequence=sequence + 1, error=str(exc)
                     )
                     return
+                if not tool_exception_recovery_enabled and not _is_tool_timeout_like_exception(exc):
+                    yield runtime._failed_chunk(
+                        session=session, sequence=sequence + 1, error=str(exc)
+                    )
+                    raise
                 tool_result = ToolResult(
                     tool_name=plan_tool_call.tool_name,
                     status="error",
@@ -525,7 +541,10 @@ class RuntimeRunLoopCoordinator:
             )
             yield from drained_chunks
 
-            if plan_tool_call.tool_name == QuestionTool.definition.name:
+            if (
+                plan_tool_call.tool_name == QuestionTool.definition.name
+                and tool_result.status == "ok"
+            ):
                 pending_question = PendingQuestion(
                     request_id=f"question-{uuid4().hex}",
                     tool_name=plan_tool_call.tool_name,
