@@ -1206,17 +1206,6 @@ def test_provider_runtime_executes_read_path_and_persists_config(tmp_path: Path)
         "lsp": {"configured_enabled": False, "mode": "disabled", "servers": []},
         "mcp": {"configured_enabled": False, "mode": "disabled", "servers": []},
         "model": "opencode/gpt-5.4",
-        "agent": {
-            "preset": "leader",
-            "prompt_profile": "leader",
-            "prompt_materialization": {
-                "profile": "leader",
-                "version": 1,
-                "source": "builtin",
-                "format": "text",
-            },
-            "execution_engine": "provider",
-        },
         "provider_fallback": None,
         "plan": None,
         "resolved_provider": {
