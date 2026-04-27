@@ -266,13 +266,13 @@ def test_prepare_provider_context_truncates_old_tool_outputs_by_tool_policy() ->
     context = prepare_provider_context(
         prompt="search",
         tool_results=(
-            ToolResult(tool_name="grep", status="ok", content="x" * 80, data={"index": 1}),
+            ToolResult(tool_name="grep", status="ok", content="x" * 200, data={"index": 1}),
             ToolResult(tool_name="grep", status="ok", content="latest" * 20, data={"index": 2}),
         ),
         session_metadata={},
         policy=ContextWindowPolicy(
             max_tool_results=2,
-            per_tool_result_tokens={"grep": 5},
+            per_tool_result_tokens={"grep": 30},
             recent_tool_result_count=1,
         ),
     )
@@ -286,6 +286,51 @@ def test_prepare_provider_context_truncates_old_tool_outputs_by_tool_policy() ->
     assert latest.content == "latest" * 20
     assert context.truncated_tool_result_count == 1
     assert context.metadata_payload()["truncated_tool_result_count"] == 1
+
+
+def test_prepare_provider_context_keeps_truncation_message_inside_tool_cap() -> None:
+    context = prepare_provider_context(
+        prompt="search",
+        tool_results=(
+            ToolResult(tool_name="grep", status="ok", content="x" * 80, data={"index": 1}),
+        ),
+        session_metadata={},
+        policy=ContextWindowPolicy(
+            max_tool_results=1,
+            minimum_retained_tool_results=0,
+            recent_tool_result_count=0,
+            per_tool_result_tokens={"grep": 1},
+        ),
+    )
+
+    (result,) = context.tool_results
+    assert result.truncated is True
+    assert result.content is not None
+    assert len(result.content) <= 4
+
+
+def test_prepare_provider_context_applies_recent_tool_result_token_cap() -> None:
+    context = prepare_provider_context(
+        prompt="search",
+        tool_results=(
+            ToolResult(tool_name="grep", status="ok", content="older", data={"index": 1}),
+            ToolResult(tool_name="grep", status="ok", content="x" * 80, data={"index": 2}),
+        ),
+        session_metadata={},
+        policy=ContextWindowPolicy(
+            max_tool_results=1,
+            recent_tool_result_count=1,
+            recent_tool_result_tokens=5,
+            default_tool_result_tokens=None,
+        ),
+    )
+
+    (latest,) = context.tool_results
+    assert latest.data["index"] == 2
+    assert latest.truncated is True
+    assert latest.content is not None
+    assert len(latest.content) <= 20
+    assert context.truncated_tool_result_count == 1
 
 
 def test_prepare_provider_context_preserves_recent_results_over_count_cap() -> None:

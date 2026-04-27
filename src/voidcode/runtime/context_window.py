@@ -280,9 +280,7 @@ def _tool_limit_for_result(result: ToolResult, policy: ContextWindowPolicy) -> i
     return policy.per_tool_result_tokens.get(result.tool_name, policy.default_tool_result_tokens)
 
 
-def _clip_text_to_token_limit(text: str, *, limit: int, tokenizer_model: str | None) -> str:
-    if _estimated_token_count(text, tokenizer_model=tokenizer_model).tokens <= limit:
-        return text
+def _clip_plain_text_to_token_limit(text: str, *, limit: int, tokenizer_model: str | None) -> str:
     clipped: list[str] = []
     used = 0
     for char in text:
@@ -291,30 +289,60 @@ def _clip_text_to_token_limit(text: str, *, limit: int, tokenizer_model: str | N
             break
         clipped.append(char)
         used += char_tokens
-    omitted = len(text) - len(clipped)
-    return (
-        "".join(clipped)
-        + f"\n[Tool output truncated by context window policy; omitted {omitted} chars]"
+    candidate = "".join(clipped)
+    while (
+        candidate
+        and _estimated_token_count(candidate, tokenizer_model=tokenizer_model).tokens > limit
+    ):
+        candidate = candidate[:-1]
+    return candidate
+
+
+def _truncation_message(*, omitted_chars: int) -> str:
+    return f"\n[Tool output truncated by context window policy; omitted {omitted_chars} chars]"
+
+
+def _clip_text_to_token_limit(text: str, *, limit: int, tokenizer_model: str | None) -> str:
+    if _estimated_token_count(text, tokenizer_model=tokenizer_model).tokens <= limit:
+        return text
+    clipped = _clip_plain_text_to_token_limit(
+        text,
+        limit=limit,
+        tokenizer_model=tokenizer_model,
     )
+    while True:
+        omitted = len(text) - len(clipped)
+        truncation_message = _truncation_message(omitted_chars=omitted)
+        candidate = f"{clipped}{truncation_message}"
+        if _estimated_token_count(candidate, tokenizer_model=tokenizer_model).tokens <= limit:
+            return candidate
+        if not clipped:
+            return _clip_plain_text_to_token_limit(
+                truncation_message,
+                limit=limit,
+                tokenizer_model=tokenizer_model,
+            )
+        clipped = clipped[:-1]
 
 
 def _truncate_tool_result_content(
     result: ToolResult,
     *,
-    policy: ContextWindowPolicy,
+    limit: int | None,
+    tokenizer_model: str | None,
 ) -> tuple[ToolResult, bool]:
-    limit = _tool_limit_for_result(result, policy)
     if limit is None or result.content is None:
         return result, False
     original_estimate = _estimated_token_count(
-        result.content, tokenizer_model=policy.tokenizer_model
+        result.content,
+        tokenizer_model=tokenizer_model,
     )
     if original_estimate.tokens <= limit:
         return result, False
     clipped = _clip_text_to_token_limit(
         result.content,
         limit=limit,
-        tokenizer_model=policy.tokenizer_model,
+        tokenizer_model=tokenizer_model,
     )
     data = {
         **result.data,
@@ -616,11 +644,13 @@ def prepare_provider_context(
     truncated_count = 0
     for index, result in enumerate(tool_results):
         if index >= protected_start:
-            truncated_results.append(result)
-            continue
+            content_limit = effective_policy.recent_tool_result_tokens
+        else:
+            content_limit = _tool_limit_for_result(result, effective_policy)
         truncated_result, was_truncated = _truncate_tool_result_content(
             result,
-            policy=effective_policy,
+            limit=content_limit,
+            tokenizer_model=effective_policy.tokenizer_model,
         )
         truncated_results.append(truncated_result)
         if was_truncated:
