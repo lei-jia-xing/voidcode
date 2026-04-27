@@ -160,7 +160,7 @@ def test_provider_auth_authorize_missing_credentials_raises_deterministic_error(
         _ = resolver.authorize(ProviderAuthAuthorizeRequest(provider="openai"))
 
     assert exc_info.value.code == "missing_credentials"
-    assert provider_auth_error_to_execution_kind(exc_info.value) == "invalid_model"
+    assert provider_auth_error_to_execution_kind(exc_info.value) == "missing_auth"
 
 
 def test_provider_auth_callback_google_oauth_builds_auth_material() -> None:

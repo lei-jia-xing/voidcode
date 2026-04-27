@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Any, Literal, cast
+from typing import Any, cast
 
-from .protocol import ProviderExecutionError
+from .protocol import ProviderErrorKind, ProviderExecutionError
 
 _CONTEXT_OVERFLOW_PATTERNS = (
     re.compile(r"prompt is too long", re.IGNORECASE),
@@ -40,26 +40,109 @@ _INVALID_MODEL_PATTERNS = (
     re.compile(r"model_not_found", re.IGNORECASE),
 )
 
+_SENSITIVE_DETAIL_KEY_MARKERS = (
+    "api_key",
+    "apikey",
+    "authorization",
+    "cookie",
+    "credential",
+    "key",
+    "password",
+    "secret",
+    "token",
+)
+_SECRET_VALUE_PATTERNS = (
+    re.compile(r"sk-[A-Za-z0-9_\-]{6,}"),
+    re.compile(r"Bearer\s+[A-Za-z0-9._\-]{6,}", re.IGNORECASE),
+    re.compile(r"(?i)(api[_-]?key|token|secret|password)=([^\s&]+)"),
+)
+
+
+def _redact_secret_text(value: str) -> str:
+    redacted = value
+    for pattern in _SECRET_VALUE_PATTERNS:
+        redacted = pattern.sub(
+            lambda match: (
+                f"{match.group(1)}=<redacted>"
+                if match.lastindex and match.lastindex >= 2
+                else "<redacted>"
+            ),
+            redacted,
+        )
+    return redacted
+
+
+def _redact_provider_error_detail(value: object) -> object:
+    if isinstance(value, dict):
+        redacted: dict[str, object] = {}
+        for raw_key, raw_item in cast(dict[object, object], value).items():
+            key = str(raw_key)
+            lowered = key.lower()
+            if any(marker in lowered for marker in _SENSITIVE_DETAIL_KEY_MARKERS):
+                redacted[key] = "<redacted>"
+            else:
+                redacted[key] = _redact_provider_error_detail(raw_item)
+        return redacted
+    if isinstance(value, list):
+        return [_redact_provider_error_detail(item) for item in cast(list[object], value)]
+    if isinstance(value, str):
+        return _redact_secret_text(value)
+    return value
+
+
+def _provider_error_details(payload: dict[str, Any]) -> dict[str, object]:
+    return cast(dict[str, object], _redact_provider_error_detail(payload))
+
 
 @dataclass(frozen=True, slots=True)
 class ParsedProviderError:
-    kind: Literal["rate_limit", "context_limit", "invalid_model", "transient_failure"]
+    kind: ProviderErrorKind
     message: str
     details: dict[str, object]
     retryable: bool
     fallback_allowed: bool
+    guidance: str
 
 
-def _recovery_policy_for_kind(
-    kind: Literal["rate_limit", "context_limit", "invalid_model", "transient_failure"],
-) -> tuple[bool, bool]:
+def _recovery_policy_for_kind(kind: ProviderErrorKind) -> tuple[bool, bool]:
     if kind == "context_limit":
         return False, False
-    if kind == "invalid_model":
+    if kind in {
+        "missing_auth",
+        "invalid_model",
+        "unsupported_feature",
+        "stream_tool_feedback_shape",
+    }:
         return False, True
     if kind == "rate_limit":
         return True, True
+    if kind == "cancelled":
+        return False, False
     return True, True
+
+
+def guidance_for_provider_error_kind(kind: ProviderErrorKind) -> str:
+    if kind == "missing_auth":
+        return "Configure the provider API key or auth method, then retry."
+    if kind == "invalid_model":
+        return "Check the configured provider/model name and model access permissions."
+    if kind == "rate_limit":
+        return "Retry later, reduce request volume, or configure a fallback model."
+    if kind == "context_limit":
+        return (
+            "Reduce prompt/tool-result context or switch to a model with a larger context window."
+        )
+    if kind == "unsupported_feature":
+        return (
+            "Disable the unsupported provider feature or choose a model/provider that supports it."
+        )
+    if kind == "stream_tool_feedback_shape":
+        return (
+            "Report this provider stream/tool-call shape; VoidCode could not normalize it safely."
+        )
+    if kind == "cancelled":
+        return "The request was cancelled; rerun when ready."
+    return "Retry the request or configure a fallback provider/model."
 
 
 def _extract_error_message(payload: dict[str, Any]) -> str | None:
@@ -113,7 +196,7 @@ def _classify_api_error_kind(
     message: str,
     status_code: int | None,
     code: str | None,
-) -> Literal["rate_limit", "context_limit", "invalid_model", "transient_failure"]:
+) -> ProviderErrorKind:
     if _is_context_overflow(message, status_code, code):
         return "context_limit"
 
@@ -122,18 +205,78 @@ def _classify_api_error_kind(
     ):
         return "rate_limit"
 
-    if status_code in {401, 403, 404}:
-        return "invalid_model"
+    if isinstance(code, str) and code.lower() in {
+        "missing_api_key",
+        "invalid_api_key",
+        "authentication_error",
+        "unauthorized",
+    }:
+        return "missing_auth"
 
     if isinstance(code, str) and code.lower() in {
         "invalid_model",
         "model_not_found",
-        "invalid_api_key",
         "insufficient_quota",
         "usage_not_included",
-        "authentication_error",
     }:
         return "invalid_model"
+
+    if status_code == 401:
+        return "missing_auth"
+
+    if status_code == 404:
+        return "invalid_model"
+
+    lowered_message = message.lower()
+    if any(
+        marker in lowered_message
+        for marker in (
+            "api key is missing",
+            "missing api key",
+            "invalid api key",
+            "authentication failed",
+            "unauthorized",
+        )
+    ):
+        return "missing_auth"
+
+    if status_code == 403:
+        if any(pattern.search(message) is not None for pattern in _INVALID_MODEL_PATTERNS):
+            return "invalid_model"
+        if any(
+            marker in lowered_message
+            for marker in (
+                "not authorized for model",
+                "model access",
+                "model unavailable",
+                "permission to access model",
+                "usage not included",
+            )
+        ):
+            return "invalid_model"
+        return "missing_auth"
+
+    if any(
+        marker in lowered_message
+        for marker in (
+            "unsupported stream",
+            "streaming is not supported",
+            "tools are not supported",
+            "tool calling is not supported",
+        )
+    ):
+        return "unsupported_feature"
+
+    if any(
+        marker in lowered_message
+        for marker in (
+            "invalid tool call",
+            "tool_calls must",
+            "malformed tool call",
+            "stream tool",
+        )
+    ):
+        return "stream_tool_feedback_shape"
 
     if any(pattern.search(message) is not None for pattern in _INVALID_MODEL_PATTERNS):
         return "invalid_model"
@@ -150,12 +293,14 @@ def parse_provider_api_error(payload: dict[str, Any]) -> ParsedProviderError:
     code = _extract_error_code(payload)
     kind = _classify_api_error_kind(message=message, status_code=status_code, code=code)
     retryable, fallback_allowed = _recovery_policy_for_kind(kind)
-    details: dict[str, object] = dict(payload)
+    details = _provider_error_details(payload)
+    guidance = guidance_for_provider_error_kind(kind)
     details.update(
         {
             "source": "api",
             "status_code": status_code,
             "error_code": code,
+            "guidance": guidance,
         }
     )
     return ParsedProviderError(
@@ -164,6 +309,7 @@ def parse_provider_api_error(payload: dict[str, Any]) -> ParsedProviderError:
         details=details,
         retryable=retryable,
         fallback_allowed=fallback_allowed,
+        guidance=guidance,
     )
 
 
@@ -173,12 +319,14 @@ def parse_provider_stream_error(payload: dict[str, Any]) -> ParsedProviderError:
     code = _extract_error_code(payload)
     kind = _classify_api_error_kind(message=message, status_code=status_code, code=code)
     retryable, fallback_allowed = _recovery_policy_for_kind(kind)
-    details: dict[str, object] = dict(payload)
+    details = _provider_error_details(payload)
+    guidance = guidance_for_provider_error_kind(kind)
     details.update(
         {
             "source": "stream",
             "status_code": status_code,
             "error_code": code,
+            "guidance": guidance,
         }
     )
     return ParsedProviderError(
@@ -187,6 +335,7 @@ def parse_provider_stream_error(payload: dict[str, Any]) -> ParsedProviderError:
         details=details,
         retryable=retryable,
         fallback_allowed=fallback_allowed,
+        guidance=guidance,
     )
 
 

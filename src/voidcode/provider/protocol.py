@@ -13,6 +13,16 @@ type AppliedSkill = dict[str, str]
 type ProviderStreamEventKind = Literal["delta", "content", "error", "done"]
 type ProviderStreamChannel = Literal["text", "tool", "reasoning", "error"]
 type ProviderDoneReason = Literal["completed", "cancelled", "error"]
+type ProviderErrorKind = Literal[
+    "missing_auth",
+    "invalid_model",
+    "rate_limit",
+    "transient_failure",
+    "context_limit",
+    "unsupported_feature",
+    "stream_tool_feedback_shape",
+    "cancelled",
+]
 
 
 @runtime_checkable
@@ -93,16 +103,7 @@ class ProviderStreamEvent:
     channel: ProviderStreamChannel = "text"
     text: str | None = None
     error: str | None = None
-    error_kind: (
-        Literal[
-            "rate_limit",
-            "context_limit",
-            "invalid_model",
-            "transient_failure",
-            "cancelled",
-        ]
-        | None
-    ) = None
+    error_kind: ProviderErrorKind | None = None
     done_reason: ProviderDoneReason | None = None
     usage: ProviderTokenUsage | None = None
 
@@ -178,13 +179,7 @@ def wrap_provider_stream(
 
 @dataclass(frozen=True, slots=True)
 class ProviderExecutionError(ValueError):
-    kind: Literal[
-        "rate_limit",
-        "context_limit",
-        "invalid_model",
-        "transient_failure",
-        "cancelled",
-    ]
+    kind: ProviderErrorKind
     provider_name: str
     model_name: str
     message: str
