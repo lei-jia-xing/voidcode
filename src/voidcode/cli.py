@@ -515,12 +515,22 @@ def _handle_server_command(args: argparse.Namespace) -> int:
         approval_mode=cast(PermissionDecision | None, getattr(args, "approval_mode", None)),
     )
     server_entry = cast(Callable[..., None], args.server_entry)
-    server_entry(
-        workspace=workspace,
-        host=cast(str, args.host),
-        port=cast(int, args.port),
-        config=config,
-    )
+    if hasattr(args, "open_browser"):
+        server_entry(
+            workspace=workspace,
+            host=cast(str, args.host),
+            port=cast(int, args.port),
+            config=config,
+            open_browser=cast(bool, args.open_browser),
+        )
+    else:
+        server_entry(
+            workspace=workspace,
+            host=cast(str, args.host),
+            port=cast(int, args.port),
+            config=config,
+        )
+
     return 0
 
 
@@ -809,6 +819,13 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("allow", "deny", "ask"),
         help="Override the runtime approval mode for this launcher process.",
     )
+    _ = web_parser.add_argument(
+        "--no-open",
+        dest="open_browser",
+        action="store_false",
+        help="Start the web launcher without opening a browser window.",
+    )
+    web_parser.set_defaults(open_browser=True)
     web_parser.set_defaults(handler=_handle_server_command, server_entry=web)
 
     sessions_parser = subparsers.add_parser("sessions", help="Inspect persisted local sessions.")

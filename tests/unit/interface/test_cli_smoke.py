@@ -223,6 +223,40 @@ def test_web_command_forwards_runtime_config_and_server_entry() -> None:
         host="127.0.0.1",
         port=8012,
         config=config,
+        open_browser=True,
+    )
+
+
+def test_web_command_forwards_no_open_flag() -> None:
+    cli = importlib.import_module("voidcode.cli")
+    workspace = Path("/tmp/web-workspace")
+    config = SimpleNamespace(approval_mode="allow")
+
+    with patch.object(
+        cli, "load_runtime_config", autospec=True, return_value=config
+    ) as config_mock:
+        with patch.object(cli, "web", autospec=True) as web_mock:
+            result = cli.main(
+                [
+                    "web",
+                    "--workspace",
+                    str(workspace),
+                    "--host",
+                    "127.0.0.1",
+                    "--port",
+                    "8012",
+                    "--no-open",
+                ]
+            )
+
+    assert result == 0
+    config_mock.assert_called_once_with(workspace, approval_mode=None)
+    web_mock.assert_called_once_with(
+        workspace=workspace,
+        host="127.0.0.1",
+        port=8012,
+        config=config,
+        open_browser=False,
     )
 
 

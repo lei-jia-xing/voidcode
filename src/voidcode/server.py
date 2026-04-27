@@ -64,6 +64,7 @@ def web(
     host: str = "127.0.0.1",
     port: int = 8000,
     config: RuntimeConfig | None = None,
+    open_browser: bool = True,
 ) -> None:
     url = f"http://{host}:{port}"
     frontend_dist = _resolve_frontend_dist()
@@ -72,10 +73,11 @@ def web(
     print(f"  Local server running at: {url}")
     print()
 
-    try:
-        webbrowser.open(url)
-    except Exception:
-        pass
+    if open_browser:
+        try:
+            webbrowser.open(url)
+        except Exception:
+            pass
 
     _run_runtime_server(
         workspace=workspace,
