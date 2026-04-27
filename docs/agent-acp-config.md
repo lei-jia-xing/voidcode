@@ -95,6 +95,33 @@ The `acp` key in `.voidcode.json` configures the Agent Communication Protocol.
 }
 ```
 
+### External Stdio Facade
+
+VoidCode also exposes a minimal external-facing ACP-compatible stdio facade:
+
+```bash
+voidcode acp --workspace . --approval-mode ask
+```
+
+This command runs a newline-delimited JSON-RPC 2.0 server over stdin/stdout. Each input line must be one JSON-RPC request object, and each stdout line is one JSON-RPC response or notification. Human logs, debug output, and process errors are reserved for stderr so clients can safely parse stdout as protocol data only.
+
+Supported JSON-RPC methods:
+
+| Method | Description |
+|--------|-------------|
+| `initialize` | Returns ACP protocol version `1`, minimal `agentCapabilities`, `agentInfo`, and `authMethods: []`. |
+| `session/new` | Allocates an external ACP session id and records it for later prompts. Non-empty `mcpServers` are rejected because MCP-over-ACP is not implemented. |
+| `session/prompt` | Accepts ACP text prompt blocks, runs `VoidCodeRuntime.run_stream(RuntimeRequest(...))` in a worker thread, maps the ACP session id to the runtime session id emitted by the runtime, emits `session/update` notifications, and returns `stopReason: "end_turn"` on completion. |
+| `session/cancel` | Supports ACP notification style and request style for tests/debugging. It records a best-effort cancel request while the stdio read loop remains active; because the runtime has no public active prompt interrupt hook yet, cancellation is observed between runtime stream chunks and reported as limited in request-style responses. |
+
+Prompt output is emitted as ACP `agent_message_chunk` updates. Runtime tool request/completion events are summarized as `tool_call` and `tool_call_update` with stable per-turn tool call ids; other runtime events are exposed as `agent_thought_chunk` JSON so clients can observe the run without parsing VoidCode's internal stdout. Runtime failures are surfaced as generic `agent_message_chunk` failure text and JSON-RPC errors rather than silent process exits or raw exception leaks.
+
+The facade enforces bounded request lines, prompt text, and in-memory session count to protect the long-running stdio process from accidental client-side floods.
+
+Protocol errors are reported as JSON-RPC errors for malformed JSON, invalid request objects, unknown methods, invalid params, missing params, and unknown ACP session ids. Runtime failures are surfaced as protocol-visible `session/update` failure notifications and JSON-RPC errors; they should not silently terminate stdout framing.
+
+The stdio facade intentionally remains a thin client/protocol layer over the runtime boundary. Runtime configuration is still loaded with the normal `load_runtime_config()` path, `--approval-mode` is honored the same way as `run` and `serve`, and execution still goes through `VoidCodeRuntime`.
+
 ### Supported Fields
 
 | Field | Type | Required | Default | Description |
@@ -119,6 +146,8 @@ The `acp` key in `.voidcode.json` configures the Agent Communication Protocol.
 - Multi-agent routing plane
 - Recoverable delegated execution
 - Supervisor/worker transport
+- Subagent orchestration over stdio ACP
+- MCP-over-ACP, HTTP ACP, auth, full session replay/list/load, or full OpenCode parity
 
 ### Examples
 
