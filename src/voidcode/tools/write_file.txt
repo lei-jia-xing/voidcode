@@ -3,7 +3,6 @@ Writes a file to the local workspace.
 Usage:
 - This tool will overwrite the existing file if there is one at the provided path.
 - The path parameter must stay inside the workspace.
-- If this is an existing file, you should read it first unless the user explicitly asked for a full rewrite.
-- ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required.
-- NEVER proactively create documentation files (*.md) or README files unless the user explicitly asks.
-- Only use emojis if the user explicitly requests them.
+- A successful result returns a short write summary plus metadata such as path and byte_count; it does not return the full file content.
+- For existing files, prefer edit or multi_edit for targeted replacements; use write_file when creating a new file or intentionally replacing the whole file.
+- Read existing content first when you need to preserve or modify part of a file.

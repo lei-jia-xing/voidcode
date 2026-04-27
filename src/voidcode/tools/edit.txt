@@ -1,10 +1,10 @@
 Performs exact string replacements in files.
 
 Usage:
-- You should read the file first before editing so the replacement is grounded in real context.
+- Read the file first when you need context to choose a safe replacement.
 - The path parameter must be a workspace-relative file path.
 - oldString and newString must be strings. oldString must match the existing file content.
-- ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required.
+- Use this tool for targeted changes to existing files; use write_file or apply_patch when creating files or replacing a complete file.
 - The edit will fail if oldString is not found in the file.
 - The edit will fail if oldString matches multiple locations and replaceAll is not true.
 - Use replaceAll for replacing every occurrence in the file, such as a local rename.
