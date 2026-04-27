@@ -136,11 +136,11 @@
 - 冒烟测试应当使用最小化请求（例如单轮对话、简单 prompt），仅验证 provider 连接路径和响应解析是否正确。
 - 冒烟测试失败不影响主验收门的判定。
 
-### v1 是 leader-owned runtime，带已交付 delegated child execution
+### v1 是 runtime-owned single-agent path，带已交付 delegated child execution
 
-当前版本（v1）的执行模型仍然是 **leader-owned runtime**，而不是任意拓扑的多代理编排。明确说明：
+当前版本（v1）的执行模型仍然是 **runtime-owned single-agent path**，而不是任意拓扑的多代理编排。明确说明：
 
-- 顶层 active run 只接受 `leader`。
+- 顶层 active run 默认使用 `leader`，也可显式选择 `product` 进入规划/需求模式。
 - runtime-owned delegation path 已经可以启动 `worker`、`advisor`、`explore`、`researcher`、`product` 这些 child preset，并通过 background task / child session / notification / result retrieval surfaces 暴露生命周期真相。
 - 文档中不得把当前状态描述成“任意多代理平台”或“ACP 已经接管完整协作控制面”；但也不得再把 delegated child execution 描述成完全不存在。
 
