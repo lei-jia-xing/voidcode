@@ -22,7 +22,7 @@ def test_write_file_tool_writes_utf8_content_inside_workspace(tmp_path: Path) ->
     assert (tmp_path / "nested" / "output.txt").read_text(encoding="utf-8") == "hello utf8 π"
     assert result.tool_name == "write_file"
     assert result.status == "ok"
-    assert result.content == "hello utf8 π"
+    assert result.content == "Wrote file successfully: nested/output.txt"
     assert result.data == {
         "path": "nested/output.txt",
         "byte_count": len("hello utf8 π".encode()),

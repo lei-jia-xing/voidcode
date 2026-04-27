@@ -46,7 +46,7 @@ class WriteFileTool:
         return ToolResult(
             tool_name=self.definition.name,
             status="ok",
-            content=args.content,
+            content=f"Wrote file successfully: {candidate.relative_to(workspace_root).as_posix()}",
             data={
                 "path": candidate.relative_to(workspace_root).as_posix(),
                 "byte_count": len(args.content.encode("utf-8")),
