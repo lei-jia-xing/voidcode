@@ -1061,7 +1061,7 @@ def test_http_approval_resolution_endpoint_resumes_real_waiting_background_task(
     assert cast(dict[str, object], resume_payload["session"])["status"] == "completed"
     assert task_payload["status"] == "completed"
     assert cast(dict[str, object], output_payload["task"])["status"] == "completed"
-    assert output_payload["output"] == "delegated"
+    assert output_payload["output"] == "Wrote file successfully: child.txt"
 
 
 def test_http_approval_resolution_preserves_stale_terminal_task_status_across_runtime_instances(
@@ -1128,7 +1128,7 @@ def test_http_approval_resolution_preserves_stale_terminal_task_status_across_ru
     assert cast(dict[str, object], resume_payload["session"])["status"] == "completed"
     assert task_payload["status"] == "failed"
     assert output_task_payload["status"] == "failed"
-    assert output_payload["output"] == "delegated"
+    assert output_payload["output"] == "Wrote file successfully: child.txt"
 
 
 def test_http_run_stream_accepts_metadata_for_skills_and_max_steps() -> None:
