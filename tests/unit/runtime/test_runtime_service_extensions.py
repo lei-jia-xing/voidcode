@@ -10358,6 +10358,52 @@ def test_runtime_persists_provider_model_catalog_cache(tmp_path: Path) -> None:
     assert result.model_metadata["gpt-4o"].max_input_tokens == 111_616
 
 
+def test_runtime_provider_validation_refreshes_past_persisted_catalog_cache(
+    tmp_path: Path,
+) -> None:
+    cache_dir = tmp_path / ".voidcode"
+    cache_dir.mkdir()
+    (cache_dir / "provider-model-catalog.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "providers": {
+                    "litellm": {
+                        "provider": "litellm",
+                        "models": ["stale"],
+                        "model_metadata": {},
+                        "refreshed": True,
+                        "source": "fallback",
+                        "last_refresh_status": "failed",
+                        "last_error": "stale credential failure",
+                        "discovery_mode": "configured_endpoint",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    config = RuntimeConfig(
+        providers=RuntimeProvidersConfig(
+            litellm=LiteLLMProviderConfig(
+                discovery_base_url="",
+                auth_scheme="none",
+                model_map={"alias": "gpt-4o"},
+            )
+        )
+    )
+    runtime = VoidCodeRuntime(workspace=tmp_path, config=config)
+
+    validation = runtime.validate_provider_credentials("litellm")
+    inspect = runtime.inspect_provider("litellm")
+
+    assert validation.status == "skipped"
+    assert validation.last_error == "provider model discovery disabled by config"
+    assert inspect.models.models == ("alias", "gpt-4o")
+    assert inspect.models.last_refresh_status == "skipped"
+    assert inspect.models.last_error == "provider model discovery disabled by config"
+
+
 def test_runtime_provider_models_result_exposes_capability_metadata(tmp_path: Path) -> None:
     registry = ModelProviderRegistry.with_defaults()
     registry.model_catalog = {

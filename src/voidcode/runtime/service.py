@@ -2387,8 +2387,8 @@ class VoidCodeRuntime:
                 current=provider_name == self._current_provider_name(),
             ),
         )
-        models = self.provider_models_result(provider_name)
         validation = self.validate_provider_credentials(provider_name)
+        models = self.provider_models_result(provider_name)
         current_model = (
             self._provider_model.selection.model
             if self._provider_model.selection.provider == provider_name
@@ -2410,8 +2410,8 @@ class VoidCodeRuntime:
     def validate_provider_credentials(self, provider_name: str) -> ProviderValidationResult:
         if not provider_name or "/" in provider_name:
             raise ValueError("provider_name must be a non-empty provider id without '/'")
-        result = self.provider_models_result(provider_name)
-        if not result.configured:
+        if not self._provider_is_configured(provider_name):
+            result = self.provider_models_result(provider_name)
             return ProviderValidationResult(
                 provider=provider_name,
                 configured=False,
@@ -2422,6 +2422,8 @@ class VoidCodeRuntime:
                 last_error=result.last_error,
                 discovery_mode=result.discovery_mode,
             )
+        _ = self.refresh_provider_models(provider_name)
+        result = self.provider_models_result(provider_name)
         if result.last_refresh_status == "failed":
             return ProviderValidationResult(
                 provider=provider_name,
