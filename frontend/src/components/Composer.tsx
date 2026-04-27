@@ -56,21 +56,17 @@ export function Composer({
     group.models.includes(selectedModel),
   );
   const selectableAgentPresets = useMemo(() => {
-    const selectable = (agentPresets ?? []).filter(
-      (agent) => agent.selectable !== false,
-    );
-    return selectable.length > 0 ? selectable : (agentPresets ?? []);
+    return (agentPresets ?? []).filter((agent) => agent.selectable !== false);
   }, [agentPresets]);
 
   const selectedAgentLabel = useMemo(() => {
     return (
-      selectableAgentPresets.find(
-        (agent) => agent.id === (agentPreset ?? "leader"),
-      )?.label ??
+      agentPresets?.find((agent) => agent.id === (agentPreset ?? "leader"))
+        ?.label ??
       agentPreset ??
       "leader"
     );
-  }, [agentPreset, selectableAgentPresets]);
+  }, [agentPreset, agentPresets]);
 
   const selectedModelLabel = useMemo(() => {
     for (const { provider, models } of availableModelGroups) {

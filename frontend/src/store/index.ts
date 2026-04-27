@@ -365,19 +365,15 @@ export const useAppStore = create<AppState>()(
           const selectableAgentPresets = agentPresets.filter(
             (agent) => agent.selectable !== false,
           );
-          const agentSelectionCandidates =
-            selectableAgentPresets.length > 0
-              ? selectableAgentPresets
-              : agentPresets;
           set({
             agentPresets,
             agentsStatus: "success",
             agentsError: null,
-            agentPreset: agentSelectionCandidates.some(
+            agentPreset: selectableAgentPresets.some(
               (agent) => agent.id === get().agentPreset,
             )
               ? get().agentPreset
-              : ((agentSelectionCandidates[0]?.id ?? "leader") as "leader"),
+              : (selectableAgentPresets[0]?.id ?? "leader"),
           });
         } catch (err) {
           set({
