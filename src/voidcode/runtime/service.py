@@ -445,6 +445,8 @@ class VoidCodeRuntime:
         )
         self._hydrate_provider_model_catalog_cache()
         initial_agent = self._config.agent
+        if initial_agent is None and self._config.execution_engine == "provider":
+            initial_agent = RuntimeAgentConfig(preset="leader")
         if initial_agent is not None:
             initial_agent = parse_runtime_agent_payload(
                 serialize_runtime_agent_config(initial_agent),
@@ -2773,6 +2775,8 @@ class VoidCodeRuntime:
             env=os.environ,
         )
         initial_agent = self._config.agent
+        if initial_agent is None and self._config.execution_engine == "provider":
+            initial_agent = RuntimeAgentConfig(preset="leader")
         if initial_agent is not None:
             initial_agent = parse_runtime_agent_payload(
                 serialize_runtime_agent_config(initial_agent),
@@ -5040,6 +5044,8 @@ class VoidCodeRuntime:
         provider_fallback = self._config.provider_fallback
         plan = self._config.plan
         agent = self._config.agent
+        if agent is None and execution_engine == "provider":
+            agent = RuntimeAgentConfig(preset="leader")
         context_window = self._context_window_config_override or self._config.context_window
         allow_persisted_subagent_presets = False
         if metadata is not None:
@@ -5115,11 +5121,14 @@ class VoidCodeRuntime:
         persisted_model = runtime_config.get("model")
         if persisted_model is None or isinstance(persisted_model, str):
             model = persisted_model
-        persisted_max_steps = runtime_config.get("max_steps")
-        if isinstance(persisted_max_steps, int) and not isinstance(persisted_max_steps, bool):
-            if persisted_max_steps < 1:
-                raise ValueError("persisted runtime_config max_steps must be at least 1")
-            max_steps = persisted_max_steps
+        if "max_steps" in runtime_config:
+            persisted_max_steps = runtime_config.get("max_steps")
+            if persisted_max_steps is None:
+                max_steps = None
+            elif isinstance(persisted_max_steps, int) and not isinstance(persisted_max_steps, bool):
+                if persisted_max_steps < 1:
+                    raise ValueError("persisted runtime_config max_steps must be at least 1")
+                max_steps = persisted_max_steps
         tool_timeout_seconds = self._config.tool_timeout_seconds
         if "tool_timeout_seconds" in runtime_config:
             persisted_tool_timeout = runtime_config.get("tool_timeout_seconds")
@@ -5306,7 +5315,7 @@ class EffectiveRuntimeConfig:
     approval_mode: PermissionDecision
     model: str | None
     execution_engine: ExecutionEngineName
-    max_steps: int
+    max_steps: int | None
     tool_timeout_seconds: int | None = None
     provider_fallback: RuntimeProviderFallbackConfig | None = None
     plan: RuntimePlanConfig | None = None

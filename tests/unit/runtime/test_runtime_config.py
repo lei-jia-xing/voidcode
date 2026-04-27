@@ -214,7 +214,7 @@ def test_runtime_config_defaults_to_ask_without_file_or_env(tmp_path: Path) -> N
     assert config.approval_mode == "ask"
     assert config.model is None
     assert config.execution_engine == "deterministic"
-    assert config.max_steps == 4
+    assert config.max_steps is None
     assert config.hooks is None
 
 

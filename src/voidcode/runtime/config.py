@@ -245,7 +245,7 @@ class RuntimeConfig:
     approval_mode: PermissionDecision = "ask"
     model: str | None = None
     execution_engine: ExecutionEngineName = "deterministic"
-    max_steps: int = 4
+    max_steps: int | None = None
     tool_timeout_seconds: int | None = None
     hooks: RuntimeHooksConfig | None = None
     tools: RuntimeToolsConfig | None = None
@@ -2311,7 +2311,7 @@ def _resolve_execution_engine(
 
 def _resolve_max_steps(
     *, explicit: int | None, repo_local: int | None, environment: int | None
-) -> int:
+) -> int | None:
     if explicit is not None:
         return explicit
     if repo_local is not None:

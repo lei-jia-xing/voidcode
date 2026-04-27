@@ -10,6 +10,7 @@ from unittest.mock import patch
 from voidcode.graph.contracts import GraphEvent, GraphStep
 from voidcode.hook.config import RuntimeFormatterPresetConfig, RuntimeHooksConfig
 from voidcode.mcp import McpToolSafety
+from voidcode.runtime.config import RuntimeConfig
 from voidcode.runtime.mcp import (
     McpConfigState,
     McpManagerState,
@@ -286,12 +287,33 @@ def test_tool_registry_accepts_tools_from_provider_output() -> None:
             assert registry.resolve(tool_name).definition.name == tool_name
 
 
+def test_default_runtime_scopes_tools_to_leader_manifest(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(execution_engine="provider", model="opencode-go/glm-5.1"),
+        graph=_StubGraph(),
+    )
+    (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
+    response = runtime.run(RuntimeRequest(prompt="go"))
+    runtime_config = response.session.metadata["runtime_config"]
+    assert isinstance(runtime_config, dict)
+    agent = cast(dict[str, object], runtime_config["agent"])
+    assert isinstance(agent, dict)
+
+    assert agent["preset"] == "leader"
+    assert any(event.event_type == "runtime.tool_lookup_succeeded" for event in response.events)
+    assert all(event.payload.get("tool") != "missing_tool" for event in response.events)
+
+
 def test_builtin_tool_definitions_include_sidecar_guidance() -> None:
     registry = ToolRegistry.from_tools(BuiltinToolProvider().provide_tools())
     definitions = {definition.name: definition for definition in registry.definitions()}
 
     assert definitions["write_file"].description.startswith("Writes a file to the local workspace.")
-    assert "ALWAYS prefer editing existing files" in definitions["write_file"].description
+    assert (
+        "new file or intentionally replacing the whole file"
+        in definitions["write_file"].description
+    )
     assert definitions["ast_grep_search"].description.startswith(
         "Use ast-grep tools for structural code matching"
     )

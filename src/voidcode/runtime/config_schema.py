@@ -108,7 +108,10 @@ def runtime_config_json_schema() -> dict[str, object]:
             "max_steps": {
                 "type": "integer",
                 "minimum": 1,
-                "description": "Maximum graph step budget for a single run.",
+                "description": (
+                    "Maximum graph step budget for a single run. Omit this field for "
+                    "the provider default of no fixed step cap."
+                ),
             },
             "tool_timeout_seconds": {
                 "type": "integer",
