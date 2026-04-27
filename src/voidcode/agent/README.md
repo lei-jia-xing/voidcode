@@ -64,6 +64,10 @@
 
 当前 builtin preset 都有 agent-owned prompt profile；active / delegated agent 的 manifest allowlist 会收窄 provider 可见的 `available_tools`，并且同一边界也会约束实际 tool lookup / invocation。builtin `prompt_profile` 由 `src/voidcode/agent/` 统一 materialize 后进入 provider system message，`model_preference` / `execution_engine` 会作为 manifest live defaults 被 runtime 解析，manifest `skill_refs` 会作为默认 skill selection 进入 runtime skill application，`agent.skills` 会覆盖本次运行使用的 runtime-managed skill discovery / application policy。
 
+`prompt_materialization` 是 prompt 审计元数据：它声明 builtin prompt profile、materialization version、source/format，以及可选的 `model_family_overrides`。当前 builtin agents 仍共享各自默认 profile，但这个结构允许后续在不改变执行拓扑的前提下，为特定模型族选择不同 profile。profile 选择规则属于 agent declaration 层；最终 provider system message 的组装仍由 runtime/provider 路径负责。
+
+`top_level_selectable` 显式声明一个 manifest 是否允许作为顶层 active agent 被选择。当前只有 `leader` 为 `true`；`worker`、`advisor`、`explore`、`researcher`、`product` 都是 delegated/internal presets，不能作为任意顶层 active agent 选择。runtime 仍通过自己的 `_EXECUTABLE_AGENT_PRESETS` 做执行时 enforcement，测试会校验该 allowlist 与 manifest 声明保持一致。
+
 此外，builtin prompt 文本 ownership 现在明确归属 `src/voidcode/agent/`：agent 层负责 builtin prompt 内容、profile materialization 与 manifest 校验，provider 层只负责 message assembly 和模型调用，不再持有 role-specific persona 源码副本。
 
 ## 与 runtime 的边界
@@ -72,7 +76,7 @@
 
 当前 agent manifest 内部也区分了两类语义：
 
-- **live defaults**：`prompt_profile`、`execution_engine`、`model_preference`、`tool_allowlist`、`skill_refs`。这些字段要么已经被 runtime 直接消费，要么作为 active agent 的默认值进入 runtime config truth。
+- **live defaults**：`prompt_profile`、`prompt_materialization`、`top_level_selectable`、`execution_engine`、`model_preference`、`tool_allowlist`、`skill_refs`。这些字段要么已经被 runtime 直接消费，要么作为 active agent 的默认值进入 runtime config truth。`top_level_selectable` 是 declaration，runtime enforcement 仍由 `_EXECUTABLE_AGENT_PRESETS` 持有；`prompt_materialization` 是 declaration，runtime/provider materialization 仍使用 agent 层导出的 prompt rendering helper。
 - **intent metadata**：`routing_hints`。它仍属于声明层元数据，不是 runtime execution governance truth。
 
 最终的执行真相仍然由 `voidcode.runtime` 持有。
