@@ -64,7 +64,11 @@ def build_runtime_graph(
     if engine_name == "deterministic":
         return DeterministicGraph(max_steps=max_steps or 4)
     if provider_model.provider is None:
-        raise ValueError("provider execution engine requires a configured model")
+        raise ValueError(
+            "provider execution requires a configured provider/model. "
+            "Run 'voidcode config init' and set model to 'provider/model' (or set VOIDCODE_MODEL), "
+            "or explicitly use execution_engine='deterministic' for test/dev workflows."
+        )
     return ProviderGraph(
         provider=provider_model.provider.turn_provider(),
         provider_model=provider_model,

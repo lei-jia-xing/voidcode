@@ -29,6 +29,8 @@ from unittest.mock import patch
 
 from .._paths import with_src_pythonpath
 
+_ = os.environ.setdefault("VOIDCODE_EXECUTION_ENGINE", "deterministic")
+
 
 def _run_module_cli(
     *args: str, env: dict[str, str] | None = None

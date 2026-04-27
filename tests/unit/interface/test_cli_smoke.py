@@ -152,12 +152,14 @@ def _configure_resume_stream(runtime: Any, *streams: Iterable[_StubChunk]) -> No
 def _run_module_cli(
     *args: str, env: dict[str, str] | None = None
 ) -> subprocess.CompletedProcess[str]:
+    effective_env = with_src_pythonpath(env)
+    effective_env.setdefault("VOIDCODE_EXECUTION_ENGINE", "deterministic")
     return subprocess.run(
         [sys.executable, "-m", "voidcode", *args],
         capture_output=True,
         text=True,
         check=False,
-        env=with_src_pythonpath(env),
+        env=effective_env,
     )
 
 
@@ -1415,6 +1417,7 @@ def test_config_init_writes_starter_config_and_refuses_overwrite() -> None:
     assert written_payload == {
         "$schema": "https://voidcode.dev/schemas/runtime-config.schema.json",
         "approval_mode": "ask",
+        "execution_engine": "provider",
     }
     assert second.returncode != 0
     assert second.stdout == ""

@@ -2306,7 +2306,7 @@ def _resolve_execution_engine(
         return repo_local
     if environment is not None:
         return environment
-    return "deterministic"
+    return "provider"
 
 
 def _resolve_max_steps(

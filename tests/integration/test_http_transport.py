@@ -4,6 +4,7 @@ import asyncio
 import importlib
 import json
 import logging
+import os
 import sys
 import threading
 import time
@@ -15,6 +16,8 @@ from typing import Protocol, cast
 from unittest.mock import patch
 
 import pytest
+
+_ = os.environ.setdefault("VOIDCODE_EXECUTION_ENGINE", "deterministic")
 
 
 def _cwd_command() -> str:

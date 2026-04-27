@@ -624,7 +624,9 @@ def _handle_config_init_command(args: argparse.Namespace) -> int:
     try:
         payload = generate_starter_runtime_config(
             approval_mode=cast(str, args.approval_mode),
-            execution_engine=cast(str | None, getattr(args, "execution_engine", None)),
+            execution_engine=(
+                cast(str | None, getattr(args, "execution_engine", None)) or "provider"
+            ),
             max_steps=cast(int | None, getattr(args, "max_steps", None)),
             include_examples=cast(bool, args.with_examples),
         )
@@ -916,7 +918,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     run_parser = subparsers.add_parser(
         "run",
-        help="Run through the local runtime; provider execution is used when configured.",
+        help=(
+            "Run through the local runtime; provider-backed execution is the product path, "
+            "and deterministic is an explicit test/dev harness."
+        ),
     )
     _ = run_parser.add_argument(
         "request",
