@@ -54,11 +54,13 @@ Python 测试现在同时包含示例型测试和一小批基于 Hypothesis 的 
 - `mise run frontend:lint` → `bun run lint`
 - `mise run frontend:typecheck` → `bun run typecheck`
 - `mise run frontend:test` → `bun run test:run`
+- `mise run frontend:e2e` → `bun run build && bun run test:e2e`
 - `mise run frontend:coverage` → `bun run test:coverage`
 
 ### 全局 任务
 
-- `mise run check` → 运行所有 Python 和前端检查
+- `mise run check` → 运行所有 Python 和前端静态/单元检查
+- `mise run frontend:check:e2e` → 运行前端静态/单元检查后再运行 Playwright E2E
 - `mise run ci` → 运行 `mise run check`，随后构建 Python 包和前端生产包，用于合并前的 CI parity 验证
 - `mise run pre-commit` → `uv run pre-commit run --all-files`
 
@@ -110,7 +112,10 @@ Python 测试现在同时包含示例型测试和一小批基于 Hypothesis 的 
 2.  **启动开发服务器**：`mise run frontend:dev` (运行在 [http://localhost:5173](http://localhost:5173))
 3.  **Lint/类型检查**：`mise run frontend:lint` 和 `mise run frontend:typecheck`
 4.  **运行组件测试**：`mise run frontend:test`
-5.  **运行覆盖率测试**：`mise run frontend:coverage` 或使用 `mise run check` 进行全面验证。
+5.  **运行 Launcher E2E**：`mise run frontend:e2e`。该路径会先构建 `frontend/dist`，再通过 `voidcode web --no-open` 启动本地 launcher，避免自动弹出额外浏览器窗口。
+6.  **运行覆盖率测试**：`mise run frontend:coverage` 或使用 `mise run check` 进行常规全面验证。
+
+仓库根目录不维护 `package.json`。根目录命令统一通过 `mise.toml` 暴露；Bun 脚本只在 `frontend/package.json` 中维护，避免出现两套前端命令入口。
 
 ## 项目布局
 

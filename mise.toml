@@ -31,12 +31,19 @@ dir = "frontend"
 run = "bun run test:run"
 dir = "frontend"
 
+[tasks."frontend:e2e"]
+run = "bun run build && bun run test:e2e"
+dir = "frontend"
+
 [tasks."frontend:coverage"]
 run = "bun run test:coverage"
 dir = "frontend"
 
 [tasks."frontend:check"]
 run = "mise run frontend:lint && mise run frontend:typecheck && mise run frontend:test"
+
+[tasks."frontend:check:e2e"]
+run = "mise run frontend:check && mise run frontend:e2e"
 
 [tasks.lint]
 run = "uv run ruff check ."

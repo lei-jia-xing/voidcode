@@ -121,6 +121,7 @@ mise run frontend:dev
 mise run frontend:lint
 mise run frontend:typecheck
 mise run frontend:test
+mise run frontend:e2e
 mise run frontend:build
 
 # Combined verification
@@ -133,6 +134,7 @@ uv run pre-commit install
 ```
 
 `mise` orchestrates tasks and loads the local virtual environment. `uv` remains the source of truth for Python dependency management and execution.
+Bun scripts are owned by `frontend/package.json`; the repository root intentionally has no `package.json` so root-level automation goes through `mise.toml`.
 
 ## Documentation map
 

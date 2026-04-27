@@ -47,6 +47,7 @@ mise run build
 mise run frontend:lint
 mise run frontend:typecheck
 mise run frontend:test
+mise run frontend:e2e
 mise run check
 mise run ci
 mise run pre-commit

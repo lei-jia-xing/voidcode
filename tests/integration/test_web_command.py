@@ -41,7 +41,13 @@ def test_web_prints_banner_and_url(capsys: Any, tmp_path: Path) -> None:
 
     with patch.object(server, "_run_runtime_server", autospec=True):
         with patch.object(server, "_FRONTEND_DIST", frontend_dist):
-            server.web(workspace=workspace, host="127.0.0.1", port=8080, config=config)
+            server.web(
+                workspace=workspace,
+                host="127.0.0.1",
+                port=8080,
+                config=config,
+                open_browser=False,
+            )
 
     captured = capsys.readouterr()
     assert "VoidCode" in captured.out
@@ -89,7 +95,13 @@ def test_web_delegates_to_shared_runtime_server(tmp_path: Path) -> None:
 
     with patch.object(server, "_run_runtime_server", autospec=True) as run_mock:
         with patch.object(server, "_FRONTEND_DIST", frontend_dist):
-            server.web(workspace=workspace, host="127.0.0.1", port=8001, config=config)
+            server.web(
+                workspace=workspace,
+                host="127.0.0.1",
+                port=8001,
+                config=config,
+                open_browser=False,
+            )
 
     run_mock.assert_called_once_with(
         workspace=workspace,
@@ -98,6 +110,19 @@ def test_web_delegates_to_shared_runtime_server(tmp_path: Path) -> None:
         config=config,
         frontend_dist=frontend_dist,
     )
+
+
+def test_web_can_skip_browser_open(tmp_path: Path) -> None:
+    """Verify automated callers can start the launcher without opening a browser."""
+    server = importlib.import_module("voidcode.server")
+    frontend_dist = write_frontend_dist_fixture(tmp_path)
+
+    with patch.object(server, "_run_runtime_server", autospec=True):
+        with patch.object(server, "_FRONTEND_DIST", frontend_dist):
+            with patch.object(server, "webbrowser", autospec=True) as webbrowser_mock:
+                server.web(workspace=tmp_path, port=8001, open_browser=False)
+
+    webbrowser_mock.open.assert_not_called()
 
 
 def test_web_fails_fast_when_frontend_dist_missing(tmp_path: Path) -> None:
