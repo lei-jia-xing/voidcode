@@ -7,6 +7,7 @@ import pytest
 
 from voidcode.runtime.config_schema import (
     RUNTIME_CONFIG_SCHEMA_ID,
+    ConfigMigration,
     apply_config_migrations,
     detect_config_migrations,
     format_starter_runtime_config_json,
@@ -83,38 +84,51 @@ def test_format_starter_runtime_config_json_preserves_order() -> None:
     assert format_starter_runtime_config_json(payload) == '{\n  "approval_mode": "ask"\n}\n'
 
 
-def test_detect_config_migrations_reports_removed_agent_leader_mode() -> None:
+def test_detect_config_migrations_returns_no_current_migrations() -> None:
+    payload: dict[str, object] = {"approval_mode": "ask"}
+
+    assert detect_config_migrations(payload) == ()
+
+
+def test_apply_config_migrations_removes_nested_field_without_mutating_input() -> None:
     payload: dict[str, object] = {
         "approval_mode": "ask",
-        "agent": {"preset": "leader", "leader_mode": "legacy"},
+        "nested": {"keep": True, "deprecated": "value"},
     }
-
-    migrations = detect_config_migrations(payload)
-
-    assert len(migrations) == 1
-    assert migrations[0].to_dict() == {
-        "field_path": "agent.leader_mode",
-        "action": "remove",
-        "reason": (
-            "agent.leader_mode has been removed; use the default leader execution flow instead"
+    migrations = (
+        ConfigMigration(
+            field_path=("nested", "deprecated"),
+            action="remove",
+            reason="nested.deprecated is no longer used",
         ),
-    }
-
-
-def test_apply_config_migrations_removes_legacy_field_without_mutating_input() -> None:
-    payload: dict[str, object] = {
-        "approval_mode": "ask",
-        "agent": {"preset": "leader", "leader_mode": "legacy"},
-    }
-    migrations = detect_config_migrations(payload)
+    )
 
     updated = apply_config_migrations(payload, migrations)
 
-    assert updated == {"approval_mode": "ask", "agent": {"preset": "leader"}}
+    assert updated == {"approval_mode": "ask", "nested": {"keep": True}}
     assert payload == {
         "approval_mode": "ask",
-        "agent": {"preset": "leader", "leader_mode": "legacy"},
+        "nested": {"keep": True, "deprecated": "value"},
     }
+
+
+def test_apply_config_migrations_renames_nested_field() -> None:
+    payload: dict[str, object] = {
+        "approval_mode": "ask",
+        "nested": {"old": "value"},
+    }
+    migrations = (
+        ConfigMigration(
+            field_path=("nested", "old"),
+            action="rename",
+            reason="nested.old was renamed",
+            new_field_path=("nested", "new"),
+        ),
+    )
+
+    updated = apply_config_migrations(payload, migrations)
+
+    assert updated == {"approval_mode": "ask", "nested": {"new": "value"}}
 
 
 def test_detect_config_migrations_ignores_non_object_payload() -> None:

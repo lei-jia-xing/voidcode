@@ -365,26 +365,7 @@ def format_starter_runtime_config_json(payload: Mapping[str, object]) -> str:
 def detect_config_migrations(payload: object) -> tuple[ConfigMigration, ...]:
     if not isinstance(payload, dict):
         return ()
-    typed_payload = cast(dict[str, object], payload)
-
-    migrations: list[ConfigMigration] = []
-
-    raw_agent = typed_payload.get("agent")
-    if isinstance(raw_agent, dict):
-        agent_payload = cast(dict[str, object], raw_agent)
-        if "leader_mode" in agent_payload:
-            migrations.append(
-                ConfigMigration(
-                    field_path=("agent", "leader_mode"),
-                    action="remove",
-                    reason=(
-                        "agent.leader_mode has been removed; "
-                        "use the default leader execution flow instead"
-                    ),
-                )
-            )
-
-    return tuple(migrations)
+    return ()
 
 
 def apply_config_migrations(
