@@ -128,6 +128,16 @@ def test_render_agent_prompt_materializes_builtin_profiles(
     assert expected_fragment in prompt
 
 
+def test_leader_prompt_requires_native_tool_actions_for_implementation() -> None:
+    prompt = render_agent_prompt({"preset": "leader", "prompt_profile": "leader"})
+
+    assert prompt is not None
+    assert "act through the runtime's native tool calls" in prompt
+    assert "writing code in prose is not doing the work" in prompt
+    assert "If concrete action is required and suitable tools are available" in prompt
+    assert "Never describe a tool call, patch, command, or file change as text" in prompt
+
+
 def test_render_agent_prompt_falls_back_for_non_builtin_profiles() -> None:
     prompt = render_agent_prompt({"preset": "leader", "prompt_profile": "custom-review"})
 
