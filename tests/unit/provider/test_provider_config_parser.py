@@ -574,3 +574,38 @@ def test_merge_provider_configs_keeps_repo_provider_over_environment_fallback() 
 
     assert merged is not None
     assert merged.opencode_go == SimplifiedProviderConfig(api_key="repo-key")
+
+
+def test_merge_provider_configs_preserves_empty_base_url_override() -> None:
+    merged = merge_provider_configs(
+        ProviderConfigs(
+            openai=OpenAIProviderConfig(base_url="", discovery_base_url=""),
+            litellm=LiteLLMProviderConfig(base_url="", discovery_base_url=""),
+            opencode_go=SimplifiedProviderConfig(base_url="", discovery_base_url=""),
+        ),
+        ProviderConfigs(
+            openai=OpenAIProviderConfig(
+                base_url="https://fallback.openai.example",
+                discovery_base_url="https://fallback.openai.example/v1",
+            ),
+            litellm=LiteLLMProviderConfig(
+                base_url="https://fallback.litellm.example",
+                discovery_base_url="https://fallback.litellm.example/v1",
+            ),
+            opencode_go=SimplifiedProviderConfig(
+                base_url="https://fallback.opencode.example",
+                discovery_base_url="https://fallback.opencode.example/v1",
+            ),
+        ),
+    )
+
+    assert merged is not None
+    assert merged.openai is not None
+    assert merged.openai.base_url == ""
+    assert merged.openai.discovery_base_url == ""
+    assert merged.litellm is not None
+    assert merged.litellm.base_url == ""
+    assert merged.litellm.discovery_base_url == ""
+    assert merged.opencode_go is not None
+    assert merged.opencode_go.base_url == ""
+    assert merged.opencode_go.discovery_base_url == ""

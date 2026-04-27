@@ -80,6 +80,10 @@ BoundaryStringList = Annotated[tuple[str, ...], BeforeValidator(_parse_boundary_
 BoundaryStringMapping = Annotated[dict[str, str], BeforeValidator(_parse_boundary_string_mapping)]
 
 
+def _prefer_primary[T](primary: T | None, fallback: T | None) -> T | None:
+    return primary if primary is not None else fallback
+
+
 class _ProviderPayloadModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -599,12 +603,12 @@ def _merge_openai_provider_config(
     if fallback is None:
         return primary
     return OpenAIProviderConfig(
-        api_key=primary.api_key or fallback.api_key,
-        base_url=primary.base_url or fallback.base_url,
-        discovery_base_url=primary.discovery_base_url or fallback.discovery_base_url,
-        organization=primary.organization or fallback.organization,
-        project=primary.project or fallback.project,
-        timeout_seconds=primary.timeout_seconds or fallback.timeout_seconds,
+        api_key=_prefer_primary(primary.api_key, fallback.api_key),
+        base_url=_prefer_primary(primary.base_url, fallback.base_url),
+        discovery_base_url=_prefer_primary(primary.discovery_base_url, fallback.discovery_base_url),
+        organization=_prefer_primary(primary.organization, fallback.organization),
+        project=_prefer_primary(primary.project, fallback.project),
+        timeout_seconds=_prefer_primary(primary.timeout_seconds, fallback.timeout_seconds),
     )
 
 
@@ -617,12 +621,12 @@ def _merge_anthropic_provider_config(
     if fallback is None:
         return primary
     return AnthropicProviderConfig(
-        api_key=primary.api_key or fallback.api_key,
-        base_url=primary.base_url or fallback.base_url,
-        discovery_base_url=primary.discovery_base_url or fallback.discovery_base_url,
-        version=primary.version or fallback.version,
+        api_key=_prefer_primary(primary.api_key, fallback.api_key),
+        base_url=_prefer_primary(primary.base_url, fallback.base_url),
+        discovery_base_url=_prefer_primary(primary.discovery_base_url, fallback.discovery_base_url),
+        version=_prefer_primary(primary.version, fallback.version),
         beta_headers=primary.beta_headers or fallback.beta_headers,
-        timeout_seconds=primary.timeout_seconds or fallback.timeout_seconds,
+        timeout_seconds=_prefer_primary(primary.timeout_seconds, fallback.timeout_seconds),
     )
 
 
@@ -635,12 +639,12 @@ def _merge_google_provider_config(
     if fallback is None:
         return primary
     return GoogleProviderConfig(
-        auth=primary.auth or fallback.auth,
-        base_url=primary.base_url or fallback.base_url,
-        discovery_base_url=primary.discovery_base_url or fallback.discovery_base_url,
-        project=primary.project or fallback.project,
-        region=primary.region or fallback.region,
-        timeout_seconds=primary.timeout_seconds or fallback.timeout_seconds,
+        auth=_prefer_primary(primary.auth, fallback.auth),
+        base_url=_prefer_primary(primary.base_url, fallback.base_url),
+        discovery_base_url=_prefer_primary(primary.discovery_base_url, fallback.discovery_base_url),
+        project=_prefer_primary(primary.project, fallback.project),
+        region=_prefer_primary(primary.region, fallback.region),
+        timeout_seconds=_prefer_primary(primary.timeout_seconds, fallback.timeout_seconds),
     )
 
 
@@ -653,9 +657,9 @@ def _merge_copilot_provider_config(
     if fallback is None:
         return primary
     return CopilotProviderConfig(
-        auth=primary.auth or fallback.auth,
-        base_url=primary.base_url or fallback.base_url,
-        timeout_seconds=primary.timeout_seconds or fallback.timeout_seconds,
+        auth=_prefer_primary(primary.auth, fallback.auth),
+        base_url=_prefer_primary(primary.base_url, fallback.base_url),
+        timeout_seconds=_prefer_primary(primary.timeout_seconds, fallback.timeout_seconds),
     )
 
 
@@ -668,13 +672,13 @@ def _merge_litellm_provider_config(
     if fallback is None:
         return primary
     return LiteLLMProviderConfig(
-        api_key=primary.api_key or fallback.api_key,
-        api_key_env_var=primary.api_key_env_var or fallback.api_key_env_var,
-        base_url=primary.base_url or fallback.base_url,
-        discovery_base_url=primary.discovery_base_url or fallback.discovery_base_url,
-        auth_header=primary.auth_header or fallback.auth_header,
+        api_key=_prefer_primary(primary.api_key, fallback.api_key),
+        api_key_env_var=_prefer_primary(primary.api_key_env_var, fallback.api_key_env_var),
+        base_url=_prefer_primary(primary.base_url, fallback.base_url),
+        discovery_base_url=_prefer_primary(primary.discovery_base_url, fallback.discovery_base_url),
+        auth_header=_prefer_primary(primary.auth_header, fallback.auth_header),
         auth_scheme=primary.auth_scheme or fallback.auth_scheme,
-        timeout_seconds=primary.timeout_seconds or fallback.timeout_seconds,
+        timeout_seconds=_prefer_primary(primary.timeout_seconds, fallback.timeout_seconds),
         model_map={**fallback.model_map, **primary.model_map},
     )
 
@@ -688,11 +692,11 @@ def _merge_simplified_provider_config(
     if fallback is None:
         return primary
     return SimplifiedProviderConfig(
-        api_key=primary.api_key or fallback.api_key,
-        api_key_env_var=primary.api_key_env_var or fallback.api_key_env_var,
-        base_url=primary.base_url or fallback.base_url,
-        discovery_base_url=primary.discovery_base_url or fallback.discovery_base_url,
-        timeout_seconds=primary.timeout_seconds or fallback.timeout_seconds,
+        api_key=_prefer_primary(primary.api_key, fallback.api_key),
+        api_key_env_var=_prefer_primary(primary.api_key_env_var, fallback.api_key_env_var),
+        base_url=_prefer_primary(primary.base_url, fallback.base_url),
+        discovery_base_url=_prefer_primary(primary.discovery_base_url, fallback.discovery_base_url),
+        timeout_seconds=_prefer_primary(primary.timeout_seconds, fallback.timeout_seconds),
         model_map={**fallback.model_map, **primary.model_map},
     )
 
