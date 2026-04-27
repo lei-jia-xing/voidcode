@@ -38,6 +38,28 @@ def test_provider_readiness_reports_missing_auth(tmp_path: Path) -> None:
     assert "openai.api_key" in readiness.guidance
 
 
+def test_provider_readiness_preserves_invalid_provider_status(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            model="unknown-provider/demo",
+            execution_engine="provider",
+        ),
+    )
+    try:
+        readiness = runtime.provider_readiness()
+    finally:
+        runtime.__exit__(None, None, None)
+
+    assert readiness.provider == "unknown-provider"
+    assert readiness.model == "demo"
+    assert readiness.configured is False
+    assert readiness.ok is False
+    assert readiness.auth_present is False
+    assert readiness.status == "invalid_model"
+    assert "not supported" in readiness.guidance
+
+
 def test_provider_readiness_includes_fallback_and_context_metadata(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
