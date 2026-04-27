@@ -33,6 +33,22 @@ def test_shell_exec_tool_runs_command_in_workspace(tmp_path: Path) -> None:
     assert result.data.get("truncated") is False
 
 
+def test_shell_exec_tool_supports_shell_operators(tmp_path: Path) -> None:
+    tool = ShellExecTool()
+
+    result = tool.invoke(
+        ToolCall(
+            tool_name="shell_exec",
+            arguments={"command": "printf 'alpha\\n' > sample.txt && cat sample.txt"},
+        ),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert result.content == "alpha\n"
+    assert (tmp_path / "sample.txt").read_text(encoding="utf-8") == "alpha\n"
+
+
 def test_shell_exec_tool_rejects_invalid_command_arguments(tmp_path: Path) -> None:
     tool = ShellExecTool()
 
