@@ -86,6 +86,13 @@ def _request(method: str, request_id: int, params: dict[str, object] | None = No
     return json.dumps(payload)
 
 
+def _notification(method: str, params: dict[str, object] | None = None) -> str:
+    payload: dict[str, object] = {"jsonrpc": "2.0", "method": method}
+    if params is not None:
+        payload["params"] = params
+    return json.dumps(payload)
+
+
 def _run_server(runtime: Any, *lines: str) -> tuple[list[dict[str, Any]], str]:
     stdout = io.StringIO()
     stderr = io.StringIO()
@@ -207,6 +214,48 @@ def test_prompt_failure_emits_failure_notification_and_json_rpc_error() -> None:
     assert messages[2]["error"] == {"code": -32603, "message": "runtime execution failed"}
 
 
+def test_prompt_runtime_failed_event_returns_json_rpc_error() -> None:
+    runtime = _StubRuntime(
+        [
+            _StubChunk(
+                kind="event",
+                session=_StubSession(_StubSessionRef("runtime-1")),
+                event=_StubEvent(
+                    session_id="runtime-1",
+                    sequence=1,
+                    event_type="runtime.request_received",
+                    source="runtime",
+                    payload={"prompt": "hello"},
+                ),
+            ),
+            _StubChunk(
+                kind="event",
+                session=_StubSession(_StubSessionRef("runtime-1"), status="failed"),
+                event=_StubEvent(
+                    session_id="runtime-1",
+                    sequence=2,
+                    event_type="runtime.failed",
+                    source="runtime",
+                    payload={"error": "permission denied for tool: write_file"},
+                ),
+            ),
+        ]
+    )
+    with patch("voidcode.acp.stdio.uuid4", return_value=SimpleNamespace(hex="abc")):
+        messages, _ = _run_server(
+            runtime,
+            _request("session/new", 1),
+            _request("session/prompt", 2, {"sessionId": "acp-session-abc", "prompt": "hello"}),
+        )
+
+    assert messages[-1] == {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "error": {"code": -32603, "message": "runtime execution failed"},
+    }
+    assert not any(message.get("result") == {"stopReason": "end_turn"} for message in messages)
+
+
 def test_cancel_returns_limited_success_without_crashing() -> None:
     messages, _ = _run_server(
         _StubRuntime(),
@@ -243,6 +292,17 @@ def test_cancel_notification_writes_no_response() -> None:
 
     assert len(messages) == 1
     assert messages[0]["result"]["sessionId"] == "acp-session-abc"
+
+
+def test_notification_style_requests_write_no_result_or_error() -> None:
+    messages, _ = _run_server(
+        _StubRuntime(),
+        _notification("initialize"),
+        _notification("session/new"),
+        _notification("unknown"),
+    )
+
+    assert messages == []
 
 
 def test_cancel_request_during_prompt_returns_cancelled_stop_reason() -> None:

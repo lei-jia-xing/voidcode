@@ -64,7 +64,12 @@ class StdioAcpServer:
             if not line.strip():
                 continue
             if len(line.encode("utf-8")) > MAX_JSON_RPC_LINE_BYTES:
-                self._write_error(None, _ERROR_INVALID_REQUEST, "request line is too large")
+                self._write_error(
+                    None,
+                    _ERROR_INVALID_REQUEST,
+                    "request line is too large",
+                    respond_without_id=True,
+                )
                 continue
             try:
                 request = json.loads(line)
@@ -73,6 +78,7 @@ class StdioAcpServer:
                     None,
                     _ERROR_PARSE,
                     f"parse error: {exc.msg}",
+                    respond_without_id=True,
                 )
                 continue
             self._handle_loaded_request(request)
@@ -81,7 +87,12 @@ class StdioAcpServer:
 
     def _handle_loaded_request(self, request: object) -> None:
         if not isinstance(request, dict):
-            self._write_error(None, _ERROR_INVALID_REQUEST, "request must be an object")
+            self._write_error(
+                None,
+                _ERROR_INVALID_REQUEST,
+                "request must be an object",
+                respond_without_id=True,
+            )
             return
         payload = cast(dict[object, object], request)
         request_id = _request_id(payload.get("id"))
@@ -200,6 +211,8 @@ class StdioAcpServer:
         binding: AcpSessionBinding,
     ) -> None:
         stop_reason = "end_turn"
+        failed_execution = False
+        final_session_status: object = None
         try:
             request = RuntimeRequest(
                 prompt=prompt,
@@ -222,7 +235,10 @@ class StdioAcpServer:
                     break
                 if binding.runtime_session_id is None:
                     binding.runtime_session_id = chunk.session.session.id
+                final_session_status = getattr(chunk.session, "status", None)
                 if chunk.event is not None:
+                    if _optional_attr(chunk.event, "event_type") == "runtime.failed":
+                        failed_execution = True
                     self._write_runtime_event_update(
                         acp_session_id=acp_session_id,
                         runtime_session_id=chunk.session.session.id,
@@ -241,6 +257,9 @@ class StdioAcpServer:
                 raise RuntimeError("runtime stream emitted no chunks")
             if binding.cancel_requested:
                 stop_reason = "cancelled"
+            if failed_execution or final_session_status == "failed":
+                self._write_error(request_id, _ERROR_INTERNAL, "runtime execution failed")
+                return
             self._write_result(
                 request_id,
                 {"stopReason": stop_reason},
@@ -351,9 +370,20 @@ class StdioAcpServer:
         )
 
     def _write_result(self, request_id: JsonRpcId, result: JsonObject) -> None:
+        if request_id is None:
+            return
         self._write_json({"jsonrpc": JSON_RPC_VERSION, "id": request_id, "result": result})
 
-    def _write_error(self, request_id: JsonRpcId, code: int, message: str) -> None:
+    def _write_error(
+        self,
+        request_id: JsonRpcId,
+        code: int,
+        message: str,
+        *,
+        respond_without_id: bool = False,
+    ) -> None:
+        if request_id is None and not respond_without_id:
+            return
         self._write_json(
             {
                 "jsonrpc": JSON_RPC_VERSION,
