@@ -78,6 +78,11 @@ class RuntimeRunLoopCoordinator:
                     original_tool_result_count=base_context.original_tool_result_count,
                     retained_tool_result_count=base_context.retained_tool_result_count,
                     max_tool_result_count=base_context.max_tool_result_count,
+                    original_tool_result_tokens=base_context.original_tool_result_tokens,
+                    retained_tool_result_tokens=base_context.retained_tool_result_tokens,
+                    dropped_tool_result_tokens=base_context.dropped_tool_result_tokens,
+                    token_budget=base_context.token_budget,
+                    token_estimate_source=base_context.token_estimate_source,
                     continuity_state=reinjected_continuity,
                     summary_anchor=summary_anchor,
                     summary_source=summary_source,
@@ -96,6 +101,15 @@ class RuntimeRunLoopCoordinator:
                 metadata=graph_request.metadata,
             )
             if context_window.compacted and reinjected_continuity is None:
+                token_metadata: dict[str, object] = {}
+                if context_window.token_budget is not None:
+                    token_metadata = {
+                        "original_tool_result_tokens": (context_window.original_tool_result_tokens),
+                        "retained_tool_result_tokens": (context_window.retained_tool_result_tokens),
+                        "dropped_tool_result_tokens": context_window.dropped_tool_result_tokens,
+                        "token_budget": context_window.token_budget,
+                        "token_estimate_source": context_window.token_estimate_source,
+                    }
                 sequence += 1
                 yield RuntimeStreamChunk(
                     kind="event",
@@ -109,6 +123,7 @@ class RuntimeRunLoopCoordinator:
                             "reason": context_window.compaction_reason,
                             "original_tool_result_count": context_window.original_tool_result_count,
                             "retained_tool_result_count": context_window.retained_tool_result_count,
+                            **token_metadata,
                             "compacted": True,
                             "summary_anchor": context_window.summary_anchor,
                             "summary_source": context_window.summary_source,

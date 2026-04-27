@@ -3657,6 +3657,11 @@ class VoidCodeRuntime:
         dropped = continuity_payload.get("dropped_tool_result_count")
         retained = continuity_payload.get("retained_tool_result_count")
         source = continuity_payload.get("source")
+        original_tokens = continuity_payload.get("original_tool_result_tokens")
+        retained_tokens = continuity_payload.get("retained_tool_result_tokens")
+        dropped_tokens = continuity_payload.get("dropped_tool_result_tokens")
+        token_budget = continuity_payload.get("token_budget")
+        token_estimate_source = continuity_payload.get("token_estimate_source")
         if summary_text is not None and not isinstance(summary_text, str):
             return None
         if not isinstance(dropped, int) or isinstance(dropped, bool):
@@ -3668,11 +3673,33 @@ class VoidCodeRuntime:
         version = continuity_payload.get("version")
         if version is not None and (not isinstance(version, int) or isinstance(version, bool)):
             return None
+
+        def _optional_int(value: object) -> int | None:
+            if value is None:
+                return None
+            if isinstance(value, int) and not isinstance(value, bool):
+                return value
+            raise ValueError
+
+        try:
+            original_token_count = _optional_int(original_tokens)
+            retained_token_count = _optional_int(retained_tokens)
+            dropped_token_count = _optional_int(dropped_tokens)
+            resolved_token_budget = _optional_int(token_budget)
+        except ValueError:
+            return None
+        if token_estimate_source is not None and not isinstance(token_estimate_source, str):
+            return None
         return RuntimeContinuityState(
             summary_text=summary_text,
             dropped_tool_result_count=dropped,
             retained_tool_result_count=retained,
             source=source,
+            original_tool_result_tokens=original_token_count,
+            retained_tool_result_tokens=retained_token_count,
+            dropped_tool_result_tokens=dropped_token_count,
+            token_budget=resolved_token_budget,
+            token_estimate_source=token_estimate_source,
             version=version if version is not None else 1,
         )
 
