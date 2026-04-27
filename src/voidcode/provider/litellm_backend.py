@@ -76,11 +76,16 @@ class LiteLLMBackendSingleAgentProvider:
 
     @staticmethod
     def _to_tool_schema(tool: ToolDefinition) -> dict[str, object]:
-        parameters: dict[str, object] = tool.input_schema or {
-            "type": "object",
-            "properties": {},
-            "additionalProperties": True,
-        }
+        input_schema = tool.input_schema or {}
+        parameters: dict[str, object]
+        if input_schema.get("type") == "object":
+            parameters = input_schema
+        else:
+            parameters = {
+                "type": "object",
+                "properties": input_schema,
+                "additionalProperties": True,
+            }
         return {
             "type": "function",
             "function": {
@@ -190,6 +195,29 @@ class LiteLLMBackendSingleAgentProvider:
 
         return f"Runtime continuity summary:\n{summary_text.strip()}"
 
+    @staticmethod
+    def _tool_results_user_message(request: ProviderTurnRequest) -> str | None:
+        if not request.context_window.tool_results:
+            return None
+
+        lines = ["Runtime tool results from earlier steps:"]
+        for index, result in enumerate(request.context_window.tool_results, start=1):
+            content = result.content or ""
+            if len(content) > 4000:
+                content = f"{content[:4000]}\n... [truncated]"
+            error = result.error or ""
+            error_line = f"\nerror:\n{error}" if error else ""
+            lines.append(
+                f"{index}. {result.tool_name} status={result.status}\n"
+                f"content:\n{content}"
+                f"{error_line}"
+            )
+        lines.append(
+            "Use these tool results to decide the next step. "
+            "Do not repeat a tool call when the result already satisfies the request."
+        )
+        return "\n\n".join(lines)
+
     def _build_messages(self, request: ProviderTurnRequest) -> list[dict[str, str]]:
         messages: list[dict[str, str]] = []
         agent_profile_message = self._agent_profile_system_message(request)
@@ -201,6 +229,9 @@ class LiteLLMBackendSingleAgentProvider:
         continuity_message = self._continuity_system_message(request)
         if continuity_message is not None:
             messages.append({"role": "system", "content": continuity_message})
+        tool_results_message = self._tool_results_user_message(request)
+        if tool_results_message is not None:
+            messages.append({"role": "user", "content": tool_results_message})
         messages.append({"role": "user", "content": request.prompt})
         return messages
 

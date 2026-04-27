@@ -51,7 +51,7 @@ class _StubContextWindow:
 
 
 def _build_turn_request(*, model_name: str) -> ProviderTurnRequest:
-    tool_results = (ToolResult(tool_name="read_file", status="ok", content="hello world"),)
+    tool_results: tuple[ToolResult, ...] = ()
     return ProviderTurnRequest(
         prompt="read sample.txt",
         available_tools=(
@@ -85,7 +85,7 @@ def _prompt_materialization_payload(
 
 
 def _build_turn_request_with_skill(*, model_name: str) -> ProviderTurnRequest:
-    tool_results = (ToolResult(tool_name="read_file", status="ok", content="hello world"),)
+    tool_results: tuple[ToolResult, ...] = ()
     return ProviderTurnRequest(
         prompt="summarize sample.txt",
         available_tools=(
@@ -109,7 +109,7 @@ def _build_turn_request_with_skill(*, model_name: str) -> ProviderTurnRequest:
 
 
 def _build_turn_request_with_continuity(*, model_name: str) -> ProviderTurnRequest:
-    tool_results = (ToolResult(tool_name="read_file", status="ok", content="hello world"),)
+    tool_results: tuple[ToolResult, ...] = ()
     return ProviderTurnRequest(
         prompt="summarize sample.txt",
         available_tools=(
@@ -317,6 +317,58 @@ def test_provider_adapter_stream_turn_emits_happy_path_chunks(
     assert events[0] == ProviderStreamEvent(kind="delta", channel="text", text="hello ")
     assert events[1] == ProviderStreamEvent(kind="delta", channel="text", text="world")
     assert events[2] == ProviderStreamEvent(kind="done", done_reason="completed")
+
+
+def test_provider_adapter_wraps_internal_tool_property_schema(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = OpenAIModelProvider().turn_provider()
+    request = _build_turn_request(model_name="openai")
+    request = ProviderTurnRequest(
+        prompt=request.prompt,
+        available_tools=(
+            ToolDefinition(
+                name="write_file",
+                description="write file",
+                input_schema={
+                    "path": {"type": "string"},
+                    "content": {"type": "string"},
+                },
+                read_only=False,
+            ),
+        ),
+        tool_results=request.tool_results,
+        context_window=request.context_window,
+        applied_skills=request.applied_skills,
+        raw_model=request.raw_model,
+        provider_name=request.provider_name,
+        model_name=request.model_name,
+    )
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        completion_content="hello world",
+    )
+
+    _ = provider.propose_turn(request)
+
+    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+    assert isinstance(payload_obj, dict)
+    payload = cast(dict[str, object], payload_obj)
+    tools_obj = payload.get("tools")
+    assert isinstance(tools_obj, list)
+    tool_payload = cast(dict[str, object], tools_obj[0])
+    function_obj = tool_payload.get("function")
+    assert isinstance(function_obj, dict)
+    function = cast(dict[str, object], function_obj)
+    assert function["parameters"] == {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string"},
+            "content": {"type": "string"},
+        },
+        "additionalProperties": True,
+    }
 
 
 @pytest.mark.parametrize(
@@ -618,6 +670,91 @@ def test_provider_adapter_omits_continuity_message_without_summary_text(
     assert isinstance(messages_obj, list)
     messages = cast(list[dict[str, str]], messages_obj)
     assert messages == [{"role": "user", "content": "read sample.txt"}]
+
+
+def test_provider_adapter_includes_tool_result_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = OpenAIModelProvider().turn_provider()
+    request = _build_turn_request(model_name="openai")
+    tool_results = (ToolResult(tool_name="read_file", status="ok", content="hello world"),)
+    request = ProviderTurnRequest(
+        prompt=request.prompt,
+        available_tools=request.available_tools,
+        tool_results=tool_results,
+        context_window=_StubContextWindow(
+            prompt=request.context_window.prompt,
+            tool_results=tool_results,
+        ),
+        applied_skills=request.applied_skills,
+        raw_model=request.raw_model,
+        provider_name=request.provider_name,
+        model_name=request.model_name,
+        attempt=request.attempt,
+        abort_signal=request.abort_signal,
+    )
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        completion_content="done",
+    )
+
+    _ = provider.propose_turn(request)
+
+    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+    assert isinstance(payload_obj, dict)
+    payload = cast(dict[str, object], payload_obj)
+    messages_obj = payload.get("messages")
+    assert isinstance(messages_obj, list)
+    messages = cast(list[dict[str, str]], messages_obj)
+    assert messages[0]["role"] == "user"
+    assert "Runtime tool results from earlier steps" in messages[0]["content"]
+    assert "read_file status=ok" in messages[0]["content"]
+    assert "hello world" in messages[0]["content"]
+    assert messages[1] == {"role": "user", "content": "read sample.txt"}
+
+
+def test_provider_adapter_includes_tool_result_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = OpenAIModelProvider().turn_provider()
+    request = _build_turn_request(model_name="openai")
+    tool_results = (
+        ToolResult(tool_name="read_file", status="error", error="sample.txt not found"),
+    )
+    request = ProviderTurnRequest(
+        prompt=request.prompt,
+        available_tools=request.available_tools,
+        tool_results=tool_results,
+        context_window=_StubContextWindow(
+            prompt=request.context_window.prompt,
+            tool_results=tool_results,
+        ),
+        applied_skills=request.applied_skills,
+        raw_model=request.raw_model,
+        provider_name=request.provider_name,
+        model_name=request.model_name,
+        attempt=request.attempt,
+        abort_signal=request.abort_signal,
+    )
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        completion_content="done",
+    )
+
+    _ = provider.propose_turn(request)
+
+    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+    assert isinstance(payload_obj, dict)
+    payload = cast(dict[str, object], payload_obj)
+    messages_obj = payload.get("messages")
+    assert isinstance(messages_obj, list)
+    messages = cast(list[dict[str, str]], messages_obj)
+    assert messages[0]["role"] == "user"
+    assert "read_file status=error" in messages[0]["content"]
+    assert "error:\nsample.txt not found" in messages[0]["content"]
+    assert messages[1] == {"role": "user", "content": "read sample.txt"}
 
 
 @pytest.mark.parametrize(
