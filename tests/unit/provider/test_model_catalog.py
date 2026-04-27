@@ -72,10 +72,12 @@ def test_discover_available_models_includes_known_model_budget_metadata() -> Non
         fetcher=lambda _request: ("gpt-4o", "unknown-model"),
     )
 
-    assert result.model_metadata["gpt-4o"] == ProviderModelMetadata(
-        context_window=128_000,
-        max_output_tokens=16_384,
-    )
+    metadata = result.model_metadata["gpt-4o"]
+    assert metadata.context_window == 128_000
+    assert metadata.max_input_tokens == 111_616
+    assert metadata.max_output_tokens == 16_384
+    assert metadata.supports_tools is True
+    assert metadata.supports_vision is True
     assert "unknown-model" not in result.model_metadata
 
 
@@ -99,10 +101,50 @@ def test_infer_model_metadata_covers_current_frontier_provider_models(
     context_window: int,
     max_output_tokens: int,
 ) -> None:
-    assert infer_model_metadata(provider, model) == ProviderModelMetadata(
+    metadata = infer_model_metadata(provider, model)
+    assert metadata is not None
+    assert metadata == ProviderModelMetadata(
         context_window=context_window,
         max_output_tokens=max_output_tokens,
+        supports_tools=metadata.supports_tools,
+        supports_vision=metadata.supports_vision,
+        supports_streaming=metadata.supports_streaming,
+        supports_reasoning=metadata.supports_reasoning,
+        supports_json_mode=metadata.supports_json_mode,
     )
+
+
+def test_infer_model_metadata_exposes_model_capability_flags() -> None:
+    metadata = infer_model_metadata("anthropic", "claude-sonnet-4-6")
+
+    assert metadata == ProviderModelMetadata(
+        context_window=1_000_000,
+        max_output_tokens=64_000,
+        supports_tools=True,
+        supports_vision=True,
+        supports_streaming=True,
+        supports_reasoning=True,
+        supports_json_mode=False,
+    )
+
+
+def test_provider_model_metadata_payload_includes_limits_and_capabilities() -> None:
+    payload = ProviderModelMetadata(
+        context_window=128_000,
+        max_output_tokens=16_384,
+        supports_tools=True,
+        supports_vision=False,
+        supports_streaming=True,
+    ).payload()
+
+    assert payload == {
+        "context_window": 128_000,
+        "max_input_tokens": 111_616,
+        "max_output_tokens": 16_384,
+        "supports_tools": True,
+        "supports_vision": False,
+        "supports_streaming": True,
+    }
 
 
 def test_infer_model_metadata_returns_none_for_unknown_models() -> None:

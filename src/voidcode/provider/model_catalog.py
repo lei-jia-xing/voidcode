@@ -17,14 +17,44 @@ from .config import LiteLLMProviderConfig
 @dataclass(frozen=True, slots=True)
 class ProviderModelMetadata:
     context_window: int | None = None
+    max_input_tokens: int | None = None
     max_output_tokens: int | None = None
+    supports_tools: bool | None = None
+    supports_vision: bool | None = None
+    supports_streaming: bool | None = None
+    supports_reasoning: bool | None = None
+    supports_json_mode: bool | None = None
 
-    def payload(self) -> dict[str, int]:
-        payload: dict[str, int] = {}
+    def __post_init__(self) -> None:
+        if self.max_input_tokens is not None or self.context_window is None:
+            return
+        if self.max_output_tokens is None:
+            object.__setattr__(self, "max_input_tokens", self.context_window)
+            return
+        object.__setattr__(
+            self,
+            "max_input_tokens",
+            max(1, self.context_window - self.max_output_tokens),
+        )
+
+    def payload(self) -> dict[str, int | bool]:
+        payload: dict[str, int | bool] = {}
         if self.context_window is not None:
             payload["context_window"] = self.context_window
+        if self.max_input_tokens is not None:
+            payload["max_input_tokens"] = self.max_input_tokens
         if self.max_output_tokens is not None:
             payload["max_output_tokens"] = self.max_output_tokens
+        if self.supports_tools is not None:
+            payload["supports_tools"] = self.supports_tools
+        if self.supports_vision is not None:
+            payload["supports_vision"] = self.supports_vision
+        if self.supports_streaming is not None:
+            payload["supports_streaming"] = self.supports_streaming
+        if self.supports_reasoning is not None:
+            payload["supports_reasoning"] = self.supports_reasoning
+        if self.supports_json_mode is not None:
+            payload["supports_json_mode"] = self.supports_json_mode
         return payload
 
 
@@ -168,76 +198,185 @@ def infer_model_metadata(provider_name: str, model_name: str) -> ProviderModelMe
     if not model:
         return None
     if provider == "openai" or model.startswith(("gpt-5", "gpt-4.1", "gpt-4o", "o1", "o3", "o4")):
+        common_openai = {
+            "supports_tools": True,
+            "supports_vision": not model.startswith(("o1", "o3-mini")),
+            "supports_streaming": True,
+            "supports_reasoning": model.startswith(("gpt-5", "o1", "o3", "o4")),
+            "supports_json_mode": True,
+        }
         if model.startswith(("gpt-5.5", "gpt-5.4")) and not model.startswith(
             ("gpt-5.4-mini", "gpt-5.4-nano")
         ):
-            return ProviderModelMetadata(context_window=1_000_000, max_output_tokens=128_000)
+            return ProviderModelMetadata(
+                context_window=1_000_000, max_output_tokens=128_000, **common_openai
+            )
         if model.startswith(("gpt-5.4-mini", "gpt-5.4-nano")):
-            return ProviderModelMetadata(context_window=400_000, max_output_tokens=128_000)
+            return ProviderModelMetadata(
+                context_window=400_000, max_output_tokens=128_000, **common_openai
+            )
         if model.startswith("gpt-5"):
-            return ProviderModelMetadata(context_window=400_000, max_output_tokens=128_000)
+            return ProviderModelMetadata(
+                context_window=400_000, max_output_tokens=128_000, **common_openai
+            )
         if model.startswith("gpt-4o-mini"):
-            return ProviderModelMetadata(context_window=128_000, max_output_tokens=16_384)
+            return ProviderModelMetadata(
+                context_window=128_000, max_output_tokens=16_384, **common_openai
+            )
         if model.startswith("gpt-4o"):
-            return ProviderModelMetadata(context_window=128_000, max_output_tokens=16_384)
+            return ProviderModelMetadata(
+                context_window=128_000, max_output_tokens=16_384, **common_openai
+            )
         if model.startswith("gpt-4.1"):
-            return ProviderModelMetadata(context_window=1_047_576, max_output_tokens=32_768)
+            return ProviderModelMetadata(
+                context_window=1_047_576, max_output_tokens=32_768, **common_openai
+            )
         if model.startswith(("o1", "o3", "o4")):
-            return ProviderModelMetadata(context_window=200_000, max_output_tokens=100_000)
+            return ProviderModelMetadata(
+                context_window=200_000, max_output_tokens=100_000, **common_openai
+            )
     if provider == "anthropic" or model.startswith("claude-"):
+        common_anthropic = {
+            "supports_tools": True,
+            "supports_vision": "haiku" not in model,
+            "supports_streaming": True,
+            "supports_reasoning": model.startswith(("claude-opus-4", "claude-sonnet-4")),
+            "supports_json_mode": False,
+        }
         if model.startswith(("claude-opus-4-7", "claude-sonnet-4-6")):
-            return ProviderModelMetadata(context_window=1_000_000, max_output_tokens=64_000)
+            return ProviderModelMetadata(
+                context_window=1_000_000, max_output_tokens=64_000, **common_anthropic
+            )
         if model.startswith("claude-haiku-4-5"):
-            return ProviderModelMetadata(context_window=200_000, max_output_tokens=64_000)
-        return ProviderModelMetadata(context_window=200_000, max_output_tokens=8_192)
+            return ProviderModelMetadata(
+                context_window=200_000, max_output_tokens=64_000, **common_anthropic
+            )
+        return ProviderModelMetadata(
+            context_window=200_000, max_output_tokens=8_192, **common_anthropic
+        )
     if provider == "google" or model.startswith("gemini-"):
+        common_google = {
+            "supports_tools": True,
+            "supports_vision": True,
+            "supports_streaming": True,
+            "supports_reasoning": model.startswith(("gemini-2.5", "gemini-3")),
+            "supports_json_mode": True,
+        }
         if model.startswith(("gemini-3-pro-preview", "gemini-3-flash-preview")):
-            return ProviderModelMetadata(context_window=1_048_576, max_output_tokens=65_536)
+            return ProviderModelMetadata(
+                context_window=1_048_576, max_output_tokens=65_536, **common_google
+            )
         if model.startswith("gemini-3"):
-            return ProviderModelMetadata(context_window=1_000_000, max_output_tokens=65_536)
+            return ProviderModelMetadata(
+                context_window=1_000_000, max_output_tokens=65_536, **common_google
+            )
         if model.startswith("gemini-2.5"):
-            return ProviderModelMetadata(context_window=1_000_000, max_output_tokens=65_536)
-        return ProviderModelMetadata(context_window=1_000_000, max_output_tokens=8_192)
+            return ProviderModelMetadata(
+                context_window=1_000_000, max_output_tokens=65_536, **common_google
+            )
+        return ProviderModelMetadata(
+            context_window=1_000_000, max_output_tokens=8_192, **common_google
+        )
     if provider == "deepseek" or model.startswith("deepseek-"):
+        common_deepseek = {
+            "supports_tools": True,
+            "supports_vision": False,
+            "supports_streaming": True,
+            "supports_reasoning": "reasoner" in model or model.startswith("deepseek-v4"),
+            "supports_json_mode": True,
+        }
         if model.startswith("deepseek-v4"):
-            return ProviderModelMetadata(context_window=1_000_000, max_output_tokens=384_000)
+            return ProviderModelMetadata(
+                context_window=1_000_000, max_output_tokens=384_000, **common_deepseek
+            )
         if model in {"deepseek-chat", "deepseek-reasoner"}:
-            return ProviderModelMetadata(context_window=1_000_000, max_output_tokens=384_000)
+            return ProviderModelMetadata(
+                context_window=1_000_000, max_output_tokens=384_000, **common_deepseek
+            )
     if provider in {"qwen", "opencode-go"} or model.startswith(("qwen", "qwq", "qvq")):
+        common_qwen = {
+            "supports_tools": True,
+            "supports_vision": model.startswith(("qvq",)) or "vl" in model,
+            "supports_streaming": True,
+            "supports_reasoning": model.startswith(("qwq", "qvq", "qwen3")),
+            "supports_json_mode": True,
+        }
         if model.startswith(("qwen3.6-plus", "qwen3.6-flash", "qwen3.5-plus", "qwen3.5-flash")):
-            return ProviderModelMetadata(context_window=1_000_000, max_output_tokens=64_000)
+            return ProviderModelMetadata(
+                context_window=1_000_000, max_output_tokens=64_000, **common_qwen
+            )
         if model.startswith("qwen3.6-max-preview"):
-            return ProviderModelMetadata(context_window=256_000, max_output_tokens=64_000)
+            return ProviderModelMetadata(
+                context_window=256_000, max_output_tokens=64_000, **common_qwen
+            )
         if model.startswith("qwen3.5-"):
-            return ProviderModelMetadata(context_window=256_000, max_output_tokens=64_000)
+            return ProviderModelMetadata(
+                context_window=256_000, max_output_tokens=64_000, **common_qwen
+            )
         if model in {"qwen-plus-us", "qwen-flash-us"}:
-            return ProviderModelMetadata(context_window=1_000_000)
+            return ProviderModelMetadata(context_window=1_000_000, **common_qwen)
     if provider in {"glm", "opencode-go"} or model.startswith("glm-"):
+        common_glm = {
+            "supports_tools": True,
+            "supports_vision": model.startswith("glm-4v") or "vision" in model,
+            "supports_streaming": True,
+            "supports_reasoning": model.startswith(("glm-5", "glm-z1")),
+            "supports_json_mode": True,
+        }
         if model.startswith("glm-5.1"):
-            return ProviderModelMetadata(context_window=198_000, max_output_tokens=128_000)
+            return ProviderModelMetadata(
+                context_window=198_000, max_output_tokens=128_000, **common_glm
+            )
         if model.startswith("glm-5"):
-            return ProviderModelMetadata(context_window=200_000)
+            return ProviderModelMetadata(context_window=200_000, **common_glm)
     if provider in {"kimi", "opencode-go"} or model.startswith(("kimi-", "moonshot-")):
+        common_kimi = {
+            "supports_tools": True,
+            "supports_vision": False,
+            "supports_streaming": True,
+            "supports_reasoning": "thinking" in model,
+            "supports_json_mode": True,
+        }
         if model.startswith(("kimi-k2.6", "kimi-k2.5", "kimi-k2-0905")):
-            return ProviderModelMetadata(context_window=256_000, max_output_tokens=96_000)
+            return ProviderModelMetadata(
+                context_window=256_000, max_output_tokens=96_000, **common_kimi
+            )
         if model.startswith(("kimi-k2-thinking", "kimi-k2-turbo")):
-            return ProviderModelMetadata(context_window=256_000)
+            return ProviderModelMetadata(context_window=256_000, **common_kimi)
         if model.startswith("kimi-k2-0711"):
-            return ProviderModelMetadata(context_window=128_000)
+            return ProviderModelMetadata(context_window=128_000, **common_kimi)
         if model.startswith("moonshot-v1-128k"):
-            return ProviderModelMetadata(context_window=128_000)
+            return ProviderModelMetadata(context_window=128_000, **common_kimi)
         if model.startswith("moonshot-v1-32k"):
-            return ProviderModelMetadata(context_window=32_000)
+            return ProviderModelMetadata(context_window=32_000, **common_kimi)
         if model.startswith("moonshot-v1-8k"):
-            return ProviderModelMetadata(context_window=8_000)
+            return ProviderModelMetadata(context_window=8_000, **common_kimi)
     if provider in {"minimax", "opencode-go"} or model.startswith(("minimax-", "mimo-")):
+        common_minimax = {
+            "supports_tools": True,
+            "supports_vision": model.startswith("mimo-v2-omni"),
+            "supports_streaming": True,
+            "supports_reasoning": model.startswith(("minimax-m2", "mimo-v2.5")),
+            "supports_json_mode": True,
+        }
         if model.startswith("minimax-m2.5"):
-            return ProviderModelMetadata(context_window=192_000, max_output_tokens=32_000)
+            return ProviderModelMetadata(
+                context_window=192_000, max_output_tokens=32_000, **common_minimax
+            )
         if model.startswith("minimax-m2"):
-            return ProviderModelMetadata(context_window=204_800)
+            return ProviderModelMetadata(context_window=204_800, **common_minimax)
     if provider == "grok" or model.startswith("grok-"):
+        common_grok = {
+            "supports_tools": True,
+            "supports_vision": True,
+            "supports_streaming": True,
+            "supports_reasoning": "reasoning" in model or model.startswith("grok-4"),
+            "supports_json_mode": True,
+        }
         if model.startswith(("grok-4-1-fast", "grok-4-fast")):
-            return ProviderModelMetadata(context_window=2_000_000, max_output_tokens=30_000)
+            return ProviderModelMetadata(
+                context_window=2_000_000, max_output_tokens=30_000, **common_grok
+            )
     return None
 
 
