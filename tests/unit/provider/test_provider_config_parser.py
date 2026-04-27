@@ -109,6 +109,35 @@ def test_parse_provider_configs_payload_rejects_unknown_provider_block() -> None
         )
 
 
+def test_merge_provider_configs_preserves_fallback_litellm_none_auth_scheme() -> None:
+    primary = ProviderConfigs(litellm=LiteLLMProviderConfig(api_key="env-key"))
+    fallback = ProviderConfigs(litellm=LiteLLMProviderConfig(auth_scheme="none"))
+
+    merged = merge_provider_configs(primary, fallback)
+
+    assert merged is not None
+    assert merged.litellm == LiteLLMProviderConfig(
+        api_key="env-key",
+        auth_scheme="none",
+    )
+
+
+def test_merge_provider_configs_preserves_fallback_litellm_token_auth_scheme() -> None:
+    primary = ProviderConfigs(litellm=LiteLLMProviderConfig(api_key="env-key"))
+    fallback = ProviderConfigs(
+        litellm=LiteLLMProviderConfig(auth_scheme="token", auth_header="X-API-Key")
+    )
+
+    merged = merge_provider_configs(primary, fallback)
+
+    assert merged is not None
+    assert merged.litellm == LiteLLMProviderConfig(
+        api_key="env-key",
+        auth_header="X-API-Key",
+        auth_scheme="token",
+    )
+
+
 def test_parse_provider_configs_payload_rejects_invalid_openai_base_url_type() -> None:
     with pytest.raises(
         ValueError,

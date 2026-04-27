@@ -142,7 +142,7 @@ class _LiteLLMProviderConfigPayload(_ProviderPayloadModel):
     base_url: BoundaryOptionalString = None
     discovery_base_url: BoundaryOptionalString = None
     auth_header: BoundaryOptionalString = None
-    auth_scheme: BoundaryOptionalString = "bearer"
+    auth_scheme: BoundaryOptionalString = None
     timeout_seconds: BoundaryOptionalTimeout = None
     model_map: BoundaryStringMapping = Field(default_factory=dict)
 
@@ -446,6 +446,11 @@ class LiteLLMProviderConfig:
     auth_scheme: Literal["bearer", "token", "none"] = "bearer"
     timeout_seconds: float | None = None
     model_map: dict[str, str] = field(default_factory=dict)
+    auth_scheme_explicit: bool = field(default=False, compare=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.auth_scheme != "bearer" and not self.auth_scheme_explicit:
+            object.__setattr__(self, "auth_scheme_explicit", True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -677,7 +682,8 @@ def _merge_litellm_provider_config(
         base_url=_prefer_primary(primary.base_url, fallback.base_url),
         discovery_base_url=_prefer_primary(primary.discovery_base_url, fallback.discovery_base_url),
         auth_header=_prefer_primary(primary.auth_header, fallback.auth_header),
-        auth_scheme=primary.auth_scheme or fallback.auth_scheme,
+        auth_scheme=(primary.auth_scheme if primary.auth_scheme_explicit else fallback.auth_scheme),
+        auth_scheme_explicit=primary.auth_scheme_explicit or fallback.auth_scheme_explicit,
         timeout_seconds=_prefer_primary(primary.timeout_seconds, fallback.timeout_seconds),
         model_map={**fallback.model_map, **primary.model_map},
     )
@@ -1352,6 +1358,7 @@ def _parse_litellm_provider_config(
         discovery_base_url=payload.discovery_base_url,
         auth_header=payload.auth_header,
         auth_scheme=auth_scheme,
+        auth_scheme_explicit=raw_auth_scheme is not None,
         timeout_seconds=payload.timeout_seconds,
         model_map=payload.model_map,
     )
