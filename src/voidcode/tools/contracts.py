@@ -23,6 +23,7 @@ class ToolDefinition:
 class ToolCall:
     tool_name: str
     arguments: dict[str, object] = field(default_factory=dict)
+    tool_call_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
