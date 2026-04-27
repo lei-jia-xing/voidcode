@@ -22,6 +22,18 @@ def _truncate(text: str) -> tuple[str, bool]:
     return text[:MAX_OUTPUT_CHARS], True
 
 
+def kill_timed_out_process(process: subprocess.Popen[str]) -> None:
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except AttributeError:
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
+    except ProcessLookupError:
+        pass
+
+
 @final
 class ShellExecTool:
     definition: ClassVar[ToolDefinition] = ToolDefinition(
@@ -94,10 +106,7 @@ class ShellExecTool:
         try:
             stdout, stderr = process.communicate(timeout=timeout_seconds)
         except subprocess.TimeoutExpired as exc:
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+            kill_timed_out_process(process)
             process.communicate()
             if runtime_timeout_selected:
                 raise RuntimeToolTimeoutError(
