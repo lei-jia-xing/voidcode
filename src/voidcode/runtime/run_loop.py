@@ -249,6 +249,8 @@ class RuntimeRunLoopCoordinator:
                         "rate_limit",
                         "invalid_model",
                         "transient_failure",
+                        "unsupported_feature",
+                        "stream_tool_feedback_shape",
                     }:
                         yield runtime._failed_chunk(
                             session=session,
