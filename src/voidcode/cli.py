@@ -19,7 +19,21 @@ from .doctor import (
     format_report_json,
 )
 from .provider.snapshot import resolved_provider_snapshot
-from .runtime.config import RuntimeConfig, load_runtime_config, serialize_provider_fallback_config
+from .runtime.config import (
+    RUNTIME_CONFIG_FILE_NAME,
+    RuntimeConfig,
+    load_runtime_config,
+    serialize_provider_fallback_config,
+)
+from .runtime.config_schema import (
+    apply_config_migrations,
+    detect_config_migrations,
+    format_starter_runtime_config_json,
+    generate_starter_runtime_config,
+    read_runtime_config_payload,
+    runtime_config_json_schema,
+    write_runtime_config_payload,
+)
 from .runtime.contracts import (
     BackgroundTaskResult,
     ProviderInspectResult,
@@ -572,6 +586,83 @@ def _handle_config_show_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def _handle_config_schema_command(args: argparse.Namespace) -> int:
+    _ = args
+    print(json.dumps(runtime_config_json_schema(), indent=2, sort_keys=True))
+    return 0
+
+
+def _handle_config_init_command(args: argparse.Namespace) -> int:
+    workspace = cast(Path, args.workspace)
+    if not workspace.exists() or not workspace.is_dir():
+        raise SystemExit(f"error: workspace does not exist: {workspace}")
+
+    payload = generate_starter_runtime_config(
+        approval_mode=cast(str, args.approval_mode),
+        execution_engine=cast(str | None, getattr(args, "execution_engine", None)),
+        max_steps=cast(int | None, getattr(args, "max_steps", None)),
+        include_examples=cast(bool, args.with_examples),
+    )
+    if cast(bool, args.print):
+        print(format_starter_runtime_config_json(payload), end="")
+        return 0
+
+    config_path = workspace.resolve() / RUNTIME_CONFIG_FILE_NAME
+    if config_path.exists() and not cast(bool, args.force):
+        raise SystemExit(
+            f"error: runtime config already exists: {config_path}; pass --force to overwrite"
+        )
+    written_path = write_runtime_config_payload(workspace, payload)
+    print(json.dumps({"workspace": str(workspace), "config_path": str(written_path)}))
+    return 0
+
+
+def _handle_config_migrate_command(args: argparse.Namespace) -> int:
+    workspace = cast(Path, args.workspace)
+    if not workspace.exists() or not workspace.is_dir():
+        raise SystemExit(f"error: workspace does not exist: {workspace}")
+
+    try:
+        payload = read_runtime_config_payload(workspace)
+    except ValueError as exc:
+        raise SystemExit(f"error: {exc}") from None
+
+    config_path = workspace.resolve() / RUNTIME_CONFIG_FILE_NAME
+    if payload is None:
+        print(
+            json.dumps(
+                {
+                    "workspace": str(workspace),
+                    "config_path": str(config_path),
+                    "dry_run": not cast(bool, args.write),
+                    "migrations": [],
+                    "updated_config": None,
+                }
+            )
+        )
+        return 0
+
+    migrations = detect_config_migrations(payload)
+    updated_payload = apply_config_migrations(payload, migrations)
+    should_write = cast(bool, args.write)
+    if should_write and migrations:
+        write_runtime_config_payload(workspace, updated_payload)
+
+    print(
+        json.dumps(
+            {
+                "workspace": str(workspace),
+                "config_path": str(config_path),
+                "dry_run": not should_write,
+                "migrations": [migration.to_dict() for migration in migrations],
+                "updated_config": updated_payload if migrations else None,
+            },
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
 def _handle_provider_models_command(args: argparse.Namespace) -> int:
     workspace = cast(Path, args.workspace)
     provider = cast(str, args.provider)
@@ -935,6 +1026,69 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional persisted session identifier used to show resumed effective config.",
     )
     config_show_parser.set_defaults(handler=_handle_config_show_command)
+
+    config_schema_parser = config_subparsers.add_parser(
+        "schema", help="Print the JSON Schema for .voidcode.json."
+    )
+    config_schema_parser.set_defaults(handler=_handle_config_schema_command)
+
+    config_init_parser = config_subparsers.add_parser(
+        "init", help="Generate a starter workspace .voidcode.json."
+    )
+    _ = config_init_parser.add_argument(
+        "--workspace",
+        type=Path,
+        default=Path.cwd(),
+        help="Workspace root where .voidcode.json should be generated.",
+    )
+    _ = config_init_parser.add_argument(
+        "--approval-mode",
+        choices=("allow", "deny", "ask"),
+        default="ask",
+        help="Starter approval mode to write.",
+    )
+    _ = config_init_parser.add_argument(
+        "--execution-engine",
+        choices=("deterministic", "provider"),
+        help="Optional execution engine to include in the generated config.",
+    )
+    _ = config_init_parser.add_argument(
+        "--max-steps",
+        type=int,
+        help="Optional max step budget to include in the generated config.",
+    )
+    _ = config_init_parser.add_argument(
+        "--with-examples",
+        action="store_true",
+        help="Include minimal tools and skills example blocks.",
+    )
+    _ = config_init_parser.add_argument(
+        "--print",
+        action="store_true",
+        help="Print the generated config instead of writing it.",
+    )
+    _ = config_init_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite an existing .voidcode.json.",
+    )
+    config_init_parser.set_defaults(handler=_handle_config_init_command)
+
+    config_migrate_parser = config_subparsers.add_parser(
+        "migrate", help="Detect and optionally apply .voidcode.json migrations."
+    )
+    _ = config_migrate_parser.add_argument(
+        "--workspace",
+        type=Path,
+        default=Path.cwd(),
+        help="Workspace root containing .voidcode.json.",
+    )
+    _ = config_migrate_parser.add_argument(
+        "--write",
+        action="store_true",
+        help="Write migrated config back to .voidcode.json. Defaults to dry-run.",
+    )
+    config_migrate_parser.set_defaults(handler=_handle_config_migrate_command)
 
     provider_models_parser = provider_subparsers.add_parser(
         "models", help="Show or refresh available models for one provider."
