@@ -529,11 +529,9 @@ class VoidCodeRuntime:
         self._plan_contributor = build_plan_contributor(self._workspace, self._config.plan)
         self._background_task_threads = {}
         self._background_tasks_reconciled = False
-        self._default_context_window_policy = self._context_window_policy_for_active_model(
-            self._context_window_policy_from_config(
-                initial_context_window,
-                resolved_provider=self._resolved_provider_config,
-            )
+        self._default_context_window_policy = self._context_window_policy_from_config(
+            initial_context_window,
+            resolved_provider=None,
         )
         self._run_loop_coordinator = RuntimeRunLoopCoordinator(self)
         self._resume_coordinator = RuntimeResumeCoordinator(self)
@@ -2291,13 +2289,22 @@ class VoidCodeRuntime:
             supports_json_mode=inferred.supports_json_mode,
         )
 
-    def _context_window_policy_for_active_model(
-        self, policy: ContextWindowPolicy
+    def _context_window_policy_for_provider_attempt(
+        self,
+        policy: ContextWindowPolicy,
+        *,
+        resolved_provider: ResolvedProviderConfig | None,
+        provider_attempt: int,
     ) -> ContextWindowPolicy:
         if policy.model_context_window_tokens is not None:
             return policy
-        provider_name = self._provider_model.selection.provider
-        model_name = self._provider_model.selection.model
+        if resolved_provider is None:
+            return policy
+        provider_target = resolved_provider.target_chain.target_at(provider_attempt)
+        if provider_target is None:
+            provider_target = resolved_provider.active_target
+        provider_name = provider_target.selection.provider
+        model_name = provider_target.selection.model
         if provider_name is None or model_name is None:
             return policy
         metadata = self._metadata_for_provider_model(provider_name, model_name)
@@ -4025,14 +4032,19 @@ class VoidCodeRuntime:
         session_metadata: dict[str, object],
         policy: ContextWindowPolicy | None = None,
     ) -> RuntimeContextWindow:
+        effective_config = self._effective_runtime_config_from_metadata(session_metadata)
+        provider_attempt = self._provider_attempt_from_metadata(session_metadata)
         if policy is None:
-            effective_config = self._effective_runtime_config_from_metadata(session_metadata)
-            provider_attempt = self._provider_attempt_from_metadata(session_metadata)
             policy = self._context_window_policy_from_config(
                 effective_config.context_window,
-                resolved_provider=effective_config.resolved_provider,
+                resolved_provider=None,
                 provider_attempt=provider_attempt,
             )
+        policy = self._context_window_policy_for_provider_attempt(
+            policy,
+            resolved_provider=effective_config.resolved_provider,
+            provider_attempt=provider_attempt,
+        )
         return prepare_provider_context(
             prompt=prompt,
             tool_results=tool_results,

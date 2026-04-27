@@ -6783,6 +6783,32 @@ def test_runtime_context_window_policy_uses_fallback_attempt_model_metadata(
     assert context_window.token_budget == 4_000
 
 
+def test_runtime_context_window_policy_recomputes_default_for_fallback_attempt(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            provider_fallback=RuntimeProviderFallbackConfig(
+                preferred_model="opencode/gpt-5.4",
+                fallback_models=("kimi/moonshot-v1-8k",),
+            ),
+            context_window=RuntimeContextWindowConfig(max_context_ratio=0.5),
+        ),
+    )
+
+    context_window = runtime._prepare_provider_context_window(  # pyright: ignore[reportPrivateUsage]
+        prompt="read sample.txt",
+        tool_results=(),
+        session_metadata={"provider_attempt": 1},
+        policy=runtime._default_context_window_policy,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    assert context_window.token_budget == 4_000
+
+
 def test_runtime_provider_fallback_seam_returns_next_graph_selection(tmp_path: Path) -> None:
     created_providers: list[_ScriptedTurnProvider] = []
     registry = ModelProviderRegistry(
