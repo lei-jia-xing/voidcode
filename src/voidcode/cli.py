@@ -708,11 +708,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     run_parser = subparsers.add_parser(
         "run",
-        help="Run the deterministic local read-only slice.",
+        help="Run through the local runtime; provider execution is used when configured.",
     )
     _ = run_parser.add_argument(
         "request",
-        help="Simple deterministic request such as 'read README.md'.",
+        help="Runtime request such as 'read README.md'.",
     )
     _ = run_parser.add_argument(
         "--workspace",
