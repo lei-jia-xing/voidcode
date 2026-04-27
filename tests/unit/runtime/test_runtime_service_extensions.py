@@ -4454,17 +4454,17 @@ def test_runtime_persists_mcp_failed_before_terminal_failure_on_tool_call_abort(
         permission_policy=PermissionPolicy(mode="allow"),
     )
 
-    with pytest.raises(ValueError, match=_FailingMcpManager.call_error):
-        _ = list(runtime.run_stream(RuntimeRequest(prompt="go", session_id="mcp-call-failed")))
+    _ = list(runtime.run_stream(RuntimeRequest(prompt="go", session_id="mcp-call-failed")))
 
     replay = runtime.resume("mcp-call-failed")
-
-    assert replay.session.status == "failed"
-    assert [event.event_type for event in replay.events[-2:]] == [
-        RUNTIME_MCP_SERVER_FAILED,
-        "runtime.failed",
+    completed_events = [
+        event for event in replay.events if event.event_type == "runtime.tool_completed"
     ]
-    assert replay.events[-1].payload == {"error": _FailingMcpManager.call_error}
+
+    assert RUNTIME_MCP_SERVER_FAILED in [event.event_type for event in replay.events]
+    assert len(completed_events) == 1
+    assert completed_events[0].payload["status"] == "error"
+    assert completed_events[0].payload["error"] == _FailingMcpManager.call_error
 
 
 def test_runtime_metadata_includes_mcp_state_when_configured(tmp_path: Path) -> None:
@@ -6705,7 +6705,7 @@ def test_runtime_graph_selection_avoids_reusing_initial_provider_graph(
             "runtime_config": {
                 "approval_mode": "ask",
                 "execution_engine": "deterministic",
-                "max_steps": 4,
+                "max_steps": None,
                 "provider_fallback": None,
                 "resolved_provider": None,
                 "plan": None,
@@ -6850,7 +6850,7 @@ def test_runtime_provider_fallback_seam_returns_next_graph_selection(tmp_path: P
             "runtime_config": {
                 "approval_mode": "ask",
                 "execution_engine": "provider",
-                "max_steps": 4,
+                "max_steps": None,
                 "tool_timeout_seconds": None,
                 "provider_fallback": {
                     "preferred_model": "primary/model-a",
@@ -8535,39 +8535,41 @@ def test_runtime_resume_preserves_provider_attempt_and_target_across_pending_app
 
     assert waiting.session.status == "waiting"
     assert waiting.session.metadata["provider_attempt"] == 1
-    assert waiting.session.metadata["runtime_config"] == {
-        "approval_mode": "ask",
-        "execution_engine": "provider",
-        "max_steps": 4,
-        "tool_timeout_seconds": None,
-        "model": "opencode/gpt-5.4",
-        "provider_fallback": {
-            "preferred_model": "opencode/gpt-5.4",
-            "fallback_models": ["custom/demo"],
+    runtime_config = cast(dict[str, object], waiting.session.metadata["runtime_config"])
+    assert runtime_config["approval_mode"] == "ask"
+    assert runtime_config["execution_engine"] == "provider"
+    assert runtime_config["max_steps"] is None
+    assert runtime_config["tool_timeout_seconds"] is None
+    assert runtime_config["model"] == "opencode/gpt-5.4"
+    assert runtime_config["provider_fallback"] == {
+        "preferred_model": "opencode/gpt-5.4",
+        "fallback_models": ["custom/demo"],
+    }
+    assert runtime_config["plan"] is None
+    assert runtime_config["resolved_provider"] == {
+        "active_target": {
+            "raw_model": "opencode/gpt-5.4",
+            "provider": "opencode",
+            "model": "gpt-5.4",
         },
-        "plan": None,
-        "resolved_provider": {
-            "active_target": {
+        "targets": [
+            {
                 "raw_model": "opencode/gpt-5.4",
                 "provider": "opencode",
                 "model": "gpt-5.4",
             },
-            "targets": [
-                {
-                    "raw_model": "opencode/gpt-5.4",
-                    "provider": "opencode",
-                    "model": "gpt-5.4",
-                },
-                {
-                    "raw_model": "custom/demo",
-                    "provider": "custom",
-                    "model": "demo",
-                },
-            ],
-        },
-        "lsp": {"mode": "disabled", "configured_enabled": False, "servers": []},
-        "mcp": {"mode": "disabled", "configured_enabled": False, "servers": []},
+            {
+                "raw_model": "custom/demo",
+                "provider": "custom",
+                "model": "demo",
+            },
+        ],
     }
+    assert runtime_config["lsp"] == {"mode": "disabled", "configured_enabled": False, "servers": []}
+    assert runtime_config["mcp"] == {"mode": "disabled", "configured_enabled": False, "servers": []}
+    agent_config = runtime_config["agent"]
+    assert isinstance(agent_config, dict)
+    assert agent_config["preset"] == "leader"
     assert custom_attempts == [1]
     approval_event = waiting.events[-1]
     assert approval_event.event_type == "runtime.approval_requested"
@@ -9935,7 +9937,7 @@ def test_runtime_downgrades_to_next_provider_target_on_provider_failures(
     }
 
 
-def test_runtime_tool_completed_preserves_non_read_file_tagged_content(tmp_path: Path) -> None:
+def test_runtime_tool_completed_summarizes_write_file_tagged_content(tmp_path: Path) -> None:
     tagged_content = "\n".join(
         [
             "<path>sample.txt</path>",
@@ -9958,7 +9960,8 @@ def test_runtime_tool_completed_preserves_non_read_file_tagged_content(tmp_path:
         event for event in response.events if event.event_type == "runtime.tool_completed"
     )
     assert tool_completed_event.payload["tool"] == "write_file"
-    assert tool_completed_event.payload["content"] == tagged_content
+    assert tool_completed_event.payload["content"] == "Wrote file successfully: tagged.txt"
+    assert (tmp_path / "tagged.txt").read_text(encoding="utf-8") == tagged_content
 
 
 def test_runtime_provider_streaming_emits_ordered_provider_stream_events(
@@ -10029,10 +10032,9 @@ def test_runtime_run_stream_preserves_streamed_tool_requests(tmp_path: Path) -> 
         event for event in events if event.event_type == "graph.tool_request_created"
     ]
     assert len(tool_request_events) == 1
-    assert tool_request_events[0].payload == {
-        "tool": "read_file",
-        "arguments": {"filePath": "sample.txt"},
-    }
+    assert tool_request_events[0].payload["tool"] == "read_file"
+    assert tool_request_events[0].payload["arguments"] == {"filePath": "sample.txt"}
+    assert isinstance(tool_request_events[0].payload["tool_call_id"], str)
     output_chunks = [chunk.output for chunk in chunks if chunk.kind == "output"]
     assert output_chunks == ["sample contents"]
 
@@ -10487,7 +10489,7 @@ def test_runtime_context_window_policy_uses_active_model_limit(tmp_path: Path) -
         context_window_policy=ContextWindowPolicy(max_context_ratio=0.01),
     )
 
-    context = runtime._prepare_provider_context_window(
+    context = runtime._prepare_provider_context_window(  # pyright: ignore[reportPrivateUsage]
         prompt="read sample.txt",
         tool_results=(),
         session_metadata={},
