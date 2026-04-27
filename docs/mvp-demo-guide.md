@@ -19,16 +19,16 @@
    uv run voidcode run "write hello.txt contents" --workspace . --approval-mode ask
    ```
    *预期结果*：
-   - CLI 打印 `EVENT runtime.approval_requested`。
+   - CLI 打印简洁的审批进度摘要。
    - CLI 弹出类似于 `Approve write_file for write_file hello.txt? [y/N]: ` 的审批提示（具体的 target summary 可能包含工具名和路径）。
-   - 输入 `y` 后，CLI 继续执行并显示写入状态的 `RESULT` 块。
-   - 所有事件（请求接收、工具调用、审批通过等）均通过 `EVENT` 日志实时流式打印。
+   - 输入 `y` 后，CLI 继续执行并显示最终输出和 session id。
+   - 如需完整机器可解析事件流，使用 `uv run voidcode run --json ...`；JSON 模式会把最终结果写到 stdout，并把运行进度保留在 stderr。
 
 2. **会话持久化**：验证会话及其审批状态已记录。
    ```bash
    uv run voidcode sessions list --workspace .
    ```
-   *预期结果*：CLI 打印形如 `SESSION id=<id> status=completed turn=<n> updated_at=<ts> prompt='<prompt>'` 的记录。
+   *预期结果*：CLI 以表格样式列出 session id、状态、turn、更新时间与 prompt；脚本消费可使用 `--json` 输出稳定 JSON 数组。
 
 3. **会话恢复**：在不重新执行工具的情况下重放整个交互过程。
    ```bash
