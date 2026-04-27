@@ -202,6 +202,18 @@ def _format_details(result: CapabilityCheckResult) -> list[str]:
         details.append(f"preset: {d['preset_name']}")
     if "version_info" in d and d["version_info"]:
         details.append(f"version: {d['version_info']}")
+    if "provider" in d:
+        details.append(f"provider: {d['provider']}")
+    if "model" in d:
+        details.append(f"model: {d['model']}")
+    if "auth_present" in d:
+        details.append(f"auth_present: {d['auth_present']}")
+    if "streaming_supported" in d:
+        details.append(f"streaming_supported: {d['streaming_supported']}")
+    if "context_window" in d and d["context_window"] is not None:
+        details.append(f"context_window: {d['context_window']}")
+    if "fallback_chain" in d and d["fallback_chain"]:
+        details.append(f"fallback_chain: {', '.join(str(item) for item in d['fallback_chain'])}")
 
     return details
 
