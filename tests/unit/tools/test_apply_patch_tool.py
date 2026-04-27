@@ -136,6 +136,28 @@ def test_apply_patch_accepts_structured_add_file_patch(tmp_path: Path) -> None:
     assert result.content == "A src/main.py\nA README.md"
 
 
+def test_apply_patch_rejects_malformed_structured_add_file_line(
+    tmp_path: Path,
+) -> None:
+    patch_text = "\n".join(
+        [
+            "*** Begin Patch",
+            "*** Add File: README.md",
+            "+# Demo",
+            "missing plus prefix",
+            "*** End Patch",
+        ]
+    )
+
+    with pytest.raises(ValueError, match=r"Add File content lines must start with '\+'"):
+        ApplyPatchTool().invoke(
+            ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
+            workspace=tmp_path,
+        )
+
+    assert not (tmp_path / "README.md").exists()
+
+
 def test_apply_patch_rejects_structured_add_file_when_destination_exists(
     tmp_path: Path,
 ) -> None:
@@ -225,6 +247,35 @@ def test_apply_patch_accepts_structured_update_delete_and_move(tmp_path: Path) -
         {"path": "obsolete.txt", "status": "D"},
         {"path": "new.txt", "old_path": "old.txt", "status": "R"},
     ]
+
+
+def test_apply_patch_repeated_structured_updates_use_staged_content(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "app.py"
+    target.write_text("alpha\nbeta\n", encoding="utf-8")
+    patch_text = "\n".join(
+        [
+            "*** Begin Patch",
+            "*** Update File: app.py",
+            "@@",
+            "-alpha",
+            "+alpha-one",
+            "*** Update File: app.py",
+            "@@",
+            "-beta",
+            "+beta-two",
+            "*** End Patch",
+        ]
+    )
+
+    result = ApplyPatchTool().invoke(
+        ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert target.read_text(encoding="utf-8") == "alpha-one\nbeta-two\n"
 
 
 def test_apply_patch_rejects_structured_same_path_move_without_deleting_file(

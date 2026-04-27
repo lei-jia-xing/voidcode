@@ -93,8 +93,9 @@ def _parse_marker_add_content(lines: list[str], index: int) -> tuple[str, int]:
     content_lines: list[str] = []
     while current < len(lines) and not lines[current].startswith("***"):
         line = lines[current]
-        if line.startswith("+"):
-            content_lines.append(line[1:])
+        if not line.startswith("+"):
+            raise ValueError(f"Add File content lines must start with '+': {line}")
+        content_lines.append(line[1:])
         current += 1
     return "\n".join(content_lines), current
 
@@ -238,12 +239,12 @@ def _seek_sequence(
     return -1
 
 
-def _derive_marker_update_content(file_path: Path, chunks: tuple[_MarkerChunk, ...]) -> str:
-    try:
-        original = file_path.read_text(encoding="utf-8")
-    except FileNotFoundError as exc:
-        raise ValueError(f"Failed to read file to update: {file_path}") from exc
-
+def _derive_marker_update_content_from_text(
+    original: str,
+    *,
+    file_path: Path,
+    chunks: tuple[_MarkerChunk, ...],
+) -> str:
     original_lines = original.split("\n")
     if original_lines and original_lines[-1] == "":
         original_lines.pop()
@@ -294,6 +295,7 @@ def _apply_marker_patch(patch_text: str, *, workspace: Path) -> ToolResult:
     hunks = _parse_marker_patch(patch_text)
     prepared: list[_PreparedMarkerChange] = []
     planned_add_paths: set[str] = set()
+    staged_contents: dict[str, str] = {}
     for hunk in hunks:
         _assert_within_workspace(workspace, Path(hunk.path))
         if hunk.move_path is not None:
@@ -304,6 +306,7 @@ def _apply_marker_patch(patch_text: str, *, workspace: Path) -> ToolResult:
             if target.exists() or hunk.path in planned_add_paths:
                 raise ValueError(f"Add File destination already exists: {hunk.path}")
             planned_add_paths.add(hunk.path)
+            staged_contents[hunk.path] = hunk.contents or ""
             prepared.append(
                 _PreparedMarkerChange(status="A", path=hunk.path, content=hunk.contents or "")
             )
@@ -311,10 +314,23 @@ def _apply_marker_patch(patch_text: str, *, workspace: Path) -> ToolResult:
             target = workspace / hunk.path
             if not target.exists():
                 raise ValueError(f"Failed to read file for deletion: {target}")
+            staged_contents.pop(hunk.path, None)
             prepared.append(_PreparedMarkerChange(status="D", path=hunk.path))
         else:
-            content = _derive_marker_update_content(workspace / hunk.path, hunk.chunks)
+            source_file = workspace / hunk.path
+            source_content = staged_contents.get(hunk.path)
+            if source_content is None:
+                try:
+                    source_content = source_file.read_text(encoding="utf-8")
+                except FileNotFoundError as exc:
+                    raise ValueError(f"Failed to read file to update: {source_file}") from exc
+            content = _derive_marker_update_content_from_text(
+                source_content,
+                file_path=source_file,
+                chunks=hunk.chunks,
+            )
             if hunk.move_path is None:
+                staged_contents[hunk.path] = content
                 prepared.append(_PreparedMarkerChange(status="M", path=hunk.path, content=content))
             else:
                 source_path = (workspace / hunk.path).resolve()
@@ -323,6 +339,8 @@ def _apply_marker_patch(patch_text: str, *, workspace: Path) -> ToolResult:
                     raise ValueError(f"Move destination must differ from source: {hunk.move_path}")
                 if destination_path.exists():
                     raise ValueError(f"Move destination already exists: {hunk.move_path}")
+                staged_contents.pop(hunk.path, None)
+                staged_contents[hunk.move_path] = content
                 prepared.append(
                     _PreparedMarkerChange(
                         status="R",
