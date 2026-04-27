@@ -507,12 +507,29 @@ class ProviderModelsResult:
 
 
 @dataclass(frozen=True, slots=True)
+class ProviderReadinessResult:
+    provider: str | None
+    model: str | None
+    configured: bool
+    ok: bool
+    status: str
+    guidance: str
+    auth_present: bool | None = None
+    streaming_configured: bool | None = None
+    streaming_supported: bool | None = None
+    context_window: int | None = None
+    max_output_tokens: int | None = None
+    fallback_chain: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class ProviderInspectResult:
     summary: ProviderSummary
     models: ProviderModelsResult
     validation: ProviderValidationResult
     current_model: str | None = None
     current_model_metadata: ProviderModelMetadata | None = None
+    readiness: ProviderReadinessResult | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -525,6 +542,8 @@ class ProviderValidationResult:
     source: str | None = None
     last_error: str | None = None
     discovery_mode: str | None = None
+    failure_kind: str | None = None
+    guidance: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

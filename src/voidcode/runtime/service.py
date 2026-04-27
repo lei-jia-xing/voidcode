@@ -29,8 +29,12 @@ from ..hook.executor import (
     run_lifecycle_hooks,
     run_tool_hooks,
 )
-from ..provider.auth import ProviderAuthResolver
-from ..provider.errors import format_invalid_provider_config_error
+from ..provider.auth import (
+    ProviderAuthAuthorizeRequest,
+    ProviderAuthResolutionError,
+    ProviderAuthResolver,
+)
+from ..provider.errors import format_invalid_provider_config_error, guidance_for_provider_error_kind
 from ..provider.model_catalog import (
     ProviderModelCatalog,
     infer_model_metadata,
@@ -101,6 +105,7 @@ from .contracts import (
     ProviderInspectResult,
     ProviderModelMetadata,
     ProviderModelsResult,
+    ProviderReadinessResult,
     ProviderSummary,
     ProviderValidationResult,
     ReviewFileDiff,
@@ -251,6 +256,18 @@ _SKILL_BINDING_SCOPE_KEYS = (
 class _ActiveSessionKey:
     workspace: Path
     session_id: str
+
+
+def _provider_target_label(target: ResolvedProviderModel) -> str:
+    provider = target.selection.provider
+    model = target.selection.model
+    if provider is None and model is None:
+        return "unresolved"
+    if provider is None:
+        return str(model)
+    if model is None:
+        return provider
+    return f"{provider}/{model}"
 
 
 class _ActiveSessionRegistry:
@@ -2380,6 +2397,70 @@ class VoidCodeRuntime:
             discovery_mode=cast(str | None, catalog["discovery_mode"]),
         )
 
+    def provider_readiness(self, *, session_id: str | None = None) -> ProviderReadinessResult:
+        effective_config = self.effective_runtime_config(session_id=session_id)
+        return self._provider_readiness_for_effective_config(effective_config)
+
+    def _provider_readiness_for_effective_config(
+        self, effective_config: EffectiveRuntimeConfig
+    ) -> ProviderReadinessResult:
+        active_target = effective_config.resolved_provider.active_target
+        provider_name = active_target.selection.provider
+        model_name = active_target.selection.model
+        fallback_chain = tuple(
+            _provider_target_label(target)
+            for target in effective_config.resolved_provider.target_chain.all_targets
+        )
+        streaming_configured = None
+        streaming_supported = None
+        context_window = None
+        max_output_tokens = None
+        if provider_name is not None and model_name is not None:
+            metadata = self._metadata_for_provider_model(provider_name, model_name)
+            if metadata is not None:
+                streaming_supported = metadata.supports_streaming
+                context_window = metadata.context_window
+                max_output_tokens = metadata.max_output_tokens
+        if effective_config.context_window is not None:
+            if effective_config.context_window.model_context_window_tokens is not None:
+                context_window = effective_config.context_window.model_context_window_tokens
+            if effective_config.context_window.reserved_output_tokens is not None:
+                max_output_tokens = effective_config.context_window.reserved_output_tokens
+        configured = provider_name is not None and self._provider_is_configured(provider_name)
+        auth_present, auth_failure_kind, auth_message = self._provider_auth_presence(provider_name)
+        validation_status = "ready"
+        ok = configured and auth_present is not False
+        guidance = "Provider/model configuration is ready enough to run."
+        if provider_name is None or model_name is None:
+            validation_status = "missing_model"
+            ok = False
+            guidance = "Configure a provider/model, for example model: 'openai/gpt-4o'."
+        elif not configured:
+            validation_status = "unconfigured"
+            ok = False
+            guidance = "Add provider credentials in environment variables or .voidcode.json."
+        elif auth_present is False:
+            validation_status = auth_failure_kind or "missing_auth"
+            ok = False
+            guidance = auth_message or guidance_for_provider_error_kind("missing_auth")
+        elif streaming_supported is False:
+            validation_status = "streaming_unsupported"
+            guidance = guidance_for_provider_error_kind("unsupported_feature")
+        return ProviderReadinessResult(
+            provider=provider_name,
+            model=model_name,
+            configured=configured,
+            ok=ok,
+            status=validation_status,
+            guidance=guidance,
+            auth_present=auth_present,
+            streaming_configured=streaming_configured,
+            streaming_supported=streaming_supported,
+            context_window=context_window,
+            max_output_tokens=max_output_tokens,
+            fallback_chain=fallback_chain,
+        )
+
     def inspect_provider(self, provider_name: str) -> ProviderInspectResult:
         if not provider_name or "/" in provider_name:
             raise ValueError("provider_name must be a non-empty provider id without '/'")
@@ -2414,6 +2495,7 @@ class VoidCodeRuntime:
             validation=validation,
             current_model=current_model,
             current_model_metadata=current_metadata,
+            readiness=self.provider_readiness() if summary.current else None,
         )
 
     def validate_provider_credentials(self, provider_name: str) -> ProviderValidationResult:
@@ -2430,6 +2512,19 @@ class VoidCodeRuntime:
                 source=result.source,
                 last_error=result.last_error,
                 discovery_mode=result.discovery_mode,
+                failure_kind="missing_auth",
+                guidance="Add provider credentials in environment variables or .voidcode.json.",
+            )
+        auth_present, auth_failure_kind, auth_message = self._provider_auth_presence(provider_name)
+        if auth_present is False:
+            return ProviderValidationResult(
+                provider=provider_name,
+                configured=True,
+                ok=False,
+                status=auth_failure_kind or "missing_auth",
+                message=auth_message or "Provider authentication is missing.",
+                failure_kind=auth_failure_kind or "missing_auth",
+                guidance=auth_message or guidance_for_provider_error_kind("missing_auth"),
             )
         _ = self.refresh_provider_models(provider_name)
         result = self.provider_models_result(provider_name)
@@ -2443,6 +2538,8 @@ class VoidCodeRuntime:
                 source=result.source,
                 last_error=result.last_error,
                 discovery_mode=result.discovery_mode,
+                failure_kind="transient_failure",
+                guidance=guidance_for_provider_error_kind("transient_failure"),
             )
         status = result.last_refresh_status or "ok"
         ok = status == "ok"
@@ -2460,7 +2557,27 @@ class VoidCodeRuntime:
             source=result.source,
             last_error=result.last_error,
             discovery_mode=result.discovery_mode,
+            guidance=(
+                "Provider model discovery succeeded."
+                if ok
+                else "Credentials are present, but remote validation could not confirm readiness."
+            ),
         )
+
+    def _provider_auth_presence(
+        self, provider_name: str | None
+    ) -> tuple[bool | None, str | None, str | None]:
+        if provider_name is None:
+            return None, None, None
+        try:
+            result = self._provider_auth_resolver.authorize(
+                ProviderAuthAuthorizeRequest(provider=provider_name)
+            )
+        except ProviderAuthResolutionError as exc:
+            if exc.code == "missing_credentials":
+                return False, "missing_auth", str(exc)
+            return False, exc.provider_error_kind, str(exc)
+        return result.status == "authorized", None, None
 
     @staticmethod
     def _optional_positive_int(value: object) -> int | None:
