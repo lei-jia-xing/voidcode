@@ -578,11 +578,11 @@ def test_run_command_real_cli_reports_current_request_truth_without_agent_preset
             env=env,
         )
 
-    assert result.returncode == 0
+    assert result.returncode == 1
     assert "EVENT runtime.request_received source=runtime prompt=read README.md" in result.stdout
     assert "EVENT runtime.plan_created source=runtime" not in result.stdout
     assert "read_file target does not exist: README.md" in result.stdout
-    assert result.stderr == ""
+    assert result.stderr == "error: read_file target does not exist: README.md\n"
     assert "Traceback" not in result.stderr
 
 

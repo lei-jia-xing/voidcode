@@ -305,6 +305,7 @@ def test_runtime_context_window_config_serializes_for_session_resume() -> None:
 
 
 def test_runtime_persists_context_window_config_for_resume(tmp_path: Path) -> None:
+    _ = (tmp_path / "README.md").write_text("context window\n", encoding="utf-8")
     context_window = RuntimeContextWindowConfig(
         max_tool_results=5,
         reserved_output_tokens=100,
