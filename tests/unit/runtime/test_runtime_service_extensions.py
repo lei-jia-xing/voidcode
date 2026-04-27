@@ -104,6 +104,24 @@ from voidcode.tools import ToolCall
 from voidcode.tools.contracts import ToolDefinition, ToolResult
 
 
+def test_runtime_top_level_agent_allowlist_matches_manifest_selectability() -> None:
+    top_level_manifest_ids = {
+        manifest.id
+        for manifest in runtime_service_module.list_builtin_agent_manifests()
+        if manifest.top_level_selectable
+    }
+    executable_agent_presets = cast(
+        frozenset[str],
+        _private_attr(runtime_service_module, "_EXECUTABLE_AGENT_PRESETS"),
+    )
+
+    assert top_level_manifest_ids == executable_agent_presets
+
+
+def _prompt_materialization_payload(profile: str) -> dict[str, object]:
+    return {"profile": profile, "version": 1, "source": "builtin", "format": "text"}
+
+
 def _private_attr(instance: object, name: str) -> Any:
     return getattr(instance, name)
 
@@ -1044,6 +1062,7 @@ def test_runtime_task_tool_starts_background_task_with_skill_metadata(tmp_path: 
         "agent": {
             "preset": "worker",
             "prompt_profile": "worker",
+            "prompt_materialization": _prompt_materialization_payload("worker"),
             "execution_engine": "provider",
         },
     }
@@ -1081,6 +1100,7 @@ def test_runtime_constructs_with_custom_agent_hook_refs(tmp_path: Path) -> None:
     assert runtime_config["agent"] == {
         "preset": "leader",
         "prompt_profile": "researcher",
+        "prompt_materialization": _prompt_materialization_payload("leader"),
         "prompt_ref": "researcher",
         "prompt_source": "builtin",
         "hook_refs": ["customfmt"],
@@ -1124,6 +1144,7 @@ def test_runtime_category_routing_resolves_real_child_agent_and_persists_identit
         "agent": {
             "preset": "worker",
             "prompt_profile": "worker",
+            "prompt_materialization": _prompt_materialization_payload("worker"),
             "execution_engine": "provider",
         },
     }
@@ -1131,6 +1152,7 @@ def test_runtime_category_routing_resolves_real_child_agent_and_persists_identit
     assert runtime_config["agent"] == {
         "preset": "worker",
         "prompt_profile": "worker",
+        "prompt_materialization": _prompt_materialization_payload("worker"),
         "execution_engine": "provider",
     }
     assert result.routing is not None
@@ -1162,6 +1184,7 @@ def test_runtime_subagent_type_routing_resolves_real_child_agent_and_persists_id
     assert runtime_config["agent"] == {
         "preset": "explore",
         "prompt_profile": "explore",
+        "prompt_materialization": _prompt_materialization_payload("explore"),
         "execution_engine": "provider",
     }
     assert response.session.metadata["delegation"] == {
@@ -1225,6 +1248,7 @@ def test_runtime_background_delegation_executes_on_real_provider_child_path(
     assert created_providers[1].requests[0].agent_preset == {
         "preset": "worker",
         "prompt_profile": "worker",
+        "prompt_materialization": _prompt_materialization_payload("worker"),
         "model": "opencode/gpt-5.4",
         "execution_engine": "provider",
     }
@@ -7346,6 +7370,7 @@ def test_runtime_agent_config_selects_provider_graph_and_persists_agent_metadata
     assert created_providers[0].requests[0].agent_preset == {
         "preset": "leader",
         "prompt_profile": "leader",
+        "prompt_materialization": _prompt_materialization_payload("leader"),
         "model": "opencode/gpt-5.4",
         "execution_engine": "provider",
     }
@@ -7353,6 +7378,7 @@ def test_runtime_agent_config_selects_provider_graph_and_persists_agent_metadata
     assert runtime_config["agent"] == {
         "preset": "leader",
         "prompt_profile": "leader",
+        "prompt_materialization": _prompt_materialization_payload("leader"),
         "model": "opencode/gpt-5.4",
         "execution_engine": "provider",
     }
@@ -7407,6 +7433,7 @@ def test_runtime_request_metadata_agent_override_persists_and_restores_agent_con
     assert created_providers[0].requests[0].agent_preset == {
         "preset": "leader",
         "prompt_profile": "leader",
+        "prompt_materialization": _prompt_materialization_payload("leader"),
         "model": "opencode/gpt-5.4",
         "execution_engine": "provider",
     }
@@ -7468,6 +7495,7 @@ def test_runtime_partial_request_agent_override_preserves_inherited_agent_fields
     assert created_providers[0].requests[0].agent_preset == {
         "preset": "leader",
         "prompt_profile": "leader",
+        "prompt_materialization": _prompt_materialization_payload("leader"),
         "model": "opencode/gpt-5.4",
         "execution_engine": "provider",
         "provider_fallback": {
@@ -7479,6 +7507,7 @@ def test_runtime_partial_request_agent_override_preserves_inherited_agent_fields
     assert runtime_config["agent"] == {
         "preset": "leader",
         "prompt_profile": "leader",
+        "prompt_materialization": _prompt_materialization_payload("leader"),
         "model": "opencode/gpt-5.4",
         "execution_engine": "provider",
         "provider_fallback": {
@@ -7561,6 +7590,7 @@ def test_runtime_agent_tool_allowlist_limits_provider_visible_tools(tmp_path: Pa
     assert runtime_config["agent"] == {
         "preset": "leader",
         "prompt_profile": "leader",
+        "prompt_materialization": _prompt_materialization_payload("leader"),
         "model": "opencode/gpt-5.4",
         "execution_engine": "provider",
         "tools": {"allowlist": ["read_file"]},
@@ -7704,6 +7734,7 @@ def test_runtime_agent_builtin_tools_disabled_exposes_no_builtin_tools(tmp_path:
     assert runtime_config["agent"] == {
         "preset": "leader",
         "prompt_profile": "leader",
+        "prompt_materialization": _prompt_materialization_payload("leader"),
         "model": "opencode/gpt-5.4",
         "execution_engine": "provider",
         "tools": {"builtin": {"enabled": False}},
@@ -7854,6 +7885,7 @@ def test_runtime_agent_skills_config_loads_and_persists_runtime_skills(
     assert runtime_config["agent"] == {
         "preset": "leader",
         "prompt_profile": "leader",
+        "prompt_materialization": _prompt_materialization_payload("leader"),
         "execution_engine": "provider",
         "skills": {"enabled": True, "paths": ["agent-skills"]},
     }
