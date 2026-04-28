@@ -116,8 +116,6 @@ class AgentManifest:
             fields.append("model_preference")
         if self.tool_allowlist:
             fields.append("tool_allowlist")
-        if self.skill_refs:
-            fields.append("skill_refs")
         fields.append("top_level_selectable")
         if self.prompt_materialization is not None:
             fields.append("prompt_materialization")

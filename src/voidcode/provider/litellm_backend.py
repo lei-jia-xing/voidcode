@@ -21,6 +21,7 @@ else:
 
 
 from ..tools.contracts import ToolCall, ToolDefinition
+from ..tools.output import sanitize_tool_arguments, sanitize_tool_result_data
 from .config import LiteLLMProviderConfig
 from .errors import provider_execution_error_from_api_payload
 from .protocol import (
@@ -193,14 +194,72 @@ class LiteLLMBackendSingleAgentProvider:
                 message="assembled context is required",
             )
         messages: list[dict[str, object]] = []
+        if request.provider_name == "opencode-go":
+            tool_feedback_lines: list[str] = []
+            for segment in assembled_context.segments:
+                if segment.role == "tool":
+                    metadata = segment.metadata or {}
+                    raw_data = metadata.get("data")
+                    sanitized_data = (
+                        sanitize_tool_result_data(cast(dict[str, object], raw_data))
+                        if isinstance(raw_data, dict)
+                        else {}
+                    )
+                    raw_arguments = sanitized_data.get("arguments")
+                    sanitized_arguments = (
+                        sanitize_tool_arguments(cast(dict[str, object], raw_arguments))
+                        if isinstance(raw_arguments, dict)
+                        else {}
+                    )
+                    payload = {
+                        "tool_name": segment.tool_name,
+                        "arguments": sanitized_arguments,
+                        "status": metadata.get("status"),
+                        "content": segment.content or "",
+                        "error": metadata.get("error"),
+                        "data": {
+                            key: value
+                            for key, value in sanitized_data.items()
+                            if key not in {"tool_call_id", "arguments"}
+                        },
+                        "truncated": metadata.get("truncated"),
+                        "partial": metadata.get("partial"),
+                        "reference": metadata.get("reference"),
+                    }
+                    tool_feedback_lines.append(
+                        json.dumps(payload, ensure_ascii=False, sort_keys=True)
+                    )
+                elif segment.role != "assistant":
+                    messages.append({"role": segment.role, "content": segment.content})
+            if tool_feedback_lines:
+                intro_line_1 = "Completed tool calls for current request:"
+                intro_line_2 = (
+                    "Use these results as latest state. "
+                    "Do not repeat completed calls unless retry is required."
+                )
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": "\n".join(
+                            (
+                                intro_line_1,
+                                intro_line_2,
+                                *tool_feedback_lines,
+                            )
+                        ),
+                    }
+                )
+            return messages
+
         for segment in assembled_context.segments:
             if segment.role == "assistant" and segment.tool_name is not None:
                 tool_call_id = _normalize_tool_call_id(
                     segment.tool_call_id,
                     fallback=segment.tool_name,
                 )
+                sanitized_arguments = sanitize_tool_arguments(segment.tool_arguments or {})
                 arguments = json.dumps(
-                    segment.tool_arguments or {},
+                    sanitized_arguments,
                     ensure_ascii=False,
                     sort_keys=True,
                 )
@@ -222,10 +281,26 @@ class LiteLLMBackendSingleAgentProvider:
                 )
                 continue
             if segment.role == "tool":
+                metadata = segment.metadata or {}
+                raw_data = metadata.get("data")
+                sanitized_data = (
+                    sanitize_tool_result_data(cast(dict[str, object], raw_data))
+                    if isinstance(raw_data, dict)
+                    else {}
+                )
                 payload = {
                     "tool_name": segment.tool_name,
                     "content": segment.content or "",
-                    **(segment.metadata or {}),
+                    "status": metadata.get("status"),
+                    "error": metadata.get("error"),
+                    "data": {
+                        key: value
+                        for key, value in sanitized_data.items()
+                        if key not in {"tool_call_id", "arguments"}
+                    },
+                    "truncated": metadata.get("truncated"),
+                    "partial": metadata.get("partial"),
+                    "reference": metadata.get("reference"),
                 }
                 messages.append(
                     {

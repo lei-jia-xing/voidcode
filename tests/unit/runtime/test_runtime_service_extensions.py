@@ -189,8 +189,17 @@ class _SkillAwareStubGraph:
     ) -> _StubStep:
         _ = tool_results, session
         type(self).last_request = request
-        skill_names = [skill["name"] for skill in request.applied_skills]
-        skill_contents = [skill["content"] for skill in request.applied_skills]
+        assembled = request.assembled_context
+        assert assembled is not None
+        skill_names: list[str] = []
+        skill_contents: list[str] = []
+        for segment in assembled.segments:
+            if segment.role != "system" or not isinstance(segment.content, str):
+                continue
+            if segment.content.startswith("Skill: "):
+                first_line = segment.content.splitlines()[0]
+                skill_names.append(first_line.removeprefix("Skill: ").strip())
+                skill_contents.append(segment.content)
         if skill_names:
             output = f"{request.prompt}\n[skills={','.join(skill_names)}]\n{skill_contents[0]}"
         else:
@@ -5859,15 +5868,14 @@ def test_runtime_emits_skills_loaded_catalog_without_default_full_injection(tmp_
     ]
     assert response.events[1].payload["skills"] == ["demo"]
     assert response.events[1].payload["selected_skills"] == []
-    assert response.events[1].payload["catalog_context_length"] > 0
+    assert cast(int, response.events[1].payload["catalog_context_length"]) > 0
     assert response.session.metadata["applied_skills"] == []
     assert "applied_skill_payloads" not in response.session.metadata
     assert _SkillCapturingStubGraph.last_request is not None
-    assert _SkillCapturingStubGraph.last_request.applied_skills == ()
-    assert "<available_skills>" in _SkillCapturingStubGraph.last_request.skill_prompt_context
-    assert "Always explain your reasoning." not in (
-        _SkillCapturingStubGraph.last_request.skill_prompt_context
-    )
+    assembled = _SkillCapturingStubGraph.last_request.assembled_context
+    assert assembled is not None
+    system_segments = [s.content for s in assembled.segments if s.role == "system"]
+    assert system_segments == []
 
 
 def test_runtime_persists_explicit_empty_applied_skill_snapshot(tmp_path: Path) -> None:
@@ -5886,7 +5894,9 @@ def test_runtime_persists_explicit_empty_applied_skill_snapshot(tmp_path: Path) 
     assert response.session.metadata["applied_skills"] == []
     assert "applied_skill_payloads" not in response.session.metadata
     assert _SkillCapturingStubGraph.last_request is not None
-    assert _SkillCapturingStubGraph.last_request.applied_skills == ()
+    assembled = _SkillCapturingStubGraph.last_request.assembled_context
+    assert assembled is not None
+    assert [s for s in assembled.segments if s.role == "system"] == []
 
 
 def test_runtime_applies_only_requested_skills_from_request_metadata(tmp_path: Path) -> None:
@@ -5913,11 +5923,11 @@ def test_runtime_applies_only_requested_skills_from_request_metadata(tmp_path: P
     assert response.session.metadata["applied_skills"] == ["beta"]
     assert response.events[2].payload["skills"] == ["beta"]
     assert _SkillCapturingStubGraph.last_request is not None
-    assert [skill["name"] for skill in _SkillCapturingStubGraph.last_request.applied_skills] == [
-        "beta"
-    ]
-    assert "Skill: beta" in _SkillCapturingStubGraph.last_request.skill_prompt_context
-    assert "Skill: alpha" not in _SkillCapturingStubGraph.last_request.skill_prompt_context
+    assembled = _SkillCapturingStubGraph.last_request.assembled_context
+    assert assembled is not None
+    system_contents = [s.content for s in assembled.segments if s.role == "system"]
+    assert any(isinstance(item, str) and "Use beta." in item for item in system_contents)
+    assert not any(isinstance(item, str) and "Use alpha." in item for item in system_contents)
 
 
 def test_runtime_force_load_skills_emits_applied_and_persists_snapshot(tmp_path: Path) -> None:
@@ -5946,11 +5956,12 @@ def test_runtime_force_load_skills_emits_applied_and_persists_snapshot(tmp_path:
     assert applied_event.payload["skills"] == ["demo"]
     assert response.session.metadata["applied_skills"] == ["demo"]
     assert _SkillCapturingStubGraph.last_request is not None
-    assert [skill["name"] for skill in _SkillCapturingStubGraph.last_request.applied_skills] == [
-        "demo"
-    ]
-    assert "Always explain your reasoning." in (
-        _SkillCapturingStubGraph.last_request.skill_prompt_context
+    assembled = _SkillCapturingStubGraph.last_request.assembled_context
+    assert assembled is not None
+    system_contents = [s.content for s in assembled.segments if s.role == "system"]
+    assert any(
+        isinstance(item, str) and "Always explain your reasoning." in item
+        for item in system_contents
     )
 
 
@@ -6087,10 +6098,12 @@ def test_runtime_skill_payloads_affect_execution_output_when_graph_consumes_them
 
     assert response.output == "summarize sample.txt"
     assert _SkillAwareStubGraph.last_request is not None
-    assert _SkillAwareStubGraph.last_request.applied_skills == ()
-    assert "<available_skills>" in _SkillAwareStubGraph.last_request.skill_prompt_context
-    assert "Use concise bullet points." not in (
-        _SkillAwareStubGraph.last_request.skill_prompt_context
+    assembled = _SkillAwareStubGraph.last_request.assembled_context
+    assert assembled is not None
+    system_contents = [s.content for s in assembled.segments if s.role == "system"]
+    assert all(
+        not (isinstance(item, str) and "Use concise bullet points." in item)
+        for item in system_contents
     )
 
 
@@ -6132,7 +6145,9 @@ def test_runtime_resume_reuses_frozen_skill_payloads_for_execution_semantics(
 
     assert resumed.output == "go"
     assert _SkillAwareStubGraph.last_request is not None
-    assert _SkillAwareStubGraph.last_request.applied_skills == ()
+    assembled = _SkillAwareStubGraph.last_request.assembled_context
+    assert assembled is not None
+    assert [s for s in assembled.segments if s.role == "system"] == []
 
 
 def test_runtime_resume_rejects_invalid_persisted_skill_payload_with_source_path(
@@ -6367,7 +6382,9 @@ def test_runtime_resume_uses_frozen_applied_skill_payloads_when_live_skill_chang
 
     assert resumed.session.status == "completed"
     assert _ApprovalThenCaptureSkillGraph.last_request is not None
-    assert _ApprovalThenCaptureSkillGraph.last_request.applied_skills == ()
+    assembled = _ApprovalThenCaptureSkillGraph.last_request.assembled_context
+    assert assembled is not None
+    assert [s for s in assembled.segments if s.role == "system"] == []
 
 
 def test_runtime_resume_preserves_explicit_empty_applied_skill_snapshot(
@@ -6409,7 +6426,9 @@ def test_runtime_resume_preserves_explicit_empty_applied_skill_snapshot(
 
     assert resumed.session.status == "completed"
     assert _ApprovalThenCaptureSkillGraph.last_request is not None
-    assert _ApprovalThenCaptureSkillGraph.last_request.applied_skills == ()
+    assembled = _ApprovalThenCaptureSkillGraph.last_request.assembled_context
+    assert assembled is not None
+    assert [s for s in assembled.segments if s.role == "system"] == []
 
 
 def test_runtime_resume_uses_persisted_approval_mode_for_follow_up_gated_tools(
@@ -6541,15 +6560,14 @@ def test_runtime_approval_resume_preserves_canonical_continuity_state(tmp_path: 
         "tool_result_start": 0,
         "tool_result_end": 2,
     }
-    continuity_state = cast(
-        RuntimeContinuityState | None,
-        created_providers[-1].requests[-1].context_window.continuity_state,
-    )
-    context_window = cast(RuntimeContextWindow, created_providers[-1].requests[-1].context_window)
+    assembled_context = created_providers[-1].requests[-1].assembled_context
+    assert assembled_context is not None
+    continuity_state = cast(RuntimeContinuityState | None, assembled_context.continuity_state)
+    context_window = cast(RuntimeContextWindow, resumed.session.metadata["context_window"])
     assert continuity_state is not None
     assert continuity_state.metadata_payload() == expected_resumed_continuity
-    assert context_window.summary_anchor == (resumed_continuity_summary["anchor"])
-    assert context_window.summary_source == {
+    assert context_window["summary_anchor"] == (resumed_continuity_summary["anchor"])
+    assert context_window["summary_source"] == {
         "tool_result_start": 0,
         "tool_result_end": 2,
     }
@@ -8201,7 +8219,9 @@ def test_runtime_agent_skills_config_loads_and_persists_runtime_skills(
         "skills": {"enabled": True, "paths": ["agent-skills"]},
     }
     assert _SkillCapturingStubGraph.last_request is not None
-    assert _SkillCapturingStubGraph.last_request.applied_skills == ()
+    assembled = _SkillCapturingStubGraph.last_request.assembled_context
+    assert assembled is not None
+    assert [s for s in assembled.segments if s.role == "system"] == []
 
 
 def test_runtime_agent_manifest_skill_refs_select_runtime_skills(
@@ -8244,9 +8264,9 @@ def test_runtime_agent_manifest_skill_refs_select_runtime_skills(
     assert response.events[1].payload["selected_skills"] == ["demo"]
     assert response.session.metadata["applied_skills"] == []
     assert _SkillCapturingStubGraph.last_request is not None
-    assert _SkillCapturingStubGraph.last_request.applied_skills == ()
-    assert "<name>demo</name>" in _SkillCapturingStubGraph.last_request.skill_prompt_context
-    assert "<name>zeta</name>" not in _SkillCapturingStubGraph.last_request.skill_prompt_context
+    assembled = _SkillCapturingStubGraph.last_request.assembled_context
+    assert assembled is not None
+    assert [s for s in assembled.segments if s.role == "system"] == []
 
 
 def test_runtime_agent_manifest_skill_refs_combine_with_request_skills(
@@ -8295,9 +8315,12 @@ def test_runtime_agent_manifest_skill_refs_combine_with_request_skills(
     assert response.events[2].payload["skills"] == ["zeta"]
     assert response.session.metadata["applied_skills"] == ["zeta"]
     assert _SkillCapturingStubGraph.last_request is not None
-    assert [skill["name"] for skill in _SkillCapturingStubGraph.last_request.applied_skills] == [
-        "zeta"
-    ]
+    assembled = _SkillCapturingStubGraph.last_request.assembled_context
+    assert assembled is not None
+    system_contents = [s.content for s in assembled.segments if s.role == "system"]
+    assert any(
+        isinstance(item, str) and "Apply requested skill." in item for item in system_contents
+    )
 
 
 def test_runtime_resume_uses_persisted_selected_skill_names_when_payloads_missing(
@@ -8409,7 +8432,9 @@ def test_runtime_resume_uses_persisted_selected_skill_names_when_payloads_missin
 
     assert resumed.session.status == "completed"
     assert _ApprovalThenCaptureSkillGraph.last_request is not None
-    assert _ApprovalThenCaptureSkillGraph.last_request.applied_skills == ()
+    assembled = _ApprovalThenCaptureSkillGraph.last_request.assembled_context
+    assert assembled is not None
+    assert [s for s in assembled.segments if s.role == "system"] == []
 
 
 def test_runtime_request_agent_override_can_enable_skill_loading(

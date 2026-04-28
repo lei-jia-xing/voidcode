@@ -1338,11 +1338,33 @@ class VoidCodeRuntime:
         session: SessionState,
         *,
         events: tuple[EventEnvelope, ...],
+        force_loaded_skills: tuple[dict[str, object], ...] = (),
     ) -> SessionState:
         loaded_payloads = [
             event.payload for event in events if event.event_type == "runtime.skill_loaded"
         ]
-        if not loaded_payloads:
+        implicit_force_loaded: tuple[dict[str, object], ...] = ()
+        raw_snapshot = session.metadata.get("skill_snapshot")
+        if isinstance(raw_snapshot, dict):
+            snapshot_payload = cast(dict[str, object], raw_snapshot)
+            applied_payloads = snapshot_payload.get("applied_skill_payloads")
+            if isinstance(applied_payloads, list):
+                normalized: list[dict[str, object]] = []
+                for item in cast(list[object], applied_payloads):
+                    if not isinstance(item, dict):
+                        continue
+                    payload = cast(dict[str, object], item)
+                    normalized.append(
+                        {
+                            "name": payload.get("name"),
+                            "source": "force_load",
+                            "source_path": payload.get("source_path"),
+                        }
+                    )
+                implicit_force_loaded = tuple(normalized)
+
+        merged_payloads = [*loaded_payloads, *force_loaded_skills, *implicit_force_loaded]
+        if not merged_payloads:
             return session
         return SessionState(
             session=session.session,
@@ -1350,7 +1372,7 @@ class VoidCodeRuntime:
             turn=session.turn,
             metadata={
                 **session.metadata,
-                "loaded_skills": loaded_payloads,
+                "loaded_skills": merged_payloads,
             },
         )
 
@@ -1505,15 +1527,12 @@ class VoidCodeRuntime:
             agent=effective_config.agent,
             source="run",
         )
-        frozen_applied_skills = skill_snapshot.applied_skill_payloads
         catalog_skill_context = self._catalog_skill_context(
             skill_registry,
             available_skill_names=tuple(loaded_skill_names),
             selected_skill_names=skill_snapshot.selected_skill_names,
         )
         skill_prompt_context = skill_snapshot.skill_prompt_context
-        if not frozen_applied_skills:
-            skill_prompt_context = catalog_skill_context
         if skills_config is not None and skills_config.enabled is True:
             session = SessionState(
                 session=session.session,
@@ -4762,6 +4781,19 @@ class VoidCodeRuntime:
             "applied_skills": [payload["name"] for payload in snapshot.applied_skill_payloads],
             "skill_snapshot": snapshot_payload(snapshot),
         }
+
+    @staticmethod
+    def _force_loaded_skill_payloads(
+        snapshot: SkillExecutionSnapshot,
+    ) -> tuple[dict[str, object], ...]:
+        return tuple(
+            {
+                "name": payload.get("name"),
+                "source": "force_load",
+                "source_path": payload.get("source_path"),
+            }
+            for payload in snapshot.applied_skill_payloads
+        )
 
     def _skill_snapshot_from_metadata(
         self,

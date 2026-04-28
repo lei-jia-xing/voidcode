@@ -510,6 +510,7 @@ class RuntimeResumeCoordinator:
             agent=effective_config.agent,
             source="resume",
         )
+
         graph_request = GraphRunRequest(
             session=session,
             prompt=prompt,

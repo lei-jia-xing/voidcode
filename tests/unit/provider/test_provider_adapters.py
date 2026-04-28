@@ -51,6 +51,25 @@ class _StubContextWindow:
         return self._continuity_state
 
 
+@dataclass(frozen=True, slots=True)
+class _StubSegment:
+    role: str
+    content: str | None
+    tool_call_id: str | None = None
+    tool_name: str | None = None
+    tool_arguments: dict[str, object] | None = None
+    metadata: dict[str, object] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _StubAssembledContext:
+    prompt: str
+    tool_results: tuple[ToolResult, ...]
+    continuity_state: object | None
+    segments: tuple[_StubSegment, ...]
+    metadata: dict[str, object]
+
+
 def _build_turn_request(*, model_name: str) -> ProviderTurnRequest:
     tool_results: tuple[ToolResult, ...] = ()
     return ProviderTurnRequest(
@@ -1223,72 +1242,7 @@ def test_opencode_go_provider_sanitizes_user_tool_feedback(
     assert '"data_uri": {"byte_count"' in feedback
 
 
-@pytest.mark.parametrize(
-    ("agent_preset", "expected_fragment"),
-    [
-        (
-            {
-                "preset": "leader",
-                "prompt_profile": "leader",
-                "prompt_materialization": _prompt_materialization_payload("leader"),
-                "model": "openai/demo",
-                "execution_engine": "provider",
-            },
-            "VoidCode's leader agent",
-        ),
-        (
-            {
-                "preset": "worker",
-                "prompt_profile": "worker",
-                "prompt_materialization": _prompt_materialization_payload("worker"),
-                "model": "openai/demo",
-                "execution_engine": "provider",
-            },
-            "VoidCode's worker agent",
-        ),
-    ],
-)
-def test_provider_adapter_materializes_builtin_agent_prompt_profiles(
-    monkeypatch: pytest.MonkeyPatch,
-    agent_preset: dict[str, object],
-    expected_fragment: str,
-) -> None:
-    provider = OpenAIModelProvider()
-    provider = provider.turn_provider()
-    request = _build_turn_request(model_name="openai")
-    request = ProviderTurnRequest(
-        prompt=request.prompt,
-        available_tools=request.available_tools,
-        tool_results=request.tool_results,
-        context_window=request.context_window,
-        applied_skills=request.applied_skills,
-        raw_model=request.raw_model,
-        provider_name=request.provider_name,
-        model_name=request.model_name,
-        agent_preset=agent_preset,
-        attempt=request.attempt,
-        abort_signal=request.abort_signal,
-    )
-    _patch_litellm_completion(
-        monkeypatch,
-        mode="completion",
-        completion_content="hello world",
-    )
-
-    _ = provider.propose_turn(request)
-
-    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
-    assert isinstance(payload_obj, dict)
-    payload = cast(dict[str, object], payload_obj)
-    messages_obj = payload.get("messages")
-    assert isinstance(messages_obj, list)
-    messages = cast(list[dict[str, str]], messages_obj)
-    assert messages[0]["role"] == "system"
-    assert expected_fragment in messages[0]["content"]
-    assert messages[1] == {"role": "user", "content": "read sample.txt"}
-
-
-def test_provider_adapter_applies_serialized_model_family_prompt_override(
+def test_provider_adapter_uses_runtime_assembled_context_for_agent_system_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     provider = OpenAIModelProvider()
@@ -1303,16 +1257,16 @@ def test_provider_adapter_applies_serialized_model_family_prompt_override(
         raw_model=request.raw_model,
         provider_name=request.provider_name,
         model_name=request.model_name,
-        agent_preset={
-            "preset": "leader",
-            "prompt_profile": "leader",
-            "prompt_materialization": _prompt_materialization_payload(
-                "leader",
-                model_family_overrides={"openai": "worker"},
+        assembled_context=_StubAssembledContext(
+            prompt="read sample.txt",
+            tool_results=(),
+            continuity_state=None,
+            segments=(
+                _StubSegment(role="system", content="Runtime agent system prompt."),
+                _StubSegment(role="user", content="read sample.txt"),
             ),
-            "model": "openai/demo",
-            "execution_engine": "provider",
-        },
+            metadata={},
+        ),
         attempt=request.attempt,
         abort_signal=request.abort_signal,
     )
@@ -1331,11 +1285,11 @@ def test_provider_adapter_applies_serialized_model_family_prompt_override(
     assert isinstance(messages_obj, list)
     messages = cast(list[dict[str, str]], messages_obj)
     assert messages[0]["role"] == "system"
-    assert "VoidCode's worker agent" in messages[0]["content"]
+    assert messages[0]["content"] == "Runtime agent system prompt."
     assert messages[1] == {"role": "user", "content": "read sample.txt"}
 
 
-def test_provider_adapter_preserves_serialized_prompt_profile_override(
+def test_provider_adapter_uses_runtime_assembled_context_for_model_family_override(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     provider = OpenAIModelProvider()
@@ -1350,13 +1304,16 @@ def test_provider_adapter_preserves_serialized_prompt_profile_override(
         raw_model=request.raw_model,
         provider_name=request.provider_name,
         model_name=request.model_name,
-        agent_preset={
-            "preset": "leader",
-            "prompt_profile": "researcher",
-            "prompt_materialization": _prompt_materialization_payload("researcher"),
-            "model": "openai/demo",
-            "execution_engine": "provider",
-        },
+        assembled_context=_StubAssembledContext(
+            prompt="read sample.txt",
+            tool_results=(),
+            continuity_state=None,
+            segments=(
+                _StubSegment(role="system", content="Runtime model-family override prompt."),
+                _StubSegment(role="user", content="read sample.txt"),
+            ),
+            metadata={},
+        ),
         attempt=request.attempt,
         abort_signal=request.abort_signal,
     )
@@ -1375,11 +1332,11 @@ def test_provider_adapter_preserves_serialized_prompt_profile_override(
     assert isinstance(messages_obj, list)
     messages = cast(list[dict[str, str]], messages_obj)
     assert messages[0]["role"] == "system"
-    assert "VoidCode's researcher agent" in messages[0]["content"]
+    assert messages[0]["content"] == "Runtime model-family override prompt."
     assert messages[1] == {"role": "user", "content": "read sample.txt"}
 
 
-def test_provider_adapter_falls_back_for_unknown_agent_prompt_profile(
+def test_provider_adapter_uses_runtime_assembled_context_for_prompt_profile_override(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     provider = OpenAIModelProvider()
@@ -1394,12 +1351,63 @@ def test_provider_adapter_falls_back_for_unknown_agent_prompt_profile(
         raw_model=request.raw_model,
         provider_name=request.provider_name,
         model_name=request.model_name,
-        agent_preset={
-            "preset": "leader",
-            "prompt_profile": "custom-review",
-            "model": "openai/demo",
-            "execution_engine": "provider",
-        },
+        assembled_context=_StubAssembledContext(
+            prompt="read sample.txt",
+            tool_results=(),
+            continuity_state=None,
+            segments=(
+                _StubSegment(role="system", content="Runtime prompt-profile message."),
+                _StubSegment(role="user", content="read sample.txt"),
+            ),
+            metadata={},
+        ),
+        attempt=request.attempt,
+        abort_signal=request.abort_signal,
+    )
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        completion_content="hello world",
+    )
+
+    _ = provider.propose_turn(request)
+
+    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+    assert isinstance(payload_obj, dict)
+    payload = cast(dict[str, object], payload_obj)
+    messages_obj = payload.get("messages")
+    assert isinstance(messages_obj, list)
+    messages = cast(list[dict[str, str]], messages_obj)
+    assert messages[0]["role"] == "system"
+    assert messages[0]["content"] == "Runtime prompt-profile message."
+    assert messages[1] == {"role": "user", "content": "read sample.txt"}
+
+
+def test_provider_adapter_uses_runtime_assembled_context_for_unknown_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = OpenAIModelProvider()
+    provider = provider.turn_provider()
+    request = _build_turn_request(model_name="openai")
+    request = ProviderTurnRequest(
+        prompt=request.prompt,
+        available_tools=request.available_tools,
+        tool_results=request.tool_results,
+        context_window=request.context_window,
+        applied_skills=request.applied_skills,
+        raw_model=request.raw_model,
+        provider_name=request.provider_name,
+        model_name=request.model_name,
+        assembled_context=_StubAssembledContext(
+            prompt="read sample.txt",
+            tool_results=(),
+            continuity_state=None,
+            segments=(
+                _StubSegment(role="system", content="Runtime custom-review prompt."),
+                _StubSegment(role="user", content="read sample.txt"),
+            ),
+            metadata={},
+        ),
         attempt=request.attempt,
         abort_signal=request.abort_signal,
     )
@@ -1419,11 +1427,7 @@ def test_provider_adapter_falls_back_for_unknown_agent_prompt_profile(
     messages = cast(list[dict[str, str]], messages_obj)
     assert messages[0] == {
         "role": "system",
-        "content": (
-            "Runtime-selected VoidCode agent prompt profile: custom-review. "
-            "Treat this as the active agent role profile for this single-agent turn while "
-            "still following the runtime-provided tool and skill boundaries."
-        ),
+        "content": "Runtime custom-review prompt.",
     }
 
 
