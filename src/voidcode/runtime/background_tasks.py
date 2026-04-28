@@ -93,6 +93,7 @@ class RuntimeBackgroundTaskSupervisor:
     def __init__(self, runtime: VoidCodeRuntime) -> None:
         self._runtime = runtime
         self._queue_lock = threading.RLock()
+        self._slot_available = threading.Condition(self._queue_lock)
         self._provider_running_counts: dict[str, int] = {}
         self._model_running_counts: dict[str, int] = {}
 
@@ -197,6 +198,56 @@ class RuntimeBackgroundTaskSupervisor:
             self._model_running_counts[identity.model_key] = model_count
         else:
             self._model_running_counts.pop(identity.model_key, None)
+        self._slot_available.notify_all()
+
+    def _task_cancel_requested(self, task_id: str) -> bool:
+        task = self._runtime._session_store.load_background_task(
+            workspace=self._runtime._workspace,
+            task_id=task_id,
+        )
+        return task.status == "cancelled" or task.cancel_requested_at is not None
+
+    def _mark_background_task_cancelled_during_retry_wait(
+        self,
+        *,
+        task_id: str,
+    ) -> None:
+        terminal_task = self._runtime._session_store.mark_background_task_terminal(
+            workspace=self._runtime._workspace,
+            task_id=task_id,
+            status="cancelled",
+            error="cancelled by parent during delegated execution",
+        )
+        self.run_background_task_lifecycle_hook(terminal_task)
+
+    def _wait_for_rate_limit_backoff_or_cancel(
+        self,
+        *,
+        task_id: str,
+        retry_count: int,
+    ) -> bool:
+        deadline = time.monotonic() + self._rate_limit_backoff_seconds(retry_count)
+        while True:
+            if self._task_cancel_requested(task_id):
+                return True
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            time.sleep(min(remaining, 0.05))
+
+    def _wait_for_slot_or_cancel(
+        self,
+        *,
+        task_id: str,
+        identity: _BackgroundTaskConcurrencyIdentity,
+    ) -> bool:
+        with self._slot_available:
+            while not self._can_start_task(identity):
+                if self._task_cancel_requested(task_id):
+                    return True
+                self._slot_available.wait(timeout=0.5)
+            self._reserve_slot(identity)
+            return False
 
     def _queued_counts_for_identity(
         self, identity: _BackgroundTaskConcurrencyIdentity
@@ -900,14 +951,19 @@ class RuntimeBackgroundTaskSupervisor:
                         self._release_slot(slot_identity)
                         slot_reserved = False
                     self._drain_background_task_queue()
-                    time.sleep(self._rate_limit_backoff_seconds(retry_count))
-                    while True:
-                        with self._queue_lock:
-                            if self._can_start_task(slot_identity):
-                                self._reserve_slot(slot_identity)
-                                slot_reserved = True
-                                break
-                        time.sleep(0.01)
+                    if self._wait_for_rate_limit_backoff_or_cancel(
+                        task_id=task_id,
+                        retry_count=retry_count,
+                    ):
+                        self._mark_background_task_cancelled_during_retry_wait(task_id=task_id)
+                        return
+                    if self._wait_for_slot_or_cancel(
+                        task_id=task_id,
+                        identity=slot_identity,
+                    ):
+                        self._mark_background_task_cancelled_during_retry_wait(task_id=task_id)
+                        return
+                    slot_reserved = True
                     continue
                 self.finalize_background_task_from_session_response(session_response=response)
                 return
