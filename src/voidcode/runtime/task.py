@@ -91,6 +91,7 @@ _CATEGORY_TO_SUBAGENT_PRESET: dict[str, SubagentExecutablePreset] = {
     "visual-engineering": "product",
     "unspecified-high": "worker",
 }
+SUPPORTED_SUBAGENT_CATEGORIES: tuple[str, ...] = tuple(sorted(_CATEGORY_TO_SUBAGENT_PRESET))
 
 _CALLABLE_SUBAGENT_PRESETS = frozenset({"advisor", "explore", "product", "researcher", "worker"})
 _BACKGROUND_TASK_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
@@ -103,6 +104,10 @@ _BACKGROUND_TASK_ALLOWED_TRANSITIONS: dict[
     "failed": frozenset(),
     "cancelled": frozenset(),
 }
+
+
+def supported_subagent_categories() -> tuple[str, ...]:
+    return SUPPORTED_SUBAGENT_CATEGORIES
 
 
 def resolve_subagent_route(requested: SubagentRoutingIdentity) -> ResolvedSubagentRoute:

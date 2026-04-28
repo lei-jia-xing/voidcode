@@ -14,6 +14,7 @@ from voidcode.runtime.config_schema import (
     generate_starter_runtime_config,
     runtime_config_json_schema,
 )
+from voidcode.runtime.task import supported_subagent_categories
 
 
 def test_runtime_config_json_schema_exposes_core_fields() -> None:
@@ -29,6 +30,13 @@ def test_runtime_config_json_schema_exposes_core_fields() -> None:
         "description": "Default approval policy for tool execution.",
     }
     assert properties["agent"] == {"$ref": "#/$defs/agentConfig"}
+    agents = cast(dict[str, object], properties["agents"])
+    agent_map_properties = cast(dict[str, object], agents["properties"])
+    assert agent_map_properties["worker"] == {"$ref": "#/$defs/agentConfig"}
+    assert agents["additionalProperties"] == {"$ref": "#/$defs/customAgentConfig"}
+    categories = cast(dict[str, object], properties["categories"])
+    category_names = cast(dict[str, object], categories["propertyNames"])
+    assert category_names["enum"] == list(supported_subagent_categories())
     defs = schema["$defs"]
     assert isinstance(defs, dict)
     agent_config = cast(dict[str, object], defs["agentConfig"])
@@ -42,6 +50,16 @@ def test_runtime_config_json_schema_exposes_core_fields() -> None:
         "researcher",
         "product",
     ]
+    assert agent_properties["fallback_models"] == {
+        "type": "array",
+        "items": {"type": "string", "minLength": 1},
+        "description": (
+            "Agent-scoped shorthand for provider_fallback.fallback_models; "
+            "requires agent.model as the preferred model."
+        ),
+    }
+    custom_agent_config = cast(dict[str, object], defs["customAgentConfig"])
+    assert custom_agent_config["required"] == ["preset"]
     mcp_schema = cast(dict[str, object], properties["mcp"])
     mcp_properties = cast(dict[str, object], mcp_schema["properties"])
     mcp_servers = cast(dict[str, object], mcp_properties["servers"])

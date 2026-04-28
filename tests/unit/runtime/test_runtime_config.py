@@ -28,6 +28,7 @@ from voidcode.runtime.config import (
     TOOL_TIMEOUT_ENV_VAR,
     RuntimeAgentConfig,
     RuntimeBackgroundTaskConfig,
+    RuntimeCategoryConfig,
     RuntimeConfig,
     RuntimeContextWindowConfig,
     RuntimeFormatterPresetConfig,
@@ -57,6 +58,7 @@ from voidcode.runtime.config import (
     serialize_runtime_agent_config,
     serialize_runtime_agents_config,
     serialize_runtime_background_task_config,
+    serialize_runtime_categories_config,
     serialize_runtime_context_window_config,
     user_runtime_config_path,
 )
@@ -1300,6 +1302,54 @@ def test_runtime_config_parses_agents_map_with_builtin_keys(tmp_path: Path) -> N
     )
 
 
+def test_runtime_config_parses_agents_fallback_models_shorthand(tmp_path: Path) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps(
+            {
+                "agents": {
+                    "worker": {
+                        "model": "opencode/gpt-5.4",
+                        "fallback_models": ["opencode/gpt-5.3", "custom/demo"],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.agents is not None
+    assert config.agents["worker"].provider_fallback == RuntimeProviderFallbackConfig(
+        preferred_model="opencode/gpt-5.4",
+        fallback_models=("opencode/gpt-5.3", "custom/demo"),
+    )
+    assert serialize_runtime_agent_config(config.agents["worker"]) == {
+        "preset": "worker",
+        "prompt_profile": "worker",
+        "prompt_materialization": _prompt_materialization_payload("worker"),
+        "model": "opencode/gpt-5.4",
+        "execution_engine": "provider",
+        "provider_fallback": {
+            "preferred_model": "opencode/gpt-5.4",
+            "fallback_models": ["opencode/gpt-5.3", "custom/demo"],
+        },
+    }
+
+
+def test_runtime_config_rejects_agents_fallback_models_without_model(tmp_path: Path) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps({"agents": {"worker": {"fallback_models": ["opencode/gpt-5.3"]}}}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"runtime config field 'agents.worker.model' is required",
+    ):
+        _ = load_runtime_config(tmp_path, env={})
+
+
 def test_runtime_config_parses_agents_map_with_custom_keys(tmp_path: Path) -> None:
     runtime_config_path(tmp_path).write_text(
         json.dumps(
@@ -1556,6 +1606,41 @@ def test_runtime_config_parses_agents_payload_via_helper() -> None:
     assert parsed is not None
     assert parsed["leader"].preset == "leader"
     assert parsed["my_assistant"].preset == "advisor"
+
+
+def test_runtime_config_parses_category_model_overrides(tmp_path: Path) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps(
+            {
+                "categories": {
+                    "quick": {"model": "openai/gpt-4o-mini"},
+                    "ultrabrain": {"model": "openai/o3"},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.categories == {
+        "quick": RuntimeCategoryConfig(model="openai/gpt-4o-mini"),
+        "ultrabrain": RuntimeCategoryConfig(model="openai/o3"),
+    }
+    assert serialize_runtime_categories_config(config.categories) == {
+        "quick": {"model": "openai/gpt-4o-mini"},
+        "ultrabrain": {"model": "openai/o3"},
+    }
+
+
+def test_runtime_config_rejects_unknown_category_model_override(tmp_path: Path) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps({"categories": {"mystery": {"model": "openai/gpt-4o"}}}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="categories.mystery"):
+        _ = load_runtime_config(tmp_path, env={})
 
 
 def test_runtime_config_parses_repo_local_max_steps(tmp_path: Path) -> None:

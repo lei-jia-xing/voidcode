@@ -268,8 +268,31 @@ def runtime_config_json_schema() -> dict[str, object]:
             "agent": {"$ref": "#/$defs/agentConfig"},
             "agents": {
                 "type": "object",
-                "additionalProperties": {"$ref": "#/$defs/agentConfig"},
+                "properties": {
+                    "leader": {"$ref": "#/$defs/agentConfig"},
+                    "worker": {"$ref": "#/$defs/agentConfig"},
+                    "advisor": {"$ref": "#/$defs/agentConfig"},
+                    "explore": {"$ref": "#/$defs/agentConfig"},
+                    "researcher": {"$ref": "#/$defs/agentConfig"},
+                    "product": {"$ref": "#/$defs/agentConfig"},
+                },
+                "additionalProperties": {"$ref": "#/$defs/customAgentConfig"},
                 "propertyNames": {"pattern": "^[a-z][a-z0-9_-]*$"},
+            },
+            "categories": {
+                "type": "object",
+                "description": "Per task-category runtime model overrides for delegated sessions.",
+                "additionalProperties": {"$ref": "#/$defs/categoryConfig"},
+                "propertyNames": {
+                    "enum": [
+                        "deep",
+                        "quick",
+                        "ultrabrain",
+                        "unspecified-high",
+                        "visual-engineering",
+                        "writing",
+                    ]
+                },
             },
         },
         "$defs": {
@@ -334,7 +357,26 @@ def runtime_config_json_schema() -> dict[str, object]:
                         "type": "object",
                         "additionalProperties": True,
                     },
+                    "fallback_models": {
+                        "type": "array",
+                        "items": {"type": "string", "minLength": 1},
+                        "description": (
+                            "Agent-scoped shorthand for provider_fallback.fallback_models; "
+                            "requires agent.model as the preferred model."
+                        ),
+                    },
                 },
+            },
+            "categoryConfig": {
+                "type": "object",
+                "additionalProperties": True,
+                "properties": {
+                    "model": {"type": "string", "minLength": 1},
+                },
+            },
+            "customAgentConfig": {
+                "allOf": [{"$ref": "#/$defs/agentConfig"}],
+                "required": ["preset"],
             },
         },
     }
