@@ -5875,8 +5875,8 @@ def test_runtime_emits_skills_loaded_catalog_without_default_full_injection(tmp_
     assembled = _SkillCapturingStubGraph.last_request.assembled_context
     assert assembled is not None
     system_segments = [s.content for s in assembled.segments if s.role == "system"]
-    assert any(
-        isinstance(item, str) and "Runtime skills catalog (recommended/visible)." in item
+    assert all(
+        not isinstance(item, str) or "Runtime skills catalog (recommended/visible)." in item
         for item in system_segments
     )
     assert not any(
@@ -5904,8 +5904,8 @@ def test_runtime_persists_explicit_empty_applied_skill_snapshot(tmp_path: Path) 
     assembled = _SkillCapturingStubGraph.last_request.assembled_context
     assert assembled is not None
     system_segments = [s.content for s in assembled.segments if s.role == "system"]
-    assert any(
-        isinstance(item, str) and "Runtime skills catalog (recommended/visible)." in item
+    assert all(
+        not isinstance(item, str) or "Runtime skills catalog (recommended/visible)." in item
         for item in system_segments
     )
 
