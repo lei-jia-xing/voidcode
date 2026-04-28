@@ -168,6 +168,21 @@ class RuntimeAcpConfig:
     handshake_payload: dict[str, object] = field(default_factory=dict)
 
 
+def _empty_background_task_concurrency_map() -> dict[str, int]:
+    return {}
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeBackgroundTaskConfig:
+    default_concurrency: int = 5
+    provider_concurrency: Mapping[str, int] = field(
+        default_factory=_empty_background_task_concurrency_map
+    )
+    model_concurrency: Mapping[str, int] = field(
+        default_factory=_empty_background_task_concurrency_map
+    )
+
+
 type McpTransport = Literal["stdio"]
 
 
@@ -254,6 +269,9 @@ class RuntimeConfig:
     context_window: RuntimeContextWindowConfig | None = None
     lsp: RuntimeLspConfig | None = None
     acp: RuntimeAcpConfig | None = None
+    background_task: RuntimeBackgroundTaskConfig = field(
+        default_factory=RuntimeBackgroundTaskConfig
+    )
     mcp: RuntimeMcpConfig | None = None
     tui: RuntimeTuiConfig | None = None
     provider_fallback: RuntimeProviderFallbackConfig | None = None
@@ -277,6 +295,7 @@ class RuntimeConfigOverrides:
     context_window: RuntimeContextWindowConfig | None = None
     lsp: RuntimeLspConfig | None = None
     acp: RuntimeAcpConfig | None = None
+    background_task: RuntimeBackgroundTaskConfig | None = None
     mcp: RuntimeMcpConfig | None = None
     tui: RuntimeTuiConfig | None = None
     provider_fallback: RuntimeProviderFallbackConfig | None = None
@@ -424,6 +443,7 @@ def load_runtime_config(
         skills=repo_local.skills,
         context_window=repo_local.context_window,
         lsp=resolved_lsp,
+        background_task=repo_local.background_task or RuntimeBackgroundTaskConfig(),
         mcp=repo_local.mcp,
         tui=resolved_tui,
         provider_fallback=repo_local.provider_fallback,
@@ -502,6 +522,9 @@ def _load_repo_local_config(
     raw_mcp = payload.get("mcp")
     mcp = _parse_mcp_config(raw_mcp)
 
+    raw_background_task = payload.get("background_task")
+    background_task = _parse_background_task_config(raw_background_task)
+
     raw_tui = payload.get("tui")
     tui = _parse_tui_config(raw_tui)
 
@@ -537,6 +560,7 @@ def _load_repo_local_config(
         skills=skills,
         context_window=context_window,
         lsp=lsp,
+        background_task=background_task,
         mcp=mcp,
         tui=tui,
         provider_fallback=provider_fallback,
@@ -826,6 +850,55 @@ def _parse_optional_positive_int(value: object, *, field_path: str) -> int | Non
     if value < 1:
         raise ValueError(f"runtime config field '{field_path}' must be greater than or equal to 1")
     return value
+
+
+def _parse_concurrency_limit(value: object, *, field_path: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ValueError(f"runtime config field '{field_path}' must be an integer")
+    if value < 1:
+        raise ValueError(f"runtime config field '{field_path}' must be greater than or equal to 1")
+    return value
+
+
+def _parse_concurrency_map(value: object, *, field_path: str) -> dict[str, int]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(f"runtime config field '{field_path}' must be an object when provided")
+    parsed: dict[str, int] = {}
+    for raw_key, raw_limit in cast(dict[object, object], value).items():
+        if not isinstance(raw_key, str) or not raw_key.strip():
+            raise ValueError(f"runtime config field '{field_path}' keys must be non-empty strings")
+        parsed[raw_key] = _parse_concurrency_limit(
+            raw_limit,
+            field_path=f"{field_path}.{raw_key}",
+        )
+    return parsed
+
+
+def _parse_background_task_config(raw_value: object) -> RuntimeBackgroundTaskConfig | None:
+    if raw_value is None:
+        return None
+    if not isinstance(raw_value, dict):
+        raise ValueError("runtime config field 'background_task' must be an object when provided")
+    payload = cast(dict[str, object], raw_value)
+    default_concurrency = RuntimeBackgroundTaskConfig().default_concurrency
+    if "default_concurrency" in payload:
+        default_concurrency = _parse_concurrency_limit(
+            payload.get("default_concurrency"),
+            field_path="background_task.default_concurrency",
+        )
+    return RuntimeBackgroundTaskConfig(
+        default_concurrency=default_concurrency,
+        provider_concurrency=_parse_concurrency_map(
+            payload.get("provider_concurrency"),
+            field_path="background_task.provider_concurrency",
+        ),
+        model_concurrency=_parse_concurrency_map(
+            payload.get("model_concurrency"),
+            field_path="background_task.model_concurrency",
+        ),
+    )
 
 
 class _RuntimeContextWindowValidationModel(BaseModel):
@@ -1750,6 +1823,19 @@ def serialize_runtime_context_window_config(
         payload["per_tool_result_tokens"] = dict(context_window.per_tool_result_tokens)
     if context_window.tokenizer_model is not None:
         payload["tokenizer_model"] = context_window.tokenizer_model
+    return payload
+
+
+def serialize_runtime_background_task_config(
+    background_task: RuntimeBackgroundTaskConfig,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "default_concurrency": background_task.default_concurrency,
+    }
+    if background_task.provider_concurrency:
+        payload["provider_concurrency"] = dict(background_task.provider_concurrency)
+    if background_task.model_concurrency:
+        payload["model_concurrency"] = dict(background_task.model_concurrency)
     return payload
 
 

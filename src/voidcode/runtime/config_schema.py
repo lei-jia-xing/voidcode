@@ -239,6 +239,22 @@ def runtime_config_json_schema() -> dict[str, object]:
                     "prefer environment variables for secrets."
                 ),
             },
+            "background_task": {
+                "type": "object",
+                "additionalProperties": True,
+                "description": "Background task queue and concurrency limits.",
+                "properties": {
+                    "default_concurrency": {"type": "integer", "minimum": 1},
+                    "provider_concurrency": {
+                        "type": "object",
+                        "additionalProperties": {"type": "integer", "minimum": 1},
+                    },
+                    "model_concurrency": {
+                        "type": "object",
+                        "additionalProperties": {"type": "integer", "minimum": 1},
+                    },
+                },
+            },
             "plan": {
                 "type": "object",
                 "additionalProperties": True,

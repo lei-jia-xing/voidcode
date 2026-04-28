@@ -56,6 +56,7 @@ class RuntimeRequestMetadata(TypedDict, total=False):
 
 class InternalRuntimeRequestMetadata(RuntimeRequestMetadata, total=False):
     background_run: bool
+    background_rate_limit_retry: bool
     background_task_id: str
 
 
@@ -79,7 +80,9 @@ class RuntimeSubagentRoutingMetadata(TypedDict, total=False):
 _STABLE_RUNTIME_REQUEST_METADATA_KEYS = frozenset(
     {"abort_requested", "agent", "command", "delegation", "max_steps", "provider_stream", "skills"}
 )
-_INTERNAL_RUNTIME_REQUEST_METADATA_KEYS = frozenset({"background_run", "background_task_id"})
+_INTERNAL_RUNTIME_REQUEST_METADATA_KEYS = frozenset(
+    {"background_run", "background_rate_limit_retry", "background_task_id"}
+)
 
 
 def _empty_runtime_request_metadata() -> RuntimeRequestMetadata:
@@ -391,6 +394,14 @@ def validate_runtime_request_metadata(
         if not isinstance(background_run, bool):
             raise RuntimeRequestError("request metadata 'background_run' must be a boolean")
         normalized["background_run"] = background_run
+
+    if allow_internal_fields and "background_rate_limit_retry" in metadata:
+        background_rate_limit_retry = metadata["background_rate_limit_retry"]
+        if not isinstance(background_rate_limit_retry, bool):
+            raise RuntimeRequestError(
+                "request metadata 'background_rate_limit_retry' must be a boolean"
+            )
+        normalized["background_rate_limit_retry"] = background_rate_limit_retry
 
     if allow_internal_fields and "background_task_id" in metadata:
         background_task_id = metadata["background_task_id"]

@@ -4,15 +4,19 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
 from ..hook.config import RuntimeHookSurface
 from ..hook.executor import LifecycleHookExecutionRequest, run_lifecycle_hooks
+from ..provider.models import ResolvedProviderConfig
 from .contracts import (
     BackgroundTaskResult,
     InternalRuntimeRequestMetadata,
     RuntimeRequest,
+    RuntimeRequestError,
     RuntimeRequestMetadataPayload,
     RuntimeResponse,
     RuntimeSessionResult,
@@ -24,6 +28,7 @@ from .events import (
     RUNTIME_BACKGROUND_TASK_FAILED,
     RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL,
     RUNTIME_FAILED,
+    RUNTIME_PROVIDER_FALLBACK,
     EventEnvelope,
 )
 from .session import SessionState
@@ -42,10 +47,57 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_BACKGROUND_TASK_RATE_LIMIT_RETRIES = 2
+_BACKGROUND_TASK_RATE_LIMIT_BASE_BACKOFF_SECONDS = 0.05
+
+
+@dataclass(frozen=True, slots=True)
+class _BackgroundTaskConcurrencyIdentity:
+    provider: str
+    model: str
+    limit: int
+    limit_source: str
+
+    @property
+    def model_key(self) -> str:
+        return f"{self.provider}/{self.model}"
+
+
+@dataclass(frozen=True, slots=True)
+class _BackgroundTaskConcurrencySnapshot:
+    provider: str
+    model: str
+    limit: int
+    limit_source: str
+    running_provider: int
+    running_model: int
+    running_total: int
+    queued_provider: int
+    queued_model: int
+    queued_total: int
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "provider": self.provider,
+            "model": self.model,
+            "limit": self.limit,
+            "limit_source": self.limit_source,
+            "running_provider": self.running_provider,
+            "running_model": self.running_model,
+            "running_total": self.running_total,
+            "queued_provider": self.queued_provider,
+            "queued_model": self.queued_model,
+            "queued_total": self.queued_total,
+        }
+
 
 class RuntimeBackgroundTaskSupervisor:
     def __init__(self, runtime: VoidCodeRuntime) -> None:
         self._runtime = runtime
+        self._queue_lock = threading.RLock()
+        self._slot_available = threading.Condition(self._queue_lock)
+        self._provider_running_counts: dict[str, int] = {}
+        self._model_running_counts: dict[str, int] = {}
 
     def start_background_task(self, request: RuntimeRequest) -> BackgroundTaskState:
         runtime = self._runtime
@@ -66,15 +118,282 @@ class RuntimeBackgroundTaskSupervisor:
         runtime._session_store.create_background_task(
             workspace=runtime._workspace, task=initial_state
         )
-        worker = threading.Thread(
-            target=runtime._run_background_task_worker,
-            args=(task_id,),
-            name=f"voidcode-background-task-{task_id}",
-            daemon=True,
-        )
-        runtime._background_task_threads[task_id] = worker
-        worker.start()
+        self._drain_background_task_queue()
         return runtime.load_background_task(task_id)
+
+    def _concurrency_identity_for_request(
+        self, request: RuntimeRequest
+    ) -> _BackgroundTaskConcurrencyIdentity:
+        effective_config = self._runtime._runtime_config_for_request(request)
+        return self._concurrency_identity_for_resolved_provider(
+            effective_config.resolved_provider,
+        )
+
+    def _concurrency_identity_for_resolved_provider(
+        self, resolved_provider: ResolvedProviderConfig
+    ) -> _BackgroundTaskConcurrencyIdentity:
+        target = resolved_provider.active_target
+        provider = target.selection.provider or "deterministic"
+        model = target.selection.model or target.selection.raw_model or "deterministic"
+        return self._concurrency_identity_for_provider_model(provider=provider, model=model)
+
+    def _concurrency_identity_for_provider_model(
+        self,
+        *,
+        provider: str,
+        model: str,
+    ) -> _BackgroundTaskConcurrencyIdentity:
+        model_key = f"{provider}/{model}"
+        background_task_config = self._runtime._config.background_task
+        model_limit = background_task_config.model_concurrency.get(model_key)
+        if model_limit is not None:
+            return _BackgroundTaskConcurrencyIdentity(
+                provider=provider,
+                model=model,
+                limit=model_limit,
+                limit_source="model",
+            )
+        provider_limit = background_task_config.provider_concurrency.get(provider)
+        if provider_limit is not None:
+            return _BackgroundTaskConcurrencyIdentity(
+                provider=provider,
+                model=model,
+                limit=provider_limit,
+                limit_source="provider",
+            )
+        return _BackgroundTaskConcurrencyIdentity(
+            provider=provider,
+            model=model,
+            limit=background_task_config.default_concurrency,
+            limit_source="default",
+        )
+
+    def _fallback_identity_for_event(
+        self,
+        event: EventEnvelope,
+    ) -> _BackgroundTaskConcurrencyIdentity | None:
+        if event.event_type != RUNTIME_PROVIDER_FALLBACK:
+            return None
+        provider = event.payload.get("to_provider")
+        model = event.payload.get("to_model")
+        if not isinstance(provider, str) or not provider:
+            return None
+        if not isinstance(model, str) or not model:
+            return None
+        return self._concurrency_identity_for_provider_model(provider=provider, model=model)
+
+    def _concurrency_identity_for_task(
+        self, task: BackgroundTaskState
+    ) -> _BackgroundTaskConcurrencyIdentity:
+        request = RuntimeRequest(
+            prompt=task.request.prompt,
+            session_id=task.request.session_id,
+            parent_session_id=task.request.parent_session_id,
+            metadata=cast(RuntimeRequestMetadataPayload, task.request.metadata),
+            allocate_session_id=task.request.allocate_session_id,
+        )
+        return self._concurrency_identity_for_request(request)
+
+    def _can_start_task(self, identity: _BackgroundTaskConcurrencyIdentity) -> bool:
+        running_provider = self._provider_running_counts.get(identity.provider, 0)
+        running_model = self._model_running_counts.get(identity.model_key, 0)
+        if identity.limit_source == "model":
+            return running_model < identity.limit
+        if identity.limit_source == "provider":
+            return running_provider < identity.limit
+        return sum(self._provider_running_counts.values()) < identity.limit
+
+    def _reserve_slot(self, identity: _BackgroundTaskConcurrencyIdentity) -> None:
+        self._provider_running_counts[identity.provider] = (
+            self._provider_running_counts.get(identity.provider, 0) + 1
+        )
+        self._model_running_counts[identity.model_key] = (
+            self._model_running_counts.get(identity.model_key, 0) + 1
+        )
+
+    def _release_slot(self, identity: _BackgroundTaskConcurrencyIdentity) -> None:
+        provider_count = max(0, self._provider_running_counts.get(identity.provider, 0) - 1)
+        model_count = max(0, self._model_running_counts.get(identity.model_key, 0) - 1)
+        if provider_count:
+            self._provider_running_counts[identity.provider] = provider_count
+        else:
+            self._provider_running_counts.pop(identity.provider, None)
+        if model_count:
+            self._model_running_counts[identity.model_key] = model_count
+        else:
+            self._model_running_counts.pop(identity.model_key, None)
+        self._slot_available.notify_all()
+
+    def _task_cancel_requested(self, task_id: str) -> bool:
+        task = self._runtime._session_store.load_background_task(
+            workspace=self._runtime._workspace,
+            task_id=task_id,
+        )
+        return task.status == "cancelled" or task.cancel_requested_at is not None
+
+    def _mark_background_task_cancelled_during_retry_wait(
+        self,
+        *,
+        task_id: str,
+    ) -> None:
+        terminal_task = self._runtime._session_store.mark_background_task_terminal(
+            workspace=self._runtime._workspace,
+            task_id=task_id,
+            status="cancelled",
+            error="cancelled by parent during delegated execution",
+        )
+        self.run_background_task_lifecycle_hook(terminal_task)
+
+    def _wait_for_rate_limit_backoff_or_cancel(
+        self,
+        *,
+        task_id: str,
+        retry_count: int,
+    ) -> bool:
+        deadline = time.monotonic() + self._rate_limit_backoff_seconds(retry_count)
+        while True:
+            if self._task_cancel_requested(task_id):
+                return True
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            time.sleep(min(remaining, 0.05))
+
+    def _wait_for_slot_or_cancel(
+        self,
+        *,
+        task_id: str,
+        identity: _BackgroundTaskConcurrencyIdentity,
+    ) -> bool:
+        with self._slot_available:
+            while not self._can_start_task(identity):
+                if self._task_cancel_requested(task_id):
+                    return True
+                self._slot_available.wait(timeout=0.5)
+            self._reserve_slot(identity)
+            return False
+
+    def _queued_counts_for_identity(
+        self, identity: _BackgroundTaskConcurrencyIdentity
+    ) -> tuple[int, int, int]:
+        runtime = self._runtime
+        queued_provider = 0
+        queued_model = 0
+        queued_total = 0
+        for summary in runtime._session_store.list_background_tasks(workspace=runtime._workspace):
+            if summary.status != "queued":
+                continue
+            queued_total += 1
+            task = runtime._session_store.load_background_task(
+                workspace=runtime._workspace,
+                task_id=summary.task.id,
+            )
+            task_identity = self._concurrency_identity_for_task(task)
+            if task_identity.provider == identity.provider:
+                queued_provider += 1
+            if task_identity.model_key == identity.model_key:
+                queued_model += 1
+        return queued_provider, queued_model, queued_total
+
+    def _concurrency_snapshot(
+        self, task: BackgroundTaskState
+    ) -> _BackgroundTaskConcurrencySnapshot:
+        identity = self._concurrency_identity_for_task(task)
+        with self._queue_lock:
+            queued_provider, queued_model, queued_total = self._queued_counts_for_identity(identity)
+            return _BackgroundTaskConcurrencySnapshot(
+                provider=identity.provider,
+                model=identity.model,
+                limit=identity.limit,
+                limit_source=identity.limit_source,
+                running_provider=self._provider_running_counts.get(identity.provider, 0),
+                running_model=self._model_running_counts.get(identity.model_key, 0),
+                running_total=sum(self._provider_running_counts.values()),
+                queued_provider=queued_provider,
+                queued_model=queued_model,
+                queued_total=queued_total,
+            )
+
+    def _concurrency_payload_for_event(self, task: BackgroundTaskState) -> dict[str, object]:
+        if self._runtime._config.background_task.default_concurrency == 5 and not (
+            self._runtime._config.background_task.provider_concurrency
+            or self._runtime._config.background_task.model_concurrency
+        ):
+            return {}
+        try:
+            return {"concurrency": self._concurrency_snapshot(task).as_payload()}
+        except (RuntimeRequestError, ValueError):
+            return {}
+
+    def _drain_background_task_queue(self) -> None:
+        runtime = self._runtime
+        failed_tasks: list[BackgroundTaskState] = []
+        with self._queue_lock:
+            summaries = sorted(
+                runtime._session_store.list_background_tasks(workspace=runtime._workspace),
+                key=lambda summary: (summary.created_at, summary.task.id),
+            )
+            for summary in summaries:
+                if summary.status != "queued":
+                    continue
+                task = runtime._session_store.load_background_task(
+                    workspace=runtime._workspace,
+                    task_id=summary.task.id,
+                )
+                if task.status != "queued" or task.task.id in runtime._background_task_threads:
+                    continue
+                request = RuntimeRequest(
+                    prompt=task.request.prompt,
+                    session_id=task.request.session_id,
+                    parent_session_id=task.request.parent_session_id,
+                    metadata=cast(RuntimeRequestMetadataPayload, task.request.metadata),
+                    allocate_session_id=task.request.allocate_session_id,
+                )
+                try:
+                    identity = self._concurrency_identity_for_task(task)
+                    routing = runtime._session_routing_for_request(request)
+                except (RuntimeRequestError, ValueError) as exc:
+                    failed_task = runtime._session_store.mark_background_task_terminal(
+                        workspace=runtime._workspace,
+                        task_id=task.task.id,
+                        status="failed",
+                        error=str(exc),
+                    )
+                    failed_tasks.append(failed_task)
+                    continue
+                if not self._can_start_task(identity):
+                    continue
+                self._reserve_slot(identity)
+                running_task = runtime._session_store.mark_background_task_running(
+                    workspace=runtime._workspace,
+                    task_id=task.task.id,
+                    session_id=routing.session_id,
+                )
+                if running_task.status != "running":
+                    self._release_slot(identity)
+                    continue
+                worker = threading.Thread(
+                    target=runtime._run_background_task_worker,
+                    args=(task.task.id,),
+                    name=f"voidcode-background-task-{task.task.id}",
+                    daemon=True,
+                )
+                runtime._background_task_threads[task.task.id] = worker
+                try:
+                    worker.start()
+                except RuntimeError as exc:
+                    runtime._background_task_threads.pop(task.task.id, None)
+                    self._release_slot(identity)
+                    failed_task = runtime._session_store.mark_background_task_terminal(
+                        workspace=runtime._workspace,
+                        task_id=task.task.id,
+                        status="failed",
+                        error=str(exc),
+                    )
+                    failed_tasks.append(failed_task)
+                    continue
+        for failed_task in failed_tasks:
+            self.run_background_task_lifecycle_hook(failed_task)
 
     def load_background_task_result(self, task_id: str) -> BackgroundTaskResult:
         task = self._runtime.load_background_task(task_id)
@@ -199,21 +518,40 @@ class RuntimeBackgroundTaskSupervisor:
         result_available = task.result_available
         if not result_available and task.status != "cancelled" and child_result is not None:
             result_available = True
+        routing_error: str | None = None
+        try:
+            routing = task.routing_identity
+        except ValueError as exc:
+            routing = None
+            routing_error = str(exc)
         return BackgroundTaskResult(
             task_id=task.task.id,
             parent_session_id=task.parent_session_id,
             child_session_id=task.session_id,
             status=task.status,
             requested_child_session_id=task.request.session_id or task.session_id,
-            routing=task.routing_identity,
+            routing=routing,
             approval_request_id=task.approval_request_id,
             question_request_id=task.question_request_id,
             approval_blocked=approval_blocked,
             summary_output=summary_output,
-            error=error,
+            error=error or routing_error,
             result_available=result_available,
             cancellation_cause=task.cancellation_cause,
         )
+
+    def _delegated_lifecycle_payloads(
+        self,
+        result: BackgroundTaskResult,
+    ) -> tuple[BackgroundTaskResult, dict[str, object], dict[str, object]]:
+        try:
+            delegation = result.delegated_execution.as_payload()
+            message = result.delegated_message.as_payload()
+        except ValueError as exc:
+            result = replace(result, routing=None, error=result.error or str(exc))
+            delegation = result.delegated_execution.as_payload()
+            message = result.delegated_message.as_payload()
+        return result, delegation, message
 
     def emit_background_task_parent_terminal_event(self, *, task: BackgroundTaskState) -> None:
         runtime = self._runtime
@@ -233,13 +571,15 @@ class RuntimeBackgroundTaskSupervisor:
             "cancelled": RUNTIME_BACKGROUND_TASK_CANCELLED,
         }
         event_type = event_type_by_status[task.status]
+        result, delegation_payload, message_payload = self._delegated_lifecycle_payloads(result)
         payload: dict[str, object] = {
             "task_id": task.task.id,
             "parent_session_id": parent_session_id,
             "status": task.status,
             "result_available": result.result_available,
-            "delegation": result.delegated_execution.as_payload(),
-            "message": result.delegated_message.as_payload(),
+            "delegation": delegation_payload,
+            "message": message_payload,
+            **self._concurrency_payload_for_event(task),
         }
         if result.child_session_id is not None:
             payload["child_session_id"] = result.child_session_id
@@ -346,6 +686,7 @@ class RuntimeBackgroundTaskSupervisor:
             )
             return
         result = self.background_task_result(task=task)
+        result, delegation_payload, message_payload = self._delegated_lifecycle_payloads(result)
         try:
             _ = session_event_appender.append_session_event(
                 workspace=runtime._workspace,
@@ -358,8 +699,9 @@ class RuntimeBackgroundTaskSupervisor:
                     "child_session_id": child_session_id,
                     "status": "running",
                     "approval_blocked": True,
-                    "delegation": result.delegated_execution.as_payload(),
-                    "message": result.delegated_message.as_payload(),
+                    "delegation": delegation_payload,
+                    "message": message_payload,
+                    **self._concurrency_payload_for_event(task),
                     **(
                         {"approval_request_id": approval_request_id}
                         if approval_request_id is not None
@@ -516,6 +858,7 @@ class RuntimeBackgroundTaskSupervisor:
                 fail_incomplete(
                     workspace=runtime._workspace,
                     message="background task interrupted before completion",
+                    include_queued=False,
                 ),
             )
             for failed_task in failed_tasks:
@@ -528,9 +871,12 @@ class RuntimeBackgroundTaskSupervisor:
             )
             self.backfill_parent_background_task_event(task=task)
         runtime._background_tasks_reconciled = True
+        self._drain_background_task_queue()
 
     def run_background_task_worker(self, task_id: str) -> None:
         runtime = self._runtime
+        slot_identity: _BackgroundTaskConcurrencyIdentity | None = None
+        slot_reserved = False
         try:
             task = runtime.load_background_task(task_id)
             if task.status == "cancelled":
@@ -542,13 +888,31 @@ class RuntimeBackgroundTaskSupervisor:
                 metadata=cast(RuntimeRequestMetadataPayload, task.request.metadata),
                 allocate_session_id=task.request.allocate_session_id,
             )
-            routing = runtime._session_routing_for_request(request)
-            session_id = routing.session_id
-            running_task = runtime._session_store.mark_background_task_running(
-                workspace=runtime._workspace,
-                task_id=task_id,
-                session_id=session_id,
-            )
+            slot_identity = self._concurrency_identity_for_request(request)
+            if task.status == "queued":
+                routing = runtime._session_routing_for_request(request)
+                session_id = routing.session_id
+                with self._queue_lock:
+                    if not self._can_start_task(slot_identity):
+                        return
+                    self._reserve_slot(slot_identity)
+                    slot_reserved = True
+                running_task = runtime._session_store.mark_background_task_running(
+                    workspace=runtime._workspace,
+                    task_id=task_id,
+                    session_id=session_id,
+                )
+                if running_task.status != "running":
+                    with self._queue_lock:
+                        self._release_slot(slot_identity)
+                    slot_reserved = False
+                    slot_identity = None
+            else:
+                running_task = task
+                slot_reserved = True
+                session_id = (
+                    task.session_id or runtime._session_routing_for_request(request).session_id
+                )
             if running_task.status != "running":
                 return
             dispatch_task = runtime.load_background_task(task_id)
@@ -563,89 +927,138 @@ class RuntimeBackgroundTaskSupervisor:
                 )
                 self.run_background_task_lifecycle_hook(terminal_task)
                 return
-            events: list[EventEnvelope] = []
-            output: str | None = None
-            final_session: Any | None = None
-            internal_request = RuntimeRequest(
-                prompt=dispatch_task.request.prompt,
-                session_id=session_id,
-                parent_session_id=dispatch_task.request.parent_session_id,
-                metadata=cast(
-                    InternalRuntimeRequestMetadata,
-                    {
-                        **dispatch_task.request.metadata,
-                        "background_task_id": task_id,
-                        "background_run": True,
-                    },
-                ),
-                allocate_session_id=False,
-            )
-            for chunk in runtime._run_with_persistence(
-                internal_request,
-                allow_internal_metadata=True,
-            ):
-                final_session = chunk.session
-                if chunk.event is not None:
-                    events.append(chunk.event)
-                if chunk.kind == "output":
-                    output = chunk.output
-                current_task_state = runtime._session_store.load_background_task(
-                    workspace=runtime._workspace,
-                    task_id=task_id,
-                )
-                if current_task_state.cancel_requested_at is not None:
-                    if final_session is None:
-                        raise ValueError("runtime stream emitted no chunks")
-                    cancel_metadata = dict(final_session.metadata)
-                    cancel_metadata["abort_requested"] = True
-                    cancelled_response = RuntimeResponse(
-                        session=SessionState(
-                            session=final_session.session,
-                            status="failed",
-                            turn=final_session.turn,
-                            metadata=cancel_metadata,
-                        ),
-                        events=tuple(events)
-                        + (
-                            EventEnvelope(
-                                session_id=session_id,
-                                sequence=(events[-1].sequence if events else 0) + 1,
-                                event_type=RUNTIME_FAILED,
-                                source="runtime",
-                                payload={
-                                    "error": "cancelled by parent during delegated execution",
-                                    "cancelled": True,
-                                    "delegated_task_id": task_id,
-                                },
+            retry_count = 0
+            while True:
+                events: list[EventEnvelope] = []
+                output: str | None = None
+                final_session: Any | None = None
+                internal_request = RuntimeRequest(
+                    prompt=dispatch_task.request.prompt,
+                    session_id=session_id,
+                    parent_session_id=dispatch_task.request.parent_session_id,
+                    metadata=cast(
+                        InternalRuntimeRequestMetadata,
+                        {
+                            **dispatch_task.request.metadata,
+                            **(
+                                {"background_rate_limit_retry": True}
+                                if retry_count < _BACKGROUND_TASK_RATE_LIMIT_RETRIES
+                                else {}
                             ),
-                        ),
-                        output=output,
-                    )
-                    runtime._session_store.save_run(
-                        workspace=runtime._workspace,
-                        request=internal_request,
-                        response=cancelled_response,
-                    )
-                    terminal_task = runtime._session_store.mark_background_task_terminal(
+                            "background_task_id": task_id,
+                            "background_run": True,
+                        },
+                    ),
+                    allocate_session_id=False,
+                )
+                for chunk in runtime._run_with_persistence(
+                    internal_request,
+                    allow_internal_metadata=True,
+                ):
+                    final_session = chunk.session
+                    if chunk.event is not None:
+                        events.append(chunk.event)
+                        fallback_identity = self._fallback_identity_for_event(chunk.event)
+                        if fallback_identity is not None and fallback_identity != slot_identity:
+                            with self._queue_lock:
+                                if slot_identity is not None and slot_reserved:
+                                    self._release_slot(slot_identity)
+                                    slot_reserved = False
+                            self._drain_background_task_queue()
+                            if self._wait_for_slot_or_cancel(
+                                task_id=task_id,
+                                identity=fallback_identity,
+                            ):
+                                self._mark_background_task_cancelled_during_retry_wait(
+                                    task_id=task_id,
+                                )
+                                return
+                            slot_identity = fallback_identity
+                            slot_reserved = True
+                    if chunk.kind == "output":
+                        output = chunk.output
+                    current_task_state = runtime._session_store.load_background_task(
                         workspace=runtime._workspace,
                         task_id=task_id,
-                        status="cancelled",
-                        error="cancelled by parent during delegated execution",
                     )
-                    self.run_background_task_lifecycle_hook(terminal_task)
-                    return
-            if final_session is None:
-                raise ValueError("runtime stream emitted no chunks")
-            if final_session.status == "waiting":
-                final_session = runtime._reload_persisted_session(
-                    session_id=final_session.session.id
+                    if current_task_state.cancel_requested_at is not None:
+                        if final_session is None:
+                            raise ValueError("runtime stream emitted no chunks")
+                        cancel_metadata = dict(final_session.metadata)
+                        cancel_metadata["abort_requested"] = True
+                        cancelled_response = RuntimeResponse(
+                            session=SessionState(
+                                session=final_session.session,
+                                status="failed",
+                                turn=final_session.turn,
+                                metadata=cancel_metadata,
+                            ),
+                            events=tuple(events)
+                            + (
+                                EventEnvelope(
+                                    session_id=session_id,
+                                    sequence=(events[-1].sequence if events else 0) + 1,
+                                    event_type=RUNTIME_FAILED,
+                                    source="runtime",
+                                    payload={
+                                        "error": "cancelled by parent during delegated execution",
+                                        "cancelled": True,
+                                        "delegated_task_id": task_id,
+                                    },
+                                ),
+                            ),
+                            output=output,
+                        )
+                        runtime._session_store.save_run(
+                            workspace=runtime._workspace,
+                            request=internal_request,
+                            response=cancelled_response,
+                        )
+                        terminal_task = runtime._session_store.mark_background_task_terminal(
+                            workspace=runtime._workspace,
+                            task_id=task_id,
+                            status="cancelled",
+                            error="cancelled by parent during delegated execution",
+                        )
+                        self.run_background_task_lifecycle_hook(terminal_task)
+                        return
+                if final_session is None:
+                    raise ValueError("runtime stream emitted no chunks")
+                if final_session.status == "waiting":
+                    final_session = runtime._reload_persisted_session(
+                        session_id=final_session.session.id
+                    )
+                response = RuntimeResponse(
+                    session=final_session,
+                    events=tuple(events),
+                    output=output,
                 )
-            response = RuntimeResponse(
-                session=final_session,
-                events=tuple(events),
-                output=output,
-            )
-            self.finalize_background_task_from_session_response(session_response=response)
+                if (
+                    self._response_has_rate_limit_error(response)
+                    and retry_count < _BACKGROUND_TASK_RATE_LIMIT_RETRIES
+                    and slot_identity is not None
+                ):
+                    retry_count += 1
+                    with self._queue_lock:
+                        self._release_slot(slot_identity)
+                        slot_reserved = False
+                    self._drain_background_task_queue()
+                    if self._wait_for_rate_limit_backoff_or_cancel(
+                        task_id=task_id,
+                        retry_count=retry_count,
+                    ):
+                        self._mark_background_task_cancelled_during_retry_wait(task_id=task_id)
+                        return
+                    if self._wait_for_slot_or_cancel(
+                        task_id=task_id,
+                        identity=slot_identity,
+                    ):
+                        self._mark_background_task_cancelled_during_retry_wait(task_id=task_id)
+                        return
+                    slot_reserved = True
+                    continue
+                self.finalize_background_task_from_session_response(session_response=response)
+                return
         except Exception as exc:
             logger.exception("background task failed: %s", task_id)
             terminal_task = runtime._session_store.mark_background_task_terminal(
@@ -656,4 +1069,22 @@ class RuntimeBackgroundTaskSupervisor:
             )
             self.run_background_task_lifecycle_hook(terminal_task)
         finally:
+            if slot_identity is not None and slot_reserved:
+                with self._queue_lock:
+                    self._release_slot(slot_identity)
             runtime._background_task_threads.pop(task_id, None)
+            self._drain_background_task_queue()
+
+    @staticmethod
+    def _response_has_rate_limit_error(response: RuntimeResponse) -> bool:
+        if response.session.status != "failed":
+            return False
+        for event in reversed(response.events):
+            if event.event_type != RUNTIME_FAILED:
+                continue
+            return event.payload.get("provider_error_kind") == "rate_limit"
+        return False
+
+    @staticmethod
+    def _rate_limit_backoff_seconds(retry_count: int) -> float:
+        return _BACKGROUND_TASK_RATE_LIMIT_BASE_BACKOFF_SECONDS * (2 ** max(0, retry_count - 1))

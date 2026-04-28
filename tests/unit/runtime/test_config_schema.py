@@ -47,6 +47,19 @@ def test_runtime_config_json_schema_exposes_core_fields() -> None:
     mcp_servers = cast(dict[str, object], mcp_properties["servers"])
     mcp_server_schema = cast(dict[str, object], mcp_servers["additionalProperties"])
     assert mcp_server_schema["required"] == ["command"]
+    background_task_schema = cast(dict[str, object], properties["background_task"])
+    background_task_properties = cast(dict[str, object], background_task_schema["properties"])
+    assert background_task_properties["default_concurrency"] == {
+        "type": "integer",
+        "minimum": 1,
+    }
+    provider_concurrency = cast(
+        dict[str, object], background_task_properties["provider_concurrency"]
+    )
+    assert provider_concurrency["additionalProperties"] == {
+        "type": "integer",
+        "minimum": 1,
+    }
 
 
 def test_generate_starter_runtime_config_excludes_secrets() -> None:

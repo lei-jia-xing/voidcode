@@ -179,6 +179,27 @@ class RuntimeRunLoopCoordinator:
                             },
                         )
                         return
+                    if (
+                        provider_error.kind == "rate_limit"
+                        and graph_request.metadata.get("background_rate_limit_retry") is True
+                    ):
+                        yield runtime._failed_chunk(
+                            session=session,
+                            sequence=sequence + 1,
+                            error=str(provider_error),
+                            payload={
+                                "provider_error_kind": provider_error.kind,
+                                "provider": provider_error.provider_name,
+                                "model": provider_error.model_name,
+                                "background_retry_deferred_fallback": True,
+                                **(
+                                    {"provider_error_details": provider_error.details}
+                                    if provider_error.details is not None
+                                    else {}
+                                ),
+                            },
+                        )
+                        return
                     fallback_selection = runtime._fallback_graph_selection(
                         error=provider_error,
                         session_metadata=session.metadata,
