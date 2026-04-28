@@ -2003,6 +2003,7 @@ def serialize_runtime_context_window_config(
         payload["tokenizer_model"] = context_window.tokenizer_model
     return payload
 
+
 def serialize_runtime_background_task_config(
     background_task: RuntimeBackgroundTaskConfig,
 ) -> dict[str, object]:

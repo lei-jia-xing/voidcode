@@ -212,6 +212,8 @@ _PERSISTED_RUNTIME_CONFIG_KEYS = frozenset(
         "provider_fallback",
         "resolved_provider",
         "agent",
+        "agents",
+        "categories",
         "context_window",
         "lsp",
         "mcp",
