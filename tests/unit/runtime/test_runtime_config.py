@@ -27,6 +27,7 @@ from voidcode.runtime.config import (
     RUNTIME_CONFIG_FILE_NAME,
     TOOL_TIMEOUT_ENV_VAR,
     RuntimeAgentConfig,
+    RuntimeBackgroundTaskConfig,
     RuntimeConfig,
     RuntimeContextWindowConfig,
     RuntimeFormatterPresetConfig,
@@ -55,6 +56,7 @@ from voidcode.runtime.config import (
     save_workspace_tui_preferences,
     serialize_runtime_agent_config,
     serialize_runtime_agents_config,
+    serialize_runtime_background_task_config,
     serialize_runtime_context_window_config,
     user_runtime_config_path,
 )
@@ -215,7 +217,66 @@ def test_runtime_config_defaults_to_ask_without_file_or_env(tmp_path: Path) -> N
     assert config.model is None
     assert config.execution_engine == "provider"
     assert config.max_steps is None
+    assert config.background_task == RuntimeBackgroundTaskConfig()
     assert config.hooks is None
+
+
+def test_runtime_config_loads_background_task_concurrency_from_repo_file(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / RUNTIME_CONFIG_FILE_NAME
+    config_path.write_text(
+        json.dumps(
+            {
+                "background_task": {
+                    "default_concurrency": 3,
+                    "provider_concurrency": {"anthropic": 2},
+                    "model_concurrency": {"anthropic/claude-opus-4-7": 1},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.background_task == RuntimeBackgroundTaskConfig(
+        default_concurrency=3,
+        provider_concurrency={"anthropic": 2},
+        model_concurrency={"anthropic/claude-opus-4-7": 1},
+    )
+
+
+def test_runtime_config_rejects_invalid_background_task_concurrency(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / RUNTIME_CONFIG_FILE_NAME
+    config_path.write_text(
+        json.dumps({"background_task": {"provider_concurrency": {"openai": 0}}}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="background_task.provider_concurrency.openai.*greater than or equal to 1",
+    ):
+        _ = load_runtime_config(tmp_path, env={})
+
+
+def test_runtime_background_task_config_serializes_non_default_maps() -> None:
+    payload = serialize_runtime_background_task_config(
+        RuntimeBackgroundTaskConfig(
+            default_concurrency=4,
+            provider_concurrency={"openai": 3},
+            model_concurrency={"openai/gpt-4.1": 2},
+        )
+    )
+
+    assert payload == {
+        "default_concurrency": 4,
+        "provider_concurrency": {"openai": 3},
+        "model_concurrency": {"openai/gpt-4.1": 2},
+    }
 
 
 def test_runtime_config_defaults_to_provider_for_product_runs(
