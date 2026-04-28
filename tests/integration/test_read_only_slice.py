@@ -1220,7 +1220,6 @@ def test_provider_runtime_executes_read_path_and_persists_config(tmp_path: Path)
         "mcp": {"configured_enabled": False, "mode": "disabled", "servers": []},
         "model": "opencode/gpt-5.4",
         "provider_fallback": None,
-        "plan": None,
         "resolved_provider": {
             "active_target": {
                 "raw_model": "opencode/gpt-5.4",
@@ -1880,7 +1879,7 @@ def test_runtime_denied_multi_step_loop_stops_before_follow_up_tools(tmp_path: P
     assert (tmp_path / "copied.txt").exists() is False
 
 
-def test_runtime_rejects_legacy_session_schema_for_pending_approval(tmp_path: Path) -> None:
+def test_runtime_rejects_stale_session_schema_for_pending_approval(tmp_path: Path) -> None:
     runtime_request, runtime = _approval_runtime(tmp_path, mode="ask")
     database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
     database_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1922,7 +1921,7 @@ def test_runtime_rejects_legacy_session_schema_for_pending_approval(tmp_path: Pa
 
     with pytest.raises(RuntimeError, match="sqlite runtime schema mismatch"):
         _ = runtime.run(
-            runtime_request(prompt="write danger.txt legacy approval", session_id="legacy-session")
+            runtime_request(prompt="write danger.txt stale approval", session_id="stale-session")
         )
 
 
@@ -2011,7 +2010,6 @@ def test_runtime_resume_uses_persisted_runtime_config_over_fresh_resume_override
         "mcp": {"configured_enabled": False, "mode": "disabled", "servers": []},
         "model": "session/model",
         "provider_fallback": None,
-        "plan": None,
         "resolved_provider": {
             "active_target": {
                 "raw_model": "session/model",
@@ -2029,122 +2027,6 @@ def test_runtime_resume_uses_persisted_runtime_config_over_fresh_resume_override
     }
     runtime_state = cast(dict[str, object], replay.session.metadata["runtime_state"])
     assert set(runtime_state) == {"acp", "run_id"}
-    assert runtime_state["acp"] == {
-        "available": False,
-        "configured_enabled": False,
-        "last_delegation": None,
-        "last_error": None,
-        "last_event_type": None,
-        "last_request_id": None,
-        "last_request_type": None,
-        "mode": "disabled",
-        "status": "disconnected",
-    }
-
-
-def test_runtime_resume_accepts_legacy_sessions_without_runtime_config_metadata(
-    tmp_path: Path,
-) -> None:
-    _ = (tmp_path / "sample.txt").write_text("legacy config\n", encoding="utf-8")
-    runtime_request, runtime = _approval_runtime(tmp_path, mode="allow")
-    response = runtime.run(
-        runtime_request(prompt="read sample.txt", session_id="legacy-runtime-config")
-    )
-
-    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
-    connection = sqlite3.connect(database_path)
-    try:
-        row = cast(
-            tuple[str],
-            connection.execute(
-                "SELECT metadata_json FROM sessions WHERE session_id = ?",
-                ("legacy-runtime-config",),
-            ).fetchone(),
-        )
-        metadata = cast(dict[str, object], json.loads(row[0]))
-        metadata.pop("runtime_config", None)
-        _ = connection.execute(
-            "UPDATE sessions SET metadata_json = ? WHERE session_id = ?",
-            (json.dumps(metadata, sort_keys=True), "legacy-runtime-config"),
-        )
-        connection.commit()
-    finally:
-        connection.close()
-
-    replay = runtime.resume("legacy-runtime-config")
-
-    assert replay.session.status == response.session.status
-    assert replay.output == response.output
-    replay_metadata = replay.session.metadata
-    assert set(replay_metadata) == {"workspace", "runtime_state", "context_window"}
-    assert replay_metadata["workspace"] == str(tmp_path)
-    runtime_state = cast(dict[str, object], replay_metadata["runtime_state"])
-    assert set(runtime_state) == {"acp", "run_id"}
-    assert runtime_state["acp"] == {
-        "available": False,
-        "configured_enabled": False,
-        "last_delegation": None,
-        "last_error": None,
-        "last_event_type": None,
-        "last_request_id": None,
-        "last_request_type": None,
-        "mode": "disabled",
-        "status": "disconnected",
-    }
-    assert isinstance(runtime_state.get("run_id"), str)
-    assert cast(str, runtime_state["run_id"])
-    assert replay_metadata["context_window"] == {
-        "compacted": False,
-        "compaction_reason": None,
-        "original_tool_result_count": 1,
-        "retained_tool_result_count": 1,
-        "max_tool_result_count": 4,
-    }
-
-
-def test_runtime_resume_repairs_legacy_non_dict_runtime_state_metadata(tmp_path: Path) -> None:
-    runtime_request, runtime = _approval_runtime(tmp_path, mode="ask")
-    waiting = runtime.run(
-        runtime_request(prompt="write danger.txt approved later", session_id="legacy-runtime-state")
-    )
-    approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
-
-    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
-    connection = sqlite3.connect(database_path)
-    try:
-        row = cast(
-            tuple[str],
-            connection.execute(
-                "SELECT metadata_json FROM sessions WHERE session_id = ?",
-                ("legacy-runtime-state",),
-            ).fetchone(),
-        )
-        metadata = cast(dict[str, object], json.loads(row[0]))
-        metadata["runtime_state"] = "broken"
-        _ = connection.execute(
-            "UPDATE sessions SET metadata_json = ? WHERE session_id = ?",
-            (json.dumps(metadata, sort_keys=True), "legacy-runtime-state"),
-        )
-        connection.commit()
-    finally:
-        connection.close()
-
-    replay = runtime.resume(
-        "legacy-runtime-state",
-        approval_request_id=approval_request_id,
-        approval_decision="allow",
-    )
-
-    assert replay.session.status == "completed"
-    assert replay.output == "Wrote file successfully: danger.txt"
-    assert set(replay.session.metadata) == {
-        "workspace",
-        "runtime_config",
-        "runtime_state",
-        "context_window",
-    }
-    runtime_state = cast(dict[str, object], replay.session.metadata["runtime_state"])
-    assert set(runtime_state) == {"acp"}
     assert runtime_state["acp"] == {
         "available": False,
         "configured_enabled": False,

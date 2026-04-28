@@ -8,7 +8,6 @@ type EventSource = Literal["runtime", "graph", "tool"]
 
 type ExistingEventType = Literal[
     "runtime.request_received",
-    "runtime.plan_created",
     "runtime.skills_loaded",
     "runtime.skills_applied",
     "runtime.provider_fallback",
@@ -71,7 +70,6 @@ type DelegatedLifecycleStatus = Literal[
 type KnownEventType = ExistingEventType | PrototypeAdditiveEventType
 
 RUNTIME_REQUEST_RECEIVED: Final[ExistingEventType] = "runtime.request_received"
-RUNTIME_PLAN_CREATED: Final[ExistingEventType] = "runtime.plan_created"
 RUNTIME_SKILLS_LOADED: Final[ExistingEventType] = "runtime.skills_loaded"
 RUNTIME_SKILLS_APPLIED: Final[ExistingEventType] = "runtime.skills_applied"
 RUNTIME_PROVIDER_FALLBACK: Final[ExistingEventType] = "runtime.provider_fallback"
@@ -129,7 +127,6 @@ RUNTIME_DELEGATED_RESULT_AVAILABLE: Final[PrototypeAdditiveEventType] = (
 
 EMITTED_EVENT_TYPES: Final[tuple[ExistingEventType, ...]] = (
     RUNTIME_REQUEST_RECEIVED,
-    RUNTIME_PLAN_CREATED,
     RUNTIME_SKILLS_LOADED,
     RUNTIME_SKILLS_APPLIED,
     RUNTIME_PROVIDER_FALLBACK,
@@ -315,32 +312,6 @@ class DelegatedExecutionPayload:
             "cancellation_cause": self.cancellation_cause,
         }
 
-    def legacy_payload(self) -> dict[str, object]:
-        payload: dict[str, object] = {
-            "task_id": self.delegated_task_id,
-            "parent_session_id": self.parent_session_id,
-            "requested_child_session_id": self.requested_child_session_id,
-            "child_session_id": self.child_session_id,
-            "approval_request_id": self.approval_request_id,
-            "question_request_id": self.question_request_id,
-            "status": self.lifecycle_status,
-            "approval_blocked": self.approval_blocked,
-            "result_available": self.result_available,
-            "cancellation_cause": self.cancellation_cause,
-        }
-        if self.routing is not None:
-            routing = self.routing
-            payload.update(
-                {
-                    "routing_mode": routing.mode,
-                    "routing_category": routing.category,
-                    "routing_subagent_type": routing.subagent_type,
-                    "routing_description": routing.description,
-                    "routing_command": routing.command,
-                }
-            )
-        return payload
-
     @classmethod
     def from_payload(
         cls,
@@ -351,19 +322,6 @@ class DelegatedExecutionPayload:
         nested_routing = DelegatedRoutingPayload.from_payload(
             _mapping_or_none(payload.get("routing"))
         )
-        legacy_routing = DelegatedRoutingPayload.from_payload(
-            {
-                key: value
-                for key, value in {
-                    "mode": payload.get("routing_mode"),
-                    "category": payload.get("routing_category"),
-                    "subagent_type": payload.get("routing_subagent_type"),
-                    "description": payload.get("routing_description"),
-                    "command": payload.get("routing_command"),
-                }.items()
-                if value is not None
-            }
-        )
         raw_status = payload.get("lifecycle_status")
         parsed_status = (
             raw_status if raw_status in _DELEGATED_EVENT_STATUS_BY_TYPE.values() else None
@@ -372,16 +330,15 @@ class DelegatedExecutionPayload:
             parent_session_id=_string_or_none(payload.get("parent_session_id")),
             requested_child_session_id=_string_or_none(payload.get("requested_child_session_id")),
             child_session_id=_string_or_none(payload.get("child_session_id")),
-            delegated_task_id=_string_or_none(payload.get("delegated_task_id"))
-            or _string_or_none(payload.get("task_id")),
+            delegated_task_id=_string_or_none(payload.get("delegated_task_id")),
             approval_request_id=_string_or_none(payload.get("approval_request_id")),
             question_request_id=_string_or_none(payload.get("question_request_id")),
-            routing=nested_routing or legacy_routing,
+            routing=nested_routing,
             selected_preset=_string_or_none(payload.get("selected_preset")),
             selected_execution_engine=_string_or_none(payload.get("selected_execution_engine")),
             lifecycle_status=cast(
                 DelegatedLifecycleStatus | None,
-                parsed_status or lifecycle_status or _string_or_none(payload.get("status")),
+                parsed_status or lifecycle_status,
             ),
             approval_blocked=_bool_or_default(payload.get("approval_blocked")),
             result_available=_bool_or_default(payload.get("result_available")),
@@ -439,8 +396,6 @@ class DelegatedLifecycleEventPayload:
 
     def as_payload(self) -> dict[str, object]:
         payload: dict[str, object] = {
-            **self.delegation.legacy_payload(),
-            **self.message.as_payload(),
             "delegation": self.delegation.as_payload(),
             "message": self.message.as_payload(),
         }
@@ -461,8 +416,8 @@ class DelegatedLifecycleEventPayload:
             cast(DelegatedBackgroundTaskEventType | ExistingEventType, event.event_type)
         )
         payload = event.payload
-        delegation_payload = _mapping_or_none(payload.get("delegation")) or payload
-        message_payload = _mapping_or_none(payload.get("message")) or payload
+        delegation_payload = _mapping_or_none(payload.get("delegation")) or {}
+        message_payload = _mapping_or_none(payload.get("message"))
         delegation = DelegatedExecutionPayload.from_payload(
             delegation_payload,
             lifecycle_status=default_status,

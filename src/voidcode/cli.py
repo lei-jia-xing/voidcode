@@ -49,11 +49,8 @@ from .runtime.config import (
     serialize_runtime_agent_config,
 )
 from .runtime.config_schema import (
-    apply_config_migrations,
-    detect_config_migrations,
     format_starter_runtime_config_json,
     generate_starter_runtime_config,
-    read_runtime_config_payload,
     runtime_config_json_schema,
     write_runtime_config_payload,
 )
@@ -857,52 +854,6 @@ def _handle_config_init_command(args: argparse.Namespace) -> int:
     return 0
 
 
-def _handle_config_migrate_command(args: argparse.Namespace) -> int:
-    workspace = cast(Path, args.workspace)
-    if not workspace.exists() or not workspace.is_dir():
-        raise SystemExit(f"error: workspace does not exist: {workspace}")
-
-    try:
-        payload = read_runtime_config_payload(workspace)
-    except ValueError as exc:
-        raise SystemExit(f"error: {exc}") from None
-
-    config_path = workspace.resolve() / RUNTIME_CONFIG_FILE_NAME
-    if payload is None:
-        print(
-            json.dumps(
-                {
-                    "workspace": str(workspace),
-                    "config_path": str(config_path),
-                    "dry_run": not cast(bool, args.write),
-                    "migrations": [],
-                    "updated_config": None,
-                }
-            )
-        )
-        return 0
-
-    migrations = detect_config_migrations(payload)
-    updated_payload = apply_config_migrations(payload, migrations)
-    should_write = cast(bool, args.write)
-    if should_write and migrations:
-        write_runtime_config_payload(workspace, updated_payload)
-
-    print(
-        json.dumps(
-            {
-                "workspace": str(workspace),
-                "config_path": str(config_path),
-                "dry_run": not should_write,
-                "migrations": [migration.to_dict() for migration in migrations],
-                "updated_config": updated_payload if migrations else None,
-            },
-            sort_keys=True,
-        )
-    )
-    return 0
-
-
 def _handle_provider_models_command(args: argparse.Namespace) -> int:
     workspace = cast(Path, args.workspace)
     provider = cast(str, args.provider)
@@ -1503,22 +1454,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Overwrite an existing .voidcode.json.",
     )
     config_init_parser.set_defaults(handler=_handle_config_init_command)
-
-    config_migrate_parser = config_subparsers.add_parser(
-        "migrate", help="Detect and optionally apply .voidcode.json migrations."
-    )
-    _ = config_migrate_parser.add_argument(
-        "--workspace",
-        type=Path,
-        default=Path.cwd(),
-        help="Workspace root containing .voidcode.json.",
-    )
-    _ = config_migrate_parser.add_argument(
-        "--write",
-        action="store_true",
-        help="Write migrated config back to .voidcode.json. Defaults to dry-run.",
-    )
-    config_migrate_parser.set_defaults(handler=_handle_config_migrate_command)
 
     provider_models_parser = provider_subparsers.add_parser(
         "models", help="Show or refresh available models for one provider."

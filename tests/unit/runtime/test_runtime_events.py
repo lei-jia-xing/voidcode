@@ -18,7 +18,6 @@ from voidcode.runtime.events import (
     RUNTIME_LSP_SERVER_STOPPED,
     RUNTIME_MCP_SERVER_FAILED,
     RUNTIME_MEMORY_REFRESHED,
-    RUNTIME_PLAN_CREATED,
     RUNTIME_SESSION_ENDED,
     RUNTIME_SESSION_IDLE,
     RUNTIME_SESSION_STARTED,
@@ -33,7 +32,7 @@ from voidcode.runtime.events import (
 )
 
 
-def test_plan_created_is_in_stable_emitted_event_types() -> None:
+def test_runtime_event_types_include_stable_emitted_events() -> None:
     assert GRAPH_LOOP_STEP in EMITTED_EVENT_TYPES
     assert GRAPH_MODEL_TURN in EMITTED_EVENT_TYPES
     assert RUNTIME_SKILLS_APPLIED in EMITTED_EVENT_TYPES
@@ -44,7 +43,7 @@ def test_plan_created_is_in_stable_emitted_event_types() -> None:
     assert RUNTIME_LSP_SERVER_STOPPED in EMITTED_EVENT_TYPES
     assert RUNTIME_LSP_SERVER_FAILED in EMITTED_EVENT_TYPES
     assert RUNTIME_MCP_SERVER_FAILED in EMITTED_EVENT_TYPES
-    assert RUNTIME_PLAN_CREATED in EMITTED_EVENT_TYPES
+    assert "runtime.plan_created" not in EMITTED_EVENT_TYPES
     assert RUNTIME_TOOL_STARTED in EMITTED_EVENT_TYPES
 
 
@@ -111,27 +110,26 @@ def test_delegated_lifecycle_payload_preserves_typed_transport_shape() -> None:
         "approval_blocked": True,
         "result_available": True,
     }
-    assert payload["task_id"] == "task-1"
-    assert payload["routing_category"] == "deep"
+    assert "task_id" not in payload
+    assert "routing_category" not in payload
 
 
-def test_event_envelope_parses_legacy_delegated_payloads_without_ad_hoc_key_checks() -> None:
+def test_event_envelope_requires_nested_delegated_payload_shape() -> None:
     event = EventEnvelope(
         session_id="leader-session",
         sequence=1,
         event_type=RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL,
         source="runtime",
         payload={
-            "task_id": "task-1",
-            "parent_session_id": "leader-session",
-            "requested_child_session_id": "child-session",
-            "child_session_id": "child-session",
-            "approval_request_id": "approval-1",
-            "status": "running",
-            "approval_blocked": True,
-            "result_available": True,
-            "routing_mode": "background",
-            "routing_subagent_type": "explore",
+            "delegation": {
+                "parent_session_id": "leader-session",
+                "requested_child_session_id": "child-session",
+                "child_session_id": "child-session",
+                "delegated_task_id": "task-1",
+                "approval_request_id": "approval-1",
+                "routing": {"mode": "background", "subagent_type": "explore"},
+            },
+            "message": {"approval_blocked": True, "result_available": True},
         },
     )
 
