@@ -3814,7 +3814,7 @@ def test_runtime_cancel_background_task_reconciles_orphaned_queued_task(tmp_path
     assert cancelled.cancel_requested_at is None
 
 
-def test_runtime_reconciles_incomplete_background_tasks_on_init(tmp_path: Path) -> None:
+def test_runtime_reconciles_queued_background_tasks_on_init(tmp_path: Path) -> None:
     first_runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
     store = _private_attr(first_runtime, "_session_store")
     task_module = importlib.import_module("voidcode.runtime.task")
@@ -3829,10 +3829,10 @@ def test_runtime_reconciles_incomplete_background_tasks_on_init(tmp_path: Path) 
     )
 
     second_runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
-    reconciled = second_runtime.load_background_task("task-orphan")
+    reconciled = _wait_for_background_task(second_runtime, "task-orphan")
 
-    assert reconciled.status == "failed"
-    assert reconciled.error == "background task interrupted before completion"
+    assert reconciled.status == "completed"
+    assert reconciled.error is None
 
 
 def test_runtime_background_task_worker_exits_when_task_is_cancelled_before_start_transition(

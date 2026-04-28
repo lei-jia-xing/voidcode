@@ -144,6 +144,7 @@ class SessionStore(Protocol):
         *,
         workspace: Path,
         message: str,
+        include_queued: bool = True,
     ) -> tuple[BackgroundTaskState, ...]: ...
 
 
@@ -1727,19 +1728,25 @@ class SqliteSessionStore:
         *,
         workspace: Path,
         message: str,
+        include_queued: bool = True,
     ) -> tuple[BackgroundTaskState, ...]:
+        incomplete_status_predicate = (
+            "background_tasks.status IN ('queued', 'running')"
+            if include_queued
+            else "background_tasks.status = 'running'"
+        )
         with self._connect(workspace) as connection:
             rows = cast(
                 list[sqlite3.Row],
                 connection.execute(
-                    """
+                    f"""
                     SELECT background_tasks.task_id, background_tasks.cancel_requested_at
                     FROM background_tasks
                     LEFT JOIN sessions
                       ON sessions.workspace = background_tasks.workspace
                      AND sessions.session_id = background_tasks.session_id
                     WHERE background_tasks.workspace = ?
-                      AND background_tasks.status IN ('queued', 'running')
+                      AND {incomplete_status_predicate}
                       AND NOT (
                           background_tasks.status = 'running'
                           AND background_tasks.session_id IS NOT NULL

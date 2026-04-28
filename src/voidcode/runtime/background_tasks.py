@@ -785,6 +785,7 @@ class RuntimeBackgroundTaskSupervisor:
                 fail_incomplete(
                     workspace=runtime._workspace,
                     message="background task interrupted before completion",
+                    include_queued=False,
                 ),
             )
             for failed_task in failed_tasks:
@@ -797,6 +798,7 @@ class RuntimeBackgroundTaskSupervisor:
             )
             self.backfill_parent_background_task_event(task=task)
         runtime._background_tasks_reconciled = True
+        self._drain_background_task_queue()
 
     def run_background_task_worker(self, task_id: str) -> None:
         runtime = self._runtime
