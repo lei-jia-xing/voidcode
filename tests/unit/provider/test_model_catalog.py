@@ -116,6 +116,26 @@ def test_discover_available_models_merges_remote_metadata_over_inferred_defaults
     assert metadata.model_status == "preview"
 
 
+def test_discover_available_models_preserves_zero_priced_remote_costs() -> None:
+    result = discover_available_models(
+        "openai",
+        LiteLLMProviderConfig(discovery_base_url="https://api.openai.com"),
+        fetcher=lambda _request: ModelDiscoveryFetchResult(
+            models=("gpt-4o",),
+            model_metadata={
+                "gpt-4o": ProviderModelMetadata(
+                    cost_per_input_token=0.0,
+                    cost_per_output_token=0.0,
+                )
+            },
+        ),
+    )
+
+    metadata = result.model_metadata["gpt-4o"]
+    assert metadata.cost_per_input_token == 0.0
+    assert metadata.cost_per_output_token == 0.0
+
+
 def test_discover_available_models_merges_partial_remote_metadata() -> None:
     result = discover_available_models(
         "google",
@@ -225,6 +245,8 @@ def test_google_discovery_preserves_preview_model_status(
     assert metadata.context_window == 64_000
     assert metadata.max_input_tokens == 64_000
     assert metadata.max_output_tokens == 65_536
+    assert metadata.modalities_input == ("text", "image", "audio", "video")
+    assert metadata.modalities_output == ("text",)
     assert metadata.model_status == "preview"
 
 

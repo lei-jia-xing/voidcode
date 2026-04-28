@@ -298,10 +298,10 @@ def _metadata(
         supports_streaming=_optional_bool(values.get("supports_streaming")),
         supports_reasoning=_optional_bool(values.get("supports_reasoning")),
         supports_json_mode=_optional_bool(values.get("supports_json_mode")),
-        cost_per_input_token=_positive_float(values.get("cost_per_input_token")),
-        cost_per_output_token=_positive_float(values.get("cost_per_output_token")),
-        cost_per_cache_read_token=_positive_float(values.get("cost_per_cache_read_token")),
-        cost_per_cache_write_token=_positive_float(values.get("cost_per_cache_write_token")),
+        cost_per_input_token=_non_negative_float(values.get("cost_per_input_token")),
+        cost_per_output_token=_non_negative_float(values.get("cost_per_output_token")),
+        cost_per_cache_read_token=_non_negative_float(values.get("cost_per_cache_read_token")),
+        cost_per_cache_write_token=_non_negative_float(values.get("cost_per_cache_write_token")),
         supports_reasoning_effort=_optional_bool(values.get("supports_reasoning_effort")),
         default_reasoning_effort=_optional_str(values.get("default_reasoning_effort")),
         supports_interleaved_reasoning=_optional_bool(values.get("supports_interleaved_reasoning")),
@@ -768,8 +768,8 @@ def _positive_int(value: object) -> int | None:
     return None
 
 
-def _positive_float(value: object) -> float | None:
-    if isinstance(value, int | float) and not isinstance(value, bool) and value > 0:
+def _non_negative_float(value: object) -> float | None:
+    if isinstance(value, int | float) and not isinstance(value, bool) and value >= 0:
         return float(value)
     return None
 
@@ -812,10 +812,10 @@ def _metadata_from_discovery_item(
         supports_streaming=_optional_bool(raw.get("supports_streaming")),
         supports_reasoning=_optional_bool(raw.get("supports_reasoning")),
         supports_json_mode=_optional_bool(raw.get("supports_json_mode")),
-        cost_per_input_token=_positive_float(raw.get("input_cost_per_token")),
-        cost_per_output_token=_positive_float(raw.get("output_cost_per_token")),
-        cost_per_cache_read_token=_positive_float(raw.get("cache_read_input_token_cost")),
-        cost_per_cache_write_token=_positive_float(raw.get("cache_creation_input_token_cost")),
+        cost_per_input_token=_non_negative_float(raw.get("input_cost_per_token")),
+        cost_per_output_token=_non_negative_float(raw.get("output_cost_per_token")),
+        cost_per_cache_read_token=_non_negative_float(raw.get("cache_read_input_token_cost")),
+        cost_per_cache_write_token=_non_negative_float(raw.get("cache_creation_input_token_cost")),
         supports_reasoning_effort=_optional_bool(raw.get("supports_reasoning_effort")),
         default_reasoning_effort=_optional_str(raw.get("default_reasoning_effort")),
         supports_interleaved_reasoning=_optional_bool(raw.get("supports_interleaved_reasoning")),
@@ -846,8 +846,6 @@ def _metadata_from_google_item(
             else None
         ),
         supports_json_mode=True,
-        modalities_input=("text", "image"),
-        modalities_output=("text",),
         model_status="preview" if "preview" in model_name.lower() else "active",
     )
     return metadata if metadata.payload() else None
