@@ -103,39 +103,45 @@ def test_infer_model_metadata_covers_current_frontier_provider_models(
 ) -> None:
     metadata = infer_model_metadata(provider, model)
     assert metadata is not None
-    assert metadata == ProviderModelMetadata(
-        context_window=context_window,
-        max_output_tokens=max_output_tokens,
-        supports_tools=metadata.supports_tools,
-        supports_vision=metadata.supports_vision,
-        supports_streaming=metadata.supports_streaming,
-        supports_reasoning=metadata.supports_reasoning,
-        supports_json_mode=metadata.supports_json_mode,
-    )
+    assert metadata.context_window == context_window
+    assert metadata.max_output_tokens == max_output_tokens
+    assert metadata.supports_tools is True
+    assert metadata.model_status == "active"
+    assert metadata.supports_reasoning_effort is not None
 
 
 def test_infer_model_metadata_exposes_model_capability_flags() -> None:
     metadata = infer_model_metadata("anthropic", "claude-sonnet-4-6")
 
-    assert metadata == ProviderModelMetadata(
-        context_window=1_000_000,
-        max_output_tokens=64_000,
-        supports_tools=True,
-        supports_vision=True,
-        supports_streaming=True,
-        supports_reasoning=True,
-        supports_json_mode=False,
-    )
+    assert metadata.context_window == 1_000_000
+    assert metadata.max_output_tokens == 64_000
+    assert metadata.supports_tools is True
+    assert metadata.supports_vision is True
+    assert metadata.supports_streaming is True
+    assert metadata.supports_reasoning is True
+    assert metadata.supports_json_mode is False
+    assert metadata.supports_reasoning_effort is True
+    assert metadata.default_reasoning_effort == "medium"
+    assert metadata.supports_interleaved_reasoning is True
+    assert metadata.model_status == "active"
+    assert metadata.cost_per_input_token is not None
 
 
 def test_provider_model_metadata_payload_includes_limits_and_capabilities() -> None:
-    payload = ProviderModelMetadata(
+    metadata = ProviderModelMetadata(
         context_window=128_000,
         max_output_tokens=16_384,
         supports_tools=True,
         supports_vision=False,
         supports_streaming=True,
-    ).payload()
+        cost_per_input_token=0.000005,
+        cost_per_output_token=0.000015,
+        supports_reasoning_effort=True,
+        default_reasoning_effort="medium",
+        modalities_input=("text",),
+        model_status="active",
+    )
+    payload = metadata.payload()
 
     assert payload == {
         "context_window": 128_000,
@@ -144,6 +150,12 @@ def test_provider_model_metadata_payload_includes_limits_and_capabilities() -> N
         "supports_tools": True,
         "supports_vision": False,
         "supports_streaming": True,
+        "cost_per_input_token": 0.000005,
+        "cost_per_output_token": 0.000015,
+        "supports_reasoning_effort": True,
+        "default_reasoning_effort": "medium",
+        "modalities_input": ("text",),
+        "model_status": "active",
     }
 
 

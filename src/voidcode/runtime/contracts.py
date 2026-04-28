@@ -492,6 +492,16 @@ class ProviderModelMetadata:
     supports_streaming: bool | None = None
     supports_reasoning: bool | None = None
     supports_json_mode: bool | None = None
+    cost_per_input_token: float | None = None
+    cost_per_output_token: float | None = None
+    cost_per_cache_read_token: float | None = None
+    cost_per_cache_write_token: float | None = None
+    supports_reasoning_effort: bool | None = None
+    default_reasoning_effort: str | None = None
+    supports_interleaved_reasoning: bool | None = None
+    modalities_input: tuple[str, ...] | None = None
+    modalities_output: tuple[str, ...] | None = None
+    model_status: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

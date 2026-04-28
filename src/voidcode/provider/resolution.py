@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from .config import ProviderFallbackConfig
 from .errors import format_invalid_provider_config_error
+from .model_catalog import infer_model_metadata
 from .models import (
     ProviderModelSelection,
     ProviderResolutionMetadata,
@@ -33,6 +34,7 @@ def resolve_provider_model(
             source=provider_resolution.source,
             configured=provider_resolution.configured,
         ),
+        metadata=infer_model_metadata(provider_name, model_name),
     )
 
 

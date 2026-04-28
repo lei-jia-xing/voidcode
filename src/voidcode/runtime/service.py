@@ -2192,6 +2192,36 @@ class VoidCodeRuntime:
                     supports_json_mode=VoidCodeRuntime._optional_bool(
                         payload.get("supports_json_mode")
                     ),
+                    cost_per_input_token=VoidCodeRuntime._optional_float(
+                        payload.get("cost_per_input_token")
+                    ),
+                    cost_per_output_token=VoidCodeRuntime._optional_float(
+                        payload.get("cost_per_output_token")
+                    ),
+                    cost_per_cache_read_token=VoidCodeRuntime._optional_float(
+                        payload.get("cost_per_cache_read_token")
+                    ),
+                    cost_per_cache_write_token=VoidCodeRuntime._optional_float(
+                        payload.get("cost_per_cache_write_token")
+                    ),
+                    supports_reasoning_effort=VoidCodeRuntime._optional_bool(
+                        payload.get("supports_reasoning_effort")
+                    ),
+                    default_reasoning_effort=VoidCodeRuntime._optional_str(
+                        payload.get("default_reasoning_effort")
+                    ),
+                    supports_interleaved_reasoning=VoidCodeRuntime._optional_bool(
+                        payload.get("supports_interleaved_reasoning")
+                    ),
+                    modalities_input=VoidCodeRuntime._optional_str_tuple(
+                        payload.get("modalities_input")
+                    ),
+                    modalities_output=VoidCodeRuntime._optional_str_tuple(
+                        payload.get("modalities_output")
+                    ),
+                    model_status=VoidCodeRuntime._optional_str(
+                        payload.get("model_status")
+                    ),
                 )
                 for model, raw_payload in metadata_payloads.items()
                 if isinstance(model, str) and isinstance(raw_payload, dict)
@@ -2306,6 +2336,16 @@ class VoidCodeRuntime:
             supports_streaming=inferred.supports_streaming,
             supports_reasoning=inferred.supports_reasoning,
             supports_json_mode=inferred.supports_json_mode,
+            cost_per_input_token=inferred.cost_per_input_token,
+            cost_per_output_token=inferred.cost_per_output_token,
+            cost_per_cache_read_token=inferred.cost_per_cache_read_token,
+            cost_per_cache_write_token=inferred.cost_per_cache_write_token,
+            supports_reasoning_effort=inferred.supports_reasoning_effort,
+            default_reasoning_effort=inferred.default_reasoning_effort,
+            supports_interleaved_reasoning=inferred.supports_interleaved_reasoning,
+            modalities_input=inferred.modalities_input,
+            modalities_output=inferred.modalities_output,
+            model_status=inferred.model_status,
         )
 
     def _context_window_policy_for_provider_attempt(
@@ -2383,6 +2423,36 @@ class VoidCodeRuntime:
                     ),
                     supports_json_mode=VoidCodeRuntime._optional_bool(
                         payload.get("supports_json_mode")
+                    ),
+                    cost_per_input_token=VoidCodeRuntime._optional_float(
+                        payload.get("cost_per_input_token")
+                    ),
+                    cost_per_output_token=VoidCodeRuntime._optional_float(
+                        payload.get("cost_per_output_token")
+                    ),
+                    cost_per_cache_read_token=VoidCodeRuntime._optional_float(
+                        payload.get("cost_per_cache_read_token")
+                    ),
+                    cost_per_cache_write_token=VoidCodeRuntime._optional_float(
+                        payload.get("cost_per_cache_write_token")
+                    ),
+                    supports_reasoning_effort=VoidCodeRuntime._optional_bool(
+                        payload.get("supports_reasoning_effort")
+                    ),
+                    default_reasoning_effort=VoidCodeRuntime._optional_str(
+                        payload.get("default_reasoning_effort")
+                    ),
+                    supports_interleaved_reasoning=VoidCodeRuntime._optional_bool(
+                        payload.get("supports_interleaved_reasoning")
+                    ),
+                    modalities_input=VoidCodeRuntime._optional_str_tuple(
+                        payload.get("modalities_input")
+                    ),
+                    modalities_output=VoidCodeRuntime._optional_str_tuple(
+                        payload.get("modalities_output")
+                    ),
+                    model_status=VoidCodeRuntime._optional_str(
+                        payload.get("model_status")
                     ),
                 )
                 for model, raw_payload in cast(
@@ -2628,6 +2698,20 @@ class VoidCodeRuntime:
     @staticmethod
     def _optional_bool(value: object) -> bool | None:
         return value if isinstance(value, bool) else None
+
+    @staticmethod
+    def _optional_float(value: object) -> float | None:
+        return value if isinstance(value, (int, float)) else None
+
+    @staticmethod
+    def _optional_str(value: object) -> str | None:
+        return value if isinstance(value, str) else None
+
+    @staticmethod
+    def _optional_str_tuple(value: object) -> tuple[str, ...] | None:
+        if isinstance(value, (list, tuple)) and all(isinstance(item, str) for item in value):
+            return tuple(value)
+        return None
 
     def list_agent_summaries(self) -> tuple[AgentSummary, ...]:
         summaries: list[AgentSummary] = []
