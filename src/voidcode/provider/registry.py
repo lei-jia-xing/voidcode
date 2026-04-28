@@ -19,7 +19,12 @@ from .grok import GrokModelProvider
 from .kimi import KimiModelProvider
 from .litellm import LiteLLMModelProvider
 from .minimax import MiniMaxModelProvider
-from .model_catalog import ProviderModelCatalog, discover_available_models
+from .model_catalog import (
+    ProviderModelCatalog,
+    ProviderModelMetadata,
+    discover_available_models,
+    infer_model_metadata,
+)
 from .models import ProviderResolutionSource
 from .openai import OpenAIModelProvider
 from .opencode_go import OpenCodeGoModelProvider
@@ -327,6 +332,17 @@ class ModelProviderRegistry:
                 discovery_mode=discovery.discovery_mode,
             )
         return discovery.models
+
+    def model_metadata_for_model(
+        self, provider_name: str, model_name: str
+    ) -> ProviderModelMetadata | None:
+        if self.model_catalog is not None:
+            catalog = self.model_catalog.get(provider_name)
+            if catalog is not None:
+                metadata = catalog.model_metadata.get(model_name)
+                if metadata is not None:
+                    return metadata
+        return infer_model_metadata(provider_name, model_name)
 
     def provider_catalog(self, provider_name: str) -> ProviderModelCatalog | None:
         if self.model_catalog is None:

@@ -22,6 +22,7 @@ from voidcode.provider.openai import OpenAIModelProvider
 from voidcode.provider.opencode_go import OpenCodeGoModelProvider
 from voidcode.provider.qwen import QwenModelProvider
 from voidcode.provider.registry import ModelProviderRegistry, StaticModelProvider
+from voidcode.provider.resolution import resolve_provider_model
 
 
 def test_registry_registers_concrete_provider_adapters() -> None:
@@ -143,11 +144,25 @@ def test_registry_refresh_available_models_stores_model_metadata() -> None:
     assert "gpt-4o" in models
     assert catalog is not None
     assert catalog.model_metadata["gpt-4o"].context_window == 128_000
+    assert catalog.model_metadata["gpt-4o"].cost_per_output_token is not None
     assert registry.available_models("litellm") == models
     catalog = registry.provider_catalog("litellm")
     assert catalog is not None
     assert catalog.last_refresh_status in {"ok", "failed", "skipped"}
     assert catalog.discovery_mode in {"configured_endpoint", "configured_base_url", "disabled"}
+
+
+def test_resolved_provider_model_carries_catalog_metadata_for_routing() -> None:
+    registry = ModelProviderRegistry.with_defaults()
+    registry.refresh_available_models("openai")
+
+    resolved = resolve_provider_model("openai/gpt-4o", registry=registry)
+
+    assert resolved.metadata is not None
+    assert resolved.metadata.context_window == 128_000
+    assert resolved.metadata.supports_tools is True
+    assert resolved.metadata.cost_per_input_token is not None
+    assert resolved.metadata.model_status == "active"
 
 
 def test_registry_refresh_custom_provider_uses_custom_config() -> None:

@@ -2191,28 +2191,7 @@ class VoidCodeRuntime:
                 cast(dict[object, object], raw_metadata) if isinstance(raw_metadata, dict) else {}
             )
             model_metadata = {
-                model: CatalogProviderModelMetadata(
-                    context_window=VoidCodeRuntime._optional_positive_int(
-                        payload.get("context_window")
-                    ),
-                    max_input_tokens=VoidCodeRuntime._optional_positive_int(
-                        payload.get("max_input_tokens")
-                    ),
-                    max_output_tokens=VoidCodeRuntime._optional_positive_int(
-                        payload.get("max_output_tokens")
-                    ),
-                    supports_tools=VoidCodeRuntime._optional_bool(payload.get("supports_tools")),
-                    supports_vision=VoidCodeRuntime._optional_bool(payload.get("supports_vision")),
-                    supports_streaming=VoidCodeRuntime._optional_bool(
-                        payload.get("supports_streaming")
-                    ),
-                    supports_reasoning=VoidCodeRuntime._optional_bool(
-                        payload.get("supports_reasoning")
-                    ),
-                    supports_json_mode=VoidCodeRuntime._optional_bool(
-                        payload.get("supports_json_mode")
-                    ),
-                )
+                model: VoidCodeRuntime._catalog_metadata_from_payload(payload)
                 for model, raw_payload in metadata_payloads.items()
                 if isinstance(model, str) and isinstance(raw_payload, dict)
                 for payload in (cast(dict[str, object], raw_payload),)
@@ -2292,28 +2271,7 @@ class VoidCodeRuntime:
             raw_payload = metadata_payloads.get(model_name)
             if isinstance(raw_payload, dict):
                 payload = cast(dict[str, object], raw_payload)
-                return ProviderModelMetadata(
-                    context_window=VoidCodeRuntime._optional_positive_int(
-                        payload.get("context_window")
-                    ),
-                    max_input_tokens=VoidCodeRuntime._optional_positive_int(
-                        payload.get("max_input_tokens")
-                    ),
-                    max_output_tokens=VoidCodeRuntime._optional_positive_int(
-                        payload.get("max_output_tokens")
-                    ),
-                    supports_tools=VoidCodeRuntime._optional_bool(payload.get("supports_tools")),
-                    supports_vision=VoidCodeRuntime._optional_bool(payload.get("supports_vision")),
-                    supports_streaming=VoidCodeRuntime._optional_bool(
-                        payload.get("supports_streaming")
-                    ),
-                    supports_reasoning=VoidCodeRuntime._optional_bool(
-                        payload.get("supports_reasoning")
-                    ),
-                    supports_json_mode=VoidCodeRuntime._optional_bool(
-                        payload.get("supports_json_mode")
-                    ),
-                )
+                return VoidCodeRuntime._contract_metadata_from_payload(payload)
         inferred = infer_model_metadata(provider_name, model_name)
         if inferred is None:
             return None
@@ -2326,6 +2284,16 @@ class VoidCodeRuntime:
             supports_streaming=inferred.supports_streaming,
             supports_reasoning=inferred.supports_reasoning,
             supports_json_mode=inferred.supports_json_mode,
+            cost_per_input_token=inferred.cost_per_input_token,
+            cost_per_output_token=inferred.cost_per_output_token,
+            cost_per_cache_read_token=inferred.cost_per_cache_read_token,
+            cost_per_cache_write_token=inferred.cost_per_cache_write_token,
+            supports_reasoning_effort=inferred.supports_reasoning_effort,
+            default_reasoning_effort=inferred.default_reasoning_effort,
+            supports_interleaved_reasoning=inferred.supports_interleaved_reasoning,
+            modalities_input=inferred.modalities_input,
+            modalities_output=inferred.modalities_output,
+            model_status=inferred.model_status,
         )
 
     def _context_window_policy_for_provider_attempt(
@@ -2383,28 +2351,7 @@ class VoidCodeRuntime:
             configured=configured,
             models=tuple(cast(list[str], catalog["models"])),
             model_metadata={
-                model: ProviderModelMetadata(
-                    context_window=VoidCodeRuntime._optional_positive_int(
-                        payload.get("context_window")
-                    ),
-                    max_input_tokens=VoidCodeRuntime._optional_positive_int(
-                        payload.get("max_input_tokens")
-                    ),
-                    max_output_tokens=VoidCodeRuntime._optional_positive_int(
-                        payload.get("max_output_tokens")
-                    ),
-                    supports_tools=VoidCodeRuntime._optional_bool(payload.get("supports_tools")),
-                    supports_vision=VoidCodeRuntime._optional_bool(payload.get("supports_vision")),
-                    supports_streaming=VoidCodeRuntime._optional_bool(
-                        payload.get("supports_streaming")
-                    ),
-                    supports_reasoning=VoidCodeRuntime._optional_bool(
-                        payload.get("supports_reasoning")
-                    ),
-                    supports_json_mode=VoidCodeRuntime._optional_bool(
-                        payload.get("supports_json_mode")
-                    ),
-                )
+                model: VoidCodeRuntime._contract_metadata_from_payload(payload)
                 for model, raw_payload in cast(
                     dict[str, object], catalog.get("model_metadata", {})
                 ).items()
@@ -2648,6 +2595,96 @@ class VoidCodeRuntime:
     @staticmethod
     def _optional_bool(value: object) -> bool | None:
         return value if isinstance(value, bool) else None
+
+    @staticmethod
+    def _optional_positive_float(value: object) -> float | None:
+        if isinstance(value, bool) or not isinstance(value, int | float):
+            return None
+        normalized = float(value)
+        return normalized if normalized > 0 else None
+
+    @staticmethod
+    def _optional_string(value: object) -> str | None:
+        return value if isinstance(value, str) and value else None
+
+    @staticmethod
+    def _optional_string_tuple(value: object) -> tuple[str, ...] | None:
+        if not isinstance(value, list | tuple):
+            return None
+        raw_items = cast(Iterable[object], value)
+        items = tuple(item for item in raw_items if isinstance(item, str) and item)
+        return items or None
+
+    @staticmethod
+    def _catalog_metadata_from_payload(
+        payload: dict[str, object],
+    ) -> CatalogProviderModelMetadata:
+        return CatalogProviderModelMetadata(
+            context_window=VoidCodeRuntime._optional_positive_int(payload.get("context_window")),
+            max_input_tokens=VoidCodeRuntime._optional_positive_int(
+                payload.get("max_input_tokens")
+            ),
+            max_output_tokens=VoidCodeRuntime._optional_positive_int(
+                payload.get("max_output_tokens")
+            ),
+            supports_tools=VoidCodeRuntime._optional_bool(payload.get("supports_tools")),
+            supports_vision=VoidCodeRuntime._optional_bool(payload.get("supports_vision")),
+            supports_streaming=VoidCodeRuntime._optional_bool(payload.get("supports_streaming")),
+            supports_reasoning=VoidCodeRuntime._optional_bool(payload.get("supports_reasoning")),
+            supports_json_mode=VoidCodeRuntime._optional_bool(payload.get("supports_json_mode")),
+            cost_per_input_token=VoidCodeRuntime._optional_positive_float(
+                payload.get("cost_per_input_token")
+            ),
+            cost_per_output_token=VoidCodeRuntime._optional_positive_float(
+                payload.get("cost_per_output_token")
+            ),
+            cost_per_cache_read_token=VoidCodeRuntime._optional_positive_float(
+                payload.get("cost_per_cache_read_token")
+            ),
+            cost_per_cache_write_token=VoidCodeRuntime._optional_positive_float(
+                payload.get("cost_per_cache_write_token")
+            ),
+            supports_reasoning_effort=VoidCodeRuntime._optional_bool(
+                payload.get("supports_reasoning_effort")
+            ),
+            default_reasoning_effort=VoidCodeRuntime._optional_string(
+                payload.get("default_reasoning_effort")
+            ),
+            supports_interleaved_reasoning=VoidCodeRuntime._optional_bool(
+                payload.get("supports_interleaved_reasoning")
+            ),
+            modalities_input=VoidCodeRuntime._optional_string_tuple(
+                payload.get("modalities_input")
+            ),
+            modalities_output=VoidCodeRuntime._optional_string_tuple(
+                payload.get("modalities_output")
+            ),
+            model_status=VoidCodeRuntime._optional_string(payload.get("model_status")),
+        )
+
+    @staticmethod
+    def _contract_metadata_from_payload(payload: dict[str, object]) -> ProviderModelMetadata:
+        catalog_metadata = VoidCodeRuntime._catalog_metadata_from_payload(payload)
+        return ProviderModelMetadata(
+            context_window=catalog_metadata.context_window,
+            max_input_tokens=catalog_metadata.max_input_tokens,
+            max_output_tokens=catalog_metadata.max_output_tokens,
+            supports_tools=catalog_metadata.supports_tools,
+            supports_vision=catalog_metadata.supports_vision,
+            supports_streaming=catalog_metadata.supports_streaming,
+            supports_reasoning=catalog_metadata.supports_reasoning,
+            supports_json_mode=catalog_metadata.supports_json_mode,
+            cost_per_input_token=catalog_metadata.cost_per_input_token,
+            cost_per_output_token=catalog_metadata.cost_per_output_token,
+            cost_per_cache_read_token=catalog_metadata.cost_per_cache_read_token,
+            cost_per_cache_write_token=catalog_metadata.cost_per_cache_write_token,
+            supports_reasoning_effort=catalog_metadata.supports_reasoning_effort,
+            default_reasoning_effort=catalog_metadata.default_reasoning_effort,
+            supports_interleaved_reasoning=catalog_metadata.supports_interleaved_reasoning,
+            modalities_input=catalog_metadata.modalities_input,
+            modalities_output=catalog_metadata.modalities_output,
+            model_status=catalog_metadata.model_status,
+        )
 
     def list_agent_summaries(self) -> tuple[AgentSummary, ...]:
         summaries: list[AgentSummary] = []

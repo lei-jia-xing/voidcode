@@ -954,6 +954,20 @@ def _provider_model_metadata_payload(
             "supports_streaming": metadata.supports_streaming,
             "supports_reasoning": metadata.supports_reasoning,
             "supports_json_mode": metadata.supports_json_mode,
+            "cost_per_input_token": metadata.cost_per_input_token,
+            "cost_per_output_token": metadata.cost_per_output_token,
+            "cost_per_cache_read_token": metadata.cost_per_cache_read_token,
+            "cost_per_cache_write_token": metadata.cost_per_cache_write_token,
+            "supports_reasoning_effort": metadata.supports_reasoning_effort,
+            "default_reasoning_effort": metadata.default_reasoning_effort,
+            "supports_interleaved_reasoning": metadata.supports_interleaved_reasoning,
+            "modalities_input": list(metadata.modalities_input)
+            if metadata.modalities_input is not None
+            else None,
+            "modalities_output": list(metadata.modalities_output)
+            if metadata.modalities_output is not None
+            else None,
+            "model_status": metadata.model_status,
         }.items()
         if value is not None
     }

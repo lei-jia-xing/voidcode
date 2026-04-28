@@ -10561,6 +10561,8 @@ def test_runtime_persists_provider_model_catalog_cache(tmp_path: Path) -> None:
     assert result.source == "fallback"
     assert result.last_refresh_status == "skipped"
     assert result.model_metadata["gpt-4o"].max_input_tokens == 111_616
+    assert result.model_metadata["gpt-4o"].cost_per_input_token is not None
+    assert result.model_metadata["gpt-4o"].modalities_input == ("text", "image")
 
 
 def test_runtime_provider_validation_refreshes_past_persisted_catalog_cache(
@@ -10625,6 +10627,12 @@ def test_runtime_provider_models_result_exposes_capability_metadata(tmp_path: Pa
                     supports_streaming=True,
                     supports_reasoning=False,
                     supports_json_mode=True,
+                    cost_per_input_token=0.0000025,
+                    cost_per_output_token=0.00001,
+                    supports_reasoning_effort=False,
+                    modalities_input=("text", "image"),
+                    modalities_output=("text",),
+                    model_status="active",
                 )
             },
         )
@@ -10638,6 +10646,9 @@ def test_runtime_provider_models_result_exposes_capability_metadata(tmp_path: Pa
     assert result.model_metadata["gpt-4o"].supports_tools is True
     assert result.model_metadata["gpt-4o"].supports_vision is True
     assert result.model_metadata["gpt-4o"].supports_json_mode is True
+    assert result.model_metadata["gpt-4o"].cost_per_output_token == 0.00001
+    assert result.model_metadata["gpt-4o"].modalities_input == ("text", "image")
+    assert result.model_metadata["gpt-4o"].model_status == "active"
 
 
 def test_runtime_inspect_provider_combines_status_models_and_validation(tmp_path: Path) -> None:
@@ -10657,6 +10668,8 @@ def test_runtime_inspect_provider_combines_status_models_and_validation(tmp_path
     assert result.current_model_metadata.context_window == 128_000
     assert result.current_model_metadata.max_input_tokens == 111_616
     assert result.current_model_metadata.supports_tools is True
+    assert result.current_model_metadata.cost_per_input_token is not None
+    assert result.current_model_metadata.model_status == "active"
 
 
 def test_runtime_context_window_policy_uses_active_model_limit(tmp_path: Path) -> None:
