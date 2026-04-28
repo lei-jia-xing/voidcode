@@ -5,7 +5,7 @@ import logging
 import os
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
@@ -320,7 +320,10 @@ class RuntimeBackgroundTaskSupervisor:
             or self._runtime._config.background_task.model_concurrency
         ):
             return {}
-        return {"concurrency": self._concurrency_snapshot(task).as_payload()}
+        try:
+            return {"concurrency": self._concurrency_snapshot(task).as_payload()}
+        except (RuntimeRequestError, ValueError):
+            return {}
 
     def _drain_background_task_queue(self) -> None:
         runtime = self._runtime
@@ -515,21 +518,40 @@ class RuntimeBackgroundTaskSupervisor:
         result_available = task.result_available
         if not result_available and task.status != "cancelled" and child_result is not None:
             result_available = True
+        routing_error: str | None = None
+        try:
+            routing = task.routing_identity
+        except ValueError as exc:
+            routing = None
+            routing_error = str(exc)
         return BackgroundTaskResult(
             task_id=task.task.id,
             parent_session_id=task.parent_session_id,
             child_session_id=task.session_id,
             status=task.status,
             requested_child_session_id=task.request.session_id or task.session_id,
-            routing=task.routing_identity,
+            routing=routing,
             approval_request_id=task.approval_request_id,
             question_request_id=task.question_request_id,
             approval_blocked=approval_blocked,
             summary_output=summary_output,
-            error=error,
+            error=error or routing_error,
             result_available=result_available,
             cancellation_cause=task.cancellation_cause,
         )
+
+    def _delegated_lifecycle_payloads(
+        self,
+        result: BackgroundTaskResult,
+    ) -> tuple[BackgroundTaskResult, dict[str, object], dict[str, object]]:
+        try:
+            delegation = result.delegated_execution.as_payload()
+            message = result.delegated_message.as_payload()
+        except ValueError as exc:
+            result = replace(result, routing=None, error=result.error or str(exc))
+            delegation = result.delegated_execution.as_payload()
+            message = result.delegated_message.as_payload()
+        return result, delegation, message
 
     def emit_background_task_parent_terminal_event(self, *, task: BackgroundTaskState) -> None:
         runtime = self._runtime
@@ -549,13 +571,14 @@ class RuntimeBackgroundTaskSupervisor:
             "cancelled": RUNTIME_BACKGROUND_TASK_CANCELLED,
         }
         event_type = event_type_by_status[task.status]
+        result, delegation_payload, message_payload = self._delegated_lifecycle_payloads(result)
         payload: dict[str, object] = {
             "task_id": task.task.id,
             "parent_session_id": parent_session_id,
             "status": task.status,
             "result_available": result.result_available,
-            "delegation": result.delegated_execution.as_payload(),
-            "message": result.delegated_message.as_payload(),
+            "delegation": delegation_payload,
+            "message": message_payload,
             **self._concurrency_payload_for_event(task),
         }
         if result.child_session_id is not None:
@@ -663,6 +686,7 @@ class RuntimeBackgroundTaskSupervisor:
             )
             return
         result = self.background_task_result(task=task)
+        result, delegation_payload, message_payload = self._delegated_lifecycle_payloads(result)
         try:
             _ = session_event_appender.append_session_event(
                 workspace=runtime._workspace,
@@ -675,8 +699,8 @@ class RuntimeBackgroundTaskSupervisor:
                     "child_session_id": child_session_id,
                     "status": "running",
                     "approval_blocked": True,
-                    "delegation": result.delegated_execution.as_payload(),
-                    "message": result.delegated_message.as_payload(),
+                    "delegation": delegation_payload,
+                    "message": message_payload,
                     **self._concurrency_payload_for_event(task),
                     **(
                         {"approval_request_id": approval_request_id}

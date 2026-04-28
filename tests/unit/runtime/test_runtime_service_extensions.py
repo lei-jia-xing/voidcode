@@ -3912,7 +3912,12 @@ def test_runtime_reconciles_queued_background_tasks_on_init(tmp_path: Path) -> N
 def test_runtime_drain_marks_invalid_queued_task_failed_and_continues(
     tmp_path: Path,
 ) -> None:
-    first_runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    first_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_BackgroundTaskSuccessGraph(),
+        config=RuntimeConfig(background_task=RuntimeBackgroundTaskConfig(default_concurrency=1)),
+    )
+    parent = first_runtime.run(RuntimeRequest(prompt="parent"))
     store = _private_attr(first_runtime, "_session_store")
     task_module = importlib.import_module("voidcode.runtime.task")
     store.create_background_task(
@@ -3922,6 +3927,7 @@ def test_runtime_drain_marks_invalid_queued_task_failed_and_continues(
             request=task_module.BackgroundTaskRequestSnapshot(
                 prompt="invalid",
                 metadata={"agent": {"preset": "leader", "model": ""}},
+                parent_session_id=parent.session.session.id,
             ),
             created_at=1,
             updated_at=1,
@@ -3936,14 +3942,40 @@ def test_runtime_drain_marks_invalid_queued_task_failed_and_continues(
             updated_at=2,
         ),
     )
+    connection = sqlite3.connect(tmp_path / ".voidcode" / "sessions.sqlite3")
+    try:
+        _ = connection.execute(
+            """
+            UPDATE background_tasks
+            SET request_metadata_json = ?
+            WHERE task_id = ?
+            """,
+            (
+                json.dumps(
+                    {
+                        "agent": {"preset": "leader", "model": ""},
+                        "delegation": {"mode": "invalid"},
+                    },
+                    sort_keys=True,
+                ),
+                "task-invalid-metadata",
+            ),
+        )
+        connection.commit()
+    finally:
+        connection.close()
 
-    second_runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    second_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_BackgroundTaskSuccessGraph(),
+        config=RuntimeConfig(background_task=RuntimeBackgroundTaskConfig(default_concurrency=1)),
+    )
     completed = _wait_for_background_task(second_runtime, "task-after-invalid")
     failed = second_runtime.load_background_task("task-invalid-metadata")
 
     assert failed.status == "failed"
     assert failed.error is not None
-    assert "agent.model" in failed.error
+    assert "delegation.mode" in failed.error
     assert completed.status == "completed"
 
 

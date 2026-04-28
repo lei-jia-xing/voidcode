@@ -1131,7 +1131,10 @@ class VoidCodeRuntime:
         approval_blocked: bool | None = None,
         result_available: bool | None = None,
     ) -> AcpDelegatedExecution:
-        routing = task.routing_identity
+        try:
+            routing = task.routing_identity
+        except ValueError:
+            routing = None
         delegation_metadata = task.request.metadata.get("delegation")
         delegation_dict = (
             cast(dict[str, object], delegation_metadata)
