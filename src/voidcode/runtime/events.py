@@ -241,6 +241,20 @@ def _mapping_or_none(value: object) -> Mapping[str, object] | None:
     return cast(Mapping[str, object], value)
 
 
+def _delegated_lifecycle_message_payload(
+    payload: Mapping[str, object],
+) -> Mapping[str, object] | None:
+    message_payload = _mapping_or_none(payload.get("message"))
+    if message_payload is not None:
+        return message_payload
+    fallback_payload = {
+        key: payload[key]
+        for key in ("summary_output", "error", "approval_blocked", "result_available")
+        if key in payload
+    }
+    return fallback_payload or None
+
+
 @dataclass(frozen=True, slots=True)
 class DelegatedRoutingPayload:
     mode: Literal["sync", "background"] | None = None
@@ -417,7 +431,7 @@ class DelegatedLifecycleEventPayload:
         )
         payload = event.payload
         delegation_payload = _mapping_or_none(payload.get("delegation")) or {}
-        message_payload = _mapping_or_none(payload.get("message"))
+        message_payload = _delegated_lifecycle_message_payload(payload)
         delegation = DelegatedExecutionPayload.from_payload(
             delegation_payload,
             lifecycle_status=default_status,

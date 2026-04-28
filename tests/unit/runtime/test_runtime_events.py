@@ -142,3 +142,37 @@ def test_event_envelope_requires_nested_delegated_payload_shape() -> None:
     assert delegated.delegation.routing is not None
     assert delegated.delegation.routing.subagent_type == "explore"
     assert delegated.message.approval_blocked is True
+
+
+def test_acp_delegated_lifecycle_uses_top_level_message_state_when_message_missing() -> None:
+    event = EventEnvelope(
+        session_id="leader-session",
+        sequence=1,
+        event_type="runtime.acp_delegated_lifecycle",
+        source="runtime",
+        payload={
+            "session_id": "child-session",
+            "parent_session_id": "leader-session",
+            "status": "running",
+            "approval_blocked": True,
+            "result_available": True,
+            "delegation": {
+                "parent_session_id": "leader-session",
+                "child_session_id": "child-session",
+                "delegated_task_id": "task-1",
+                "lifecycle_status": "waiting_approval",
+                "approval_blocked": True,
+                "result_available": True,
+            },
+        },
+    )
+
+    delegated = event.delegated_lifecycle
+
+    assert delegated is not None
+    assert delegated.session_id == "child-session"
+    assert delegated.parent_session_id == "leader-session"
+    assert delegated.delegation.lifecycle_status == "waiting_approval"
+    assert delegated.message.status == "waiting_approval"
+    assert delegated.message.approval_blocked is True
+    assert delegated.message.result_available is True
