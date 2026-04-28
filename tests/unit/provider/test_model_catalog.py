@@ -223,7 +223,18 @@ def test_google_discovery_preserves_preview_model_status(
 
     metadata = result.model_metadata["gemini-3-pro-preview"]
     assert metadata.context_window == 64_000
+    assert metadata.max_input_tokens == 64_000
+    assert metadata.max_output_tokens == 65_536
     assert metadata.model_status == "preview"
+
+
+def test_deepseek_reasoning_effort_metadata_is_internally_consistent() -> None:
+    metadata = infer_model_metadata("deepseek", "deepseek-reasoner")
+
+    assert metadata is not None
+    assert metadata.supports_reasoning is True
+    assert metadata.supports_reasoning_effort is False
+    assert metadata.default_reasoning_effort is None
 
 
 @pytest.mark.parametrize(

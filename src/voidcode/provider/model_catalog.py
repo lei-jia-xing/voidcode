@@ -34,18 +34,21 @@ class ProviderModelMetadata:
     modalities_input: tuple[str, ...] | None = None
     modalities_output: tuple[str, ...] | None = None
     model_status: str | None = None
+    derived_max_input_tokens: bool = field(default=False, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if self.max_input_tokens is not None or self.context_window is None:
             return
         if self.max_output_tokens is None:
             object.__setattr__(self, "max_input_tokens", self.context_window)
+            object.__setattr__(self, "derived_max_input_tokens", True)
             return
         object.__setattr__(
             self,
             "max_input_tokens",
             max(1, self.context_window - self.max_output_tokens),
         )
+        object.__setattr__(self, "derived_max_input_tokens", True)
 
     def payload(self) -> dict[str, int | float | bool | str | list[str]]:
         payload: dict[str, int | float | bool | str | list[str]] = {}
@@ -333,6 +336,7 @@ def _override_max_input_tokens(
         override.context_window is not None
         and override.max_input_tokens == override.context_window
         and override.max_output_tokens is None
+        and override.derived_max_input_tokens
     ):
         if inferred is not None and override.context_window != inferred.context_window:
             return None
@@ -527,9 +531,7 @@ def infer_model_metadata(provider_name: str, model_name: str) -> ProviderModelMe
             "supports_reasoning": "reasoner" in model or model.startswith("deepseek-v4"),
             "supports_json_mode": True,
             "supports_reasoning_effort": False,
-            "default_reasoning_effort": "medium"
-            if "reasoner" in model or model.startswith("deepseek-v4")
-            else None,
+            "default_reasoning_effort": None,
             "supports_interleaved_reasoning": False,
             "modalities_input": ("text",),
             "modalities_output": ("text",),
