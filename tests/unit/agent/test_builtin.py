@@ -199,7 +199,6 @@ def test_agent_manifest_exposes_live_default_vs_intent_field_semantics() -> None
         "execution_engine",
         "model_preference",
         "tool_allowlist",
-        "skill_refs",
         "top_level_selectable",
         "prompt_materialization",
     )

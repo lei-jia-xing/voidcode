@@ -5875,7 +5875,14 @@ def test_runtime_emits_skills_loaded_catalog_without_default_full_injection(tmp_
     assembled = _SkillCapturingStubGraph.last_request.assembled_context
     assert assembled is not None
     system_segments = [s.content for s in assembled.segments if s.role == "system"]
-    assert system_segments == []
+    assert any(
+        isinstance(item, str) and "Runtime skills catalog (recommended/visible)." in item
+        for item in system_segments
+    )
+    assert not any(
+        isinstance(item, str) and "Always explain your reasoning." in item
+        for item in system_segments
+    )
 
 
 def test_runtime_persists_explicit_empty_applied_skill_snapshot(tmp_path: Path) -> None:
@@ -5896,7 +5903,11 @@ def test_runtime_persists_explicit_empty_applied_skill_snapshot(tmp_path: Path) 
     assert _SkillCapturingStubGraph.last_request is not None
     assembled = _SkillCapturingStubGraph.last_request.assembled_context
     assert assembled is not None
-    assert [s for s in assembled.segments if s.role == "system"] == []
+    system_segments = [s.content for s in assembled.segments if s.role == "system"]
+    assert any(
+        isinstance(item, str) and "Runtime skills catalog (recommended/visible)." in item
+        for item in system_segments
+    )
 
 
 def test_runtime_applies_only_requested_skills_from_request_metadata(tmp_path: Path) -> None:
@@ -6563,7 +6574,7 @@ def test_runtime_approval_resume_preserves_canonical_continuity_state(tmp_path: 
     assembled_context = created_providers[-1].requests[-1].assembled_context
     assert assembled_context is not None
     continuity_state = cast(RuntimeContinuityState | None, assembled_context.continuity_state)
-    context_window = cast(RuntimeContextWindow, resumed.session.metadata["context_window"])
+    context_window = cast(dict[str, object], resumed.session.metadata["context_window"])
     assert continuity_state is not None
     assert continuity_state.metadata_payload() == expected_resumed_continuity
     assert context_window["summary_anchor"] == (resumed_continuity_summary["anchor"])
@@ -8221,7 +8232,11 @@ def test_runtime_agent_skills_config_loads_and_persists_runtime_skills(
     assert _SkillCapturingStubGraph.last_request is not None
     assembled = _SkillCapturingStubGraph.last_request.assembled_context
     assert assembled is not None
-    assert [s for s in assembled.segments if s.role == "system"] == []
+    system_segments = [s.content for s in assembled.segments if s.role == "system"]
+    assert any(
+        isinstance(item, str) and "Runtime skills catalog (recommended/visible)." in item
+        for item in system_segments
+    )
 
 
 def test_runtime_agent_manifest_skill_refs_select_runtime_skills(
@@ -8266,7 +8281,11 @@ def test_runtime_agent_manifest_skill_refs_select_runtime_skills(
     assert _SkillCapturingStubGraph.last_request is not None
     assembled = _SkillCapturingStubGraph.last_request.assembled_context
     assert assembled is not None
-    assert [s for s in assembled.segments if s.role == "system"] == []
+    system_segments = [s.content for s in assembled.segments if s.role == "system"]
+    assert any(
+        isinstance(item, str) and "Runtime skills catalog (recommended/visible)." in item
+        for item in system_segments
+    )
 
 
 def test_runtime_agent_manifest_skill_refs_combine_with_request_skills(
