@@ -246,7 +246,10 @@ def discover_available_models(
 
     model_metadata: dict[str, ProviderModelMetadata] = {}
     for model in deduped:
-        metadata = discovered_metadata.get(model) or infer_model_metadata(provider_name, model)
+        metadata = _merge_model_metadata(
+            inferred=infer_model_metadata(provider_name, model),
+            override=discovered_metadata.get(model),
+        )
         if metadata is not None:
             model_metadata[model] = metadata
 
@@ -311,6 +314,78 @@ def _modalities_tuple(value: object) -> tuple[str, ...] | None:
     raw_items = cast(Iterable[object], value)
     modalities = tuple(item for item in raw_items if isinstance(item, str) and item)
     return modalities or None
+
+
+def _override_value[T](inferred: T | None, override: T | None) -> T | None:
+    return override if override is not None else inferred
+
+
+def _override_max_input_tokens(
+    *,
+    inferred: ProviderModelMetadata | None,
+    override: ProviderModelMetadata,
+) -> int | None:
+    if override.max_input_tokens is None:
+        return None if inferred is None else inferred.max_input_tokens
+    if (
+        override.context_window is not None
+        and override.max_input_tokens == override.context_window
+        and override.max_output_tokens is None
+    ):
+        return None if inferred is None else inferred.max_input_tokens
+    return override.max_input_tokens
+
+
+def _merge_model_metadata(
+    *,
+    inferred: ProviderModelMetadata | None,
+    override: ProviderModelMetadata | None,
+) -> ProviderModelMetadata | None:
+    if inferred is None:
+        return override
+    if override is None:
+        return inferred
+    return ProviderModelMetadata(
+        context_window=_override_value(inferred.context_window, override.context_window),
+        max_input_tokens=_override_max_input_tokens(inferred=inferred, override=override),
+        max_output_tokens=_override_value(inferred.max_output_tokens, override.max_output_tokens),
+        supports_tools=_override_value(inferred.supports_tools, override.supports_tools),
+        supports_vision=_override_value(inferred.supports_vision, override.supports_vision),
+        supports_streaming=_override_value(
+            inferred.supports_streaming, override.supports_streaming
+        ),
+        supports_reasoning=_override_value(
+            inferred.supports_reasoning, override.supports_reasoning
+        ),
+        supports_json_mode=_override_value(
+            inferred.supports_json_mode, override.supports_json_mode
+        ),
+        cost_per_input_token=_override_value(
+            inferred.cost_per_input_token, override.cost_per_input_token
+        ),
+        cost_per_output_token=_override_value(
+            inferred.cost_per_output_token, override.cost_per_output_token
+        ),
+        cost_per_cache_read_token=_override_value(
+            inferred.cost_per_cache_read_token, override.cost_per_cache_read_token
+        ),
+        cost_per_cache_write_token=_override_value(
+            inferred.cost_per_cache_write_token, override.cost_per_cache_write_token
+        ),
+        supports_reasoning_effort=_override_value(
+            inferred.supports_reasoning_effort, override.supports_reasoning_effort
+        ),
+        default_reasoning_effort=_override_value(
+            inferred.default_reasoning_effort, override.default_reasoning_effort
+        ),
+        supports_interleaved_reasoning=_override_value(
+            inferred.supports_interleaved_reasoning,
+            override.supports_interleaved_reasoning,
+        ),
+        modalities_input=_override_value(inferred.modalities_input, override.modalities_input),
+        modalities_output=_override_value(inferred.modalities_output, override.modalities_output),
+        model_status=_override_value(inferred.model_status, override.model_status),
+    )
 
 
 def infer_model_metadata(provider_name: str, model_name: str) -> ProviderModelMetadata | None:

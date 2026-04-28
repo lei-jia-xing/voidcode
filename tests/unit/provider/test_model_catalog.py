@@ -84,7 +84,7 @@ def test_discover_available_models_includes_known_model_budget_metadata() -> Non
     assert "unknown-model" not in result.model_metadata
 
 
-def test_discover_available_models_prefers_remote_metadata_when_present() -> None:
+def test_discover_available_models_merges_remote_metadata_over_inferred_defaults() -> None:
     result = discover_available_models(
         "openai",
         LiteLLMProviderConfig(discovery_base_url="https://api.openai.com"),
@@ -106,9 +106,41 @@ def test_discover_available_models_prefers_remote_metadata_when_present() -> Non
     metadata = result.model_metadata["gpt-4o"]
     assert metadata.context_window == 64_000
     assert metadata.max_input_tokens == 59_904
+    assert metadata.max_output_tokens == 4_096
     assert metadata.cost_per_input_token == 0.000001
+    assert metadata.cost_per_output_token == 0.00001
+    assert metadata.supports_vision is True
+    assert metadata.supports_json_mode is True
     assert metadata.modalities_input == ("text",)
+    assert metadata.modalities_output == ("text",)
     assert metadata.model_status == "preview"
+
+
+def test_discover_available_models_merges_partial_remote_metadata() -> None:
+    result = discover_available_models(
+        "google",
+        LiteLLMProviderConfig(discovery_base_url="https://generativelanguage.googleapis.com"),
+        fetcher=lambda _request: ModelDiscoveryFetchResult(
+            models=("gemini-2.5-pro",),
+            model_metadata={
+                "gemini-2.5-pro": ProviderModelMetadata(
+                    supports_tools=True,
+                    supports_streaming=True,
+                    modalities_input=("text", "image"),
+                )
+            },
+        ),
+    )
+
+    metadata = result.model_metadata["gemini-2.5-pro"]
+    assert metadata.context_window == 1_000_000
+    assert metadata.max_output_tokens == 65_536
+    assert metadata.supports_reasoning is True
+    assert metadata.supports_reasoning_effort is True
+    assert metadata.default_reasoning_effort == "medium"
+    assert metadata.cost_per_input_token is not None
+    assert metadata.cost_per_output_token is not None
+    assert metadata.model_status == "active"
 
 
 @pytest.mark.parametrize(
