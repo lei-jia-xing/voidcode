@@ -660,6 +660,41 @@ class _UnexpectedFallbackTurnProvider:
         return ProviderTurnResult(output="fallback used")
 
 
+class _BlockingFallbackModelProvider:
+    def __init__(self, *, name: str) -> None:
+        self.name = name
+        self.calls = 0
+        self.first_started = threading.Event()
+        self.second_started = threading.Event()
+        self.release_first = threading.Event()
+        self.lock = threading.Lock()
+
+    def turn_provider(self) -> _BlockingFallbackTurnProvider:
+        return _BlockingFallbackTurnProvider(model_provider=self)
+
+
+@dataclass(slots=True)
+class _BlockingFallbackTurnProvider:
+    model_provider: _BlockingFallbackModelProvider
+
+    @property
+    def name(self) -> str:
+        return self.model_provider.name
+
+    def propose_turn(self, request: object) -> ProviderTurnResult:
+        _ = request
+        with self.model_provider.lock:
+            self.model_provider.calls += 1
+            call_number = self.model_provider.calls
+        if call_number == 1:
+            self.model_provider.first_started.set()
+            if not self.model_provider.release_first.wait(timeout=2.0):
+                raise RuntimeError("first fallback call was not released")
+        else:
+            self.model_provider.second_started.set()
+        return ProviderTurnResult(output=f"fallback call {call_number}")
+
+
 class _ApprovalThenRateLimitModelProvider:
     def __init__(self, *, name: str) -> None:
         self.name = name
@@ -1100,6 +1135,45 @@ def test_runtime_background_rate_limit_retry_precedes_provider_fallback(
     assert child.output == "primary recovered"
     assert primary.attempts == 2
     assert fallback.calls == 0
+
+
+def test_runtime_background_fallback_reacquires_fallback_model_slot(
+    tmp_path: Path,
+) -> None:
+    primary = _AlwaysFailingModelProvider(name="opencode", error_kind="missing_auth")
+    fallback = _BlockingFallbackModelProvider(name="custom")
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        model_provider_registry=ModelProviderRegistry(
+            providers={"opencode": primary, "custom": fallback}
+        ),
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            provider_fallback=RuntimeProviderFallbackConfig(
+                preferred_model="opencode/gpt-5.4",
+                fallback_models=("custom/demo",),
+            ),
+            background_task=RuntimeBackgroundTaskConfig(
+                default_concurrency=4,
+                model_concurrency={"custom/demo": 1},
+            ),
+        ),
+    )
+
+    first = runtime.start_background_task(RuntimeRequest(prompt="first fallback task"))
+    assert fallback.first_started.wait(timeout=2.0)
+    second = runtime.start_background_task(RuntimeRequest(prompt="second fallback task"))
+
+    assert not fallback.second_started.wait(timeout=0.2)
+
+    fallback.release_first.set()
+    first_terminal = _wait_for_background_task(runtime, first.task.id)
+    second_terminal = _wait_for_background_task(runtime, second.task.id)
+
+    assert first_terminal.status == "completed"
+    assert second_terminal.status == "completed"
+    assert fallback.calls == 2
 
 
 def test_runtime_background_retry_marker_does_not_persist_across_approval_resume(
@@ -3870,6 +3944,36 @@ def test_runtime_drain_marks_invalid_queued_task_failed_and_continues(
     assert failed.status == "failed"
     assert failed.error is not None
     assert "agent.model" in failed.error
+    assert completed.status == "completed"
+
+
+def test_runtime_drain_releases_slot_when_worker_start_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_BackgroundTaskSuccessGraph(),
+        config=RuntimeConfig(background_task=RuntimeBackgroundTaskConfig(default_concurrency=1)),
+    )
+    original_start = threading.Thread.start
+    start_calls = 0
+
+    def _start_once_then_fail(thread: threading.Thread) -> None:
+        nonlocal start_calls
+        start_calls += 1
+        if start_calls == 1:
+            raise RuntimeError("can't start new thread")
+        original_start(thread)
+
+    monkeypatch.setattr(threading.Thread, "start", _start_once_then_fail)
+
+    failed = runtime.start_background_task(RuntimeRequest(prompt="first background task"))
+    second = runtime.start_background_task(RuntimeRequest(prompt="second background task"))
+    completed = _wait_for_background_task(runtime, second.task.id)
+
+    assert failed.status == "failed"
+    assert failed.error == "can't start new thread"
     assert completed.status == "completed"
 
 

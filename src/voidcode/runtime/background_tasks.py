@@ -28,6 +28,7 @@ from .events import (
     RUNTIME_BACKGROUND_TASK_FAILED,
     RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL,
     RUNTIME_FAILED,
+    RUNTIME_PROVIDER_FALLBACK,
     EventEnvelope,
 )
 from .session import SessionState
@@ -134,6 +135,14 @@ class RuntimeBackgroundTaskSupervisor:
         target = resolved_provider.active_target
         provider = target.selection.provider or "deterministic"
         model = target.selection.model or target.selection.raw_model or "deterministic"
+        return self._concurrency_identity_for_provider_model(provider=provider, model=model)
+
+    def _concurrency_identity_for_provider_model(
+        self,
+        *,
+        provider: str,
+        model: str,
+    ) -> _BackgroundTaskConcurrencyIdentity:
         model_key = f"{provider}/{model}"
         background_task_config = self._runtime._config.background_task
         model_limit = background_task_config.model_concurrency.get(model_key)
@@ -158,6 +167,20 @@ class RuntimeBackgroundTaskSupervisor:
             limit=background_task_config.default_concurrency,
             limit_source="default",
         )
+
+    def _fallback_identity_for_event(
+        self,
+        event: EventEnvelope,
+    ) -> _BackgroundTaskConcurrencyIdentity | None:
+        if event.event_type != RUNTIME_PROVIDER_FALLBACK:
+            return None
+        provider = event.payload.get("to_provider")
+        model = event.payload.get("to_model")
+        if not isinstance(provider, str) or not provider:
+            return None
+        if not isinstance(model, str) or not model:
+            return None
+        return self._concurrency_identity_for_provider_model(provider=provider, model=model)
 
     def _concurrency_identity_for_task(
         self, task: BackgroundTaskState
@@ -353,7 +376,19 @@ class RuntimeBackgroundTaskSupervisor:
                     daemon=True,
                 )
                 runtime._background_task_threads[task.task.id] = worker
-                worker.start()
+                try:
+                    worker.start()
+                except RuntimeError as exc:
+                    runtime._background_task_threads.pop(task.task.id, None)
+                    self._release_slot(identity)
+                    failed_task = runtime._session_store.mark_background_task_terminal(
+                        workspace=runtime._workspace,
+                        task_id=task.task.id,
+                        status="failed",
+                        error=str(exc),
+                    )
+                    failed_tasks.append(failed_task)
+                    continue
         for failed_task in failed_tasks:
             self.run_background_task_lifecycle_hook(failed_task)
 
@@ -899,6 +934,23 @@ class RuntimeBackgroundTaskSupervisor:
                     final_session = chunk.session
                     if chunk.event is not None:
                         events.append(chunk.event)
+                        fallback_identity = self._fallback_identity_for_event(chunk.event)
+                        if fallback_identity is not None and fallback_identity != slot_identity:
+                            with self._queue_lock:
+                                if slot_identity is not None and slot_reserved:
+                                    self._release_slot(slot_identity)
+                                    slot_reserved = False
+                            self._drain_background_task_queue()
+                            if self._wait_for_slot_or_cancel(
+                                task_id=task_id,
+                                identity=fallback_identity,
+                            ):
+                                self._mark_background_task_cancelled_during_retry_wait(
+                                    task_id=task_id,
+                                )
+                                return
+                            slot_identity = fallback_identity
+                            slot_reserved = True
                     if chunk.kind == "output":
                         output = chunk.output
                     current_task_state = runtime._session_store.load_background_task(
