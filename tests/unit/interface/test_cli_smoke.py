@@ -68,6 +68,44 @@ class _StubNonInteractiveInput:
         raise AssertionError("readline should not be called for non-interactive runs")
 
 
+def _expected_category_models(
+    global_model: str | None,
+    *,
+    overrides: dict[str, str] | None = None,
+) -> dict[str, dict[str, object]]:
+    configured_overrides = overrides or {}
+    presets = {
+        "deep": "worker",
+        "quick": "worker",
+        "ultrabrain": "advisor",
+        "unspecified-high": "worker",
+        "visual-engineering": "product",
+        "writing": "product",
+    }
+    return {
+        category: {
+            "model": configured_overrides.get(category),
+            "effective_model": configured_overrides.get(category, global_model),
+            "selected_preset": preset,
+            "selected_execution_engine": "provider",
+        }
+        for category, preset in presets.items()
+    }
+
+
+def _expected_agent_models(global_model: str | None) -> dict[str, dict[str, object]]:
+    return {
+        agent_id: {
+            "model": None,
+            "fallback_models": [],
+            "effective_model": global_model,
+            "effective_fallback_models": [],
+            "selected_execution_engine": "provider",
+        }
+        for agent_id in ("leader", "worker", "advisor", "explore", "researcher", "product")
+    }
+
+
 class _StubTtyStderr:
     def __init__(self) -> None:
         self.writes: list[str] = []
@@ -1326,6 +1364,8 @@ def test_config_show_outputs_workspace_effective_config() -> None:
         "execution_engine": "deterministic",
         "max_steps": None,
         "agent": None,
+        "agents": _expected_agent_models("repo/model"),
+        "categories": _expected_category_models("repo/model"),
         "provider_fallback": None,
         "resolved_provider": {
             "active_target": {
@@ -1380,6 +1420,39 @@ def test_config_show_accepts_json_flag() -> None:
     assert payload["approval_mode"] == "ask"
 
 
+def test_config_show_outputs_effective_category_models_without_secrets() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        (workspace / ".voidcode.json").write_text(
+            json.dumps(
+                {
+                    "model": "openai/global-model",
+                    "categories": {"quick": {"model": "openai/category-model"}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        env = with_src_pythonpath(os.environ.copy())
+        env["OPENAI_API_KEY"] = "category-secret"
+
+        result = _run_module_cli(
+            "config",
+            "show",
+            "--workspace",
+            str(workspace),
+            env=env,
+        )
+
+    payload = json.loads(result.stdout)
+    assert result.returncode == 0
+    assert payload["categories"] == _expected_category_models(
+        "openai/global-model",
+        overrides={"quick": "openai/category-model"},
+    )
+    assert payload["agents"] == _expected_agent_models("openai/global-model")
+    assert "category-secret" not in result.stdout
+
+
 def test_config_show_uses_opencode_go_environment_without_leaking_key() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         workspace = Path(tmp)
@@ -1406,6 +1479,8 @@ def test_config_show_uses_opencode_go_environment_without_leaking_key() -> None:
     assert payload["execution_engine"] == "provider"
     assert payload["agent"]["preset"] == "leader"
     assert payload["agent"]["prompt_profile"] == "leader"
+    assert payload["agents"] == _expected_agent_models("opencode-go/glm-5")
+    assert payload["categories"] == _expected_category_models("opencode-go/glm-5")
     assert payload["resolved_provider"] == {
         "active_target": {
             "raw_model": "opencode-go/glm-5",
@@ -1448,6 +1523,17 @@ def test_config_show_outputs_resumed_session_effective_config() -> None:
             "allow",
             env=env,
         )
+        (workspace / ".voidcode.json").write_text(
+            json.dumps(
+                {
+                    "approval_mode": "deny",
+                    "model": "changed/model",
+                    "categories": {"quick": {"model": "changed/category"}},
+                    "agents": {"worker": {"model": "changed/worker"}},
+                }
+            ),
+            encoding="utf-8",
+        )
         result = _run_module_cli(
             "config",
             "show",
@@ -1468,6 +1554,8 @@ def test_config_show_outputs_resumed_session_effective_config() -> None:
         "execution_engine": "deterministic",
         "max_steps": None,
         "agent": None,
+        "agents": _expected_agent_models("repo/model"),
+        "categories": _expected_category_models("repo/model"),
         "provider_fallback": None,
         "resolved_provider": {
             "active_target": {
@@ -1530,6 +1618,8 @@ def test_config_show_delegates_to_runtime_effective_config(capsys: Any) -> None:
         workspace = Path(tmp)
         with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
             runtime_class.return_value.effective_runtime_config.return_value = runtime_config
+            runtime_class.return_value.effective_category_model_config.return_value = {}
+            runtime_class.return_value.effective_agent_model_config.return_value = {}
             readiness = cli.ProviderReadinessResult(
                 provider="runtime",
                 model="model",
@@ -1559,6 +1649,12 @@ def test_config_show_delegates_to_runtime_effective_config(capsys: Any) -> None:
     runtime_class.return_value.effective_runtime_config.assert_called_once_with(
         session_id="config-session"
     )
+    runtime_class.return_value.effective_agent_model_config.assert_called_once_with(
+        session_id="config-session"
+    )
+    runtime_class.return_value.effective_category_model_config.assert_called_once_with(
+        session_id="config-session"
+    )
     assert json.loads(captured.out) == {
         "workspace": str(workspace),
         "session_id": "config-session",
@@ -1567,6 +1663,8 @@ def test_config_show_delegates_to_runtime_effective_config(capsys: Any) -> None:
         "execution_engine": "deterministic",
         "max_steps": 9,
         "agent": None,
+        "agents": {},
+        "categories": {},
         "provider_fallback": None,
         "resolved_provider": {
             "active_target": {

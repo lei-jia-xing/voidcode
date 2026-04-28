@@ -720,6 +720,8 @@ def _handle_config_show_command(args: argparse.Namespace) -> int:
         try:
             effective_config = runtime.effective_runtime_config(session_id=session_id)
             readiness = runtime.provider_readiness(session_id=session_id)
+            categories = runtime.effective_category_model_config(session_id=session_id)
+            agents = runtime.effective_agent_model_config(session_id=session_id)
         except ValueError as exc:
             raise SystemExit(f"error: {exc}") from None
     finally:
@@ -734,6 +736,8 @@ def _handle_config_show_command(args: argparse.Namespace) -> int:
             "execution_engine": effective_config.execution_engine,
             "max_steps": effective_config.max_steps,
             "agent": serialize_runtime_agent_config(getattr(effective_config, "agent", None)),
+            "agents": agents,
+            "categories": categories,
             "provider_fallback": serialize_provider_fallback_config(
                 getattr(effective_config, "provider_fallback", None)
             ),
