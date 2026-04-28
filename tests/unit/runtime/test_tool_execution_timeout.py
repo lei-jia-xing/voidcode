@@ -179,7 +179,10 @@ def _make_runtime(
     tool_timeout_seconds: int | None = None,
 ) -> VoidCodeRuntime:
     registry = ToolRegistry.from_tools([tool])
-    config = RuntimeConfig(tool_timeout_seconds=tool_timeout_seconds)
+    config = RuntimeConfig(
+        execution_engine="deterministic",
+        tool_timeout_seconds=tool_timeout_seconds,
+    )
     return VoidCodeRuntime(
         workspace=tmp_path,
         tool_registry=registry,
@@ -251,7 +254,11 @@ def test_timeout_event_payload_contains_tool_name_and_seconds(tmp_path: Path) ->
                 "timeout": 10,
             }
         ),
-        config=RuntimeConfig(approval_mode="allow", tool_timeout_seconds=timeout),
+        config=RuntimeConfig(
+            approval_mode="allow",
+            execution_engine="deterministic",
+            tool_timeout_seconds=timeout,
+        ),
     )
 
     chunks = list(runtime.run_stream(RuntimeRequest(prompt="go")))
@@ -279,7 +286,11 @@ def test_runtime_does_not_hang_after_tool_timeout(tmp_path: Path) -> None:
                 "timeout": 10,
             }
         ),
-        config=RuntimeConfig(approval_mode="allow", tool_timeout_seconds=1),
+        config=RuntimeConfig(
+            approval_mode="allow",
+            execution_engine="deterministic",
+            tool_timeout_seconds=1,
+        ),
     )
 
     start = time.monotonic()
@@ -340,7 +351,7 @@ def test_runtime_sanitizes_tool_arguments_and_data_before_events_and_feedback(
         workspace=tmp_path,
         tool_registry=ToolRegistry.from_tools([tool]),
         graph=graph,
-        config=RuntimeConfig(),
+        config=RuntimeConfig(execution_engine="deterministic"),
     )
 
     chunks = list(runtime.run_stream(RuntimeRequest(prompt="go")))
@@ -410,7 +421,11 @@ def test_session_status_is_failed_after_timeout(tmp_path: Path) -> None:
                 "timeout": 10,
             }
         ),
-        config=RuntimeConfig(approval_mode="allow", tool_timeout_seconds=1),
+        config=RuntimeConfig(
+            approval_mode="allow",
+            execution_engine="deterministic",
+            tool_timeout_seconds=1,
+        ),
     )
 
     chunks = list(runtime.run_stream(RuntimeRequest(prompt="go")))
@@ -426,7 +441,11 @@ def test_shell_exec_uses_existing_tool_timeout_when_runtime_timeout_is_unset(
         workspace=tmp_path,
         tool_registry=ToolRegistry.from_tools([ShellExecTool()]),
         graph=_ShellExecGraph({"command": command}),
-        config=RuntimeConfig(approval_mode="allow", tool_timeout_seconds=None),
+        config=RuntimeConfig(
+            approval_mode="allow",
+            execution_engine="deterministic",
+            tool_timeout_seconds=None,
+        ),
     )
     chunks = list(runtime.run_stream(RuntimeRequest(prompt="go")))
     completed_events = [
@@ -448,7 +467,11 @@ def test_shell_exec_timeout_wins_when_shorter_than_runtime_timeout(tmp_path: Pat
         workspace=tmp_path,
         tool_registry=ToolRegistry.from_tools([ShellExecTool()]),
         graph=_ShellExecGraph({"command": command, "timeout": 1}),
-        config=RuntimeConfig(approval_mode="allow", tool_timeout_seconds=10),
+        config=RuntimeConfig(
+            approval_mode="allow",
+            execution_engine="deterministic",
+            tool_timeout_seconds=10,
+        ),
     )
 
     _ = list(runtime.run_stream(RuntimeRequest(prompt="go", session_id=session_id)))
@@ -471,7 +494,11 @@ def test_runtime_timeout_wins_when_shorter_than_shell_exec_timeout(tmp_path: Pat
         workspace=tmp_path,
         tool_registry=ToolRegistry.from_tools([ShellExecTool()]),
         graph=_ShellExecGraph({"command": command, "timeout": 10}),
-        config=RuntimeConfig(approval_mode="allow", tool_timeout_seconds=1),
+        config=RuntimeConfig(
+            approval_mode="allow",
+            execution_engine="deterministic",
+            tool_timeout_seconds=1,
+        ),
     )
     chunks = list(runtime.run_stream(RuntimeRequest(prompt="go")))
     event_types = [
@@ -504,7 +531,11 @@ def test_runtime_timeout_prevents_delayed_shell_exec_side_effect(tmp_path: Path)
         workspace=tmp_path,
         tool_registry=ToolRegistry.from_tools([ShellExecTool()]),
         graph=_ShellExecGraph({"command": command, "timeout": 10}),
-        config=RuntimeConfig(approval_mode="allow", tool_timeout_seconds=1),
+        config=RuntimeConfig(
+            approval_mode="allow",
+            execution_engine="deterministic",
+            tool_timeout_seconds=1,
+        ),
     )
 
     _ = list(runtime.run_stream(RuntimeRequest(prompt="go")))

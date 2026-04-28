@@ -20,11 +20,11 @@ from unittest.mock import ANY, patch
 
 import pytest
 
-pytestmark = pytest.mark.usefixtures("_force_deterministic_engine_default")
+pytestmark = pytest.mark.usefixtures("force_deterministic_engine_default")
 
 
 @pytest.fixture
-def _force_deterministic_engine_default(monkeypatch: pytest.MonkeyPatch) -> None:
+def force_deterministic_engine_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("VOIDCODE_EXECUTION_ENGINE", "deterministic")
 
 
@@ -678,6 +678,7 @@ def test_runtime_emits_pre_and_post_hook_events_around_successful_tool_run(tmp_p
                 permission_policy=policy,
                 config=runtime_config(
                     approval_mode="allow",
+                    execution_engine="deterministic",
                     hooks=hooks_config(
                         enabled=True,
                         pre_tool=((sys.executable, "-c", "print('pre ok')"),),
@@ -742,6 +743,7 @@ def test_runtime_aborts_tool_run_when_pre_hook_fails(tmp_path: Path) -> None:
                     permission_policy=policy,
                     config=runtime_config(
                         approval_mode="allow",
+                        execution_engine="deterministic",
                         hooks=hooks_config(
                             enabled=True,
                             pre_tool=((sys.executable, "-c", "import sys; sys.exit(7)"),),
@@ -767,6 +769,7 @@ def test_runtime_aborts_tool_run_when_pre_hook_fails(tmp_path: Path) -> None:
                 permission_policy=policy,
                 config=runtime_config(
                     approval_mode="allow",
+                    execution_engine="deterministic",
                     hooks=hooks_config(
                         enabled=True,
                         pre_tool=((sys.executable, "-c", "import sys; sys.exit(7)"),),
@@ -882,6 +885,7 @@ def test_runtime_skips_post_hook_when_tool_execution_fails(tmp_path: Path) -> No
                     permission_policy=policy,
                     config=runtime_config(
                         approval_mode="allow",
+                        execution_engine="deterministic",
                         hooks=hooks_config(
                             enabled=True,
                             pre_tool=((sys.executable, "-c", "print('pre ok')"),),
@@ -906,6 +910,7 @@ def test_runtime_skips_post_hook_when_tool_execution_fails(tmp_path: Path) -> No
                 permission_policy=policy,
                 config=runtime_config(
                     approval_mode="allow",
+                    execution_engine="deterministic",
                     hooks=hooks_config(
                         enabled=True,
                         pre_tool=((sys.executable, "-c", "print('pre ok')"),),
