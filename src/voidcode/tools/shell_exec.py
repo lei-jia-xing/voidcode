@@ -16,13 +16,31 @@ MAX_TIMEOUT_SECONDS = 120
 MAX_OUTPUT_CHARS = 200_000
 
 
-def _truncate(text: str) -> tuple[str, bool]:
+def _truncate(text: str | None) -> tuple[str, bool]:
+    if text is None:
+        return "", False
     if len(text) <= MAX_OUTPUT_CHARS:
         return text, False
     return text[:MAX_OUTPUT_CHARS], True
 
 
 def kill_timed_out_process(process: subprocess.Popen[str]) -> None:
+    if os.name == "nt":
+        try:
+            _ = subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                capture_output=True,
+                check=False,
+                text=True,
+            )
+            return
+        except OSError:
+            pass
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
+        return
     try:
         os.killpg(process.pid, signal.SIGKILL)
     except AttributeError:
@@ -91,6 +109,9 @@ class ShellExecTool:
             runtime_timeout_selected = True
 
         try:
+            creationflags = 0
+            if os.name == "nt":
+                creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
             process = subprocess.Popen(
                 command_text,
                 cwd=workspace.resolve(),
@@ -98,7 +119,10 @@ class ShellExecTool:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 start_new_session=True,
+                creationflags=creationflags,
             )
         except OSError as exc:
             raise ValueError(f"shell_exec failed to execute command: {exc}") from exc

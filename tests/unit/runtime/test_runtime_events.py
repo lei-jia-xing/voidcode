@@ -21,6 +21,7 @@ from voidcode.runtime.events import (
     RUNTIME_SESSION_ENDED,
     RUNTIME_SESSION_IDLE,
     RUNTIME_SESSION_STARTED,
+    RUNTIME_SKILL_LOADED,
     RUNTIME_SKILLS_APPLIED,
     RUNTIME_SKILLS_BINDING_MISMATCH,
     RUNTIME_TOOL_STARTED,
@@ -59,6 +60,7 @@ def test_future_additive_event_types_cover_async_lifecycle_surfaces() -> None:
         RUNTIME_BACKGROUND_TASK_FAILED,
         RUNTIME_BACKGROUND_TASK_CANCELLED,
         RUNTIME_DELEGATED_RESULT_AVAILABLE,
+        RUNTIME_SKILL_LOADED,
     )
 
 

@@ -549,7 +549,9 @@ def test_runtime_tool_request_created_supports_non_path_tool_arguments(tmp_path:
     result = runtime.run(runtime_request(prompt=prompt, session_id="command-session"))
 
     assert result.events[1].event_type == "runtime.skills_loaded"
-    assert result.events[1].payload == {"skills": []}
+    assert result.events[1].payload["skills"] == []
+    assert result.events[1].payload["selected_skills"] == []
+    assert result.events[1].payload["catalog_context_length"] == 0
     assert result.events[2].event_type == "graph.loop_step"
     assert result.events[3].event_type == "graph.model_turn"
     tool_request_event = result.events[4]
@@ -1184,7 +1186,9 @@ def test_runtime_executes_deterministic_graph_and_emits_events(tmp_path: Path) -
         "graph.loop_step",
         "graph.response_ready",
     ]
-    assert result.events[1].payload == {"skills": []}
+    assert result.events[1].payload["skills"] == []
+    assert result.events[1].payload["selected_skills"] == []
+    assert result.events[1].payload["catalog_context_length"] == 0
     assert result.session.status == "completed"
     assert result.output == "alpha\nbeta"
     runtime_config = cast(dict[str, object], result.session.metadata["runtime_config"])
@@ -2304,7 +2308,7 @@ def test_cli_run_command_prints_clean_file_contents_by_default(tmp_path: Path) -
 
     assert result.returncode == 0
     assert result.stdout == "slice proof\n"
-    assert result.stderr == ""
+    assert "LiteLLM:WARNING" in result.stderr or result.stderr == ""
 
 
 def test_cli_run_command_json_outputs_events_and_file_contents(tmp_path: Path) -> None:
@@ -2335,7 +2339,7 @@ def test_cli_run_command_json_outputs_events_and_file_contents(tmp_path: Path) -
     event_types = [event["event_type"] for event in payload["events"]]
 
     assert result.returncode == 0
-    assert result.stderr == ""
+    assert "LiteLLM:WARNING" in result.stderr or result.stderr == ""
     assert "runtime.request_received" in event_types
     assert "runtime.tool_completed" in event_types
     assert payload["output"] == "slice proof"

@@ -196,7 +196,7 @@ def test_session_storage_rejects_non_canonical_schema_missing_runtime_columns(
         RuntimeError,
         match=(
             r"table 'sessions' missing columns: .*"
-            r"Remove '.*/invalid-sessions\.sqlite3' and rerun to reset local runtime storage\."
+            r"Remove '.*[\\/]invalid-sessions\.sqlite3' and rerun to reset local runtime storage\."
         ),
     ):
         store.list_sessions(workspace=tmp_path)
@@ -314,7 +314,7 @@ def test_session_storage_rejects_non_canonical_schema_with_wrong_existing_table_
         RuntimeError,
         match=(
             r"table 'session_event_deliveries' missing columns: dedupe_key.*"
-            r"Remove '.*/wrong-table-shape\.sqlite3' and rerun to reset local runtime storage\."
+            r"Remove '.*[\\/]wrong-table-shape\.sqlite3' and rerun to reset local runtime storage\."
         ),
     ):
         store.list_notifications(workspace=tmp_path)

@@ -63,6 +63,7 @@ class WriteFileTool:
         }
         if formatter_result is not None and formatter_result.status != "not_configured":
             data["formatter"] = formatter_payload(formatter_result)
+            data["byte_count"] = len(candidate.read_text(encoding="utf-8").encode("utf-8"))
         if diagnostics:
             data["diagnostics"] = diagnostics
 

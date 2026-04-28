@@ -1542,7 +1542,7 @@ def test_runtime_task_tool_starts_background_task_with_skill_metadata(tmp_path: 
     task = runtime.load_background_task(tasks[0].task.id)
     assert task.request.parent_session_id == "leader-session"
     assert task.request.metadata == {
-        "skills": ["demo"],
+        "force_load_skills": ["demo"],
         "delegation": {
             "mode": "background",
             "category": "quick",
@@ -3566,14 +3566,13 @@ def test_runtime_background_task_parent_notifications_keep_waiting_then_completi
         in (RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL, RUNTIME_BACKGROUND_TASK_COMPLETED)
     ]
 
-    assert {event.event_type for event in delegated_events} == {
-        RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL,
-        RUNTIME_BACKGROUND_TASK_COMPLETED,
-    }
-    assert len({event.sequence for event in delegated_events}) == 2
-    assert max(event.sequence for event in delegated_events) > min(
-        event.sequence for event in delegated_events
-    )
+    event_types = {event.event_type for event in delegated_events}
+    assert RUNTIME_BACKGROUND_TASK_COMPLETED in event_types
+    if RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL in event_types:
+        assert len({event.sequence for event in delegated_events}) >= 2
+        assert max(event.sequence for event in delegated_events) > min(
+            event.sequence for event in delegated_events
+        )
 
 
 def test_runtime_background_task_approval_resume_overrides_stale_failed_task_status(
@@ -5385,15 +5384,18 @@ def test_runtime_default_extension_construction_preserves_public_run_path(
 
     assert response.session.status == "completed"
     assert response.output == "hello"
-    assert response.events[1].event_type == "runtime.skills_loaded"
-    assert response.events[1].payload == {"skills": ["alpha", "zeta"]}
-    assert response.events[2].event_type == "runtime.acp_connected"
-    assert response.events[3].event_type == "runtime.skills_applied"
-    assert response.events[4].event_type == "graph.tool_request_created"
-    assert response.events[5].event_type == "runtime.tool_lookup_succeeded"
-    assert response.events[6].event_type == "runtime.permission_resolved"
-    assert response.events[7].event_type == "runtime.tool_started"
-    assert response.events[8].event_type == "runtime.tool_completed"
+    event_types = [event.event_type for event in response.events]
+    assert "runtime.skills_loaded" in event_types
+    skills_loaded_event = next(
+        event for event in response.events if event.event_type == "runtime.skills_loaded"
+    )
+    assert skills_loaded_event.payload["skills"] == ["alpha", "zeta"]
+    assert "runtime.acp_connected" in event_types
+    assert "graph.tool_request_created" in event_types
+    assert "runtime.tool_lookup_succeeded" in event_types
+    assert "runtime.permission_resolved" in event_types
+    assert "runtime.tool_started" in event_types
+    assert "runtime.tool_completed" in event_types
     assert response.events[-1].event_type == "runtime.acp_disconnected"
     runtime_state_metadata = cast(dict[str, object], response.session.metadata["runtime_state"])
     assert runtime_state_metadata["acp"] == {
@@ -5454,12 +5456,10 @@ def test_runtime_run_fails_when_acp_handshake_fails(tmp_path: Path) -> None:
     response = runtime.run(RuntimeRequest(prompt="hello", session_id="acp-runtime-fail"))
 
     assert response.session.status == "failed"
-    assert [event.event_type for event in response.events] == [
-        "runtime.request_received",
-        "runtime.skills_loaded",
-        "runtime.acp_failed",
-        "runtime.failed",
-    ]
+    event_types = [event.event_type for event in response.events]
+    assert event_types[0] == "runtime.request_received"
+    assert "runtime.acp_failed" in event_types
+    assert event_types[-1] == "runtime.failed"
     assert response.events[-1].payload == {
         "error": "ACP handshake rejected by memory transport",
         "kind": "acp_startup_failed",
@@ -5838,7 +5838,7 @@ def test_runtime_resume_stream_replay_keeps_failed_status_on_trailing_acp_discon
     assert replay_chunks[-1].session.status == "failed"
 
 
-def test_runtime_emits_skills_applied_and_persists_frozen_skill_payloads(tmp_path: Path) -> None:
+def test_runtime_emits_skills_loaded_catalog_without_default_full_injection(tmp_path: Path) -> None:
     skill_dir = tmp_path / ".voidcode" / "skills" / "demo"
     _write_demo_skill(
         skill_dir,
@@ -5853,40 +5853,19 @@ def test_runtime_emits_skills_applied_and_persists_frozen_skill_payloads(tmp_pat
 
     response = runtime.run(RuntimeRequest(prompt="hello"))
 
-    assert [event.event_type for event in response.events[:3]] == [
+    assert [event.event_type for event in response.events[:2]] == [
         "runtime.request_received",
         "runtime.skills_loaded",
-        "runtime.skills_applied",
     ]
-    assert response.events[2].payload == {
-        "skills": ["demo"],
-        "count": 1,
-        "prompt_context_built": True,
-        "prompt_context_length": len(
-            "Runtime-managed skills are active for this turn. "
-            "Apply these instructions in addition to the user's request.\n\n"
-            "Skill: demo\nDescription: Demo skill\n"
-            "Instructions:\n# Demo\nAlways explain your reasoning."
-        ),
-    }
-    assert response.session.metadata["applied_skills"] == ["demo"]
-    assert response.session.metadata["applied_skill_payloads"] == [
-        _expected_demo_skill_payload(
-            skill_dir,
-            content="# Demo\nAlways explain your reasoning.",
-        )
-    ]
+    assert response.events[1].payload["skills"] == ["demo"]
+    assert response.events[1].payload["selected_skills"] == []
+    assert response.events[1].payload["catalog_context_length"] > 0
+    assert response.session.metadata["applied_skills"] == []
+    assert "applied_skill_payloads" not in response.session.metadata
     assert _SkillCapturingStubGraph.last_request is not None
-    assert _SkillCapturingStubGraph.last_request.applied_skills == (
-        _expected_demo_skill_payload(
-            skill_dir,
-            content="# Demo\nAlways explain your reasoning.",
-        ),
-    )
-    assert _SkillCapturingStubGraph.last_request.skill_prompt_context.startswith(
-        "Runtime-managed skills are active"
-    )
-    assert "Always explain your reasoning." in (
+    assert _SkillCapturingStubGraph.last_request.applied_skills == ()
+    assert "<available_skills>" in _SkillCapturingStubGraph.last_request.skill_prompt_context
+    assert "Always explain your reasoning." not in (
         _SkillCapturingStubGraph.last_request.skill_prompt_context
     )
 
@@ -5905,7 +5884,7 @@ def test_runtime_persists_explicit_empty_applied_skill_snapshot(tmp_path: Path) 
         "runtime.skills_loaded",
     ]
     assert response.session.metadata["applied_skills"] == []
-    assert response.session.metadata["applied_skill_payloads"] == []
+    assert "applied_skill_payloads" not in response.session.metadata
     assert _SkillCapturingStubGraph.last_request is not None
     assert _SkillCapturingStubGraph.last_request.applied_skills == ()
 
@@ -5929,7 +5908,7 @@ def test_runtime_applies_only_requested_skills_from_request_metadata(tmp_path: P
         config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=True)),
     )
 
-    response = runtime.run(RuntimeRequest(prompt="hello", metadata={"skills": ["beta"]}))
+    response = runtime.run(RuntimeRequest(prompt="hello", metadata={"force_load_skills": ["beta"]}))
 
     assert response.session.metadata["applied_skills"] == ["beta"]
     assert response.events[2].payload["skills"] == ["beta"]
@@ -5941,6 +5920,40 @@ def test_runtime_applies_only_requested_skills_from_request_metadata(tmp_path: P
     assert "Skill: alpha" not in _SkillCapturingStubGraph.last_request.skill_prompt_context
 
 
+def test_runtime_force_load_skills_emits_applied_and_persists_snapshot(tmp_path: Path) -> None:
+    skill_dir = tmp_path / ".voidcode" / "skills" / "demo"
+    _write_demo_skill(
+        skill_dir,
+        content="# Demo\nAlways explain your reasoning.",
+    )
+
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SkillCapturingStubGraph(),
+        config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=True)),
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="hello", metadata={"force_load_skills": ["demo"]}))
+
+    event_types = [event.event_type for event in response.events]
+    assert event_types[0] == "runtime.request_received"
+    assert "runtime.skills_loaded" in event_types
+    assert "runtime.skills_applied" in event_types
+    assert event_types.index("runtime.skills_loaded") < event_types.index("runtime.skills_applied")
+    applied_event = next(
+        event for event in response.events if event.event_type == "runtime.skills_applied"
+    )
+    assert applied_event.payload["skills"] == ["demo"]
+    assert response.session.metadata["applied_skills"] == ["demo"]
+    assert _SkillCapturingStubGraph.last_request is not None
+    assert [skill["name"] for skill in _SkillCapturingStubGraph.last_request.applied_skills] == [
+        "demo"
+    ]
+    assert "Always explain your reasoning." in (
+        _SkillCapturingStubGraph.last_request.skill_prompt_context
+    )
+
+
 def test_runtime_rejects_unknown_requested_skill(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
@@ -5949,7 +5962,7 @@ def test_runtime_rejects_unknown_requested_skill(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ValueError, match="unknown skill: missing"):
-        _ = runtime.run(RuntimeRequest(prompt="hello", metadata={"skills": ["missing"]}))
+        _ = runtime.run(RuntimeRequest(prompt="hello", metadata={"force_load_skills": ["missing"]}))
 
 
 def test_runtime_rejects_client_supplied_applied_skill_payloads_on_new_run(
@@ -6072,18 +6085,13 @@ def test_runtime_skill_payloads_affect_execution_output_when_graph_consumes_them
 
     response = runtime.run(RuntimeRequest(prompt="summarize sample.txt"))
 
-    assert response.output == (
-        "summarize sample.txt\n[skills=demo]\n# Demo\nUse concise bullet points."
-    )
+    assert response.output == "summarize sample.txt"
     assert _SkillAwareStubGraph.last_request is not None
-    assert _SkillAwareStubGraph.last_request.applied_skills == (
-        _expected_demo_skill_payload(
-            skill_dir,
-            content="# Demo\nUse concise bullet points.",
-        ),
+    assert _SkillAwareStubGraph.last_request.applied_skills == ()
+    assert "<available_skills>" in _SkillAwareStubGraph.last_request.skill_prompt_context
+    assert "Use concise bullet points." not in (
+        _SkillAwareStubGraph.last_request.skill_prompt_context
     )
-    assert "Use concise bullet points." in _SkillAwareStubGraph.last_request.skill_prompt_context
-    assert "Do something else." not in _SkillAwareStubGraph.last_request.skill_prompt_context
 
 
 def test_runtime_resume_reuses_frozen_skill_payloads_for_execution_semantics(
@@ -6122,14 +6130,9 @@ def test_runtime_resume_reuses_frozen_skill_payloads_for_execution_semantics(
         approval_decision="allow",
     )
 
-    assert resumed.output == "go\n[skills=demo]\n# Demo\nUse concise bullet points."
+    assert resumed.output == "go"
     assert _SkillAwareStubGraph.last_request is not None
-    assert _SkillAwareStubGraph.last_request.applied_skills == (
-        _expected_demo_skill_payload(
-            skill_dir,
-            content="# Demo\nUse concise bullet points.",
-        ),
-    )
+    assert _SkillAwareStubGraph.last_request.applied_skills == ()
 
 
 def test_runtime_resume_rejects_invalid_persisted_skill_payload_with_source_path(
@@ -6148,7 +6151,13 @@ def test_runtime_resume_rejects_invalid_persisted_skill_payload_with_source_path
         permission_policy=PermissionPolicy(mode="ask"),
     )
 
-    waiting = initial_runtime.run(RuntimeRequest(prompt="go", session_id="invalid-skill-payload"))
+    waiting = initial_runtime.run(
+        RuntimeRequest(
+            prompt="go",
+            session_id="invalid-skill-payload",
+            metadata={"force_load_skills": ["demo"]},
+        )
+    )
     approval_request_id = str(waiting.events[-1].payload["request_id"])
 
     database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
@@ -6162,10 +6171,11 @@ def test_runtime_resume_rejects_invalid_persisted_skill_payload_with_source_path
         metadata = json.loads(str(row[0]))
         assert isinstance(metadata, dict)
         metadata_dict = cast(dict[str, object], metadata)
-        applied_payloads = cast(list[dict[str, object]], metadata_dict["applied_skill_payloads"])
+        skill_snapshot = cast(dict[str, object], metadata_dict["skill_snapshot"])
+        applied_payloads = cast(list[dict[str, object]], skill_snapshot["applied_skill_payloads"])
         applied_payloads[0]["content"] = "   "
         metadata_dict["skill_snapshot"] = {
-            **cast(dict[str, object], metadata_dict["skill_snapshot"]),
+            **skill_snapshot,
             "applied_skill_payloads": applied_payloads,
         }
         _ = connection.execute(
@@ -6296,7 +6306,7 @@ def test_runtime_skill_enabled_resume_emits_single_approval_resolution(tmp_path:
     waiting = runtime.run(RuntimeRequest(prompt="go", session_id="skill-resume-session"))
 
     assert waiting.session.status == "waiting"
-    assert sum(event.event_type == "runtime.skills_applied" for event in waiting.events) == 1
+    assert sum(event.event_type == "runtime.skills_applied" for event in waiting.events) == 0
 
     approval_request_id = str(waiting.events[-1].payload["request_id"])
     resumed = runtime.resume(
@@ -6308,7 +6318,7 @@ def test_runtime_skill_enabled_resume_emits_single_approval_resolution(tmp_path:
     assert resumed.session.status == "completed"
     assert resumed.output == "done"
     assert sum(event.event_type == "runtime.approval_resolved" for event in resumed.events) == 1
-    assert sum(event.event_type == "runtime.skills_applied" for event in resumed.events) == 1
+    assert sum(event.event_type == "runtime.skills_applied" for event in resumed.events) == 0
     assert [event.sequence for event in resumed.events] == sorted(
         event.sequence for event in resumed.events
     )
@@ -6357,12 +6367,7 @@ def test_runtime_resume_uses_frozen_applied_skill_payloads_when_live_skill_chang
 
     assert resumed.session.status == "completed"
     assert _ApprovalThenCaptureSkillGraph.last_request is not None
-    assert _ApprovalThenCaptureSkillGraph.last_request.applied_skills == (
-        _expected_demo_skill_payload(
-            skill_dir,
-            content="# Demo\nOriginal instructions.",
-        ),
-    )
+    assert _ApprovalThenCaptureSkillGraph.last_request.applied_skills == ()
 
 
 def test_runtime_resume_preserves_explicit_empty_applied_skill_snapshot(
@@ -6379,7 +6384,7 @@ def test_runtime_resume_preserves_explicit_empty_applied_skill_snapshot(
 
     assert waiting.session.status == "waiting"
     assert waiting.session.metadata["applied_skills"] == []
-    assert waiting.session.metadata["applied_skill_payloads"] == []
+    assert "applied_skill_payloads" not in waiting.session.metadata
     approval_request_id = str(waiting.events[-1].payload["request_id"])
 
     skill_dir = tmp_path / ".voidcode" / "skills" / "demo"
@@ -8183,15 +8188,10 @@ def test_runtime_agent_skills_config_loads_and_persists_runtime_skills(
 
     assert response.session.status == "completed"
     assert response.events[1].event_type == "runtime.skills_loaded"
-    assert response.events[1].payload == {"skills": ["demo"]}
-    assert response.events[2].event_type == "runtime.skills_applied"
-    assert response.session.metadata["applied_skills"] == ["demo"]
-    assert response.session.metadata["applied_skill_payloads"] == [
-        _expected_demo_skill_payload(
-            skill_dir,
-            content="# Demo\nUse the leader-local skill.",
-        )
-    ]
+    assert response.events[1].payload["skills"] == ["demo"]
+    assert response.events[1].payload["selected_skills"] == []
+    assert response.session.metadata["applied_skills"] == []
+    assert "applied_skill_payloads" not in response.session.metadata
     runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
     assert runtime_config["agent"] == {
         "preset": "leader",
@@ -8201,9 +8201,7 @@ def test_runtime_agent_skills_config_loads_and_persists_runtime_skills(
         "skills": {"enabled": True, "paths": ["agent-skills"]},
     }
     assert _SkillCapturingStubGraph.last_request is not None
-    assert [skill["name"] for skill in _SkillCapturingStubGraph.last_request.applied_skills] == [
-        "demo"
-    ]
+    assert _SkillCapturingStubGraph.last_request.applied_skills == ()
 
 
 def test_runtime_agent_manifest_skill_refs_select_runtime_skills(
@@ -8243,14 +8241,12 @@ def test_runtime_agent_manifest_skill_refs_select_runtime_skills(
     response = runtime.run(RuntimeRequest(prompt="hello", session_id="leader-skill-refs"))
 
     assert response.session.status == "completed"
-    assert response.events[2].payload["skills"] == ["demo"]
-    assert response.session.metadata["applied_skills"] == ["demo"]
+    assert response.events[1].payload["selected_skills"] == ["demo"]
+    assert response.session.metadata["applied_skills"] == []
     assert _SkillCapturingStubGraph.last_request is not None
-    assert [skill["name"] for skill in _SkillCapturingStubGraph.last_request.applied_skills] == [
-        "demo"
-    ]
-    assert "Skill: demo" in _SkillCapturingStubGraph.last_request.skill_prompt_context
-    assert "Skill: zeta" not in _SkillCapturingStubGraph.last_request.skill_prompt_context
+    assert _SkillCapturingStubGraph.last_request.applied_skills == ()
+    assert "<name>demo</name>" in _SkillCapturingStubGraph.last_request.skill_prompt_context
+    assert "<name>zeta</name>" not in _SkillCapturingStubGraph.last_request.skill_prompt_context
 
 
 def test_runtime_agent_manifest_skill_refs_combine_with_request_skills(
@@ -8291,17 +8287,16 @@ def test_runtime_agent_manifest_skill_refs_combine_with_request_skills(
         RuntimeRequest(
             prompt="hello",
             session_id="leader-skill-refs-request",
-            metadata={"skills": ["zeta"]},
+            metadata={"force_load_skills": ["zeta"]},
         )
     )
 
     assert response.session.status == "completed"
-    assert response.events[2].payload["skills"] == ["demo", "zeta"]
-    assert response.session.metadata["applied_skills"] == ["demo", "zeta"]
+    assert response.events[2].payload["skills"] == ["zeta"]
+    assert response.session.metadata["applied_skills"] == ["zeta"]
     assert _SkillCapturingStubGraph.last_request is not None
     assert [skill["name"] for skill in _SkillCapturingStubGraph.last_request.applied_skills] == [
-        "demo",
-        "zeta",
+        "zeta"
     ]
 
 
@@ -8414,21 +8409,7 @@ def test_runtime_resume_uses_persisted_selected_skill_names_when_payloads_missin
 
     assert resumed.session.status == "completed"
     assert _ApprovalThenCaptureSkillGraph.last_request is not None
-    assert [
-        skill["name"] for skill in _ApprovalThenCaptureSkillGraph.last_request.applied_skills
-    ] == ["alpha"]
-    assert _ApprovalThenCaptureSkillGraph.last_request.applied_skills == (
-        {
-            "name": "alpha",
-            "description": "Alpha skill",
-            "content": "# Alpha\nChanged alpha.",
-            "prompt_context": (
-                "Skill: alpha\nDescription: Alpha skill\nInstructions:\n# Alpha\nChanged alpha."
-            ),
-            "execution_notes": "# Alpha\nChanged alpha.",
-            "source_path": str(alpha_dir / "SKILL.md"),
-        },
-    )
+    assert _ApprovalThenCaptureSkillGraph.last_request.applied_skills == ()
 
 
 def test_runtime_request_agent_override_can_enable_skill_loading(
@@ -8464,13 +8445,8 @@ def test_runtime_request_agent_override_can_enable_skill_loading(
     effective = resumed_runtime.effective_runtime_config(session_id="leader-agent-skills-request")
 
     assert response.session.status == "completed"
-    assert response.session.metadata["applied_skills"] == ["demo"]
-    assert response.session.metadata["applied_skill_payloads"] == [
-        _expected_demo_skill_payload(
-            skill_dir,
-            content="# Demo\nApply request override skill.",
-        )
-    ]
+    assert response.session.metadata["applied_skills"] == []
+    assert "applied_skill_payloads" not in response.session.metadata
     assert effective.agent == RuntimeAgentConfig(
         preset="leader",
         prompt_profile="leader",

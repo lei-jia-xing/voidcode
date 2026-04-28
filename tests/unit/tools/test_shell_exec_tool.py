@@ -35,18 +35,21 @@ def test_shell_exec_tool_runs_command_in_workspace(tmp_path: Path) -> None:
 
 def test_shell_exec_tool_supports_shell_operators(tmp_path: Path) -> None:
     tool = ShellExecTool()
+    command = "printf 'alpha\\n' > sample.txt && cat sample.txt"
+    if sys.platform.startswith("win"):
+        command = "echo alpha>sample.txt && type sample.txt"
 
     result = tool.invoke(
         ToolCall(
             tool_name="shell_exec",
-            arguments={"command": "printf 'alpha\\n' > sample.txt && cat sample.txt"},
+            arguments={"command": command},
         ),
         workspace=tmp_path,
     )
 
     assert result.status == "ok"
-    assert result.content == "alpha\n"
-    assert (tmp_path / "sample.txt").read_text(encoding="utf-8") == "alpha\n"
+    assert result.content.strip() == "alpha"
+    assert (tmp_path / "sample.txt").read_text(encoding="utf-8").strip() == "alpha"
 
 
 def test_shell_exec_tool_rejects_invalid_command_arguments(tmp_path: Path) -> None:
@@ -94,6 +97,9 @@ def test_shell_exec_timeout_cleanup_falls_back_without_killpg(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     tool = ShellExecTool()
+
+    if not hasattr(__import__("os"), "killpg"):
+        pytest.skip("killpg unavailable on this platform")
 
     def unavailable_killpg(_pid: int, _signal_value: int) -> None:
         raise AttributeError("killpg unavailable")

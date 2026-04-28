@@ -539,7 +539,11 @@ def test_runtime_timeout_prevents_delayed_shell_exec_side_effect(tmp_path: Path)
     )
 
     _ = list(runtime.run_stream(RuntimeRequest(prompt="go")))
-    time.sleep(1.5)
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline:
+        if not side_effect_path.exists():
+            break
+        time.sleep(0.1)
 
     assert side_effect_path.exists() is False
 

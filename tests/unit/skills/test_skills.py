@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -86,7 +87,7 @@ def test_skill_loader_reports_entry_path_in_parse_errors(tmp_path: Path) -> None
     entry_path = skill_dir / "SKILL.md"
     entry_path.write_text("---\nname: broken\n---\n# Missing description\n", encoding="utf-8")
 
-    with pytest.raises(ValueError, match=str(entry_path.resolve()).replace(".", r"\.")):
+    with pytest.raises(ValueError, match=re.escape(str(entry_path.resolve()))):
         _ = LocalSkillMetadataLoader().load(entry_path)
 
 

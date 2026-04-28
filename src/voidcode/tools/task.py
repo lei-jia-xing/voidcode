@@ -142,7 +142,7 @@ class TaskTool:
 
         context = require_runtime_tool_context(self.definition.name)
         request_metadata: dict[str, object] = {
-            "skills": list(args.load_skills),
+            "force_load_skills": list(args.load_skills),
             "delegation": _delegation_metadata(args),
         }
         if context.delegation_depth > 0 or context.remaining_spawn_budget is not None:

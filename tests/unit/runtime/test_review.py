@@ -1,14 +1,37 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 from voidcode.runtime.contracts import GitStatusSnapshot, ReviewChangedFile, ReviewTreeNode
 from voidcode.runtime.review import WorkspaceReviewService
 
 
+def _require_symlink_capability() -> None:
+    if os.name != "nt":
+        return
+    probe = Path(__file__).resolve().parent / ".symlink-capability-probe"
+    target = probe.with_suffix(".target")
+    try:
+        target.write_text("probe\n", encoding="utf-8")
+        try:
+            probe.symlink_to(target)
+        except OSError as exc:
+            if getattr(exc, "winerror", None) == 1314:
+                pytest.skip("Windows symlink privilege unavailable")
+            raise
+    finally:
+        if probe.exists() or probe.is_symlink():
+            probe.unlink(missing_ok=True)
+        target.unlink(missing_ok=True)
+
+
 def test_review_snapshot_keeps_out_of_root_symlinked_file_paths_relative(tmp_path: Path) -> None:
+    _require_symlink_capability()
     outside_file = tmp_path.parent / "outside-file.txt"
     outside_file.write_text("outside\n", encoding="utf-8")
     symlink_path = tmp_path / "external-file.txt"
@@ -32,6 +55,7 @@ def test_review_snapshot_keeps_out_of_root_symlinked_file_paths_relative(tmp_pat
 def test_review_snapshot_does_not_descend_into_out_of_root_symlinked_directory(
     tmp_path: Path,
 ) -> None:
+    _require_symlink_capability()
     outside_dir = tmp_path.parent / "outside-dir"
     outside_dir.mkdir()
     (outside_dir / "nested.txt").write_text("nested\n", encoding="utf-8")

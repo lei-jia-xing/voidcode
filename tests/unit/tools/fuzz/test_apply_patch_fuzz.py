@@ -29,10 +29,12 @@ CI_SETTINGS = settings(derandomize=True, database=None, max_examples=200)
 _path_chars = st.characters(
     min_codepoint=33,
     max_codepoint=126,
-    blacklist_characters=['"', "\n", "\r", "\t", "/"],
+    blacklist_characters=['"', "\n", "\r", "\t", "/", "<", ">", ":", "\\", "|", "?", "*"],
 )
 _path_segment = st.text(alphabet=_path_chars, min_size=1, max_size=8)
 _slash_path = st.lists(_path_segment, min_size=1, max_size=3).map("/".join)
+_slash_path = _slash_path.filter(lambda path: not path.startswith("/"))
+_slash_path = _slash_path.filter(lambda path: all(char not in path for char in (":", "\\")))
 _space_path = st.lists(_path_segment, min_size=1, max_size=2).map(" ".join)
 _relative_path = st.one_of(_slash_path, _space_path)
 _line_chars = st.characters(

@@ -52,6 +52,7 @@ class RuntimeRequestMetadata(TypedDict, total=False):
     max_steps: int
     provider_stream: bool
     skills: list[str]
+    force_load_skills: list[str]
 
 
 class InternalRuntimeRequestMetadata(RuntimeRequestMetadata, total=False):
@@ -78,7 +79,16 @@ class RuntimeSubagentRoutingMetadata(TypedDict, total=False):
 
 
 _STABLE_RUNTIME_REQUEST_METADATA_KEYS = frozenset(
-    {"abort_requested", "agent", "command", "delegation", "max_steps", "provider_stream", "skills"}
+    {
+        "abort_requested",
+        "agent",
+        "command",
+        "delegation",
+        "max_steps",
+        "provider_stream",
+        "skills",
+        "force_load_skills",
+    }
 )
 _INTERNAL_RUNTIME_REQUEST_METADATA_KEYS = frozenset(
     {"background_run", "background_rate_limit_retry", "background_task_id"}
@@ -388,6 +398,21 @@ def validate_runtime_request_metadata(
                 )
             parsed_skills.append(raw_name)
         normalized["skills"] = parsed_skills
+
+    if "force_load_skills" in metadata:
+        raw_force_load = metadata["force_load_skills"]
+        if not isinstance(raw_force_load, list):
+            raise RuntimeRequestError(
+                "request metadata 'force_load_skills' must be a list of skill names"
+            )
+        parsed_force_load: list[str] = []
+        for index, raw_name in enumerate(cast(list[object], raw_force_load)):
+            if not isinstance(raw_name, str) or not raw_name:
+                raise RuntimeRequestError(
+                    f"request metadata 'force_load_skills[{index}]' must be a non-empty string"
+                )
+            parsed_force_load.append(raw_name)
+        normalized["force_load_skills"] = parsed_force_load
 
     if allow_internal_fields and "background_run" in metadata:
         background_run = metadata["background_run"]
