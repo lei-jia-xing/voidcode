@@ -470,6 +470,9 @@ def test_provider_provider_graph_rejects_nonstream_missing_terminal_outcome() ->
                 prompt="read sample.txt",
                 available_tools=_tool_definitions(),
                 context_window=RuntimeContextWindow(prompt="read sample.txt"),
+                assembled_context=_assembled_from_context_window(
+                    RuntimeContextWindow(prompt="read sample.txt")
+                ),
             ),
             tool_results=(),
             session=_session(),
@@ -524,6 +527,9 @@ def test_provider_provider_graph_preserves_stream_error_details() -> None:
                 prompt="read sample.txt",
                 available_tools=_tool_definitions(),
                 context_window=RuntimeContextWindow(prompt="read sample.txt"),
+                assembled_context=_assembled_from_context_window(
+                    RuntimeContextWindow(prompt="read sample.txt")
+                ),
                 metadata={"provider_stream": True},
             ),
             tool_results=(),
@@ -590,6 +596,9 @@ def test_provider_provider_graph_prefers_parsed_stream_error_kind_over_generic_t
                 prompt="read sample.txt",
                 available_tools=_tool_definitions(),
                 context_window=RuntimeContextWindow(prompt="read sample.txt"),
+                assembled_context=_assembled_from_context_window(
+                    RuntimeContextWindow(prompt="read sample.txt")
+                ),
                 metadata={"provider_stream": True},
             ),
             tool_results=(),
@@ -643,6 +652,9 @@ def test_provider_provider_graph_preserves_explicit_stream_error_kind(
                 prompt="read sample.txt",
                 available_tools=_tool_definitions(),
                 context_window=RuntimeContextWindow(prompt="read sample.txt"),
+                assembled_context=_assembled_from_context_window(
+                    RuntimeContextWindow(prompt="read sample.txt")
+                ),
                 metadata={"provider_stream": True},
             ),
             tool_results=(),
@@ -720,6 +732,9 @@ def test_provider_provider_graph_forwards_agent_preset_to_provider() -> None:
             prompt="read sample.txt",
             available_tools=_tool_definitions(),
             context_window=RuntimeContextWindow(prompt="read sample.txt"),
+            assembled_context=_assembled_from_context_window(
+                RuntimeContextWindow(prompt="read sample.txt")
+            ),
             metadata={
                 "agent_preset": {
                     "preset": "leader",
@@ -895,6 +910,9 @@ def test_provider_provider_graph_enforces_configured_max_steps() -> None:
                 prompt="read sample.txt",
                 available_tools=_tool_definitions(),
                 context_window=RuntimeContextWindow(prompt="read sample.txt"),
+                assembled_context=_assembled_from_context_window(
+                    RuntimeContextWindow(prompt="read sample.txt")
+                ),
             ),
             tool_results=(
                 ToolResult(
@@ -924,6 +942,9 @@ def test_provider_provider_graph_streams_ordered_events_and_deterministic_output
             prompt="read sample.txt",
             available_tools=_tool_definitions(),
             context_window=RuntimeContextWindow(prompt="read sample.txt"),
+            assembled_context=_assembled_from_context_window(
+                RuntimeContextWindow(prompt="read sample.txt")
+            ),
             metadata={"provider_stream": True},
         ),
         tool_results=(),
@@ -953,6 +974,9 @@ def test_provider_provider_graph_stream_done_without_text_does_not_fallback_prop
             prompt="read sample.txt",
             available_tools=_tool_definitions(),
             context_window=RuntimeContextWindow(prompt="read sample.txt"),
+            assembled_context=_assembled_from_context_window(
+                RuntimeContextWindow(prompt="read sample.txt")
+            ),
             metadata={"provider_stream": True},
         ),
         tool_results=(),
@@ -981,6 +1005,9 @@ def test_provider_provider_graph_returns_streamed_tool_call() -> None:
             prompt="read sample.txt",
             available_tools=_tool_definitions(),
             context_window=RuntimeContextWindow(prompt="read sample.txt"),
+            assembled_context=_assembled_from_context_window(
+                RuntimeContextWindow(prompt="read sample.txt")
+            ),
             metadata={"provider_stream": True},
         ),
         tool_results=(),
@@ -1010,6 +1037,9 @@ def test_provider_provider_graph_prefers_streamed_tool_call_over_text() -> None:
             prompt="read sample.txt",
             available_tools=_tool_definitions(),
             context_window=RuntimeContextWindow(prompt="read sample.txt"),
+            assembled_context=_assembled_from_context_window(
+                RuntimeContextWindow(prompt="read sample.txt")
+            ),
             metadata={"provider_stream": True},
         ),
         tool_results=(),
@@ -1037,6 +1067,9 @@ def test_provider_provider_graph_reconstructs_chunked_streamed_tool_call() -> No
             prompt="read sample.txt",
             available_tools=_tool_definitions(),
             context_window=RuntimeContextWindow(prompt="read sample.txt"),
+            assembled_context=_assembled_from_context_window(
+                RuntimeContextWindow(prompt="read sample.txt")
+            ),
             metadata={"provider_stream": True},
         ),
         tool_results=(),
@@ -1066,6 +1099,9 @@ def test_provider_provider_graph_uses_latest_complete_tool_snapshot() -> None:
             prompt="read sample.txt",
             available_tools=_tool_definitions(),
             context_window=RuntimeContextWindow(prompt="read sample.txt"),
+            assembled_context=_assembled_from_context_window(
+                RuntimeContextWindow(prompt="read sample.txt")
+            ),
             metadata={"provider_stream": True},
         ),
         tool_results=(),
@@ -1096,6 +1132,9 @@ def test_provider_provider_graph_rejects_malformed_streamed_tool_payload() -> No
                 prompt="read sample.txt",
                 available_tools=_tool_definitions(),
                 context_window=RuntimeContextWindow(prompt="read sample.txt"),
+                assembled_context=_assembled_from_context_window(
+                    RuntimeContextWindow(prompt="read sample.txt")
+                ),
                 metadata={"provider_stream": True},
             ),
             tool_results=(),
@@ -1122,6 +1161,9 @@ def test_provider_provider_graph_requires_done_event_for_stream_completion() -> 
                 prompt="read sample.txt",
                 available_tools=_tool_definitions(),
                 context_window=RuntimeContextWindow(prompt="read sample.txt"),
+                assembled_context=_assembled_from_context_window(
+                    RuntimeContextWindow(prompt="read sample.txt")
+                ),
                 metadata={"provider_stream": True},
             ),
             tool_results=(),
@@ -1147,6 +1189,9 @@ def test_provider_provider_graph_prefers_mixed_stream_tool_terminal_output() -> 
             prompt="read sample.txt",
             available_tools=_tool_definitions(),
             context_window=RuntimeContextWindow(prompt="read sample.txt"),
+            assembled_context=_assembled_from_context_window(
+                RuntimeContextWindow(prompt="read sample.txt")
+            ),
             metadata={"provider_stream": True},
         ),
         tool_results=(),
@@ -1175,6 +1220,9 @@ def test_provider_provider_graph_stream_error_maps_to_provider_execution_error()
                 prompt="read sample.txt",
                 available_tools=_tool_definitions(),
                 context_window=RuntimeContextWindow(prompt="read sample.txt"),
+                assembled_context=_assembled_from_context_window(
+                    RuntimeContextWindow(prompt="read sample.txt")
+                ),
                 metadata={"provider_stream": True},
             ),
             tool_results=(),

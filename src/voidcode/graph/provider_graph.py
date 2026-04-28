@@ -1,15 +1,13 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Literal, cast
 
 from ..provider.errors import parse_provider_stream_error
 from ..provider.models import ResolvedProviderModel
 from ..provider.protocol import (
     ProviderAbortSignal,
-    ProviderAssembledContext,
-    ProviderContextSegment,
     ProviderExecutionError,
     ProviderStreamEvent,
     ProviderTokenUsage,
@@ -54,15 +52,6 @@ class _GraphAbortSignal:
 
     def set_cancelled(self, value: bool) -> None:
         self._cancelled = value
-
-
-@dataclass(frozen=True, slots=True)
-class _PromptOnlyAssembledContext:
-    prompt: str
-    tool_results: tuple[ToolResult, ...] = ()
-    continuity_state: object | None = None
-    segments: tuple[ProviderContextSegment, ...] = ()
-    metadata: dict[str, object] = field(default_factory=dict)
 
 
 class ProviderGraph:
@@ -121,9 +110,7 @@ class ProviderGraph:
                     "model": self._provider_model.selection.model,
                     "attempt": request.metadata.get("provider_attempt", 0),
                     "streaming": streaming_enabled,
-                    "prompt": request.assembled_context.prompt
-                    if request.assembled_context
-                    else request.prompt,
+                    "prompt": request.assembled_context.prompt,
                 },
             ),
         )
@@ -136,10 +123,8 @@ class ProviderGraph:
                 str(abort_requested).strip().lower() not in {"false", "0", "no", "off", ""}
             )
         turn_request = ProviderTurnRequest(
-            assembled_context=(
-                request.assembled_context
-                or self._default_assembled_context(request.prompt, tool_results)
-            ),
+            assembled_context=request.assembled_context,
+            bounded_context_window=request.context_window,
             available_tools=request.available_tools,
             raw_model=self._provider_model.selection.raw_model,
             provider_name=self._provider_model.selection.provider,
@@ -413,18 +398,6 @@ class ProviderGraph:
             model_name=model_name or "unknown",
             message=message,
             details=details,
-        )
-
-    @staticmethod
-    def _default_assembled_context(
-        prompt: str,
-        tool_results: tuple[ToolResult, ...],
-    ) -> ProviderAssembledContext:
-        return _PromptOnlyAssembledContext(
-            prompt=prompt,
-            tool_results=tool_results,
-            continuity_state=None,
-            segments=(ProviderContextSegment(role="user", content=prompt),),
         )
 
     @staticmethod

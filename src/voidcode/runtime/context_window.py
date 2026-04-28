@@ -801,6 +801,7 @@ def assemble_provider_context(
     policy: ContextWindowPolicy | None = None,
     skill_prompt_context: str = "",
     loaded_skills: tuple[dict[str, object], ...] = (),
+    preserved_continuity_state: RuntimeContinuityState | None = None,
 ) -> RuntimeAssembledContext:
     context_window = prepare_provider_context(
         prompt=prompt,
@@ -811,7 +812,10 @@ def assemble_provider_context(
     segments: list[RuntimeContextSegment] = []
     if skill_prompt_context.strip():
         segments.append(RuntimeContextSegment(role="system", content=skill_prompt_context.strip()))
-    continuity_state = context_window.continuity_state
+    continuity_state = preserved_continuity_state or context_window.continuity_state
+    metadata_payload = context_window.metadata_payload()
+    if continuity_state is not None and "continuity_state" not in metadata_payload:
+        metadata_payload["continuity_state"] = continuity_state.metadata_payload()
     if continuity_state is not None:
         summary_text = continuity_state.summary_text
         if isinstance(summary_text, str) and summary_text.strip():
@@ -863,8 +867,8 @@ def assemble_provider_context(
     return RuntimeAssembledContext(
         prompt=prompt,
         tool_results=context_window.tool_results,
-        continuity_state=context_window.continuity_state,
+        continuity_state=continuity_state,
         segments=tuple(segments),
-        metadata=context_window.metadata_payload(),
+        metadata=metadata_payload,
         loaded_skills=loaded_skills,
     )

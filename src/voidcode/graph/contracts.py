@@ -39,9 +39,9 @@ class GraphLoopState(TypedDict):
 class GraphRunRequest:
     session: SessionState
     prompt: str
+    assembled_context: ProviderAssembledContext
     available_tools: tuple[ToolDefinition, ...] = ()
     context_window: ProviderContextWindow | None = None
-    assembled_context: ProviderAssembledContext | None = None
     metadata: dict[str, object] = field(default_factory=dict)
 
 

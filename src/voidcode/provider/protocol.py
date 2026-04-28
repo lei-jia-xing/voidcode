@@ -9,7 +9,6 @@ from ..command.resolver import resolve_tool_instruction
 from ..runtime.context_window import normalize_read_file_output
 from ..tools.contracts import ToolCall, ToolDefinition, ToolResult
 
-type AppliedSkill = dict[str, str]
 type ProviderMessageRole = Literal["system", "user", "assistant", "tool"]
 type ProviderStreamEventKind = Literal["delta", "content", "error", "done"]
 type ProviderStreamChannel = Literal["text", "tool", "reasoning", "error"]
@@ -46,121 +45,81 @@ class ProviderContextWindow(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class ProviderTurnRequest:
+    assembled_context: ProviderAssembledContext
+    bounded_context_window: ProviderContextWindow | None = None
     available_tools: tuple[ToolDefinition, ...] = ()
     raw_model: str | None = None
     provider_name: str | None = None
     model_name: str | None = None
-    assembled_context: ProviderAssembledContext | None = None
-    prompt: str = ""
-    tool_results: tuple[ToolResult, ...] = ()
-    context_window: ProviderContextWindow | None = None
-    applied_skills: tuple[AppliedSkill, ...] = ()
-    skill_prompt_context: str = ""
     agent_preset: dict[str, object] | None = None
     attempt: int = 0
     abort_signal: ProviderAbortSignal | None = None
 
-    def __post_init__(self) -> None:
-        if self.assembled_context is not None:
-            return
-        prompt = self.prompt
-        context_window = self.context_window
-        tool_results = (
-            context_window.tool_results if context_window is not None else self.tool_results
+    @property
+    def prompt(self) -> str:
+        return self.assembled_context.prompt
+
+    @property
+    def tool_results(self) -> tuple[ToolResult, ...]:
+        return self.assembled_context.tool_results
+
+    @property
+    def context_window(self) -> ProviderContextWindow:
+        if self.bounded_context_window is not None:
+            return self.bounded_context_window
+        payload = self.assembled_context.metadata
+        retained_raw = payload.get("retained_tool_result_count")
+        retained_count = (
+            retained_raw
+            if isinstance(retained_raw, int)
+            else len(self.assembled_context.tool_results)
         )
-        continuity_state = context_window.continuity_state if context_window is not None else None
-        segments: list[ProviderContextSegment] = []
-        skill_message = self.skill_prompt_context.strip()
-        if not skill_message and self.applied_skills:
-            rendered_skills: list[str] = []
-            for skill in self.applied_skills:
-                name = skill.get("name", "").strip() or "unnamed-skill"
-                description = skill.get("description", "").strip()
-                content = (
-                    skill.get("prompt_context", "").strip() or skill.get("content", "").strip()
-                )
-                lines = [f"## {name}"]
-                if description:
-                    lines.append(f"Description: {description}")
-                if content:
-                    lines.append(content)
-                rendered_skills.append("\n".join(lines))
-            if rendered_skills:
-                skill_message = (
-                    "You must apply the following runtime-managed skills for this turn. "
-                    "Treat them as active task instructions in addition to the user's request.\n\n"
-                    + "\n\n".join(rendered_skills)
-                )
-        if skill_message:
-            segments.append(ProviderContextSegment(role="system", content=skill_message))
-        if continuity_state is not None:
-            summary_text = getattr(continuity_state, "summary_text", None)
-            if isinstance(summary_text, str) and summary_text.strip():
-                segments.append(
-                    ProviderContextSegment(
-                        role="system",
-                        content=f"Runtime continuity summary:\n{summary_text.strip()}",
-                    )
-                )
-        segments.append(ProviderContextSegment(role="user", content=prompt))
-        for index, result in enumerate(tool_results, start=1):
-            raw_tool_call_id = result.data.get("tool_call_id")
-            tool_call_id = (
-                raw_tool_call_id
-                if isinstance(raw_tool_call_id, str) and raw_tool_call_id.strip()
-                else f"voidcode_tool_{index}"
-            )
-            raw_arguments = result.data.get("arguments")
-            tool_arguments: dict[str, object]
-            if isinstance(raw_arguments, dict):
-                tool_arguments = dict(cast(dict[str, object], raw_arguments))
-            else:
-                tool_arguments = {}
-            segments.append(
-                ProviderContextSegment(
-                    role="assistant",
-                    content=None,
-                    tool_call_id=tool_call_id,
-                    tool_name=result.tool_name,
-                    tool_arguments=tool_arguments,
-                )
-            )
-            segments.append(
-                ProviderContextSegment(
-                    role="tool",
-                    content=result.content or "",
-                    tool_call_id=tool_call_id,
-                    tool_name=result.tool_name,
-                    metadata={
-                        "status": result.status,
-                        "error": result.error,
-                        "data": result.data,
-                        "truncated": result.truncated,
-                        "partial": result.partial,
-                        "reference": result.reference,
-                    },
-                )
-            )
-        object.__setattr__(
-            self,
-            "assembled_context",
-            _LegacyAssembledContext(
-                prompt=prompt,
-                tool_results=tool_results,
-                continuity_state=continuity_state,
-                segments=tuple(segments),
-                metadata={},
+        return _DerivedContextWindow(
+            prompt=self.assembled_context.prompt,
+            tool_results=self.assembled_context.tool_results,
+            continuity_state=self.assembled_context.continuity_state,
+            compacted=bool(payload.get("compacted", False)),
+            retained_tool_result_count=retained_count,
+            token_budget=cast(int | None, payload.get("token_budget")),
+            token_estimate_source=cast(str | None, payload.get("token_estimate_source")),
+            original_tool_result_tokens=cast(
+                int | None, payload.get("original_tool_result_tokens")
             ),
+            retained_tool_result_tokens=cast(
+                int | None, payload.get("retained_tool_result_tokens")
+            ),
+            dropped_tool_result_tokens=cast(int | None, payload.get("dropped_tool_result_tokens")),
+            original_tool_result_count=cast(int | None, payload.get("original_tool_result_count")),
+            compaction_reason=cast(str | None, payload.get("compaction_reason")),
+            summary_anchor=cast(str | None, payload.get("summary_anchor")),
+            summary_source=cast(dict[str, object] | None, payload.get("summary_source")),
         )
+
+    @property
+    def applied_skills(self) -> tuple[dict[str, str], ...]:
+        return ()
 
 
 @dataclass(frozen=True, slots=True)
-class _LegacyAssembledContext:
+class _DerivedContextWindow:
     prompt: str
     tool_results: tuple[ToolResult, ...]
-    continuity_state: object | None
-    segments: tuple[ProviderContextSegmentLike, ...]
-    metadata: dict[str, object]
+    continuity_state: object | None = None
+    compacted: bool = False
+    retained_tool_result_count: int = 0
+    token_budget: int | None = None
+    token_estimate_source: str | None = None
+    original_tool_result_tokens: int | None = None
+    retained_tool_result_tokens: int | None = None
+    dropped_tool_result_tokens: int | None = None
+    original_tool_result_count: int | None = None
+    compaction_reason: str | None = None
+    summary_anchor: str | None = None
+    summary_source: dict[str, object] | None = None
+
+    def __post_init__(self) -> None:
+        if self.retained_tool_result_count == 0:
+            object.__setattr__(self, "retained_tool_result_count", len(self.tool_results))
 
 
 @dataclass(frozen=True, slots=True)
@@ -376,8 +335,6 @@ class StubTurnProvider:
 
     def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
         assembled_context = request.assembled_context
-        if assembled_context is None:
-            raise ValueError("assembled context is required")
         commands = [line.strip() for line in assembled_context.prompt.splitlines() if line.strip()]
         if not commands:
             raise ValueError("request must not be empty")

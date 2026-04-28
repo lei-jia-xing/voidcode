@@ -186,13 +186,6 @@ class LiteLLMBackendSingleAgentProvider:
 
     def _build_messages(self, request: ProviderTurnRequest) -> list[dict[str, object]]:
         assembled_context = request.assembled_context
-        if assembled_context is None:
-            raise ProviderExecutionError(
-                kind="transient_failure",
-                provider_name=self.name,
-                model_name=request.model_name or "unknown",
-                message="assembled context is required",
-            )
         messages: list[dict[str, object]] = []
         if request.provider_name == "opencode-go":
             tool_feedback_lines: list[str] = []

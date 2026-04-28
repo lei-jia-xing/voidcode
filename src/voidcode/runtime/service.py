@@ -4470,10 +4470,15 @@ class VoidCodeRuntime:
         raw_loaded = session_metadata.get("loaded_skills", [])
         loaded_skills: tuple[dict[str, object], ...] = ()
         if isinstance(raw_loaded, list):
-            items: list[dict[str, object]] = [
-                dict[str, object](item) for item in raw_loaded if isinstance(item, dict)
-            ]
-            loaded_skills = tuple(items)
+            typed: list[dict[str, object]] = []
+            for item in cast(list[object], raw_loaded):
+                if isinstance(item, dict):
+                    entry: dict[str, object] = {}
+                    for k, v in cast(dict[object, object], item).items():
+                        if isinstance(k, str):
+                            entry[k] = v
+                    typed.append(entry)
+            loaded_skills = tuple(typed)
         return assemble_provider_context(
             prompt=prompt,
             tool_results=tool_results,
@@ -4481,6 +4486,9 @@ class VoidCodeRuntime:
             policy=policy or self._default_context_window_policy,
             skill_prompt_context=skill_prompt_context,
             loaded_skills=loaded_skills,
+            preserved_continuity_state=self._continuity_state_from_session_metadata(
+                session_metadata
+            ),
         )
 
     @staticmethod
