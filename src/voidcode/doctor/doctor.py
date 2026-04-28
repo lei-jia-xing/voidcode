@@ -278,15 +278,10 @@ def create_doctor_for_config(
                 exit_method = getattr(runtime, "__exit__", None)
                 if callable(exit_method):
                     exit_method(None, None, None)
+        status = CapabilityCheckStatus.READY if readiness.ok else CapabilityCheckStatus.ERROR
         doctor.add_result(
             CapabilityCheckResult(
-                status=(
-                    CapabilityCheckStatus.READY
-                    if readiness.ok
-                    else CapabilityCheckStatus.ERROR
-                    if readiness.status == "missing_auth"
-                    else CapabilityCheckStatus.NOT_CONFIGURED
-                ),
+                status=status,
                 name="provider.readiness",
                 check_type=DoctorCheckType.PROVIDER_READINESS.value,
                 details={
