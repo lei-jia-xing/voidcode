@@ -11,6 +11,7 @@ from voidcode.provider import model_catalog
 from voidcode.provider.config import LiteLLMProviderConfig
 from voidcode.provider.model_catalog import (
     DiscoveryRequest,
+    ModelDiscoveryFetchResult,
     ProviderModelMetadata,
     discover_available_models,
     infer_model_metadata,
@@ -78,7 +79,36 @@ def test_discover_available_models_includes_known_model_budget_metadata() -> Non
     assert metadata.max_output_tokens == 16_384
     assert metadata.supports_tools is True
     assert metadata.supports_vision is True
+    assert metadata.cost_per_input_token is not None
+    assert metadata.modalities_input == ("text", "image")
     assert "unknown-model" not in result.model_metadata
+
+
+def test_discover_available_models_prefers_remote_metadata_when_present() -> None:
+    result = discover_available_models(
+        "openai",
+        LiteLLMProviderConfig(discovery_base_url="https://api.openai.com"),
+        fetcher=lambda _request: ModelDiscoveryFetchResult(
+            models=("gpt-4o",),
+            model_metadata={
+                "gpt-4o": ProviderModelMetadata(
+                    context_window=64_000,
+                    max_output_tokens=4_096,
+                    cost_per_input_token=0.000001,
+                    supports_tools=True,
+                    modalities_input=("text",),
+                    model_status="preview",
+                )
+            },
+        ),
+    )
+
+    metadata = result.model_metadata["gpt-4o"]
+    assert metadata.context_window == 64_000
+    assert metadata.max_input_tokens == 59_904
+    assert metadata.cost_per_input_token == 0.000001
+    assert metadata.modalities_input == ("text",)
+    assert metadata.model_status == "preview"
 
 
 @pytest.mark.parametrize(
@@ -103,15 +133,13 @@ def test_infer_model_metadata_covers_current_frontier_provider_models(
 ) -> None:
     metadata = infer_model_metadata(provider, model)
     assert metadata is not None
-    assert metadata == ProviderModelMetadata(
-        context_window=context_window,
-        max_output_tokens=max_output_tokens,
-        supports_tools=metadata.supports_tools,
-        supports_vision=metadata.supports_vision,
-        supports_streaming=metadata.supports_streaming,
-        supports_reasoning=metadata.supports_reasoning,
-        supports_json_mode=metadata.supports_json_mode,
-    )
+    assert metadata.context_window == context_window
+    assert metadata.max_output_tokens == max_output_tokens
+    assert metadata.cost_per_input_token is not None
+    assert metadata.cost_per_output_token is not None
+    assert metadata.modalities_input is not None
+    assert metadata.modalities_output == ("text",)
+    assert metadata.model_status in {"active", "preview"}
 
 
 def test_infer_model_metadata_exposes_model_capability_flags() -> None:
@@ -125,6 +153,14 @@ def test_infer_model_metadata_exposes_model_capability_flags() -> None:
         supports_streaming=True,
         supports_reasoning=True,
         supports_json_mode=False,
+        cost_per_input_token=0.000003,
+        cost_per_output_token=0.000015,
+        supports_reasoning_effort=True,
+        default_reasoning_effort="medium",
+        supports_interleaved_reasoning=True,
+        modalities_input=("text", "image"),
+        modalities_output=("text",),
+        model_status="active",
     )
 
 
@@ -135,6 +171,14 @@ def test_provider_model_metadata_payload_includes_limits_and_capabilities() -> N
         supports_tools=True,
         supports_vision=False,
         supports_streaming=True,
+        cost_per_input_token=0.000001,
+        cost_per_output_token=0.000002,
+        supports_reasoning_effort=True,
+        default_reasoning_effort="low",
+        supports_interleaved_reasoning=False,
+        modalities_input=("text",),
+        modalities_output=("text",),
+        model_status="active",
     ).payload()
 
     assert payload == {
@@ -144,6 +188,14 @@ def test_provider_model_metadata_payload_includes_limits_and_capabilities() -> N
         "supports_tools": True,
         "supports_vision": False,
         "supports_streaming": True,
+        "cost_per_input_token": 0.000001,
+        "cost_per_output_token": 0.000002,
+        "supports_reasoning_effort": True,
+        "default_reasoning_effort": "low",
+        "supports_interleaved_reasoning": False,
+        "modalities_input": ["text"],
+        "modalities_output": ["text"],
+        "model_status": "active",
     }
 
 
