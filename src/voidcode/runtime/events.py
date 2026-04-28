@@ -12,6 +12,7 @@ type ExistingEventType = Literal[
     "runtime.skills_loaded",
     "runtime.skills_applied",
     "runtime.provider_fallback",
+    "runtime.category_model_diagnostic",
     "runtime.acp_connected",
     "runtime.acp_disconnected",
     "runtime.acp_failed",
@@ -74,6 +75,7 @@ RUNTIME_PLAN_CREATED: Final[ExistingEventType] = "runtime.plan_created"
 RUNTIME_SKILLS_LOADED: Final[ExistingEventType] = "runtime.skills_loaded"
 RUNTIME_SKILLS_APPLIED: Final[ExistingEventType] = "runtime.skills_applied"
 RUNTIME_PROVIDER_FALLBACK: Final[ExistingEventType] = "runtime.provider_fallback"
+RUNTIME_CATEGORY_MODEL_DIAGNOSTIC: Final[ExistingEventType] = "runtime.category_model_diagnostic"
 RUNTIME_ACP_CONNECTED: Final[ExistingEventType] = "runtime.acp_connected"
 RUNTIME_ACP_DISCONNECTED: Final[ExistingEventType] = "runtime.acp_disconnected"
 RUNTIME_ACP_FAILED: Final[ExistingEventType] = "runtime.acp_failed"
@@ -131,6 +133,7 @@ EMITTED_EVENT_TYPES: Final[tuple[ExistingEventType, ...]] = (
     RUNTIME_SKILLS_LOADED,
     RUNTIME_SKILLS_APPLIED,
     RUNTIME_PROVIDER_FALLBACK,
+    RUNTIME_CATEGORY_MODEL_DIAGNOSTIC,
     RUNTIME_ACP_CONNECTED,
     RUNTIME_ACP_DISCONNECTED,
     RUNTIME_ACP_FAILED,

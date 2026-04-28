@@ -580,6 +580,7 @@ class AgentSummary:
     model_label: str | None = None
     model_source: str | None = None
     provider: str | None = None
+    fallback_chain: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

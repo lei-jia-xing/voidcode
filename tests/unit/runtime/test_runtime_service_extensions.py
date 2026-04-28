@@ -40,6 +40,7 @@ from voidcode.runtime.config import (
     RuntimeAcpConfig,
     RuntimeAgentConfig,
     RuntimeBackgroundTaskConfig,
+    RuntimeCategoryConfig,
     RuntimeConfig,
     RuntimeContextWindowConfig,
     RuntimeFormatterPresetConfig,
@@ -1686,6 +1687,260 @@ def test_runtime_subagent_type_routing_resolves_real_child_agent_and_persists_id
         "remaining_spawn_budget": 3,
         "selected_preset": "explore",
         "selected_execution_engine": "provider",
+    }
+
+
+def test_runtime_category_model_override_precedes_agent_preset_and_global_model(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_BackgroundTaskSuccessGraph(),
+        config=RuntimeConfig(
+            model="openai/global-model",
+            categories={"quick": RuntimeCategoryConfig(model="openai/category-model")},
+            agents={
+                "worker": RuntimeAgentConfig(
+                    preset="worker",
+                    prompt_profile="worker",
+                    model="openai/worker-model",
+                    execution_engine="provider",
+                )
+            },
+        ),
+    )
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+
+    response = runtime.run(
+        RuntimeRequest(
+            prompt="delegated child",
+            parent_session_id="leader-session",
+            metadata={"delegation": {"mode": "sync", "category": "quick"}},
+        )
+    )
+
+    agent = cast(dict[str, object], response.session.metadata["agent"])
+    runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
+    assert agent["model"] == "openai/category-model"
+    assert cast(dict[str, object], runtime_config["agent"])["model"] == "openai/category-model"
+
+
+def test_runtime_delegated_child_preserves_preset_fallback_chain_with_category_model(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_BackgroundTaskSuccessGraph(),
+        config=RuntimeConfig(
+            model="openai/global-model",
+            categories={"quick": RuntimeCategoryConfig(model="openai/category-model")},
+            agents={
+                "worker": RuntimeAgentConfig(
+                    preset="worker",
+                    prompt_profile="worker",
+                    model="openai/worker-model",
+                    execution_engine="provider",
+                    provider_fallback=RuntimeProviderFallbackConfig(
+                        preferred_model="openai/worker-model",
+                        fallback_models=("openai/worker-fallback", "custom/demo"),
+                    ),
+                )
+            },
+        ),
+    )
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+
+    response = runtime.run(
+        RuntimeRequest(
+            prompt="delegated child",
+            parent_session_id="leader-session",
+            metadata={"delegation": {"mode": "sync", "category": "quick"}},
+        )
+    )
+
+    runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
+    provider_fallback = cast(dict[str, object], runtime_config["provider_fallback"])
+    agent = cast(dict[str, object], runtime_config["agent"])
+    agent_provider_fallback = cast(dict[str, object], agent["provider_fallback"])
+    assert provider_fallback == {
+        "preferred_model": "openai/category-model",
+        "fallback_models": ["openai/worker-fallback", "custom/demo"],
+    }
+    assert agent_provider_fallback == provider_fallback
+    assert runtime.effective_runtime_config(
+        session_id=response.session.session.id
+    ).provider_fallback == RuntimeProviderFallbackConfig(
+        preferred_model="openai/category-model",
+        fallback_models=("openai/worker-fallback", "custom/demo"),
+    )
+
+
+def test_runtime_delegated_child_rebases_duplicate_fallback_model(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_BackgroundTaskSuccessGraph(),
+        config=RuntimeConfig(
+            categories={"quick": RuntimeCategoryConfig(model="openai/category-model")},
+            agents={
+                "worker": RuntimeAgentConfig(
+                    preset="worker",
+                    prompt_profile="worker",
+                    model="openai/worker-model",
+                    execution_engine="provider",
+                    provider_fallback=RuntimeProviderFallbackConfig(
+                        preferred_model="openai/worker-model",
+                        fallback_models=("openai/category-model", "custom/demo"),
+                    ),
+                )
+            },
+        ),
+    )
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+
+    response = runtime.run(
+        RuntimeRequest(
+            prompt="delegated child",
+            parent_session_id="leader-session",
+            metadata={"delegation": {"mode": "sync", "category": "quick"}},
+        )
+    )
+
+    assert runtime.effective_runtime_config(
+        session_id=response.session.session.id
+    ).provider_fallback == RuntimeProviderFallbackConfig(
+        preferred_model="openai/category-model",
+        fallback_models=("custom/demo",),
+    )
+
+
+def test_runtime_subagent_type_uses_agent_preset_model_before_global_model(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_BackgroundTaskSuccessGraph(),
+        config=RuntimeConfig(
+            model="openai/global-model",
+            categories={"quick": RuntimeCategoryConfig(model="openai/category-model")},
+            agents={
+                "explore": RuntimeAgentConfig(
+                    preset="explore",
+                    prompt_profile="explore",
+                    model="openai/explore-model",
+                    execution_engine="provider",
+                )
+            },
+        ),
+    )
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+
+    response = runtime.run(
+        RuntimeRequest(
+            prompt="delegated child",
+            parent_session_id="leader-session",
+            metadata={"delegation": {"mode": "sync", "subagent_type": "explore"}},
+        )
+    )
+
+    runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
+    assert cast(dict[str, object], runtime_config["agent"])["model"] == "openai/explore-model"
+
+
+def test_runtime_delegated_child_falls_back_to_global_model(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_BackgroundTaskSuccessGraph(),
+        config=RuntimeConfig(model="openai/global-model"),
+    )
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+
+    response = runtime.run(
+        RuntimeRequest(
+            prompt="delegated child",
+            parent_session_id="leader-session",
+            metadata={"delegation": {"mode": "sync", "category": "quick"}},
+        )
+    )
+
+    runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
+    assert cast(dict[str, object], runtime_config["agent"])["model"] == "openai/global-model"
+
+
+def test_runtime_request_agent_model_override_precedes_category_model(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_BackgroundTaskSuccessGraph(),
+        config=RuntimeConfig(
+            model="openai/global-model",
+            categories={"quick": RuntimeCategoryConfig(model="openai/category-model")},
+        ),
+    )
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+
+    response = runtime.run(
+        RuntimeRequest(
+            prompt="delegated child",
+            parent_session_id="leader-session",
+            metadata={
+                "delegation": {"mode": "sync", "category": "quick"},
+                "agent": {"preset": "worker", "model": "openai/request-model"},
+            },
+        )
+    )
+
+    runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
+    assert cast(dict[str, object], runtime_config["agent"])["model"] == "openai/request-model"
+
+
+def test_runtime_ultrabrain_warns_when_resolved_model_lacks_reasoning_support(
+    tmp_path: Path,
+) -> None:
+    registry = ModelProviderRegistry.with_defaults()
+    registry.model_catalog = {
+        "openai": ProviderModelCatalog(
+            provider="openai",
+            models=("gpt-4o",),
+            refreshed=True,
+            model_metadata={"gpt-4o": ProviderModelMetadata(supports_reasoning=False)},
+        )
+    }
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_BackgroundTaskSuccessGraph(),
+        config=RuntimeConfig(
+            model="openai/gpt-4o",
+            categories={"ultrabrain": RuntimeCategoryConfig(model="openai/gpt-4o")},
+        ),
+        model_provider_registry=registry,
+    )
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+
+    response = runtime.run(
+        RuntimeRequest(
+            prompt="delegated child",
+            parent_session_id="leader-session",
+            metadata={"delegation": {"mode": "sync", "category": "ultrabrain"}},
+        )
+    )
+
+    diagnostic = next(
+        event
+        for event in response.events
+        if event.event_type == "runtime.category_model_diagnostic"
+    )
+    assert diagnostic.payload == {
+        "severity": "warning",
+        "category": "model_capability_mismatch",
+        "capability": "reasoning",
+        "requested_category": "ultrabrain",
+        "provider": "openai",
+        "model": "gpt-4o",
+        "message": (
+            "task category 'ultrabrain' resolved to a model whose provider metadata "
+            "does not support reasoning"
+        ),
     }
 
 
@@ -7827,6 +8082,7 @@ def test_runtime_agent_summary_exposes_stable_agent_and_model_fields(tmp_path: P
         assert summary.model is None
         assert summary.model_label is None
         assert summary.provider is None
+        assert summary.fallback_chain == ()
 
     configured_runtime = VoidCodeRuntime(
         workspace=tmp_path,
@@ -7841,6 +8097,7 @@ def test_runtime_agent_summary_exposes_stable_agent_and_model_fields(tmp_path: P
     assert configured_summary.model_label == "gpt-5.4"
     assert configured_summary.model_source == "configured"
     assert configured_summary.provider == "opencode"
+    assert configured_summary.fallback_chain == ("opencode/gpt-5.4",)
 
     agent_runtime = VoidCodeRuntime(
         workspace=tmp_path,
@@ -7856,6 +8113,24 @@ def test_runtime_agent_summary_exposes_stable_agent_and_model_fields(tmp_path: P
     assert agent_summary.execution_engine == "provider"
     assert agent_summary.model == "opencode/gpt-5.4"
     assert agent_summary.model_source == "configured"
+
+    fallback_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            agent=RuntimeAgentConfig(
+                preset="leader",
+                model="opencode/gpt-5.4",
+                provider_fallback=RuntimeProviderFallbackConfig(
+                    preferred_model="opencode/gpt-5.4",
+                    fallback_models=("opencode/gpt-5.3",),
+                ),
+            ),
+        ),
+    )
+
+    fallback_summary = fallback_runtime.list_agent_summaries()[0]
+
+    assert fallback_summary.fallback_chain == ("opencode/gpt-5.4", "opencode/gpt-5.3")
 
 
 def test_runtime_provider_compaction_emits_continuity_state_and_persists_metadata(

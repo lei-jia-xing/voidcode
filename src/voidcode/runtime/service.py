@@ -6,7 +6,7 @@ import logging
 import os
 import subprocess
 import threading
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from fnmatch import fnmatchcase
 from pathlib import Path
@@ -72,6 +72,7 @@ from .background_tasks import RuntimeBackgroundTaskSupervisor
 from .config import (
     ExecutionEngineName,
     RuntimeAgentConfig,
+    RuntimeCategoryConfig,
     RuntimeConfig,
     RuntimeContextWindowConfig,
     RuntimeHooksConfig,
@@ -83,11 +84,15 @@ from .config import (
     load_runtime_config,
     parse_provider_fallback_payload,
     parse_runtime_agent_payload,
+    parse_runtime_agents_payload,
+    parse_runtime_categories_payload,
     parse_runtime_context_window_payload,
     parse_runtime_plan_payload,
     save_global_web_settings,
     serialize_provider_fallback_config,
     serialize_runtime_agent_config,
+    serialize_runtime_agents_config,
+    serialize_runtime_categories_config,
     serialize_runtime_context_window_config,
     serialize_runtime_plan_config,
 )
@@ -136,6 +141,7 @@ from .events import (
     RUNTIME_ACP_DISCONNECTED,
     RUNTIME_ACP_FAILED,
     RUNTIME_APPROVAL_REQUESTED,
+    RUNTIME_CATEGORY_MODEL_DIAGNOSTIC,
     RUNTIME_LSP_SERVER_FAILED,
     RUNTIME_LSP_SERVER_REUSED,
     RUNTIME_LSP_SERVER_STARTED,
@@ -192,6 +198,7 @@ from .storage import SessionEventAppender, SessionStore, SqliteSessionStore
 from .task import (
     BackgroundTaskState,
     StoredBackgroundTaskSummary,
+    supported_subagent_categories,
     validate_background_task_id,
 )
 from .tool_provider import BuiltinToolProvider
@@ -1405,6 +1412,23 @@ class VoidCodeRuntime:
             ),
         )
 
+        for diagnostic in self._category_model_diagnostics(
+            request_metadata=request_metadata,
+            effective_config=effective_config,
+        ):
+            sequence += 1
+            yield RuntimeStreamChunk(
+                kind="event",
+                session=session,
+                event=EventEnvelope(
+                    session_id=session.session.id,
+                    sequence=sequence,
+                    event_type=RUNTIME_CATEGORY_MODEL_DIAGNOSTIC,
+                    source="runtime",
+                    payload=diagnostic,
+                ),
+            )
+
         command_metadata = request_metadata.get("command")
         if isinstance(command_metadata, dict):
             sequence += 1
@@ -2125,6 +2149,88 @@ class VoidCodeRuntime:
         response = self._load_stored_response(session_id=session_id)
         return self._effective_runtime_config_from_metadata(response.session.metadata)
 
+    def effective_category_model_config(
+        self, *, session_id: str | None = None
+    ) -> dict[str, object]:
+        categories, agents, base_model = self._display_routing_config(session_id=session_id)
+        payload: dict[str, object] = {}
+        for category in supported_subagent_categories():
+            route = runtime_subagent_route_from_metadata(
+                {"delegation": {"mode": "background", "category": category}}
+            )
+            assert route is not None
+            category_config = categories.get(category)
+            model = self._delegated_model_for_route_from_configs(
+                category=category,
+                selected_preset=route.selected_preset,
+                request_agent=None,
+                categories=categories,
+                agents=agents,
+                base_model=base_model,
+            )
+            payload[category] = {
+                "model": category_config.model if category_config is not None else None,
+                "effective_model": model,
+                "selected_preset": route.selected_preset,
+                "selected_execution_engine": route.execution_engine,
+            }
+        return payload
+
+    def effective_agent_model_config(self, *, session_id: str | None = None) -> dict[str, object]:
+        _categories, agents, base_model = self._display_routing_config(session_id=session_id)
+        payload: dict[str, object] = {}
+        for manifest in list_builtin_agent_manifests():
+            preset_agent = agents.get(manifest.id)
+            model = preset_agent.model if preset_agent is not None else manifest.model_preference
+            if model is None:
+                model = base_model
+            provider_fallback = self._provider_fallback_for_agent_selection(
+                model=model,
+                preset_agent=preset_agent,
+            )
+            execution_engine = (
+                preset_agent.execution_engine
+                if preset_agent is not None and preset_agent.execution_engine is not None
+                else manifest.execution_engine
+            )
+            fallback_models = (
+                list(provider_fallback.fallback_models) if provider_fallback is not None else []
+            )
+            payload[manifest.id] = {
+                "model": preset_agent.model if preset_agent is not None else None,
+                "fallback_models": fallback_models,
+                "effective_model": model,
+                "effective_fallback_models": fallback_models,
+                "selected_execution_engine": execution_engine,
+            }
+        return payload
+
+    def _display_routing_config(
+        self,
+        *,
+        session_id: str | None,
+    ) -> tuple[Mapping[str, RuntimeCategoryConfig], Mapping[str, RuntimeAgentConfig], str | None]:
+        if session_id is None:
+            return self._config.categories or {}, self._config.agents or {}, self._config.model
+        validate_session_id(session_id)
+        response = self._load_stored_response(session_id=session_id)
+        runtime_config = response.session.metadata.get("runtime_config")
+        if not isinstance(runtime_config, dict):
+            return {}, {}, None
+        payload = cast(dict[str, object], runtime_config)
+        raw_model = payload.get("model")
+        base_model = raw_model if isinstance(raw_model, str) else None
+        categories = parse_runtime_categories_payload(
+            payload.get("categories"),
+            source="persisted runtime_config.categories",
+        )
+        agents = parse_runtime_agents_payload(
+            payload.get("agents"),
+            source="persisted runtime_config.agents",
+            hooks=self._config.hooks,
+        )
+        return categories or {}, agents or {}, base_model
+
     def refresh_provider_models(self, provider_name: str) -> tuple[str, ...]:
         if not provider_name or "/" in provider_name:
             raise ValueError("provider_name must be a non-empty provider id without '/'")
@@ -2725,7 +2831,10 @@ class VoidCodeRuntime:
             )
             resolved_provider = resolve_provider_config(
                 model,
-                provider_fallback,
+                self._provider_fallback_for_agent_selection(
+                    model=model,
+                    preset_agent=agent_config,
+                ),
                 registry=self._model_provider_registry,
             )
             resolved_model = resolved_provider.model or model
@@ -2757,6 +2866,10 @@ class VoidCodeRuntime:
                     model_label=active_selection.model,
                     model_source=model_source,
                     provider=active_selection.provider,
+                    fallback_chain=tuple(
+                        _provider_target_label(target)
+                        for target in resolved_provider.target_chain.all_targets
+                    ),
                 )
             )
         return tuple(summaries)
@@ -4768,6 +4881,12 @@ class VoidCodeRuntime:
         serialized_agent = serialize_runtime_agent_config(effective_config.agent)
         if serialized_agent is not None:
             runtime_config_metadata["agent"] = serialized_agent
+        serialized_agents = serialize_runtime_agents_config(self._config.agents)
+        if serialized_agents is not None:
+            runtime_config_metadata["agents"] = serialized_agents
+        serialized_categories = serialize_runtime_categories_config(self._config.categories)
+        if serialized_categories is not None:
+            runtime_config_metadata["categories"] = serialized_categories
         lsp_state = self._lsp_manager.current_state()
         runtime_config_metadata["lsp"] = {
             "mode": lsp_state.mode,
@@ -4925,10 +5044,31 @@ class VoidCodeRuntime:
 
         raw_agent = normalized_metadata.get("agent")
         if raw_agent is None:
+            delegated_model = self._delegated_model_for_route(
+                category=resolved_route.requested.category,
+                selected_preset=resolved_route.selected_preset,
+                request_agent=None,
+            )
+            delegated_provider_fallback = self._delegated_provider_fallback_for_route(
+                category=resolved_route.requested.category,
+                selected_preset=resolved_route.selected_preset,
+                request_agent=None,
+                model=delegated_model,
+            )
             agent = parse_runtime_agent_payload(
                 {
                     "preset": resolved_route.selected_preset,
                     "execution_engine": resolved_route.execution_engine,
+                    **({"model": delegated_model} if delegated_model is not None else {}),
+                    **(
+                        {
+                            "provider_fallback": serialize_provider_fallback_config(
+                                delegated_provider_fallback
+                            )
+                        }
+                        if delegated_provider_fallback is not None
+                        else {}
+                    ),
                 },
                 source="delegation.selected_preset",
                 hooks=self._config.hooks,
@@ -4954,6 +5094,23 @@ class VoidCodeRuntime:
                     "request metadata 'agent.execution_engine' must match delegated child "
                     f"execution engine '{resolved_route.execution_engine}'"
                 )
+            if agent.model is None:
+                delegated_model = self._delegated_model_for_route(
+                    category=resolved_route.requested.category,
+                    selected_preset=resolved_route.selected_preset,
+                    request_agent=agent,
+                )
+                if delegated_model is not None:
+                    agent = replace(agent, model=delegated_model)
+            if agent.provider_fallback is None:
+                delegated_provider_fallback = self._delegated_provider_fallback_for_route(
+                    category=resolved_route.requested.category,
+                    selected_preset=resolved_route.selected_preset,
+                    request_agent=agent,
+                    model=agent.model,
+                )
+                if delegated_provider_fallback is not None:
+                    agent = replace(agent, provider_fallback=delegated_provider_fallback)
 
         self._validate_runtime_agent_for_execution(
             agent,
@@ -4967,6 +5124,141 @@ class VoidCodeRuntime:
         return validate_runtime_request_metadata(
             normalized_metadata,
             allow_internal_fields=allow_internal_fields,
+        )
+
+    def _delegated_model_for_route(
+        self,
+        *,
+        category: str | None,
+        selected_preset: str,
+        request_agent: RuntimeAgentConfig | None,
+    ) -> str | None:
+        if request_agent is not None and request_agent.model is not None:
+            return request_agent.model
+        return self._delegated_model_for_route_from_configs(
+            category=category,
+            selected_preset=selected_preset,
+            request_agent=request_agent,
+            categories=self._config.categories or {},
+            agents=self._config.agents or {},
+            base_model=self._config.model,
+        )
+
+    def _delegated_model_for_route_from_configs(
+        self,
+        *,
+        category: str | None,
+        selected_preset: str,
+        request_agent: RuntimeAgentConfig | None,
+        categories: Mapping[str, RuntimeCategoryConfig],
+        agents: Mapping[str, RuntimeAgentConfig],
+        base_model: str | None,
+    ) -> str | None:
+        if request_agent is not None and request_agent.model is not None:
+            return request_agent.model
+        category_config = categories.get(category) if category is not None else None
+        if category_config is not None and category_config.model is not None:
+            return category_config.model
+        preset_agent = agents.get(selected_preset)
+        if preset_agent is not None and preset_agent.model is not None:
+            return preset_agent.model
+        return base_model
+
+    def _delegated_provider_fallback_for_route(
+        self,
+        *,
+        category: str | None,
+        selected_preset: str,
+        request_agent: RuntimeAgentConfig | None,
+        model: str | None,
+    ) -> RuntimeProviderFallbackConfig | None:
+        if request_agent is not None and request_agent.provider_fallback is not None:
+            return request_agent.provider_fallback
+        preset_agent = self._preset_agent_config(selected_preset)
+        provider_fallback = self._provider_fallback_for_agent_selection(
+            model=model,
+            preset_agent=preset_agent,
+        )
+        if category is not None and provider_fallback is not None and model is not None:
+            return self._provider_fallback_with_preferred_model(provider_fallback, model)
+        return provider_fallback
+
+    def _provider_fallback_for_agent_selection(
+        self,
+        *,
+        model: str | None,
+        preset_agent: RuntimeAgentConfig | None,
+    ) -> RuntimeProviderFallbackConfig | None:
+        if preset_agent is not None and preset_agent.provider_fallback is not None:
+            if model is None or model == preset_agent.provider_fallback.preferred_model:
+                return preset_agent.provider_fallback
+            return self._provider_fallback_with_preferred_model(
+                preset_agent.provider_fallback,
+                model,
+            )
+        if self._config.provider_fallback is None:
+            return None
+        if model is None or model == self._config.provider_fallback.preferred_model:
+            return self._config.provider_fallback
+        return self._provider_fallback_with_preferred_model(self._config.provider_fallback, model)
+
+    @staticmethod
+    def _provider_fallback_with_preferred_model(
+        provider_fallback: RuntimeProviderFallbackConfig,
+        preferred_model: str,
+    ) -> RuntimeProviderFallbackConfig:
+        return RuntimeProviderFallbackConfig(
+            preferred_model=preferred_model,
+            fallback_models=tuple(
+                fallback_model
+                for fallback_model in provider_fallback.fallback_models
+                if fallback_model != preferred_model
+            ),
+        )
+
+    def _category_config(self, category: str | None) -> RuntimeCategoryConfig | None:
+        if category is None or self._config.categories is None:
+            return None
+        return self._config.categories.get(category)
+
+    def _preset_agent_config(self, preset: str) -> RuntimeAgentConfig | None:
+        if self._config.agents is None:
+            return None
+        return self._config.agents.get(preset)
+
+    def _category_model_diagnostics(
+        self,
+        *,
+        request_metadata: dict[str, object],
+        effective_config: EffectiveRuntimeConfig,
+    ) -> tuple[dict[str, object], ...]:
+        raw_delegation = request_metadata.get("delegation")
+        if not isinstance(raw_delegation, dict):
+            return ()
+        delegation = cast(dict[str, object], raw_delegation)
+        if delegation.get("category") != "ultrabrain":
+            return ()
+        active_target = effective_config.resolved_provider.active_target.selection
+        provider_name = active_target.provider
+        model_name = active_target.model
+        if provider_name is None or model_name is None:
+            return ()
+        metadata = self._metadata_for_provider_model(provider_name, model_name)
+        if metadata is None or metadata.supports_reasoning is not False:
+            return ()
+        return (
+            {
+                "severity": "warning",
+                "category": "model_capability_mismatch",
+                "capability": "reasoning",
+                "requested_category": "ultrabrain",
+                "provider": provider_name,
+                "model": model_name,
+                "message": (
+                    "task category 'ultrabrain' resolved to a model whose provider metadata "
+                    "does not support reasoning"
+                ),
+            },
         )
 
     def _runtime_state_metadata(self, *, run_id: str | None = None) -> dict[str, object]:
