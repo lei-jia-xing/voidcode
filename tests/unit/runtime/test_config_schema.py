@@ -81,6 +81,30 @@ def test_runtime_config_json_schema_exposes_core_fields() -> None:
         "type": "integer",
         "minimum": 1,
     }
+    hooks_schema = cast(dict[str, object], properties["hooks"])
+    hooks_properties = cast(dict[str, object], hooks_schema["properties"])
+    formatter_presets = cast(dict[str, object], hooks_properties["formatter_presets"])
+    assert formatter_presets["additionalProperties"] == {"$ref": "#/$defs/formatterPresetConfig"}
+    formatter_preset_config = cast(dict[str, object], defs["formatterPresetConfig"])
+    assert formatter_preset_config["additionalProperties"] is False
+    formatter_preset_properties = cast(dict[str, object], formatter_preset_config["properties"])
+    assert set(formatter_preset_properties) == {
+        "command",
+        "extensions",
+        "root_markers",
+        "fallback_commands",
+        "cwd_policy",
+    }
+    context_window_config = cast(dict[str, object], defs["contextWindowConfig"])
+    context_window_properties = cast(dict[str, object], context_window_config["properties"])
+    for key in (
+        "max_tool_results",
+        "minimum_retained_tool_results",
+        "recent_tool_result_count",
+        "reserved_output_tokens",
+    ):
+        numeric_property = cast(dict[str, object], context_window_properties[key])
+        assert numeric_property["minimum"] == 1
     tools_config = cast(dict[str, object], defs["toolsConfig"])
     assert tools_config["additionalProperties"] is False
     tools_properties = cast(dict[str, object], tools_config["properties"])

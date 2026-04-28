@@ -103,7 +103,7 @@ def runtime_config_json_schema() -> dict[str, object]:
                     "on_delegated_result_available": {"$ref": "#/$defs/commandList"},
                     "formatter_presets": {
                         "type": "object",
-                        "additionalProperties": {"type": "object"},
+                        "additionalProperties": {"$ref": "#/$defs/formatterPresetConfig"},
                     },
                 },
             },
@@ -263,6 +263,28 @@ def runtime_config_json_schema() -> dict[str, object]:
                     "type": "array",
                     "items": {"type": "string"},
                     "minItems": 1,
+                },
+            },
+            "formatterPresetConfig": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "command": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 1,
+                    },
+                    "extensions": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 1,
+                    },
+                    "root_markers": {"type": "array", "items": {"type": "string"}},
+                    "fallback_commands": {"$ref": "#/$defs/commandList"},
+                    "cwd_policy": {
+                        "type": "string",
+                        "enum": ["workspace", "nearest_root", "file_directory"],
+                    },
                 },
             },
             "toolsConfig": {

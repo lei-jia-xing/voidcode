@@ -635,42 +635,9 @@ class VoidCodeRuntime:
         error: str | None = None,
     ) -> dict[str, object] | None:
         existing_plan_state = metadata.get("plan_state")
-        if isinstance(existing_plan_state, dict):
-            plan_state: dict[str, object] = dict(cast(dict[str, object], existing_plan_state))
-        else:
-            serialized_plan_artifact_obj = metadata.get("plan_artifact")
-            if not isinstance(serialized_plan_artifact_obj, dict):
-                return None
-            serialized_plan_artifact = cast(dict[str, object], serialized_plan_artifact_obj)
-            raw_steps_obj = serialized_plan_artifact.get("steps")
-            raw_steps = (
-                cast(list[object], raw_steps_obj) if isinstance(raw_steps_obj, list) else None
-            )
-            first_step = (
-                cast(dict[str, object], raw_steps[0])
-                if raw_steps is not None and bool(raw_steps) and isinstance(raw_steps[0], dict)
-                else None
-            )
-            step_count = len(raw_steps) if raw_steps is not None else 0
-            current_step_order = (
-                first_step.get("order")
-                if first_step is not None and isinstance(first_step.get("order"), int)
-                else 1
-            )
-            current_step_title = (
-                cast(str, first_step.get("title"))
-                if first_step is not None and isinstance(first_step.get("title"), str)
-                else None
-            )
-            plan_state = {
-                "mode": "plan_first",
-                "status": "planned",
-                "step_count": step_count,
-                "current_step_index": 0,
-                "current_step_order": current_step_order,
-            }
-            if current_step_title is not None:
-                plan_state["current_step_title"] = current_step_title
+        if not isinstance(existing_plan_state, dict):
+            return None
+        plan_state: dict[str, object] = dict(cast(dict[str, object], existing_plan_state))
 
         if status is not None:
             plan_state["status"] = status

@@ -1755,6 +1755,29 @@ def test_runtime_config_rejects_invalid_repo_local_execution_engine(tmp_path: Pa
             "runtime config field 'hooks.timeout_seconds'",
             id="hook-timeout-type",
         ),
+        pytest.param(
+            {"context_window": {"max_tool_results": 0}},
+            "runtime config field 'context_window.max_tool_results'.*greater than or equal to 1",
+            id="context-window-max-tool-results-zero",
+        ),
+        pytest.param(
+            {"context_window": {"minimum_retained_tool_results": 0}},
+            "runtime config field 'context_window.minimum_retained_tool_results'"
+            ".*greater than or equal to 1",
+            id="context-window-minimum-retained-zero",
+        ),
+        pytest.param(
+            {"context_window": {"recent_tool_result_count": 0}},
+            "runtime config field 'context_window.recent_tool_result_count'"
+            ".*greater than or equal to 1",
+            id="context-window-recent-count-zero",
+        ),
+        pytest.param(
+            {"context_window": {"reserved_output_tokens": 0}},
+            "runtime config field 'context_window.reserved_output_tokens'"
+            ".*greater than or equal to 1",
+            id="context-window-reserved-output-zero",
+        ),
     ],
 )
 def test_runtime_config_rejects_invalid_max_steps(
@@ -1912,6 +1935,11 @@ def test_runtime_config_rejects_invalid_max_steps(
             {"agent": {"preset": "leader", "plan": {"provider": "custom"}}},
             "runtime config field 'agent.plan'",
             id="agent-plan-removed",
+        ),
+        pytest.param(
+            {"agent": {"leader": {"model": "opencode/gpt-5.4"}}},
+            "runtime config field 'agent.leader'",
+            id="agent-nested-preset-alias-removed",
         ),
         pytest.param(
             {"providers": {"openai": {"api_key": 1}}},

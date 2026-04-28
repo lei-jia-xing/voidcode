@@ -1033,7 +1033,7 @@ class _RuntimeContextWindowValidationModel(BaseModel):
         mode="before",
     )
     @classmethod
-    def _validate_non_negative_int(cls, value: object, info: ValidationInfo) -> int:
+    def _validate_positive_int(cls, value: object, info: ValidationInfo) -> int:
         field_name = info.field_name or "unknown"
         field_path = f"context_window.{field_name}"
         if value is None:
@@ -1041,9 +1041,9 @@ class _RuntimeContextWindowValidationModel(BaseModel):
             return cast(int, getattr(defaults, field_name))
         if not isinstance(value, int) or isinstance(value, bool):
             raise ValueError(f"runtime config field '{field_path}' must be an integer")
-        if value < 0:
+        if value < 1:
             raise ValueError(
-                f"runtime config field '{field_path}' must be greater than or equal to 0"
+                f"runtime config field '{field_path}' must be greater than or equal to 1"
             )
         return value
 
@@ -1078,10 +1078,10 @@ class _RuntimeContextWindowValidationModel(BaseModel):
             raise ValueError(
                 "runtime config field 'context_window.reserved_output_tokens' must be an integer"
             )
-        if value < 0:
+        if value < 1:
             raise ValueError(
                 "runtime config field 'context_window.reserved_output_tokens' must be "
-                "greater than or equal to 0"
+                "greater than or equal to 1"
             )
         return value
 
