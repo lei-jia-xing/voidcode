@@ -33,6 +33,7 @@ def resolve_provider_model(
             source=provider_resolution.source,
             configured=provider_resolution.configured,
         ),
+        metadata=registry.model_metadata_for_model(provider_name, model_name),
     )
 
 
