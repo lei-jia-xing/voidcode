@@ -13,6 +13,8 @@ from voidcode.doctor.checker import (
     CapabilityCheckStatus,
     DoctorCheckType,
 )
+from voidcode.provider.config import OpenAIProviderConfig, ProviderConfigs
+from voidcode.runtime.config import RuntimeConfig
 
 
 class TestCapabilityDoctor:
@@ -75,10 +77,7 @@ class TestCreateDoctorForConfig:
 
     def test_creates_doctor_with_ast_grep_check(self) -> None:
         """Test that the doctor includes ast-grep check."""
-        config = MagicMock()
-        config.hooks = None
-        config.lsp = None
-        config.mcp = None
+        config = RuntimeConfig()
 
         hooks = MagicMock()
         hooks.enabled = True
@@ -92,10 +91,7 @@ class TestCreateDoctorForConfig:
 
     def test_handles_none_config_sections(self) -> None:
         """Test that the function handles None config sections gracefully."""
-        config = MagicMock()
-        config.hooks = None
-        config.lsp = None
-        config.mcp = None
+        config = RuntimeConfig()
 
         hooks = MagicMock()
         hooks.enabled = True
@@ -115,10 +111,7 @@ class TestCreateDoctorForConfig:
             "typescript": MagicMock(),
         }
 
-        config = MagicMock()
-        config.hooks = hooks
-        config.lsp = None
-        config.mcp = None
+        config = RuntimeConfig(hooks=hooks)
 
         doctor = create_doctor_for_config(Path("/tmp"), config)
 
@@ -135,3 +128,39 @@ class TestCreateDoctorForConfig:
             CapabilityCheckStatus.READY,
             CapabilityCheckStatus.NOT_FOUND,
         }
+
+    def test_adds_provider_readiness_check_for_provider_config(self, tmp_path: Path) -> None:
+        config = RuntimeConfig(
+            model="openai/gpt-4o",
+            execution_engine="provider",
+            providers=ProviderConfigs(openai=OpenAIProviderConfig()),
+        )
+
+        doctor = create_doctor_for_config(tmp_path, config)
+
+        readiness = next(result for result in doctor.results if result.name == "provider.readiness")
+        assert readiness.check_type == DoctorCheckType.PROVIDER_READINESS.value
+        assert readiness.status == CapabilityCheckStatus.ERROR
+        assert readiness.details["provider"] == "openai"
+        assert readiness.details["model"] == "gpt-4o"
+        assert readiness.details["auth_present"] is False
+        assert readiness.error_message is not None
+        assert "openai.api_key" in readiness.error_message
+
+    def test_provider_readiness_runtime_error_is_structured_result(self, tmp_path: Path) -> None:
+        config = RuntimeConfig(
+            model="malformed-model",
+            execution_engine="provider",
+        )
+
+        doctor = create_doctor_for_config(tmp_path, config)
+
+        readiness = next(result for result in doctor.results if result.name == "provider.readiness")
+        assert readiness.check_type == DoctorCheckType.PROVIDER_READINESS.value
+        assert readiness.status == CapabilityCheckStatus.ERROR
+        assert readiness.details == {
+            "model": "malformed-model",
+            "status": "invalid_config",
+        }
+        assert readiness.error_message is not None
+        assert "provider/model" in readiness.error_message

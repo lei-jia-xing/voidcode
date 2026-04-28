@@ -244,7 +244,14 @@ class RuntimeRunLoopCoordinator:
                             },
                         )
                         continue
-                    if provider_error.kind in {"rate_limit", "invalid_model", "transient_failure"}:
+                    if provider_error.kind in {
+                        "missing_auth",
+                        "rate_limit",
+                        "invalid_model",
+                        "transient_failure",
+                        "unsupported_feature",
+                        "stream_tool_feedback_shape",
+                    }:
                         yield runtime._failed_chunk(
                             session=session,
                             sequence=sequence + 1,

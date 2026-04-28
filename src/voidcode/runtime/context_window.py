@@ -6,7 +6,7 @@ import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from functools import lru_cache
-from typing import Any, NamedTuple, cast
+from typing import Any, Literal, NamedTuple, cast
 
 from ..tools.contracts import ToolResult
 
@@ -208,6 +208,24 @@ def _tool_result_preview(result: ToolResult, *, max_preview_chars: int) -> str:
 
 _UNICODE_TOKEN_ESTIMATE_SOURCE = "unicode_aware_chars"
 
+type TokenCountMethod = Literal["tiktoken", "estimated"]
+
+
+@dataclass(frozen=True, slots=True)
+class TokenCount:
+    tokens: int
+    method: TokenCountMethod
+    source: str
+    exact: bool = False
+
+    def metadata_payload(self) -> dict[str, object]:
+        return {
+            "tokens": self.tokens,
+            "method": self.method,
+            "source": self.source,
+            "exact": self.exact,
+        }
+
 
 class _TokenEstimate(NamedTuple):
     tokens: int
@@ -223,15 +241,17 @@ def _tiktoken_encoding_for_model(tokenizer_model: str) -> Any:
         return tiktoken.get_encoding("cl100k_base")
 
 
-def _estimated_token_count(value: str, *, tokenizer_model: str | None = None) -> _TokenEstimate:
+def count_text_tokens(value: str, *, tokenizer_model: str | None = None) -> TokenCount:
     if not value:
-        return _TokenEstimate(0, _UNICODE_TOKEN_ESTIMATE_SOURCE)
+        return TokenCount(0, method="estimated", source=_UNICODE_TOKEN_ESTIMATE_SOURCE)
     if tokenizer_model is not None:
         try:
             encoding = _tiktoken_encoding_for_model(tokenizer_model)
-            return _TokenEstimate(
+            return TokenCount(
                 len(encoding.encode(value, disallowed_special=())),
-                f"tiktoken:{tokenizer_model}",
+                method="tiktoken",
+                source=f"tiktoken:{tokenizer_model}",
+                exact=True,
             )
         except ImportError:
             pass
@@ -242,10 +262,17 @@ def _estimated_token_count(value: str, *, tokenizer_model: str | None = None) ->
             ascii_chars += 1
         else:
             non_ascii_chars += 1
-    return _TokenEstimate(
-        max(1, ((ascii_chars + 3) // 4) + non_ascii_chars),
-        _UNICODE_TOKEN_ESTIMATE_SOURCE,
+    return TokenCount(
+        tokens=max(1, ((ascii_chars + 3) // 4) + non_ascii_chars),
+        method="estimated",
+        source=_UNICODE_TOKEN_ESTIMATE_SOURCE,
+        exact=False,
     )
+
+
+def _estimated_token_count(value: str, *, tokenizer_model: str | None = None) -> _TokenEstimate:
+    counted = count_text_tokens(value, tokenizer_model=tokenizer_model)
+    return _TokenEstimate(counted.tokens, counted.source)
 
 
 def _tool_result_token_estimate(

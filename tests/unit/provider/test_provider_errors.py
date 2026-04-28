@@ -59,8 +59,25 @@ def test_parse_provider_api_error_maps_429_to_rate_limit() -> None:
     assert parsed.fallback_allowed is True
 
 
-def test_parse_provider_api_error_maps_401_to_invalid_model() -> None:
+def test_parse_provider_api_error_maps_401_to_missing_auth() -> None:
     parsed = parse_provider_api_error({"status_code": 401, "message": "Unauthorized"})
+
+    assert parsed.kind == "missing_auth"
+    assert parsed.retryable is False
+    assert parsed.fallback_allowed is True
+    assert "API key" in parsed.guidance
+
+
+def test_parse_provider_api_error_keeps_403_model_code_as_invalid_model() -> None:
+    parsed = parse_provider_api_error(
+        {
+            "status_code": 403,
+            "error": {
+                "code": "model_not_found",
+                "message": "model not found or no model access",
+            },
+        }
+    )
 
     assert parsed.kind == "invalid_model"
     assert parsed.retryable is False
@@ -78,6 +95,16 @@ def test_parse_provider_api_error_maps_context_overflow_patterns() -> None:
     assert parsed.kind == "context_limit"
     assert parsed.retryable is False
     assert parsed.fallback_allowed is False
+
+
+def test_parse_provider_api_error_maps_unsupported_feature() -> None:
+    parsed = parse_provider_api_error(
+        {"status_code": 400, "message": "Streaming is not supported for this model"}
+    )
+
+    assert parsed.kind == "unsupported_feature"
+    assert parsed.retryable is False
+    assert parsed.fallback_allowed is True
 
 
 def test_parse_provider_stream_error_maps_context_length_exceeded_code() -> None:
@@ -111,6 +138,36 @@ def test_provider_execution_error_from_api_payload_preserves_details() -> None:
     assert exc.details["source"] == "api"
 
 
+def test_provider_execution_error_redacts_secret_details() -> None:
+    exc = provider_execution_error_from_api_payload(
+        provider_name="openai",
+        model_name="gpt-4o",
+        payload={
+            "status_code": 401,
+            "message": "invalid api key",
+            "api_key": "sk-secret",
+            "headers": {
+                "Authorization": "Bearer sk-secret",
+                "x-api-key": "secret-header",
+                "cookie": "session=secret-cookie",
+            },
+            "url": "https://example.invalid?api_key=secret-query-token",
+            "debug": "raw token=secret-value",
+        },
+    )
+
+    assert exc.details is not None
+    assert exc.kind == "missing_auth"
+    assert exc.details["api_key"] == "<redacted>"
+    assert exc.details["headers"] == {
+        "Authorization": "<redacted>",
+        "x-api-key": "<redacted>",
+        "cookie": "<redacted>",
+    }
+    assert exc.details["url"] == "https://example.invalid?api_key=<redacted>"
+    assert exc.details["debug"] == "raw token=<redacted>"
+
+
 def test_provider_execution_error_from_stream_payload_preserves_details() -> None:
     exc = provider_execution_error_from_stream_payload(
         provider_name="openai",
@@ -118,7 +175,7 @@ def test_provider_execution_error_from_stream_payload_preserves_details() -> Non
         payload={"status_code": 403, "message": "forbidden"},
     )
 
-    assert exc.kind == "invalid_model"
+    assert exc.kind == "missing_auth"
     assert exc.retryable is False
     assert exc.details is not None
     assert exc.details["status_code"] == 403

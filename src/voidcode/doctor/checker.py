@@ -57,6 +57,7 @@ class DoctorCheckType(enum.Enum):
     LSP_SERVER = "lsp_server"
     MCP_SERVER = "mcp_server"
     RUNTIME_CONFIG = "runtime_config"
+    PROVIDER_READINESS = "provider_readiness"
 
 
 @dataclass(frozen=True, slots=True)
