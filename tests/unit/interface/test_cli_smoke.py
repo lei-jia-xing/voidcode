@@ -1506,7 +1506,16 @@ def test_config_show_outputs_resumed_session_effective_config() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         workspace = Path(tmp)
         (workspace / ".voidcode.json").write_text(
-            json.dumps({"approval_mode": "deny", "model": "repo/model"}),
+            json.dumps(
+                {
+                    "approval_mode": "deny",
+                    "model": "repo/model",
+                    "provider_fallback": {
+                        "preferred_model": "repo/model",
+                        "fallback_models": ["repo/session-fallback"],
+                    },
+                }
+            ),
             encoding="utf-8",
         )
         (workspace / "sample.txt").write_text("session config\n", encoding="utf-8")
@@ -1528,6 +1537,10 @@ def test_config_show_outputs_resumed_session_effective_config() -> None:
                 {
                     "approval_mode": "deny",
                     "model": "changed/model",
+                    "provider_fallback": {
+                        "preferred_model": "changed/model",
+                        "fallback_models": ["changed/workspace-fallback"],
+                    },
                     "categories": {"quick": {"model": "changed/category"}},
                     "agents": {"worker": {"model": "changed/worker"}},
                 }
@@ -1554,9 +1567,28 @@ def test_config_show_outputs_resumed_session_effective_config() -> None:
         "execution_engine": "deterministic",
         "max_steps": None,
         "agent": None,
-        "agents": _expected_agent_models("repo/model"),
+        "agents": {
+            agent_id: {
+                "model": None,
+                "fallback_models": ["repo/session-fallback"],
+                "effective_model": "repo/model",
+                "effective_fallback_models": ["repo/session-fallback"],
+                "selected_execution_engine": "provider",
+            }
+            for agent_id in (
+                "leader",
+                "worker",
+                "advisor",
+                "explore",
+                "researcher",
+                "product",
+            )
+        },
         "categories": _expected_category_models("repo/model"),
-        "provider_fallback": None,
+        "provider_fallback": {
+            "preferred_model": "repo/model",
+            "fallback_models": ["repo/session-fallback"],
+        },
         "resolved_provider": {
             "active_target": {
                 "raw_model": "repo/model",
@@ -1568,7 +1600,12 @@ def test_config_show_outputs_resumed_session_effective_config() -> None:
                     "raw_model": "repo/model",
                     "provider": "repo",
                     "model": "model",
-                }
+                },
+                {
+                    "raw_model": "repo/session-fallback",
+                    "provider": "repo",
+                    "model": "session-fallback",
+                },
             ],
         },
         "provider_readiness": {
@@ -1583,7 +1620,7 @@ def test_config_show_outputs_resumed_session_effective_config() -> None:
             "streaming_supported": None,
             "context_window": None,
             "max_output_tokens": None,
-            "fallback_chain": ["repo/model"],
+            "fallback_chain": ["repo/model", "repo/session-fallback"],
         },
         "context_budget": {"context_window": None, "max_output_tokens": None},
     }

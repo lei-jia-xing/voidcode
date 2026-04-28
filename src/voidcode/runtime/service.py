@@ -2152,7 +2152,9 @@ class VoidCodeRuntime:
     def effective_category_model_config(
         self, *, session_id: str | None = None
     ) -> dict[str, object]:
-        categories, agents, base_model = self._display_routing_config(session_id=session_id)
+        categories, agents, base_model, _base_provider_fallback = self._display_routing_config(
+            session_id=session_id
+        )
         payload: dict[str, object] = {}
         for category in supported_subagent_categories():
             route = runtime_subagent_route_from_metadata(
@@ -2177,7 +2179,9 @@ class VoidCodeRuntime:
         return payload
 
     def effective_agent_model_config(self, *, session_id: str | None = None) -> dict[str, object]:
-        _categories, agents, base_model = self._display_routing_config(session_id=session_id)
+        _categories, agents, base_model, base_provider_fallback = self._display_routing_config(
+            session_id=session_id
+        )
         payload: dict[str, object] = {}
         for manifest in list_builtin_agent_manifests():
             preset_agent = agents.get(manifest.id)
@@ -2187,6 +2191,7 @@ class VoidCodeRuntime:
             provider_fallback = self._provider_fallback_for_agent_selection(
                 model=model,
                 preset_agent=preset_agent,
+                base_provider_fallback=base_provider_fallback,
             )
             execution_engine = (
                 preset_agent.execution_engine
@@ -2209,17 +2214,33 @@ class VoidCodeRuntime:
         self,
         *,
         session_id: str | None,
-    ) -> tuple[Mapping[str, RuntimeCategoryConfig], Mapping[str, RuntimeAgentConfig], str | None]:
+    ) -> tuple[
+        Mapping[str, RuntimeCategoryConfig],
+        Mapping[str, RuntimeAgentConfig],
+        str | None,
+        RuntimeProviderFallbackConfig | None,
+    ]:
         if session_id is None:
-            return self._config.categories or {}, self._config.agents or {}, self._config.model
+            return (
+                self._config.categories or {},
+                self._config.agents or {},
+                self._config.model,
+                self._config.provider_fallback,
+            )
         validate_session_id(session_id)
         response = self._load_stored_response(session_id=session_id)
         runtime_config = response.session.metadata.get("runtime_config")
         if not isinstance(runtime_config, dict):
-            return {}, {}, None
+            return {}, {}, None, None
         payload = cast(dict[str, object], runtime_config)
         raw_model = payload.get("model")
         base_model = raw_model if isinstance(raw_model, str) else None
+        base_provider_fallback = None
+        if "provider_fallback" in payload:
+            base_provider_fallback = parse_provider_fallback_payload(
+                payload.get("provider_fallback"),
+                source="persisted runtime_config.provider_fallback",
+            )
         categories = parse_runtime_categories_payload(
             payload.get("categories"),
             source="persisted runtime_config.categories",
@@ -2229,7 +2250,7 @@ class VoidCodeRuntime:
             source="persisted runtime_config.agents",
             hooks=self._config.hooks,
         )
-        return categories or {}, agents or {}, base_model
+        return categories or {}, agents or {}, base_model, base_provider_fallback
 
     def refresh_provider_models(self, provider_name: str) -> tuple[str, ...]:
         if not provider_name or "/" in provider_name:
@@ -2834,6 +2855,7 @@ class VoidCodeRuntime:
                 self._provider_fallback_for_agent_selection(
                     model=model,
                     preset_agent=agent_config,
+                    base_provider_fallback=self._config.provider_fallback,
                 ),
                 registry=self._model_provider_registry,
             )
@@ -5178,6 +5200,7 @@ class VoidCodeRuntime:
         provider_fallback = self._provider_fallback_for_agent_selection(
             model=model,
             preset_agent=preset_agent,
+            base_provider_fallback=self._config.provider_fallback,
         )
         if category is not None and provider_fallback is not None and model is not None:
             return self._provider_fallback_with_preferred_model(provider_fallback, model)
@@ -5188,6 +5211,7 @@ class VoidCodeRuntime:
         *,
         model: str | None,
         preset_agent: RuntimeAgentConfig | None,
+        base_provider_fallback: RuntimeProviderFallbackConfig | None,
     ) -> RuntimeProviderFallbackConfig | None:
         if preset_agent is not None and preset_agent.provider_fallback is not None:
             if model is None or model == preset_agent.provider_fallback.preferred_model:
@@ -5196,11 +5220,11 @@ class VoidCodeRuntime:
                 preset_agent.provider_fallback,
                 model,
             )
-        if self._config.provider_fallback is None:
+        if base_provider_fallback is None:
             return None
-        if model is None or model == self._config.provider_fallback.preferred_model:
-            return self._config.provider_fallback
-        return self._provider_fallback_with_preferred_model(self._config.provider_fallback, model)
+        if model is None or model == base_provider_fallback.preferred_model:
+            return base_provider_fallback
+        return self._provider_fallback_with_preferred_model(base_provider_fallback, model)
 
     @staticmethod
     def _provider_fallback_with_preferred_model(
