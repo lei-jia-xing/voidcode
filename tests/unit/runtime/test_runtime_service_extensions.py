@@ -3835,6 +3835,44 @@ def test_runtime_reconciles_queued_background_tasks_on_init(tmp_path: Path) -> N
     assert reconciled.error is None
 
 
+def test_runtime_drain_marks_invalid_queued_task_failed_and_continues(
+    tmp_path: Path,
+) -> None:
+    first_runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    store = _private_attr(first_runtime, "_session_store")
+    task_module = importlib.import_module("voidcode.runtime.task")
+    store.create_background_task(
+        workspace=tmp_path,
+        task=task_module.BackgroundTaskState(
+            task=task_module.BackgroundTaskRef(id="task-invalid-metadata"),
+            request=task_module.BackgroundTaskRequestSnapshot(
+                prompt="invalid",
+                metadata={"agent": {"preset": "leader", "model": ""}},
+            ),
+            created_at=1,
+            updated_at=1,
+        ),
+    )
+    store.create_background_task(
+        workspace=tmp_path,
+        task=task_module.BackgroundTaskState(
+            task=task_module.BackgroundTaskRef(id="task-after-invalid"),
+            request=task_module.BackgroundTaskRequestSnapshot(prompt="background hello"),
+            created_at=2,
+            updated_at=2,
+        ),
+    )
+
+    second_runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    completed = _wait_for_background_task(second_runtime, "task-after-invalid")
+    failed = second_runtime.load_background_task("task-invalid-metadata")
+
+    assert failed.status == "failed"
+    assert failed.error is not None
+    assert "agent.model" in failed.error
+    assert completed.status == "completed"
+
+
 def test_runtime_background_task_worker_exits_when_task_is_cancelled_before_start_transition(
     tmp_path: Path,
 ) -> None:

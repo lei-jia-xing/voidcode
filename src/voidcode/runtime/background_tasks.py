@@ -16,6 +16,7 @@ from .contracts import (
     BackgroundTaskResult,
     InternalRuntimeRequestMetadata,
     RuntimeRequest,
+    RuntimeRequestError,
     RuntimeRequestMetadataPayload,
     RuntimeResponse,
     RuntimeSessionResult,
@@ -300,6 +301,7 @@ class RuntimeBackgroundTaskSupervisor:
 
     def _drain_background_task_queue(self) -> None:
         runtime = self._runtime
+        failed_tasks: list[BackgroundTaskState] = []
         with self._queue_lock:
             summaries = sorted(
                 runtime._session_store.list_background_tasks(workspace=runtime._workspace),
@@ -314,9 +316,6 @@ class RuntimeBackgroundTaskSupervisor:
                 )
                 if task.status != "queued" or task.task.id in runtime._background_task_threads:
                     continue
-                identity = self._concurrency_identity_for_task(task)
-                if not self._can_start_task(identity):
-                    continue
                 request = RuntimeRequest(
                     prompt=task.request.prompt,
                     session_id=task.request.session_id,
@@ -324,7 +323,20 @@ class RuntimeBackgroundTaskSupervisor:
                     metadata=cast(RuntimeRequestMetadataPayload, task.request.metadata),
                     allocate_session_id=task.request.allocate_session_id,
                 )
-                routing = runtime._session_routing_for_request(request)
+                try:
+                    identity = self._concurrency_identity_for_task(task)
+                    routing = runtime._session_routing_for_request(request)
+                except (RuntimeRequestError, ValueError) as exc:
+                    failed_task = runtime._session_store.mark_background_task_terminal(
+                        workspace=runtime._workspace,
+                        task_id=task.task.id,
+                        status="failed",
+                        error=str(exc),
+                    )
+                    failed_tasks.append(failed_task)
+                    continue
+                if not self._can_start_task(identity):
+                    continue
                 self._reserve_slot(identity)
                 running_task = runtime._session_store.mark_background_task_running(
                     workspace=runtime._workspace,
@@ -342,6 +354,8 @@ class RuntimeBackgroundTaskSupervisor:
                 )
                 runtime._background_task_threads[task.task.id] = worker
                 worker.start()
+        for failed_task in failed_tasks:
+            self.run_background_task_lifecycle_hook(failed_task)
 
     def load_background_task_result(self, task_id: str) -> BackgroundTaskResult:
         task = self._runtime.load_background_task(task_id)
