@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from pathlib import Path
 from typing import cast
 
@@ -35,7 +34,6 @@ from voidcode.runtime.config import (
     RuntimeHooksConfig,
     RuntimeLspConfig,
     RuntimeLspServerConfig,
-    RuntimePlanConfig,
     RuntimeProviderFallbackConfig,
     RuntimeSkillsConfig,
     RuntimeToolsBuiltinConfig,
@@ -49,14 +47,12 @@ from voidcode.runtime.config import (
     load_global_web_settings,
     load_runtime_config,
     parse_runtime_agent_payload,
-    parse_runtime_agents_payload,
     parse_runtime_context_window_payload,
     runtime_config_path,
     save_global_tui_preferences,
     save_global_web_settings,
     save_workspace_tui_preferences,
     serialize_runtime_agent_config,
-    serialize_runtime_agents_config,
     serialize_runtime_background_task_config,
     serialize_runtime_categories_config,
     serialize_runtime_context_window_config,
@@ -608,7 +604,6 @@ def test_runtime_config_parses_extension_domains(tmp_path: Path) -> None:
                 "max_steps": 6,
                 "tools": {
                     "builtin": {"enabled": True},
-                    "paths": [".voidcode/tools", "vendor/tools"],
                 },
                 "skills": {
                     "enabled": True,
@@ -671,12 +666,6 @@ def test_runtime_config_parses_extension_domains(tmp_path: Path) -> None:
                         }
                     },
                 },
-                "plan": {
-                    "provider": "custom",
-                    "module": "./.voidcode/plan_extension.py",
-                    "factory": "build",
-                    "options": {"mode": "strict"},
-                },
             }
         ),
         encoding="utf-8",
@@ -688,7 +677,6 @@ def test_runtime_config_parses_extension_domains(tmp_path: Path) -> None:
     assert config.max_steps == 6
     assert config.tools == RuntimeToolsConfig(
         builtin=RuntimeToolsBuiltinConfig(enabled=True),
-        paths=(".voidcode/tools", "vendor/tools"),
     )
     assert config.skills == RuntimeSkillsConfig(
         enabled=True,
@@ -745,12 +733,6 @@ def test_runtime_config_parses_extension_domains(tmp_path: Path) -> None:
             model_map={"coder": "ollama/qwen2.5-coder:latest"},
         )
     }
-    assert config.plan == RuntimePlanConfig(
-        provider="custom",
-        module="./.voidcode/plan_extension.py",
-        factory="build",
-        options={"mode": "strict"},
-    )
 
 
 def test_runtime_config_providers_use_environment_secrets_when_omitted(tmp_path: Path) -> None:
@@ -875,7 +857,7 @@ def test_runtime_config_accepts_extended_builtin_lsp_catalog_entries(tmp_path: P
     )
 
 
-def test_runtime_config_keeps_explicit_lsp_preset_alias_support_for_compatibility(
+def test_runtime_config_accepts_lsp_preset_aliases(
     tmp_path: Path,
 ) -> None:
     runtime_config_path(tmp_path).write_text(
@@ -1051,19 +1033,18 @@ def test_runtime_config_accepts_provider_execution_engine(tmp_path: Path) -> Non
     assert config.model == "opencode/gpt-5.4"
 
 
-def test_runtime_config_parses_leader_agent_preset_from_repo_file(tmp_path: Path) -> None:
+def test_runtime_config_parses_agent_preset_from_repo_file(tmp_path: Path) -> None:
     runtime_config_path(tmp_path).write_text(
         json.dumps(
             {
                 "agent": {
-                    "leader": {
-                        "model": "opencode/gpt-5.4",
-                        "tools": {"builtin": {"enabled": True}, "paths": [".voidcode/tools"]},
-                        "skills": {"enabled": True, "paths": [".voidcode/skills"]},
-                        "provider_fallback": {
-                            "preferred_model": "opencode/gpt-5.4",
-                            "fallback_models": ["custom/demo"],
-                        },
+                    "preset": "leader",
+                    "model": "opencode/gpt-5.4",
+                    "tools": {"builtin": {"enabled": True}},
+                    "skills": {"enabled": True, "paths": [".voidcode/skills"]},
+                    "provider_fallback": {
+                        "preferred_model": "opencode/gpt-5.4",
+                        "fallback_models": ["custom/demo"],
                     },
                 }
             }
@@ -1080,7 +1061,6 @@ def test_runtime_config_parses_leader_agent_preset_from_repo_file(tmp_path: Path
         execution_engine="provider",
         tools=RuntimeToolsConfig(
             builtin=RuntimeToolsBuiltinConfig(enabled=True),
-            paths=(".voidcode/tools",),
         ),
         skills=RuntimeSkillsConfig(enabled=True, paths=(".voidcode/skills",)),
         provider_fallback=RuntimeProviderFallbackConfig(
@@ -1090,24 +1070,17 @@ def test_runtime_config_parses_leader_agent_preset_from_repo_file(tmp_path: Path
     )
 
 
-def test_runtime_config_rejects_agent_maps_without_exactly_one_built_in_key(
+def test_runtime_config_rejects_agent_preset_alias_maps(
     tmp_path: Path,
 ) -> None:
     runtime_config_path(tmp_path).write_text(
-        json.dumps(
-            {
-                "agent": {
-                    "leader": {"model": "opencode/gpt-5.4"},
-                    "unknown": {"model": "custom/demo"},
-                }
-            }
-        ),
+        json.dumps({"agent": {"leader": {"model": "opencode/gpt-5.4"}}}),
         encoding="utf-8",
     )
 
     with pytest.raises(
         ValueError,
-        match="runtime config field 'agent' must declare exactly one built-in agent key: leader",
+        match="runtime config field 'agent.leader' is not supported",
     ):
         _ = load_runtime_config(tmp_path, env={})
 
@@ -1119,7 +1092,6 @@ def test_runtime_agent_payload_round_trips_through_serialization() -> None:
             "model": "opencode/gpt-5.4",
             "tools": {
                 "builtin": {"enabled": True},
-                "paths": [".voidcode/tools"],
                 "allowlist": ["read_file", "grep"],
                 "default": ["read_file"],
             },
@@ -1137,7 +1109,6 @@ def test_runtime_agent_payload_round_trips_through_serialization() -> None:
         "execution_engine": "provider",
         "tools": {
             "builtin": {"enabled": True},
-            "paths": [".voidcode/tools"],
             "allowlist": ["read_file", "grep"],
             "default": ["read_file"],
         },
@@ -1210,7 +1181,7 @@ def test_runtime_agent_payload_resolves_through_builtin_agent_manifest() -> None
 def test_runtime_agent_payload_rejects_removed_leader_mode() -> None:
     with pytest.raises(
         ValueError,
-        match="runtime config field 'agent.leader_mode' has been removed",
+        match="runtime config field 'agent.leader_mode' is not supported",
     ):
         _ = parse_runtime_agent_payload(
             {"preset": "leader", "leader_mode": "plan_first"},
@@ -1397,18 +1368,10 @@ def test_runtime_config_parses_agent_references_against_workspace_hooks(
                     }
                 },
                 "agent": {
-                    "leader": {
-                        "prompt_ref": "researcher",
-                        "prompt_source": "builtin",
-                        "hook_refs": ["customfmt"],
-                    }
-                },
-                "agents": {
-                    "my_helper": {
-                        "preset": "advisor",
-                        "prompt_ref": "advisor",
-                        "hook_refs": ["customfmt"],
-                    }
+                    "preset": "leader",
+                    "prompt_ref": "researcher",
+                    "prompt_source": "builtin",
+                    "hook_refs": ["customfmt"],
                 },
             }
         ),
@@ -1425,187 +1388,6 @@ def test_runtime_config_parses_agent_references_against_workspace_hooks(
         hook_refs=("customfmt",),
         execution_engine="provider",
     )
-    assert config.agents is not None
-    assert config.agents["my_helper"] == RuntimeAgentConfig(
-        preset="advisor",
-        prompt_profile="advisor",
-        prompt_ref="advisor",
-        prompt_source="builtin",
-        hook_refs=("customfmt",),
-        execution_engine="provider",
-    )
-
-
-@pytest.mark.parametrize(
-    "invalid_id",
-    ["Leader", "my agent", "1agent", "_helper", "agent.test", "AGENT"],
-)
-def test_runtime_config_rejects_agents_map_with_invalid_id(tmp_path: Path, invalid_id: str) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps({"agents": {invalid_id: {"preset": "leader"}}}),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(
-        ValueError,
-        match=r"runtime config field 'agents' keys must match",
-    ):
-        _ = load_runtime_config(tmp_path, env={})
-
-
-def test_runtime_config_rejects_agents_map_when_not_object(tmp_path: Path) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps({"agents": ["leader"]}),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(
-        ValueError,
-        match=r"runtime config field 'agents' must be an object when provided",
-    ):
-        _ = load_runtime_config(tmp_path, env={})
-
-
-def test_runtime_config_rejects_agents_entry_when_not_object(tmp_path: Path) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps({"agents": {"leader": "provider"}}),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(
-        ValueError,
-        match=r"runtime config field 'agents.leader' must be an object when provided",
-    ):
-        _ = load_runtime_config(tmp_path, env={})
-
-
-def test_runtime_config_rejects_agents_custom_key_without_preset(tmp_path: Path) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps({"agents": {"my_helper": {"model": "anthropic/claude-3"}}}),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(
-        ValueError,
-        match=r"runtime config field 'agents.my_helper.preset' must be one of:",
-    ):
-        _ = load_runtime_config(tmp_path, env={})
-
-
-def test_runtime_config_rejects_agents_custom_key_with_invalid_preset(
-    tmp_path: Path,
-) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps({"agents": {"my_helper": {"preset": "not_a_real_preset"}}}),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(
-        ValueError,
-        match=r"runtime config field 'agents.my_helper.preset' must be one of:",
-    ):
-        _ = load_runtime_config(tmp_path, env={})
-
-
-def test_runtime_config_rejects_agents_entry_with_malformed_field_type(
-    tmp_path: Path,
-) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps({"agents": {"leader": {"model": 123}}}),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(
-        ValueError,
-        match=r"runtime config field 'agents.leader.model' must be a non-empty string",
-    ):
-        _ = load_runtime_config(tmp_path, env={})
-
-
-def test_runtime_config_agents_payload_round_trips(tmp_path: Path) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps(
-            {
-                "agents": {
-                    "leader": {
-                        "model": "opencode/gpt-5.4",
-                        "prompt_ref": "leader",
-                        "prompt_source": "builtin",
-                        "hook_refs": ["python"],
-                    },
-                    "researcher": {"preset": "researcher"},
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    config = load_runtime_config(tmp_path, env={})
-
-    assert config.agents is not None
-    serialized = serialize_runtime_agents_config(config.agents)
-    assert serialized == {
-        "leader": {
-            "preset": "leader",
-            "prompt_profile": "leader",
-            "prompt_materialization": _prompt_materialization_payload("leader"),
-            "prompt_ref": "leader",
-            "prompt_source": "builtin",
-            "hook_refs": ["python"],
-            "model": "opencode/gpt-5.4",
-            "execution_engine": "provider",
-        },
-        "researcher": {
-            "preset": "researcher",
-            "prompt_profile": "researcher",
-            "prompt_materialization": _prompt_materialization_payload("researcher"),
-            "execution_engine": "provider",
-        },
-    }
-
-
-def test_runtime_config_allows_agent_and_agents_to_coexist(tmp_path: Path) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps(
-            {
-                "agent": {"leader": {"model": "opencode/gpt-5.4"}},
-                "agents": {
-                    "advisor": {"model": "anthropic/claude-3-5-sonnet"},
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    config = load_runtime_config(tmp_path, env={})
-
-    assert config.agent == RuntimeAgentConfig(
-        preset="leader",
-        prompt_profile="leader",
-        model="opencode/gpt-5.4",
-        execution_engine="provider",
-    )
-    assert config.agents is not None
-    assert config.agents["advisor"] == RuntimeAgentConfig(
-        preset="advisor",
-        prompt_profile="advisor",
-        model="anthropic/claude-3-5-sonnet",
-        execution_engine="provider",
-    )
-
-
-def test_runtime_config_parses_agents_payload_via_helper() -> None:
-    parsed = parse_runtime_agents_payload(
-        {
-            "leader": {"model": "opencode/gpt-5.4"},
-            "my_assistant": {"preset": "advisor"},
-        },
-        source="test payload",
-    )
-
-    assert parsed is not None
-    assert parsed["leader"].preset == "leader"
-    assert parsed["my_assistant"].preset == "advisor"
 
 
 def test_runtime_config_parses_category_model_overrides(tmp_path: Path) -> None:
@@ -1973,6 +1755,29 @@ def test_runtime_config_rejects_invalid_repo_local_execution_engine(tmp_path: Pa
             "runtime config field 'hooks.timeout_seconds'",
             id="hook-timeout-type",
         ),
+        pytest.param(
+            {"context_window": {"max_tool_results": 0}},
+            "runtime config field 'context_window.max_tool_results'.*greater than or equal to 1",
+            id="context-window-max-tool-results-zero",
+        ),
+        pytest.param(
+            {"context_window": {"minimum_retained_tool_results": 0}},
+            "runtime config field 'context_window.minimum_retained_tool_results'"
+            ".*greater than or equal to 1",
+            id="context-window-minimum-retained-zero",
+        ),
+        pytest.param(
+            {"context_window": {"recent_tool_result_count": 0}},
+            "runtime config field 'context_window.recent_tool_result_count'"
+            ".*greater than or equal to 1",
+            id="context-window-recent-count-zero",
+        ),
+        pytest.param(
+            {"context_window": {"reserved_output_tokens": 0}},
+            "runtime config field 'context_window.reserved_output_tokens'"
+            ".*greater than or equal to 1",
+            id="context-window-reserved-output-zero",
+        ),
     ],
 )
 def test_runtime_config_rejects_invalid_max_steps(
@@ -1987,16 +1792,22 @@ def test_runtime_config_rejects_invalid_max_steps(
 @pytest.mark.parametrize(
     ("payload", "match"),
     [
+        pytest.param({"plan": {}}, "runtime config field 'plan'", id="top-level-plan"),
         pytest.param({"tools": []}, "runtime config field 'tools'", id="tools-shape"),
+        pytest.param(
+            {"tools": {"paths": [".voidcode/tools"]}},
+            "runtime config field 'tools.paths'",
+            id="tools-paths-removed",
+        ),
         pytest.param(
             {"tools": {"builtin": {"enabled": "yes"}}},
             "runtime config field 'tools.builtin.enabled'",
             id="tools-builtin-enabled-type",
         ),
         pytest.param(
-            {"tools": {"paths": [".voidcode/tools", 3]}},
-            "runtime config field 'tools.paths\\[1\\]'",
-            id="tools-path-item-type",
+            {"tools": {"builtin": {"mode": "extra"}}},
+            "runtime config field 'tools.builtin.mode'",
+            id="tools-builtin-unknown",
         ),
         pytest.param({"skills": []}, "runtime config field 'skills'", id="skills-shape"),
         pytest.param(
@@ -2024,6 +1835,11 @@ def test_runtime_config_rejects_invalid_max_steps(
             {"lsp": {"servers": {"pyright": []}}},
             "runtime config field 'lsp.servers.pyright'",
             id="lsp-server-shape",
+        ),
+        pytest.param(
+            {"lsp": {"servers": {"pyright": {"extra": True}}}},
+            "runtime config field 'lsp.servers.pyright.extra'",
+            id="lsp-server-unknown-field",
         ),
         pytest.param(
             {"lsp": {"servers": {"custom": {"command": []}}}},
@@ -2111,6 +1927,21 @@ def test_runtime_config_rejects_invalid_max_steps(
             id="providers-openai-shape",
         ),
         pytest.param(
+            {"agent": {"preset": "leader", "tools": {"paths": [".voidcode/tools"]}}},
+            "runtime config field 'agent.tools.paths'",
+            id="agent-tools-paths-removed",
+        ),
+        pytest.param(
+            {"agent": {"preset": "leader", "plan": {"provider": "custom"}}},
+            "runtime config field 'agent.plan'",
+            id="agent-plan-removed",
+        ),
+        pytest.param(
+            {"agent": {"leader": {"model": "opencode/gpt-5.4"}}},
+            "runtime config field 'agent.leader'",
+            id="agent-nested-preset-alias-removed",
+        ),
+        pytest.param(
             {"providers": {"openai": {"api_key": 1}}},
             "runtime config field 'providers.openai.api_key'",
             id="providers-openai-api-key-type",
@@ -2189,31 +2020,6 @@ def test_runtime_config_rejects_invalid_max_steps(
             {"providers": {"litellm": {"model_map": {"gpt-4o": 4}}}},
             "runtime config field 'providers.litellm.model_map.gpt-4o'",
             id="providers-litellm-model-map-value-invalid",
-        ),
-        pytest.param(
-            {"plan": []},
-            "runtime config field 'plan'",
-            id="plan-shape",
-        ),
-        pytest.param(
-            {"plan": {"provider": ""}},
-            "runtime config field 'plan.provider'",
-            id="plan-provider-empty",
-        ),
-        pytest.param(
-            {"plan": {"module": ""}},
-            "runtime config field 'plan.module'",
-            id="plan-module-empty",
-        ),
-        pytest.param(
-            {"plan": {"factory": ""}},
-            "runtime config field 'plan.factory'",
-            id="plan-factory-empty",
-        ),
-        pytest.param(
-            {"plan": {"options": []}},
-            "runtime config field 'plan.options'",
-            id="plan-options-shape",
         ),
         pytest.param(
             {"hooks": {"pre_tool": "python scripts/pre.py"}},
@@ -2742,14 +2548,12 @@ def test_parse_simple_extension_configs_preserve_public_dataclasses() -> None:
     assert _parse_tools_config(
         {
             "builtin": {"enabled": True},
-            "paths": [".voidcode/tools"],
             "allowlist": ["read_file", "grep"],
             "default": ["read_file"],
         }
     ) == (
         RuntimeToolsConfig(
             builtin=RuntimeToolsBuiltinConfig(enabled=True),
-            paths=(".voidcode/tools",),
             allowlist=("read_file", "grep"),
             default=("read_file",),
         )
@@ -2844,64 +2648,3 @@ def test_runtime_config_resume_prefers_persisted_session_values_over_fresh_defau
     assert effective.model == "session/model"
     assert effective.execution_engine == "deterministic"
     assert effective.max_steps == 7
-
-
-def test_runtime_config_resume_preserves_persisted_none_plan_precedence(tmp_path: Path) -> None:
-    sample_file = tmp_path / "sample.txt"
-    sample_file.write_text("resume plan precedence\n", encoding="utf-8")
-
-    initial_runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        config=RuntimeConfig(execution_engine="deterministic", plan=None),
-    )
-    _ = initial_runtime.run(
-        RuntimeRequest(prompt="read sample.txt", session_id="resume-plan-none-precedence")
-    )
-
-    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
-    connection = sqlite3.connect(database_path)
-    try:
-        row = connection.execute(
-            "SELECT metadata_json FROM sessions WHERE session_id = ?",
-            ("resume-plan-none-precedence",),
-        ).fetchone()
-        assert row is not None
-        metadata = json.loads(str(row[0]))
-        assert isinstance(metadata, dict)
-        runtime_config_metadata = cast(dict[str, object], metadata["runtime_config"])
-        assert runtime_config_metadata["plan"] is None
-    finally:
-        connection.close()
-
-    extension_file = tmp_path / "plan_extension.py"
-    extension_file.write_text(
-        "\n".join(
-            (
-                "from voidcode.runtime.plan import PlanPatch",
-                "",
-                "def build(options):",
-                "    contributor_type = type(",
-                "        'Contributor',",
-                "        (),",
-                "        {'apply': lambda self, context: PlanPatch()},",
-                "    )",
-                "    return contributor_type()",
-            )
-        ),
-        encoding="utf-8",
-    )
-
-    resumed_runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        config=RuntimeConfig(
-            plan=RuntimePlanConfig(
-                provider="custom",
-                module=str(extension_file),
-                factory="build",
-                options={"mode": "fresh"},
-            )
-        ),
-    )
-    effective = resumed_runtime.effective_runtime_config(session_id="resume-plan-none-precedence")
-
-    assert effective.plan is None

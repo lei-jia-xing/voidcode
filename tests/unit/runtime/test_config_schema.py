@@ -7,9 +7,6 @@ import pytest
 
 from voidcode.runtime.config_schema import (
     RUNTIME_CONFIG_SCHEMA_ID,
-    ConfigMigration,
-    apply_config_migrations,
-    detect_config_migrations,
     format_starter_runtime_config_json,
     generate_starter_runtime_config,
     runtime_config_json_schema,
@@ -24,6 +21,9 @@ def test_runtime_config_json_schema_exposes_core_fields() -> None:
     assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
     properties = schema["properties"]
     assert isinstance(properties, dict)
+    assert schema["additionalProperties"] is False
+    assert "plan" not in properties
+    assert "agents" in properties
     assert properties["approval_mode"] == {
         "type": "string",
         "enum": ["allow", "deny", "ask"],
@@ -40,7 +40,10 @@ def test_runtime_config_json_schema_exposes_core_fields() -> None:
     defs = schema["$defs"]
     assert isinstance(defs, dict)
     agent_config = cast(dict[str, object], defs["agentConfig"])
+    assert agent_config["additionalProperties"] is False
     agent_properties = cast(dict[str, object], agent_config["properties"])
+    assert "plan" not in agent_properties
+    assert "leader_mode" not in agent_properties
     preset_property = cast(dict[str, object], agent_properties["preset"])
     assert preset_property["enum"] == [
         "leader",
@@ -78,6 +81,34 @@ def test_runtime_config_json_schema_exposes_core_fields() -> None:
         "type": "integer",
         "minimum": 1,
     }
+    hooks_schema = cast(dict[str, object], properties["hooks"])
+    hooks_properties = cast(dict[str, object], hooks_schema["properties"])
+    formatter_presets = cast(dict[str, object], hooks_properties["formatter_presets"])
+    assert formatter_presets["additionalProperties"] == {"$ref": "#/$defs/formatterPresetConfig"}
+    formatter_preset_config = cast(dict[str, object], defs["formatterPresetConfig"])
+    assert formatter_preset_config["additionalProperties"] is False
+    formatter_preset_properties = cast(dict[str, object], formatter_preset_config["properties"])
+    assert set(formatter_preset_properties) == {
+        "command",
+        "extensions",
+        "root_markers",
+        "fallback_commands",
+        "cwd_policy",
+    }
+    context_window_config = cast(dict[str, object], defs["contextWindowConfig"])
+    context_window_properties = cast(dict[str, object], context_window_config["properties"])
+    for key in (
+        "max_tool_results",
+        "minimum_retained_tool_results",
+        "recent_tool_result_count",
+        "reserved_output_tokens",
+    ):
+        numeric_property = cast(dict[str, object], context_window_properties[key])
+        assert numeric_property["minimum"] == 1
+    tools_config = cast(dict[str, object], defs["toolsConfig"])
+    assert tools_config["additionalProperties"] is False
+    tools_properties = cast(dict[str, object], tools_config["properties"])
+    assert "paths" not in tools_properties
 
 
 def test_generate_starter_runtime_config_excludes_secrets() -> None:
@@ -124,54 +155,3 @@ def test_format_starter_runtime_config_json_preserves_order() -> None:
     payload = generate_starter_runtime_config(include_schema_reference=False)
 
     assert format_starter_runtime_config_json(payload) == '{\n  "approval_mode": "ask"\n}\n'
-
-
-def test_detect_config_migrations_returns_no_current_migrations() -> None:
-    payload: dict[str, object] = {"approval_mode": "ask"}
-
-    assert detect_config_migrations(payload) == ()
-
-
-def test_apply_config_migrations_removes_nested_field_without_mutating_input() -> None:
-    payload: dict[str, object] = {
-        "approval_mode": "ask",
-        "nested": {"keep": True, "deprecated": "value"},
-    }
-    migrations = (
-        ConfigMigration(
-            field_path=("nested", "deprecated"),
-            action="remove",
-            reason="nested.deprecated is no longer used",
-        ),
-    )
-
-    updated = apply_config_migrations(payload, migrations)
-
-    assert updated == {"approval_mode": "ask", "nested": {"keep": True}}
-    assert payload == {
-        "approval_mode": "ask",
-        "nested": {"keep": True, "deprecated": "value"},
-    }
-
-
-def test_apply_config_migrations_renames_nested_field() -> None:
-    payload: dict[str, object] = {
-        "approval_mode": "ask",
-        "nested": {"old": "value"},
-    }
-    migrations = (
-        ConfigMigration(
-            field_path=("nested", "old"),
-            action="rename",
-            reason="nested.old was renamed",
-            new_field_path=("nested", "new"),
-        ),
-    )
-
-    updated = apply_config_migrations(payload, migrations)
-
-    assert updated == {"approval_mode": "ask", "nested": {"new": "value"}}
-
-
-def test_detect_config_migrations_ignores_non_object_payload() -> None:
-    assert detect_config_migrations([]) == ()

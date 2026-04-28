@@ -69,7 +69,6 @@ def _is_ignored(
         if not p:
             continue
 
-        # Keep backward-compatible simple name ignores (e.g. "node_modules")
         if p in relative_parts:
             return True
 

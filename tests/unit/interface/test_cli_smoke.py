@@ -669,7 +669,6 @@ def test_run_command_real_cli_reports_current_request_truth_without_agent_preset
     assert result.returncode != 0
     assert result.stdout == ""
     assert "EVENT runtime.request_received" not in result.stdout
-    assert "EVENT runtime.plan_created" not in result.stdout
     assert "read_file target does not exist: README.md" in result.stderr
     assert "Traceback" not in result.stderr
 
@@ -1919,64 +1918,6 @@ def test_config_init_invalid_max_steps_returns_error_without_traceback() -> None
     assert result.stdout == ""
     assert "error: max_steps must be an integer greater than or equal to 1" in result.stderr
     assert "Traceback" not in result.stderr
-
-
-def test_config_migrate_dry_run_reports_no_current_migrations() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        workspace = Path(tmp)
-        config_path = workspace / ".voidcode.json"
-        config_path.write_text(
-            json.dumps({"approval_mode": "ask"}),
-            encoding="utf-8",
-        )
-
-        result = _run_module_cli("config", "migrate", "--workspace", str(workspace))
-        disk_payload = json.loads(config_path.read_text(encoding="utf-8"))
-
-    payload = json.loads(result.stdout)
-    assert result.returncode == 0
-    assert payload["dry_run"] is True
-    assert payload["migrations"] == []
-    assert payload["updated_config"] is None
-    assert disk_payload == {"approval_mode": "ask"}
-
-
-def test_config_migrate_write_noop_keeps_current_config() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        workspace = Path(tmp)
-        config_path = workspace / ".voidcode.json"
-        config_path.write_text(
-            json.dumps({"approval_mode": "deny"}),
-            encoding="utf-8",
-        )
-
-        result = _run_module_cli(
-            "config",
-            "migrate",
-            "--workspace",
-            str(workspace),
-            "--write",
-        )
-        disk_payload = json.loads(config_path.read_text(encoding="utf-8"))
-
-    payload = json.loads(result.stdout)
-    assert result.returncode == 0
-    assert payload["dry_run"] is False
-    assert payload["migrations"] == []
-    assert payload["updated_config"] is None
-    assert disk_payload == {"approval_mode": "deny"}
-
-
-def test_config_migrate_invalid_json_returns_error() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        workspace = Path(tmp)
-        (workspace / ".voidcode.json").write_text("{", encoding="utf-8")
-
-        result = _run_module_cli("config", "migrate", "--workspace", str(workspace))
-
-    assert result.returncode != 0
-    assert result.stdout == ""
-    assert "must contain valid JSON" in result.stderr
 
 
 def test_commands_list_outputs_discovered_project_commands_json() -> None:

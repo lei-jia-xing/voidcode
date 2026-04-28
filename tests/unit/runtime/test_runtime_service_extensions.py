@@ -48,7 +48,6 @@ from voidcode.runtime.config import (
     RuntimeLspConfig,
     RuntimeLspServerConfig,
     RuntimeMcpServerConfig,
-    RuntimePlanConfig,
     RuntimeProviderFallbackConfig,
     RuntimeProvidersConfig,
     RuntimeSkillsConfig,
@@ -109,11 +108,11 @@ from voidcode.skills import SkillRegistry
 from voidcode.tools import ToolCall
 from voidcode.tools.contracts import ToolDefinition, ToolResult
 
-pytestmark = pytest.mark.usefixtures("_force_deterministic_engine_default")
+pytestmark = pytest.mark.usefixtures("force_deterministic_engine_default")
 
 
 @pytest.fixture
-def _force_deterministic_engine_default(monkeypatch: pytest.MonkeyPatch) -> None:
+def force_deterministic_engine_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("VOIDCODE_EXECUTION_ENGINE", "deterministic")
 
 
@@ -6408,399 +6407,6 @@ def test_runtime_resume_preserves_explicit_empty_applied_skill_snapshot(
     assert _ApprovalThenCaptureSkillGraph.last_request.applied_skills == ()
 
 
-def test_runtime_resume_preserves_legacy_name_only_empty_applied_skills_snapshot(
-    tmp_path: Path,
-) -> None:
-    initial_runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        graph=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=True), approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
-    )
-
-    waiting = initial_runtime.run(
-        RuntimeRequest(prompt="go", session_id="legacy-empty-skill-session")
-    )
-
-    assert waiting.session.status == "waiting"
-    approval_request_id = str(waiting.events[-1].payload["request_id"])
-
-    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
-    connection = sqlite3.connect(database_path)
-    try:
-        row = connection.execute(
-            "SELECT metadata_json FROM sessions WHERE session_id = ?",
-            ("legacy-empty-skill-session",),
-        ).fetchone()
-        assert row is not None
-        metadata = json.loads(str(row[0]))
-        assert isinstance(metadata, dict)
-        metadata_dict = cast(dict[str, object], metadata)
-        metadata_dict.pop("applied_skill_payloads", None)
-        _ = connection.execute(
-            "UPDATE sessions SET metadata_json = ? WHERE session_id = ?",
-            (json.dumps(metadata_dict, sort_keys=True), "legacy-empty-skill-session"),
-        )
-        connection.commit()
-    finally:
-        connection.close()
-
-    skill_dir = tmp_path / ".voidcode" / "skills" / "demo"
-    _write_demo_skill(
-        skill_dir,
-        description="New skill",
-        content="# Demo\nAdded after waiting.",
-    )
-
-    resumed_runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        graph=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=True), approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
-    )
-
-    resumed = resumed_runtime.resume(
-        session_id="legacy-empty-skill-session",
-        approval_request_id=approval_request_id,
-        approval_decision="allow",
-    )
-
-    assert resumed.session.status == "completed"
-    assert _ApprovalThenCaptureSkillGraph.last_request is not None
-    assert _ApprovalThenCaptureSkillGraph.last_request.applied_skills == ()
-
-
-def test_runtime_resume_rejects_invalid_legacy_persisted_skill_payload_with_source_path(
-    tmp_path: Path,
-) -> None:
-    skill_dir = tmp_path / ".voidcode" / "skills" / "demo"
-    _write_demo_skill(
-        skill_dir,
-        description="Demo skill",
-        content="# Demo\nOriginal instructions.",
-    )
-
-    initial_runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        graph=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=True), approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
-    )
-
-    waiting = initial_runtime.run(RuntimeRequest(prompt="go", session_id="legacy-invalid-skill"))
-    approval_request_id = str(waiting.events[-1].payload["request_id"])
-
-    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
-    connection = sqlite3.connect(database_path)
-    try:
-        row = connection.execute(
-            "SELECT metadata_json FROM sessions WHERE session_id = ?",
-            ("legacy-invalid-skill",),
-        ).fetchone()
-        assert row is not None
-        metadata = json.loads(str(row[0]))
-        assert isinstance(metadata, dict)
-        metadata_dict = cast(dict[str, object], metadata)
-        metadata_dict.pop("skill_snapshot", None)
-        applied_payloads = cast(list[dict[str, object]], metadata_dict["applied_skill_payloads"])
-        applied_payloads[0]["execution_notes"] = "   "
-        _ = connection.execute(
-            "UPDATE sessions SET metadata_json = ? WHERE session_id = ?",
-            (json.dumps(metadata_dict, sort_keys=True), "legacy-invalid-skill"),
-        )
-        connection.commit()
-    finally:
-        connection.close()
-
-    resumed_runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        graph=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=True), approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
-    )
-
-    with pytest.raises(
-        ValueError,
-        match=r"persisted applied skill payload execution_notes must not be empty",
-    ):
-        _ = resumed_runtime.resume(
-            session_id="legacy-invalid-skill",
-            approval_request_id=approval_request_id,
-            approval_decision="allow",
-        )
-
-
-def test_runtime_resume_reconstructs_legacy_applied_skill_names_from_live_registry(
-    tmp_path: Path,
-) -> None:
-    skill_dir = tmp_path / ".voidcode" / "skills" / "demo"
-    _write_demo_skill(
-        skill_dir,
-        description="Demo skill",
-        content="# Demo\nOriginal instructions.",
-    )
-
-    initial_runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        graph=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=True), approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
-    )
-
-    waiting = initial_runtime.run(RuntimeRequest(prompt="go", session_id="legacy-skill-session"))
-
-    assert waiting.session.status == "waiting"
-    approval_request_id = str(waiting.events[-1].payload["request_id"])
-
-    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
-    connection = sqlite3.connect(database_path)
-    try:
-        row = connection.execute(
-            "SELECT metadata_json FROM sessions WHERE session_id = ?",
-            ("legacy-skill-session",),
-        ).fetchone()
-        assert row is not None
-        metadata = json.loads(str(row[0]))
-        assert isinstance(metadata, dict)
-        metadata_dict = cast(dict[str, object], metadata)
-        metadata_dict.pop("applied_skill_payloads", None)
-        _ = connection.execute(
-            "UPDATE sessions SET metadata_json = ? WHERE session_id = ?",
-            (json.dumps(metadata_dict, sort_keys=True), "legacy-skill-session"),
-        )
-        connection.commit()
-    finally:
-        connection.close()
-
-    _write_demo_skill(
-        skill_dir,
-        description="Changed skill",
-        content="# Demo\nChanged instructions.",
-    )
-
-    resumed_runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        graph=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=True), approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
-    )
-
-    resumed = resumed_runtime.resume(
-        session_id="legacy-skill-session",
-        approval_request_id=approval_request_id,
-        approval_decision="allow",
-    )
-
-    assert resumed.session.status == "completed"
-    assert _ApprovalThenCaptureSkillGraph.last_request is not None
-    assert _ApprovalThenCaptureSkillGraph.last_request.applied_skills == (
-        _expected_demo_skill_payload(
-            skill_dir,
-            description="Changed skill",
-            content="# Demo\nChanged instructions.",
-        ),
-    )
-
-
-def test_runtime_resume_skips_missing_legacy_applied_skill_names(
-    tmp_path: Path,
-) -> None:
-    skill_dir = tmp_path / ".voidcode" / "skills" / "demo"
-    _write_demo_skill(
-        skill_dir,
-        description="Demo skill",
-        content="# Demo\nOriginal instructions.",
-    )
-
-    initial_runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        graph=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=True), approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
-    )
-
-    waiting = initial_runtime.run(
-        RuntimeRequest(prompt="go", session_id="legacy-missing-skill-session")
-    )
-
-    assert waiting.session.status == "waiting"
-    approval_request_id = str(waiting.events[-1].payload["request_id"])
-
-    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
-    connection = sqlite3.connect(database_path)
-    try:
-        row = connection.execute(
-            "SELECT metadata_json FROM sessions WHERE session_id = ?",
-            ("legacy-missing-skill-session",),
-        ).fetchone()
-        assert row is not None
-        metadata = json.loads(str(row[0]))
-        assert isinstance(metadata, dict)
-        metadata_dict = cast(dict[str, object], metadata)
-        metadata_dict.pop("applied_skill_payloads", None)
-        metadata_dict["applied_skills"] = ["demo", "missing"]
-        _ = connection.execute(
-            "UPDATE sessions SET metadata_json = ? WHERE session_id = ?",
-            (json.dumps(metadata_dict, sort_keys=True), "legacy-missing-skill-session"),
-        )
-        connection.commit()
-    finally:
-        connection.close()
-
-    _write_demo_skill(
-        skill_dir,
-        description="Changed skill",
-        content="# Demo\nChanged instructions.",
-    )
-
-    resumed_runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        graph=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=True), approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
-    )
-
-    resumed = resumed_runtime.resume(
-        session_id="legacy-missing-skill-session",
-        approval_request_id=approval_request_id,
-        approval_decision="allow",
-    )
-
-    assert resumed.session.status == "completed"
-    assert _ApprovalThenCaptureSkillGraph.last_request is not None
-    assert _ApprovalThenCaptureSkillGraph.last_request.applied_skills == (
-        _expected_demo_skill_payload(
-            skill_dir,
-            description="Changed skill",
-            content="# Demo\nChanged instructions.",
-        ),
-    )
-
-
-def test_runtime_resume_legacy_applied_skill_names_override_changed_manifest_defaults(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    alpha_dir = tmp_path / ".voidcode" / "skills" / "alpha"
-    beta_dir = tmp_path / ".voidcode" / "skills" / "beta"
-    alpha_dir.mkdir(parents=True)
-    beta_dir.mkdir(parents=True)
-    (alpha_dir / "SKILL.md").write_text(
-        "---\nname: alpha\ndescription: Alpha skill\n---\n# Alpha\nOriginal alpha.\n",
-        encoding="utf-8",
-    )
-    (beta_dir / "SKILL.md").write_text(
-        "---\nname: beta\ndescription: Beta skill\n---\n# Beta\nOriginal beta.\n",
-        encoding="utf-8",
-    )
-
-    def _leader_manifest_with_alpha(agent_id: str):
-        if agent_id == "leader":
-            return replace(LEADER_AGENT_MANIFEST, skill_refs=("alpha",))
-        return get_builtin_agent_manifest(agent_id)
-
-    monkeypatch.setattr(
-        runtime_service_module,
-        "get_builtin_agent_manifest",
-        _leader_manifest_with_alpha,
-    )
-    initial_runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        graph=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(
-            agent=RuntimeAgentConfig(
-                preset="leader",
-                skills=RuntimeSkillsConfig(enabled=True),
-            ),
-            approval_mode="ask",
-        ),
-        permission_policy=PermissionPolicy(mode="ask"),
-    )
-
-    waiting = initial_runtime.run(RuntimeRequest(prompt="go", session_id="legacy-applied-skills"))
-
-    assert waiting.session.status == "waiting"
-    approval_request_id = str(waiting.events[-1].payload["request_id"])
-
-    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
-    connection = sqlite3.connect(database_path)
-    try:
-        row = connection.execute(
-            "SELECT metadata_json FROM sessions WHERE session_id = ?",
-            ("legacy-applied-skills",),
-        ).fetchone()
-        assert row is not None
-        metadata = json.loads(str(row[0]))
-        assert isinstance(metadata, dict)
-        metadata_dict = cast(dict[str, object], metadata)
-        metadata_dict.pop("applied_skill_payloads", None)
-        metadata_dict.pop("selected_skill_names", None)
-        metadata_dict["applied_skills"] = ["alpha"]
-        _ = connection.execute(
-            "UPDATE sessions SET metadata_json = ? WHERE session_id = ?",
-            (json.dumps(metadata_dict, sort_keys=True), "legacy-applied-skills"),
-        )
-        connection.commit()
-    finally:
-        connection.close()
-
-    (alpha_dir / "SKILL.md").write_text(
-        "---\nname: alpha\ndescription: Alpha skill\n---\n# Alpha\nChanged alpha.\n",
-        encoding="utf-8",
-    )
-    (beta_dir / "SKILL.md").write_text(
-        "---\nname: beta\ndescription: Beta skill\n---\n# Beta\nChanged beta.\n",
-        encoding="utf-8",
-    )
-
-    def _leader_manifest_with_beta(agent_id: str):
-        if agent_id == "leader":
-            return replace(LEADER_AGENT_MANIFEST, skill_refs=("beta",))
-        return get_builtin_agent_manifest(agent_id)
-
-    monkeypatch.setattr(
-        runtime_service_module,
-        "get_builtin_agent_manifest",
-        _leader_manifest_with_beta,
-    )
-    resumed_runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        graph=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(
-            agent=RuntimeAgentConfig(
-                preset="leader",
-                skills=RuntimeSkillsConfig(enabled=True),
-            ),
-            approval_mode="ask",
-        ),
-        permission_policy=PermissionPolicy(mode="ask"),
-    )
-
-    resumed = resumed_runtime.resume(
-        session_id="legacy-applied-skills",
-        approval_request_id=approval_request_id,
-        approval_decision="allow",
-    )
-
-    assert resumed.session.status == "completed"
-    assert _ApprovalThenCaptureSkillGraph.last_request is not None
-    assert [
-        skill["name"] for skill in _ApprovalThenCaptureSkillGraph.last_request.applied_skills
-    ] == ["alpha"]
-    assert _ApprovalThenCaptureSkillGraph.last_request.applied_skills == (
-        {
-            "name": "alpha",
-            "description": "Alpha skill",
-            "content": "# Alpha\nChanged alpha.",
-            "prompt_context": (
-                "Skill: alpha\nDescription: Alpha skill\nInstructions:\n# Alpha\nChanged alpha."
-            ),
-            "execution_notes": "# Alpha\nChanged alpha.",
-            "source_path": str(alpha_dir / "SKILL.md"),
-        },
-    )
-
-
 def test_runtime_resume_uses_persisted_approval_mode_for_follow_up_gated_tools(
     tmp_path: Path,
 ) -> None:
@@ -7040,61 +6646,6 @@ def test_runtime_approval_resume_preserves_token_budget_context_metadata(
     assert persisted_context_window["token_estimate_source"] == context_window.token_estimate_source
 
 
-def test_runtime_resume_falls_back_to_fresh_policy_for_legacy_sessions_without_runtime_config(
-    tmp_path: Path,
-) -> None:
-    initial_runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        graph=_MultiStepStubGraph(),
-        config=RuntimeConfig(approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
-    )
-
-    waiting = initial_runtime.run(RuntimeRequest(prompt="go", session_id="legacy-approval-session"))
-
-    assert waiting.session.status == "waiting"
-    first_request_id = str(waiting.events[-1].payload["request_id"])
-
-    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
-    connection = sqlite3.connect(database_path)
-    try:
-        row = connection.execute(
-            "SELECT metadata_json FROM sessions WHERE session_id = ?",
-            ("legacy-approval-session",),
-        ).fetchone()
-        assert row is not None
-        metadata = json.loads(str(row[0]))
-        assert isinstance(metadata, dict)
-        metadata_dict = cast(dict[str, object], metadata)
-        metadata_dict.pop("runtime_config", None)
-        _ = connection.execute(
-            "UPDATE sessions SET metadata_json = ? WHERE session_id = ?",
-            (json.dumps(metadata_dict, sort_keys=True), "legacy-approval-session"),
-        )
-        connection.commit()
-    finally:
-        connection.close()
-
-    resumed_runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        graph=_MultiStepStubGraph(),
-        config=RuntimeConfig(approval_mode="deny"),
-        permission_policy=PermissionPolicy(mode="deny"),
-    )
-
-    resumed = resumed_runtime.resume(
-        session_id="legacy-approval-session",
-        approval_request_id=first_request_id,
-        approval_decision="allow",
-    )
-
-    assert resumed.session.status == "failed"
-    assert resumed.events[-2].event_type == "runtime.approval_resolved"
-    assert resumed.events[-2].payload["decision"] == "deny"
-    assert resumed.events[-1].event_type == "runtime.failed"
-    assert resumed.events[-1].payload == {"error": "permission denied for tool: write_file"}
-
-
 def test_runtime_rejects_boolean_continuity_version_in_session_metadata() -> None:
     continuity_from_metadata = _private_attr(
         VoidCodeRuntime, "_continuity_state_from_session_metadata"
@@ -7228,7 +6779,6 @@ def test_runtime_effective_runtime_config_recovers_persisted_max_steps(tmp_path:
         "tool_timeout_seconds": None,
         "model": "session/model",
         "provider_fallback": None,
-        "plan": None,
         "resolved_provider": {
             "active_target": {
                 "raw_model": "session/model",
@@ -7414,105 +6964,6 @@ def test_runtime_effective_runtime_config_rejects_invalid_persisted_max_steps(
         _ = resumed_runtime.effective_runtime_config(session_id="invalid-max-steps")
 
 
-def test_runtime_effective_runtime_config_falls_back_for_legacy_sessions(tmp_path: Path) -> None:
-    sample_file = tmp_path / "sample.txt"
-    sample_file.write_text("legacy config\n", encoding="utf-8")
-
-    runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        config=RuntimeConfig(approval_mode="allow", model="session/model"),
-    )
-    _ = runtime.run(RuntimeRequest(prompt="read sample.txt", session_id="legacy-config-session"))
-
-    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
-    connection = sqlite3.connect(database_path)
-    try:
-        row = connection.execute(
-            "SELECT metadata_json FROM sessions WHERE session_id = ?",
-            ("legacy-config-session",),
-        ).fetchone()
-        assert row is not None
-        metadata = json.loads(str(row[0]))
-        assert isinstance(metadata, dict)
-        metadata_dict = cast(dict[str, object], metadata)
-        metadata_dict.pop("runtime_config", None)
-        _ = connection.execute(
-            "UPDATE sessions SET metadata_json = ? WHERE session_id = ?",
-            (json.dumps(metadata_dict, sort_keys=True), "legacy-config-session"),
-        )
-        connection.commit()
-    finally:
-        connection.close()
-
-    resumed_runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        config=RuntimeConfig(
-            approval_mode="deny",
-            execution_engine="deterministic",
-            model="fresh/model",
-            max_steps=9,
-        ),
-    )
-    effective = resumed_runtime.effective_runtime_config(session_id="legacy-config-session")
-
-    assert effective.approval_mode == "deny"
-    assert effective.model == "fresh/model"
-    assert effective.execution_engine == "deterministic"
-    assert effective.max_steps == 9
-
-
-def test_runtime_effective_runtime_config_falls_back_to_fresh_tool_timeout_for_legacy_sessions(
-    tmp_path: Path,
-) -> None:
-    sample_file = tmp_path / "sample.txt"
-    sample_file.write_text("legacy config\n", encoding="utf-8")
-
-    runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        config=RuntimeConfig(
-            approval_mode="allow",
-            model="session/model",
-            tool_timeout_seconds=5,
-        ),
-    )
-    _ = runtime.run(RuntimeRequest(prompt="read sample.txt", session_id="legacy-tool-timeout"))
-
-    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
-    connection = sqlite3.connect(database_path)
-    try:
-        row = connection.execute(
-            "SELECT metadata_json FROM sessions WHERE session_id = ?",
-            ("legacy-tool-timeout",),
-        ).fetchone()
-        assert row is not None
-        metadata = json.loads(str(row[0]))
-        assert isinstance(metadata, dict)
-        metadata_dict = cast(dict[str, object], metadata)
-        runtime_config = cast(dict[str, object], metadata_dict["runtime_config"])
-        runtime_config.pop("tool_timeout_seconds", None)
-        _ = connection.execute(
-            "UPDATE sessions SET metadata_json = ? WHERE session_id = ?",
-            (json.dumps(metadata_dict, sort_keys=True), "legacy-tool-timeout"),
-        )
-        connection.commit()
-    finally:
-        connection.close()
-
-    resumed_runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        config=RuntimeConfig(
-            approval_mode="deny",
-            model="fresh/model",
-            tool_timeout_seconds=9,
-        ),
-    )
-    effective = resumed_runtime.effective_runtime_config(session_id="legacy-tool-timeout")
-
-    assert effective.approval_mode == "allow"
-    assert effective.model == "session/model"
-    assert effective.tool_timeout_seconds == 9
-
-
 def test_runtime_effective_runtime_config_keeps_persisted_non_agent_sessions_clear_of_fresh_agent_defaults(  # noqa: E501
     tmp_path: Path,
 ) -> None:
@@ -7579,7 +7030,6 @@ def test_runtime_graph_selection_avoids_reusing_initial_provider_graph(
                 "max_steps": None,
                 "provider_fallback": None,
                 "resolved_provider": None,
-                "plan": None,
             }
         }
     )
@@ -7648,7 +7098,10 @@ def test_runtime_context_window_policy_uses_fallback_attempt_model_metadata(
     context_window = runtime._prepare_provider_context_window(  # pyright: ignore[reportPrivateUsage]
         prompt="read sample.txt",
         tool_results=(),
-        session_metadata={"provider_attempt": 1},
+        session_metadata={
+            "provider_attempt": 1,
+            "runtime_config": runtime._runtime_config_metadata(),  # pyright: ignore[reportPrivateUsage]
+        },
     )
 
     assert context_window.token_budget == 4_000
@@ -7673,7 +7126,10 @@ def test_runtime_context_window_policy_recomputes_default_for_fallback_attempt(
     context_window = runtime._prepare_provider_context_window(  # pyright: ignore[reportPrivateUsage]
         prompt="read sample.txt",
         tool_results=(),
-        session_metadata={"provider_attempt": 1},
+        session_metadata={
+            "provider_attempt": 1,
+            "runtime_config": runtime._runtime_config_metadata(),  # pyright: ignore[reportPrivateUsage]
+        },
         policy=runtime._default_context_window_policy,  # pyright: ignore[reportPrivateUsage]
     )
 
@@ -7746,7 +7202,6 @@ def test_runtime_provider_fallback_seam_returns_next_graph_selection(tmp_path: P
                         },
                     ],
                 },
-                "plan": None,
             }
         },
         provider_attempt=0,
@@ -7784,7 +7239,6 @@ def test_runtime_effective_runtime_config_uses_request_metadata_max_steps_for_ne
         "max_steps": 2,
         "tool_timeout_seconds": None,
         "provider_fallback": None,
-        "plan": None,
         "resolved_provider": None,
         "lsp": {"mode": "disabled", "configured_enabled": False, "servers": []},
         "mcp": {"mode": "disabled", "configured_enabled": False, "servers": []},
@@ -7806,141 +7260,32 @@ def test_runtime_effective_runtime_config_uses_request_metadata_max_steps_for_ne
     assert cast(str, runtime_state["run_id"])
 
 
-def test_runtime_custom_plan_contributor_can_patch_prompt_and_metadata(tmp_path: Path) -> None:
-    extension_file = tmp_path / "plan_extension.py"
-    extension_file.write_text(
-        "\n".join(
-            (
-                "from voidcode.runtime.plan import PlanPatch",
-                "",
-                "def build(options):",
-                "    prefix = str(options.get('prefix', ''))",
-                "",
-                "    class Contributor:",
-                "        def apply(self, context):",
-                "            return PlanPatch(",
-                "                prompt=f'{prefix}{context.prompt}',",
-                "                metadata_updates={'plan_applied': True},",
-                "            )",
-                "",
-                "    return Contributor()",
-            )
-        ),
-        encoding="utf-8",
-    )
-
-    runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        graph=_SkillCapturingStubGraph(),
-        config=RuntimeConfig(
-            plan=RuntimePlanConfig(
-                provider="custom",
-                module=str(extension_file),
-                factory="build",
-                options={"prefix": "[planned] "},
-            )
-        ),
-    )
-
-    response = runtime.run(RuntimeRequest(prompt="hello"))
-
-    assert response.output == "[planned] hello"
-    assert _SkillCapturingStubGraph.last_request is not None
-    assert _SkillCapturingStubGraph.last_request.prompt == "[planned] hello"
-    assert _SkillCapturingStubGraph.last_request.metadata["plan_applied"] is True
-
-
-def test_runtime_effective_config_restores_persisted_plan_metadata(tmp_path: Path) -> None:
-    extension_file = tmp_path / "plan_extension.py"
-    extension_file.write_text(
-        "\n".join(
-            (
-                "from voidcode.runtime.plan import PlanPatch",
-                "",
-                "def build(options):",
-                "    contributor_type = type(",
-                "        'Contributor',",
-                "        (),",
-                "        {'apply': lambda self, context: PlanPatch()},",
-                "    )",
-                "    return contributor_type()",
-            )
-        ),
-        encoding="utf-8",
-    )
-
-    plan_config = RuntimePlanConfig(
-        provider="custom",
-        module=str(extension_file),
-        factory="build",
-        options={"mode": "strict"},
-    )
-    runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        graph=_SkillCapturingStubGraph(),
-        config=RuntimeConfig(plan=plan_config),
-    )
-    _ = runtime.run(RuntimeRequest(prompt="hello", session_id="plan-session"))
-
-    resumed_runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        graph=_SkillCapturingStubGraph(),
-        config=RuntimeConfig(),
-    )
-    effective = resumed_runtime.effective_runtime_config(session_id="plan-session")
-
-    assert effective.plan == plan_config
-
-
-def test_runtime_effective_runtime_config_preserves_explicit_none_plan_over_fresh_default(
+def test_runtime_effective_runtime_config_restores_persisted_config_without_plan(
     tmp_path: Path,
 ) -> None:
     sample_file = tmp_path / "sample.txt"
-    sample_file.write_text("plan none\n", encoding="utf-8")
+    sample_file.write_text("persisted config\n", encoding="utf-8")
 
     initial_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        config=RuntimeConfig(execution_engine="deterministic", plan=None),
+        config=RuntimeConfig(execution_engine="deterministic", model="session/model"),
     )
     response = initial_runtime.run(
-        RuntimeRequest(prompt="read sample.txt", session_id="plan-none-session")
+        RuntimeRequest(prompt="read sample.txt", session_id="config-session-without-plan")
     )
     runtime_config_metadata = cast(dict[str, object], response.session.metadata["runtime_config"])
 
-    assert runtime_config_metadata["plan"] is None
+    assert "plan" not in runtime_config_metadata
 
-    extension_file = tmp_path / "resume_plan_extension.py"
-    extension_file.write_text(
-        "\n".join(
-            (
-                "from voidcode.runtime.plan import PlanPatch",
-                "",
-                "def build(options):",
-                "    contributor_type = type(",
-                "        'Contributor',",
-                "        (),",
-                "        {'apply': lambda self, context: PlanPatch()},",
-                "    )",
-                "    return contributor_type()",
-            )
-        ),
-        encoding="utf-8",
-    )
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        config=RuntimeConfig(
-            plan=RuntimePlanConfig(
-                provider="custom",
-                module=str(extension_file),
-                factory="build",
-                options={"mode": "fresh"},
-            )
-        ),
+        config=RuntimeConfig(execution_engine="deterministic", model="fresh/model"),
     )
 
-    effective = resumed_runtime.effective_runtime_config(session_id="plan-none-session")
+    effective = resumed_runtime.effective_runtime_config(session_id="config-session-without-plan")
 
-    assert effective.plan is None
+    assert effective.execution_engine == "deterministic"
+    assert effective.model == "session/model"
 
 
 @pytest.mark.parametrize(
@@ -7963,60 +7308,6 @@ def test_runtime_run_rejects_invalid_request_metadata_max_steps(
                 metadata=cast(RuntimeRequestMetadataPayload, {"max_steps": invalid_max_steps}),
             )
         )
-
-
-def test_runtime_effective_runtime_config_falls_back_to_fresh_max_steps_for_legacy_sessions(
-    tmp_path: Path,
-) -> None:
-    sample_file = tmp_path / "sample.txt"
-    sample_file.write_text("legacy config\n", encoding="utf-8")
-
-    runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        config=RuntimeConfig(
-            approval_mode="allow",
-            execution_engine="deterministic",
-            model="session/model",
-            max_steps=5,
-        ),
-    )
-    _ = runtime.run(RuntimeRequest(prompt="read sample.txt", session_id="legacy-max-steps"))
-
-    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
-    connection = sqlite3.connect(database_path)
-    try:
-        row = connection.execute(
-            "SELECT metadata_json FROM sessions WHERE session_id = ?",
-            ("legacy-max-steps",),
-        ).fetchone()
-        assert row is not None
-        metadata = json.loads(str(row[0]))
-        assert isinstance(metadata, dict)
-        metadata_dict = cast(dict[str, object], metadata)
-        metadata_dict.pop("runtime_config", None)
-        _ = connection.execute(
-            "UPDATE sessions SET metadata_json = ? WHERE session_id = ?",
-            (json.dumps(metadata_dict, sort_keys=True), "legacy-max-steps"),
-        )
-        connection.commit()
-    finally:
-        connection.close()
-
-    resumed_runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        config=RuntimeConfig(
-            approval_mode="deny",
-            execution_engine="deterministic",
-            model="fresh/model",
-            max_steps=9,
-        ),
-    )
-    effective = resumed_runtime.effective_runtime_config(session_id="legacy-max-steps")
-
-    assert effective.approval_mode == "deny"
-    assert effective.model == "fresh/model"
-    assert effective.execution_engine == "deterministic"
-    assert effective.max_steps == 9
 
 
 def test_runtime_prefers_explicit_graph_over_config_selected_execution_engine(
@@ -9518,7 +8809,6 @@ def test_runtime_resume_preserves_provider_attempt_and_target_across_pending_app
         "preferred_model": "opencode/gpt-5.4",
         "fallback_models": ["custom/demo"],
     }
-    assert runtime_config["plan"] is None
     assert runtime_config["resolved_provider"] == {
         "active_target": {
             "raw_model": "opencode/gpt-5.4",
@@ -10223,64 +9513,6 @@ def test_runtime_resume_emits_skill_binding_mismatch_event_when_checkpoint_bindi
     actual_binding = cast(dict[str, object], mismatch_payload["actual_binding"])
     assert expected_binding["approval_mode"] == "deny"
     assert actual_binding["approval_mode"] == "ask"
-
-
-def test_runtime_resume_does_not_emit_binding_mismatch_when_checkpoint_binding_missing(
-    tmp_path: Path,
-) -> None:
-    runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        graph=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(
-            approval_mode="ask",
-            skills=RuntimeSkillsConfig(enabled=True),
-        ),
-        permission_policy=PermissionPolicy(mode="ask"),
-    )
-
-    waiting = runtime.run(RuntimeRequest(prompt="go", session_id="checkpoint-binding-legacy"))
-    approval_request_id = str(waiting.events[-1].payload["request_id"])
-
-    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
-    connection = sqlite3.connect(database_path)
-    try:
-        row = connection.execute(
-            "SELECT resume_checkpoint_json FROM sessions WHERE session_id = ?",
-            ("checkpoint-binding-legacy",),
-        ).fetchone()
-        assert row is not None
-        checkpoint = json.loads(str(row[0]))
-        assert isinstance(checkpoint, dict)
-        checkpoint_dict = cast(dict[str, object], checkpoint)
-        checkpoint_dict.pop("skill_binding_snapshot", None)
-        _ = connection.execute(
-            "UPDATE sessions SET resume_checkpoint_json = ? WHERE session_id = ?",
-            (json.dumps(checkpoint_dict, sort_keys=True), "checkpoint-binding-legacy"),
-        )
-        connection.commit()
-    finally:
-        connection.close()
-
-    resumed_runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        graph=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(
-            approval_mode="ask",
-            skills=RuntimeSkillsConfig(enabled=True),
-        ),
-        permission_policy=PermissionPolicy(mode="ask"),
-    )
-
-    resumed = resumed_runtime.resume(
-        session_id="checkpoint-binding-legacy",
-        approval_request_id=approval_request_id,
-        approval_decision="allow",
-    )
-
-    mismatch_events = [
-        event for event in resumed.events if event.event_type == RUNTIME_SKILLS_BINDING_MISMATCH
-    ]
-    assert mismatch_events == []
 
 
 def test_runtime_resume_falls_back_when_skill_snapshot_hash_mismatches_checkpoint(
@@ -11497,7 +10729,9 @@ def test_runtime_context_window_policy_uses_active_model_limit(tmp_path: Path) -
     context = runtime._prepare_provider_context_window(  # pyright: ignore[reportPrivateUsage]
         prompt="read sample.txt",
         tool_results=(),
-        session_metadata={},
+        session_metadata={
+            "runtime_config": runtime._runtime_config_metadata(),  # pyright: ignore[reportPrivateUsage]
+        },
     )
 
     assert context.token_budget == 1_280

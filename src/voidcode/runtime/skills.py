@@ -28,7 +28,7 @@ class SkillExecutionSnapshot:
     skill_prompt_context: str
     snapshot_hash: str
     snapshot_version: int = 1
-    source: Literal["run", "resume", "replay", "legacy"] = "run"
+    source: Literal["run", "resume", "replay"] = "run"
     binding_snapshot: dict[str, object] | None = None
 
 
@@ -145,7 +145,7 @@ def _snapshot_hash(payload: Mapping[str, object]) -> str:
 def build_skill_execution_snapshot(
     contexts: Iterable[SkillRuntimeContext],
     *,
-    source: Literal["run", "resume", "replay", "legacy"] = "run",
+    source: Literal["run", "resume", "replay"] = "run",
     selected_skill_names: Iterable[str] | None = None,
     binding_snapshot: dict[str, object] | None = None,
 ) -> SkillExecutionSnapshot:
@@ -223,9 +223,9 @@ def snapshot_from_payload(payload: dict[str, object]) -> SkillExecutionSnapshot:
             normalized[key] = value
         _ = runtime_context_from_payload(normalized)
         applied_payloads.append(normalized)
-    source = payload.get("source", "legacy")
-    if source not in {"run", "resume", "replay", "legacy"}:
-        source = "legacy"
+    source = payload.get("source")
+    if source not in {"run", "resume", "replay"}:
+        raise ValueError("persisted skill snapshot source must be one of: run, resume, replay")
     snapshot_version = payload.get("snapshot_version", 1)
     if not isinstance(snapshot_version, int):
         raise ValueError("persisted skill snapshot version must be an integer")
@@ -250,7 +250,7 @@ def snapshot_from_payload(payload: dict[str, object]) -> SkillExecutionSnapshot:
         skill_prompt_context=skill_prompt_context,
         snapshot_hash=computed_hash,
         snapshot_version=snapshot_version,
-        source=cast(Literal["run", "resume", "replay", "legacy"], source),
+        source=cast(Literal["run", "resume", "replay"], source),
         binding_snapshot=cast(dict[str, object] | None, binding_snapshot),
     )
 

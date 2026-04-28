@@ -99,7 +99,6 @@ def _resolve_preset(
     override: LspServerConfigOverride,
 ) -> LspServerPreset | None:
     # Builtin server-name lookup is the canonical public path.
-    # Explicit preset remains supported for compatibility and alias/custom-name cases.
     if override.preset is not None:
         return get_builtin_lsp_server_preset(override.preset)
     if has_builtin_lsp_server_preset(server_name):

@@ -76,7 +76,6 @@ from .config import (
     RuntimeConfig,
     RuntimeContextWindowConfig,
     RuntimeHooksConfig,
-    RuntimePlanConfig,
     RuntimeProviderFallbackConfig,
     RuntimeSkillsConfig,
     RuntimeWebSettings,
@@ -87,14 +86,12 @@ from .config import (
     parse_runtime_agents_payload,
     parse_runtime_categories_payload,
     parse_runtime_context_window_payload,
-    parse_runtime_plan_payload,
     save_global_web_settings,
     serialize_provider_fallback_config,
     serialize_runtime_agent_config,
     serialize_runtime_agents_config,
     serialize_runtime_categories_config,
     serialize_runtime_context_window_config,
-    serialize_runtime_plan_config,
 )
 from .context_window import (
     ContextWindowPolicy,
@@ -173,11 +170,6 @@ from .permission import (
     PermissionResolution,
     resolve_permission,
 )
-from .plan import (
-    PlanContributor,
-    apply_plan_patch,
-    build_plan_contributor,
-)
 from .provider_protocol import ProviderExecutionError
 from .question import PendingQuestion, QuestionResponse
 from .resume import RuntimeResumeCoordinator
@@ -190,7 +182,6 @@ from .skills import (
     build_runtime_context,
     build_runtime_contexts,
     build_skill_execution_snapshot,
-    runtime_context_from_payload,
     snapshot_from_payload,
     snapshot_payload,
 )
@@ -211,6 +202,23 @@ logger = logging.getLogger(__name__)
 
 _EXECUTABLE_AGENT_PRESETS = frozenset({"leader", "product"})
 _EXECUTABLE_SUBAGENT_PRESETS = frozenset({"advisor", "explore", "product", "researcher", "worker"})
+_PERSISTED_RUNTIME_CONFIG_KEYS = frozenset(
+    {
+        "approval_mode",
+        "execution_engine",
+        "max_steps",
+        "tool_timeout_seconds",
+        "model",
+        "provider_fallback",
+        "resolved_provider",
+        "agent",
+        "agents",
+        "categories",
+        "context_window",
+        "lsp",
+        "mcp",
+    }
+)
 _ACP_CONNECTIVITY_ERRORS = frozenset(
     {
         "ACP adapter is not connected",
@@ -253,7 +261,6 @@ _SKILL_BINDING_SCOPE_KEYS = (
     "model",
     "provider_fallback",
     "resolved_provider",
-    "plan",
     "agent",
     "lsp",
     "mcp",
@@ -436,7 +443,6 @@ class VoidCodeRuntime:
     _mcp_manager: McpManager
     _acp_adapter: AcpAdapter
     _graph_cache: dict[tuple[ExecutionEngineName, str], RuntimeGraph]
-    _plan_contributor: PlanContributor
     _background_task_threads: dict[str, threading.Thread]
     _background_tasks_reconciled: bool
     _context_window_config_override: RuntimeContextWindowConfig | None
@@ -540,7 +546,6 @@ class VoidCodeRuntime:
             max_steps=self._config.max_steps,
             tool_timeout_seconds=self._config.tool_timeout_seconds,
             provider_fallback=initial_provider_fallback,
-            plan=self._config.plan,
             resolved_provider=self._resolved_provider_config,
             agent=initial_agent,
             context_window=initial_context_window,
@@ -556,7 +561,6 @@ class VoidCodeRuntime:
         )
         self._session_store = session_store or SqliteSessionStore()
         self._acp_adapter = acp_adapter or build_acp_adapter(self._config.acp)
-        self._plan_contributor = build_plan_contributor(self._workspace, self._config.plan)
         self._background_task_threads = {}
         self._background_tasks_reconciled = False
         self._default_context_window_policy = self._context_window_policy_from_config(
@@ -633,42 +637,9 @@ class VoidCodeRuntime:
         error: str | None = None,
     ) -> dict[str, object] | None:
         existing_plan_state = metadata.get("plan_state")
-        if isinstance(existing_plan_state, dict):
-            plan_state: dict[str, object] = dict(cast(dict[str, object], existing_plan_state))
-        else:
-            serialized_plan_artifact_obj = metadata.get("plan_artifact")
-            if not isinstance(serialized_plan_artifact_obj, dict):
-                return None
-            serialized_plan_artifact = cast(dict[str, object], serialized_plan_artifact_obj)
-            raw_steps_obj = serialized_plan_artifact.get("steps")
-            raw_steps = (
-                cast(list[object], raw_steps_obj) if isinstance(raw_steps_obj, list) else None
-            )
-            first_step = (
-                cast(dict[str, object], raw_steps[0])
-                if raw_steps is not None and bool(raw_steps) and isinstance(raw_steps[0], dict)
-                else None
-            )
-            step_count = len(raw_steps) if raw_steps is not None else 0
-            current_step_order = (
-                first_step.get("order")
-                if first_step is not None and isinstance(first_step.get("order"), int)
-                else 1
-            )
-            current_step_title = (
-                cast(str, first_step.get("title"))
-                if first_step is not None and isinstance(first_step.get("title"), str)
-                else None
-            )
-            plan_state = {
-                "mode": "plan_first",
-                "status": "planned",
-                "step_count": step_count,
-                "current_step_index": 0,
-                "current_step_order": current_step_order,
-            }
-            if current_step_title is not None:
-                plan_state["current_step_title"] = current_step_title
+        if not isinstance(existing_plan_state, dict):
+            return None
+        plan_state: dict[str, object] = dict(cast(dict[str, object], existing_plan_state))
 
         if status is not None:
             plan_state["status"] = status
@@ -893,7 +864,6 @@ class VoidCodeRuntime:
                 max_steps=request_max_steps,
                 tool_timeout_seconds=resolved.tool_timeout_seconds,
                 provider_fallback=resolved.provider_fallback,
-                plan=resolved.plan,
                 resolved_provider=resolved.resolved_provider,
                 agent=resolved.agent,
                 context_window=resolved.context_window,
@@ -1546,31 +1516,25 @@ class VoidCodeRuntime:
 
         active_agent = effective_config.agent
 
-        planned_prompt, planned_metadata = apply_plan_patch(
-            contributor=self._plan_contributor,
-            prompt=request.prompt,
-            metadata=request_metadata,
-        )
-
         graph_request = GraphRunRequest(
             session=session,
-            prompt=planned_prompt,
+            prompt=request.prompt,
             available_tools=tool_registry.definitions(),
             applied_skills=frozen_applied_skills,
             skill_prompt_context=skill_prompt_context,
             context_window=self._prepare_provider_context_window(
-                prompt=planned_prompt,
+                prompt=request.prompt,
                 tool_results=(),
                 session_metadata=session.metadata,
             ),
             metadata={
-                **planned_metadata,
+                **request_metadata,
                 "agent_preset": serialize_runtime_agent_config(
                     self._effective_runtime_config_from_metadata(session.metadata).agent
                 ),
                 "provider_attempt": 0,
                 "provider_stream": _coerce_bool_like(
-                    planned_metadata.get("provider_stream", False),
+                    request_metadata.get("provider_stream", False),
                     False,
                 ),
             },
@@ -3171,7 +3135,6 @@ class VoidCodeRuntime:
             max_steps=self._config.max_steps,
             tool_timeout_seconds=self._config.tool_timeout_seconds,
             provider_fallback=initial_provider_fallback,
-            plan=self._config.plan,
             resolved_provider=self._resolved_provider_config,
             agent=initial_agent,
             context_window=self._config.context_window,
@@ -4588,19 +4551,6 @@ class VoidCodeRuntime:
     def _loaded_skill_names(skill_registry: SkillRegistry) -> list[str]:
         return sorted(skill_registry.skills)
 
-    @staticmethod
-    def _validated_runtime_context_from_payload(payload: dict[str, str]) -> SkillRuntimeContext:
-        try:
-            return runtime_context_from_payload(payload)
-        except ValueError as exc:
-            source_path = payload.get("source_path", "")
-            prefix = (
-                f"persisted skill payload {source_path}"
-                if source_path
-                else "persisted skill payload"
-            )
-            raise ValueError(f"{prefix}: {exc}") from exc
-
     def _applied_skill_contexts(
         self,
         skill_registry: SkillRegistry,
@@ -4624,13 +4574,6 @@ class VoidCodeRuntime:
         persisted_selected_skill_names = (
             self._persisted_selected_skill_names(metadata) if metadata is not None else None
         )
-        legacy_applied_skill_names = (
-            self._legacy_applied_skill_names(metadata) if metadata is not None else None
-        )
-        if persisted_selected_skill_names is None and legacy_applied_skill_names is not None:
-            if not legacy_applied_skill_names:
-                return ()
-            return self._available_runtime_contexts(skill_registry, legacy_applied_skill_names)
         selected_skill_names = self._selected_skill_names_for_agent(
             agent,
             request_skill_names=request_skill_names,
@@ -4644,7 +4587,7 @@ class VoidCodeRuntime:
         *,
         metadata: dict[str, object] | None,
         agent: RuntimeAgentConfig | None,
-        source: Literal["run", "resume", "replay", "legacy"],
+        source: Literal["run", "resume", "replay"],
     ) -> SkillExecutionSnapshot:
         binding_snapshot = self._skill_binding_snapshot(metadata)
         if metadata is not None:
@@ -4731,18 +4674,6 @@ class VoidCodeRuntime:
         has_payload_keys = "applied_skill_payloads" in metadata
         if isinstance(raw_snapshot, dict) and has_payload_keys:
             return snapshot_from_payload(cast(dict[str, object], raw_snapshot))
-        persisted_payloads = self._persisted_applied_skill_payloads(metadata)
-        if persisted_payloads is not None:
-            contexts = tuple(
-                self._validated_runtime_context_from_payload(payload)
-                for payload in persisted_payloads
-            )
-            selected_names = self._persisted_selected_skill_names(metadata)
-            return build_skill_execution_snapshot(
-                contexts,
-                source="legacy",
-                selected_skill_names=selected_names if selected_names is not None else None,
-            )
         return None
 
     @staticmethod
@@ -4783,14 +4714,6 @@ class VoidCodeRuntime:
         return sanitized
 
     @staticmethod
-    def _legacy_applied_skill_names(metadata: dict[str, object]) -> tuple[str, ...] | None:
-        raw_applied = metadata.get("applied_skills")
-        if not isinstance(raw_applied, list):
-            return None
-        names = [item for item in cast(list[object], raw_applied) if isinstance(item, str)]
-        return tuple(names)
-
-    @staticmethod
     def _persisted_selected_skill_names(
         metadata: dict[str, object],
     ) -> tuple[str, ...] | None:
@@ -4806,64 +4729,6 @@ class VoidCodeRuntime:
                 raise ValueError(f"persisted selected skill names[{index}] must be a string")
             selected_skill_names.append(raw_name)
         return tuple(selected_skill_names)
-
-    @staticmethod
-    def _persisted_applied_skill_payloads(
-        metadata: dict[str, object],
-    ) -> tuple[dict[str, str], ...] | None:
-        if "applied_skill_payloads" not in metadata:
-            return None
-        raw_payloads = metadata["applied_skill_payloads"]
-        if not isinstance(raw_payloads, list):
-            raise ValueError("persisted applied skill payloads must be a list")
-        persisted_payloads = cast(list[object], raw_payloads)
-
-        payloads: list[dict[str, str]] = []
-        for raw_payload in persisted_payloads:
-            if not isinstance(raw_payload, dict):
-                raise ValueError("persisted applied skill payloads must contain objects")
-            payload = cast(dict[str, object], raw_payload)
-            name = payload.get("name")
-            description = payload.get("description")
-            content = payload.get("content")
-            prompt_context = payload.get("prompt_context")
-            execution_notes = payload.get("execution_notes")
-            source_path = payload.get("source_path")
-            if (
-                not isinstance(name, str)
-                or not isinstance(description, str)
-                or not isinstance(content, str)
-            ):
-                raise ValueError("persisted applied skill payloads must include string fields")
-            if not name.strip() or not description.strip() or not content.strip():
-                raise ValueError("persisted applied skill payload string fields must not be empty")
-            normalized_payload = {"name": name, "description": description, "content": content}
-            if prompt_context is not None:
-                if not isinstance(prompt_context, str):
-                    raise ValueError(
-                        "persisted applied skill payload prompt_context must be a string"
-                    )
-                if not prompt_context.strip():
-                    raise ValueError(
-                        "persisted applied skill payload prompt_context must not be empty"
-                    )
-                normalized_payload["prompt_context"] = prompt_context
-            if execution_notes is not None:
-                if not isinstance(execution_notes, str):
-                    raise ValueError(
-                        "persisted applied skill payload execution_notes must be a string"
-                    )
-                if not execution_notes.strip():
-                    raise ValueError(
-                        "persisted applied skill payload execution_notes must not be empty"
-                    )
-                normalized_payload["execution_notes"] = execution_notes
-            if source_path is not None:
-                if not isinstance(source_path, str):
-                    raise ValueError("persisted applied skill payload source_path must be a string")
-                normalized_payload["source_path"] = source_path
-            payloads.append(normalized_payload)
-        return tuple(payloads)
 
     @staticmethod
     def _available_runtime_contexts(
@@ -4891,7 +4756,6 @@ class VoidCodeRuntime:
                 effective_config.provider_fallback
             ),
             "resolved_provider": resolved_provider_snapshot(effective_config.resolved_provider),
-            "plan": serialize_runtime_plan_config(effective_config.plan),
         }
         serialized_context_window = serialize_runtime_context_window_config(
             effective_config.context_window
@@ -5014,7 +4878,6 @@ class VoidCodeRuntime:
             max_steps=resolved.max_steps,
             tool_timeout_seconds=resolved.tool_timeout_seconds,
             provider_fallback=provider_fallback,
-            plan=resolved.plan,
             resolved_provider=resolved_provider,
             agent=merged_agent,
             context_window=resolved.context_window,
@@ -5582,7 +5445,6 @@ class VoidCodeRuntime:
         execution_engine = self._config.execution_engine
         max_steps = self._config.max_steps
         provider_fallback = self._config.provider_fallback
-        plan = self._config.plan
         agent = self._config.agent
         if agent is None and execution_engine == "provider":
             agent = RuntimeAgentConfig(preset="leader")
@@ -5644,7 +5506,6 @@ class VoidCodeRuntime:
                 max_steps=max_steps,
                 tool_timeout_seconds=self._config.tool_timeout_seconds,
                 provider_fallback=provider_fallback,
-                plan=plan,
                 resolved_provider=resolved_provider,
                 agent=agent,
                 context_window=context_window,
@@ -5652,20 +5513,17 @@ class VoidCodeRuntime:
 
         persisted_runtime_config = metadata.get("runtime_config")
         if not isinstance(persisted_runtime_config, dict):
-            return EffectiveRuntimeConfig(
-                approval_mode=approval_mode,
-                model=model,
-                execution_engine=execution_engine,
-                max_steps=max_steps,
-                tool_timeout_seconds=self._config.tool_timeout_seconds,
-                provider_fallback=provider_fallback,
-                plan=plan,
-                resolved_provider=resolved_provider,
-                agent=agent,
-                context_window=context_window,
-            )
+            raise ValueError("persisted session metadata must include runtime_config")
 
         runtime_config = cast(dict[str, object], persisted_runtime_config)
+        unknown_runtime_config_keys = sorted(
+            key for key in runtime_config if key not in _PERSISTED_RUNTIME_CONFIG_KEYS
+        )
+        if unknown_runtime_config_keys:
+            raise ValueError(
+                "persisted runtime_config field "
+                f"'{unknown_runtime_config_keys[0]}' is not supported"
+            )
         persisted_approval_mode = runtime_config.get("approval_mode")
         if persisted_approval_mode in ("allow", "deny", "ask"):
             approval_mode = persisted_approval_mode
@@ -5704,20 +5562,6 @@ class VoidCodeRuntime:
                 raise ValueError(
                     format_invalid_provider_config_error(
                         "persisted runtime_config.provider_fallback",
-                        str(exc),
-                    )
-                ) from exc
-        plan = None
-        if "plan" in runtime_config:
-            try:
-                plan = parse_runtime_plan_payload(
-                    runtime_config.get("plan"),
-                    source="persisted runtime_config.plan",
-                )
-            except ValueError as exc:
-                raise ValueError(
-                    format_invalid_provider_config_error(
-                        "persisted runtime_config.plan",
                         str(exc),
                     )
                 ) from exc
@@ -5773,7 +5617,6 @@ class VoidCodeRuntime:
             max_steps=max_steps,
             tool_timeout_seconds=tool_timeout_seconds,
             provider_fallback=provider_fallback,
-            plan=plan,
             resolved_provider=resolved_provider,
             agent=agent,
             context_window=context_window,
@@ -5872,7 +5715,6 @@ class EffectiveRuntimeConfig:
     max_steps: int | None
     tool_timeout_seconds: int | None = None
     provider_fallback: RuntimeProviderFallbackConfig | None = None
-    plan: RuntimePlanConfig | None = None
     resolved_provider: ResolvedProviderConfig = field(default_factory=ResolvedProviderConfig)
     agent: RuntimeAgentConfig | None = None
     context_window: RuntimeContextWindowConfig | None = None

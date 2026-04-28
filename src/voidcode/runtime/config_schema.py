@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Literal, cast
+from typing import cast
 
 from .config import (
     APPROVAL_MODE_ENV_VAR,
@@ -22,10 +21,6 @@ __all__ = [
     "RUNTIME_CONFIG_SCHEMA_ID",
     "RUNTIME_CONFIG_SCHEMA_TITLE",
     "RUNTIME_CONFIG_SCHEMA_URI",
-    "ConfigMigration",
-    "MigrationAction",
-    "apply_config_migrations",
-    "detect_config_migrations",
     "format_starter_runtime_config_json",
     "generate_starter_runtime_config",
     "read_runtime_config_payload",
@@ -37,36 +32,6 @@ RUNTIME_CONFIG_SCHEMA_ID = "https://voidcode.dev/schemas/runtime-config.schema.j
 RUNTIME_CONFIG_SCHEMA_URI = RUNTIME_CONFIG_SCHEMA_ID
 RUNTIME_CONFIG_SCHEMA_TITLE = "VoidCode runtime config"
 _JSON_SCHEMA_DRAFT = "https://json-schema.org/draft/2020-12/schema"
-
-MigrationAction = Literal["remove", "rename"]
-
-
-@dataclass(frozen=True, slots=True)
-class ConfigMigration:
-    field_path: tuple[str, ...]
-    action: MigrationAction
-    reason: str
-    new_field_path: tuple[str, ...] | None = None
-
-    @property
-    def display_path(self) -> str:
-        return ".".join(self.field_path)
-
-    @property
-    def display_new_path(self) -> str | None:
-        if self.new_field_path is None:
-            return None
-        return ".".join(self.new_field_path)
-
-    def to_dict(self) -> dict[str, object]:
-        payload: dict[str, object] = {
-            "field_path": self.display_path,
-            "action": self.action,
-            "reason": self.reason,
-        }
-        if self.new_field_path is not None:
-            payload["new_field_path"] = self.display_new_path
-        return payload
 
 
 def runtime_config_json_schema() -> dict[str, object]:
@@ -84,7 +49,7 @@ def runtime_config_json_schema() -> dict[str, object]:
             "`~/.config/voidcode/config.json`."
         ),
         "type": "object",
-        "additionalProperties": True,
+        "additionalProperties": False,
         "properties": {
             "$schema": {
                 "type": "string",
@@ -120,7 +85,7 @@ def runtime_config_json_schema() -> dict[str, object]:
             },
             "hooks": {
                 "type": "object",
-                "additionalProperties": True,
+                "additionalProperties": False,
                 "description": (
                     "Runtime-managed lifecycle hooks (pre/post tool, session, background)."
                 ),
@@ -138,26 +103,27 @@ def runtime_config_json_schema() -> dict[str, object]:
                     "on_delegated_result_available": {"$ref": "#/$defs/commandList"},
                     "formatter_presets": {
                         "type": "object",
-                        "additionalProperties": {"type": "object"},
+                        "additionalProperties": {"$ref": "#/$defs/formatterPresetConfig"},
                     },
                 },
             },
             "tools": {"$ref": "#/$defs/toolsConfig"},
             "skills": {"$ref": "#/$defs/skillsConfig"},
+            "context_window": {"$ref": "#/$defs/contextWindowConfig"},
             "lsp": {
                 "type": "object",
-                "additionalProperties": True,
+                "additionalProperties": False,
                 "properties": {
                     "enabled": {"type": "boolean"},
                     "servers": {
                         "type": "object",
-                        "additionalProperties": {"type": "object"},
+                        "additionalProperties": {"$ref": "#/$defs/lspServerConfig"},
                     },
                 },
             },
             "mcp": {
                 "type": "object",
-                "additionalProperties": True,
+                "additionalProperties": False,
                 "properties": {
                     "enabled": {"type": "boolean"},
                     "request_timeout_seconds": {"type": "number", "exclusiveMinimum": 0},
@@ -165,7 +131,7 @@ def runtime_config_json_schema() -> dict[str, object]:
                         "type": "object",
                         "additionalProperties": {
                             "type": "object",
-                            "additionalProperties": True,
+                            "additionalProperties": False,
                             "required": ["command"],
                             "properties": {
                                 "transport": {"type": "string", "enum": ["stdio"]},
@@ -185,7 +151,7 @@ def runtime_config_json_schema() -> dict[str, object]:
             },
             "tui": {
                 "type": "object",
-                "additionalProperties": True,
+                "additionalProperties": False,
                 "properties": {
                     "leader_key": {"type": "string"},
                     "keymap": {
@@ -201,11 +167,11 @@ def runtime_config_json_schema() -> dict[str, object]:
                     },
                     "preferences": {
                         "type": "object",
-                        "additionalProperties": True,
+                        "additionalProperties": False,
                         "properties": {
                             "theme": {
                                 "type": "object",
-                                "additionalProperties": True,
+                                "additionalProperties": False,
                                 "properties": {
                                     "name": {"type": "string"},
                                     "mode": {
@@ -216,7 +182,7 @@ def runtime_config_json_schema() -> dict[str, object]:
                             },
                             "reading": {
                                 "type": "object",
-                                "additionalProperties": True,
+                                "additionalProperties": False,
                                 "properties": {
                                     "wrap": {"type": "boolean"},
                                     "sidebar_collapsed": {"type": "boolean"},
@@ -228,8 +194,12 @@ def runtime_config_json_schema() -> dict[str, object]:
             },
             "provider_fallback": {
                 "type": "object",
-                "additionalProperties": True,
+                "additionalProperties": False,
                 "description": "Provider fallback chain configuration.",
+                "properties": {
+                    "preferred_model": {"type": "string", "minLength": 1},
+                    "fallback_models": {"type": "array", "items": {"type": "string"}},
+                },
             },
             "providers": {
                 "type": "object",
@@ -253,16 +223,6 @@ def runtime_config_json_schema() -> dict[str, object]:
                         "type": "object",
                         "additionalProperties": {"type": "integer", "minimum": 1},
                     },
-                },
-            },
-            "plan": {
-                "type": "object",
-                "additionalProperties": True,
-                "properties": {
-                    "provider": {"type": "string", "minLength": 1},
-                    "module": {"type": "string", "minLength": 1},
-                    "factory": {"type": "string", "minLength": 1},
-                    "options": {"type": "object", "additionalProperties": True},
                 },
             },
             "agent": {"$ref": "#/$defs/agentConfig"},
@@ -305,23 +265,81 @@ def runtime_config_json_schema() -> dict[str, object]:
                     "minItems": 1,
                 },
             },
+            "formatterPresetConfig": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "command": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 1,
+                    },
+                    "extensions": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 1,
+                    },
+                    "root_markers": {"type": "array", "items": {"type": "string"}},
+                    "fallback_commands": {"$ref": "#/$defs/commandList"},
+                    "cwd_policy": {
+                        "type": "string",
+                        "enum": ["workspace", "nearest_root", "file_directory"],
+                    },
+                },
+            },
             "toolsConfig": {
                 "type": "object",
-                "additionalProperties": True,
+                "additionalProperties": False,
                 "properties": {
                     "builtin": {
                         "type": "object",
-                        "additionalProperties": True,
+                        "additionalProperties": False,
                         "properties": {"enabled": {"type": "boolean"}},
                     },
-                    "paths": {"type": "array", "items": {"type": "string"}},
                     "allowlist": {"type": "array", "items": {"type": "string"}},
                     "default": {"type": "array", "items": {"type": "string"}},
                 },
             },
+            "contextWindowConfig": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "version": {"type": "integer", "const": 1},
+                    "auto_compaction": {"type": "boolean"},
+                    "max_tool_results": {"type": "integer", "minimum": 1},
+                    "max_tool_result_tokens": {"type": "integer", "minimum": 1},
+                    "max_context_ratio": {"type": "number", "exclusiveMinimum": 0},
+                    "model_context_window_tokens": {"type": "integer", "minimum": 1},
+                    "reserved_output_tokens": {"type": "integer", "minimum": 1},
+                    "minimum_retained_tool_results": {"type": "integer", "minimum": 1},
+                    "recent_tool_result_count": {"type": "integer", "minimum": 1},
+                    "recent_tool_result_tokens": {"type": "integer", "minimum": 1},
+                    "default_tool_result_tokens": {"type": "integer", "minimum": 1},
+                    "per_tool_result_tokens": {
+                        "type": "object",
+                        "additionalProperties": {"type": "integer", "minimum": 1},
+                    },
+                    "tokenizer_model": {"type": "string", "minLength": 1},
+                    "continuity_preview_items": {"type": "integer", "minimum": 1},
+                    "continuity_preview_chars": {"type": "integer", "minimum": 1},
+                },
+            },
+            "lspServerConfig": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "preset": {"type": "string", "minLength": 1},
+                    "command": {"type": "array", "items": {"type": "string"}},
+                    "languages": {"type": "array", "items": {"type": "string"}},
+                    "extensions": {"type": "array", "items": {"type": "string"}},
+                    "root_markers": {"type": "array", "items": {"type": "string"}},
+                    "settings": {"type": "object"},
+                    "init_options": {"type": "object"},
+                },
+            },
             "skillsConfig": {
                 "type": "object",
-                "additionalProperties": True,
+                "additionalProperties": False,
                 "properties": {
                     "enabled": {"type": "boolean"},
                     "paths": {"type": "array", "items": {"type": "string"}},
@@ -329,7 +347,7 @@ def runtime_config_json_schema() -> dict[str, object]:
             },
             "agentConfig": {
                 "type": "object",
-                "additionalProperties": True,
+                "additionalProperties": False,
                 "properties": {
                     "preset": {
                         "type": "string",
@@ -343,6 +361,7 @@ def runtime_config_json_schema() -> dict[str, object]:
                         ],
                     },
                     "prompt_profile": {"type": "string", "minLength": 1},
+                    "prompt_materialization": {"type": "object"},
                     "prompt_ref": {"type": "string", "minLength": 1},
                     "prompt_source": {"type": "string", "enum": ["builtin"]},
                     "hook_refs": {"type": "array", "items": {"type": "string"}},
@@ -355,7 +374,11 @@ def runtime_config_json_schema() -> dict[str, object]:
                     "skills": {"$ref": "#/$defs/skillsConfig"},
                     "provider_fallback": {
                         "type": "object",
-                        "additionalProperties": True,
+                        "additionalProperties": False,
+                        "properties": {
+                            "preferred_model": {"type": "string", "minLength": 1},
+                            "fallback_models": {"type": "array", "items": {"type": "string"}},
+                        },
                     },
                     "fallback_models": {
                         "type": "array",
@@ -439,32 +462,6 @@ def format_starter_runtime_config_json(payload: Mapping[str, object]) -> str:
     return json.dumps(dict(payload), indent=2, ensure_ascii=False) + "\n"
 
 
-def detect_config_migrations(payload: object) -> tuple[ConfigMigration, ...]:
-    if not isinstance(payload, dict):
-        return ()
-    return ()
-
-
-def apply_config_migrations(
-    payload: Mapping[str, object],
-    migrations: Sequence[ConfigMigration],
-) -> dict[str, object]:
-    new_payload = _clone_payload(payload)
-    for migration in migrations:
-        if migration.action == "remove":
-            _delete_path(new_payload, migration.field_path)
-        elif migration.action == "rename":
-            if migration.new_field_path is None:
-                raise ValueError(
-                    f"rename migration requires a new_field_path; received {migration!r}"
-                )
-            value = _pop_path(new_payload, migration.field_path)
-            if value is _MISSING:
-                continue
-            _set_path(new_payload, migration.new_field_path, value)
-    return new_payload
-
-
 def read_runtime_config_payload(workspace: Path) -> dict[str, object] | None:
     config_path = runtime_config_path(workspace.resolve())
     if not config_path.exists():
@@ -493,57 +490,3 @@ def write_runtime_config_payload(
         encoding="utf-8",
     )
     return config_path
-
-
-_MISSING: object = object()
-
-
-def _clone_payload(payload: Mapping[str, object]) -> dict[str, object]:
-    return cast(dict[str, object], json.loads(json.dumps(dict(payload))))
-
-
-def _delete_path(payload: dict[str, object], path: Sequence[str]) -> None:
-    if not path:
-        return
-    parent = _resolve_parent(payload, path, create_missing=False)
-    if parent is None:
-        return
-    parent.pop(path[-1], None)
-
-
-def _pop_path(payload: dict[str, object], path: Sequence[str]) -> object:
-    if not path:
-        return _MISSING
-    parent = _resolve_parent(payload, path, create_missing=False)
-    if parent is None or path[-1] not in parent:
-        return _MISSING
-    return parent.pop(path[-1])
-
-
-def _set_path(payload: dict[str, object], path: Sequence[str], value: object) -> None:
-    if not path:
-        raise ValueError("set path requires at least one segment")
-    parent = _resolve_parent(payload, path, create_missing=True)
-    if parent is None:
-        raise ValueError("could not resolve parent path for rename target: " + ".".join(path))
-    parent[path[-1]] = value
-
-
-def _resolve_parent(
-    payload: dict[str, object],
-    path: Sequence[str],
-    *,
-    create_missing: bool,
-) -> dict[str, object] | None:
-    current: dict[str, object] = payload
-    for segment in path[:-1]:
-        nxt = current.get(segment)
-        if isinstance(nxt, dict):
-            current = cast(dict[str, object], nxt)
-            continue
-        if not create_missing:
-            return None
-        new_child: dict[str, object] = {}
-        current[segment] = new_child
-        current = new_child
-    return current
