@@ -4607,9 +4607,6 @@ class VoidCodeRuntime:
             key="force_load_skills",
         )
 
-        persisted_selected_skill_names = (
-            self._persisted_selected_skill_names(metadata) if metadata is not None else None
-        )
         force_load_skill_names = request_force_load_skill_names
         if force_load_skill_names is None:
             return ()
