@@ -4100,7 +4100,9 @@ class VoidCodeRuntime:
         return validate_runtime_request_metadata(
             normalized,
             allow_internal_fields=(
-                "background_run" in normalized or "background_task_id" in normalized
+                "background_run" in normalized
+                or "background_rate_limit_retry" in normalized
+                or "background_task_id" in normalized
             ),
         )
 

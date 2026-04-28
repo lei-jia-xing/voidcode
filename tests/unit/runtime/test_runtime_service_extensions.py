@@ -1,4 +1,4 @@
-# pyright: reportArgumentType=false
+# pyright: reportArgumentType=false, reportUnusedFunction=false
 from __future__ import annotations
 
 import importlib
@@ -8,6 +8,7 @@ import os
 import re
 import sqlite3
 import sys
+import threading
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -38,6 +39,7 @@ from voidcode.runtime.acp import (
 from voidcode.runtime.config import (
     RuntimeAcpConfig,
     RuntimeAgentConfig,
+    RuntimeBackgroundTaskConfig,
     RuntimeConfig,
     RuntimeContextWindowConfig,
     RuntimeFormatterPresetConfig,
@@ -560,6 +562,104 @@ class _BackgroundTaskSuccessGraph:
         return _StubStep(output=request.prompt, is_finished=True)
 
 
+class _BlockingBackgroundTaskGraph:
+    def __init__(self) -> None:
+        self.release_first = threading.Event()
+        self.first_started = threading.Event()
+        self.prompts_seen: list[str] = []
+
+    def step(
+        self,
+        request: GraphRunRequest,
+        tool_results: tuple[object, ...],
+        *,
+        session: SessionState,
+    ) -> _StubStep:
+        _ = tool_results, session
+        self.prompts_seen.append(request.prompt)
+        if request.prompt == "first background task":
+            self.first_started.set()
+            if not self.release_first.wait(timeout=2.0):
+                raise RuntimeError("first background task was not released")
+        return _StubStep(output=request.prompt, is_finished=True)
+
+
+class _RateLimitThenSuccessGraph:
+    def __init__(self) -> None:
+        self.attempts = 0
+
+    def step(
+        self,
+        request: GraphRunRequest,
+        tool_results: tuple[object, ...],
+        *,
+        session: SessionState,
+    ) -> _StubStep:
+        _ = tool_results, session
+        self.attempts += 1
+        if self.attempts == 1:
+            raise ProviderExecutionError(
+                kind="rate_limit",
+                provider_name="openai",
+                model_name="gpt-4.1",
+                message="rate limited",
+            )
+        return _StubStep(output=request.prompt, is_finished=True)
+
+
+class _RateLimitOnceModelProvider:
+    def __init__(self, *, name: str) -> None:
+        self.name = name
+        self.attempts = 0
+
+    def turn_provider(self) -> _RateLimitOnceTurnProvider:
+        return _RateLimitOnceTurnProvider(model_provider=self)
+
+
+@dataclass(slots=True)
+class _RateLimitOnceTurnProvider:
+    model_provider: _RateLimitOnceModelProvider
+
+    @property
+    def name(self) -> str:
+        return self.model_provider.name
+
+    def propose_turn(self, request: object) -> ProviderTurnResult:
+        turn_request = cast(ProviderTurnRequest, request)
+        self.model_provider.attempts += 1
+        if self.model_provider.attempts == 1:
+            raise ProviderExecutionError(
+                kind="rate_limit",
+                provider_name=self.name,
+                model_name=turn_request.model_name or "gpt-5.4",
+                message="rate limited once",
+            )
+        return ProviderTurnResult(output="primary recovered")
+
+
+class _UnexpectedFallbackModelProvider:
+    def __init__(self, *, name: str) -> None:
+        self.name = name
+        self.calls = 0
+
+    def turn_provider(self) -> _UnexpectedFallbackTurnProvider:
+        return _UnexpectedFallbackTurnProvider(model_provider=self)
+
+
+@dataclass(slots=True)
+class _UnexpectedFallbackTurnProvider:
+    model_provider: _UnexpectedFallbackModelProvider
+
+    @property
+    def name(self) -> str:
+        return self.model_provider.name
+
+    def propose_turn(self, request: object) -> ProviderTurnResult:
+        _ = request
+        self.model_provider.calls += 1
+        return ProviderTurnResult(output="fallback used")
+
+
 class _TaskToolGraph:
     def step(
         self,
@@ -787,6 +887,184 @@ def test_runtime_background_task_executes_through_existing_runtime_path(tmp_path
     assert resumed.session.metadata["background_run"] is True
     assert resumed.output == "background hello"
     assert completed == loaded
+
+
+def test_runtime_background_task_concurrency_limit_queues_and_drains(tmp_path: Path) -> None:
+    graph = _BlockingBackgroundTaskGraph()
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=graph,
+        config=RuntimeConfig(background_task=RuntimeBackgroundTaskConfig(default_concurrency=1)),
+    )
+
+    first = runtime.start_background_task(RuntimeRequest(prompt="first background task"))
+    assert graph.first_started.wait(timeout=2.0)
+    second = runtime.start_background_task(RuntimeRequest(prompt="second background task"))
+
+    assert runtime.load_background_task(first.task.id).status == "running"
+    assert runtime.load_background_task(second.task.id).status == "queued"
+
+    graph.release_first.set()
+    first_terminal = _wait_for_background_task(runtime, first.task.id)
+    second_terminal = _wait_for_background_task(runtime, second.task.id)
+
+    assert first_terminal.status == "completed"
+    assert second_terminal.status == "completed"
+    assert graph.prompts_seen == ["first background task", "second background task"]
+
+
+def test_runtime_background_task_concurrency_identity_uses_model_provider_default_precedence(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_BackgroundTaskSuccessGraph(),
+        config=RuntimeConfig(
+            model="openai/gpt-4.1",
+            background_task=RuntimeBackgroundTaskConfig(
+                default_concurrency=4,
+                provider_concurrency={"openai": 2},
+                model_concurrency={"openai/gpt-4.1": 1},
+            ),
+        ),
+    )
+    supervisor = runtime._background_task_supervisor  # pyright: ignore[reportPrivateUsage]
+
+    model_identity = supervisor._concurrency_identity_for_request(  # pyright: ignore[reportPrivateUsage]
+        RuntimeRequest(prompt="model")
+    )
+    provider_identity = supervisor._concurrency_identity_for_request(  # pyright: ignore[reportPrivateUsage]
+        RuntimeRequest(
+            prompt="provider",
+            metadata={
+                "agent": {
+                    "preset": "leader",
+                    "execution_engine": "provider",
+                    "model": "openai/gpt-4o",
+                }
+            },
+        )
+    )
+    default_identity = supervisor._concurrency_identity_for_request(  # pyright: ignore[reportPrivateUsage]
+        RuntimeRequest(
+            prompt="default",
+            metadata={
+                "agent": {
+                    "preset": "leader",
+                    "execution_engine": "provider",
+                    "model": "anthropic/claude-sonnet-4",
+                }
+            },
+        )
+    )
+
+    assert (model_identity.limit, model_identity.limit_source) == (1, "model")
+    assert (provider_identity.limit, provider_identity.limit_source) == (2, "provider")
+    assert (default_identity.limit, default_identity.limit_source) == (4, "default")
+
+
+def test_runtime_background_task_configured_events_include_concurrency_metadata(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_BackgroundTaskSuccessGraph(),
+        config=RuntimeConfig(background_task=RuntimeBackgroundTaskConfig(default_concurrency=1)),
+    )
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+
+    started = runtime.start_background_task(
+        RuntimeRequest(prompt="background child", parent_session_id="leader-session")
+    )
+    _ = _wait_for_background_task(runtime, started.task.id)
+    leader_response = _wait_for_session_event(
+        runtime,
+        "leader-session",
+        RUNTIME_BACKGROUND_TASK_COMPLETED,
+    )
+
+    completed_event = next(
+        event
+        for event in leader_response.events
+        if event.event_type == RUNTIME_BACKGROUND_TASK_COMPLETED
+    )
+    assert completed_event.payload["concurrency"] == {
+        "provider": "deterministic",
+        "model": "deterministic",
+        "limit": 1,
+        "limit_source": "default",
+        "running_provider": 1,
+        "running_model": 1,
+        "running_total": 1,
+        "queued_provider": 0,
+        "queued_model": 0,
+        "queued_total": 0,
+    }
+
+
+def test_runtime_background_task_rate_limit_retries_after_backoff(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = _RateLimitThenSuccessGraph()
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=graph)
+
+    def _zero_backoff(retry_count: int) -> float:
+        _ = retry_count
+        return 0.0
+
+    monkeypatch.setattr(
+        runtime._background_task_supervisor,  # pyright: ignore[reportPrivateUsage]
+        "_rate_limit_backoff_seconds",
+        _zero_backoff,
+    )
+
+    started = runtime.start_background_task(RuntimeRequest(prompt="retry after rate limit"))
+    completed = _wait_for_background_task(runtime, started.task.id)
+
+    assert completed.status == "completed"
+    assert graph.attempts == 2
+
+
+def test_runtime_background_rate_limit_retry_precedes_provider_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    primary = _RateLimitOnceModelProvider(name="opencode")
+    fallback = _UnexpectedFallbackModelProvider(name="custom")
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        model_provider_registry=ModelProviderRegistry(
+            providers={"opencode": primary, "custom": fallback}
+        ),
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            provider_fallback=RuntimeProviderFallbackConfig(
+                preferred_model="opencode/gpt-5.4",
+                fallback_models=("custom/demo",),
+            ),
+        ),
+    )
+
+    def _zero_backoff(retry_count: int) -> float:
+        _ = retry_count
+        return 0.0
+
+    monkeypatch.setattr(
+        runtime._background_task_supervisor,  # pyright: ignore[reportPrivateUsage]
+        "_rate_limit_backoff_seconds",
+        _zero_backoff,
+    )
+
+    started = runtime.start_background_task(RuntimeRequest(prompt="background provider retry"))
+    completed = _wait_for_background_task(runtime, started.task.id)
+    child = runtime.resume(cast(str, completed.session_id))
+
+    assert completed.status == "completed"
+    assert child.output == "primary recovered"
+    assert primary.attempts == 2
+    assert fallback.calls == 0
 
 
 def test_runtime_session_debug_snapshot_reports_completed_state(tmp_path: Path) -> None:
