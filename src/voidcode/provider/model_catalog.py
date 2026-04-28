@@ -332,6 +332,8 @@ def _override_max_input_tokens(
         and override.max_input_tokens == override.context_window
         and override.max_output_tokens is None
     ):
+        if inferred is not None and override.context_window != inferred.context_window:
+            return None
         return None if inferred is None else inferred.max_input_tokens
     return override.max_input_tokens
 
@@ -820,7 +822,9 @@ def _metadata_from_discovery_item(
     return metadata if metadata.payload() else None
 
 
-def _metadata_from_google_item(item: _GoogleModelItem) -> ProviderModelMetadata | None:
+def _metadata_from_google_item(
+    item: _GoogleModelItem, *, model_name: str
+) -> ProviderModelMetadata | None:
     context_window = item.inputTokenLimit
     metadata = ProviderModelMetadata(
         context_window=context_window,
@@ -840,7 +844,7 @@ def _metadata_from_google_item(item: _GoogleModelItem) -> ProviderModelMetadata 
         supports_json_mode=True,
         modalities_input=("text", "image"),
         modalities_output=("text",),
-        model_status="active",
+        model_status="preview" if "preview" in model_name.lower() else "active",
     )
     return metadata if metadata.payload() else None
 
@@ -900,7 +904,7 @@ def _parse_google_discovery_payload(payload: object) -> ModelDiscoveryFetchResul
         if isinstance(raw_name, str) and raw_name:
             normalized = raw_name[len("models/") :] if raw_name.startswith("models/") else raw_name
             model_ids.append(normalized)
-            metadata = _metadata_from_google_item(item)
+            metadata = _metadata_from_google_item(item, model_name=normalized)
             if metadata is not None:
                 model_metadata[normalized] = metadata
     return ModelDiscoveryFetchResult(models=tuple(model_ids), model_metadata=model_metadata)

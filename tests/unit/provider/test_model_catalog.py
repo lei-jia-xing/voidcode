@@ -143,6 +143,69 @@ def test_discover_available_models_merges_partial_remote_metadata() -> None:
     assert metadata.model_status == "active"
 
 
+def test_discover_available_models_recomputes_input_limit_for_remote_context_override() -> None:
+    result = discover_available_models(
+        "openai",
+        LiteLLMProviderConfig(discovery_base_url="https://api.openai.com"),
+        fetcher=lambda _request: ModelDiscoveryFetchResult(
+            models=("gpt-4o",),
+            model_metadata={
+                "gpt-4o": ProviderModelMetadata(
+                    context_window=64_000,
+                )
+            },
+        ),
+    )
+
+    metadata = result.model_metadata["gpt-4o"]
+    assert metadata.context_window == 64_000
+    assert metadata.max_output_tokens == 16_384
+    assert metadata.max_input_tokens == 47_616
+
+
+def test_google_discovery_preserves_preview_model_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Response:
+        def __enter__(self) -> _Response:
+            return self
+
+        def __exit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            tb: TracebackType | None,
+        ) -> bool:
+            return False
+
+        def read(self) -> bytes:
+            return json.dumps(
+                {
+                    "models": [
+                        {
+                            "name": "models/gemini-3-pro-preview",
+                            "inputTokenLimit": 64_000,
+                        }
+                    ]
+                }
+            ).encode("utf-8")
+
+    def _fake_urlopen(_request: Request, timeout: float) -> _Response:
+        assert timeout == 10.0
+        return _Response()
+
+    monkeypatch.setattr(model_catalog, "urlopen", _fake_urlopen)
+
+    result = discover_available_models(
+        "google",
+        LiteLLMProviderConfig(discovery_base_url="https://generativelanguage.googleapis.com"),
+    )
+
+    metadata = result.model_metadata["gemini-3-pro-preview"]
+    assert metadata.context_window == 64_000
+    assert metadata.model_status == "preview"
+
+
 @pytest.mark.parametrize(
     ("provider", "model", "context_window", "max_output_tokens"),
     [
