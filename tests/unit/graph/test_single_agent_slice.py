@@ -6,6 +6,7 @@ import pytest
 
 from voidcode.graph.contracts import GraphRunRequest
 from voidcode.graph.provider_graph import ProviderGraph
+from voidcode.provider.protocol import ProviderErrorKind
 from voidcode.provider.registry import ModelProviderRegistry
 from voidcode.provider.resolution import resolve_provider_model
 from voidcode.runtime.context_window import RuntimeContextWindow, RuntimeContinuityState
@@ -545,6 +546,59 @@ def test_provider_provider_graph_prefers_parsed_stream_error_kind_over_generic_t
         )
 
     assert exc_info.value.kind == "context_limit"
+
+
+@pytest.mark.parametrize(
+    "error_kind",
+    ["missing_auth", "unsupported_feature", "stream_tool_feedback_shape"],
+)
+def test_provider_provider_graph_preserves_explicit_stream_error_kind(
+    error_kind: ProviderErrorKind,
+) -> None:
+    provider_model = resolve_provider_model(
+        "opencode/gpt-5.4",
+        registry=ModelProviderRegistry.with_defaults(),
+    )
+
+    class _ExplicitKindStreamErrorTurnProvider:
+        name = "opencode"
+
+        def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
+            _ = request
+            return ProviderTurnResult(output="fallback")
+
+        def stream_turn(self, request: ProviderTurnRequest):
+            _ = request
+            return iter(
+                (
+                    ProviderStreamEvent(
+                        kind="error",
+                        channel="error",
+                        error="provider stream failed",
+                        error_kind=error_kind,
+                    ),
+                )
+            )
+
+    graph = ProviderGraph(
+        provider=_ExplicitKindStreamErrorTurnProvider(),
+        provider_model=provider_model,
+    )
+
+    with pytest.raises(ProviderExecutionError, match="provider stream failed") as exc_info:
+        _ = graph.step(
+            request=GraphRunRequest(
+                session=_session(),
+                prompt="read sample.txt",
+                available_tools=_tool_definitions(),
+                context_window=RuntimeContextWindow(prompt="read sample.txt"),
+                metadata={"provider_stream": True},
+            ),
+            tool_results=(),
+            session=_session(),
+        )
+
+    assert exc_info.value.kind == error_kind
 
 
 def test_provider_provider_graph_passes_applied_skill_context_to_provider() -> None:

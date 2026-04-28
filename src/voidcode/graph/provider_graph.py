@@ -247,9 +247,12 @@ class ProviderGraph:
                 parsed = parse_provider_stream_error(error_payload)
                 parsed_kind = parsed.kind
                 if stream_event.error_kind in {
+                    "missing_auth",
                     "rate_limit",
                     "context_limit",
                     "invalid_model",
+                    "unsupported_feature",
+                    "stream_tool_feedback_shape",
                 }:
                     parsed_kind = stream_event.error_kind
                 raise ProviderExecutionError(
