@@ -271,12 +271,16 @@ class RuntimeResumeCoordinator:
             session=session,
             prompt=prompt,
             available_tools=tool_registry.definitions(),
-            applied_skills=resumed_skill_snapshot.applied_skill_payloads,
-            skill_prompt_context=resumed_skill_snapshot.skill_prompt_context,
             context_window=runtime._prepare_provider_context_window(
                 prompt=prompt,
                 tool_results=tuple(tool_results),
                 session_metadata=session.metadata,
+            ),
+            assembled_context=runtime._assemble_provider_context(
+                prompt=prompt,
+                tool_results=tuple(tool_results),
+                session_metadata=session.metadata,
+                skill_prompt_context=resumed_skill_snapshot.skill_prompt_context,
             ),
             metadata={
                 **session.metadata,
@@ -506,16 +510,21 @@ class RuntimeResumeCoordinator:
             agent=effective_config.agent,
             source="resume",
         )
+
         graph_request = GraphRunRequest(
             session=session,
             prompt=prompt,
             available_tools=tool_registry.definitions(),
-            applied_skills=resumed_skill_snapshot.applied_skill_payloads,
-            skill_prompt_context=resumed_skill_snapshot.skill_prompt_context,
             context_window=runtime._prepare_provider_context_window(
                 prompt=prompt,
                 tool_results=tuple(tool_results),
                 session_metadata=session.metadata,
+            ),
+            assembled_context=runtime._assemble_provider_context(
+                prompt=prompt,
+                tool_results=tuple(tool_results),
+                session_metadata=session.metadata,
+                skill_prompt_context=resumed_skill_snapshot.skill_prompt_context,
             ),
             metadata={
                 **session.metadata,

@@ -3,13 +3,13 @@ from __future__ import annotations
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Literal, Protocol, runtime_checkable
+from typing import Literal, Protocol, cast, runtime_checkable
 
 from ..command.resolver import resolve_tool_instruction
 from ..runtime.context_window import normalize_read_file_output
 from ..tools.contracts import ToolCall, ToolDefinition, ToolResult
 
-type AppliedSkill = dict[str, str]
+type ProviderMessageRole = Literal["system", "user", "assistant", "tool"]
 type ProviderStreamEventKind = Literal["delta", "content", "error", "done"]
 type ProviderStreamChannel = Literal["text", "tool", "reasoning", "error"]
 type ProviderDoneReason = Literal["completed", "cancelled", "error"]
@@ -45,18 +45,130 @@ class ProviderContextWindow(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class ProviderTurnRequest:
-    prompt: str
-    available_tools: tuple[ToolDefinition, ...]
-    tool_results: tuple[ToolResult, ...]
-    context_window: ProviderContextWindow
-    applied_skills: tuple[AppliedSkill, ...]
-    raw_model: str | None
-    provider_name: str | None
-    model_name: str | None
-    skill_prompt_context: str = ""
+    assembled_context: ProviderAssembledContext
+    bounded_context_window: ProviderContextWindow | None = None
+    available_tools: tuple[ToolDefinition, ...] = ()
+    raw_model: str | None = None
+    provider_name: str | None = None
+    model_name: str | None = None
     agent_preset: dict[str, object] | None = None
     attempt: int = 0
     abort_signal: ProviderAbortSignal | None = None
+
+    @property
+    def prompt(self) -> str:
+        return self.assembled_context.prompt
+
+    @property
+    def tool_results(self) -> tuple[ToolResult, ...]:
+        return self.assembled_context.tool_results
+
+    @property
+    def context_window(self) -> ProviderContextWindow:
+        if self.bounded_context_window is not None:
+            return self.bounded_context_window
+        payload = self.assembled_context.metadata
+        retained_raw = payload.get("retained_tool_result_count")
+        retained_count = (
+            retained_raw
+            if isinstance(retained_raw, int)
+            else len(self.assembled_context.tool_results)
+        )
+        return _DerivedContextWindow(
+            prompt=self.assembled_context.prompt,
+            tool_results=self.assembled_context.tool_results,
+            continuity_state=self.assembled_context.continuity_state,
+            compacted=bool(payload.get("compacted", False)),
+            retained_tool_result_count=retained_count,
+            token_budget=cast(int | None, payload.get("token_budget")),
+            token_estimate_source=cast(str | None, payload.get("token_estimate_source")),
+            original_tool_result_tokens=cast(
+                int | None, payload.get("original_tool_result_tokens")
+            ),
+            retained_tool_result_tokens=cast(
+                int | None, payload.get("retained_tool_result_tokens")
+            ),
+            dropped_tool_result_tokens=cast(int | None, payload.get("dropped_tool_result_tokens")),
+            original_tool_result_count=cast(int | None, payload.get("original_tool_result_count")),
+            compaction_reason=cast(str | None, payload.get("compaction_reason")),
+            summary_anchor=cast(str | None, payload.get("summary_anchor")),
+            summary_source=cast(dict[str, object] | None, payload.get("summary_source")),
+        )
+
+    @property
+    def applied_skills(self) -> tuple[dict[str, str], ...]:
+        return ()
+
+
+@dataclass(frozen=True, slots=True)
+class _DerivedContextWindow:
+    prompt: str
+    tool_results: tuple[ToolResult, ...]
+    continuity_state: object | None = None
+    compacted: bool = False
+    retained_tool_result_count: int = 0
+    token_budget: int | None = None
+    token_estimate_source: str | None = None
+    original_tool_result_tokens: int | None = None
+    retained_tool_result_tokens: int | None = None
+    dropped_tool_result_tokens: int | None = None
+    original_tool_result_count: int | None = None
+    compaction_reason: str | None = None
+    summary_anchor: str | None = None
+    summary_source: dict[str, object] | None = None
+
+    def __post_init__(self) -> None:
+        if self.retained_tool_result_count == 0:
+            object.__setattr__(self, "retained_tool_result_count", len(self.tool_results))
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderContextSegment:
+    role: ProviderMessageRole
+    content: str | None
+    tool_call_id: str | None = None
+    tool_name: str | None = None
+    tool_arguments: dict[str, object] | None = None
+    metadata: dict[str, object] | None = None
+
+
+@runtime_checkable
+class ProviderContextSegmentLike(Protocol):
+    @property
+    def role(self) -> ProviderMessageRole: ...
+
+    @property
+    def content(self) -> str | None: ...
+
+    @property
+    def tool_call_id(self) -> str | None: ...
+
+    @property
+    def tool_name(self) -> str | None: ...
+
+    @property
+    def tool_arguments(self) -> dict[str, object] | None: ...
+
+    @property
+    def metadata(self) -> dict[str, object] | None: ...
+
+
+@runtime_checkable
+class ProviderAssembledContext(Protocol):
+    @property
+    def prompt(self) -> str: ...
+
+    @property
+    def tool_results(self) -> tuple[ToolResult, ...]: ...
+
+    @property
+    def continuity_state(self) -> object | None: ...
+
+    @property
+    def segments(self) -> tuple[ProviderContextSegmentLike, ...]: ...
+
+    @property
+    def metadata(self) -> dict[str, object]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -222,15 +334,16 @@ class StubTurnProvider:
     name: str
 
     def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
-        commands = [line.strip() for line in request.prompt.splitlines() if line.strip()]
+        assembled_context = request.assembled_context
+        commands = [line.strip() for line in assembled_context.prompt.splitlines() if line.strip()]
         if not commands:
             raise ValueError("request must not be empty")
 
-        step_index = len(request.tool_results)
+        step_index = len(assembled_context.tool_results)
         if step_index >= len(commands):
-            if not request.context_window.tool_results:
+            if not assembled_context.tool_results:
                 raise ValueError("request must contain at least one actionable command")
-            last_result = request.context_window.tool_results[-1]
+            last_result = assembled_context.tool_results[-1]
             return ProviderTurnResult(output=_normalize_tool_output(last_result.content))
 
         resolution = resolve_tool_instruction(

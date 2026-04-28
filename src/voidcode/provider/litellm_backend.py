@@ -20,7 +20,6 @@ else:
             pass
 
 
-from ..agent import render_agent_prompt
 from ..tools.contracts import ToolCall, ToolDefinition
 from ..tools.output import sanitize_tool_arguments, sanitize_tool_result_data
 from .config import LiteLLMProviderConfig
@@ -185,184 +184,129 @@ class LiteLLMBackendSingleAgentProvider:
         _ = request
         return dict(self.completion_kwargs or {})
 
-    @staticmethod
-    def _skill_system_message(request: ProviderTurnRequest) -> str | None:
-        if request.skill_prompt_context.strip():
-            return request.skill_prompt_context.strip()
-        if not request.applied_skills:
-            return None
-
-        rendered_skills: list[str] = []
-        for skill in request.applied_skills:
-            name = skill.get("name", "").strip() or "unnamed-skill"
-            description = skill.get("description", "").strip()
-            content = skill.get("prompt_context", "").strip() or skill.get("content", "").strip()
-
-            lines = [f"## {name}"]
-            if description:
-                lines.append(f"Description: {description}")
-            if content:
-                lines.append(content)
-            rendered_skills.append("\n".join(lines))
-
-        if not rendered_skills:
-            return None
-
-        return (
-            "You must apply the following runtime-managed skills for this turn. "
-            "Treat them as active task instructions in addition to the user's request.\n\n"
-            + "\n\n".join(rendered_skills)
-        )
-
-    @classmethod
-    def _agent_profile_system_message(cls, request: ProviderTurnRequest) -> str | None:
-        return render_agent_prompt(
-            request.agent_preset,
-            model_family=cls._model_family_hint(request),
-        )
-
-    @staticmethod
-    def _model_family_hint(request: ProviderTurnRequest) -> str | None:
-        if request.provider_name is not None and request.provider_name.strip():
-            return request.provider_name.strip()
-        if request.raw_model is None or "/" not in request.raw_model:
-            return None
-        provider_name, _model_name = request.raw_model.split("/", 1)
-        return provider_name.strip() or None
-
-    @staticmethod
-    def _continuity_system_message(request: ProviderTurnRequest) -> str | None:
-        continuity_state = request.context_window.continuity_state
-        if continuity_state is None:
-            return None
-
-        summary_text = getattr(continuity_state, "summary_text", None)
-        if not isinstance(summary_text, str) or not summary_text.strip():
-            return None
-
-        return f"Runtime continuity summary:\n{summary_text.strip()}"
-
-    @staticmethod
-    def _tool_result_messages(request: ProviderTurnRequest) -> list[dict[str, object]]:
-        messages: list[dict[str, object]] = []
-        for index, result in enumerate(request.context_window.tool_results, start=1):
-            sanitized_data = sanitize_tool_result_data(result.data)
-            raw_tool_call_id = result.data.get("tool_call_id")
-            tool_call_id = _normalize_tool_call_id(
-                raw_tool_call_id if isinstance(raw_tool_call_id, str) else None,
-                fallback=f"voidcode_tool_{index}",
-            )
-            raw_arguments = result.data.get("arguments")
-            arguments_payload = (
-                sanitize_tool_arguments(cast(dict[str, object], raw_arguments))
-                if isinstance(raw_arguments, dict)
-                else {}
-            )
-            arguments = json.dumps(
-                arguments_payload,
-                ensure_ascii=False,
-                sort_keys=True,
-            )
-            content = result.content or ""
-            result_payload = {
-                "tool_name": result.tool_name,
-                "status": result.status,
-                "content": content,
-                "error": result.error,
-                "data": {
-                    key: value
-                    for key, value in sanitized_data.items()
-                    if key not in {"tool_call_id", "arguments"}
-                },
-                "truncated": result.truncated,
-                "partial": result.partial,
-                "reference": result.reference,
-            }
-            messages.append(
-                {
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": [
-                        {
-                            "id": tool_call_id,
-                            "type": "function",
-                            "function": {
-                                "name": result.tool_name,
-                                "arguments": arguments,
-                            },
-                        }
-                    ],
-                }
-            )
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": tool_call_id,
-                    "content": json.dumps(
-                        result_payload,
-                        ensure_ascii=False,
-                        sort_keys=True,
-                    ),
-                }
-            )
-        return messages
-
-    @staticmethod
-    def _tool_results_user_message(request: ProviderTurnRequest) -> str | None:
-        if not request.context_window.tool_results:
-            return None
-
-        lines = [
-            "The following tool calls have already completed for the current user request.",
-            "Use these results as the latest state. Do not repeat a completed tool call "
-            "unless a later error explicitly requires retrying it.",
-        ]
-        for index, result in enumerate(request.context_window.tool_results, start=1):
-            sanitized_data = sanitize_tool_result_data(result.data)
-            raw_arguments = result.data.get("arguments")
-            arguments_payload = (
-                sanitize_tool_arguments(cast(dict[str, object], raw_arguments))
-                if isinstance(raw_arguments, dict)
-                else {}
-            )
-            content = result.content or ""
-            payload = {
-                "index": index,
-                "tool_name": result.tool_name,
-                "arguments": arguments_payload,
-                "status": result.status,
-                "content": content,
-                "error": result.error,
-                "data": {
-                    key: value
-                    for key, value in sanitized_data.items()
-                    if key not in {"tool_call_id", "arguments"}
-                },
-                "truncated": result.truncated,
-                "partial": result.partial,
-                "reference": result.reference,
-            }
-            lines.append(json.dumps(payload, ensure_ascii=False, sort_keys=True))
-        return "\n".join(lines)
-
     def _build_messages(self, request: ProviderTurnRequest) -> list[dict[str, object]]:
+        assembled_context = request.assembled_context
         messages: list[dict[str, object]] = []
-        agent_profile_message = self._agent_profile_system_message(request)
-        if agent_profile_message is not None:
-            messages.append({"role": "system", "content": agent_profile_message})
-        skill_message = self._skill_system_message(request)
-        if skill_message is not None:
-            messages.append({"role": "system", "content": skill_message})
-        continuity_message = self._continuity_system_message(request)
-        if continuity_message is not None:
-            messages.append({"role": "system", "content": continuity_message})
-        messages.append({"role": "user", "content": request.prompt})
         if request.provider_name == "opencode-go":
-            tool_results_message = self._tool_results_user_message(request)
-            if tool_results_message is not None:
-                messages.append({"role": "user", "content": tool_results_message})
-        else:
-            messages.extend(self._tool_result_messages(request))
+            tool_feedback_lines: list[str] = []
+            for segment in assembled_context.segments:
+                if segment.role == "tool":
+                    metadata = segment.metadata or {}
+                    raw_data = metadata.get("data")
+                    sanitized_data = (
+                        sanitize_tool_result_data(cast(dict[str, object], raw_data))
+                        if isinstance(raw_data, dict)
+                        else {}
+                    )
+                    raw_arguments = sanitized_data.get("arguments")
+                    sanitized_arguments = (
+                        sanitize_tool_arguments(cast(dict[str, object], raw_arguments))
+                        if isinstance(raw_arguments, dict)
+                        else {}
+                    )
+                    payload = {
+                        "tool_name": segment.tool_name,
+                        "arguments": sanitized_arguments,
+                        "status": metadata.get("status"),
+                        "content": segment.content or "",
+                        "error": metadata.get("error"),
+                        "data": {
+                            key: value
+                            for key, value in sanitized_data.items()
+                            if key not in {"tool_call_id", "arguments"}
+                        },
+                        "truncated": metadata.get("truncated"),
+                        "partial": metadata.get("partial"),
+                        "reference": metadata.get("reference"),
+                    }
+                    tool_feedback_lines.append(
+                        json.dumps(payload, ensure_ascii=False, sort_keys=True)
+                    )
+                elif segment.role != "assistant":
+                    messages.append({"role": segment.role, "content": segment.content})
+            if tool_feedback_lines:
+                intro_line_1 = "Completed tool calls for current request:"
+                intro_line_2 = (
+                    "Use these results as latest state. "
+                    "Do not repeat completed calls unless retry is required."
+                )
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": "\n".join(
+                            (
+                                intro_line_1,
+                                intro_line_2,
+                                *tool_feedback_lines,
+                            )
+                        ),
+                    }
+                )
+            return messages
+
+        for segment in assembled_context.segments:
+            if segment.role == "assistant" and segment.tool_name is not None:
+                tool_call_id = _normalize_tool_call_id(
+                    segment.tool_call_id,
+                    fallback=segment.tool_name,
+                )
+                sanitized_arguments = sanitize_tool_arguments(segment.tool_arguments or {})
+                arguments = json.dumps(
+                    sanitized_arguments,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": segment.content,
+                        "tool_calls": [
+                            {
+                                "id": tool_call_id,
+                                "type": "function",
+                                "function": {
+                                    "name": segment.tool_name,
+                                    "arguments": arguments,
+                                },
+                            }
+                        ],
+                    }
+                )
+                continue
+            if segment.role == "tool":
+                metadata = segment.metadata or {}
+                raw_data = metadata.get("data")
+                sanitized_data = (
+                    sanitize_tool_result_data(cast(dict[str, object], raw_data))
+                    if isinstance(raw_data, dict)
+                    else {}
+                )
+                payload = {
+                    "tool_name": segment.tool_name,
+                    "content": segment.content or "",
+                    "status": metadata.get("status"),
+                    "error": metadata.get("error"),
+                    "data": {
+                        key: value
+                        for key, value in sanitized_data.items()
+                        if key not in {"tool_call_id", "arguments"}
+                    },
+                    "truncated": metadata.get("truncated"),
+                    "partial": metadata.get("partial"),
+                    "reference": metadata.get("reference"),
+                }
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": _normalize_tool_call_id(
+                            segment.tool_call_id,
+                            fallback=segment.tool_name or "voidcode_tool",
+                        ),
+                        "content": json.dumps(payload, ensure_ascii=False, sort_keys=True),
+                    }
+                )
+                continue
+            messages.append({"role": segment.role, "content": segment.content})
         return messages
 
     def _auth_kwargs(self) -> dict[str, object]:

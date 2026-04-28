@@ -9,6 +9,23 @@ from typing import Any, get_type_hints
 import pytest
 
 
+class _StubSegment:
+    role = "user"
+    content = "Inspect the repo"
+    tool_call_id = None
+    tool_name = None
+    tool_arguments = None
+    metadata = None
+
+
+class _StubAssembledContext:
+    prompt = "Inspect the repo"
+    tool_results = ()
+    continuity_state = None
+    segments = (_StubSegment(),)
+    metadata: dict[str, object] = {}
+
+
 def _runtime_module() -> ModuleType:
     return importlib.import_module("voidcode.runtime")
 
@@ -71,7 +88,11 @@ def test_contract_modules_export_expected_symbols() -> None:
     )
     runtime_response = runtime.RuntimeResponse(session=session, events=(event,), output="done")
     stream_chunk = runtime.RuntimeStreamChunk(kind="event", session=session, event=event)
-    graph_request = graph.GraphRunRequest(session=session, prompt=runtime_request.prompt)
+    graph_request = graph.GraphRunRequest(
+        session=session,
+        prompt=runtime_request.prompt,
+        assembled_context=_StubAssembledContext(),
+    )
 
     assert session.session.id == "session-1"
     assert session.session.parent_id == "session-parent"

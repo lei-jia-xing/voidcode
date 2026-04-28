@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from ..provider.protocol import (
-    AppliedSkill,
+    ProviderAssembledContext,
+    ProviderContextSegment,
     ProviderExecutionError,
     ProviderStreamEvent,
     ProviderTokenUsage,
@@ -13,7 +14,8 @@ from ..provider.protocol import (
 )
 
 __all__ = [
-    "AppliedSkill",
+    "ProviderAssembledContext",
+    "ProviderContextSegment",
     "ProviderExecutionError",
     "ProviderStreamEvent",
     "ProviderTokenUsage",

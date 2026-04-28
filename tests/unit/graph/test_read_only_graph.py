@@ -4,14 +4,23 @@ import pytest
 
 from voidcode.graph import GraphRunRequest
 from voidcode.graph.deterministic_graph import DeterministicGraph
+from voidcode.runtime.context_window import RuntimeAssembledContext, RuntimeContextSegment
 from voidcode.runtime.session import SessionRef, SessionState
 from voidcode.tools.contracts import ToolDefinition, ToolResult
 
 
 def _request(prompt: str) -> GraphRunRequest:
+    assembled = RuntimeAssembledContext(
+        prompt=prompt,
+        tool_results=(),
+        continuity_state=None,
+        segments=(RuntimeContextSegment(role="user", content=prompt),),
+        metadata={},
+    )
     return GraphRunRequest(
         session=SessionState(session=SessionRef(id="graph-session"), status="running", turn=1),
         prompt=prompt,
+        assembled_context=assembled,
         available_tools=(
             ToolDefinition(name="read_file", description="Read file", read_only=True),
             ToolDefinition(name="grep", description="Grep files", read_only=True),

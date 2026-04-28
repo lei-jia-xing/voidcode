@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Literal, cast, final
 
 from ..acp import AcpDelegatedExecution, AcpEventEnvelope, AcpRequestEnvelope, AcpResponseEnvelope
 from ..agent import get_builtin_agent_manifest, list_builtin_agent_manifests
+from ..agent.prompts import render_agent_prompt
 from ..command import (
     COMMAND_RESOLVED,
     is_prompt_command,
@@ -95,8 +96,10 @@ from .config import (
 )
 from .context_window import (
     ContextWindowPolicy,
+    RuntimeAssembledContext,
     RuntimeContextWindow,
     RuntimeContinuityState,
+    assemble_provider_context,
     prepare_provider_context,
 )
 from .contracts import (
@@ -1336,11 +1339,33 @@ class VoidCodeRuntime:
         session: SessionState,
         *,
         events: tuple[EventEnvelope, ...],
+        force_loaded_skills: tuple[dict[str, object], ...] = (),
     ) -> SessionState:
         loaded_payloads = [
             event.payload for event in events if event.event_type == "runtime.skill_loaded"
         ]
-        if not loaded_payloads:
+        implicit_force_loaded: tuple[dict[str, object], ...] = ()
+        raw_snapshot = session.metadata.get("skill_snapshot")
+        if isinstance(raw_snapshot, dict):
+            snapshot_payload = cast(dict[str, object], raw_snapshot)
+            applied_payloads = snapshot_payload.get("applied_skill_payloads")
+            if isinstance(applied_payloads, list):
+                normalized: list[dict[str, object]] = []
+                for item in cast(list[object], applied_payloads):
+                    if not isinstance(item, dict):
+                        continue
+                    payload = cast(dict[str, object], item)
+                    normalized.append(
+                        {
+                            "name": payload.get("name"),
+                            "source": "force_load",
+                            "source_path": payload.get("source_path"),
+                        }
+                    )
+                implicit_force_loaded = tuple(normalized)
+
+        merged_payloads = [*loaded_payloads, *force_loaded_skills, *implicit_force_loaded]
+        if not merged_payloads:
             return session
         return SessionState(
             session=session.session,
@@ -1348,7 +1373,7 @@ class VoidCodeRuntime:
             turn=session.turn,
             metadata={
                 **session.metadata,
-                "loaded_skills": loaded_payloads,
+                "loaded_skills": merged_payloads,
             },
         )
 
@@ -1503,15 +1528,12 @@ class VoidCodeRuntime:
             agent=effective_config.agent,
             source="run",
         )
-        frozen_applied_skills = skill_snapshot.applied_skill_payloads
         catalog_skill_context = self._catalog_skill_context(
             skill_registry,
             available_skill_names=tuple(loaded_skill_names),
             selected_skill_names=skill_snapshot.selected_skill_names,
         )
-        skill_prompt_context = skill_snapshot.skill_prompt_context
-        if not frozen_applied_skills:
-            skill_prompt_context = catalog_skill_context
+        skill_prompt_context = skill_snapshot.skill_prompt_context or catalog_skill_context
         if skills_config is not None and skills_config.enabled is True:
             session = SessionState(
                 session=session.session,
@@ -1564,12 +1586,16 @@ class VoidCodeRuntime:
             session=session,
             prompt=request.prompt,
             available_tools=tool_registry.definitions(),
-            applied_skills=frozen_applied_skills,
-            skill_prompt_context=skill_prompt_context,
             context_window=self._prepare_provider_context_window(
                 prompt=request.prompt,
                 tool_results=(),
                 session_metadata=session.metadata,
+            ),
+            assembled_context=self._assemble_provider_context(
+                prompt=request.prompt,
+                tool_results=(),
+                session_metadata=session.metadata,
+                skill_prompt_context=skill_prompt_context,
             ),
             metadata={
                 **request_metadata,
@@ -4422,6 +4448,61 @@ class VoidCodeRuntime:
             policy=policy or self._default_context_window_policy,
         )
 
+    def _assemble_provider_context(
+        self,
+        *,
+        prompt: str,
+        tool_results: tuple[ToolResult, ...],
+        session_metadata: dict[str, object],
+        skill_prompt_context: str = "",
+        preserved_system_segments: tuple[str, ...] = (),
+    ) -> RuntimeAssembledContext:
+        effective_config = self._effective_runtime_config_from_metadata(session_metadata)
+        provider_attempt = self._provider_attempt_from_metadata(session_metadata)
+        policy = self._context_window_policy_from_config(
+            effective_config.context_window,
+            resolved_provider=None,
+            provider_attempt=provider_attempt,
+        )
+        policy = self._context_window_policy_for_provider_attempt(
+            policy,
+            resolved_provider=effective_config.resolved_provider,
+            provider_attempt=provider_attempt,
+        )
+        raw_loaded = session_metadata.get("loaded_skills", [])
+        loaded_skills: tuple[dict[str, object], ...] = ()
+        if isinstance(raw_loaded, list):
+            typed: list[dict[str, object]] = []
+            for item in cast(list[object], raw_loaded):
+                if isinstance(item, dict):
+                    entry: dict[str, object] = {}
+                    for k, v in cast(dict[object, object], item).items():
+                        if isinstance(k, str):
+                            entry[k] = v
+                    typed.append(entry)
+            loaded_skills = tuple(typed)
+        raw_agent_preset = session_metadata.get("agent_preset")
+        agent_preset = (
+            cast(dict[str, object], raw_agent_preset)
+            if isinstance(raw_agent_preset, dict)
+            else None
+        )
+        model_family = effective_config.resolved_provider.active_target.selection.provider
+        agent_prompt_context = render_agent_prompt(agent_preset, model_family=model_family) or ""
+        return assemble_provider_context(
+            prompt=prompt,
+            tool_results=tool_results,
+            session_metadata=session_metadata,
+            policy=policy or self._default_context_window_policy,
+            agent_prompt_context=agent_prompt_context,
+            skill_prompt_context=skill_prompt_context,
+            preserved_system_segments=preserved_system_segments,
+            loaded_skills=loaded_skills,
+            preserved_continuity_state=self._continuity_state_from_session_metadata(
+                session_metadata
+            ),
+        )
+
     @staticmethod
     def _continuity_state_from_session_metadata(
         session_metadata: dict[str, object],
@@ -4728,6 +4809,19 @@ class VoidCodeRuntime:
             "applied_skills": [payload["name"] for payload in snapshot.applied_skill_payloads],
             "skill_snapshot": snapshot_payload(snapshot),
         }
+
+    @staticmethod
+    def _force_loaded_skill_payloads(
+        snapshot: SkillExecutionSnapshot,
+    ) -> tuple[dict[str, object], ...]:
+        return tuple(
+            {
+                "name": payload.get("name"),
+                "source": "force_load",
+                "source_path": payload.get("source_path"),
+            }
+            for payload in snapshot.applied_skill_payloads
+        )
 
     def _skill_snapshot_from_metadata(
         self,

@@ -51,16 +51,121 @@ class _StubContextWindow:
         return self._continuity_state
 
 
+@dataclass(frozen=True, slots=True)
+class _StubSegment:
+    role: str
+    content: str | None
+    tool_call_id: str | None = None
+    tool_name: str | None = None
+    tool_arguments: dict[str, object] | None = None
+    metadata: dict[str, object] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _StubAssembledContext:
+    prompt: str
+    tool_results: tuple[ToolResult, ...]
+    continuity_state: object | None
+    segments: tuple[_StubSegment, ...]
+    metadata: dict[str, object]
+
+
+def _assembled_from_legacy(
+    *,
+    prompt: str,
+    tool_results: tuple[ToolResult, ...],
+    context_window: _StubContextWindow,
+    applied_skills: tuple[dict[str, str], ...],
+    skill_prompt_context: str = "",
+) -> _StubAssembledContext:
+    continuity_state = context_window.continuity_state
+    segments: list[_StubSegment] = []
+    skill_message = skill_prompt_context.strip()
+    if not skill_message and applied_skills:
+        rendered_skills: list[str] = []
+        for skill in applied_skills:
+            name = skill.get("name", "").strip() or "unnamed-skill"
+            description = skill.get("description", "").strip()
+            content = skill.get("prompt_context", "").strip() or skill.get("content", "").strip()
+            lines = [f"## {name}"]
+            if description:
+                lines.append(f"Description: {description}")
+            if content:
+                lines.append(content)
+            rendered_skills.append("\n".join(lines))
+        if rendered_skills:
+            skill_message = (
+                "You must apply the following runtime-managed skills for this turn. "
+                "Treat them as active task instructions in addition to the user's request.\n\n"
+                + "\n\n".join(rendered_skills)
+            )
+    if skill_message:
+        segments.append(_StubSegment(role="system", content=skill_message))
+    if continuity_state is not None:
+        summary_text = getattr(continuity_state, "summary_text", None)
+        if isinstance(summary_text, str) and summary_text.strip():
+            segments.append(
+                _StubSegment(
+                    role="system",
+                    content=f"Runtime continuity summary:\n{summary_text.strip()}",
+                )
+            )
+    segments.append(_StubSegment(role="user", content=prompt))
+    for index, result in enumerate(tool_results, start=1):
+        raw_tool_call_id = result.data.get("tool_call_id")
+        tool_call_id = (
+            raw_tool_call_id
+            if isinstance(raw_tool_call_id, str) and raw_tool_call_id.strip()
+            else f"voidcode_tool_{index}"
+        )
+        raw_arguments = result.data.get("arguments")
+        tool_arguments = raw_arguments if isinstance(raw_arguments, dict) else {}
+        segments.append(
+            _StubSegment(
+                role="assistant",
+                content=None,
+                tool_call_id=tool_call_id,
+                tool_name=result.tool_name,
+                tool_arguments=tool_arguments,
+            )
+        )
+        segments.append(
+            _StubSegment(
+                role="tool",
+                content=result.content or "",
+                tool_call_id=tool_call_id,
+                tool_name=result.tool_name,
+                metadata={
+                    "status": result.status,
+                    "error": result.error,
+                    "data": result.data,
+                    "truncated": result.truncated,
+                    "partial": result.partial,
+                    "reference": result.reference,
+                },
+            )
+        )
+    return _StubAssembledContext(
+        prompt=prompt,
+        tool_results=tool_results,
+        continuity_state=continuity_state,
+        segments=tuple(segments),
+        metadata={},
+    )
+
+
 def _build_turn_request(*, model_name: str) -> ProviderTurnRequest:
     tool_results: tuple[ToolResult, ...] = ()
     return ProviderTurnRequest(
-        prompt="read sample.txt",
+        assembled_context=_assembled_from_legacy(
+            prompt="read sample.txt",
+            tool_results=tool_results,
+            context_window=_StubContextWindow(prompt="read sample.txt", tool_results=tool_results),
+            applied_skills=(),
+        ),
         available_tools=(
             ToolDefinition(name="read_file", description="read file", read_only=True),
         ),
-        tool_results=tool_results,
-        context_window=_StubContextWindow(prompt="read sample.txt", tool_results=tool_results),
-        applied_skills=(),
         raw_model=f"{model_name}/demo",
         provider_name=model_name,
         model_name="demo",
@@ -88,18 +193,22 @@ def _prompt_materialization_payload(
 def _build_turn_request_with_skill(*, model_name: str) -> ProviderTurnRequest:
     tool_results: tuple[ToolResult, ...] = ()
     return ProviderTurnRequest(
-        prompt="summarize sample.txt",
+        assembled_context=_assembled_from_legacy(
+            prompt="summarize sample.txt",
+            tool_results=tool_results,
+            context_window=_StubContextWindow(
+                prompt="summarize sample.txt", tool_results=tool_results
+            ),
+            applied_skills=(
+                {
+                    "name": "summarize",
+                    "description": "Summarize selected files.",
+                    "content": "# Summarize\nUse concise bullet points.",
+                },
+            ),
+        ),
         available_tools=(
             ToolDefinition(name="read_file", description="read file", read_only=True),
-        ),
-        tool_results=tool_results,
-        context_window=_StubContextWindow(prompt="summarize sample.txt", tool_results=tool_results),
-        applied_skills=(
-            {
-                "name": "summarize",
-                "description": "Summarize selected files.",
-                "content": "# Summarize\nUse concise bullet points.",
-            },
         ),
         raw_model=f"{model_name}/demo",
         provider_name=model_name,
@@ -112,25 +221,27 @@ def _build_turn_request_with_skill(*, model_name: str) -> ProviderTurnRequest:
 def _build_turn_request_with_continuity(*, model_name: str) -> ProviderTurnRequest:
     tool_results: tuple[ToolResult, ...] = ()
     return ProviderTurnRequest(
-        prompt="summarize sample.txt",
+        assembled_context=_assembled_from_legacy(
+            prompt="summarize sample.txt",
+            tool_results=tool_results,
+            context_window=_StubContextWindow(
+                prompt="summarize sample.txt",
+                tool_results=tool_results,
+                compacted=True,
+                retained_tool_result_count=1,
+                _continuity_state=_StubContinuityState(
+                    summary_text=(
+                        "Compacted 2 earlier tool results:\n"
+                        '1. read_file ok path=sample.txt content_preview="old"\n'
+                        '2. read_file ok path=sample.txt content_preview="older"'
+                    )
+                ),
+            ),
+            applied_skills=(),
+        ),
         available_tools=(
             ToolDefinition(name="read_file", description="read file", read_only=True),
         ),
-        tool_results=tool_results,
-        context_window=_StubContextWindow(
-            prompt="summarize sample.txt",
-            tool_results=tool_results,
-            compacted=True,
-            retained_tool_result_count=1,
-            _continuity_state=_StubContinuityState(
-                summary_text=(
-                    "Compacted 2 earlier tool results:\n"
-                    '1. read_file ok path=sample.txt content_preview="old"\n'
-                    '2. read_file ok path=sample.txt content_preview="older"'
-                )
-            ),
-        ),
-        applied_skills=(),
         raw_model=f"{model_name}/demo",
         provider_name=model_name,
         model_name="demo",
@@ -326,7 +437,12 @@ def test_provider_adapter_wraps_internal_tool_property_schema(
     provider = OpenAIModelProvider().turn_provider()
     request = _build_turn_request(model_name="openai")
     request = ProviderTurnRequest(
-        prompt=request.prompt,
+        assembled_context=_assembled_from_legacy(
+            prompt=request.prompt,
+            tool_results=request.tool_results,
+            context_window=request.context_window,
+            applied_skills=request.applied_skills,
+        ),
         available_tools=(
             ToolDefinition(
                 name="write_file",
@@ -338,9 +454,6 @@ def test_provider_adapter_wraps_internal_tool_property_schema(
                 read_only=False,
             ),
         ),
-        tool_results=request.tool_results,
-        context_window=request.context_window,
-        applied_skills=request.applied_skills,
         raw_model=request.raw_model,
         provider_name=request.provider_name,
         model_name=request.model_name,
@@ -378,7 +491,12 @@ def test_provider_adapter_wraps_property_schema_with_description_argument(
     provider = OpenAIModelProvider().turn_provider()
     request = _build_turn_request(model_name="openai")
     request = ProviderTurnRequest(
-        prompt=request.prompt,
+        assembled_context=_assembled_from_legacy(
+            prompt=request.prompt,
+            tool_results=request.tool_results,
+            context_window=request.context_window,
+            applied_skills=request.applied_skills,
+        ),
         available_tools=(
             ToolDefinition(
                 name="demo_tool",
@@ -387,9 +505,6 @@ def test_provider_adapter_wraps_property_schema_with_description_argument(
                 read_only=True,
             ),
         ),
-        tool_results=request.tool_results,
-        context_window=request.context_window,
-        applied_skills=request.applied_skills,
         raw_model=request.raw_model,
         provider_name=request.provider_name,
         model_name=request.model_name,
@@ -424,11 +539,13 @@ def test_provider_adapter_wraps_task_tool_description_argument(
     provider = OpenAIModelProvider().turn_provider()
     request = _build_turn_request(model_name="openai")
     request = ProviderTurnRequest(
-        prompt=request.prompt,
+        assembled_context=_assembled_from_legacy(
+            prompt=request.prompt,
+            tool_results=request.tool_results,
+            context_window=request.context_window,
+            applied_skills=request.applied_skills,
+        ),
         available_tools=(TaskTool.definition,),
-        tool_results=request.tool_results,
-        context_window=request.context_window,
-        applied_skills=request.applied_skills,
         raw_model=request.raw_model,
         provider_name=request.provider_name,
         model_name=request.model_name,
@@ -469,7 +586,12 @@ def test_provider_adapter_preserves_object_schema_without_explicit_type(
     provider = OpenAIModelProvider().turn_provider()
     request = _build_turn_request(model_name="openai")
     request = ProviderTurnRequest(
-        prompt=request.prompt,
+        assembled_context=_assembled_from_legacy(
+            prompt=request.prompt,
+            tool_results=request.tool_results,
+            context_window=request.context_window,
+            applied_skills=request.applied_skills,
+        ),
         available_tools=(
             ToolDefinition(
                 name="mcp_search",
@@ -484,9 +606,6 @@ def test_provider_adapter_preserves_object_schema_without_explicit_type(
                 read_only=True,
             ),
         ),
-        tool_results=request.tool_results,
-        context_window=request.context_window,
-        applied_skills=request.applied_skills,
         raw_model=request.raw_model,
         provider_name=request.provider_name,
         model_name=request.model_name,
@@ -701,15 +820,19 @@ def test_provider_adapter_prefers_runtime_skill_prompt_context(
     provider = provider.turn_provider()
     request = _build_turn_request_with_skill(model_name="openai")
     request = ProviderTurnRequest(
-        prompt=request.prompt,
+        assembled_context=_assembled_from_legacy(
+            prompt=request.prompt,
+            tool_results=request.tool_results,
+            context_window=request.context_window,
+            applied_skills=(),
+            skill_prompt_context=(
+                "Runtime skill context\n\nSkill: summarize\nInstructions:\nBe brief."
+            ),
+        ),
         available_tools=request.available_tools,
-        tool_results=request.tool_results,
-        context_window=request.context_window,
-        applied_skills=request.applied_skills,
         raw_model=request.raw_model,
         provider_name=request.provider_name,
         model_name=request.model_name,
-        skill_prompt_context="Runtime skill context\n\nSkill: summarize\nInstructions:\nBe brief.",
         attempt=request.attempt,
         abort_signal=request.abort_signal,
     )
@@ -787,15 +910,17 @@ def test_provider_adapter_omits_continuity_message_without_summary_text(
     provider = provider.turn_provider()
     request = _build_turn_request(model_name="openai")
     request = ProviderTurnRequest(
-        prompt=request.prompt,
-        available_tools=request.available_tools,
-        tool_results=request.tool_results,
-        context_window=_StubContextWindow(
-            prompt=request.context_window.prompt,
-            tool_results=request.context_window.tool_results,
-            _continuity_state=_StubContinuityState(summary_text="   "),
+        assembled_context=_assembled_from_legacy(
+            prompt=request.prompt,
+            tool_results=request.tool_results,
+            context_window=_StubContextWindow(
+                prompt=request.context_window.prompt,
+                tool_results=request.context_window.tool_results,
+                _continuity_state=_StubContinuityState(summary_text="   "),
+            ),
+            applied_skills=request.applied_skills,
         ),
-        applied_skills=request.applied_skills,
+        available_tools=request.available_tools,
         raw_model=request.raw_model,
         provider_name=request.provider_name,
         model_name=request.model_name,
@@ -826,14 +951,16 @@ def test_provider_adapter_includes_tool_result_context(
     request = _build_turn_request(model_name="openai")
     tool_results = (ToolResult(tool_name="read_file", status="ok", content="hello world"),)
     request = ProviderTurnRequest(
-        prompt=request.prompt,
-        available_tools=request.available_tools,
-        tool_results=tool_results,
-        context_window=_StubContextWindow(
-            prompt=request.context_window.prompt,
+        assembled_context=_assembled_from_legacy(
+            prompt=request.prompt,
             tool_results=tool_results,
+            context_window=_StubContextWindow(
+                prompt=request.context_window.prompt,
+                tool_results=tool_results,
+            ),
+            applied_skills=request.applied_skills,
         ),
-        applied_skills=request.applied_skills,
+        available_tools=request.available_tools,
         raw_model=request.raw_model,
         provider_name=request.provider_name,
         model_name=request.model_name,
@@ -901,14 +1028,16 @@ def test_provider_adapter_includes_truncated_tool_reference_without_full_output(
         ),
     )
     request = ProviderTurnRequest(
-        prompt=request.prompt,
-        available_tools=request.available_tools,
-        tool_results=tool_results,
-        context_window=_StubContextWindow(
-            prompt=request.context_window.prompt,
+        assembled_context=_assembled_from_legacy(
+            prompt=request.prompt,
             tool_results=tool_results,
+            context_window=_StubContextWindow(
+                prompt=request.context_window.prompt,
+                tool_results=tool_results,
+            ),
+            applied_skills=request.applied_skills,
         ),
-        applied_skills=request.applied_skills,
+        available_tools=request.available_tools,
         raw_model=request.raw_model,
         provider_name=request.provider_name,
         model_name=request.model_name,
@@ -956,14 +1085,16 @@ def test_provider_adapter_sanitizes_tool_arguments_and_inline_blobs(
         ),
     )
     request = ProviderTurnRequest(
-        prompt=request.prompt,
-        available_tools=request.available_tools,
-        tool_results=tool_results,
-        context_window=_StubContextWindow(
-            prompt=request.context_window.prompt,
+        assembled_context=_assembled_from_legacy(
+            prompt=request.prompt,
             tool_results=tool_results,
+            context_window=_StubContextWindow(
+                prompt=request.context_window.prompt,
+                tool_results=tool_results,
+            ),
+            applied_skills=request.applied_skills,
         ),
-        applied_skills=request.applied_skills,
+        available_tools=request.available_tools,
         raw_model=request.raw_model,
         provider_name=request.provider_name,
         model_name=request.model_name,
@@ -1007,14 +1138,16 @@ def test_provider_adapter_includes_tool_result_errors(
         ToolResult(tool_name="read_file", status="error", error="sample.txt not found"),
     )
     request = ProviderTurnRequest(
-        prompt=request.prompt,
-        available_tools=request.available_tools,
-        tool_results=tool_results,
-        context_window=_StubContextWindow(
-            prompt=request.context_window.prompt,
+        assembled_context=_assembled_from_legacy(
+            prompt=request.prompt,
             tool_results=tool_results,
+            context_window=_StubContextWindow(
+                prompt=request.context_window.prompt,
+                tool_results=tool_results,
+            ),
+            applied_skills=request.applied_skills,
         ),
-        applied_skills=request.applied_skills,
+        available_tools=request.available_tools,
         raw_model=request.raw_model,
         provider_name=request.provider_name,
         model_name=request.model_name,
@@ -1063,14 +1196,16 @@ def test_provider_adapter_preserves_tool_call_id_and_arguments_in_tool_history(
         ),
     )
     request = ProviderTurnRequest(
-        prompt=request.prompt,
-        available_tools=request.available_tools,
-        tool_results=tool_results,
-        context_window=_StubContextWindow(
-            prompt=request.context_window.prompt,
+        assembled_context=_assembled_from_legacy(
+            prompt=request.prompt,
             tool_results=tool_results,
+            context_window=_StubContextWindow(
+                prompt=request.context_window.prompt,
+                tool_results=tool_results,
+            ),
+            applied_skills=request.applied_skills,
         ),
-        applied_skills=request.applied_skills,
+        available_tools=request.available_tools,
         raw_model=request.raw_model,
         provider_name=request.provider_name,
         model_name=request.model_name,
@@ -1126,14 +1261,16 @@ def test_opencode_go_provider_uses_user_tool_feedback_for_compatibility(
         ),
     )
     request = ProviderTurnRequest(
-        prompt=request.prompt,
-        available_tools=request.available_tools,
-        tool_results=tool_results,
-        context_window=_StubContextWindow(
-            prompt=request.context_window.prompt,
+        assembled_context=_assembled_from_legacy(
+            prompt=request.prompt,
             tool_results=tool_results,
+            context_window=_StubContextWindow(
+                prompt=request.context_window.prompt,
+                tool_results=tool_results,
+            ),
+            applied_skills=request.applied_skills,
         ),
-        applied_skills=request.applied_skills,
+        available_tools=request.available_tools,
         raw_model="opencode-go/kimi-k2.6",
         provider_name="opencode-go",
         model_name="kimi-k2.6",
@@ -1158,7 +1295,7 @@ def test_opencode_go_provider_uses_user_tool_feedback_for_compatibility(
     assert messages[1]["role"] == "user"
     feedback = messages[1]["content"]
     assert isinstance(feedback, str)
-    assert "tool calls have already completed" in feedback
+    assert "Completed tool calls for current request:" in feedback
     assert '"tool_name": "list"' in feedback
     assert '"arguments": {"path": "."}' in feedback
     assert "tool_calls" not in messages[1]
@@ -1185,14 +1322,16 @@ def test_opencode_go_provider_sanitizes_user_tool_feedback(
         ),
     )
     request = ProviderTurnRequest(
-        prompt=request.prompt,
-        available_tools=request.available_tools,
-        tool_results=tool_results,
-        context_window=_StubContextWindow(
-            prompt=request.context_window.prompt,
+        assembled_context=_assembled_from_legacy(
+            prompt=request.prompt,
             tool_results=tool_results,
+            context_window=_StubContextWindow(
+                prompt=request.context_window.prompt,
+                tool_results=tool_results,
+            ),
+            applied_skills=request.applied_skills,
         ),
-        applied_skills=request.applied_skills,
+        available_tools=request.available_tools,
         raw_model="opencode-go/glm-5.1",
         provider_name="opencode-go",
         model_name="glm-5.1",
@@ -1223,96 +1362,27 @@ def test_opencode_go_provider_sanitizes_user_tool_feedback(
     assert '"data_uri": {"byte_count"' in feedback
 
 
-@pytest.mark.parametrize(
-    ("agent_preset", "expected_fragment"),
-    [
-        (
-            {
-                "preset": "leader",
-                "prompt_profile": "leader",
-                "prompt_materialization": _prompt_materialization_payload("leader"),
-                "model": "openai/demo",
-                "execution_engine": "provider",
-            },
-            "VoidCode's leader agent",
-        ),
-        (
-            {
-                "preset": "worker",
-                "prompt_profile": "worker",
-                "prompt_materialization": _prompt_materialization_payload("worker"),
-                "model": "openai/demo",
-                "execution_engine": "provider",
-            },
-            "VoidCode's worker agent",
-        ),
-    ],
-)
-def test_provider_adapter_materializes_builtin_agent_prompt_profiles(
-    monkeypatch: pytest.MonkeyPatch,
-    agent_preset: dict[str, object],
-    expected_fragment: str,
-) -> None:
-    provider = OpenAIModelProvider()
-    provider = provider.turn_provider()
-    request = _build_turn_request(model_name="openai")
-    request = ProviderTurnRequest(
-        prompt=request.prompt,
-        available_tools=request.available_tools,
-        tool_results=request.tool_results,
-        context_window=request.context_window,
-        applied_skills=request.applied_skills,
-        raw_model=request.raw_model,
-        provider_name=request.provider_name,
-        model_name=request.model_name,
-        agent_preset=agent_preset,
-        attempt=request.attempt,
-        abort_signal=request.abort_signal,
-    )
-    _patch_litellm_completion(
-        monkeypatch,
-        mode="completion",
-        completion_content="hello world",
-    )
-
-    _ = provider.propose_turn(request)
-
-    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
-    assert isinstance(payload_obj, dict)
-    payload = cast(dict[str, object], payload_obj)
-    messages_obj = payload.get("messages")
-    assert isinstance(messages_obj, list)
-    messages = cast(list[dict[str, str]], messages_obj)
-    assert messages[0]["role"] == "system"
-    assert expected_fragment in messages[0]["content"]
-    assert messages[1] == {"role": "user", "content": "read sample.txt"}
-
-
-def test_provider_adapter_applies_serialized_model_family_prompt_override(
+def test_provider_adapter_uses_runtime_assembled_context_for_agent_system_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     provider = OpenAIModelProvider()
     provider = provider.turn_provider()
     request = _build_turn_request(model_name="openai")
     request = ProviderTurnRequest(
-        prompt=request.prompt,
-        available_tools=request.available_tools,
-        tool_results=request.tool_results,
-        context_window=request.context_window,
-        applied_skills=request.applied_skills,
-        raw_model=request.raw_model,
-        provider_name=request.provider_name,
-        model_name=request.model_name,
-        agent_preset={
-            "preset": "leader",
-            "prompt_profile": "leader",
-            "prompt_materialization": _prompt_materialization_payload(
-                "leader",
-                model_family_overrides={"openai": "worker"},
+        assembled_context=_StubAssembledContext(
+            prompt="read sample.txt",
+            tool_results=(),
+            continuity_state=None,
+            segments=(
+                _StubSegment(role="system", content="Runtime agent system prompt."),
+                _StubSegment(role="user", content="read sample.txt"),
             ),
-            "model": "openai/demo",
-            "execution_engine": "provider",
-        },
+            metadata={},
+        ),
+        available_tools=request.available_tools,
+        raw_model=request.raw_model,
+        provider_name=request.provider_name,
+        model_name=request.model_name,
         attempt=request.attempt,
         abort_signal=request.abort_signal,
     )
@@ -1331,32 +1401,31 @@ def test_provider_adapter_applies_serialized_model_family_prompt_override(
     assert isinstance(messages_obj, list)
     messages = cast(list[dict[str, str]], messages_obj)
     assert messages[0]["role"] == "system"
-    assert "VoidCode's worker agent" in messages[0]["content"]
+    assert messages[0]["content"] == "Runtime agent system prompt."
     assert messages[1] == {"role": "user", "content": "read sample.txt"}
 
 
-def test_provider_adapter_preserves_serialized_prompt_profile_override(
+def test_provider_adapter_uses_runtime_assembled_context_for_model_family_override(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     provider = OpenAIModelProvider()
     provider = provider.turn_provider()
     request = _build_turn_request(model_name="openai")
     request = ProviderTurnRequest(
-        prompt=request.prompt,
+        assembled_context=_StubAssembledContext(
+            prompt="read sample.txt",
+            tool_results=(),
+            continuity_state=None,
+            segments=(
+                _StubSegment(role="system", content="Runtime model-family override prompt."),
+                _StubSegment(role="user", content="read sample.txt"),
+            ),
+            metadata={},
+        ),
         available_tools=request.available_tools,
-        tool_results=request.tool_results,
-        context_window=request.context_window,
-        applied_skills=request.applied_skills,
         raw_model=request.raw_model,
         provider_name=request.provider_name,
         model_name=request.model_name,
-        agent_preset={
-            "preset": "leader",
-            "prompt_profile": "researcher",
-            "prompt_materialization": _prompt_materialization_payload("researcher"),
-            "model": "openai/demo",
-            "execution_engine": "provider",
-        },
         attempt=request.attempt,
         abort_signal=request.abort_signal,
     )
@@ -1375,31 +1444,74 @@ def test_provider_adapter_preserves_serialized_prompt_profile_override(
     assert isinstance(messages_obj, list)
     messages = cast(list[dict[str, str]], messages_obj)
     assert messages[0]["role"] == "system"
-    assert "VoidCode's researcher agent" in messages[0]["content"]
+    assert messages[0]["content"] == "Runtime model-family override prompt."
     assert messages[1] == {"role": "user", "content": "read sample.txt"}
 
 
-def test_provider_adapter_falls_back_for_unknown_agent_prompt_profile(
+def test_provider_adapter_uses_runtime_assembled_context_for_prompt_profile_override(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     provider = OpenAIModelProvider()
     provider = provider.turn_provider()
     request = _build_turn_request(model_name="openai")
     request = ProviderTurnRequest(
-        prompt=request.prompt,
+        assembled_context=_StubAssembledContext(
+            prompt="read sample.txt",
+            tool_results=(),
+            continuity_state=None,
+            segments=(
+                _StubSegment(role="system", content="Runtime prompt-profile message."),
+                _StubSegment(role="user", content="read sample.txt"),
+            ),
+            metadata={},
+        ),
         available_tools=request.available_tools,
-        tool_results=request.tool_results,
-        context_window=request.context_window,
-        applied_skills=request.applied_skills,
         raw_model=request.raw_model,
         provider_name=request.provider_name,
         model_name=request.model_name,
-        agent_preset={
-            "preset": "leader",
-            "prompt_profile": "custom-review",
-            "model": "openai/demo",
-            "execution_engine": "provider",
-        },
+        attempt=request.attempt,
+        abort_signal=request.abort_signal,
+    )
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        completion_content="hello world",
+    )
+
+    _ = provider.propose_turn(request)
+
+    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+    assert isinstance(payload_obj, dict)
+    payload = cast(dict[str, object], payload_obj)
+    messages_obj = payload.get("messages")
+    assert isinstance(messages_obj, list)
+    messages = cast(list[dict[str, str]], messages_obj)
+    assert messages[0]["role"] == "system"
+    assert messages[0]["content"] == "Runtime prompt-profile message."
+    assert messages[1] == {"role": "user", "content": "read sample.txt"}
+
+
+def test_provider_adapter_uses_runtime_assembled_context_for_unknown_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = OpenAIModelProvider()
+    provider = provider.turn_provider()
+    request = _build_turn_request(model_name="openai")
+    request = ProviderTurnRequest(
+        assembled_context=_StubAssembledContext(
+            prompt="read sample.txt",
+            tool_results=(),
+            continuity_state=None,
+            segments=(
+                _StubSegment(role="system", content="Runtime custom-review prompt."),
+                _StubSegment(role="user", content="read sample.txt"),
+            ),
+            metadata={},
+        ),
+        available_tools=request.available_tools,
+        raw_model=request.raw_model,
+        provider_name=request.provider_name,
+        model_name=request.model_name,
         attempt=request.attempt,
         abort_signal=request.abort_signal,
     )
@@ -1419,11 +1531,7 @@ def test_provider_adapter_falls_back_for_unknown_agent_prompt_profile(
     messages = cast(list[dict[str, str]], messages_obj)
     assert messages[0] == {
         "role": "system",
-        "content": (
-            "Runtime-selected VoidCode agent prompt profile: custom-review. "
-            "Treat this as the active agent role profile for this single-agent turn while "
-            "still following the runtime-provided tool and skill boundaries."
-        ),
+        "content": "Runtime custom-review prompt.",
     }
 
 
@@ -1482,13 +1590,15 @@ def test_opencode_go_provider_routes_model_families_to_required_sdk_adapter(
 
     result = provider.propose_turn(
         ProviderTurnRequest(
-            prompt="read sample.txt",
+            assembled_context=_assembled_from_legacy(
+                prompt="read sample.txt",
+                tool_results=(),
+                context_window=_StubContextWindow(prompt="read sample.txt", tool_results=()),
+                applied_skills=(),
+            ),
             available_tools=(
                 ToolDefinition(name="read_file", description="read file", read_only=True),
             ),
-            tool_results=(),
-            context_window=_StubContextWindow(prompt="read sample.txt", tool_results=()),
-            applied_skills=(),
             raw_model=f"opencode-go/{model_name}",
             provider_name="opencode-go",
             model_name=model_name,
