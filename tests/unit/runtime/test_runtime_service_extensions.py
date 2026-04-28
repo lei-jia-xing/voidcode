@@ -660,6 +660,41 @@ class _UnexpectedFallbackTurnProvider:
         return ProviderTurnResult(output="fallback used")
 
 
+class _ApprovalThenRateLimitModelProvider:
+    def __init__(self, *, name: str) -> None:
+        self.name = name
+        self.calls = 0
+
+    def turn_provider(self) -> _ApprovalThenRateLimitTurnProvider:
+        return _ApprovalThenRateLimitTurnProvider(model_provider=self)
+
+
+@dataclass(slots=True)
+class _ApprovalThenRateLimitTurnProvider:
+    model_provider: _ApprovalThenRateLimitModelProvider
+
+    @property
+    def name(self) -> str:
+        return self.model_provider.name
+
+    def propose_turn(self, request: object) -> ProviderTurnResult:
+        turn_request = cast(ProviderTurnRequest, request)
+        self.model_provider.calls += 1
+        if not turn_request.tool_results:
+            return ProviderTurnResult(
+                tool_call=ToolCall(
+                    tool_name="write_file",
+                    arguments={"path": "alpha.txt", "content": "1"},
+                )
+            )
+        raise ProviderExecutionError(
+            kind="rate_limit",
+            provider_name=self.name,
+            model_name=turn_request.model_name or "gpt-5.4",
+            message="rate limited after approval",
+        )
+
+
 class _TaskToolGraph:
     def step(
         self,
@@ -1065,6 +1100,59 @@ def test_runtime_background_rate_limit_retry_precedes_provider_fallback(
     assert child.output == "primary recovered"
     assert primary.attempts == 2
     assert fallback.calls == 0
+
+
+def test_runtime_background_retry_marker_does_not_persist_across_approval_resume(
+    tmp_path: Path,
+) -> None:
+    primary = _ApprovalThenRateLimitModelProvider(name="opencode")
+    fallback = _UnexpectedFallbackModelProvider(name="custom")
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        model_provider_registry=ModelProviderRegistry(
+            providers={"opencode": primary, "custom": fallback}
+        ),
+        config=RuntimeConfig(
+            approval_mode="ask",
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            provider_fallback=RuntimeProviderFallbackConfig(
+                preferred_model="opencode/gpt-5.4",
+                fallback_models=("custom/demo",),
+            ),
+        ),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    started = runtime.start_background_task(RuntimeRequest(prompt="background approval"))
+    running = _wait_for_background_task_session(runtime, started.task.id)
+    child_session_id = cast(str, running.session_id)
+    child_response = _wait_for_session_event(
+        runtime,
+        child_session_id,
+        "runtime.approval_requested",
+    )
+    approval_request_id = cast(str, child_response.events[-1].payload["request_id"])
+
+    assert child_response.session.status == "waiting"
+    assert "background_rate_limit_retry" not in child_response.session.metadata
+
+    resumed = runtime.resume(
+        child_session_id,
+        approval_request_id=approval_request_id,
+        approval_decision="allow",
+    )
+    completed = runtime.load_background_task(started.task.id)
+    fallback_events = [
+        event for event in resumed.events if event.event_type == "runtime.provider_fallback"
+    ]
+
+    assert resumed.session.status == "completed"
+    assert resumed.output == "fallback used"
+    assert completed.status == "completed"
+    assert primary.calls >= 2
+    assert fallback.calls == 1
+    assert len(fallback_events) == 1
 
 
 def test_runtime_session_debug_snapshot_reports_completed_state(tmp_path: Path) -> None:

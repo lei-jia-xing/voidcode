@@ -1368,12 +1368,14 @@ class VoidCodeRuntime:
         if self._graph_override is None:
             self._validate_provider_execution_ready(effective_config)
         request_metadata = self._fresh_request_metadata(request.metadata)
+        session_request_metadata = dict(request_metadata)
+        session_request_metadata.pop("background_rate_limit_retry", None)
         session = SessionState(
             session=SessionRef(id=resolved_session_id, parent_id=request.parent_session_id),
             status="running",
             turn=1,
             metadata={
-                **request_metadata,
+                **session_request_metadata,
                 "workspace": str(self._workspace),
                 "runtime_config": self._runtime_config_metadata(effective_config),
                 "runtime_state": self._runtime_state_metadata(run_id=run_id),
