@@ -107,6 +107,41 @@ def test_parse_provider_api_error_maps_unsupported_feature() -> None:
     assert parsed.fallback_allowed is True
 
 
+def test_parse_provider_api_error_checks_unsupported_feature_before_403_fallback() -> None:
+    parsed = parse_provider_api_error(
+        {"status_code": 403, "message": "Streaming is not supported for this model"}
+    )
+
+    assert parsed.kind == "unsupported_feature"
+    assert parsed.retryable is False
+    assert parsed.fallback_allowed is True
+    assert "unsupported provider feature" in parsed.guidance
+
+
+def test_parse_provider_api_error_keeps_explicit_auth_code_before_feature_marker() -> None:
+    parsed = parse_provider_api_error(
+        {
+            "status_code": 403,
+            "error": {
+                "code": "invalid_api_key",
+                "message": "invalid api key; streaming is not supported",
+            },
+        }
+    )
+
+    assert parsed.kind == "missing_auth"
+
+
+def test_parse_provider_api_error_checks_tool_shape_before_403_fallback() -> None:
+    parsed = parse_provider_api_error(
+        {"status_code": 403, "message": "stream tool payload is malformed"}
+    )
+
+    assert parsed.kind == "stream_tool_feedback_shape"
+    assert parsed.retryable is False
+    assert parsed.fallback_allowed is True
+
+
 def test_parse_provider_stream_error_maps_context_length_exceeded_code() -> None:
     parsed = parse_provider_stream_error(
         {

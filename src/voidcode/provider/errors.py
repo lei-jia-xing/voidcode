@@ -240,22 +240,6 @@ def _classify_api_error_kind(
     ):
         return "missing_auth"
 
-    if status_code == 403:
-        if any(pattern.search(message) is not None for pattern in _INVALID_MODEL_PATTERNS):
-            return "invalid_model"
-        if any(
-            marker in lowered_message
-            for marker in (
-                "not authorized for model",
-                "model access",
-                "model unavailable",
-                "permission to access model",
-                "usage not included",
-            )
-        ):
-            return "invalid_model"
-        return "missing_auth"
-
     if any(
         marker in lowered_message
         for marker in (
@@ -277,6 +261,22 @@ def _classify_api_error_kind(
         )
     ):
         return "stream_tool_feedback_shape"
+
+    if status_code == 403:
+        if any(pattern.search(message) is not None for pattern in _INVALID_MODEL_PATTERNS):
+            return "invalid_model"
+        if any(
+            marker in lowered_message
+            for marker in (
+                "not authorized for model",
+                "model access",
+                "model unavailable",
+                "permission to access model",
+                "usage not included",
+            )
+        ):
+            return "invalid_model"
+        return "missing_auth"
 
     if any(pattern.search(message) is not None for pattern in _INVALID_MODEL_PATTERNS):
         return "invalid_model"
