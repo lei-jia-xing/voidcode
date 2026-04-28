@@ -27,9 +27,16 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
+import pytest
+
 from .._paths import with_src_pythonpath
 
-_ = os.environ.setdefault("VOIDCODE_EXECUTION_ENGINE", "deterministic")
+pytestmark = pytest.mark.usefixtures("_force_deterministic_engine_default")
+
+
+@pytest.fixture
+def _force_deterministic_engine_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("VOIDCODE_EXECUTION_ENGINE", "deterministic")
 
 
 def _run_module_cli(
@@ -744,7 +751,10 @@ def test_cli_tasks_surfaces_real_runtime_waiting_approval_and_cancel(
 
     runtime = runtime_module.VoidCodeRuntime(
         workspace=tmp_path,
-        config=config_module.RuntimeConfig(approval_mode="ask"),
+        config=config_module.RuntimeConfig(
+            approval_mode="ask",
+            execution_engine="deterministic",
+        ),
         permission_policy=permission_module.PermissionPolicy(mode="ask"),
     )
     (tmp_path / "sample.txt").write_text("leader\n", encoding="utf-8")
@@ -831,7 +841,7 @@ def test_cli_tasks_output_falls_back_when_child_session_lookup_fails(capsys: Any
         approval_blocked=False,
         result_available=True,
         summary_output="Failed: delegated work",
-        error="provider execution engine requires a configured model",
+        error="provider execution requires a configured provider/model",
         routing=None,
     )
 
@@ -847,7 +857,7 @@ def test_cli_tasks_output_falls_back_when_child_session_lookup_fails(capsys: Any
     runtime.session_result.assert_called_once_with(session_id="child-missing")
     assert "TASK id=task-3 status=failed" in captured.out
     assert "result_available=True" in captured.out
-    assert "error=provider execution engine requires a configured model" in captured.out
+    assert "error=provider execution requires a configured provider/model" in captured.out
     assert "RESULT\nFailed: delegated work" in captured.out
 
 

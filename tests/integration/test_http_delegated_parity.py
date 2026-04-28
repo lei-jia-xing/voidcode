@@ -22,14 +22,20 @@ from __future__ import annotations
 import asyncio
 import importlib
 import json
-import os
 import sys
 import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, Protocol, cast
 
-_ = os.environ.setdefault("VOIDCODE_EXECUTION_ENGINE", "deterministic")
+import pytest
+
+pytestmark = pytest.mark.usefixtures("_force_deterministic_engine_default")
+
+
+@pytest.fixture
+def _force_deterministic_engine_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("VOIDCODE_EXECUTION_ENGINE", "deterministic")
 
 
 class SessionRefLike(Protocol):

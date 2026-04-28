@@ -4,7 +4,6 @@ import asyncio
 import importlib
 import json
 import logging
-import os
 import sys
 import threading
 import time
@@ -17,7 +16,12 @@ from unittest.mock import patch
 
 import pytest
 
-_ = os.environ.setdefault("VOIDCODE_EXECUTION_ENGINE", "deterministic")
+pytestmark = pytest.mark.usefixtures("_force_deterministic_engine_default")
+
+
+@pytest.fixture
+def _force_deterministic_engine_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("VOIDCODE_EXECUTION_ENGINE", "deterministic")
 
 
 def _cwd_command() -> str:
@@ -2892,6 +2896,7 @@ def test_transport_status_preserves_mcp_failed_state_across_fresh_requests(
         "import sys; sys.exit(1)",
     )
     config = runtime_config_module.RuntimeConfig(
+        execution_engine="deterministic",
         mcp=runtime_config_module.RuntimeMcpConfig(
             enabled=True,
             servers={
@@ -2899,7 +2904,7 @@ def test_transport_status_preserves_mcp_failed_state_across_fresh_requests(
                     command=failing_command,
                 )
             },
-        )
+        ),
     )
     app = create_runtime_app(workspace=tmp_path, config=config)
 

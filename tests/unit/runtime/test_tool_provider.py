@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-import os
 import sys
 import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 from unittest.mock import patch
+
+import pytest
 
 from voidcode.graph.contracts import GraphEvent, GraphStep
 from voidcode.hook.config import RuntimeFormatterPresetConfig, RuntimeHooksConfig
@@ -54,7 +55,12 @@ from voidcode.tools import (
 from voidcode.tools.contracts import ToolDefinition, ToolResult
 from voidcode.tools.guidance import guidance_filename_for_tool, guidance_for_tool
 
-_ = os.environ.setdefault("VOIDCODE_EXECUTION_ENGINE", "deterministic")
+pytestmark = pytest.mark.usefixtures("_force_deterministic_engine_default")
+
+
+@pytest.fixture
+def _force_deterministic_engine_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("VOIDCODE_EXECUTION_ENGINE", "deterministic")
 
 
 @dataclass(slots=True)
