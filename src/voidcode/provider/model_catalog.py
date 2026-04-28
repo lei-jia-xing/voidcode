@@ -326,6 +326,8 @@ def _override_max_input_tokens(
     override: ProviderModelMetadata,
 ) -> int | None:
     if override.max_input_tokens is None:
+        if override.max_output_tokens is not None:
+            return None
         return None if inferred is None else inferred.max_input_tokens
     if (
         override.context_window is not None

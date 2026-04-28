@@ -163,6 +163,26 @@ def test_discover_available_models_recomputes_input_limit_for_remote_context_ove
     assert metadata.max_input_tokens == 47_616
 
 
+def test_discover_available_models_recomputes_input_limit_for_remote_output_override() -> None:
+    result = discover_available_models(
+        "openai",
+        LiteLLMProviderConfig(discovery_base_url="https://api.openai.com"),
+        fetcher=lambda _request: ModelDiscoveryFetchResult(
+            models=("gpt-4o",),
+            model_metadata={
+                "gpt-4o": ProviderModelMetadata(
+                    max_output_tokens=4_096,
+                )
+            },
+        ),
+    )
+
+    metadata = result.model_metadata["gpt-4o"]
+    assert metadata.context_window == 128_000
+    assert metadata.max_output_tokens == 4_096
+    assert metadata.max_input_tokens == 123_904
+
+
 def test_google_discovery_preserves_preview_model_status(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
