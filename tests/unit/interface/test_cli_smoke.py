@@ -1748,6 +1748,26 @@ def test_config_init_provider_requires_model_without_traceback() -> None:
     assert "Traceback" not in result.stderr
 
 
+def test_config_init_rejects_malformed_model_without_writing() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        result = _run_module_cli(
+            "config",
+            "init",
+            "--workspace",
+            str(workspace),
+            "--model",
+            "gpt-5",
+        )
+
+        assert not (workspace / ".voidcode.json").exists()
+
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert "provider/model" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
 def test_config_init_invalid_max_steps_returns_error_without_traceback() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         workspace = Path(tmp)

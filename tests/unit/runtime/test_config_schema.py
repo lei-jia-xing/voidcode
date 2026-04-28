@@ -75,6 +75,12 @@ def test_generate_starter_runtime_config_validates_inputs() -> None:
     with pytest.raises(ValueError, match="approval_mode"):
         generate_starter_runtime_config(approval_mode="always")
 
+    with pytest.raises(ValueError, match="provider/model"):
+        generate_starter_runtime_config(model="gpt-5")
+    with pytest.raises(ValueError, match="provider/model"):
+        generate_starter_runtime_config(model="provider/")
+    with pytest.raises(ValueError, match="provider/model"):
+        generate_starter_runtime_config(model="/gpt-5")
     with pytest.raises(ValueError, match="requires model"):
         generate_starter_runtime_config(execution_engine="provider")
     with pytest.raises(ValueError, match="execution_engine"):

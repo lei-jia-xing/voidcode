@@ -347,8 +347,8 @@ def generate_starter_runtime_config(
         )
     if max_steps is not None and max_steps < 1:
         raise ValueError("max_steps must be an integer greater than or equal to 1")
-    if model is not None and not model:
-        raise ValueError("model must be a non-empty provider/model string when provided")
+    if model is not None:
+        _validate_model_reference(model)
     if execution_engine == "provider" and model is None:
         raise ValueError(
             "execution_engine provider requires model; pass --model provider/model "
@@ -369,6 +369,12 @@ def generate_starter_runtime_config(
         payload["tools"] = {"builtin": {"enabled": True}}
         payload["skills"] = {"enabled": True}
     return payload
+
+
+def _validate_model_reference(model: str) -> None:
+    provider_name, separator, model_name = model.partition("/")
+    if separator != "/" or not provider_name or not model_name:
+        raise ValueError("model must use provider/model format")
 
 
 def format_starter_runtime_config_json(payload: Mapping[str, object]) -> str:
