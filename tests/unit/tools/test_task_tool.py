@@ -81,7 +81,7 @@ def test_task_tool_starts_background_task_with_parent_context(tmp_path: Path) ->
     assert result.data["task_id"] == "task-123"
     assert runtime.requests[0].parent_session_id == "leader-session"
     assert runtime.requests[0].metadata == {
-        "skills": ["demo"],
+        "force_load_skills": ["demo"],
         "delegation": {"mode": "background", "category": "quick"},
     }
 
@@ -116,7 +116,7 @@ def test_task_tool_runs_sync_child_session(tmp_path: Path) -> None:
     assert runtime.requests[0].session_id is None
     assert runtime.requests[0].allocate_session_id is True
     assert runtime.requests[0].metadata == {
-        "skills": [],
+        "force_load_skills": [],
         "delegation": {"mode": "sync", "subagent_type": "explore"},
     }
     assert runtime.requests[0].prompt.startswith("Delegated runtime task.\nRequested mode: sync")
@@ -148,7 +148,7 @@ def test_task_tool_sync_path_preserves_explicit_child_session_id(tmp_path: Path)
     assert runtime.requests[0].session_id == "child-existing"
     assert runtime.requests[0].allocate_session_id is False
     assert runtime.requests[0].metadata == {
-        "skills": ["demo"],
+        "force_load_skills": ["demo"],
         "delegation": {"mode": "sync", "subagent_type": "explore"},
     }
 

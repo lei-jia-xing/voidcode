@@ -1296,6 +1296,11 @@ class VoidCodeRuntime:
             if final_session.status == "waiting":
                 final_session = self._disconnect_acp_for_session_state(final_session)
 
+            final_session = self._session_with_loaded_skill_metadata(
+                final_session,
+                events=tuple(events),
+            )
+
             response = RuntimeResponse(session=final_session, events=tuple(events), output=output)
             self._persist_response(request=request, response=response)
         finally:
@@ -1319,7 +1324,33 @@ class VoidCodeRuntime:
         if final_session.status == "waiting":
             final_session = self._reload_persisted_session(session_id=final_session.session.id)
 
+        final_session = self._session_with_loaded_skill_metadata(
+            final_session,
+            events=tuple(events),
+        )
+
         return RuntimeResponse(session=final_session, events=tuple(events), output=output)
+
+    @staticmethod
+    def _session_with_loaded_skill_metadata(
+        session: SessionState,
+        *,
+        events: tuple[EventEnvelope, ...],
+    ) -> SessionState:
+        loaded_payloads = [
+            event.payload for event in events if event.event_type == "runtime.skill_loaded"
+        ]
+        if not loaded_payloads:
+            return session
+        return SessionState(
+            session=session.session,
+            status=session.status,
+            turn=session.turn,
+            metadata={
+                **session.metadata,
+                "loaded_skills": loaded_payloads,
+            },
+        )
 
     def run_stream(self, request: RuntimeRequest) -> Iterator[RuntimeStreamChunk]:
         if "provider_stream" in request.metadata:
@@ -1454,18 +1485,7 @@ class VoidCodeRuntime:
             )
             return
 
-        sequence += 1
-        yield RuntimeStreamChunk(
-            kind="event",
-            session=session,
-            event=EventEnvelope(
-                session_id=session.session.id,
-                sequence=sequence,
-                event_type=RUNTIME_SKILLS_LOADED,
-                source="runtime",
-                payload={"skills": self._loaded_skill_names(skill_registry)},
-            ),
-        )
+        loaded_skill_names = self._loaded_skill_names(skill_registry)
 
         startup_chunks, session, sequence, startup_failed_chunk = self._start_run_acp(
             session=session,
@@ -1484,7 +1504,14 @@ class VoidCodeRuntime:
             source="run",
         )
         frozen_applied_skills = skill_snapshot.applied_skill_payloads
+        catalog_skill_context = self._catalog_skill_context(
+            skill_registry,
+            available_skill_names=tuple(loaded_skill_names),
+            selected_skill_names=skill_snapshot.selected_skill_names,
+        )
         skill_prompt_context = skill_snapshot.skill_prompt_context
+        if not frozen_applied_skills:
+            skill_prompt_context = catalog_skill_context
         if skills_config is not None and skills_config.enabled is True:
             session = SessionState(
                 session=session.session,
@@ -1495,6 +1522,23 @@ class VoidCodeRuntime:
                     **self._snapshot_to_session_metadata(skill_snapshot),
                 },
             )
+        sequence += 1
+        yield RuntimeStreamChunk(
+            kind="event",
+            session=session,
+            event=EventEnvelope(
+                session_id=session.session.id,
+                sequence=sequence,
+                event_type=RUNTIME_SKILLS_LOADED,
+                source="runtime",
+                payload={
+                    "skills": loaded_skill_names,
+                    "selected_skills": list(skill_snapshot.selected_skill_names),
+                    "catalog_context_length": len(catalog_skill_context),
+                },
+            ),
+        )
+
         if skill_snapshot.applied_skill_payloads:
             sequence += 1
             yield RuntimeStreamChunk(
@@ -4557,29 +4601,37 @@ class VoidCodeRuntime:
         metadata: dict[str, object] | None = None,
         agent: RuntimeAgentConfig | None = None,
     ) -> tuple[SkillRuntimeContext, ...]:
-        request_skill_names: tuple[str, ...] | None = None
-        if metadata is not None and "skills" in metadata:
-            raw_skills = metadata["skills"]
-            if not isinstance(raw_skills, list):
-                raise ValueError("request metadata 'skills' must be a list of skill names")
-            parsed_names: list[str] = []
-            for index, raw_name in enumerate(cast(list[object], raw_skills)):
-                if not isinstance(raw_name, str) or not raw_name:
-                    raise ValueError(
-                        f"request metadata 'skills[{index}]' must be a non-empty string"
-                    )
-                parsed_names.append(raw_name)
-            request_skill_names = tuple(parsed_names)
+        _ = agent
+        request_force_load_skill_names = self._request_skill_names_from_metadata(
+            metadata,
+            key="force_load_skills",
+        )
 
         persisted_selected_skill_names = (
             self._persisted_selected_skill_names(metadata) if metadata is not None else None
         )
-        selected_skill_names = self._selected_skill_names_for_agent(
-            agent,
-            request_skill_names=request_skill_names,
-            persisted_selected_skill_names=persisted_selected_skill_names,
-        )
-        return build_runtime_contexts(skill_registry, skill_names=selected_skill_names)
+        force_load_skill_names = request_force_load_skill_names
+        if force_load_skill_names is None:
+            return ()
+        return build_runtime_contexts(skill_registry, skill_names=force_load_skill_names)
+
+    @staticmethod
+    def _request_skill_names_from_metadata(
+        metadata: dict[str, object] | None,
+        *,
+        key: str,
+    ) -> tuple[str, ...] | None:
+        if metadata is None or key not in metadata:
+            return None
+        raw_skills = metadata[key]
+        if not isinstance(raw_skills, list):
+            raise ValueError(f"request metadata '{key}' must be a list of skill names")
+        parsed_names: list[str] = []
+        for index, raw_name in enumerate(cast(list[object], raw_skills)):
+            if not isinstance(raw_name, str) or not raw_name:
+                raise ValueError(f"request metadata '{key}[{index}]' must be a non-empty string")
+            parsed_names.append(raw_name)
+        return tuple(parsed_names)
 
     def _build_skill_snapshot(
         self,
@@ -4612,10 +4664,27 @@ class VoidCodeRuntime:
                         }
                     )
                 return normalized
+
+        selected_skill_names = self._selected_skill_names_for_agent(
+            agent,
+            request_skill_names=self._request_skill_names_from_metadata(metadata, key="skills"),
+            persisted_selected_skill_names=(
+                self._persisted_selected_skill_names(metadata) if metadata is not None else None
+            ),
+        )
+        force_load_skill_names = self._request_skill_names_from_metadata(
+            metadata,
+            key="force_load_skills",
+        )
         contexts = self._applied_skill_contexts(skill_registry, metadata, agent)
         return build_skill_execution_snapshot(
             contexts,
             source=source,
+            selected_skill_names=(
+                force_load_skill_names
+                if force_load_skill_names is not None
+                else selected_skill_names
+            ),
             binding_snapshot=binding_snapshot,
         )
 
@@ -4659,10 +4728,7 @@ class VoidCodeRuntime:
     def _snapshot_to_session_metadata(snapshot: SkillExecutionSnapshot) -> dict[str, object]:
         return {
             "selected_skill_names": list(snapshot.selected_skill_names),
-            "applied_skills": list(snapshot.selected_skill_names),
-            "applied_skill_payloads": [
-                dict(payload) for payload in snapshot.applied_skill_payloads
-            ],
+            "applied_skills": [payload["name"] for payload in snapshot.applied_skill_payloads],
             "skill_snapshot": snapshot_payload(snapshot),
         }
 
@@ -4671,8 +4737,7 @@ class VoidCodeRuntime:
         metadata: dict[str, object],
     ) -> SkillExecutionSnapshot | None:
         raw_snapshot = metadata.get("skill_snapshot")
-        has_payload_keys = "applied_skill_payloads" in metadata
-        if isinstance(raw_snapshot, dict) and has_payload_keys:
+        if isinstance(raw_snapshot, dict):
             return snapshot_from_payload(cast(dict[str, object], raw_snapshot))
         return None
 
@@ -4742,6 +4807,38 @@ class VoidCodeRuntime:
                 continue
             contexts.append(build_runtime_context(skill))
         return tuple(contexts)
+
+    @staticmethod
+    def _catalog_skill_context(
+        skill_registry: SkillRegistry,
+        *,
+        available_skill_names: tuple[str, ...],
+        selected_skill_names: tuple[str, ...],
+    ) -> str:
+        names = selected_skill_names or available_skill_names
+        if not names:
+            return ""
+        lines = [
+            "Runtime skills catalog (recommended/visible).",
+            "Load full instructions with tool: skill(name=...).",
+            "",
+            "<available_skills>",
+        ]
+        for skill_name in names:
+            skill = skill_registry.skills.get(skill_name)
+            if skill is None:
+                continue
+            lines.extend(
+                (
+                    "  <skill>",
+                    f"    <name>{skill.name}</name>",
+                    f"    <description>{skill.description}</description>",
+                    f"    <location>{skill.entry_path.as_uri()}</location>",
+                    "  </skill>",
+                )
+            )
+        lines.append("</available_skills>")
+        return "\n".join(lines)
 
     def _runtime_config_metadata(
         self, config: EffectiveRuntimeConfig | None = None

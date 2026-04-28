@@ -632,7 +632,9 @@ def test_runtime_default_registry_behavior_remains_unchanged(tmp_path: Path) -> 
 
     assert response.output == "hello"
     assert response.events[1].event_type == "runtime.skills_loaded"
-    assert response.events[1].payload == {"skills": []}
+    assert response.events[1].payload["skills"] == []
+    assert response.events[1].payload["selected_skills"] == []
+    assert response.events[1].payload["catalog_context_length"] == 0
     assert response.events[3].event_type == "runtime.tool_lookup_succeeded"
     assert response.events[3].payload == {"tool": "grep"}
     assert response.events[4].event_type == "runtime.permission_resolved"

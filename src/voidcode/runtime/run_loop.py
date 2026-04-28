@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterator
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
 from ..graph.contracts import GraphRunRequest, RuntimeGraph
@@ -32,6 +32,7 @@ from .contracts import RuntimeStreamChunk
 from .events import (
     RUNTIME_MEMORY_REFRESHED,
     RUNTIME_QUESTION_REQUESTED,
+    RUNTIME_SKILL_LOADED,
     RUNTIME_TOOL_STARTED,
     EventEnvelope,
 )
@@ -648,6 +649,33 @@ class RuntimeRunLoopCoordinator:
                     payload=completed_payload,
                 ),
             )
+
+            if plan_tool_call.tool_name == "skill" and tool_result.status == "ok":
+                skill_payload = completed_payload.get("skill")
+                if isinstance(skill_payload, dict):
+                    typed_skill_payload = cast(dict[str, object], skill_payload)
+                    skill_name: object | None = typed_skill_payload.get("name")
+                    skill_source_path: object | None = typed_skill_payload.get("source_path")
+                    sequence += 1
+                    yield RuntimeStreamChunk(
+                        kind="event",
+                        session=session,
+                        event=EventEnvelope(
+                            session_id=session.session.id,
+                            sequence=sequence,
+                            event_type=RUNTIME_SKILL_LOADED,
+                            source="runtime",
+                            payload={
+                                "name": skill_name if isinstance(skill_name, str) else None,
+                                "source": "tool",
+                                "source_path": (
+                                    skill_source_path
+                                    if isinstance(skill_source_path, str)
+                                    else None
+                                ),
+                            },
+                        ),
+                    )
 
             if tool_result.status == "ok":
                 post_hook_outcome = runtime._run_tool_hooks(
