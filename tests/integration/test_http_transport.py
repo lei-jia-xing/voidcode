@@ -319,6 +319,7 @@ def test_transport_agents_endpoint_serializes_stable_summary_fields() -> None:
                     model_label="gpt-5.4",
                     model_source="configured",
                     provider="opencode",
+                    fallback_chain=("opencode/gpt-5.4", "opencode/gpt-5.3"),
                 ),
             )
 
@@ -340,6 +341,7 @@ def test_transport_agents_endpoint_serializes_stable_summary_fields() -> None:
             "model_label": "gpt-5.4",
             "model_source": "configured",
             "provider": "opencode",
+            "fallback_chain": ["opencode/gpt-5.4", "opencode/gpt-5.3"],
         }
     ]
 

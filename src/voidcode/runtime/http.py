@@ -1817,6 +1817,7 @@ class RuntimeTransportApp:
             "model_label": summary.model_label,
             "model_source": summary.model_source,
             "provider": summary.provider,
+            "fallback_chain": list(summary.fallback_chain),
         }
 
     @staticmethod
