@@ -20,6 +20,7 @@ from .contracts import (
     GitStatusSnapshot,
     NoPendingQuestionError,
     ProviderInspectResult,
+    ProviderModelMetadata,
     ProviderModelsResult,
     ProviderSummary,
     ProviderValidationResult,
@@ -1723,26 +1724,44 @@ class RuntimeTransportApp:
         }
 
     @staticmethod
+    def _serialize_provider_model_metadata(metadata: ProviderModelMetadata) -> dict[str, object]:
+        return {
+            key: value
+            for key, value in {
+                "context_window": metadata.context_window,
+                "max_input_tokens": metadata.max_input_tokens,
+                "max_output_tokens": metadata.max_output_tokens,
+                "supports_tools": metadata.supports_tools,
+                "supports_vision": metadata.supports_vision,
+                "supports_streaming": metadata.supports_streaming,
+                "supports_reasoning": metadata.supports_reasoning,
+                "supports_json_mode": metadata.supports_json_mode,
+                "cost_per_input_token": metadata.cost_per_input_token,
+                "cost_per_output_token": metadata.cost_per_output_token,
+                "cost_per_cache_read_token": metadata.cost_per_cache_read_token,
+                "cost_per_cache_write_token": metadata.cost_per_cache_write_token,
+                "supports_reasoning_effort": metadata.supports_reasoning_effort,
+                "default_reasoning_effort": metadata.default_reasoning_effort,
+                "supports_interleaved_reasoning": metadata.supports_interleaved_reasoning,
+                "modalities_input": list(metadata.modalities_input)
+                if metadata.modalities_input is not None
+                else None,
+                "modalities_output": list(metadata.modalities_output)
+                if metadata.modalities_output is not None
+                else None,
+                "model_status": metadata.model_status,
+            }.items()
+            if value is not None
+        }
+
+    @staticmethod
     def _serialize_provider_models_result(result: ProviderModelsResult) -> dict[str, object]:
         return {
             "provider": result.provider,
             "configured": result.configured,
             "models": list(result.models),
             "model_metadata": {
-                model: {
-                    key: value
-                    for key, value in {
-                        "context_window": metadata.context_window,
-                        "max_input_tokens": metadata.max_input_tokens,
-                        "max_output_tokens": metadata.max_output_tokens,
-                        "supports_tools": metadata.supports_tools,
-                        "supports_vision": metadata.supports_vision,
-                        "supports_streaming": metadata.supports_streaming,
-                        "supports_reasoning": metadata.supports_reasoning,
-                        "supports_json_mode": metadata.supports_json_mode,
-                    }.items()
-                    if value is not None
-                }
+                model: RuntimeTransportApp._serialize_provider_model_metadata(metadata)
                 for model, metadata in result.model_metadata.items()
             },
             "source": result.source,
@@ -1763,20 +1782,9 @@ class RuntimeTransportApp:
             "current_model_metadata": (
                 None
                 if result.current_model_metadata is None
-                else {
-                    key: value
-                    for key, value in {
-                        "context_window": result.current_model_metadata.context_window,
-                        "max_input_tokens": result.current_model_metadata.max_input_tokens,
-                        "max_output_tokens": result.current_model_metadata.max_output_tokens,
-                        "supports_tools": result.current_model_metadata.supports_tools,
-                        "supports_vision": result.current_model_metadata.supports_vision,
-                        "supports_streaming": result.current_model_metadata.supports_streaming,
-                        "supports_reasoning": result.current_model_metadata.supports_reasoning,
-                        "supports_json_mode": result.current_model_metadata.supports_json_mode,
-                    }.items()
-                    if value is not None
-                }
+                else RuntimeTransportApp._serialize_provider_model_metadata(
+                    result.current_model_metadata
+                )
             ),
         }
 
