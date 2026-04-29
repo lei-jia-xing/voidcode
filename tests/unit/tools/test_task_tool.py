@@ -10,6 +10,9 @@ from voidcode.runtime.task import (
     BackgroundTaskRef,
     BackgroundTaskRequestSnapshot,
     BackgroundTaskState,
+    SubagentRoutingIdentity,
+    resolve_subagent_route,
+    supported_subagent_categories,
 )
 from voidcode.tools import TaskTool, ToolCall
 from voidcode.tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
@@ -79,6 +82,12 @@ def test_task_tool_starts_background_task_with_parent_context(tmp_path: Path) ->
 
     assert result.status == "ok"
     assert result.data["task_id"] == "task-123"
+    assert result.data["parent_session_id"] == "leader-session"
+    # A queued background task has not allocated a child session or result yet.
+    assert result.data["child_session_id"] is None
+    assert result.data["status"] == "queued"
+    assert result.data["result_available"] is False
+    assert result.data["delegation"] == {"mode": "background", "category": "quick"}
     assert runtime.requests[0].parent_session_id == "leader-session"
     assert runtime.requests[0].metadata == {
         "force_load_skills": ["demo"],
@@ -121,6 +130,114 @@ def test_task_tool_runs_sync_child_session(tmp_path: Path) -> None:
     }
     assert runtime.requests[0].prompt.startswith("Delegated runtime task.\nRequested mode: sync")
     assert "Requested subagent_type: explore" in runtime.requests[0].prompt
+
+
+@pytest.mark.parametrize("subagent_type", ("worker", "advisor", "explore", "researcher", "product"))
+def test_task_tool_accepts_valid_direct_child_subagent_presets(
+    tmp_path: Path,
+    subagent_type: str,
+) -> None:
+    runtime = _StubTaskRuntime()
+    tool = TaskTool(runtime=runtime)
+
+    with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="leader-session")):
+        result = tool.invoke(
+            ToolCall(
+                tool_name="task",
+                arguments={
+                    "prompt": "Handle delegated work",
+                    "run_in_background": False,
+                    "load_skills": ["demo"],
+                    "subagent_type": subagent_type,
+                },
+            ),
+            workspace=tmp_path,
+        )
+
+    assert result.status == "ok"
+    assert runtime.requests[0].metadata == {
+        "force_load_skills": ["demo"],
+        "delegation": {"mode": "sync", "subagent_type": subagent_type},
+    }
+
+
+@pytest.mark.parametrize(
+    ("subagent_type", "message"),
+    (
+        ("leader", "subagent_type 'leader' is not a callable child preset"),
+        ("unknown", "unknown subagent_type 'unknown'"),
+    ),
+)
+def test_task_tool_rejects_invalid_direct_child_subagent_presets_before_dispatch(
+    tmp_path: Path,
+    subagent_type: str,
+    message: str,
+) -> None:
+    runtime = _StubTaskRuntime()
+    tool = TaskTool(runtime=runtime)
+
+    with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="leader-session")):
+        with pytest.raises(ValueError, match=message):
+            tool.invoke(
+                ToolCall(
+                    tool_name="task",
+                    arguments={
+                        "prompt": "Handle delegated work",
+                        "run_in_background": False,
+                        "load_skills": [],
+                        "subagent_type": subagent_type,
+                    },
+                ),
+                workspace=tmp_path,
+            )
+
+    assert runtime.requests == []
+
+
+def test_task_tool_rejects_unsupported_category_before_dispatch(tmp_path: Path) -> None:
+    runtime = _StubTaskRuntime()
+    tool = TaskTool(runtime=runtime)
+
+    with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="leader-session")):
+        with pytest.raises(ValueError, match="unsupported task category 'slow'"):
+            tool.invoke(
+                ToolCall(
+                    tool_name="task",
+                    arguments={
+                        "prompt": "Handle delegated work",
+                        "run_in_background": True,
+                        "load_skills": [],
+                        "category": "slow",
+                    },
+                ),
+                workspace=tmp_path,
+            )
+
+    assert runtime.requests == []
+
+
+def test_task_category_mapping_contract_is_exact() -> None:
+    assert set(supported_subagent_categories()) == {
+        "quick",
+        "deep",
+        "unspecified-high",
+        "ultrabrain",
+        "writing",
+        "visual-engineering",
+    }
+    assert {
+        category: resolve_subagent_route(
+            SubagentRoutingIdentity(mode="background", category=category)
+        ).selected_preset
+        for category in supported_subagent_categories()
+    } == {
+        "quick": "worker",
+        "deep": "worker",
+        "unspecified-high": "worker",
+        "ultrabrain": "advisor",
+        "writing": "product",
+        "visual-engineering": "product",
+    }
 
 
 def test_task_tool_sync_path_preserves_explicit_child_session_id(tmp_path: Path) -> None:

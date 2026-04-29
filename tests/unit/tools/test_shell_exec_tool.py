@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import subprocess
 import sys
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 from voidcode.runtime.service import ToolRegistry
 from voidcode.tools import ShellExecTool, ToolCall
+from voidcode.tools.shell_exec import kill_timed_out_process
 
 
 def _cwd_command() -> str:
@@ -48,6 +51,7 @@ def test_shell_exec_tool_supports_shell_operators(tmp_path: Path) -> None:
     )
 
     assert result.status == "ok"
+    assert isinstance(result.content, str)
     assert result.content.strip() == "alpha"
     assert (tmp_path / "sample.txt").read_text(encoding="utf-8").strip() == "alpha"
 
@@ -117,6 +121,55 @@ def test_shell_exec_timeout_cleanup_falls_back_without_killpg(
             ),
             workspace=tmp_path,
         )
+
+
+def test_shell_exec_windows_timeout_cleanup_uses_successful_taskkill(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    class _FakeProcess:
+        pid = 1234
+
+        def kill(self) -> None:
+            raise AssertionError("process.kill should not run after successful taskkill")
+
+    def fake_run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr("voidcode.tools.shell_exec.os.name", "nt")
+    monkeypatch.setattr("voidcode.tools.shell_exec.subprocess.run", fake_run)
+
+    kill_timed_out_process(cast(subprocess.Popen[str], _FakeProcess()))
+
+    assert calls == [["taskkill", "/PID", "1234", "/T", "/F"]]
+
+
+def test_shell_exec_windows_timeout_cleanup_falls_back_after_taskkill_nonzero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+    killed = False
+
+    class _FakeProcess:
+        pid = 5678
+
+        def kill(self) -> None:
+            nonlocal killed
+            killed = True
+
+    def fake_run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 5, "", "not found")
+
+    monkeypatch.setattr("voidcode.tools.shell_exec.os.name", "nt")
+    monkeypatch.setattr("voidcode.tools.shell_exec.subprocess.run", fake_run)
+
+    kill_timed_out_process(cast(subprocess.Popen[str], _FakeProcess()))
+
+    assert calls == [["taskkill", "/PID", "5678", "/T", "/F"]]
+    assert killed is True
 
 
 def test_shell_exec_tool_truncates_large_output(tmp_path: Path) -> None:

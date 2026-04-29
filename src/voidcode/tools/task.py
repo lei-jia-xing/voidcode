@@ -10,6 +10,7 @@ from ..runtime.contracts import (
     RuntimeRequest,
     RuntimeResponse,
     RuntimeSessionResult,
+    runtime_subagent_route_from_metadata,
     validate_runtime_request_metadata,
 )
 from ..runtime.task import BackgroundTaskState, StoredBackgroundTaskSummary
@@ -154,11 +155,15 @@ class TaskTool:
                     context.remaining_spawn_budget - 1,
                     0,
                 )
+        validated_metadata = validate_runtime_request_metadata(request_metadata)
+        _ = runtime_subagent_route_from_metadata(validated_metadata)
+        delegation_payload = validated_metadata.get("delegation")
+        assert isinstance(delegation_payload, dict)
         request = RuntimeRequest(
             prompt=_delegated_prompt(args),
             session_id=args.session_id,
             parent_session_id=context.session_id,
-            metadata=validate_runtime_request_metadata(request_metadata),
+            metadata=validated_metadata,
             allocate_session_id=args.session_id is None,
         )
 
@@ -172,6 +177,9 @@ class TaskTool:
                     "task_id": task.task.id,
                     "status": task.status,
                     "parent_session_id": context.session_id,
+                    "child_session_id": task.session_id,
+                    "delegation": dict(delegation_payload),
+                    "result_available": task.result_available,
                     "requested_category": args.category,
                     "requested_subagent_type": args.subagent_type,
                     "load_skills": list(args.load_skills),

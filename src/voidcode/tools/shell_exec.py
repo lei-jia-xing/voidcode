@@ -26,16 +26,19 @@ def _truncate(text: str | None) -> tuple[str, bool]:
 
 def kill_timed_out_process(process: subprocess.Popen[str]) -> None:
     if os.name == "nt":
+        taskkill_succeeded = False
         try:
-            _ = subprocess.run(
+            completed = subprocess.run(
                 ["taskkill", "/PID", str(process.pid), "/T", "/F"],
                 capture_output=True,
                 check=False,
                 text=True,
             )
-            return
+            taskkill_succeeded = completed.returncode == 0
         except OSError:
             pass
+        if taskkill_succeeded:
+            return
         try:
             process.kill()
         except ProcessLookupError:
