@@ -4103,6 +4103,7 @@ def test_runtime_stream_emits_failed_terminal_chunk_before_tool_error(tmp_path: 
         stream = runtime.run_stream(runtime_request(prompt="read sample.txt"))
 
         first_four_chunks = [next(stream) for _ in range(8)]
+        tool_completed_chunk = next(stream)
         failed_chunk = next(stream)
         with pytest.raises(ValueError, match="boom from tool"):
             list(stream)
@@ -4118,6 +4119,18 @@ def test_runtime_stream_emits_failed_terminal_chunk_before_tool_error(tmp_path: 
         "runtime.tool_started",
     ]
     assert all(chunk.session.status == "running" for chunk in first_four_chunks)
+    assert tool_completed_chunk.kind == "event"
+    assert tool_completed_chunk.event is not None
+    assert tool_completed_chunk.event.event_type == "runtime.tool_completed"
+    assert tool_completed_chunk.event.payload["tool"] == "read_file"
+    assert tool_completed_chunk.event.payload["status"] == "error"
+    assert tool_completed_chunk.event.payload["error"] == "boom from tool"
+    tool_status = tool_completed_chunk.event.payload["tool_status"]
+    assert isinstance(tool_status, dict)
+    typed_tool_status = cast(dict[str, object], tool_status)
+    assert typed_tool_status["tool_name"] == "read_file"
+    assert typed_tool_status["status"] == "failed"
+    assert tool_completed_chunk.session.status == "running"
     assert failed_chunk.kind == "event"
     assert failed_chunk.event is not None
     assert failed_chunk.event.event_type == "runtime.failed"

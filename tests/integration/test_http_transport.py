@@ -2423,9 +2423,23 @@ def test_transport_persists_failed_stream_for_replay(tmp_path: Path) -> None:
     replay_payload = cast(dict[str, object], replay_response.json())
 
     assert stream_response.status == 200
-    assert payloads[8]["event"] == {
+    tool_completed_event = cast(dict[str, object], payloads[8]["event"])
+    assert tool_completed_event["session_id"] == "failed-stream-session"
+    assert tool_completed_event["sequence"] == 9
+    assert tool_completed_event["event_type"] == "runtime.tool_completed"
+    assert tool_completed_event["source"] == "tool"
+    tool_completed_payload = cast(dict[str, object], tool_completed_event["payload"])
+    assert tool_completed_payload["tool"] == "read_file"
+    assert tool_completed_payload["status"] == "error"
+    assert tool_completed_payload["error"] == "boom from transport stream"
+    tool_status = tool_completed_payload["tool_status"]
+    assert isinstance(tool_status, dict)
+    typed_tool_status = cast(dict[str, object], tool_status)
+    assert typed_tool_status["tool_name"] == "read_file"
+    assert typed_tool_status["status"] == "failed"
+    assert payloads[9]["event"] == {
         "session_id": "failed-stream-session",
-        "sequence": 9,
+        "sequence": 10,
         "event_type": "runtime.failed",
         "source": "runtime",
         "payload": {"error": "boom from transport stream"},
@@ -2461,6 +2475,7 @@ def test_transport_persists_failed_stream_for_replay(tmp_path: Path) -> None:
         "runtime.tool_lookup_succeeded",
         "runtime.permission_resolved",
         "runtime.tool_started",
+        "runtime.tool_completed",
         "runtime.failed",
     ]
 

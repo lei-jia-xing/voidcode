@@ -392,3 +392,7 @@ Added terminal `runtime.tool_completed` with `payload.status="error"` and `paylo
 - Existing events (`runtime.tool_timeout`, `runtime.failed`) preserved — additive only.
 - Recovered exceptions (tool-native timeout-like) continue through normal `runtime.tool_completed` path unchanged.
 - Permission/lookup/pre-hook failures that occur before `runtime.tool_started` are not touched.
+
+### P2 follow-up: Integration replay assertions
+- HTTP SSE and read-only stream integration tests that previously expected `runtime.failed` immediately after `runtime.tool_started` must now assert the additive terminal `runtime.tool_completed` first, with `payload.status="error"` and `payload.tool_status.status="failed"`, then preserve the subsequent `runtime.failed` assertion.
+- Replay/persistence tests need both live stream sequence checks and persisted event-type list updates, otherwise the session can be correctly persisted but the test still encodes the old terminal ordering.
