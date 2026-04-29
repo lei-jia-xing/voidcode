@@ -511,7 +511,10 @@ class RuntimeBackgroundTaskSupervisor:
     def background_task_result(self, *, task: BackgroundTaskState) -> BackgroundTaskResult:
         child_result = self.load_background_task_child_result(task=task)
         approval_blocked = child_result is not None and child_result.status == "waiting"
-        summary_output = child_result.summary if child_result is not None else None
+        summary_output = self._leader_safe_child_summary(
+            task=task,
+            child_result=child_result,
+        )
         error = (
             child_result.error if child_result is not None and child_result.error else task.error
         )
@@ -539,6 +542,26 @@ class RuntimeBackgroundTaskSupervisor:
             result_available=result_available,
             cancellation_cause=task.cancellation_cause,
         )
+
+    @staticmethod
+    def _leader_safe_child_summary(
+        *,
+        task: BackgroundTaskState,
+        child_result: RuntimeSessionResult | None,
+    ) -> str | None:
+        if child_result is None:
+            return None
+        child_session_id = child_result.session.session.id
+        if child_result.status == "completed":
+            return (
+                f"Completed child session {child_session_id}; full output is preserved outside "
+                "active context."
+            )
+        if child_result.status == "waiting":
+            return child_result.summary
+        if child_result.status == "failed":
+            return child_result.summary
+        return f"Background child session {child_session_id}: {child_result.status}"
 
     def _delegated_lifecycle_payloads(
         self,
