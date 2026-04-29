@@ -383,6 +383,8 @@ export const useAppStore = create<AppState>()(
             get().loadAgents(),
             get().loadStatus(),
             get().loadReview(),
+            get().loadNotifications(),
+            get().loadBackgroundTasks(),
           ]);
         } catch (err) {
           set({
@@ -710,6 +712,7 @@ export const useAppStore = create<AppState>()(
             currentSessionOutput: replay.output,
             replayStatus: "success",
           });
+          await get().loadBackgroundTasks();
         } catch (err) {
           if (
             get().replayRequestId !== requestId ||
