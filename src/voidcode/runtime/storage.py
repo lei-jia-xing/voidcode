@@ -2484,7 +2484,10 @@ class SqliteSessionStore:
         keep_background_tasks: int | None,
         older_than: int | None,
     ) -> tuple[str, ...]:
-        conditions = ["workspace = ?", "status IN ('completed', 'failed', 'cancelled')"]
+        conditions = [
+            "workspace = ?",
+            "status IN ('completed', 'failed', 'cancelled', 'interrupted')",
+        ]
         parameters: list[object] = [str(workspace)]
         if older_than is not None:
             conditions.append("updated_at < ?")
@@ -2494,7 +2497,8 @@ class SqliteSessionStore:
             keep_clause = (
                 "AND task_id NOT IN ("
                 "SELECT task_id FROM background_tasks "
-                "WHERE workspace = ? AND status IN ('completed', 'failed', 'cancelled') "
+                "WHERE workspace = ? AND status IN "
+                "('completed', 'failed', 'cancelled', 'interrupted') "
                 "ORDER BY updated_at DESC, task_id ASC LIMIT ?"
                 ")"
             )
