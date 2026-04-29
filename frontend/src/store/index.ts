@@ -1084,6 +1084,7 @@ export const useAppStore = create<AppState>()(
                 currentSessionOutput: replay.output,
                 replayStatus: "success",
                 replayError: null,
+                runStatus: runStatusForReplay(replay.session),
               });
             }
           } catch {
