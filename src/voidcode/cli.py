@@ -63,6 +63,7 @@ from .runtime.contracts import (
     ProviderReadinessResult,
     RuntimeRequest,
     RuntimeSessionDebugSnapshot,
+    RuntimeSessionRevertMarker,
     RuntimeStreamChunk,
     validate_runtime_request_metadata,
 )
@@ -704,6 +705,7 @@ def _serialize_session_debug_snapshot(snapshot: RuntimeSessionDebugSnapshot) -> 
             if snapshot.pending_question is not None
             else None
         ),
+        "revert_marker": _serialize_revert_marker(snapshot.revert_marker),
         "last_event_sequence": snapshot.last_event_sequence,
         "last_relevant_event": (
             {
@@ -783,6 +785,60 @@ def _handle_sessions_debug_command(args: argparse.Namespace) -> int:
         _close_runtime(runtime)
 
     print(json.dumps(_serialize_session_debug_snapshot(snapshot), sort_keys=True))
+    return 0
+
+
+def _serialize_revert_marker(marker: RuntimeSessionRevertMarker | None) -> dict[str, object] | None:
+    if marker is None:
+        return None
+    return {"sequence": marker.sequence, "active": marker.active}
+
+
+def _handle_sessions_undo_command(args: argparse.Namespace) -> int:
+    workspace = cast(Path, args.workspace)
+    session_id = cast(str, args.session_id)
+    runtime = VoidCodeRuntime(workspace=workspace)
+    try:
+        try:
+            marker = runtime.undo_session(session_id=session_id)
+        except ValueError as exc:
+            raise SystemExit(f"error: {exc}") from None
+    finally:
+        _close_runtime(runtime)
+    print_json({"session_id": session_id, "revert_marker": _serialize_revert_marker(marker)})
+    return 0
+
+
+def _handle_sessions_revert_command(args: argparse.Namespace) -> int:
+    workspace = cast(Path, args.workspace)
+    session_id = cast(str, args.session_id)
+    runtime = VoidCodeRuntime(workspace=workspace)
+    try:
+        try:
+            marker = runtime.revert_session(
+                session_id=session_id,
+                sequence=cast(int, args.sequence),
+            )
+        except ValueError as exc:
+            raise SystemExit(f"error: {exc}") from None
+    finally:
+        _close_runtime(runtime)
+    print_json({"session_id": session_id, "revert_marker": _serialize_revert_marker(marker)})
+    return 0
+
+
+def _handle_sessions_unrevert_command(args: argparse.Namespace) -> int:
+    workspace = cast(Path, args.workspace)
+    session_id = cast(str, args.session_id)
+    runtime = VoidCodeRuntime(workspace=workspace)
+    try:
+        try:
+            marker = runtime.unrevert_session(session_id=session_id)
+        except ValueError as exc:
+            raise SystemExit(f"error: {exc}") from None
+    finally:
+        _close_runtime(runtime)
+    print_json({"session_id": session_id, "revert_marker": _serialize_revert_marker(marker)})
     return 0
 
 
@@ -1902,6 +1958,49 @@ def build_parser() -> argparse.ArgumentParser:
         help="Output JSON debug snapshot (default).",
     )
     debug_parser.set_defaults(handler=_handle_sessions_debug_command)
+
+    undo_parser = sessions_subparsers.add_parser(
+        "undo", help="Revert the latest user turn out of provider-facing context."
+    )
+    _ = undo_parser.add_argument("session_id", help="Persisted session identifier to undo.")
+    _ = undo_parser.add_argument(
+        "--workspace",
+        type=Path,
+        default=Path.cwd(),
+        help="Workspace root used to resolve the local session database.",
+    )
+    undo_parser.set_defaults(handler=_handle_sessions_undo_command)
+
+    revert_parser = sessions_subparsers.add_parser(
+        "revert", help="Revert provider-facing context to an event sequence."
+    )
+    _ = revert_parser.add_argument("session_id", help="Persisted session identifier to revert.")
+    _ = revert_parser.add_argument(
+        "--to",
+        dest="sequence",
+        type=int,
+        required=True,
+        help="Event sequence to use as the revert point.",
+    )
+    _ = revert_parser.add_argument(
+        "--workspace",
+        type=Path,
+        default=Path.cwd(),
+        help="Workspace root used to resolve the local session database.",
+    )
+    revert_parser.set_defaults(handler=_handle_sessions_revert_command)
+
+    unrevert_parser = sessions_subparsers.add_parser(
+        "unrevert", help="Clear an active conversation revert marker."
+    )
+    _ = unrevert_parser.add_argument("session_id", help="Persisted session identifier to unrevert.")
+    _ = unrevert_parser.add_argument(
+        "--workspace",
+        type=Path,
+        default=Path.cwd(),
+        help="Workspace root used to resolve the local session database.",
+    )
+    unrevert_parser.set_defaults(handler=_handle_sessions_unrevert_command)
 
     tasks_status_parser = tasks_subparsers.add_parser(
         "status", help="Show delegated task lifecycle state."

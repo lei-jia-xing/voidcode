@@ -33,6 +33,7 @@ from .contracts import (
     RuntimeResponse,
     RuntimeSessionDebugSnapshot,
     RuntimeSessionResult,
+    RuntimeSessionRevertMarker,
     RuntimeStatusSnapshot,
     RuntimeStreamChunk,
     WorkspaceRegistrySnapshot,
@@ -109,6 +110,12 @@ class RuntimeTransport(Protocol):
     def session_result(self, *, session_id: str) -> RuntimeSessionResult: ...
 
     def session_debug_snapshot(self, *, session_id: str) -> RuntimeSessionDebugSnapshot: ...
+
+    def revert_session(self, *, session_id: str, sequence: int) -> RuntimeSessionRevertMarker: ...
+
+    def undo_session(self, *, session_id: str) -> RuntimeSessionRevertMarker: ...
+
+    def unrevert_session(self, *, session_id: str) -> RuntimeSessionRevertMarker | None: ...
 
     def list_notifications(self) -> tuple[RuntimeNotification, ...]: ...
 
@@ -261,6 +268,17 @@ class _QuestionAnswerRequestPayload(_HttpBoundaryModel):
         if not isinstance(value, list) or not value:
             raise ValueError("must be a non-empty array")
         return cast(list[object], value)
+
+
+class _SessionRevertRequestPayload(_HttpBoundaryModel):
+    sequence: int | None = None
+
+    @field_validator("sequence", mode="before")
+    @classmethod
+    def _validate_sequence(cls, value: object) -> int:
+        if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+            raise ValueError("must be a positive integer")
+        return value
 
 
 def _parse_json_body(body: bytes) -> object:
@@ -587,6 +605,9 @@ class RuntimeTransportApp:
             is_question_route = session_path.endswith("/question")
             is_result_route = session_path.endswith("/result")
             is_debug_route = session_path.endswith("/debug")
+            is_undo_route = session_path.endswith("/undo")
+            is_revert_route = session_path.endswith("/revert")
+            is_unrevert_route = session_path.endswith("/unrevert")
             session_id = (
                 session_path.removesuffix("/tasks")
                 if is_task_list_route
@@ -598,6 +619,12 @@ class RuntimeTransportApp:
                 if is_result_route
                 else session_path.removesuffix("/debug")
                 if is_debug_route
+                else session_path.removesuffix("/undo")
+                if is_undo_route
+                else session_path.removesuffix("/revert")
+                if is_revert_route
+                else session_path.removesuffix("/unrevert")
+                if is_unrevert_route
                 else session_path
             )
             try:
@@ -631,6 +658,12 @@ class RuntimeTransportApp:
                 if is_result_route
                 else session_path.removesuffix("/debug")
                 if is_debug_route
+                else session_path.removesuffix("/undo")
+                if is_undo_route
+                else session_path.removesuffix("/revert")
+                if is_revert_route
+                else session_path.removesuffix("/unrevert")
+                if is_unrevert_route
                 else session_path
             )
             if is_approval_route:
@@ -680,6 +713,40 @@ class RuntimeTransportApp:
                     )
                     return
                 await self._handle_session_debug(session_id=session_id, send=send)
+                return
+            if is_undo_route:
+                if method != "POST":
+                    await self._json_response(
+                        send,
+                        status=405,
+                        payload={"error": "method not allowed"},
+                    )
+                    return
+                await self._handle_session_undo(session_id=session_id, send=send)
+                return
+            if is_revert_route:
+                if method != "POST":
+                    await self._json_response(
+                        send,
+                        status=405,
+                        payload={"error": "method not allowed"},
+                    )
+                    return
+                await self._handle_session_revert(
+                    session_id=session_id,
+                    receive=receive,
+                    send=send,
+                )
+                return
+            if is_unrevert_route:
+                if method != "POST":
+                    await self._json_response(
+                        send,
+                        status=405,
+                        payload={"error": "method not allowed"},
+                    )
+                    return
+                await self._handle_session_unrevert(session_id=session_id, send=send)
                 return
             if method != "GET":
                 await self._json_response(
@@ -1281,6 +1348,70 @@ class RuntimeTransportApp:
             payload=self._serialize_session_debug_snapshot(snapshot),
         )
 
+    async def _handle_session_undo(self, *, session_id: str, send: Send) -> None:
+        with self._active_request_scope():
+            runtime = self._runtime_factory()
+            try:
+                marker = runtime.undo_session(session_id=session_id)
+            except ValueError as exc:
+                await self._json_response(send, status=404, payload={"error": str(exc)})
+                return
+            finally:
+                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
+        await self._json_response(
+            send,
+            status=200,
+            payload={"revert_marker": self._serialize_revert_marker(marker)},
+        )
+
+    async def _handle_session_revert(
+        self,
+        *,
+        session_id: str,
+        receive: Receive,
+        send: Send,
+    ) -> None:
+        try:
+            payload = _SessionRevertRequestPayload.model_validate_json(
+                await self._read_body(receive)
+            )
+        except (ValidationError, ValueError) as exc:
+            await self._json_response(send, status=400, payload={"error": str(exc)})
+            return
+        with self._active_request_scope():
+            runtime = self._runtime_factory()
+            try:
+                marker = runtime.revert_session(
+                    session_id=session_id,
+                    sequence=cast(int, payload.sequence),
+                )
+            except ValueError as exc:
+                await self._json_response(send, status=404, payload={"error": str(exc)})
+                return
+            finally:
+                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
+        await self._json_response(
+            send,
+            status=200,
+            payload={"revert_marker": self._serialize_revert_marker(marker)},
+        )
+
+    async def _handle_session_unrevert(self, *, session_id: str, send: Send) -> None:
+        with self._active_request_scope():
+            runtime = self._runtime_factory()
+            try:
+                marker = runtime.unrevert_session(session_id=session_id)
+            except ValueError as exc:
+                await self._json_response(send, status=404, payload={"error": str(exc)})
+                return
+            finally:
+                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
+        await self._json_response(
+            send,
+            status=200,
+            payload={"revert_marker": self._serialize_revert_marker(marker)},
+        )
+
     async def _handle_approval_resolution(
         self,
         *,
@@ -1579,10 +1710,25 @@ class RuntimeTransportApp:
             "output": result.output,
             "error": result.error,
             "last_event_sequence": result.last_event_sequence,
+            "revert_marker": RuntimeTransportApp._serialize_revert_marker(result.revert_marker),
             "transcript": [
-                RuntimeTransportApp._serialize_event(event) for event in result.transcript
+                {
+                    **cast(dict[str, object], RuntimeTransportApp._serialize_event(event)),
+                    "reverted": result.revert_marker is not None
+                    and result.revert_marker.active
+                    and event.sequence >= result.revert_marker.sequence,
+                }
+                for event in result.transcript
             ],
         }
+
+    @staticmethod
+    def _serialize_revert_marker(
+        marker: RuntimeSessionRevertMarker | None,
+    ) -> dict[str, object] | None:
+        if marker is None:
+            return None
+        return {"sequence": marker.sequence, "active": marker.active}
 
     @staticmethod
     def _serialize_session_debug_snapshot(
@@ -1623,6 +1769,7 @@ class RuntimeTransportApp:
                 if snapshot.pending_question is not None
                 else None
             ),
+            "revert_marker": RuntimeTransportApp._serialize_revert_marker(snapshot.revert_marker),
             "last_event_sequence": snapshot.last_event_sequence,
             "last_relevant_event": RuntimeTransportApp._serialize_session_debug_event(
                 snapshot.last_relevant_event
