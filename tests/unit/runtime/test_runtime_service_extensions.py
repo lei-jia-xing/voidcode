@@ -6395,6 +6395,33 @@ def test_runtime_rejects_non_boolean_provider_stream_request_metadata(tmp_path: 
         )
 
 
+def test_runtime_accepts_reasoning_effort_request_metadata(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_SkillCapturingStubGraph())
+
+    _ = runtime.run(RuntimeRequest(prompt="hello", metadata={"reasoning_effort": "high"}))
+
+    assert _SkillCapturingStubGraph.last_request is not None
+    assert _SkillCapturingStubGraph.last_request.metadata["reasoning_effort"] == "high"
+
+
+@pytest.mark.parametrize("invalid_value", ["", 1, True, None])
+def test_runtime_rejects_invalid_reasoning_effort_request_metadata(
+    tmp_path: Path, invalid_value: object
+) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_SkillCapturingStubGraph())
+
+    with pytest.raises(
+        ValueError,
+        match="request metadata 'reasoning_effort' must be a non-empty string",
+    ):
+        _ = runtime.run(
+            RuntimeRequest(
+                prompt="hello",
+                metadata=cast(RuntimeRequestMetadataPayload, {"reasoning_effort": invalid_value}),
+            )
+        )
+
+
 def test_runtime_skill_payloads_affect_execution_output_when_graph_consumes_them(
     tmp_path: Path,
 ) -> None:
@@ -10715,7 +10742,9 @@ def test_runtime_provider_streaming_emits_ordered_provider_stream_events(
         model_provider_registry=registry,
     )
 
-    response = runtime.run_stream(RuntimeRequest(prompt="read sample.txt"))
+    response = runtime.run_stream(
+        RuntimeRequest(prompt="read sample.txt", metadata={"provider_stream": True})
+    )
     chunks = list(response)
     events = [chunk.event for chunk in chunks if chunk.event is not None]
     assert events
@@ -10752,7 +10781,11 @@ def test_runtime_run_stream_preserves_streamed_tool_requests(tmp_path: Path) -> 
         model_provider_registry=registry,
     )
 
-    chunks = list(runtime.run_stream(RuntimeRequest(prompt="read sample.txt")))
+    chunks = list(
+        runtime.run_stream(
+            RuntimeRequest(prompt="read sample.txt", metadata={"provider_stream": True})
+        )
+    )
 
     events = [chunk.event for chunk in chunks if chunk.event is not None]
     assert events
@@ -10767,7 +10800,9 @@ def test_runtime_run_stream_preserves_streamed_tool_requests(tmp_path: Path) -> 
     assert output_chunks == ["sample contents"]
 
 
-def test_runtime_run_stream_enables_provider_stream_when_not_explicitly_set(tmp_path: Path) -> None:
+def test_runtime_run_stream_enables_provider_stream_when_not_explicitly_set(
+    tmp_path: Path,
+) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_SkillCapturingStubGraph(),
@@ -10778,6 +10813,23 @@ def test_runtime_run_stream_enables_provider_stream_when_not_explicitly_set(tmp_
 
     assert _SkillCapturingStubGraph.last_request is not None
     assert _SkillCapturingStubGraph.last_request.metadata["provider_stream"] is True
+
+
+def test_runtime_run_stream_preserves_explicit_provider_stream_false(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SkillCapturingStubGraph(),
+        config=RuntimeConfig(),
+    )
+
+    _ = list(
+        runtime.run_stream(RuntimeRequest(prompt="hello", metadata={"provider_stream": False}))
+    )
+
+    assert _SkillCapturingStubGraph.last_request is not None
+    assert _SkillCapturingStubGraph.last_request.metadata["provider_stream"] is False
 
 
 def test_runtime_run_disables_provider_stream_by_default(tmp_path: Path) -> None:

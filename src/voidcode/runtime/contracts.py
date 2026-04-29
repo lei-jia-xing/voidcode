@@ -51,6 +51,7 @@ class RuntimeRequestMetadata(TypedDict, total=False):
     delegation: RuntimeSubagentRoutingMetadata
     max_steps: int
     provider_stream: bool
+    reasoning_effort: str
     skills: list[str]
     force_load_skills: list[str]
 
@@ -86,6 +87,7 @@ _STABLE_RUNTIME_REQUEST_METADATA_KEYS = frozenset(
         "delegation",
         "max_steps",
         "provider_stream",
+        "reasoning_effort",
         "skills",
         "force_load_skills",
     }
@@ -385,6 +387,12 @@ def validate_runtime_request_metadata(
         if not isinstance(provider_stream, bool):
             raise RuntimeRequestError("request metadata 'provider_stream' must be a boolean")
         normalized["provider_stream"] = provider_stream
+
+    if "reasoning_effort" in metadata:
+        normalized["reasoning_effort"] = _validate_optional_runtime_metadata_string(
+            metadata["reasoning_effort"],
+            field_name="reasoning_effort",
+        )
 
     if "skills" in metadata:
         raw_skills = metadata["skills"]

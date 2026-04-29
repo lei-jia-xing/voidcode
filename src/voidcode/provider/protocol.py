@@ -52,6 +52,7 @@ class ProviderTurnRequest:
     provider_name: str | None = None
     model_name: str | None = None
     agent_preset: dict[str, object] | None = None
+    reasoning_effort: str | None = None
     attempt: int = 0
     abort_signal: ProviderAbortSignal | None = None
 
