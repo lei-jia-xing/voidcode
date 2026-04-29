@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+# pyright: reportUnusedFunction=false
 import asyncio
 import importlib
 import json
@@ -1148,6 +1149,109 @@ def test_transport_serializes_hook_events_from_runtime_stream(tmp_path: Path) ->
         "runtime.tool_hook_pre",
         "runtime.tool_hook_post",
     ]
+
+
+def test_transport_serializes_delegated_background_lifecycle_event_metadata(
+    tmp_path: Path,
+) -> None:
+    create_runtime_app = _load_transport_app_factory()
+    runtime_stream_chunk, session_ref, session_state, event_envelope = _load_stream_types()
+    session = session_state(
+        session=session_ref(id="leader-background-stream"),
+        status="running",
+        turn=1,
+        metadata={"workspace": str(tmp_path)},
+    )
+
+    class StubRuntime:
+        def run_stream(self, request: RuntimeRequestLike) -> Iterator[StreamChunkLike]:
+            assert request.prompt == "stream delegated background event"
+            yield runtime_stream_chunk(
+                kind="event",
+                session=session,
+                event=event_envelope(
+                    session_id="leader-background-stream",
+                    sequence=1,
+                    event_type="runtime.background_task_completed",
+                    source="runtime",
+                    payload={
+                        "task_id": "task-123",
+                        "parent_session_id": "leader-background-stream",
+                        "requested_child_session_id": "child-requested",
+                        "child_session_id": "child-session",
+                        "approval_request_id": None,
+                        "question_request_id": None,
+                        "delegation": {
+                            "parent_session_id": "leader-background-stream",
+                            "requested_child_session_id": "child-requested",
+                            "child_session_id": "child-session",
+                            "delegated_task_id": "task-123",
+                            "approval_request_id": None,
+                            "question_request_id": None,
+                            "routing": {
+                                "mode": "background",
+                                "subagent_type": "explore",
+                                "description": "Inspect logs",
+                            },
+                            "selected_preset": "explore",
+                            "selected_execution_engine": "provider",
+                            "lifecycle_status": "completed",
+                            "approval_blocked": False,
+                            "result_available": True,
+                            "cancellation_cause": None,
+                        },
+                        "message": {
+                            "kind": "delegated_lifecycle",
+                            "status": "completed",
+                            "summary_output": "Completed: child done",
+                            "error": None,
+                            "approval_blocked": False,
+                            "result_available": True,
+                        },
+                    },
+                ),
+            )
+
+        def list_sessions(self) -> tuple[StoredSessionSummaryLike, ...]:
+            raise AssertionError("list_sessions should not be called")
+
+        def web_settings(self) -> dict[str, object]:
+            raise AssertionError("web_settings should not be called")
+
+        def update_web_settings(self, **_: object) -> dict[str, object]:
+            raise AssertionError("update_web_settings should not be called")
+
+        def resume(self, session_id: str) -> RuntimeResponseLike:
+            raise AssertionError(f"resume should not be called: {session_id}")
+
+    app = create_runtime_app(workspace=tmp_path, runtime_factory=lambda: StubRuntime())
+    response = _run_app(
+        app,
+        method="POST",
+        path="/api/runtime/run/stream",
+        body=json.dumps({"prompt": "stream delegated background event"}).encode("utf-8"),
+    )
+    payloads = _parse_sse_payloads(response)
+    event_payload = cast(
+        dict[str, object],
+        cast(dict[str, object], payloads[0]["event"])["payload"],
+    )
+
+    assert response.status == 200
+    assert event_payload["task_id"] == "task-123"
+    assert cast(dict[str, object], event_payload["delegation"])["routing"] == {
+        "mode": "background",
+        "subagent_type": "explore",
+        "description": "Inspect logs",
+    }
+    assert event_payload["message"] == {
+        "kind": "delegated_lifecycle",
+        "status": "completed",
+        "summary_output": "Completed: child done",
+        "error": None,
+        "approval_blocked": False,
+        "result_available": True,
+    }
 
 
 def test_transport_resolves_pending_approval_deny_over_http(tmp_path: Path) -> None:
@@ -2777,8 +2881,10 @@ def test_transport_run_stream_continues_after_mcp_startup_failure_and_status_sta
                 },
             )
 
-        def list_tools(self, *, workspace: Path) -> tuple[object, ...]:
-            _ = workspace
+        def list_tools(
+            self, *, workspace: Path, owner_session_id: str | None = None
+        ) -> tuple[object, ...]:
+            _ = workspace, owner_session_id
             self._failed = True
             raise ValueError(self.startup_error)
 

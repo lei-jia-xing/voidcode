@@ -19,7 +19,7 @@ import pytest
 
 import voidcode.runtime.service as runtime_service_module
 from voidcode.acp import AcpRequestEnvelope, AcpResponseEnvelope
-from voidcode.agent import LEADER_AGENT_MANIFEST, get_builtin_agent_manifest
+from voidcode.agent import LEADER_AGENT_MANIFEST, get_builtin_agent_manifest, render_agent_prompt
 from voidcode.graph.deterministic_graph import DeterministicGraph
 from voidcode.provider.auth import ProviderAuthAuthorizeRequest
 from voidcode.provider.config import (
@@ -763,6 +763,40 @@ class _TaskToolGraph:
         return _StubStep(output="delegation started", is_finished=True)
 
 
+class _ParentSkillThenSyncTaskGraph:
+    child_system_segments: tuple[str | None, ...] = ()
+
+    def step(
+        self,
+        request: GraphRunRequest,
+        tool_results: tuple[object, ...],
+        *,
+        session: SessionState,
+    ) -> _StubStep:
+        if session.session.parent_id is not None:
+            type(self).child_system_segments = tuple(
+                segment.content
+                for segment in request.assembled_context.segments
+                if segment.role == "system"
+            )
+            return _StubStep(output="child done", is_finished=True)
+        if not tool_results:
+            return _StubStep(tool_call=ToolCall(tool_name="skill", arguments={"name": "demo"}))
+        if len(tool_results) == 1:
+            return _StubStep(
+                tool_call=ToolCall(
+                    tool_name="task",
+                    arguments={
+                        "prompt": "child should not inherit parent-loaded body",
+                        "run_in_background": False,
+                        "load_skills": [],
+                        "subagent_type": "explore",
+                    },
+                )
+            )
+        return _StubStep(output="parent done", is_finished=True)
+
+
 class _NestedDelegationGraph:
     def step(
         self,
@@ -862,7 +896,9 @@ def _wait_for_path_text(path: Path, *, timeout_seconds: float = 2.0) -> str:
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
         if path.exists():
-            return path.read_text()
+            text = path.read_text()
+            if text:
+                return text
         time.sleep(0.01)
     raise AssertionError(f"path was not written: {path}")
 
@@ -1570,6 +1606,107 @@ def test_runtime_task_tool_starts_background_task_with_skill_metadata(tmp_path: 
     assert task.request.prompt.startswith("Delegated runtime task.")
 
 
+def test_runtime_sync_child_with_delegated_load_skills_receives_full_skill_prompt(
+    tmp_path: Path,
+) -> None:
+    skill_dir = tmp_path / ".voidcode" / "skills" / "demo"
+    _write_demo_skill(skill_dir, content="# Demo\nUse delegated skill body before provider turn.")
+    created_providers: list[_ScriptedTurnProvider] = []
+    provider = _ScriptedModelProvider(
+        name="opencode",
+        outcomes=(ProviderTurnResult(output="done"),),
+        created_providers=created_providers,
+    )
+    registry = ModelProviderRegistry(providers={"opencode": provider})
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        model_provider_registry=registry,
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            skills=RuntimeSkillsConfig(enabled=True),
+        ),
+    )
+
+    response = runtime.run(
+        RuntimeRequest(
+            prompt="delegated child prompt",
+            session_id="delegated-skill-child",
+            metadata={
+                "force_load_skills": ["demo"],
+                "delegation": {"mode": "sync", "subagent_type": "explore"},
+            },
+        )
+    )
+    turn_provider = next(
+        (created_provider for created_provider in created_providers if created_provider.requests),
+        None,
+    )
+
+    assert response.session.status == "completed"
+    assert response.session.metadata["applied_skills"] == ["demo"]
+    assert turn_provider is not None
+    assert len(turn_provider.requests) == 1
+    first_request = turn_provider.requests[0]
+    system_contents = [
+        segment.content
+        for segment in first_request.assembled_context.segments
+        if segment.role == "system"
+    ]
+    assert any(
+        isinstance(item, str)
+        and "Runtime-managed skills are active for this turn." in item
+        and "Use delegated skill body before provider turn." in item
+        for item in system_contents
+    )
+
+
+def test_runtime_parent_loaded_skill_body_does_not_leak_to_sync_child_prompt(
+    tmp_path: Path,
+) -> None:
+    skill_dir = tmp_path / ".voidcode" / "skills" / "demo"
+    _write_demo_skill(skill_dir, content="# Demo\nParent-only loaded body must not leak.")
+    _ParentSkillThenSyncTaskGraph.child_system_segments = ()
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ParentSkillThenSyncTaskGraph(),
+        config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=True)),
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="parent loads skill", session_id="parent-skill"))
+
+    assert response.session.status == "completed"
+    assert response.output == "parent done"
+    assert not any(
+        isinstance(item, str) and "Parent-only loaded body must not leak." in item
+        for item in _ParentSkillThenSyncTaskGraph.child_system_segments
+    )
+
+
+def test_runtime_missing_delegated_force_loaded_skill_fails_without_child_result(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SkillCapturingStubGraph(),
+        config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=True)),
+    )
+
+    with pytest.raises(ValueError, match="unknown skill: missing"):
+        _ = runtime.run(
+            RuntimeRequest(
+                prompt="delegated missing forced skill",
+                session_id="missing-forced-child",
+                metadata={
+                    "force_load_skills": ["missing"],
+                    "delegation": {"mode": "sync", "subagent_type": "explore"},
+                },
+            )
+        )
+
+    assert runtime.list_sessions() == ()
+
+
 def test_runtime_constructs_with_custom_agent_hook_refs(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
@@ -2250,30 +2387,21 @@ def test_runtime_enforces_task_budget(tmp_path: Path) -> None:
         )
 
 
-def test_runtime_nested_task_tool_propagates_runtime_governance_budget(tmp_path: Path) -> None:
+def test_runtime_nested_task_tool_is_blocked_by_child_tool_scope(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(workspace=tmp_path, graph=_NestedDelegationGraph())
     _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
 
-    child = runtime.run(
-        RuntimeRequest(
-            prompt="delegate from child",
-            session_id="child-session",
-            parent_session_id="leader-session",
-            metadata={"delegation": {"mode": "sync", "category": "quick"}},
+    with pytest.raises(ValueError, match="delegation policy denied tool 'task'"):
+        _ = runtime.run(
+            RuntimeRequest(
+                prompt="delegate from child",
+                session_id="child-session",
+                parent_session_id="leader-session",
+                metadata={"delegation": {"mode": "sync", "category": "quick"}},
+            )
         )
-    )
-    tasks = runtime.list_background_tasks_by_parent_session(parent_session_id="child-session")
-    task = runtime.load_background_task(tasks[0].task.id)
 
-    assert child.output == "nested delegation started"
-    assert task.request.metadata["delegation"] == {
-        "mode": "background",
-        "category": "quick",
-        "depth": 2,
-        "remaining_spawn_budget": 2,
-        "selected_preset": "worker",
-        "selected_execution_engine": "provider",
-    }
+    assert runtime.list_background_tasks_by_parent_session(parent_session_id="child-session") == ()
 
 
 def test_runtime_allows_child_session_while_parent_stream_is_active(tmp_path: Path) -> None:
@@ -4835,14 +4963,27 @@ def test_runtime_exit_shuts_down_managed_mcp(tmp_path: Path) -> None:
         def current_state(self) -> McpManagerState:
             return McpManagerState(mode="managed", configuration=self.configuration)
 
-        def list_tools(self, *, workspace: Path):
-            _ = workspace
+        def list_tools(
+            self,
+            *,
+            workspace: Path,
+            owner_session_id: str | None = None,
+            parent_session_id: str | None = None,
+        ):
+            _ = workspace, owner_session_id, parent_session_id
             return ()
 
         def call_tool(
-            self, *, server_name: str, tool_name: str, arguments: dict[str, object], workspace: Path
+            self,
+            *,
+            server_name: str,
+            tool_name: str,
+            arguments: dict[str, object],
+            workspace: Path,
+            owner_session_id: str | None = None,
+            parent_session_id: str | None = None,
         ):
-            _ = server_name, tool_name, arguments, workspace
+            _ = server_name, tool_name, arguments, workspace, owner_session_id, parent_session_id
             raise AssertionError("not used")
 
         def shutdown(self) -> tuple[McpRuntimeEvent, ...]:
@@ -4874,14 +5015,27 @@ def test_runtime_surfaces_mcp_lifecycle_events_in_run_responses(tmp_path: Path) 
         def current_state(self) -> McpManagerState:
             return McpManagerState(mode="managed", configuration=self.configuration)
 
-        def list_tools(self, *, workspace: Path):
-            _ = workspace
+        def list_tools(
+            self,
+            *,
+            workspace: Path,
+            owner_session_id: str | None = None,
+            parent_session_id: str | None = None,
+        ):
+            _ = workspace, owner_session_id, parent_session_id
             return ()
 
         def call_tool(
-            self, *, server_name: str, tool_name: str, arguments: dict[str, object], workspace: Path
+            self,
+            *,
+            server_name: str,
+            tool_name: str,
+            arguments: dict[str, object],
+            workspace: Path,
+            owner_session_id: str | None = None,
+            parent_session_id: str | None = None,
         ):
-            _ = server_name, tool_name, arguments, workspace
+            _ = server_name, tool_name, arguments, workspace, owner_session_id, parent_session_id
             raise AssertionError("not used")
 
         def shutdown(self) -> tuple[McpRuntimeEvent, ...]:
@@ -4902,6 +5056,82 @@ def test_runtime_surfaces_mcp_lifecycle_events_in_run_responses(tmp_path: Path) 
     response = runtime.run(RuntimeRequest(prompt="hello"))
 
     assert any(event.event_type == RUNTIME_MCP_SERVER_STARTED for event in response.events)
+
+
+def test_runtime_waiting_approval_preserves_mcp_session_until_resume_completion(
+    tmp_path: Path,
+) -> None:
+    class _RecordingMcpManager:
+        def __init__(self) -> None:
+            self.release_session_ids: list[str] = []
+
+        @property
+        def configuration(self) -> McpConfigState:
+            return McpConfigState(configured_enabled=True)
+
+        def current_state(self) -> McpManagerState:
+            return McpManagerState(mode="managed", configuration=self.configuration)
+
+        def list_tools(
+            self,
+            *,
+            workspace: Path,
+            owner_session_id: str | None = None,
+            parent_session_id: str | None = None,
+        ):
+            _ = workspace, owner_session_id, parent_session_id
+            return ()
+
+        def call_tool(
+            self,
+            *,
+            server_name: str,
+            tool_name: str,
+            arguments: dict[str, object],
+            workspace: Path,
+            owner_session_id: str | None = None,
+            parent_session_id: str | None = None,
+        ):
+            _ = server_name, tool_name, arguments, workspace, owner_session_id, parent_session_id
+            raise AssertionError("not used")
+
+        def release_session(self, *, session_id: str) -> tuple[McpRuntimeEvent, ...]:
+            self.release_session_ids.append(session_id)
+            return (
+                McpRuntimeEvent(
+                    event_type=RUNTIME_MCP_SERVER_STOPPED,
+                    payload={"server": "echo", "workspace_root": str(tmp_path)},
+                ),
+            )
+
+        def shutdown(self) -> tuple[McpRuntimeEvent, ...]:
+            return ()
+
+        def drain_events(self) -> tuple[McpRuntimeEvent, ...]:
+            return ()
+
+    mcp_manager = _RecordingMcpManager()
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        mcp_manager=mcp_manager,
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    waiting = runtime.run(RuntimeRequest(prompt="go", session_id="mcp-approval-waiting"))
+
+    assert waiting.session.status == "waiting"
+    assert mcp_manager.release_session_ids == []
+
+    resumed = runtime.resume(
+        "mcp-approval-waiting",
+        approval_request_id=cast(str, waiting.events[-1].payload["request_id"]),
+        approval_decision="allow",
+    )
+
+    assert resumed.session.status == "completed"
+    assert mcp_manager.release_session_ids == ["mcp-approval-waiting"]
+    assert any(event.event_type == RUNTIME_MCP_SERVER_STOPPED for event in resumed.events)
 
 
 def test_runtime_emits_mcp_failed_and_continues_run_on_startup_refresh(
@@ -4935,15 +5165,28 @@ def test_runtime_emits_mcp_failed_and_continues_run_on_startup_refresh(
                 },
             )
 
-        def list_tools(self, *, workspace: Path):
-            _ = workspace
+        def list_tools(
+            self,
+            *,
+            workspace: Path,
+            owner_session_id: str | None = None,
+            parent_session_id: str | None = None,
+        ):
+            _ = workspace, owner_session_id, parent_session_id
             self._failed = True
             raise ValueError(self.startup_error)
 
         def call_tool(
-            self, *, server_name: str, tool_name: str, arguments: dict[str, object], workspace: Path
+            self,
+            *,
+            server_name: str,
+            tool_name: str,
+            arguments: dict[str, object],
+            workspace: Path,
+            owner_session_id: str | None = None,
+            parent_session_id: str | None = None,
         ):
-            _ = server_name, tool_name, arguments, workspace
+            _ = server_name, tool_name, arguments, workspace, owner_session_id, parent_session_id
             raise AssertionError("not used")
 
         def shutdown(self) -> tuple[McpRuntimeEvent, ...]:
@@ -5042,15 +5285,28 @@ def test_runtime_resume_emits_mcp_failed_and_continues_on_startup_refresh(
                 },
             )
 
-        def list_tools(self, *, workspace: Path):
-            _ = workspace
+        def list_tools(
+            self,
+            *,
+            workspace: Path,
+            owner_session_id: str | None = None,
+            parent_session_id: str | None = None,
+        ):
+            _ = workspace, owner_session_id, parent_session_id
             self._failed = True
             raise ValueError(self.startup_error)
 
         def call_tool(
-            self, *, server_name: str, tool_name: str, arguments: dict[str, object], workspace: Path
+            self,
+            *,
+            server_name: str,
+            tool_name: str,
+            arguments: dict[str, object],
+            workspace: Path,
+            owner_session_id: str | None = None,
+            parent_session_id: str | None = None,
         ):
-            _ = server_name, tool_name, arguments, workspace
+            _ = server_name, tool_name, arguments, workspace, owner_session_id, parent_session_id
             raise AssertionError("not used")
 
         def shutdown(self) -> tuple[McpRuntimeEvent, ...]:
@@ -5150,15 +5406,28 @@ def test_runtime_resume_still_starts_acp_when_mcp_refresh_fails(
                 },
             )
 
-        def list_tools(self, *, workspace: Path):
-            _ = workspace
+        def list_tools(
+            self,
+            *,
+            workspace: Path,
+            owner_session_id: str | None = None,
+            parent_session_id: str | None = None,
+        ):
+            _ = workspace, owner_session_id, parent_session_id
             self._failed = True
             raise ValueError(self.startup_error)
 
         def call_tool(
-            self, *, server_name: str, tool_name: str, arguments: dict[str, object], workspace: Path
+            self,
+            *,
+            server_name: str,
+            tool_name: str,
+            arguments: dict[str, object],
+            workspace: Path,
+            owner_session_id: str | None = None,
+            parent_session_id: str | None = None,
         ):
-            _ = server_name, tool_name, arguments, workspace
+            _ = server_name, tool_name, arguments, workspace, owner_session_id, parent_session_id
             raise AssertionError("not used")
 
         def shutdown(self) -> tuple[McpRuntimeEvent, ...]:
@@ -5261,8 +5530,14 @@ def test_runtime_persists_mcp_failed_before_terminal_failure_on_tool_call_abort(
         def current_state(self) -> McpManagerState:
             return McpManagerState(mode="managed", configuration=self.configuration)
 
-        def list_tools(self, *, workspace: Path):
-            _ = workspace
+        def list_tools(
+            self,
+            *,
+            workspace: Path,
+            owner_session_id: str | None = None,
+            parent_session_id: str | None = None,
+        ):
+            _ = workspace, owner_session_id, parent_session_id
             return (
                 McpToolDescriptor(
                     server_name="echo",
@@ -5273,9 +5548,16 @@ def test_runtime_persists_mcp_failed_before_terminal_failure_on_tool_call_abort(
             )
 
         def call_tool(
-            self, *, server_name: str, tool_name: str, arguments: dict[str, object], workspace: Path
+            self,
+            *,
+            server_name: str,
+            tool_name: str,
+            arguments: dict[str, object],
+            workspace: Path,
+            owner_session_id: str | None = None,
+            parent_session_id: str | None = None,
         ) -> McpToolCallResult:
-            _ = server_name, tool_name, arguments, workspace
+            _ = server_name, tool_name, arguments, workspace, owner_session_id, parent_session_id
             raise ValueError(self.call_error)
 
         def shutdown(self) -> tuple[McpRuntimeEvent, ...]:
@@ -5334,14 +5616,27 @@ def test_runtime_metadata_includes_mcp_state_when_configured(tmp_path: Path) -> 
         def current_state(self) -> McpManagerState:
             return McpManagerState(mode="managed", configuration=self.configuration)
 
-        def list_tools(self, *, workspace: Path):
-            _ = workspace
+        def list_tools(
+            self,
+            *,
+            workspace: Path,
+            owner_session_id: str | None = None,
+            parent_session_id: str | None = None,
+        ):
+            _ = workspace, owner_session_id, parent_session_id
             return ()
 
         def call_tool(
-            self, *, server_name: str, tool_name: str, arguments: dict[str, object], workspace: Path
+            self,
+            *,
+            server_name: str,
+            tool_name: str,
+            arguments: dict[str, object],
+            workspace: Path,
+            owner_session_id: str | None = None,
+            parent_session_id: str | None = None,
         ):
-            _ = server_name, tool_name, arguments, workspace
+            _ = server_name, tool_name, arguments, workspace, owner_session_id, parent_session_id
             raise AssertionError("not used")
 
         def shutdown(self) -> tuple[McpRuntimeEvent, ...]:
@@ -5954,7 +6249,9 @@ def test_runtime_force_load_skills_emits_applied_and_persists_snapshot(tmp_path:
         config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=True)),
     )
 
-    response = runtime.run(RuntimeRequest(prompt="hello", metadata={"force_load_skills": ["demo"]}))
+    response = runtime.run(
+        RuntimeRequest(prompt="hello", metadata={"force_load_skills": ["demo", "demo"]})
+    )
 
     event_types = [event.event_type for event in response.events]
     assert event_types[0] == "runtime.request_received"
@@ -5965,6 +6262,8 @@ def test_runtime_force_load_skills_emits_applied_and_persists_snapshot(tmp_path:
         event for event in response.events if event.event_type == "runtime.skills_applied"
     )
     assert applied_event.payload["skills"] == ["demo"]
+    assert applied_event.payload["count"] == 1
+    assert response.session.metadata["selected_skill_names"] == ["demo"]
     assert response.session.metadata["applied_skills"] == ["demo"]
     assert _SkillCapturingStubGraph.last_request is not None
     assembled = _SkillCapturingStubGraph.last_request.assembled_context
@@ -7686,6 +7985,41 @@ def test_runtime_agent_config_selects_provider_graph_and_persists_agent_metadata
     )
 
 
+def test_runtime_agent_prompts_include_delegation_and_child_boundaries() -> None:
+    leader_prompt = render_agent_prompt({"preset": "leader", "prompt_profile": "leader"})
+    explore_prompt = render_agent_prompt({"preset": "explore", "prompt_profile": "explore"})
+    advisor_prompt = render_agent_prompt({"preset": "advisor", "prompt_profile": "advisor"})
+    worker_prompt = render_agent_prompt({"preset": "worker", "prompt_profile": "worker"})
+
+    assert leader_prompt is not None
+    assert "Delegate when the task is multi-step" in leader_prompt
+    assert "Use category for broad domain routing" in leader_prompt
+    assert "Use subagent_type when the needed role is already clear" in leader_prompt
+    assert "Use run_in_background=true" in leader_prompt
+    assert "Use background_output to collect child results" in leader_prompt
+    assert "background_output(full_session=true) is an explicit tool result" in leader_prompt
+    assert "passing its session_id" in leader_prompt
+    assert "Escalate to the user after repeated child failure" in leader_prompt
+
+    assert explore_prompt is not None
+    assert "Stay read only" in explore_prompt
+    assert "paths, patterns, and findings" in explore_prompt
+    assert "do not edit or write files" in explore_prompt
+
+    assert advisor_prompt is not None
+    assert "Stay read only and advisory" in advisor_prompt
+    assert "Recommend, analyze, and debug" in advisor_prompt
+    assert "do not edit or write files" in advisor_prompt
+
+    assert worker_prompt is not None
+    assert "Do not delegate by default" in worker_prompt
+    assert "current runtime tool allowlist exposes it" in worker_prompt
+    assert (
+        "Runtime tool allowlists, approvals, and session state remain authoritative"
+        in worker_prompt
+    )
+
+
 def test_runtime_product_agent_config_is_top_level_selectable_and_persisted(
     tmp_path: Path,
 ) -> None:
@@ -8095,8 +8429,14 @@ def test_runtime_agent_builtin_tools_disabled_preserves_mcp_tools(tmp_path: Path
         def current_state(self) -> McpManagerState:
             return McpManagerState(mode="managed", configuration=self.configuration)
 
-        def list_tools(self, *, workspace: Path):
-            _ = workspace
+        def list_tools(
+            self,
+            *,
+            workspace: Path,
+            owner_session_id: str | None = None,
+            parent_session_id: str | None = None,
+        ):
+            _ = workspace, owner_session_id, parent_session_id
             return (
                 McpToolDescriptor(
                     server_name="echo",
@@ -8113,8 +8453,10 @@ def test_runtime_agent_builtin_tools_disabled_preserves_mcp_tools(tmp_path: Path
             tool_name: str,
             arguments: dict[str, object],
             workspace: Path,
+            owner_session_id: str | None = None,
+            parent_session_id: str | None = None,
         ) -> McpToolCallResult:
-            _ = server_name, tool_name, arguments, workspace
+            _ = server_name, tool_name, arguments, workspace, owner_session_id, parent_session_id
             return McpToolCallResult(content=[{"type": "text", "text": "echo:hi"}])
 
         def shutdown(self):
@@ -8331,7 +8673,10 @@ def test_runtime_agent_manifest_skill_refs_combine_with_request_skills(
     )
 
     assert response.session.status == "completed"
-    assert response.events[2].payload["skills"] == ["zeta"]
+    assert response.events[1].payload["selected_skills"] == ["demo", "zeta"]
+    assert response.events[2].payload["skills"] == ["demo", "zeta"]
+    assert response.events[2].payload["count"] == 1
+    assert response.session.metadata["selected_skill_names"] == ["demo", "zeta"]
     assert response.session.metadata["applied_skills"] == ["zeta"]
     assert _SkillCapturingStubGraph.last_request is not None
     assembled = _SkillCapturingStubGraph.last_request.assembled_context
@@ -8339,6 +8684,142 @@ def test_runtime_agent_manifest_skill_refs_combine_with_request_skills(
     system_contents = [s.content for s in assembled.segments if s.role == "system"]
     assert any(
         isinstance(item, str) and "Apply requested skill." in item for item in system_contents
+    )
+    assert not any(
+        isinstance(item, str) and "Apply leader skill ref." in item for item in system_contents
+    )
+
+
+def test_runtime_empty_force_load_skills_preserves_manifest_selected_skills(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    demo_dir = tmp_path / ".voidcode" / "skills" / "demo"
+    zeta_dir = tmp_path / ".voidcode" / "skills" / "zeta"
+    _write_demo_skill(demo_dir, content="# Demo\nApply leader skill ref.")
+    zeta_dir.mkdir(parents=True)
+    (zeta_dir / "SKILL.md").write_text(
+        "---\nname: zeta\ndescription: Zeta skill\n---\n# Zeta\nDo not apply by default.\n",
+        encoding="utf-8",
+    )
+
+    def _manifest_with_skill_refs(agent_id: str):
+        if agent_id == "leader":
+            return replace(LEADER_AGENT_MANIFEST, skill_refs=("demo",))
+        return get_builtin_agent_manifest(agent_id)
+
+    monkeypatch.setattr(
+        runtime_service_module,
+        "get_builtin_agent_manifest",
+        _manifest_with_skill_refs,
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SkillCapturingStubGraph(),
+        config=RuntimeConfig(
+            agent=RuntimeAgentConfig(
+                preset="leader",
+                skills=RuntimeSkillsConfig(enabled=True),
+            )
+        ),
+    )
+
+    response = runtime.run(
+        RuntimeRequest(
+            prompt="hello",
+            session_id="leader-empty-force-load-skills",
+            metadata={"force_load_skills": []},
+        )
+    )
+
+    event_types = [event.event_type for event in response.events]
+    assert response.session.status == "completed"
+    assert response.events[1].payload["selected_skills"] == ["demo"]
+    assert "runtime.skills_applied" not in event_types
+    assert response.session.metadata["selected_skill_names"] == ["demo"]
+    assert response.session.metadata["applied_skills"] == []
+    assert _SkillCapturingStubGraph.last_request is not None
+    assembled = _SkillCapturingStubGraph.last_request.assembled_context
+    assert assembled is not None
+    system_contents = [s.content for s in assembled.segments if s.role == "system"]
+    assert any(
+        isinstance(item, str)
+        and "Runtime skills catalog (recommended/visible)." in item
+        and "<name>demo</name>" in item
+        for item in system_contents
+    )
+    assert not any(
+        isinstance(item, str) and "Apply leader skill ref." in item for item in system_contents
+    )
+    assert not any(
+        isinstance(item, str) and "<name>zeta</name>" in item for item in system_contents
+    )
+
+
+def test_runtime_child_empty_force_load_preserves_manifest_skill_refs_without_body(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    demo_dir = tmp_path / ".voidcode" / "skills" / "demo"
+    zeta_dir = tmp_path / ".voidcode" / "skills" / "zeta"
+    _write_demo_skill(demo_dir, content="# Demo\nWorker catalog only instruction.")
+    zeta_dir.mkdir(parents=True)
+    (zeta_dir / "SKILL.md").write_text(
+        "---\nname: zeta\ndescription: Zeta skill\n---\n# Zeta\nNot visible for worker.\n",
+        encoding="utf-8",
+    )
+
+    def _worker_manifest_with_skill_refs(agent_id: str):
+        if agent_id == "worker":
+            manifest = get_builtin_agent_manifest(agent_id)
+            assert manifest is not None
+            return replace(manifest, skill_refs=("demo",))
+        return get_builtin_agent_manifest(agent_id)
+
+    monkeypatch.setattr(
+        runtime_service_module,
+        "get_builtin_agent_manifest",
+        _worker_manifest_with_skill_refs,
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SkillCapturingStubGraph(),
+        config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=True)),
+    )
+
+    response = runtime.run(
+        RuntimeRequest(
+            prompt="delegated child catalog",
+            session_id="child-empty-force-load-skills",
+            metadata={
+                "force_load_skills": [],
+                "delegation": {"mode": "background", "category": "quick"},
+            },
+        )
+    )
+
+    event_types = [event.event_type for event in response.events]
+    assert response.session.status == "completed"
+    assert response.events[1].payload["selected_skills"] == ["demo"]
+    assert "runtime.skills_applied" not in event_types
+    assert response.session.metadata["selected_skill_names"] == ["demo"]
+    assert response.session.metadata["applied_skills"] == []
+    assert _SkillCapturingStubGraph.last_request is not None
+    assembled = _SkillCapturingStubGraph.last_request.assembled_context
+    assert assembled is not None
+    system_contents = [s.content for s in assembled.segments if s.role == "system"]
+    assert any(
+        isinstance(item, str)
+        and "Runtime skills catalog (recommended/visible)." in item
+        and "<name>demo</name>" in item
+        for item in system_contents
+    )
+    assert not any(
+        isinstance(item, str) and "Worker catalog only instruction." in item
+        for item in system_contents
+    )
+    assert not any(
+        isinstance(item, str) and "<name>zeta</name>" in item for item in system_contents
     )
 
 
@@ -11069,8 +11550,10 @@ def test_runtime_executes_background_task_completion_hook_with_task_context(
                         "import os, pathlib; "
                         "pathlib.Path('background-hook.txt').write_text("
                         "os.environ['VOIDCODE_HOOK_SURFACE'] + ':' + "
+                        "os.environ['VOIDCODE_TASK_ID'] + ':' + "
                         "os.environ['VOIDCODE_BACKGROUND_TASK_ID'] + ':' + "
-                        "os.environ['VOIDCODE_BACKGROUND_TASK_STATUS'])",
+                        "os.environ['VOIDCODE_BACKGROUND_TASK_STATUS'] + ':' + "
+                        "os.environ['VOIDCODE_LIFECYCLE_SURFACE'])",
                     ),
                 ),
             )
@@ -11082,7 +11565,8 @@ def test_runtime_executes_background_task_completion_hook_with_task_context(
 
     assert completed.status == "completed"
     assert _wait_for_path_text(tmp_path / "background-hook.txt") == (
-        f"background_task_completed:{started.task.id}:completed"
+        f"background_task_completed:{started.task.id}:{started.task.id}:completed:"
+        "background_task_completed"
     )
 
 
@@ -11148,6 +11632,9 @@ def test_runtime_executes_delegated_result_hook_for_completed_background_child(
                         "pathlib.Path('delegated-hook.txt').write_text("
                         "os.environ['VOIDCODE_HOOK_SURFACE'] + ':' + "
                         "os.environ['VOIDCODE_SESSION_ID'] + ':' + "
+                        "os.environ['VOIDCODE_PARENT_SESSION_ID'] + ':' + "
+                        "os.environ['VOIDCODE_CHILD_SESSION_ID'] + ':' + "
+                        "os.environ.get('VOIDCODE_PRESET', '') + ':' + "
                         "os.environ['VOIDCODE_BACKGROUND_TASK_ID'] + ':' + "
                         "os.environ['VOIDCODE_DELEGATED_SESSION_ID'])",
                     ),
@@ -11165,5 +11652,6 @@ def test_runtime_executes_delegated_result_hook_for_completed_background_child(
     assert completed.status == "completed"
     delegated_session_id = completed.session_id or ""
     assert _wait_for_path_text(tmp_path / "delegated-hook.txt") == (
-        f"delegated_result_available:leader-session:{started.task.id}:{delegated_session_id}"
+        "delegated_result_available:leader-session:leader-session:"
+        f"{delegated_session_id}::{started.task.id}:{delegated_session_id}"
     )

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from voidcode.runtime.contracts import BackgroundTaskResult
 from voidcode.runtime.events import (
     EMITTED_EVENT_TYPES,
     GRAPH_LOOP_STEP,
@@ -31,6 +32,7 @@ from voidcode.runtime.events import (
     DelegatedRoutingPayload,
     EventEnvelope,
 )
+from voidcode.runtime.task import SubagentRoutingIdentity
 
 
 def test_runtime_event_types_include_stable_emitted_events() -> None:
@@ -144,6 +146,48 @@ def test_event_envelope_requires_nested_delegated_payload_shape() -> None:
     assert delegated.delegation.routing is not None
     assert delegated.delegation.routing.subagent_type == "explore"
     assert delegated.message.approval_blocked is True
+
+
+def test_background_task_result_delegated_event_payload_names_are_explicit() -> None:
+    result = BackgroundTaskResult(
+        task_id="task-1",
+        parent_session_id="leader-session",
+        child_session_id="child-session",
+        requested_child_session_id="child-requested",
+        status="completed",
+        routing=SubagentRoutingIdentity(mode="background", category="visual-engineering"),
+        summary_output="done",
+        result_available=True,
+    )
+
+    payload = result.delegated_event.as_payload()
+
+    assert result.task_id == "task-1"
+    assert payload["parent_session_id"] == "leader-session"
+    assert payload["session_id"] == "child-session"
+    assert payload["delegation"] == {
+        "parent_session_id": "leader-session",
+        "requested_child_session_id": "child-requested",
+        "child_session_id": "child-session",
+        "delegated_task_id": "task-1",
+        "approval_request_id": None,
+        "question_request_id": None,
+        "routing": {"mode": "background", "category": "visual-engineering"},
+        "selected_preset": "product",
+        "selected_execution_engine": "provider",
+        "lifecycle_status": "completed",
+        "approval_blocked": False,
+        "result_available": True,
+        "cancellation_cause": None,
+    }
+    assert payload["message"] == {
+        "kind": "delegated_lifecycle",
+        "status": "completed",
+        "summary_output": "done",
+        "error": None,
+        "approval_blocked": False,
+        "result_available": True,
+    }
 
 
 def test_acp_delegated_lifecycle_uses_top_level_message_state_when_message_missing() -> None:

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import sys
+import threading
 import time
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -14,7 +16,7 @@ from voidcode.mcp import (
     McpManagerState as CanonicalMcpManagerState,
 )
 from voidcode.runtime.config import RuntimeMcpConfig, RuntimeMcpServerConfig
-from voidcode.runtime.mcp import McpConfigState, McpManagerState, build_mcp_manager
+from voidcode.runtime.mcp import McpConfigState, McpManagerState, McpRuntimeEvent, build_mcp_manager
 
 _MCP_SERVER_SCRIPT = r"""
 from __future__ import annotations
@@ -697,6 +699,98 @@ for raw_line in sys.stdin:
     assert [tool.tool_name for tool in discovered] == ["echo"]
 
 
+def test_mcp_manager_retry_connections_skips_ownerless_session_scoped_servers(
+    tmp_path: Path,
+) -> None:
+    runtime_started = tmp_path / "runtime-started.txt"
+    session_started = tmp_path / "session-started.txt"
+    runtime_server = tmp_path / "runtime_retry_mcp_server.py"
+    session_server = tmp_path / "session_retry_mcp_server.py"
+    server_template = r"""
+from __future__ import annotations
+
+import json
+import pathlib
+import sys
+
+started = pathlib.Path(r"{started_path}")
+started.write_text("started\n", encoding="utf-8")
+
+
+def send(message: dict[str, object]) -> None:
+    sys.stdout.write(json.dumps(message) + "\n")
+    sys.stdout.flush()
+
+
+for raw_line in sys.stdin:
+    message = json.loads(raw_line)
+    method = message.get("method")
+    if method == "initialize":
+        send(
+            {{
+                "jsonrpc": "2.0",
+                "id": message["id"],
+                "result": {{
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {{"tools": {{}}}},
+                    "serverInfo": {{"name": "retry-scope", "version": "0.1.0"}},
+                }},
+            }}
+        )
+        continue
+    if method == "notifications/initialized":
+        continue
+    if method == "tools/list":
+        send({{"jsonrpc": "2.0", "id": message["id"], "result": {{"tools": []}}}})
+        continue
+"""
+    runtime_server.write_text(
+        server_template.format(started_path=runtime_started),
+        encoding="utf-8",
+    )
+    session_server.write_text(
+        server_template.format(started_path=session_started),
+        encoding="utf-8",
+    )
+    manager = build_mcp_manager(
+        RuntimeMcpConfig(
+            enabled=True,
+            servers={
+                "runtime": RuntimeMcpServerConfig(
+                    transport="stdio",
+                    command=(sys.executable, str(runtime_server)),
+                ),
+                "session": RuntimeMcpServerConfig(
+                    transport="stdio",
+                    command=(sys.executable, str(session_server)),
+                    scope="session",
+                ),
+            },
+        )
+    )
+
+    manager.retry_connections(workspace=tmp_path)
+
+    assert runtime_started.read_text(encoding="utf-8") == "started\n"
+    assert not session_started.exists()
+    state = manager.current_state()
+    assert state.servers["runtime"].status == "running"
+    assert state.servers["session"].status == "stopped"
+    assert [event.event_type for event in manager.drain_events()] == [
+        "runtime.mcp_server_started",
+        "runtime.mcp_server_acquired",
+    ]
+
+    try:
+        manager.list_tools(workspace=tmp_path)
+    except ValueError as exc:
+        assert "session-scoped server requires an owning session id" in str(exc)
+    else:
+        raise AssertionError("expected ownerless session-scoped discovery to remain strict")
+
+    assert not session_started.exists()
+
+
 def test_mcp_manager_preserves_session_on_recoverable_call_failures(tmp_path: Path) -> None:
     server_script = tmp_path / "recoverable_call_mcp_server.py"
     server_script.write_text(
@@ -809,7 +903,10 @@ for raw_line in sys.stdin:
     discovered = manager.list_tools(workspace=tmp_path)
 
     assert [tool.tool_name for tool in discovered] == ["echo"]
-    assert [event.event_type for event in manager.drain_events()] == ["runtime.mcp_server_started"]
+    assert [event.event_type for event in manager.drain_events()] == [
+        "runtime.mcp_server_started",
+        "runtime.mcp_server_acquired",
+    ]
 
     for mode, expected_error in (
         ("tool_not_found", "Tool not found"),
@@ -836,9 +933,150 @@ for raw_line in sys.stdin:
 
         assert retry.content == [{"type": "text", "text": f"echo:{mode}"}]
         failure_events = manager.drain_events()
-        assert [event.event_type for event in failure_events] == ["runtime.mcp_server_failed"]
-        assert failure_events[0].payload["stage"] == "call"
-        assert failure_events[0].payload["method"] == "tools/call"
+        failed_event = next(
+            event for event in failure_events if event.event_type == "runtime.mcp_server_failed"
+        )
+        assert failed_event.payload["stage"] == "call"
+        assert failed_event.payload["method"] == "tools/call"
+
+
+def test_mcp_manager_keeps_failure_events_coherent_during_concurrent_drains(
+    tmp_path: Path,
+) -> None:
+    server_script = tmp_path / "concurrent_failure_mcp_server.py"
+    server_script.write_text(
+        r"""
+from __future__ import annotations
+
+import json
+import sys
+
+
+def send(message: dict[str, object]) -> None:
+    sys.stdout.write(json.dumps(message) + "\n")
+    sys.stdout.flush()
+
+
+for raw_line in sys.stdin:
+    line = raw_line.strip()
+    if not line:
+        continue
+    message = json.loads(line)
+    method = message.get("method")
+    if method == "initialize":
+        send(
+            {
+                "jsonrpc": "2.0",
+                "id": message["id"],
+                "result": {
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {"tools": {}},
+                    "serverInfo": {"name": "concurrent-failure", "version": "0.1.0"},
+                },
+            }
+        )
+        continue
+    if method == "notifications/initialized":
+        continue
+    if method == "tools/list":
+        send(
+            {
+                "jsonrpc": "2.0",
+                "id": message["id"],
+                "result": {
+                    "tools": [
+                        {
+                            "name": "fail",
+                            "description": "Always fails recoverably.",
+                            "inputSchema": {"type": "object"},
+                        }
+                    ]
+                },
+            }
+        )
+        continue
+    if method == "tools/call":
+        send(
+            {
+                "jsonrpc": "2.0",
+                "id": message["id"],
+                "error": {"code": -32602, "message": "Invalid tool arguments"},
+            }
+        )
+        continue
+""",
+        encoding="utf-8",
+    )
+    manager = build_mcp_manager(
+        RuntimeMcpConfig(
+            enabled=True,
+            servers={
+                "concurrent_failure": RuntimeMcpServerConfig(
+                    transport="stdio",
+                    command=(sys.executable, str(server_script)),
+                )
+            },
+        )
+    )
+    assert [tool.tool_name for tool in manager.list_tools(workspace=tmp_path)] == ["fail"]
+    _ = manager.drain_events()
+
+    worker_count = 12
+    finished = threading.Event()
+    drained_events: list[McpRuntimeEvent] = []
+    drained_events_lock = threading.Lock()
+    errors: list[BaseException] = []
+
+    def call_failure() -> None:
+        try:
+            manager.call_tool(
+                server_name="concurrent_failure",
+                tool_name="fail",
+                arguments={},
+                workspace=tmp_path,
+            )
+        except ValueError as exc:
+            assert "Invalid tool arguments" in str(exc)
+        except BaseException as exc:  # pragma: no cover - re-raised below
+            errors.append(exc)
+        else:  # pragma: no cover - indicates the fake server stopped failing
+            errors.append(AssertionError("expected recoverable MCP call failure"))
+
+    def drain_until_finished() -> None:
+        while not finished.is_set():
+            drained = manager.drain_events()
+            if drained:
+                with drained_events_lock:
+                    drained_events.extend(drained)
+            time.sleep(0.001)
+        drained = manager.drain_events()
+        if drained:
+            with drained_events_lock:
+                drained_events.extend(drained)
+
+    drainer = threading.Thread(target=drain_until_finished)
+    threads = [threading.Thread(target=call_failure) for _ in range(worker_count)]
+    drainer.start()
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=3.0)
+    finished.set()
+    drainer.join(timeout=3.0)
+
+    if errors:
+        raise errors[0]
+    assert all(not thread.is_alive() for thread in threads)
+    assert not drainer.is_alive()
+
+    failure_events = [
+        event for event in drained_events if event.event_type == "runtime.mcp_server_failed"
+    ]
+    assert len(failure_events) == worker_count
+    assert {event.payload["stage"] for event in failure_events} == {"call"}
+    assert {event.payload["method"] for event in failure_events} == {"tools/call"}
+    assert manager.current_state().servers["concurrent_failure"].status == "failed"
+    assert [tool.tool_name for tool in manager.list_tools(workspace=tmp_path)] == ["fail"]
 
 
 def test_mcp_manager_emits_failure_event_when_startup_command_is_missing(tmp_path: Path) -> None:
@@ -907,3 +1145,281 @@ while True:
     assert server_state.stage == "startup"
     assert server_state.retry_available is True
     assert server_state.workspace_root == str(tmp_path)
+
+
+def test_mcp_manager_starts_runtime_scoped_server_once_under_concurrent_discovery(
+    tmp_path: Path,
+) -> None:
+    starts_path = tmp_path / "starts.txt"
+    server_script = tmp_path / "concurrent_mcp_server.py"
+    server_script.write_text(
+        rf'''
+from __future__ import annotations
+
+import json
+import pathlib
+import sys
+
+starts = pathlib.Path(r"{starts_path}")
+starts.write_text(
+    starts.read_text(encoding="utf-8") + "start\n" if starts.exists() else "start\n",
+    encoding="utf-8",
+)
+
+
+def send(message: dict[str, object]) -> None:
+    sys.stdout.write(json.dumps(message) + "\n")
+    sys.stdout.flush()
+
+
+for raw_line in sys.stdin:
+    message = json.loads(raw_line)
+    method = message.get("method")
+    if method == "initialize":
+        send(
+            {{
+                "jsonrpc": "2.0",
+                "id": message["id"],
+                "result": {{
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {{"tools": {{}}}},
+                    "serverInfo": {{"name": "concurrent", "version": "0.1.0"}},
+                }},
+            }}
+        )
+        continue
+    if method == "notifications/initialized":
+        continue
+    if method == "tools/list":
+        send(
+            {{
+                "jsonrpc": "2.0",
+                "id": message["id"],
+                "result": {{
+                    "tools": [
+                        {{
+                            "name": "echo",
+                            "description": "Echo.",
+                            "inputSchema": {{"type": "object"}},
+                        }}
+                    ]
+                }},
+            }}
+        )
+        continue
+''',
+        encoding="utf-8",
+    )
+    manager = build_mcp_manager(
+        RuntimeMcpConfig(
+            enabled=True,
+            servers={
+                "concurrent": RuntimeMcpServerConfig(
+                    transport="stdio",
+                    command=(sys.executable, str(server_script)),
+                )
+            },
+        )
+    )
+    errors: list[BaseException] = []
+
+    def discover() -> None:
+        try:
+            assert [tool.tool_name for tool in manager.list_tools(workspace=tmp_path)] == ["echo"]
+        except BaseException as exc:  # pragma: no cover - re-raised below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=discover) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=2.0)
+
+    if errors:
+        raise errors[0]
+    assert starts_path.read_text(encoding="utf-8").splitlines() == ["start"]
+    event_types = [event.event_type for event in manager.drain_events()]
+    assert event_types.count("runtime.mcp_server_started") == 1
+    assert "runtime.mcp_server_reused" in event_types
+
+
+def test_mcp_manager_keys_session_scoped_servers_by_owner_and_releases_one_owner(
+    tmp_path: Path,
+) -> None:
+    starts_path = tmp_path / "session-starts.txt"
+    stops_path = tmp_path / "session-stops.txt"
+    server_script = tmp_path / "session_scoped_mcp_server.py"
+    server_script.write_text(
+        rf'''
+from __future__ import annotations
+
+import json
+import pathlib
+import sys
+
+starts = pathlib.Path(r"{starts_path}")
+stops = pathlib.Path(r"{stops_path}")
+starts.write_text(
+    starts.read_text(encoding="utf-8") + "start\n" if starts.exists() else "start\n",
+    encoding="utf-8",
+)
+
+
+def send(message: dict[str, object]) -> None:
+    sys.stdout.write(json.dumps(message) + "\n")
+    sys.stdout.flush()
+
+
+for raw_line in sys.stdin:
+    message = json.loads(raw_line)
+    method = message.get("method")
+    if method == "initialize":
+        send(
+            {{
+                "jsonrpc": "2.0",
+                "id": message["id"],
+                "result": {{
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {{"tools": {{}}}},
+                    "serverInfo": {{"name": "session", "version": "0.1.0"}},
+                }},
+            }}
+        )
+        continue
+    if method == "notifications/initialized":
+        continue
+    if method == "tools/list":
+        send(
+            {{
+                "jsonrpc": "2.0",
+                "id": message["id"],
+                "result": {{
+                    "tools": [
+                        {{
+                            "name": "echo",
+                            "description": "Echo.",
+                            "inputSchema": {{"type": "object"}},
+                        }}
+                    ]
+                }},
+            }}
+        )
+        continue
+
+stops.write_text(
+    stops.read_text(encoding="utf-8") + "stop\n" if stops.exists() else "stop\n",
+    encoding="utf-8",
+)
+''',
+        encoding="utf-8",
+    )
+    manager = build_mcp_manager(
+        RuntimeMcpConfig(
+            enabled=True,
+            servers={
+                "session": RuntimeMcpServerConfig(
+                    transport="stdio",
+                    command=(sys.executable, str(server_script)),
+                    scope="session",
+                )
+            },
+        )
+    )
+
+    owner_a_tools = manager.list_tools(workspace=tmp_path, owner_session_id="a")
+    owner_b_tools = manager.list_tools(workspace=tmp_path, owner_session_id="b")
+
+    assert [tool.tool_name for tool in owner_a_tools] == ["echo"]
+    assert [tool.tool_name for tool in owner_b_tools] == ["echo"]
+    assert starts_path.read_text(encoding="utf-8").splitlines() == ["start", "start"]
+
+    release_session = cast(Any, manager).release_session
+    released_events: tuple[McpRuntimeEvent, ...] = release_session(session_id="a")
+
+    assert [event.event_type for event in released_events][-2:] == [
+        "runtime.mcp_server_released",
+        "runtime.mcp_server_stopped",
+    ]
+    assert manager.current_state().servers["session"].status == "running"
+    assert stops_path.read_text(encoding="utf-8").splitlines() == ["stop"]
+    assert [
+        tool.tool_name for tool in manager.list_tools(workspace=tmp_path, owner_session_id="b")
+    ] == ["echo"]
+
+    released_b_events: tuple[McpRuntimeEvent, ...] = release_session(session_id="b")
+
+    assert [event.event_type for event in released_b_events][-2:] == [
+        "runtime.mcp_server_released",
+        "runtime.mcp_server_stopped",
+    ]
+    assert manager.current_state().servers["session"].status == "stopped"
+    assert stops_path.read_text(encoding="utf-8").splitlines() == ["stop", "stop"]
+
+
+def test_mcp_manager_idle_cleans_abandoned_session_scoped_servers(tmp_path: Path) -> None:
+    server_script = tmp_path / "idle_mcp_server.py"
+    server_script.write_text(
+        r"""
+from __future__ import annotations
+
+import json
+import sys
+
+
+def send(message: dict[str, object]) -> None:
+    sys.stdout.write(json.dumps(message) + "\n")
+    sys.stdout.flush()
+
+
+for raw_line in sys.stdin:
+    message = json.loads(raw_line)
+    method = message.get("method")
+    if method == "initialize":
+        send(
+            {
+                "jsonrpc": "2.0",
+                "id": message["id"],
+                "result": {
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {"tools": {}},
+                    "serverInfo": {"name": "idle", "version": "0.1.0"},
+                },
+            }
+        )
+        continue
+    if method == "notifications/initialized":
+        continue
+    if method == "tools/list":
+        send({"jsonrpc": "2.0", "id": message["id"], "result": {"tools": []}})
+        continue
+""",
+        encoding="utf-8",
+    )
+    manager = build_mcp_manager(
+        RuntimeMcpConfig(
+            enabled=True,
+            servers={
+                "idle": RuntimeMcpServerConfig(
+                    transport="stdio",
+                    command=(sys.executable, str(server_script)),
+                    scope="session",
+                )
+            },
+        )
+    )
+
+    assert manager.list_tools(workspace=tmp_path, owner_session_id="abandoned") == ()
+    _ = manager.drain_events()
+
+    cleanup_idle_session_servers = cast(Any, manager).cleanup_idle_session_servers
+    cleanup_events: tuple[McpRuntimeEvent, ...] = cleanup_idle_session_servers(
+        max_idle_seconds=0,
+        active_session_ids=set(),
+    )
+
+    assert [event.event_type for event in cleanup_events] == [
+        "runtime.mcp_server_idle_cleaned",
+        "runtime.mcp_server_stopped",
+    ]
+    assert cleanup_events[0].payload["owner_session_id"] == "abandoned"
+    assert cleanup_events[0].payload["reason"] == "abandoned"

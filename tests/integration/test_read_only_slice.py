@@ -15,7 +15,7 @@ import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Any, Protocol, cast
 from unittest.mock import ANY, patch
 
 import pytest
@@ -46,13 +46,14 @@ class StreamChunkLike(Protocol):
 
 
 class SessionLike(Protocol):
-    session: object
+    session: SessionRefLike
     status: str
     metadata: dict[str, object]
 
 
 class SessionRefLike(Protocol):
     id: str
+    parent_id: str | None
 
 
 class StoredSessionSummaryLike(Protocol):
@@ -81,6 +82,7 @@ class RuntimeRequestFactory(Protocol):
         prompt: str,
         session_id: str | None = None,
         parent_session_id: str | None = None,
+        metadata: dict[str, object] | None = None,
     ) -> RuntimeRequestLike: ...
 
 
@@ -153,6 +155,42 @@ class RuntimeFactory(Protocol):
 
 class ToolCallFactory(Protocol):
     def __call__(self, *, tool_name: str, arguments: dict[str, object]) -> object: ...
+
+
+class ToolResultLike(Protocol):
+    tool_name: str
+    content: str
+    data: dict[str, object]
+
+
+class ContextSegmentLike(Protocol):
+    role: str
+    content: object
+    tool_name: str | None
+
+
+class AssembledContextLike(Protocol):
+    prompt: str
+    segments: tuple[ContextSegmentLike, ...]
+    tool_results: tuple[ToolResultLike, ...]
+    metadata: dict[str, object]
+
+
+class AvailableToolLike(Protocol):
+    name: str
+
+
+class ProviderRequestLike(Protocol):
+    assembled_context: AssembledContextLike
+    available_tools: tuple[AvailableToolLike, ...]
+
+
+def _assembled_context(request: object) -> AssembledContextLike:
+    return cast(ProviderRequestLike, request).assembled_context
+
+
+def _available_tools(request: object) -> tuple[AvailableToolLike, ...]:
+    return cast(ProviderRequestLike, request).available_tools
 
 
 class EventEnvelopeFactory(Protocol):
@@ -382,6 +420,1097 @@ class _ScriptedModelProvider:
                 return outcome
 
         return _Provider()
+
+
+@dataclass(frozen=True, slots=True)
+class _CapturingModelProvider:
+    name: str
+    requests: list[object]
+
+    def turn_provider(self) -> object:
+        requests = self.requests
+        name = self.name
+
+        class _Provider:
+            def __init__(self) -> None:
+                self.name = name
+
+            def propose_turn(self, request: object) -> object:
+                requests.append(request)
+                return importlib.import_module(
+                    "voidcode.runtime.provider_protocol"
+                ).ProviderTurnResult(output="done")
+
+        return _Provider()
+
+
+@dataclass(frozen=True, slots=True)
+class _DelegationE2EModelProvider:
+    name: str
+
+    def turn_provider(self) -> object:
+        name = self.name
+
+        class _Provider:
+            def __init__(self) -> None:
+                self.name = name
+
+            def propose_turn(self, request: object) -> object:
+                provider_protocol_module = importlib.import_module(
+                    "voidcode.runtime.provider_protocol"
+                )
+                tool_contracts_module = importlib.import_module("voidcode.tools.contracts")
+                assembled_context = _assembled_context(request)
+                prompt = assembled_context.prompt
+                tool_results = assembled_context.tool_results
+                if prompt.startswith("Delegated runtime task."):
+                    return provider_protocol_module.ProviderTurnResult(output="child final")
+                if not tool_results:
+                    return provider_protocol_module.ProviderTurnResult(
+                        tool_call=tool_contracts_module.ToolCall(
+                            tool_name="task",
+                            arguments={
+                                "prompt": "return the child final",
+                                "run_in_background": False,
+                                "load_skills": [],
+                                "subagent_type": "explore",
+                                "description": "Sync subagent E2E child",
+                            },
+                        )
+                    )
+                return provider_protocol_module.ProviderTurnResult(
+                    output="parent continued after child final"
+                )
+
+        return _Provider()
+
+
+@dataclass(frozen=True, slots=True)
+class _ParentToolResultGuardrailProvider:
+    name: str
+    requests: list[object]
+
+    def turn_provider(self) -> object:
+        requests = self.requests
+        name = self.name
+
+        class _Provider:
+            def __init__(self) -> None:
+                self.name = name
+
+            def propose_turn(self, request: object) -> object:
+                requests.append(request)
+                provider_protocol_module = importlib.import_module(
+                    "voidcode.runtime.provider_protocol"
+                )
+                tool_contracts_module = importlib.import_module("voidcode.tools.contracts")
+                assembled_context = _assembled_context(request)
+                prompt = assembled_context.prompt
+                tool_results = assembled_context.tool_results
+                if prompt.startswith("Delegated runtime task."):
+                    return provider_protocol_module.ProviderTurnResult(output="child clean")
+                if not tool_results:
+                    return provider_protocol_module.ProviderTurnResult(
+                        tool_call=tool_contracts_module.ToolCall(
+                            tool_name="read_file",
+                            arguments={"path": "parent-secret.txt"},
+                        )
+                    )
+                if len(tool_results) == 1:
+                    return provider_protocol_module.ProviderTurnResult(
+                        tool_call=tool_contracts_module.ToolCall(
+                            tool_name="task",
+                            arguments={
+                                "prompt": "check child isolation",
+                                "run_in_background": False,
+                                "load_skills": [],
+                                "subagent_type": "explore",
+                                "description": "Context isolation child",
+                            },
+                        )
+                    )
+                return provider_protocol_module.ProviderTurnResult(output="parent done")
+
+        return _Provider()
+
+
+@dataclass(frozen=True, slots=True)
+class _BackgroundOutputGuardrailProvider:
+    name: str
+    requests: list[object]
+
+    def turn_provider(self) -> object:
+        requests = self.requests
+        name = self.name
+
+        class _Provider:
+            def __init__(self) -> None:
+                self.name = name
+
+            def propose_turn(self, request: object) -> object:
+                requests.append(request)
+                provider_protocol_module = importlib.import_module(
+                    "voidcode.runtime.provider_protocol"
+                )
+                tool_contracts_module = importlib.import_module("voidcode.tools.contracts")
+                assembled_context = _assembled_context(request)
+                prompt = assembled_context.prompt
+                tool_results = assembled_context.tool_results
+                if prompt.startswith("Delegated runtime task."):
+                    return provider_protocol_module.ProviderTurnResult(
+                        output="child transcript sentinel"
+                    )
+                if not tool_results:
+                    return provider_protocol_module.ProviderTurnResult(
+                        tool_call=tool_contracts_module.ToolCall(
+                            tool_name="task",
+                            arguments={
+                                "prompt": "produce child transcript sentinel",
+                                "run_in_background": True,
+                                "load_skills": [],
+                                "subagent_type": "explore",
+                                "description": "Background transcript child",
+                            },
+                        )
+                    )
+                if len(tool_results) == 1:
+                    task_id = cast(str, tool_results[0].data["task_id"])
+                    return provider_protocol_module.ProviderTurnResult(
+                        tool_call=tool_contracts_module.ToolCall(
+                            tool_name="background_output",
+                            arguments={
+                                "task_id": task_id,
+                                "block": True,
+                                "timeout": 3000,
+                                "full_session": True,
+                                "message_limit": 10,
+                            },
+                        )
+                    )
+                return provider_protocol_module.ProviderTurnResult(
+                    output="parent collected transcript"
+                )
+
+        return _Provider()
+
+
+def _request_text(request: object) -> str:
+    assembled_context = _assembled_context(request)
+    segments = assembled_context.segments
+    parts: list[str] = [assembled_context.prompt]
+    for segment in segments:
+        content = segment.content
+        if isinstance(content, str):
+            parts.append(content)
+    return "\n".join(parts)
+
+
+def _wait_for_background_task_status(
+    runtime: RuntimeRunner,
+    task_id: str,
+    statuses: set[str],
+    *,
+    timeout: float = 3.0,
+) -> BackgroundTaskStateLike:
+    deadline = time.monotonic() + timeout
+    last_task: BackgroundTaskStateLike | None = None
+    while time.monotonic() < deadline:
+        task = runtime.load_background_task(task_id)
+        last_task = task
+        if task.status in statuses:
+            return task
+        time.sleep(0.01)
+    raise AssertionError(
+        f"background task {task_id} did not reach {sorted(statuses)}; "
+        f"last_status={last_task.status if last_task is not None else None!r}"
+    )
+
+
+def _write_demo_skill(skill_dir: Path, *, content: str) -> None:
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        f"---\nname: demo\ndescription: Demo skill\n---\n{content}\n",
+        encoding="utf-8",
+    )
+
+
+class _ParentBackgroundOutputGraph:
+    def step(self, request: object, tool_results: tuple[object, ...], *, session: object) -> object:
+        _ = request
+        session_ref = cast(SessionLike, session).session
+        if getattr(session_ref, "parent_id", None) is not None:
+            return _GraphStep(
+                events=(),
+                tool_call=None,
+                output="child background final",
+                is_finished=True,
+            )
+        tool_call_factory = cast(
+            ToolCallFactory,
+            importlib.import_module("voidcode.tools.contracts").ToolCall,
+        )
+        if not tool_results:
+            return _GraphStep(
+                events=(),
+                tool_call=tool_call_factory(
+                    tool_name="task",
+                    arguments={
+                        "prompt": "finish in the background",
+                        "run_in_background": True,
+                        "load_skills": [],
+                        "subagent_type": "explore",
+                        "description": "Background E2E child",
+                    },
+                ),
+            )
+        first_result = cast(ToolResultLike, tool_results[0])
+        first_data = first_result.data
+        if len(tool_results) == 1:
+            return _GraphStep(
+                events=(),
+                tool_call=tool_call_factory(
+                    tool_name="background_output",
+                    arguments={
+                        "task_id": first_data["task_id"],
+                        "block": True,
+                        "timeout": 3000,
+                        "full_session": True,
+                    },
+                ),
+            )
+        final_result = cast(ToolResultLike, tool_results[1])
+        return _GraphStep(
+            events=(),
+            tool_call=None,
+            output=final_result.content,
+            is_finished=True,
+        )
+
+
+class _FailingBackgroundChildGraph:
+    def step(self, request: object, tool_results: tuple[object, ...], *, session: object) -> object:
+        _ = request, tool_results
+        session_ref = cast(SessionLike, session).session
+        if getattr(session_ref, "parent_id", None) is not None:
+            raise RuntimeError("delegated child failed twice")
+        return _GraphStep(events=(), tool_call=None, output="leader ready", is_finished=True)
+
+
+class _McpEchoGraph:
+    def step(self, request: object, tool_results: tuple[object, ...], *, session: object) -> object:
+        _ = request, session
+        if not tool_results:
+            return _GraphStep(
+                events=(),
+                tool_call=cast(
+                    ToolCallFactory,
+                    importlib.import_module("voidcode.tools.contracts").ToolCall,
+                )(
+                    tool_name="mcp/echo/echo",
+                    arguments={"text": "delegated mcp"},
+                ),
+            )
+        return _GraphStep(events=(), tool_call=None, output="mcp parent done", is_finished=True)
+
+
+def _write_echo_mcp_server(server_script: Path) -> None:
+    server_script.write_text(
+        r"""
+from __future__ import annotations
+
+import json
+import sys
+
+
+def send(message: dict[str, object]) -> None:
+    sys.stdout.write(json.dumps(message) + "\n")
+    sys.stdout.flush()
+
+
+for raw_line in sys.stdin:
+    line = raw_line.strip()
+    if not line:
+        continue
+    message = json.loads(line)
+    method = message.get("method")
+    if method == "initialize":
+        send(
+            {
+                "jsonrpc": "2.0",
+                "id": message["id"],
+                "result": {
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {"tools": {}},
+                    "serverInfo": {"name": "echo-mcp", "version": "0.1.0"},
+                },
+            }
+        )
+        continue
+    if method == "notifications/initialized":
+        continue
+    if method == "tools/list":
+        send(
+            {
+                "jsonrpc": "2.0",
+                "id": message["id"],
+                "result": {
+                    "tools": [
+                        {
+                            "name": "echo",
+                            "description": "Echo text.",
+                            "annotations": {"readOnlyHint": True, "destructiveHint": False},
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {"text": {"type": "string"}},
+                            },
+                        }
+                    ]
+                },
+            }
+        )
+        continue
+    if method == "tools/call":
+        params = message.get("params", {})
+        arguments = params.get("arguments", {}) if isinstance(params, dict) else {}
+        text = arguments.get("text", "") if isinstance(arguments, dict) else ""
+        send(
+            {
+                "jsonrpc": "2.0",
+                "id": message["id"],
+                "result": {"content": [{"type": "text", "text": f"echo:{text}"}], "isError": False},
+            }
+        )
+        continue
+""",
+        encoding="utf-8",
+    )
+
+
+def test_provider_subagent_sync_e2e_parent_task_child_final_and_parent_continuation(
+    tmp_path: Path,
+) -> None:
+    contracts_module = importlib.import_module("voidcode.runtime.contracts")
+    config_module = importlib.import_module("voidcode.runtime.config")
+    model_provider_module = importlib.import_module("voidcode.provider.registry")
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    service_module = importlib.import_module("voidcode.runtime.service")
+    runtime_request = cast(Callable[..., RuntimeRequestLike], contracts_module.RuntimeRequest)
+
+    runtime = cast(
+        RuntimeRunner,
+        service_module.VoidCodeRuntime(
+            workspace=tmp_path,
+            config=config_module.RuntimeConfig(
+                approval_mode="allow",
+                execution_engine="provider",
+                model="opencode/gpt-5.4",
+            ),
+            permission_policy=permission_module.PermissionPolicy(mode="allow"),
+            model_provider_registry=model_provider_module.ModelProviderRegistry(
+                providers={"opencode": _DelegationE2EModelProvider(name="opencode")}
+            ),
+        ),
+    )
+
+    response = runtime.run(
+        runtime_request(prompt="delegate sync child", session_id="leader-session")
+    )
+    task_completed = next(
+        event
+        for event in response.events
+        if event.event_type == "runtime.tool_completed" and event.payload["tool"] == "task"
+    )
+    child_session_id = cast(str, task_completed.payload["session_id"])
+    child_replay = runtime.resume(child_session_id)
+
+    assert response.session.status == "completed"
+    assert response.output == "parent continued after child final"
+    assert task_completed.payload == {
+        "tool": "task",
+        "tool_call_id": ANY,
+        "arguments": {
+            "prompt": "return the child final",
+            "run_in_background": False,
+            "load_skills": [],
+            "subagent_type": "explore",
+            "description": "Sync subagent E2E child",
+        },
+        "status": "ok",
+        "content": "child final",
+        "error": None,
+        "session_id": child_session_id,
+        "parent_session_id": "leader-session",
+        "requested_category": None,
+        "requested_subagent_type": "explore",
+        "load_skills": [],
+        "output": "child final",
+    }
+    assert child_replay.session.session.parent_id == "leader-session"
+    assert child_replay.output == "child final"
+    assert child_replay.session.metadata["delegation"] == {
+        "mode": "sync",
+        "subagent_type": "explore",
+        "description": "Sync subagent E2E child",
+        "depth": 1,
+        "remaining_spawn_budget": 3,
+        "selected_preset": "explore",
+        "selected_execution_engine": "provider",
+    }
+
+
+def test_runtime_background_subagent_e2e_collects_background_output_result(
+    tmp_path: Path,
+) -> None:
+    runtime_request, runtime_class = _load_runtime_types()
+    runtime = cast(
+        RuntimeRunner,
+        cast(object, runtime_class(workspace=tmp_path, graph=_ParentBackgroundOutputGraph())),
+    )
+
+    response = runtime.run(
+        runtime_request(prompt="launch background child", session_id="leader-background")
+    )
+    task_completed = [
+        event
+        for event in response.events
+        if event.event_type == "runtime.tool_completed" and event.payload["tool"] == "task"
+    ][0]
+    background_completed = [
+        event
+        for event in response.events
+        if event.event_type == "runtime.tool_completed"
+        and event.payload["tool"] == "background_output"
+    ][0]
+    task_id = cast(str, task_completed.payload["task_id"])
+    reloaded = runtime.load_background_task(task_id)
+
+    assert response.session.status == "completed"
+    assert response.output == "child background final"
+    assert task_completed.payload["delegation"] == {
+        "mode": "background",
+        "subagent_type": "explore",
+        "description": "Background E2E child",
+        "depth": 1,
+        "remaining_spawn_budget": 3,
+    }
+    assert reloaded.status == "completed"
+    assert background_completed.payload["status"] == "ok"
+    assert cast(dict[str, object], background_completed.payload["message"])["status"] == "completed"
+    assert background_completed.payload["summary_output"] == "Completed: child background final"
+    assert background_completed.payload["result_available"] is True
+    assert cast(dict[str, object], background_completed.payload["session"])["output"] == (
+        "child background final"
+    )
+
+
+def test_runtime_background_subagent_queue_running_completed_states_respect_concurrency(
+    tmp_path: Path,
+) -> None:
+    runtime_request, runtime_class = _load_runtime_types()
+    config_module = importlib.import_module("voidcode.runtime.config")
+    read_file_module = importlib.import_module("voidcode.tools.read_file")
+    read_file_tool = cast(ReadFileToolType, read_file_module.ReadFileTool)
+    original_invoke = read_file_tool.invoke
+    started = threading.Event()
+    release = threading.Event()
+    active = 0
+    max_active = 0
+    active_lock = threading.Lock()
+
+    (tmp_path / "sample.txt").write_text("queued proof\n", encoding="utf-8")
+
+    def _blocking_read(self: object, call: object, *, workspace: Path) -> object:
+        nonlocal active, max_active
+        with active_lock:
+            active += 1
+            max_active = max(max_active, active)
+        started.set()
+        _ = release.wait(timeout=2)
+        try:
+            return original_invoke(self, call, workspace=workspace)
+        finally:
+            with active_lock:
+                active -= 1
+
+    with patch.object(read_file_tool, "invoke", autospec=True, side_effect=_blocking_read):
+        runtime = cast(
+            RuntimeRunner,
+            cast(
+                object,
+                runtime_class(
+                    workspace=tmp_path,
+                    config=config_module.RuntimeConfig(
+                        execution_engine="deterministic",
+                        background_task=config_module.RuntimeBackgroundTaskConfig(
+                            default_concurrency=1
+                        ),
+                    ),
+                ),
+            ),
+        )
+        first = runtime.start_background_task(runtime_request(prompt="read sample.txt"))
+        assert started.wait(timeout=1) is True
+        first_running = runtime.load_background_task(first.task.id)
+        second = runtime.start_background_task(runtime_request(prompt="read sample.txt"))
+        second_queued = runtime.load_background_task(second.task.id)
+
+        assert first_running.status == "running"
+        assert second_queued.status == "queued"
+        release.set()
+        first_done = _wait_for_background_task_status(
+            runtime, first.task.id, {"completed", "failed", "cancelled"}
+        )
+        second_done = _wait_for_background_task_status(
+            runtime, second.task.id, {"completed", "failed", "cancelled"}
+        )
+
+    assert first_done.status == "completed"
+    assert second_done.status == "completed"
+    assert max_active == 1
+
+
+def test_runtime_background_subagent_failure_guides_session_id_retry_and_escalation(
+    tmp_path: Path,
+) -> None:
+    runtime_request, runtime_class = _load_runtime_types()
+    tool_contracts_module = importlib.import_module("voidcode.tools.contracts")
+    runtime = cast(
+        RuntimeRunner,
+        cast(object, runtime_class(workspace=tmp_path, graph=_FailingBackgroundChildGraph())),
+    )
+    _ = runtime.run(runtime_request(prompt="leader", session_id="leader-failure"))
+    started = runtime.start_background_task(
+        runtime_request(
+            prompt="fail child",
+            session_id="retry-child",
+            parent_session_id="leader-failure",
+            metadata={"delegation": {"mode": "background", "subagent_type": "explore"}},
+        )
+    )
+    failed = _wait_for_background_task_status(runtime, started.task.id, {"failed"})
+    background_output_tool = importlib.import_module(
+        "voidcode.tools.background_output"
+    ).BackgroundOutputTool(runtime=runtime)
+
+    result = background_output_tool.invoke(
+        tool_contracts_module.ToolCall(
+            tool_name="background_output",
+            arguments={"task_id": started.task.id, "full_session": True},
+        ),
+        workspace=tmp_path,
+    )
+
+    assert failed.status == "failed"
+    assert result.status == "ok"
+    assert result.data["status"] == "failed"
+    assert result.data["child_session_id"] == "retry-child"
+    assert "session_id='retry-child'" in cast(str, result.data["guidance"])
+    assert "After repeated failures, stop retrying and escalate" in cast(
+        str, result.data["guidance"]
+    )
+
+
+def test_runtime_delegated_skill_loaded_child_records_exact_skill_metadata(
+    tmp_path: Path,
+) -> None:
+    contracts_module = importlib.import_module("voidcode.runtime.contracts")
+    config_module = importlib.import_module("voidcode.runtime.config")
+    model_provider_module = importlib.import_module("voidcode.provider.registry")
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    provider_protocol_module = importlib.import_module("voidcode.runtime.provider_protocol")
+    service_module = importlib.import_module("voidcode.runtime.service")
+    runtime_request = cast(Callable[..., RuntimeRequestLike], contracts_module.RuntimeRequest)
+    requests: list[object] = []
+    _write_demo_skill(
+        tmp_path / ".voidcode" / "skills" / "demo",
+        content="# Demo\nUse the delegated integration skill body.",
+    )
+
+    _ = provider_protocol_module
+    # Capture the provider request with a small wrapper so the test asserts prompt injection.
+    runtime = cast(
+        RuntimeRunner,
+        service_module.VoidCodeRuntime(
+            workspace=tmp_path,
+            config=config_module.RuntimeConfig(
+                approval_mode="allow",
+                execution_engine="provider",
+                model="opencode/gpt-5.4",
+                skills=config_module.RuntimeSkillsConfig(enabled=True),
+            ),
+            permission_policy=permission_module.PermissionPolicy(mode="allow"),
+            model_provider_registry=model_provider_module.ModelProviderRegistry(
+                providers={"opencode": _CapturingModelProvider(name="opencode", requests=requests)}
+            ),
+        ),
+    )
+
+    response = runtime.run(
+        runtime_request(
+            prompt="skill child",
+            session_id="delegated-skill-e2e",
+            metadata={
+                "force_load_skills": ["demo"],
+                "delegation": {"mode": "sync", "subagent_type": "explore"},
+            },
+        )
+    )
+    skills_applied = next(
+        event for event in response.events if event.event_type == "runtime.skills_applied"
+    )
+    system_contents = [
+        segment.content
+        for segment in _assembled_context(requests[0]).segments
+        if segment.role == "system"
+    ]
+
+    assert response.session.status == "completed"
+    assert response.session.metadata["selected_skill_names"] == ["demo"]
+    assert response.session.metadata["applied_skills"] == ["demo"]
+    assert skills_applied.payload["skills"] == ["demo"]
+    assert skills_applied.payload["count"] == 1
+    assert skills_applied.payload["prompt_context_built"] is True
+    assert isinstance(skills_applied.payload["prompt_context_length"], int)
+    assert any(
+        isinstance(content, str) and "Use the delegated integration skill body." in content
+        for content in system_contents
+    )
+
+
+def test_runtime_delegated_mcp_and_background_hook_events_have_exact_metadata(
+    tmp_path: Path,
+) -> None:
+    runtime_request, runtime_class = _load_runtime_types()
+    config_module = importlib.import_module("voidcode.runtime.config")
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    server_script = tmp_path / "echo_mcp_server.py"
+    _write_echo_mcp_server(server_script)
+
+    mcp_runtime = cast(
+        RuntimeRunner,
+        cast(
+            object,
+            runtime_class(
+                workspace=tmp_path,
+                graph=_McpEchoGraph(),
+                permission_policy=permission_module.PermissionPolicy(mode="allow"),
+                config=config_module.RuntimeConfig(
+                    approval_mode="allow",
+                    execution_engine="deterministic",
+                    mcp=config_module.RuntimeMcpConfig(
+                        enabled=True,
+                        servers={
+                            "echo": config_module.RuntimeMcpServerConfig(
+                                transport="stdio",
+                                command=(sys.executable, str(server_script)),
+                                scope="session",
+                            )
+                        },
+                    ),
+                    agents={
+                        "explore": config_module.RuntimeAgentConfig(
+                            preset="explore",
+                            execution_engine="deterministic",
+                        )
+                    },
+                ),
+            ),
+        ),
+    )
+
+    response = mcp_runtime.run(runtime_request(prompt="leader", session_id="leader-mcp"))
+    assert response.session.status == "completed"
+    response = mcp_runtime.run(
+        runtime_request(
+            prompt="use mcp",
+            session_id="mcp-child",
+            parent_session_id="leader-mcp",
+        )
+    )
+    event_types = [event.event_type for event in response.events]
+    mcp_started = next(
+        event for event in response.events if event.event_type == "runtime.mcp_server_started"
+    )
+    mcp_released = next(
+        event for event in response.events if event.event_type == "runtime.mcp_server_released"
+    )
+    mcp_tool_completed = next(
+        event
+        for event in response.events
+        if event.event_type == "runtime.tool_completed" and event.payload["server"] == "echo"
+    )
+
+    assert response.session.status == "completed"
+    assert "runtime.mcp_server_stopped" in event_types
+    assert mcp_started.payload["server"] == "echo"
+    assert mcp_started.payload["scope"] == "session"
+    assert mcp_started.payload["owner_session_id"] == "mcp-child"
+    assert mcp_released.payload["owner_session_id"] == "mcp-child"
+    assert mcp_tool_completed.payload["tool"] == "echo"
+    assert mcp_tool_completed.payload["content"] == "echo:delegated mcp"
+
+    hook_runtime = cast(
+        RuntimeRunner,
+        cast(
+            object,
+            runtime_class(
+                workspace=tmp_path,
+                graph=_ParentBackgroundOutputGraph(),
+                config=config_module.RuntimeConfig(
+                    approval_mode="allow",
+                    execution_engine="deterministic",
+                    hooks=config_module.RuntimeHooksConfig(
+                        enabled=True,
+                        on_background_task_completed=((sys.executable, "-c", "print('hook ok')"),),
+                    ),
+                ),
+                permission_policy=permission_module.PermissionPolicy(mode="allow"),
+            ),
+        ),
+    )
+    hook_response = hook_runtime.run(
+        runtime_request(prompt="launch hooked background", session_id="leader-hooked-background")
+    )
+    background_event = next(
+        event
+        for event in hook_runtime.resume("leader-hooked-background").events
+        if event.event_type == "runtime.background_task_completed"
+    )
+    delegation = cast(dict[str, object], background_event.payload["delegation"])
+    message = cast(dict[str, object], background_event.payload["message"])
+
+    assert hook_response.session.status == "completed"
+    assert delegation["parent_session_id"] == "leader-hooked-background"
+    assert delegation["child_session_id"] == background_event.payload["child_session_id"]
+    assert delegation["routing"] == {
+        "mode": "background",
+        "subagent_type": "explore",
+        "description": "Background E2E child",
+    }
+    assert delegation["selected_preset"] == "explore"
+    assert delegation["selected_execution_engine"] == "provider"
+    assert delegation["lifecycle_status"] == "completed"
+    assert message == {
+        "kind": "delegated_lifecycle",
+        "status": "completed",
+        "summary_output": "Completed: child background final",
+        "error": None,
+        "approval_blocked": False,
+        "result_available": True,
+    }
+
+
+def test_runtime_background_restart_reconcile_reloads_terminal_delegated_result(
+    tmp_path: Path,
+) -> None:
+    runtime_request, runtime_class = _load_runtime_types()
+    first_runtime = cast(
+        RuntimeRunner,
+        cast(object, runtime_class(workspace=tmp_path, graph=_ParentBackgroundOutputGraph())),
+    )
+    _ = first_runtime.run(runtime_request(prompt="leader", session_id="leader-restart"))
+    started = first_runtime.start_background_task(
+        runtime_request(
+            prompt="restart child",
+            parent_session_id="leader-restart",
+            metadata={"delegation": {"mode": "background", "subagent_type": "explore"}},
+        )
+    )
+    completed = _wait_for_background_task_status(first_runtime, started.task.id, {"completed"})
+
+    second_runtime = cast(
+        RuntimeRunner,
+        cast(object, runtime_class(workspace=tmp_path, graph=_ParentBackgroundOutputGraph())),
+    )
+    reloaded = second_runtime.load_background_task(started.task.id)
+    task_result = cast(Any, second_runtime).load_background_task_result(started.task.id)
+
+    assert completed.status == "completed"
+    assert reloaded.status == "completed"
+    assert task_result.status == "completed"
+    assert task_result.summary_output == "Completed: child background final"
+    assert task_result.result_available is True
+
+
+def test_provider_child_request_excludes_parent_tool_results_and_transcript_by_default(
+    tmp_path: Path,
+) -> None:
+    contracts_module = importlib.import_module("voidcode.runtime.contracts")
+    config_module = importlib.import_module("voidcode.runtime.config")
+    model_provider_module = importlib.import_module("voidcode.provider.registry")
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    service_module = importlib.import_module("voidcode.runtime.service")
+    runtime_request = cast(Callable[..., RuntimeRequestLike], contracts_module.RuntimeRequest)
+    requests: list[object] = []
+    _ = (tmp_path / "parent-secret.txt").write_text("parent-only tool result\n", encoding="utf-8")
+
+    runtime = cast(
+        RuntimeRunner,
+        service_module.VoidCodeRuntime(
+            workspace=tmp_path,
+            config=config_module.RuntimeConfig(
+                approval_mode="allow",
+                execution_engine="provider",
+                model="opencode/gpt-5.4",
+            ),
+            permission_policy=permission_module.PermissionPolicy(mode="allow"),
+            model_provider_registry=model_provider_module.ModelProviderRegistry(
+                providers={
+                    "opencode": _ParentToolResultGuardrailProvider(
+                        name="opencode",
+                        requests=requests,
+                    )
+                }
+            ),
+        ),
+    )
+
+    response = runtime.run(
+        runtime_request(prompt="parent reads then delegates", session_id="leader-context")
+    )
+    child_request = next(
+        request
+        for request in requests
+        if _assembled_context(request).prompt.startswith("Delegated runtime task.")
+    )
+    parent_followup_request = next(
+        request for request in requests if len(_assembled_context(request).tool_results) == 1
+    )
+    child_context = _assembled_context(child_request)
+
+    assert response.session.status == "completed"
+    assert response.output == "parent done"
+    assert "parent-only tool result" in _request_text(parent_followup_request)
+    assert child_context.tool_results == ()
+    assert "parent-only tool result" not in _request_text(child_request)
+    assert "runtime.request_received" not in _request_text(child_request)
+    assert "runtime.tool_completed" not in _request_text(child_request)
+    assert "transcript" not in child_context.metadata
+
+
+def test_provider_background_output_full_session_is_tool_result_not_hidden_context(
+    tmp_path: Path,
+) -> None:
+    contracts_module = importlib.import_module("voidcode.runtime.contracts")
+    config_module = importlib.import_module("voidcode.runtime.config")
+    model_provider_module = importlib.import_module("voidcode.provider.registry")
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    service_module = importlib.import_module("voidcode.runtime.service")
+    runtime_request = cast(Callable[..., RuntimeRequestLike], contracts_module.RuntimeRequest)
+    requests: list[object] = []
+
+    runtime = cast(
+        RuntimeRunner,
+        service_module.VoidCodeRuntime(
+            workspace=tmp_path,
+            config=config_module.RuntimeConfig(
+                approval_mode="allow",
+                execution_engine="provider",
+                model="opencode/gpt-5.4",
+            ),
+            permission_policy=permission_module.PermissionPolicy(mode="allow"),
+            model_provider_registry=model_provider_module.ModelProviderRegistry(
+                providers={
+                    "opencode": _BackgroundOutputGuardrailProvider(
+                        name="opencode",
+                        requests=requests,
+                    )
+                }
+            ),
+        ),
+    )
+
+    response = runtime.run(
+        runtime_request(prompt="launch and collect background", session_id="leader-bg")
+    )
+    parent_requests = [
+        request
+        for request in requests
+        if not _assembled_context(request).prompt.startswith("Delegated runtime task.")
+    ]
+    after_task_request = next(
+        request for request in parent_requests if len(_assembled_context(request).tool_results) == 1
+    )
+    after_background_output_request = next(
+        request for request in parent_requests if len(_assembled_context(request).tool_results) == 2
+    )
+    after_background_context = _assembled_context(after_background_output_request)
+    background_output_result = after_background_context.tool_results[1]
+    background_output_data = background_output_result.data
+    background_output_session = cast(dict[str, object], background_output_data["session"])
+    background_tool_segments = [
+        segment
+        for segment in after_background_context.segments
+        if segment.role == "tool" and segment.tool_name == "background_output"
+    ]
+
+    assert response.session.status == "completed"
+    assert response.output == "parent collected transcript"
+    assert "child transcript sentinel" not in _request_text(after_task_request)
+    assert background_output_result.tool_name == "background_output"
+    assert background_output_session["output"] == "child transcript sentinel"
+    assert isinstance(background_output_session["transcript_count"], int)
+    assert background_output_session["transcript_count"] > 0
+    assert background_tool_segments
+    assert background_tool_segments[0].content == "child transcript sentinel"
+    assert all(
+        "child transcript sentinel" not in segment.content
+        for segment in after_background_context.segments
+        if segment.role == "system" and isinstance(segment.content, str)
+    )
+
+
+def test_provider_visible_tools_are_filtered_for_delegated_agent_presets(
+    tmp_path: Path,
+) -> None:
+    contracts_module = importlib.import_module("voidcode.runtime.contracts")
+    config_module = importlib.import_module("voidcode.runtime.config")
+    model_provider_module = importlib.import_module("voidcode.provider.registry")
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    service_module = importlib.import_module("voidcode.runtime.service")
+    runtime_request = cast(Callable[..., RuntimeRequestLike], contracts_module.RuntimeRequest)
+
+    cases = (
+        (
+            "explore",
+            {"write_file", "edit", "multi_edit", "apply_patch", "task"},
+            {"read_file", "grep", "glob"},
+        ),
+        ("worker", {"task"}, {"read_file", "write_file", "edit", "apply_patch"}),
+    )
+    for subagent_type, denied_tools, expected_tools in cases:
+        requests: list[object] = []
+        runtime = cast(
+            RuntimeRunner,
+            service_module.VoidCodeRuntime(
+                workspace=tmp_path,
+                config=config_module.RuntimeConfig(
+                    approval_mode="allow",
+                    execution_engine="provider",
+                    model="opencode/gpt-5.4",
+                ),
+                permission_policy=permission_module.PermissionPolicy(mode="allow"),
+                model_provider_registry=model_provider_module.ModelProviderRegistry(
+                    providers={
+                        "opencode": _CapturingModelProvider(
+                            name="opencode",
+                            requests=requests,
+                        )
+                    }
+                ),
+            ),
+        )
+
+        response = runtime.run(
+            runtime_request(
+                prompt=f"inspect {subagent_type} tools",
+                session_id=f"{subagent_type}-visible-tools",
+                metadata={
+                    "delegation": {
+                        "mode": "sync",
+                        "subagent_type": subagent_type,
+                        "description": f"inspect {subagent_type} tools",
+                    }
+                },
+            )
+        )
+
+        assert response.session.status == "completed"
+        assert requests
+        available_tools = _available_tools(requests[0])
+        visible_tool_names = {tool.name for tool in available_tools}
+        assert expected_tools.issubset(visible_tool_names)
+        assert denied_tools.isdisjoint(visible_tool_names)
+
+
+@pytest.mark.parametrize(
+    ("subagent_type", "tool_name", "arguments"),
+    [
+        ("explore", "write_file", {"path": "blocked.txt", "content": "blocked"}),
+        ("advisor", "apply_patch", {"patch": "*** Begin Patch\n*** End Patch"}),
+        (
+            "worker",
+            "task",
+            {
+                "description": "nested delegation",
+                "prompt": "read sample.txt",
+                "subagent_type": "explore",
+            },
+        ),
+    ],
+)
+def test_runtime_rejects_denied_raw_provider_tool_calls_for_delegated_agents(
+    tmp_path: Path,
+    subagent_type: str,
+    tool_name: str,
+    arguments: dict[str, object],
+) -> None:
+    contracts_module = importlib.import_module("voidcode.runtime.contracts")
+    config_module = importlib.import_module("voidcode.runtime.config")
+    model_provider_module = importlib.import_module("voidcode.provider.registry")
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    provider_protocol_module = importlib.import_module("voidcode.runtime.provider_protocol")
+    service_module = importlib.import_module("voidcode.runtime.service")
+    tool_contracts_module = importlib.import_module("voidcode.tools.contracts")
+    runtime_request = cast(Callable[..., RuntimeRequestLike], contracts_module.RuntimeRequest)
+
+    target = tmp_path / "blocked.txt"
+    runtime = cast(
+        RuntimeRunner,
+        service_module.VoidCodeRuntime(
+            workspace=tmp_path,
+            config=config_module.RuntimeConfig(
+                approval_mode="allow",
+                execution_engine="provider",
+                model="opencode/gpt-5.4",
+            ),
+            permission_policy=permission_module.PermissionPolicy(mode="allow"),
+            model_provider_registry=model_provider_module.ModelProviderRegistry(
+                providers={
+                    "opencode": _ScriptedModelProvider(
+                        name="opencode",
+                        outcomes=(
+                            provider_protocol_module.ProviderTurnResult(
+                                tool_call=tool_contracts_module.ToolCall(
+                                    tool_name=tool_name,
+                                    arguments=arguments,
+                                )
+                            ),
+                        ),
+                    )
+                }
+            ),
+        ),
+    )
+    events: list[EventLike] = []
+
+    with pytest.raises(ValueError, match="delegation policy denied tool"):
+        for chunk in runtime.run_stream(
+            runtime_request(
+                prompt=f"malicious {subagent_type} calls {tool_name}",
+                session_id=f"{subagent_type}-{tool_name}-denied",
+                metadata={
+                    "delegation": {
+                        "mode": "sync",
+                        "subagent_type": subagent_type,
+                        "description": f"malicious {subagent_type} calls {tool_name}",
+                    }
+                },
+            )
+        ):
+            if chunk.event is not None:
+                events.append(chunk.event)
+
+    assert events[-1].event_type == "runtime.failed"
+    assert events[-1].payload == {
+        "error": (
+            f"delegation policy denied tool '{tool_name}' for child preset '{subagent_type}'; "
+            "this preset may only call tools allowed by its manifest tool_allowlist"
+        ),
+        "kind": "delegation_tool_policy_denied",
+        "tool": tool_name,
+    }
+    assert target.exists() is False
 
 
 def test_provider_runtime_falls_back_to_next_provider_target(tmp_path: Path) -> None:

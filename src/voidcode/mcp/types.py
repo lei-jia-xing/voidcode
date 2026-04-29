@@ -119,7 +119,13 @@ class McpManager(Protocol):
 
     def current_state(self) -> McpManagerState: ...
 
-    def list_tools(self, *, workspace: Any) -> tuple[McpToolDescriptor, ...]: ...
+    def list_tools(
+        self,
+        *,
+        workspace: Any,
+        owner_session_id: str | None = None,
+        parent_session_id: str | None = None,
+    ) -> tuple[McpToolDescriptor, ...]: ...
 
     def call_tool(
         self,
@@ -128,6 +134,8 @@ class McpManager(Protocol):
         tool_name: str,
         arguments: dict[str, Any],
         workspace: Any,
+        owner_session_id: str | None = None,
+        parent_session_id: str | None = None,
     ) -> McpToolCallResult: ...
 
     def shutdown(self) -> tuple[McpRuntimeEvent, ...]: ...

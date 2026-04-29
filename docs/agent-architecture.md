@@ -267,36 +267,31 @@ hook 在这里很重要，但它更多是通知与干预层，而不是异步 ag
 
 ### Phase 2：扩展受控 delegated child roles
 
-当 skill execution、事件语义和基础能力面更稳定后，再优先引入：
+当前 runtime-owned delegation path 已经支持：
 
 - `advisor`
 - `explore`
 - `researcher`
 - `product`
+- `worker`
 
-原因是它们的工具权限更窄、风险更低，也更容易先在 runtime 内形成受控的辅助调用路径。其中：
+这些 child presets 仍通过 runtime-owned task/background/session surface 执行，而不是成为可任意直接启动的顶层 agent。其中：
 
 - `explore` 先承接仓库内只读探索；
 - `researcher` 承接外部资料与公开实现调研；
 - `product` 承接需求澄清、验收标准与范围对齐。
+- `advisor` 承接只读判断与 review；
+- `worker` 承接受限的 focused execution，当前默认不获得再次 delegation 的 `task` 工具。
 
-在这一阶段，比较现实的目标仍应是**同步或受限的辅助调用语义**，而不是直接许诺可靠的异步 subagent orchestration。其中：
+在这一阶段，已经交付的目标是**同步或受限的 delegated child execution baseline**，而不是任意拓扑 multi-agent orchestration。其中：
 
 - `product` 仍可以承担同步规划与对齐语义；如果被 runtime delegation path 选中执行，也应继续服从同一套 child-session/background-task/runtime-governed lifecycle。
 
-### Phase 3：再评估 `worker` delegation
+### Phase 3：再评估更宽的 multi-agent orchestration
 
-只有当：
+当前已成立的是 background task / child-session / leader notification / result retrieval substrate，以及受支持 child preset 的 runtime-governed execution。下一阶段需要评估的是是否引入更宽的 supervisor / worker topology、跨 child handoff、direct agent-to-agent bus 或 ACP 协作控制面。
 
-- runtime-managed skill execution 已真实可用；
-- managed LSP 更成熟；
-- ACP 或等价控制面能力开始变得有意义；
-- 恢复 / replay / approval 语义能覆盖 delegated work；
-- background task / child-session / leader notification / result retrieval substrate 已经成立；
-
-才适合引入 `worker` 这类真正执行型的 delegated role。
-
-如果这些能力还没有成立，那么文档里最多只能把 async delegation 写成明确的 post-MVP 研究方向，而不能写成一个只差几个 hook 的短期落地点。
+这些能力仍不能被写成当前 shipped behavior。它们只有在 runtime-managed skill execution、managed LSP、ACP 或等价控制面，以及 resume / replay / approval 语义进一步稳定后，才适合作为单独设计进入路线图。
 
 ## 明确非目标
 

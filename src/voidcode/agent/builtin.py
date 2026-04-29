@@ -38,14 +38,30 @@ _LEADER_TOOL_ALLOWLIST = (
 
 _BUILTIN_PROMPT_MATERIALIZATION_VERSION = 1
 
+_LEADER_PRESET_HOOK_REFS = (
+    "role_reminder",
+    "delegation_guard",
+    "background_output_quality_guidance",
+    "todo_continuation_guidance",
+)
+
+_DELEGATED_PRESET_HOOK_REFS = (
+    "role_reminder",
+    "delegation_guard",
+)
+
 LEADER_AGENT_MANIFEST = AgentManifest(
     id="leader",
     name="Leader",
     mode="primary",
-    description="Primary user-facing agent preset mapped to the runtime provider path.",
+    description=(
+        "Primary user-facing agent preset with runtime-owned delegation guidance "
+        "for task, background_output, and child preset selection."
+    ),
     prompt_profile="leader",
     execution_engine="provider",
     tool_allowlist=_LEADER_TOOL_ALLOWLIST,
+    preset_hook_refs=_LEADER_PRESET_HOOK_REFS,
     top_level_selectable=True,
     prompt_materialization=AgentPromptMaterialization(
         profile="leader",
@@ -60,7 +76,10 @@ WORKER_AGENT_MANIFEST = AgentManifest(
     id="worker",
     name="Worker",
     mode="subagent",
-    description="Focused future executor preset for narrow implementation tasks.",
+    description=(
+        "Focused delegated executor preset for narrow implementation tasks, "
+        "bounded by the active runtime tool allowlist."
+    ),
     prompt_profile="worker",
     execution_engine="provider",
     tool_allowlist=(
@@ -71,8 +90,8 @@ WORKER_AGENT_MANIFEST = AgentManifest(
         "apply_patch",
         "shell_exec",
         "format_file",
-        "task",
     ),
+    preset_hook_refs=_DELEGATED_PRESET_HOOK_REFS,
     top_level_selectable=False,
     prompt_materialization=AgentPromptMaterialization(
         profile="worker",
@@ -87,10 +106,13 @@ ADVISOR_AGENT_MANIFEST = AgentManifest(
     id="advisor",
     name="Advisor",
     mode="subagent",
-    description="Read-only advisory preset for architecture, risk, and review guidance.",
+    description=(
+        "Read-only advisory preset for architecture, debugging, risk, and review guidance."
+    ),
     prompt_profile="advisor",
     execution_engine="provider",
     tool_allowlist=_READ_ONLY_WORKSPACE_TOOLS,
+    preset_hook_refs=_DELEGATED_PRESET_HOOK_REFS,
     top_level_selectable=False,
     prompt_materialization=AgentPromptMaterialization(
         profile="advisor",
@@ -106,11 +128,13 @@ EXPLORE_AGENT_MANIFEST = AgentManifest(
     name="Explore",
     mode="subagent",
     description=(
-        "Workspace-bound exploration preset for local code structure and pattern discovery."
+        "Read-only workspace-bound exploration preset for local code structure, "
+        "paths, and pattern discovery."
     ),
     prompt_profile="explore",
     execution_engine="provider",
     tool_allowlist=_READ_ONLY_WORKSPACE_TOOLS,
+    preset_hook_refs=_DELEGATED_PRESET_HOOK_REFS,
     top_level_selectable=False,
     prompt_materialization=AgentPromptMaterialization(
         profile="explore",
@@ -131,6 +155,7 @@ RESEARCHER_AGENT_MANIFEST = AgentManifest(
     prompt_profile="researcher",
     execution_engine="provider",
     tool_allowlist=("web_search", "web_fetch", "code_search"),
+    preset_hook_refs=_DELEGATED_PRESET_HOOK_REFS,
     top_level_selectable=False,
     prompt_materialization=AgentPromptMaterialization(
         profile="researcher",
@@ -160,6 +185,7 @@ PRODUCT_AGENT_MANIFEST = AgentManifest(
     prompt_profile="product",
     execution_engine="provider",
     tool_allowlist=_PRODUCT_TOOL_ALLOWLIST,
+    preset_hook_refs=("role_reminder", "background_output_quality_guidance"),
     top_level_selectable=True,
     prompt_materialization=AgentPromptMaterialization(
         profile="product",
@@ -204,6 +230,16 @@ def validate_builtin_agent_manifests(
             raise ValueError(
                 f"builtin agent manifest '{manifest.id}' must not contain duplicate tool patterns"
             )
+        if len(manifest.preset_hook_refs) != len(set(manifest.preset_hook_refs)):
+            raise ValueError(
+                f"builtin agent manifest '{manifest.id}' must not contain "
+                "duplicate preset hook refs"
+            )
+        for hook_ref in manifest.preset_hook_refs:
+            if not hook_ref.strip():
+                raise ValueError(
+                    f"builtin agent manifest '{manifest.id}' preset hook refs must be non-empty"
+                )
         if manifest.mode == "primary" and not manifest.top_level_selectable:
             raise ValueError(
                 f"builtin agent manifest '{manifest.id}' has mode='primary' but is not "

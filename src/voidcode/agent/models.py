@@ -101,6 +101,7 @@ class AgentManifest:
     model_preference: str | None = None
     tool_allowlist: tuple[str, ...] = ()
     skill_refs: tuple[str, ...] = ()
+    preset_hook_refs: tuple[str, ...] = ()
     routing_hints: dict[str, object] = field(default_factory=dict)
     top_level_selectable: bool = False
     prompt_materialization: AgentPromptMaterialization | None = None
@@ -116,6 +117,8 @@ class AgentManifest:
             fields.append("model_preference")
         if self.tool_allowlist:
             fields.append("tool_allowlist")
+        if self.preset_hook_refs:
+            fields.append("preset_hook_refs")
         fields.append("top_level_selectable")
         if self.prompt_materialization is not None:
             fields.append("prompt_materialization")

@@ -28,6 +28,7 @@ voidcode/
 | Python entrypoint | `src/voidcode/__main__.py` | `python -m voidcode` delegates to CLI |
 | Runtime orchestration boundary | `src/voidcode/runtime/service.py` | CLI calls runtime, not graph directly |
 | Runtime implementation work | `src/voidcode/runtime/AGENTS.md` | read before touching runtime control-plane code |
+| Delegated/background task contract | `docs/contracts/background-task-delegation.md` | runtime-owned subagent routing, result retrieval, retry/cancel notes |
 | Session persistence | `src/voidcode/runtime/storage.py` | SQLite-backed local session store |
 | Runtime contracts | `src/voidcode/runtime/contracts.py` | request/response boundary types |
 | Graph planning/finalization | `src/voidcode/graph/read_only_slice.py` | current deterministic slice |
@@ -66,6 +67,9 @@ voidcode/
 - Backend architecture is intentionally split into `runtime/`, `graph/`, and `tools/` with contract files marking boundaries.
 - Session recovery is local and SQLite-backed under `.voidcode/`.
 - The backend now exposes a broader tool surface including read/write/edit/search/web and patch workflows under `src/voidcode/tools/`.
+- Runtime-owned delegated child execution exists for supported child presets through background task and child session surfaces; it is not an arbitrary multi-agent topology.
+- Agent manifest `skill_refs` select catalog-visible skills by default, while request `force_load_skills` and delegated `load_skills` inject full skill bodies only into the targeted runtime context.
+- MCP is runtime/session-scoped and config-gated; do not describe workspace-scoped MCP, marketplace, dynamic agents, or direct agent-to-agent bus behavior as implemented.
 - Frontend source is intentionally small and flatter than the aspirational structure described in `frontend/README.md`.
 - Runtime-specific invariants and hotspot entry points live in `src/voidcode/runtime/AGENTS.md`.
 

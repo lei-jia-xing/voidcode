@@ -393,6 +393,19 @@ class RuntimeResumeCoordinator:
                     final_session.session.id,
                     end_hook_outcome.failed_error,
                 )
+            release_sequence = end_hook_outcome.last_sequence
+            for release_event in runtime._release_mcp_session_events(
+                session_id=final_session.session.id,
+                start_sequence=release_sequence + 1,
+            ):
+                release_sequence = release_event.sequence
+                last_sequence = release_event.sequence
+                loop_events.append(release_event)
+                yield RuntimeStreamChunk(
+                    kind="event",
+                    session=final_session,
+                    event=release_event,
+                )
 
         response = RuntimeResponse(
             session=final_session,
@@ -783,6 +796,17 @@ class RuntimeResumeCoordinator:
                     "session_end hook failed for %s during approval resume: %s",
                     session.session.id,
                     end_hook_outcome.failed_error,
+                )
+            for release_event in runtime._release_mcp_session_events(
+                session_id=session.session.id,
+                start_sequence=end_hook_outcome.last_sequence + 1,
+            ):
+                emitted_sequence = release_event.sequence
+                loop_events.append(release_event)
+                yield RuntimeStreamChunk(
+                    kind="event",
+                    session=session,
+                    event=release_event,
                 )
 
         response = RuntimeResponse(

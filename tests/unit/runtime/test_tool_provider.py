@@ -59,7 +59,9 @@ pytestmark = pytest.mark.usefixtures("_force_deterministic_engine_default")
 
 
 @pytest.fixture
-def _force_deterministic_engine_default(monkeypatch: pytest.MonkeyPatch) -> None:
+def _force_deterministic_engine_default(  # pyright: ignore[reportUnusedFunction]
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("VOIDCODE_EXECUTION_ENGINE", "deterministic")
 
 
@@ -501,8 +503,14 @@ def test_runtime_registry_includes_discovered_mcp_tools(tmp_path: Path) -> None:
         def current_state(self) -> McpManagerState:
             return McpManagerState(mode="managed", configuration=self.configuration)
 
-        def list_tools(self, *, workspace: Path):
-            _ = workspace
+        def list_tools(
+            self,
+            *,
+            workspace: Path,
+            owner_session_id: str | None = None,
+            parent_session_id: str | None = None,
+        ):
+            _ = workspace, owner_session_id, parent_session_id
             self.list_tools_calls += 1
             return (
                 McpToolDescriptor(
@@ -520,8 +528,10 @@ def test_runtime_registry_includes_discovered_mcp_tools(tmp_path: Path) -> None:
             tool_name: str,
             arguments: dict[str, object],
             workspace: Path,
+            owner_session_id: str | None = None,
+            parent_session_id: str | None = None,
         ) -> McpToolCallResult:
-            _ = server_name, tool_name, arguments, workspace
+            _ = server_name, tool_name, arguments, workspace, owner_session_id, parent_session_id
             return McpToolCallResult(content=[{"type": "text", "text": "echo:hi"}])
 
         def shutdown(self):
@@ -569,8 +579,14 @@ def test_runtime_refresh_preserves_injected_tool_registry_entries(tmp_path: Path
         def current_state(self) -> McpManagerState:
             return McpManagerState(mode="managed", configuration=self.configuration)
 
-        def list_tools(self, *, workspace: Path):
-            _ = workspace
+        def list_tools(
+            self,
+            *,
+            workspace: Path,
+            owner_session_id: str | None = None,
+            parent_session_id: str | None = None,
+        ):
+            _ = workspace, owner_session_id, parent_session_id
             return (
                 McpToolDescriptor(
                     server_name="echo",
@@ -587,8 +603,10 @@ def test_runtime_refresh_preserves_injected_tool_registry_entries(tmp_path: Path
             tool_name: str,
             arguments: dict[str, object],
             workspace: Path,
+            owner_session_id: str | None = None,
+            parent_session_id: str | None = None,
         ) -> McpToolCallResult:
-            _ = server_name, tool_name, arguments, workspace
+            _ = server_name, tool_name, arguments, workspace, owner_session_id, parent_session_id
             return McpToolCallResult(content=[{"type": "text", "text": "echo:hi"}])
 
         def shutdown(self):

@@ -105,7 +105,7 @@ _LSP_SERVER_CONFIG_KEYS = frozenset(
     {"preset", "command", "languages", "extensions", "root_markers", "settings", "init_options"}
 )
 _MCP_CONFIG_KEYS = frozenset({"enabled", "servers", "request_timeout_seconds"})
-_MCP_SERVER_CONFIG_KEYS = frozenset({"transport", "command", "env"})
+_MCP_SERVER_CONFIG_KEYS = frozenset({"transport", "command", "env", "scope"})
 _TUI_CONFIG_KEYS = frozenset({"leader_key", "keymap", "preferences"})
 _TUI_PREFERENCES_CONFIG_KEYS = frozenset({"theme", "reading"})
 _TUI_THEME_CONFIG_KEYS = frozenset({"name", "mode"})
@@ -256,6 +256,7 @@ class RuntimeBackgroundTaskConfig:
 
 
 type McpTransport = Literal["stdio"]
+type RuntimeMcpServerScope = Literal["runtime", "session"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -263,6 +264,7 @@ class RuntimeMcpServerConfig:
     transport: McpTransport = "stdio"
     command: tuple[str, ...] = ()
     env: dict[str, str] = field(default_factory=dict)
+    scope: RuntimeMcpServerScope = "runtime"
 
 
 @dataclass(frozen=True, slots=True)
@@ -1172,6 +1174,7 @@ class _RuntimeMcpServerValidationModel(BaseModel):
     transport: McpTransport = "stdio"
     command: tuple[str, ...] = ()
     env: dict[str, str] = Field(default_factory=dict)
+    scope: RuntimeMcpServerScope = "runtime"
 
     @field_validator("transport", mode="before")
     @classmethod
@@ -1213,11 +1216,24 @@ class _RuntimeMcpServerValidationModel(BaseModel):
             parsed_env[key] = item
         return parsed_env
 
+    @field_validator("scope", mode="before")
+    @classmethod
+    def _validate_scope(cls, value: object, info: ValidationInfo) -> RuntimeMcpServerScope:
+        if value is None:
+            return "runtime"
+        field_path = _validation_context_field_path(info, default="mcp.servers")
+        if value not in ("runtime", "session"):
+            raise ValueError(
+                f"runtime config field '{field_path}.scope' must be one of: runtime, session"
+            )
+        return value
+
     def to_runtime_config(self) -> RuntimeMcpServerConfig:
         return RuntimeMcpServerConfig(
             transport=self.transport,
             command=self.command,
             env=self.env,
+            scope=self.scope,
         )
 
 
