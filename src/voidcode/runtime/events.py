@@ -51,10 +51,15 @@ type PrototypeAdditiveEventType = Literal[
     "runtime.session_ended",
     "runtime.session_idle",
     "runtime.skills_binding_mismatch",
+    "runtime.background_task_registered",
+    "runtime.background_task_started",
+    "runtime.background_task_progress",
     "runtime.background_task_waiting_approval",
     "runtime.background_task_completed",
     "runtime.background_task_failed",
     "runtime.background_task_cancelled",
+    "runtime.background_task_notification_enqueued",
+    "runtime.background_task_result_read",
     "runtime.delegated_result_available",
     "runtime.skill_loaded",
 ]
@@ -123,6 +128,15 @@ RUNTIME_SESSION_IDLE: Final[PrototypeAdditiveEventType] = "runtime.session_idle"
 RUNTIME_SKILLS_BINDING_MISMATCH: Final[PrototypeAdditiveEventType] = (
     "runtime.skills_binding_mismatch"
 )
+RUNTIME_BACKGROUND_TASK_REGISTERED: Final[PrototypeAdditiveEventType] = (
+    "runtime.background_task_registered"
+)
+RUNTIME_BACKGROUND_TASK_STARTED: Final[PrototypeAdditiveEventType] = (
+    "runtime.background_task_started"
+)
+RUNTIME_BACKGROUND_TASK_PROGRESS: Final[PrototypeAdditiveEventType] = (
+    "runtime.background_task_progress"
+)
 RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL: Final[PrototypeAdditiveEventType] = (
     "runtime.background_task_waiting_approval"
 )
@@ -132,6 +146,12 @@ RUNTIME_BACKGROUND_TASK_COMPLETED: Final[PrototypeAdditiveEventType] = (
 RUNTIME_BACKGROUND_TASK_FAILED: Final[PrototypeAdditiveEventType] = "runtime.background_task_failed"
 RUNTIME_BACKGROUND_TASK_CANCELLED: Final[PrototypeAdditiveEventType] = (
     "runtime.background_task_cancelled"
+)
+RUNTIME_BACKGROUND_TASK_NOTIFICATION_ENQUEUED: Final[PrototypeAdditiveEventType] = (
+    "runtime.background_task_notification_enqueued"
+)
+RUNTIME_BACKGROUND_TASK_RESULT_READ: Final[PrototypeAdditiveEventType] = (
+    "runtime.background_task_result_read"
 )
 RUNTIME_DELEGATED_RESULT_AVAILABLE: Final[PrototypeAdditiveEventType] = (
     "runtime.delegated_result_available"
@@ -183,10 +203,15 @@ PROTOTYPE_ADDITIVE_EVENT_TYPES: Final[tuple[PrototypeAdditiveEventType, ...]] = 
     RUNTIME_SESSION_ENDED,
     RUNTIME_SESSION_IDLE,
     RUNTIME_SKILLS_BINDING_MISMATCH,
+    RUNTIME_BACKGROUND_TASK_REGISTERED,
+    RUNTIME_BACKGROUND_TASK_STARTED,
+    RUNTIME_BACKGROUND_TASK_PROGRESS,
     RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL,
     RUNTIME_BACKGROUND_TASK_COMPLETED,
     RUNTIME_BACKGROUND_TASK_FAILED,
     RUNTIME_BACKGROUND_TASK_CANCELLED,
+    RUNTIME_BACKGROUND_TASK_NOTIFICATION_ENQUEUED,
+    RUNTIME_BACKGROUND_TASK_RESULT_READ,
     RUNTIME_DELEGATED_RESULT_AVAILABLE,
     RUNTIME_SKILL_LOADED,
 )

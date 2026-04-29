@@ -17,7 +17,13 @@ from voidcode.tools import BackgroundCancelTool, BackgroundOutputTool, ToolCall
 
 
 class _StubBackgroundRuntime:
-    def load_background_task_result(self, task_id: str) -> BackgroundTaskResult:
+    def load_background_task_result(
+        self,
+        task_id: str,
+        *,
+        emit_result_read_hook: bool = True,
+    ) -> BackgroundTaskResult:
+        _ = emit_result_read_hook
         assert task_id == "task-1"
         return BackgroundTaskResult(
             task_id="task-1",
@@ -105,7 +111,13 @@ class _ManyEventBackgroundRuntime(_StubBackgroundRuntime):
 
 
 class _FailedBackgroundRuntime(_StubBackgroundRuntime):
-    def load_background_task_result(self, task_id: str) -> BackgroundTaskResult:
+    def load_background_task_result(
+        self,
+        task_id: str,
+        *,
+        emit_result_read_hook: bool = True,
+    ) -> BackgroundTaskResult:
+        _ = emit_result_read_hook
         assert task_id == "task-1"
         return BackgroundTaskResult(
             task_id="task-1",
@@ -118,7 +130,13 @@ class _FailedBackgroundRuntime(_StubBackgroundRuntime):
 
 
 class _InterruptedBackgroundRuntime(_StubBackgroundRuntime):
-    def load_background_task_result(self, task_id: str) -> BackgroundTaskResult:
+    def load_background_task_result(
+        self,
+        task_id: str,
+        *,
+        emit_result_read_hook: bool = True,
+    ) -> BackgroundTaskResult:
+        _ = emit_result_read_hook
         assert task_id == "task-1"
         return BackgroundTaskResult(
             task_id="task-1",
@@ -131,7 +149,13 @@ class _InterruptedBackgroundRuntime(_StubBackgroundRuntime):
 
 
 class _UnavailableBackgroundRuntime(_StubBackgroundRuntime):
-    def load_background_task_result(self, task_id: str) -> BackgroundTaskResult:
+    def load_background_task_result(
+        self,
+        task_id: str,
+        *,
+        emit_result_read_hook: bool = True,
+    ) -> BackgroundTaskResult:
+        _ = emit_result_read_hook
         assert task_id == "task-1"
         return BackgroundTaskResult(
             task_id="task-1",
@@ -175,9 +199,18 @@ class _BlockingUnavailableBackgroundRuntime(_UnavailableBackgroundRuntime):
     def __init__(self) -> None:
         self.load_count = 0
 
-    def load_background_task_result(self, task_id: str) -> BackgroundTaskResult:
+    def load_background_task_result(
+        self,
+        task_id: str,
+        *,
+        emit_result_read_hook: bool = True,
+    ) -> BackgroundTaskResult:
+        _ = emit_result_read_hook
         self.load_count += 1
-        return super().load_background_task_result(task_id)
+        return super().load_background_task_result(
+            task_id,
+            emit_result_read_hook=emit_result_read_hook,
+        )
 
 
 class _EmptyOutputBackgroundRuntime(_StubBackgroundRuntime):

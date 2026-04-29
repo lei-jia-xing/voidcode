@@ -2097,8 +2097,16 @@ class VoidCodeRuntime:
         validate_background_task_id(task_id)
         return self._session_store.load_background_task(workspace=self._workspace, task_id=task_id)
 
-    def load_background_task_result(self, task_id: str) -> BackgroundTaskResult:
-        return self._background_task_supervisor.load_background_task_result(task_id)
+    def load_background_task_result(
+        self,
+        task_id: str,
+        *,
+        emit_result_read_hook: bool = True,
+    ) -> BackgroundTaskResult:
+        return self._background_task_supervisor.load_background_task_result(
+            task_id,
+            emit_result_read_hook=emit_result_read_hook,
+        )
 
     def list_background_tasks(self) -> tuple[StoredBackgroundTaskSummary, ...]:
         self._background_task_supervisor.reconcile_background_tasks_if_needed()

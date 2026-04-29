@@ -421,6 +421,5 @@ mise run check
 - 完整的 async leader/worker orchestration 语义
 - scheduler integration
 - UI-specific presentation choices
-- 建立在这些事件之上的 richer lifecycle hooks
 - workspace-scoped MCP、marketplace、dynamic agents、direct agent-to-agent bus
 - #285 context assembly / compaction 的完整产品化语义

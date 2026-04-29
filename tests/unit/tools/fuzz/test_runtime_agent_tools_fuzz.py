@@ -59,7 +59,13 @@ class _RecordingBackgroundOutputRuntime:
     def __init__(self) -> None:
         self.task_ids: list[str] = []
 
-    def load_background_task_result(self, task_id: str) -> BackgroundTaskResult:
+    def load_background_task_result(
+        self,
+        task_id: str,
+        *,
+        emit_result_read_hook: bool = True,
+    ) -> BackgroundTaskResult:
+        _ = emit_result_read_hook
         self.task_ids.append(task_id)
         return BackgroundTaskResult(
             task_id=task_id,
@@ -94,7 +100,13 @@ class _UnusedTaskRuntime:
     def start_background_task(self, request: RuntimeRequest) -> BackgroundTaskState:
         raise AssertionError(request)
 
-    def load_background_task_result(self, task_id: str) -> BackgroundTaskResult:
+    def load_background_task_result(
+        self,
+        task_id: str,
+        *,
+        emit_result_read_hook: bool = True,
+    ) -> BackgroundTaskResult:
+        _ = emit_result_read_hook
         raise AssertionError(task_id)
 
     def cancel_background_task(self, task_id: str) -> BackgroundTaskState:

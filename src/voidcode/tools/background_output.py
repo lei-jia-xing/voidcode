@@ -12,7 +12,12 @@ from .contracts import ToolCall, ToolDefinition, ToolResult
 
 
 class BackgroundOutputRuntime(Protocol):
-    def load_background_task_result(self, task_id: str) -> BackgroundTaskResult: ...
+    def load_background_task_result(
+        self,
+        task_id: str,
+        *,
+        emit_result_read_hook: bool = True,
+    ) -> BackgroundTaskResult: ...
 
     def session_result(self, *, session_id: str) -> RuntimeSessionResult: ...
 
@@ -63,14 +68,25 @@ class BackgroundOutputTool:
             raise ValueError("background_output requires a non-empty task_id") from exc
 
         deadline = time.monotonic() + max(args.timeout, 1) / 1000
-        result = self._runtime.load_background_task_result(args.task_id)
+        result = self._runtime.load_background_task_result(
+            args.task_id,
+            emit_result_read_hook=not args.block,
+        )
         block_timed_out = False
         while args.block and not is_background_task_terminal(result.status):
             if time.monotonic() >= deadline:
                 block_timed_out = True
                 break
             time.sleep(0.05)
-            result = self._runtime.load_background_task_result(args.task_id)
+            result = self._runtime.load_background_task_result(
+                args.task_id,
+                emit_result_read_hook=False,
+            )
+        if args.block:
+            result = self._runtime.load_background_task_result(
+                args.task_id,
+                emit_result_read_hook=True,
+            )
         safe_summary = _background_result_safe_summary(result)
         message_payload = {
             **result.delegated_message.as_payload(),

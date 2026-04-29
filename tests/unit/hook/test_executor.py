@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from typing import cast
 
-from voidcode.hook.config import RuntimeHooksConfig
+from voidcode.hook.config import RuntimeHooksConfig, RuntimeHookSurface
 from voidcode.hook.executor import (
     HookExecutionOutcome,
     HookExecutionRequest,
@@ -167,6 +168,44 @@ def test_run_lifecycle_hooks_exposes_context_as_environment(tmp_path: Path) -> N
 
     assert outcome.failed_error is None
     assert output_path.read_text() == "background_task_completed:task-1"
+
+
+def test_run_lifecycle_hooks_executes_new_background_surfaces(tmp_path: Path) -> None:
+    command = (sys.executable, "-c", "")
+    hooks = RuntimeHooksConfig(
+        enabled=True,
+        on_background_task_registered=(command,),
+        on_background_task_started=(command,),
+        on_background_task_progress=(command,),
+        on_background_task_notification_enqueued=(command,),
+        on_background_task_result_read=(command,),
+    )
+    expected_event_types = {
+        "background_task_registered": "runtime.background_task_registered",
+        "background_task_started": "runtime.background_task_started",
+        "background_task_progress": "runtime.background_task_progress",
+        "background_task_notification_enqueued": ("runtime.background_task_notification_enqueued"),
+        "background_task_result_read": "runtime.background_task_result_read",
+    }
+
+    for surface, expected_event_type in expected_event_types.items():
+        outcome = run_lifecycle_hooks(
+            LifecycleHookExecutionRequest(
+                hooks=hooks,
+                workspace=tmp_path,
+                session_id="hook-session",
+                surface=cast(RuntimeHookSurface, surface),
+                recursion_env_var="VOIDCODE_RUNNING_TOOL_HOOK",
+                environment={},
+                sequence_start=0,
+                payload={"background_task_id": "task-1"},
+            )
+        )
+
+        assert outcome.failed_error is None
+        assert outcome.events[0].event_type == expected_event_type
+        assert outcome.events[0].payload["surface"] == surface
+        assert outcome.events[0].payload["hook_status"] == "ok"
 
 
 def test_run_lifecycle_hooks_exposes_canonical_payload_json_environment(tmp_path: Path) -> None:

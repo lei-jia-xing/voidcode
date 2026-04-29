@@ -413,18 +413,24 @@ class RuntimeBackgroundTaskSupervisor:
         for failed_task in failed_tasks:
             self.run_background_task_lifecycle_hook(failed_task)
 
-    def load_background_task_result(self, task_id: str) -> BackgroundTaskResult:
+    def load_background_task_result(
+        self,
+        task_id: str,
+        *,
+        emit_result_read_hook: bool = True,
+    ) -> BackgroundTaskResult:
         task = self._runtime.load_background_task(task_id)
         self.backfill_parent_background_task_event(task=task)
         result = self.background_task_result(task=task)
-        self.run_background_task_lifecycle_surface(
-            task=task,
-            surface="background_task_result_read",
-            session_id=task.parent_session_id
-            or task.session_id
-            or task.request.session_id
-            or "runtime",
-        )
+        if emit_result_read_hook:
+            self.run_background_task_lifecycle_surface(
+                task=task,
+                surface="background_task_result_read",
+                session_id=task.parent_session_id
+                or task.session_id
+                or task.request.session_id
+                or "runtime",
+            )
         return result
 
     def cancel_background_task(self, task_id: str) -> BackgroundTaskState:

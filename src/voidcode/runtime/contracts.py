@@ -981,7 +981,12 @@ class BackgroundTaskRuntimeEntrypoint(Protocol):
 
     def load_background_task(self, task_id: str) -> BackgroundTaskState: ...
 
-    def load_background_task_result(self, task_id: str) -> BackgroundTaskResult: ...
+    def load_background_task_result(
+        self,
+        task_id: str,
+        *,
+        emit_result_read_hook: bool = True,
+    ) -> BackgroundTaskResult: ...
 
     def list_background_tasks(self) -> tuple[StoredBackgroundTaskSummary, ...]: ...
 
