@@ -7976,7 +7976,7 @@ def test_runtime_context_pressure_payload_reason_is_consistently_exceeded(tmp_pa
     )
 
 
-def test_runtime_context_pressure_replay_uses_completed_status_for_completed_session(
+def test_runtime_context_pressure_replay_keeps_running_status_until_terminal_event(
     tmp_path: Path,
 ) -> None:
     sample_file = tmp_path / "sample.txt"
@@ -8018,7 +8018,55 @@ def test_runtime_context_pressure_replay_uses_completed_status_for_completed_ses
 
     assert response.session.status == "completed"
     assert replay_pressure_sessions
-    assert all(status == "completed" for status in replay_pressure_sessions)
+    assert all(status == "running" for status in replay_pressure_sessions)
+
+
+def test_runtime_memory_refreshed_replay_keeps_running_status_until_terminal_event(
+    tmp_path: Path,
+) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("x" * 300, encoding="utf-8")
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(
+                    ProviderTurnResult(tool_call=ToolCall("read_file", {"filePath": "sample.txt"})),
+                    ProviderTurnResult(tool_call=ToolCall("read_file", {"filePath": "sample.txt"})),
+                    ProviderTurnResult(output="done"),
+                ),
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            context_window=RuntimeContextWindowConfig(
+                max_tool_result_tokens=1,
+            ),
+        ),
+        model_provider_registry=registry,
+    )
+
+    response = runtime.run(
+        RuntimeRequest(
+            prompt="read sample.txt\nread sample.txt", session_id="memory-refresh-replay"
+        )
+    )
+    replay_chunks = list(runtime.resume_stream("memory-refresh-replay"))
+    replay_memory_sessions = [
+        chunk.session.status
+        for chunk in replay_chunks
+        if chunk.kind == "event"
+        and chunk.event is not None
+        and chunk.event.event_type == RUNTIME_MEMORY_REFRESHED
+    ]
+
+    assert response.session.status == "completed"
+    assert replay_memory_sessions
+    assert all(status == "running" for status in replay_memory_sessions)
 
 
 def test_runtime_provider_turn_usage_is_persisted_in_session_metadata(tmp_path: Path) -> None:

@@ -4269,8 +4269,6 @@ class VoidCodeRuntime:
             or (event.event_type == "graph.loop_step" and event.payload.get("phase") == "finalize")
             or event.event_type
             in {
-                "runtime.context_pressure",
-                "runtime.memory_refreshed",
                 "runtime.session_ended",
                 "runtime.mcp_server_released",
                 "runtime.mcp_server_stopped",
