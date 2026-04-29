@@ -22,7 +22,11 @@ type ExistingEventType = Literal[
     "runtime.lsp_server_stopped",
     "runtime.lsp_server_failed",
     "runtime.mcp_server_started",
+    "runtime.mcp_server_reused",
+    "runtime.mcp_server_acquired",
+    "runtime.mcp_server_released",
     "runtime.mcp_server_stopped",
+    "runtime.mcp_server_idle_cleaned",
     "runtime.mcp_server_failed",
     "graph.loop_step",
     "graph.model_turn",
@@ -87,7 +91,11 @@ RUNTIME_LSP_SERVER_STARTUP_REJECTED: Final[ExistingEventType] = (
 RUNTIME_LSP_SERVER_STOPPED: Final[ExistingEventType] = "runtime.lsp_server_stopped"
 RUNTIME_LSP_SERVER_FAILED: Final[ExistingEventType] = "runtime.lsp_server_failed"
 RUNTIME_MCP_SERVER_STARTED: Final[ExistingEventType] = "runtime.mcp_server_started"
+RUNTIME_MCP_SERVER_REUSED: Final[ExistingEventType] = "runtime.mcp_server_reused"
+RUNTIME_MCP_SERVER_ACQUIRED: Final[ExistingEventType] = "runtime.mcp_server_acquired"
+RUNTIME_MCP_SERVER_RELEASED: Final[ExistingEventType] = "runtime.mcp_server_released"
 RUNTIME_MCP_SERVER_STOPPED: Final[ExistingEventType] = "runtime.mcp_server_stopped"
+RUNTIME_MCP_SERVER_IDLE_CLEANED: Final[ExistingEventType] = "runtime.mcp_server_idle_cleaned"
 RUNTIME_MCP_SERVER_FAILED: Final[ExistingEventType] = "runtime.mcp_server_failed"
 GRAPH_LOOP_STEP: Final[ExistingEventType] = "graph.loop_step"
 GRAPH_MODEL_TURN: Final[ExistingEventType] = "graph.model_turn"
@@ -143,7 +151,11 @@ EMITTED_EVENT_TYPES: Final[tuple[ExistingEventType, ...]] = (
     RUNTIME_LSP_SERVER_STOPPED,
     RUNTIME_LSP_SERVER_FAILED,
     RUNTIME_MCP_SERVER_STARTED,
+    RUNTIME_MCP_SERVER_REUSED,
+    RUNTIME_MCP_SERVER_ACQUIRED,
+    RUNTIME_MCP_SERVER_RELEASED,
     RUNTIME_MCP_SERVER_STOPPED,
+    RUNTIME_MCP_SERVER_IDLE_CLEANED,
     RUNTIME_MCP_SERVER_FAILED,
     GRAPH_LOOP_STEP,
     GRAPH_MODEL_TURN,

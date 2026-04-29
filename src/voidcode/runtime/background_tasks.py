@@ -814,6 +814,10 @@ class RuntimeBackgroundTaskSupervisor:
         extra_payload: dict[str, object] | None = None,
     ) -> None:
         runtime = self._runtime
+        result = self.background_task_result(task=task)
+        selected_preset = result.delegated_execution.selected_preset
+        child_session_id = task.session_id
+        parent_session_id = task.parent_session_id
         outcome = run_lifecycle_hooks(
             LifecycleHookExecutionRequest(
                 hooks=runtime._config.hooks,
@@ -824,8 +828,13 @@ class RuntimeBackgroundTaskSupervisor:
                 environment=os.environ,
                 sequence_start=0,
                 payload={
+                    "task_id": task.task.id,
                     "background_task_id": task.task.id,
                     "background_task_status": task.status,
+                    "parent_session_id": parent_session_id,
+                    "child_session_id": child_session_id,
+                    "preset": selected_preset,
+                    "lifecycle_surface": surface,
                     **({"background_task_error": task.error} if task.error is not None else {}),
                     **(extra_payload or {}),
                 },

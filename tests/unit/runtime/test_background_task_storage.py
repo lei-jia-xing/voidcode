@@ -596,6 +596,102 @@ def test_background_task_storage_enriches_parent_visible_delegated_event_payload
     }
 
 
+def test_background_task_storage_preserves_supervisor_completed_event_payload_field_names(
+    tmp_path: Path,
+) -> None:
+    store = SqliteSessionStore()
+    parent_request = RuntimeRequest(prompt="leader task", session_id="leader-session")
+    parent_response = RuntimeResponse(
+        session=SessionState(
+            session=SessionRef(id="leader-session"),
+            status="completed",
+            turn=1,
+            metadata={},
+        ),
+        events=(),
+        output="done",
+    )
+    store.save_run(workspace=tmp_path, request=parent_request, response=parent_response)
+    store.create_background_task(
+        workspace=tmp_path,
+        task=BackgroundTaskState(
+            task=BackgroundTaskRef(id="task-completed-event"),
+            status="running",
+            request=BackgroundTaskRequestSnapshot(
+                prompt="delegated",
+                session_id="child-requested",
+                parent_session_id="leader-session",
+                metadata={
+                    "delegation": {
+                        "mode": "background",
+                        "category": "ultrabrain",
+                    }
+                },
+            ),
+            session_id="child-session",
+            started_at=1,
+        ),
+    )
+    completed = store.mark_background_task_terminal(
+        workspace=tmp_path,
+        task_id="task-completed-event",
+        status="completed",
+    )
+
+    appended = store.append_session_event(
+        workspace=tmp_path,
+        session_id="leader-session",
+        event_type="runtime.background_task_completed",
+        source="runtime",
+        payload={
+            "task_id": "task-completed-event",
+            "parent_session_id": "leader-session",
+            "child_session_id": "child-session",
+            "status": "completed",
+            "result_available": True,
+            "delegation": {
+                "parent_session_id": "leader-session",
+                "requested_child_session_id": "child-requested",
+                "child_session_id": "child-session",
+                "delegated_task_id": "task-completed-event",
+                "approval_request_id": None,
+                "question_request_id": None,
+                "routing": {"mode": "background", "category": "ultrabrain"},
+                "selected_preset": "advisor",
+                "selected_execution_engine": "provider",
+                "lifecycle_status": "completed",
+                "approval_blocked": False,
+                "result_available": True,
+                "cancellation_cause": None,
+            },
+        },
+    )
+
+    assert completed.result_available is True
+    assert appended is not None
+    assert appended.payload["task_id"] == "task-completed-event"
+    assert appended.payload["parent_session_id"] == "leader-session"
+    assert appended.payload["child_session_id"] == "child-session"
+    assert appended.payload["status"] == "completed"
+    assert appended.payload["result_available"] is True
+    assert appended.payload["routing_category"] == "ultrabrain"
+    assert appended.payload["delegation"] == {
+        "parent_session_id": "leader-session",
+        "requested_child_session_id": "child-requested",
+        "child_session_id": "child-session",
+        "delegated_task_id": "task-completed-event",
+        "approval_request_id": None,
+        "question_request_id": None,
+        "routing": {"mode": "background", "category": "ultrabrain"},
+        "selected_preset": "advisor",
+        "selected_execution_engine": "provider",
+        "lifecycle_status": "completed",
+        "approval_blocked": False,
+        "result_available": True,
+        "cancellation_cause": None,
+    }
+
+
 def test_background_task_storage_queued_cancel_race_does_not_overwrite_running_task(
     tmp_path: Path,
 ) -> None:
