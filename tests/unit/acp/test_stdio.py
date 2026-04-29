@@ -33,6 +33,7 @@ class _StubSessionRef:
 class _StubSession:
     session: _StubSessionRef
     status: str = "running"
+    metadata: dict[str, object] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +49,7 @@ class _StubRuntime:
         self.chunks = chunks or []
         self.fail = fail
         self.requests: list[RuntimeRequest] = []
+        self.cancel_calls: list[tuple[str, str | None, str | None]] = []
 
     def run_stream(self, request: RuntimeRequest) -> Iterator[Any]:
         self.requests.append(request)
@@ -63,23 +65,29 @@ class _StubRuntime:
         run_id: str | None = None,
         reason: str | None = None,
     ) -> dict[str, object]:
-        _ = run_id
+        self.cancel_calls.append((session_id, run_id, reason))
         return {
             "session_id": session_id,
             "status": "interrupted",
             "interrupted": True,
             "cancelled": True,
-            "run_id": "run-1",
+            "run_id": run_id,
             "reason": reason,
         }
 
 
 class _SlowRuntime:
+    def __init__(self) -> None:
+        self.cancel_calls: list[tuple[str, str | None, str | None]] = []
+
     def run_stream(self, request: RuntimeRequest) -> Iterator[Any]:
         _ = request
         yield _StubChunk(
             kind="event",
-            session=_StubSession(_StubSessionRef("runtime-1")),
+            session=_StubSession(
+                _StubSessionRef("runtime-1"),
+                metadata={"runtime_state": {"run_id": "run-1"}},
+            ),
             event=_StubEvent(
                 session_id="runtime-1",
                 sequence=1,
@@ -94,6 +102,23 @@ class _SlowRuntime:
             session=_StubSession(_StubSessionRef("runtime-1"), status="completed"),
             output="late output",
         )
+
+    def cancel_session(
+        self,
+        session_id: str,
+        *,
+        run_id: str | None = None,
+        reason: str | None = None,
+    ) -> dict[str, object]:
+        self.cancel_calls.append((session_id, run_id, reason))
+        return {
+            "session_id": session_id,
+            "status": "interrupted",
+            "interrupted": True,
+            "cancelled": True,
+            "run_id": run_id,
+            "reason": reason,
+        }
 
 
 def _request(method: str, request_id: int, params: dict[str, object] | None = None) -> str:
@@ -294,11 +319,32 @@ def test_cancel_returns_limited_success_without_crashing() -> None:
 
 
 def test_cancel_delegates_to_runtime_when_runtime_session_exists() -> None:
+    runtime = _SlowRuntime()
+    with patch("voidcode.acp.stdio.uuid4", return_value=SimpleNamespace(hex="abc")):
+        messages, _ = _run_server(
+            runtime,
+            _request("session/new", 1),
+            _request("session/prompt", 2, {"sessionId": "acp-session-abc", "prompt": "hello"}),
+            _request("session/cancel", 3, {"sessionId": "acp-session-abc"}),
+        )
+
+    cancel_result = next(message["result"] for message in messages if message.get("id") == 3)
+    assert cancel_result["cancelled"] is True
+    assert cancel_result["supported"] is True
+    assert cancel_result["runtimeCancel"]["session_id"] == "runtime-1"
+    assert cancel_result["runtimeCancel"]["run_id"] == "run-1"
+    assert runtime.cancel_calls == [("runtime-1", "run-1", "acp session/cancel")]
+
+
+def test_cancel_does_not_touch_runtime_when_binding_is_inactive() -> None:
     runtime = _StubRuntime(
         [
             _StubChunk(
                 kind="event",
-                session=_StubSession(_StubSessionRef("runtime-1")),
+                session=_StubSession(
+                    _StubSessionRef("runtime-1"),
+                    metadata={"runtime_state": {"run_id": "completed-run"}},
+                ),
                 event=_StubEvent(
                     session_id="runtime-1",
                     sequence=1,
@@ -306,6 +352,11 @@ def test_cancel_delegates_to_runtime_when_runtime_session_exists() -> None:
                     source="runtime",
                     payload={"prompt": "hello"},
                 ),
+            ),
+            _StubChunk(
+                kind="output",
+                session=_StubSession(_StubSessionRef("runtime-1"), status="completed"),
+                output="done",
             ),
         ]
     )
@@ -317,10 +368,13 @@ def test_cancel_delegates_to_runtime_when_runtime_session_exists() -> None:
             _request("session/cancel", 3, {"sessionId": "acp-session-abc"}),
         )
 
-    cancel_result = messages[-1]["result"]
-    assert cancel_result["cancelled"] is True
-    assert cancel_result["supported"] is True
-    assert cancel_result["runtimeCancel"]["session_id"] == "runtime-1"
+    cancel_result = next(message["result"] for message in messages if message.get("id") == 3)
+    assert cancel_result["runtimeSessionId"] == "runtime-1"
+    assert cancel_result["cancelled"] is False
+    assert cancel_result["supported"] is False
+    assert cancel_result["stopReason"] == "not_active"
+    assert cancel_result["runtimeCancel"] is None
+    assert runtime.cancel_calls == []
 
 
 def test_cancel_notification_writes_no_response() -> None:
