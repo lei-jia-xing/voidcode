@@ -118,6 +118,82 @@ def test_session_storage_bootstraps_canonical_schema_for_fresh_database(tmp_path
     assert any(row[2] == 1 and row[3] == "u" for row in notification_indexes)
 
 
+def test_session_storage_bootstraps_sequences_from_existing_timestamps(tmp_path: Path) -> None:
+    database_path = tmp_path / "sequence-bootstrap.sqlite3"
+    store = SqliteSessionStore(database_path=database_path)
+    old_request = RuntimeRequest(prompt="old", session_id="old-session")
+    old_response = RuntimeResponse(
+        session=SessionState(session=SessionRef(id="old-session"), status="completed", turn=1),
+        events=(
+            EventEnvelope(
+                session_id="old-session",
+                sequence=1,
+                event_type="graph.response_ready",
+                source="graph",
+            ),
+        ),
+        output="old output",
+    )
+    store.save_run(workspace=tmp_path, request=old_request, response=old_response)
+    store.create_background_task(
+        workspace=tmp_path,
+        task=BackgroundTaskState(
+            task=BackgroundTaskRef(id="old-task"),
+            request=BackgroundTaskRequestSnapshot(prompt="old task"),
+        ),
+    )
+    with closing(sqlite3.connect(database_path)) as connection:
+        _ = connection.execute(
+            "UPDATE sessions SET created_at = 40, updated_at = 50 WHERE session_id = ?",
+            ("old-session",),
+        )
+        _ = connection.execute(
+            "UPDATE background_tasks SET created_at = 60, updated_at = 70 WHERE task_id = ?",
+            ("old-task",),
+        )
+        _ = connection.execute("DELETE FROM storage_sequences")
+        connection.commit()
+
+    new_request = RuntimeRequest(prompt="new", session_id="new-session")
+    new_response = RuntimeResponse(
+        session=SessionState(session=SessionRef(id="new-session"), status="completed", turn=1),
+        events=(
+            EventEnvelope(
+                session_id="new-session",
+                sequence=1,
+                event_type="graph.response_ready",
+                source="graph",
+            ),
+        ),
+        output="new output",
+    )
+    store.save_run(workspace=tmp_path, request=new_request, response=new_response)
+    store.create_background_task(
+        workspace=tmp_path,
+        task=BackgroundTaskState(
+            task=BackgroundTaskRef(id="new-task"),
+            request=BackgroundTaskRequestSnapshot(prompt="new task"),
+        ),
+    )
+
+    with closing(sqlite3.connect(database_path)) as connection:
+        new_session_row = connection.execute(
+            "SELECT created_at, updated_at FROM sessions WHERE session_id = ?",
+            ("new-session",),
+        ).fetchone()
+        new_task_row = connection.execute(
+            "SELECT created_at, updated_at FROM background_tasks WHERE task_id = ?",
+            ("new-task",),
+        ).fetchone()
+
+    assert [session.session.id for session in store.list_sessions(workspace=tmp_path)] == [
+        "new-session",
+        "old-session",
+    ]
+    assert new_session_row == (41, 51)
+    assert new_task_row == (71, 71)
+
+
 def test_session_storage_configures_sqlite_operability_pragmas(tmp_path: Path) -> None:
     database_path = tmp_path / "operability.sqlite3"
     store = SqliteSessionStore(database_path=database_path)

@@ -433,6 +433,68 @@ class SqliteSessionStore:
         _ = connection.execute(
             "INSERT OR IGNORE INTO storage_sequences (scope, value) VALUES ('auxiliary', 0)"
         )
+        SqliteSessionStore._bump_sequence_floor(
+            connection=connection,
+            scope="sessions",
+            floor=SqliteSessionStore._max_existing_timestamp(
+                connection=connection,
+                table="sessions",
+                columns=("updated_at",),
+            ),
+        )
+        SqliteSessionStore._bump_sequence_floor(
+            connection=connection,
+            scope="background_tasks",
+            floor=SqliteSessionStore._max_existing_timestamp(
+                connection=connection,
+                table="background_tasks",
+                columns=(
+                    "created_at",
+                    "updated_at",
+                    "started_at",
+                    "finished_at",
+                    "cancel_requested_at",
+                ),
+            ),
+        )
+        SqliteSessionStore._bump_sequence_floor(
+            connection=connection,
+            scope="auxiliary",
+            floor=max(
+                SqliteSessionStore._max_existing_timestamp(
+                    connection=connection,
+                    table="sessions",
+                    columns=("created_at",),
+                ),
+                SqliteSessionStore._max_existing_timestamp(
+                    connection=connection,
+                    table="session_notifications",
+                    columns=("created_at", "acknowledged_at"),
+                ),
+                SqliteSessionStore._max_existing_timestamp(
+                    connection=connection,
+                    table="session_event_deliveries",
+                    columns=("delivered_at",),
+                ),
+            ),
+        )
+
+    @staticmethod
+    def _max_existing_timestamp(
+        *, connection: sqlite3.Connection, table: str, columns: tuple[str, ...]
+    ) -> int:
+        maxima = [
+            int(connection.execute(f"SELECT COALESCE(MAX({column}), 0) FROM {table}").fetchone()[0])
+            for column in columns
+        ]
+        return max(maxima, default=0)
+
+    @staticmethod
+    def _bump_sequence_floor(*, connection: sqlite3.Connection, scope: str, floor: int) -> None:
+        _ = connection.execute(
+            "UPDATE storage_sequences SET value = MAX(value, ?) WHERE scope = ?",
+            (floor, scope),
+        )
 
     @classmethod
     def _assert_canonical_schema(
