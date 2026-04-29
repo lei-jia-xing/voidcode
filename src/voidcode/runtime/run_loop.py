@@ -34,6 +34,7 @@ from .events import (
     RUNTIME_MEMORY_REFRESHED,
     RUNTIME_QUESTION_REQUESTED,
     RUNTIME_SKILL_LOADED,
+    RUNTIME_TODO_UPDATED,
     RUNTIME_TOOL_STARTED,
     EventEnvelope,
 )
@@ -112,6 +113,8 @@ class RuntimeRunLoopCoordinator:
             preserved_system_segments: list[str] = []
             for segment in graph_request.assembled_context.segments:
                 if segment.role != "system" or not isinstance(segment.content, str):
+                    continue
+                if segment.content.startswith("Runtime-managed todo state is active"):
                     continue
                 preserved_system_segments.append(segment.content)
                 if segment.content.startswith("Runtime-managed skills are active for this turn."):
@@ -644,6 +647,7 @@ class RuntimeRunLoopCoordinator:
                     },
                 )
 
+            runtime_tool_result_data = dict(tool_result.data)
             sanitized_arguments = sanitize_tool_arguments(dict(plan_tool_call.arguments))
             tool_result = cap_tool_result_output(tool_result, workspace=runtime._workspace)
             tool_result = replace(
@@ -763,6 +767,26 @@ class RuntimeRunLoopCoordinator:
                             },
                         ),
                     )
+
+            if plan_tool_call.tool_name == "todo_write" and tool_result.status == "ok":
+                revision = sequence + 1
+                session, todo_payload = runtime._session_with_todo_state(
+                    session,
+                    raw_todos=runtime_tool_result_data.get("todos"),
+                    revision=revision,
+                )
+                sequence = revision
+                yield RuntimeStreamChunk(
+                    kind="event",
+                    session=session,
+                    event=EventEnvelope(
+                        session_id=session.session.id,
+                        sequence=sequence,
+                        event_type=RUNTIME_TODO_UPDATED,
+                        source="runtime",
+                        payload=todo_payload,
+                    ),
+                )
 
             if tool_result.status == "ok":
                 post_hook_outcome = runtime._run_tool_hooks(

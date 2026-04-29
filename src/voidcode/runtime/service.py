@@ -203,6 +203,11 @@ from .task import (
     supported_subagent_categories,
     validate_background_task_id,
 )
+from .todos import (
+    runtime_todos_from_tool_payload,
+    todo_event_payload,
+    todo_state_payload,
+)
 from .tool_provider import BuiltinToolProvider
 
 if TYPE_CHECKING:
@@ -4795,6 +4800,38 @@ class VoidCodeRuntime:
                 },
             },
         )
+
+    @staticmethod
+    def _session_with_todo_state(
+        session: SessionState,
+        *,
+        raw_todos: object,
+        revision: int,
+    ) -> tuple[SessionState, dict[str, object]]:
+        raw_runtime_state = session.metadata.get("runtime_state")
+        runtime_state = (
+            dict(cast(dict[str, object], raw_runtime_state))
+            if isinstance(raw_runtime_state, dict)
+            else {}
+        )
+        todos = runtime_todos_from_tool_payload(raw_todos, updated_at=revision)
+        state_payload = todo_state_payload(todos, revision=revision)
+        runtime_state["todos"] = state_payload
+        next_session = SessionState(
+            session=session.session,
+            status=session.status,
+            turn=session.turn,
+            metadata={
+                **session.metadata,
+                "runtime_state": runtime_state,
+            },
+        )
+        event_payload = todo_event_payload(
+            session_id=session.session.id,
+            todos=todos,
+            revision=revision,
+        )
+        return next_session, event_payload
 
     @staticmethod
     def _session_with_provider_usage_metadata(
