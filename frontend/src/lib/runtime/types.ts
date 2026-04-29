@@ -12,6 +12,7 @@ export type AsyncStatus = "idle" | "loading" | "success" | "error";
 
 export interface SessionRef {
   id: string;
+  parent_id?: string | null;
 }
 
 export interface SessionState {
@@ -180,6 +181,175 @@ export interface RuntimeResponse {
   session: SessionState;
   events: EventEnvelope[];
   output: string | null;
+}
+
+export interface ApiErrorPayload {
+  error?: string;
+  code?: string;
+}
+
+export interface QuestionOption {
+  label: string;
+  description?: string | null;
+}
+
+export interface QuestionPrompt {
+  header: string;
+  question?: string | null;
+  multiple: boolean;
+  options: QuestionOption[];
+}
+
+export interface QuestionAnswer {
+  header: string;
+  answers: string[];
+}
+
+export interface RuntimeNotification {
+  id: string;
+  session: SessionRef;
+  kind:
+    | "completion"
+    | "failure"
+    | "cancellation"
+    | "approval_blocked"
+    | "question_blocked";
+  status: "unread" | "acknowledged";
+  summary: string;
+  event_sequence?: number | null;
+  created_at: number;
+  acknowledged_at?: number | null;
+  payload: Record<string, unknown>;
+}
+
+export interface BackgroundTaskRequestSnapshot {
+  prompt: string;
+  session_id?: string | null;
+  parent_session_id?: string | null;
+  metadata: Record<string, unknown>;
+  allocate_session_id?: boolean;
+}
+
+export interface BackgroundTaskRouting {
+  mode: string;
+  category?: string | null;
+  subagent_type?: string | null;
+  description?: string | null;
+  command?: string | null;
+}
+
+export interface BackgroundTaskSummary {
+  task: { id: string };
+  status: string;
+  prompt: string;
+  session_id?: string | null;
+  error?: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface BackgroundTaskState {
+  task: { id: string };
+  status: string;
+  request: BackgroundTaskRequestSnapshot;
+  parent_session_id?: string | null;
+  requested_child_session_id?: string | null;
+  child_session_id?: string | null;
+  approval_request_id?: string | null;
+  question_request_id?: string | null;
+  result_available: boolean;
+  cancellation_cause?: string | null;
+  error?: string | null;
+  created_at: number;
+  updated_at: number;
+  started_at?: number | null;
+  finished_at?: number | null;
+  cancel_requested_at?: number | null;
+  routing?: BackgroundTaskRouting | null;
+}
+
+export interface BackgroundTaskResultPayload {
+  task_id: string;
+  status: string;
+  parent_session_id?: string | null;
+  requested_child_session_id?: string | null;
+  child_session_id?: string | null;
+  approval_request_id?: string | null;
+  question_request_id?: string | null;
+  approval_blocked: boolean;
+  summary_output?: string | null;
+  error?: string | null;
+  result_available: boolean;
+  cancellation_cause?: string | null;
+  routing?: BackgroundTaskRouting | null;
+  delegation?: Record<string, unknown>;
+  message?: Record<string, unknown>;
+}
+
+export interface BackgroundTaskOutput {
+  task: BackgroundTaskResultPayload;
+  session_result: RuntimeSessionResult | null;
+  output: string | null;
+}
+
+export interface RuntimeSessionResult {
+  session: SessionState;
+  prompt: string;
+  status: string;
+  summary?: string | null;
+  output?: string | null;
+  error?: string | null;
+  last_event_sequence?: number | null;
+  transcript: EventEnvelope[];
+}
+
+export interface RuntimeSessionDebugEvent {
+  sequence: number;
+  event_type: string;
+  source: EventSource | string;
+  payload: Record<string, unknown>;
+}
+
+export interface RuntimeSessionDebugSnapshot {
+  session: SessionState;
+  prompt: string;
+  persisted_status: string;
+  current_status: string;
+  active: boolean;
+  resumable: boolean;
+  replayable: boolean;
+  terminal: boolean;
+  resume_checkpoint_kind?: string | null;
+  pending_approval?: {
+    request_id: string;
+    tool_name: string;
+    target_summary: string;
+    reason: string;
+    policy_mode: string;
+    arguments: Record<string, unknown>;
+    owner_session_id?: string | null;
+    owner_parent_session_id?: string | null;
+    delegated_task_id?: string | null;
+  } | null;
+  pending_question?: {
+    request_id: string;
+    tool_name: string;
+    question_count: number;
+    headers: string[];
+  } | null;
+  last_event_sequence?: number | null;
+  last_relevant_event?: RuntimeSessionDebugEvent | null;
+  last_failure_event?: RuntimeSessionDebugEvent | null;
+  failure?: { classification: string; message: string } | null;
+  last_tool?: {
+    tool_name: string;
+    status: string;
+    summary: string;
+    arguments: Record<string, unknown>;
+    sequence?: number | null;
+  } | null;
+  suggested_operator_action?: string | null;
+  operator_guidance?: string | null;
 }
 
 export type RuntimeStreamChunkKind = "event" | "output";
