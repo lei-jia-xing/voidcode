@@ -30,6 +30,8 @@ from unittest.mock import patch
 
 import pytest
 
+from voidcode.runtime.task import is_background_task_terminal
+
 from .._paths import with_src_pythonpath
 
 pytestmark = pytest.mark.usefixtures("_force_deterministic_engine_default")
@@ -73,7 +75,7 @@ def _wait_for_background_task(
 
 
 def _is_terminal_background_task(task: Any) -> bool:
-    return getattr(task, "status", None) in {"completed", "failed", "cancelled"}
+    return is_background_task_terminal(getattr(task, "status", None))
 
 
 def _is_waiting_approval_background_task(task: Any) -> bool:
