@@ -122,6 +122,91 @@ def test_session_storage_revert_marker_filters_active_view_only(tmp_path: Path) 
     ] == [1, 2, 3]
 
 
+def test_session_storage_persists_runtime_todos_and_filters_reverted_state(
+    tmp_path: Path,
+) -> None:
+    store = SqliteSessionStore()
+    request = RuntimeRequest(prompt="track todos", session_id="todo-session")
+    response = RuntimeResponse(
+        session=SessionState(
+            session=SessionRef(id="todo-session"),
+            status="completed",
+            turn=1,
+            metadata={
+                "runtime_state": {
+                    "todos": {
+                        "version": 1,
+                        "revision": 3,
+                        "todos": [
+                            {
+                                "content": "persist me",
+                                "status": "in_progress",
+                                "priority": "high",
+                                "position": 1,
+                                "updated_at": 3,
+                            }
+                        ],
+                        "summary": {
+                            "total": 1,
+                            "pending": 0,
+                            "in_progress": 1,
+                            "completed": 0,
+                            "cancelled": 0,
+                            "active": 1,
+                        },
+                    }
+                }
+            },
+        ),
+        events=(
+            EventEnvelope(
+                session_id="todo-session",
+                sequence=1,
+                event_type="runtime.request_received",
+                source="runtime",
+                payload={"prompt": "track todos"},
+            ),
+            EventEnvelope(
+                session_id="todo-session",
+                sequence=3,
+                event_type="runtime.todo_updated",
+                source="runtime",
+                payload={
+                    "session_id": "todo-session",
+                    "revision": 3,
+                    "todos": [
+                        {
+                            "content": "persist me",
+                            "status": "in_progress",
+                            "priority": "high",
+                            "position": 1,
+                            "updated_at": 3,
+                        }
+                    ],
+                },
+            ),
+        ),
+        output="done",
+    )
+
+    store.save_run(workspace=tmp_path, request=request, response=response)
+
+    loaded = store.load_session(workspace=tmp_path, session_id="todo-session")
+
+    raw_runtime_state = loaded.session.metadata["runtime_state"]
+    assert isinstance(raw_runtime_state, dict)
+    todos_state = cast(dict[str, object], raw_runtime_state)["todos"]
+    assert isinstance(todos_state, dict)
+    assert cast(list[dict[str, object]], todos_state["todos"])[0]["content"] == "persist me"
+
+    store.revert_session(workspace=tmp_path, session_id="todo-session", sequence=3)
+    reverted = store.load_session(workspace=tmp_path, session_id="todo-session")
+
+    raw_reverted_runtime_state = reverted.session.metadata["runtime_state"]
+    assert isinstance(raw_reverted_runtime_state, dict)
+    assert "todos" not in raw_reverted_runtime_state
+
+
 def test_session_storage_undo_uses_latest_visible_user_turn(tmp_path: Path) -> None:
     store = SqliteSessionStore()
     request = RuntimeRequest(prompt="second", session_id="multi-turn-session")
@@ -198,6 +283,9 @@ def test_session_storage_bootstraps_canonical_schema_for_fresh_database(tmp_path
         session_columns = [
             row[1] for row in connection.execute("PRAGMA table_info(sessions)").fetchall()
         ]
+        todo_columns = [
+            row[1] for row in connection.execute("PRAGMA table_info(session_todos)").fetchall()
+        ]
         delivery_columns = [
             row[1]
             for row in connection.execute("PRAGMA table_info(session_event_deliveries)").fetchall()
@@ -221,6 +309,14 @@ def test_session_storage_bootstraps_canonical_schema_for_fresh_database(tmp_path
         "created_at",
         "updated_at",
         "last_event_sequence",
+    ]
+    assert todo_columns == [
+        "session_id",
+        "position",
+        "content",
+        "status",
+        "priority",
+        "updated_at",
     ]
     assert delivery_columns == ["workspace", "session_id", "dedupe_key", "delivered_at"]
     assert any(row[2] == 1 and row[3] == "u" for row in notification_indexes)
@@ -324,6 +420,7 @@ def test_session_storage_configures_sqlite_operability_pragmas(tmp_path: Path) -
         "background_tasks": 0,
         "session_notifications": 0,
         "session_events": 0,
+        "session_todos": 0,
         "session_event_deliveries": 0,
     }
 
