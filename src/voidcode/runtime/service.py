@@ -30,6 +30,7 @@ from ..hook.executor import (
     run_lifecycle_hooks,
     run_tool_hooks,
 )
+from ..mcp.redaction import redact_mcp_command
 from ..provider.auth import (
     ProviderAuthAuthorizeRequest,
     ProviderAuthResolutionError,
@@ -3066,6 +3067,7 @@ class VoidCodeRuntime:
             None,
         )
         mcp_servers = tuple(mcp_state.servers.values())
+        mcp_configured_servers = mcp_state.configuration.servers
         mcp_status = (
             "unconfigured"
             if mcp_state.mode != "managed" or not mcp_state.configuration.configured_enabled
@@ -3076,6 +3078,42 @@ class VoidCodeRuntime:
             else "stopped"
         )
         mcp_error = next((server.error for server in mcp_servers if server.error), None)
+        mcp_server_details: list[dict[str, object]] = []
+        for server_name, server_config in sorted(mcp_configured_servers.items()):
+            runtime_state = mcp_state.servers.get(server_name)
+            command = (
+                list(runtime_state.command)
+                if runtime_state is not None and runtime_state.command
+                else list(getattr(server_config, "command", ()))
+            )
+            server_status = (
+                runtime_state.status
+                if runtime_state is not None
+                else "disabled"
+                if mcp_state.mode != "managed" or not mcp_state.configuration.configured_enabled
+                else "stopped"
+            )
+            mcp_server_details.append(
+                {
+                    "server": server_name,
+                    "status": server_status,
+                    "scope": getattr(
+                        runtime_state,
+                        "scope",
+                        getattr(server_config, "scope", "runtime"),
+                    ),
+                    "transport": getattr(server_config, "transport", "stdio"),
+                    "workspace_root": (
+                        None if runtime_state is None else runtime_state.workspace_root
+                    ),
+                    "stage": None if runtime_state is None else runtime_state.stage,
+                    "error": None if runtime_state is None else runtime_state.error,
+                    "command": redact_mcp_command(command),
+                    "retry_available": (
+                        False if runtime_state is None else runtime_state.retry_available
+                    ),
+                }
+            )
         return RuntimeStatusSnapshot(
             git=git,
             lsp=CapabilityStatusSnapshot(state=lsp_status, error=lsp_error),
@@ -3083,7 +3121,11 @@ class VoidCodeRuntime:
                 state=mcp_status,
                 error=mcp_error,
                 details={
-                    "configured_server_count": len(mcp_servers),
+                    "mode": mcp_state.mode,
+                    "configured": bool(mcp_configured_servers),
+                    "configured_enabled": mcp_state.configuration.configured_enabled,
+                    "configured_server_count": len(mcp_configured_servers),
+                    "active_server_count": len(mcp_servers),
                     "running_server_count": sum(
                         1 for server in mcp_servers if server.status == "running"
                     ),
@@ -3091,18 +3133,7 @@ class VoidCodeRuntime:
                         1 for server in mcp_servers if server.status == "failed"
                     ),
                     "retry_available": any(server.retry_available for server in mcp_servers),
-                    "servers": [
-                        {
-                            "server": server.server_name,
-                            "status": server.status,
-                            "workspace_root": server.workspace_root,
-                            "stage": server.stage,
-                            "error": server.error,
-                            "command": list(server.command),
-                            "retry_available": server.retry_available,
-                        }
-                        for server in mcp_servers
-                    ],
+                    "servers": mcp_server_details,
                 },
             ),
             acp=self._acp_status_snapshot(acp_state),

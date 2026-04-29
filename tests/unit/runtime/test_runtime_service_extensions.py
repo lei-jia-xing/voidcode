@@ -5227,7 +5227,11 @@ def test_runtime_emits_mcp_failed_and_continues_run_on_startup_refresh(
     assert status.mcp.state == "failed"
     assert status.mcp.error == _FailingMcpManager.startup_error
     assert status.mcp.details == {
+        "mode": "managed",
+        "configured": True,
+        "configured_enabled": True,
         "configured_server_count": 1,
+        "active_server_count": 1,
         "running_server_count": 0,
         "failed_server_count": 1,
         "retry_available": True,
@@ -5235,6 +5239,8 @@ def test_runtime_emits_mcp_failed_and_continues_run_on_startup_refresh(
             {
                 "server": "echo",
                 "status": "failed",
+                "scope": "runtime",
+                "transport": "stdio",
                 "workspace_root": str(tmp_path),
                 "stage": "startup",
                 "error": _FailingMcpManager.startup_error,

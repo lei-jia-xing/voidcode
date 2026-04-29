@@ -2962,7 +2962,11 @@ def test_transport_run_stream_continues_after_mcp_startup_failure_and_status_sta
         "state": "failed",
         "error": _FailingMcpManager.startup_error,
         "details": {
+            "mode": "managed",
+            "configured": True,
+            "configured_enabled": True,
             "configured_server_count": 1,
+            "active_server_count": 1,
             "running_server_count": 0,
             "failed_server_count": 1,
             "retry_available": True,
@@ -2970,6 +2974,8 @@ def test_transport_run_stream_continues_after_mcp_startup_failure_and_status_sta
                 {
                     "server": "context7",
                     "status": "failed",
+                    "scope": "runtime",
+                    "transport": "stdio",
                     "workspace_root": str(tmp_path),
                     "stage": "startup",
                     "error": _FailingMcpManager.startup_error,
@@ -3063,11 +3069,14 @@ def test_transport_status_preserves_mcp_failed_state_across_fresh_requests(
         )
     )
     assert mcp_details["configured_server_count"] == 1
+    assert mcp_details["active_server_count"] == 1
     assert mcp_details["running_server_count"] == 0
     assert mcp_details["failed_server_count"] == 1
     assert mcp_details["retry_available"] is True
     assert server_payload["server"] == "broken"
     assert server_payload["status"] == "failed"
+    assert server_payload["scope"] == "runtime"
+    assert server_payload["transport"] == "stdio"
     assert server_payload["workspace_root"] == str(tmp_path)
     assert server_payload["stage"] == "startup"
     assert server_payload["retry_available"] is True
