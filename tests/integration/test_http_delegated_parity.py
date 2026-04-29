@@ -17,6 +17,8 @@ Day-1 delegated lifecycle surfaces covered:
 - notification lifecycle (GET/POST /api/notifications)
 """
 
+# pyright: reportUnusedFunction=false
+
 from __future__ import annotations
 
 import asyncio
@@ -850,6 +852,38 @@ def test_http_background_task_output_endpoint_exposes_typed_delegated_payload_fo
         "result_available": True,
     }
     assert payload["output"] == "hello"
+
+
+def test_http_background_subagent_restart_reconcile_retrieves_terminal_task_result(
+    tmp_path: Path,
+) -> None:
+    runtime_request, runtime_class = _load_runtime_types()
+    create_runtime_app = _load_transport_app_factory()
+    (tmp_path / "sample.txt").write_text("restart delegated result\n", encoding="utf-8")
+
+    first_runtime = runtime_class(workspace=tmp_path)
+    _ = first_runtime.run(runtime_request(prompt="read sample.txt", session_id="leader-session"))
+    started = first_runtime.start_background_task(
+        runtime_request(prompt="read sample.txt", parent_session_id="leader-session")
+    )
+    _wait_for_background_task_terminal(first_runtime, started.task.id)
+
+    app = create_runtime_app(workspace=tmp_path)
+    status, _headers, body = _run_app(
+        app,
+        method="GET",
+        path=f"/api/tasks/{started.task.id}/output",
+    )
+    payload = cast(dict[str, object], json.loads(body.decode("utf-8")))
+    task_payload = cast(dict[str, object], payload["task"])
+    delegation = cast(dict[str, object], task_payload["delegation"])
+
+    assert status == 200
+    assert task_payload["status"] == "completed"
+    assert task_payload["parent_session_id"] == "leader-session"
+    assert delegation["lifecycle_status"] == "completed"
+    assert delegation["result_available"] is True
+    assert payload["output"] == "restart delegated result"
 
 
 def test_http_background_task_output_endpoint_preserves_empty_child_output(tmp_path: Path) -> None:
