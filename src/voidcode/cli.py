@@ -57,6 +57,7 @@ from .runtime.config_schema import (
 )
 from .runtime.contracts import (
     BackgroundTaskResult,
+    CapabilityStatusSnapshot,
     ProviderInspectResult,
     ProviderModelMetadata,
     ProviderReadinessResult,
@@ -937,6 +938,7 @@ def _handle_config_show_command(args: argparse.Namespace) -> int:
             readiness = runtime.provider_readiness(session_id=session_id)
             categories = runtime.effective_category_model_config(session_id=session_id)
             agents = runtime.effective_agent_model_config(session_id=session_id)
+            status = runtime.current_status()
         except ValueError as exc:
             raise SystemExit(f"error: {exc}") from None
     finally:
@@ -964,8 +966,74 @@ def _handle_config_show_command(args: argparse.Namespace) -> int:
                 "context_window": readiness.context_window,
                 "max_output_tokens": readiness.max_output_tokens,
             },
+            "mcp": _mcp_status_payload(status.mcp),
         }
     )
+    return EXIT_SUCCESS
+
+
+def _mcp_status_payload(snapshot: CapabilityStatusSnapshot) -> dict[str, object]:
+    state = snapshot.state
+    error = snapshot.error
+    details = snapshot.details
+    return {
+        "state": state,
+        "error": error,
+        "details": details,
+    }
+
+
+def _handle_mcp_list_command(args: argparse.Namespace) -> int:
+    workspace = cast(Path, args.workspace)
+    if not workspace.exists() or not workspace.is_dir():
+        raise SystemExit(f"error: workspace does not exist: {workspace}")
+
+    runtime = VoidCodeRuntime(workspace=workspace)
+    try:
+        status = runtime.current_status()
+    finally:
+        _close_runtime(runtime)
+
+    payload = {
+        "workspace": str(workspace),
+        "mcp": _mcp_status_payload(status.mcp),
+    }
+    if cast(bool, args.json):
+        print_json(payload)
+        return EXIT_SUCCESS
+
+    details = status.mcp.details
+    print(
+        _format_named_record(
+            "MCP",
+            [
+                ("state", status.mcp.state),
+                ("mode", details.get("mode", "disabled")),
+                ("configured", details.get("configured", False)),
+                ("configured_enabled", details.get("configured_enabled", False)),
+                ("configured_server_count", details.get("configured_server_count", 0)),
+                ("running_server_count", details.get("running_server_count", 0)),
+                ("failed_server_count", details.get("failed_server_count", 0)),
+            ],
+        )
+    )
+    servers = cast(list[object], details.get("servers", []))
+    for item in servers:
+        server = cast(dict[str, object], item)
+        print(
+            _format_named_record(
+                "MCP_SERVER",
+                [
+                    ("name", server.get("server")),
+                    ("status", server.get("status")),
+                    ("scope", server.get("scope")),
+                    ("transport", server.get("transport")),
+                    ("command", repr(server.get("command", []))),
+                    ("stage", server.get("stage")),
+                    ("error", repr(server.get("error"))),
+                ],
+            )
+        )
     return EXIT_SUCCESS
 
 
@@ -1555,6 +1623,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     commands_subparsers = commands_parser.add_subparsers(dest="commands_command")
 
+    mcp_parser = subparsers.add_parser(
+        "mcp", help="Inspect runtime-managed MCP configuration and health."
+    )
+    mcp_subparsers = mcp_parser.add_subparsers(dest="mcp_command")
+
     config_show_parser = config_subparsers.add_parser(
         "show", help="Show effective runtime config for a workspace or session."
     )
@@ -1621,6 +1694,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="Output the command definition as JSON.",
     )
     commands_show_parser.set_defaults(handler=_handle_commands_show_command)
+
+    mcp_list_parser = mcp_subparsers.add_parser(
+        "list", help="List configured MCP servers and passive runtime status."
+    )
+    _ = mcp_list_parser.add_argument(
+        "--workspace",
+        type=Path,
+        default=Path.cwd(),
+        help="Workspace root used to resolve runtime config and MCP state.",
+    )
+    _ = mcp_list_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Output MCP status as JSON.",
+    )
+    mcp_list_parser.set_defaults(handler=_handle_mcp_list_command)
 
     config_schema_parser = config_subparsers.add_parser(
         "schema", help="Print the JSON Schema for .voidcode.json."
