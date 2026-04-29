@@ -59,6 +59,15 @@ def _parse_todo_item(item: object, *, idx: int) -> dict[str, str]:
     }
 
 
+def _render_todo_content(todos: list[dict[str, str]]) -> str:
+    if not todos:
+        return "Updated 0 todos"
+    lines = [f"Updated {len(todos)} todos"]
+    for position, todo in enumerate(todos, start=1):
+        lines.append(f"{position}. [{todo['status']}/{todo['priority']}] {todo['content']}")
+    return "\n".join(lines)
+
+
 class TodoWriteTool:
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="todo_write",
@@ -91,7 +100,7 @@ class TodoWriteTool:
         return ToolResult(
             tool_name=self.definition.name,
             status="ok",
-            content=f"Updated {len(normalized)} todos",
+            content=_render_todo_content(normalized),
             data={
                 "todos": normalized,
                 "summary": summary,
