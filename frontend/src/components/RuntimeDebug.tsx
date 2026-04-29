@@ -28,15 +28,15 @@ export function RuntimeDebug() {
       type="button"
       onClick={testConnection}
       disabled={status === "testing"}
-      className="w-full flex items-center justify-center md:justify-start md:px-4 py-3 md:py-2.5 rounded-lg text-slate-400 hover:bg-slate-800/50 hover:text-slate-200 transition-colors"
+      className="w-full flex items-center justify-center md:justify-start md:px-4 py-3 md:py-2.5 rounded-lg text-[var(--vc-text-muted)] hover:bg-[var(--vc-surface-1)] hover:text-[var(--vc-text-primary)] transition-colors"
       title={t("debug.testRuntime")}
     >
       {status === "testing" ? (
-        <Loader2 className="w-5 h-5 md:mr-3 animate-spin text-indigo-400" />
+        <Loader2 className="w-5 h-5 md:mr-3 animate-spin text-[var(--vc-text-muted)]" />
       ) : status === "success" ? (
-        <CheckCircle2 className="w-5 h-5 md:mr-3 text-emerald-400" />
+        <CheckCircle2 className="w-5 h-5 md:mr-3 text-[var(--vc-confirm-text)]" />
       ) : status === "error" ? (
-        <XCircle className="w-5 h-5 md:mr-3 text-rose-400" />
+        <XCircle className="w-5 h-5 md:mr-3 text-[var(--vc-danger-text)]" />
       ) : (
         <Server className="w-5 h-5 md:mr-3" />
       )}
