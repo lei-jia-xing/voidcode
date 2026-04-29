@@ -2189,6 +2189,86 @@ def test_runtime_request_agent_model_override_precedes_category_model(tmp_path: 
     assert cast(dict[str, object], runtime_config["agent"])["model"] == "openai/request-model"
 
 
+def test_runtime_fails_fast_when_reasoning_effort_set_on_unsupported_model(
+    tmp_path: Path,
+) -> None:
+    registry = ModelProviderRegistry.with_defaults()
+    registry.model_catalog = {
+        "openai": ProviderModelCatalog(
+            provider="openai",
+            models=("gpt-4o",),
+            refreshed=True,
+            model_metadata={"gpt-4o": ProviderModelMetadata(supports_reasoning_effort=False)},
+        )
+    }
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            model="openai/gpt-4o",
+            reasoning_effort="high",
+        ),
+        model_provider_registry=registry,
+    )
+
+    with pytest.raises(RuntimeRequestError, match="does not support reasoning effort"):
+        _ = runtime.run(RuntimeRequest(prompt="leader"))
+
+
+def test_runtime_fails_fast_when_request_metadata_reasoning_effort_unsupported(
+    tmp_path: Path,
+) -> None:
+    registry = ModelProviderRegistry.with_defaults()
+    registry.model_catalog = {
+        "openai": ProviderModelCatalog(
+            provider="openai",
+            models=("gpt-4o",),
+            refreshed=True,
+            model_metadata={"gpt-4o": ProviderModelMetadata(supports_reasoning_effort=False)},
+        )
+    }
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(model="openai/gpt-4o"),
+        model_provider_registry=registry,
+    )
+
+    with pytest.raises(RuntimeRequestError, match="does not support reasoning effort"):
+        _ = runtime.run(
+            RuntimeRequest(
+                prompt="leader",
+                metadata={"reasoning_effort": "high"},
+            )
+        )
+
+
+def test_runtime_allows_reasoning_effort_when_metadata_unknown(tmp_path: Path) -> None:
+    registry = ModelProviderRegistry.with_defaults()
+    registry.model_catalog = {
+        "custom": ProviderModelCatalog(
+            provider="custom",
+            models=("alpha",),
+            refreshed=True,
+            model_metadata={"alpha": ProviderModelMetadata(supports_reasoning_effort=None)},
+        )
+    }
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=DeterministicGraph(),
+        config=RuntimeConfig(
+            model="custom/alpha",
+            execution_engine="deterministic",
+            reasoning_effort="medium",
+        ),
+        model_provider_registry=registry,
+    )
+    _ = (tmp_path / "README.md").write_text("sample\n", encoding="utf-8")
+
+    response = runtime.run(RuntimeRequest(prompt="read README.md"))
+
+    runtime_config_metadata = cast(dict[str, object], response.session.metadata["runtime_config"])
+    assert runtime_config_metadata["reasoning_effort"] == "medium"
+
+
 def test_runtime_ultrabrain_warns_when_resolved_model_lacks_reasoning_support(
     tmp_path: Path,
 ) -> None:
@@ -3467,6 +3547,57 @@ def test_runtime_waiting_approval_event_records_child_ownership(tmp_path: Path) 
     assert approval_event.payload["owner_session_id"] == "owned-approval-child"
     assert approval_event.payload["owner_parent_session_id"] is None
     assert approval_event.payload["delegated_task_id"] is None
+
+
+def test_runtime_resume_fails_fast_when_persisted_reasoning_effort_unsupported(
+    tmp_path: Path,
+) -> None:
+    initial_registry = ModelProviderRegistry.with_defaults()
+    initial_registry.model_catalog = {
+        "openai": ProviderModelCatalog(
+            provider="openai",
+            models=("gpt-4o",),
+            refreshed=True,
+            model_metadata={"gpt-4o": ProviderModelMetadata(supports_reasoning_effort=True)},
+        )
+    }
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(
+            approval_mode="ask",
+            model="openai/gpt-4o",
+            reasoning_effort="high",
+        ),
+        permission_policy=PermissionPolicy(mode="ask"),
+        model_provider_registry=initial_registry,
+    )
+    waiting = runtime.run(RuntimeRequest(prompt="go", session_id="reasoning-resume-block"))
+    approval_request_id = str(waiting.events[-1].payload["request_id"])
+
+    resumed_registry = ModelProviderRegistry.with_defaults()
+    resumed_registry.model_catalog = {
+        "openai": ProviderModelCatalog(
+            provider="openai",
+            models=("gpt-4o",),
+            refreshed=True,
+            model_metadata={"gpt-4o": ProviderModelMetadata(supports_reasoning_effort=False)},
+        )
+    }
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+        model_provider_registry=resumed_registry,
+    )
+
+    with pytest.raises(RuntimeRequestError, match="does not support reasoning effort"):
+        _ = resumed_runtime.resume(
+            "reasoning-resume-block",
+            approval_request_id=approval_request_id,
+            approval_decision="allow",
+        )
 
 
 def test_runtime_resume_rejects_malformed_persisted_pending_approval_policy_mode(

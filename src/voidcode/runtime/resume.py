@@ -11,7 +11,13 @@ from ..tools.contracts import ToolResult, ToolResultStatus
 from ..tools.output import sanitize_tool_result_data
 from ..tools.question import QuestionTool
 from .config import serialize_runtime_agent_config
-from .contracts import NoPendingQuestionError, RuntimeRequest, RuntimeResponse, RuntimeStreamChunk
+from .contracts import (
+    NoPendingQuestionError,
+    RuntimeRequest,
+    RuntimeRequestError,
+    RuntimeResponse,
+    RuntimeStreamChunk,
+)
 from .events import RUNTIME_QUESTION_ANSWERED, RUNTIME_SKILLS_BINDING_MISMATCH, EventEnvelope
 from .permission import PendingApproval, PermissionResolution
 from .question import PendingQuestion, QuestionResponse
@@ -259,6 +265,10 @@ class RuntimeResumeCoordinator:
         loop_events.append(tool_completed_event)
 
         effective_config = runtime._effective_runtime_config_from_metadata(session.metadata)
+        try:
+            runtime._validate_reasoning_effort_capability(effective_config)
+        except ValueError as exc:
+            raise RuntimeRequestError(str(exc)) from exc
         tool_registry = runtime._tool_registry_for_effective_config(effective_config)
         skill_registry = runtime._skill_registry_for_effective_config(effective_config)
         resumed_skill_snapshot = runtime._build_skill_snapshot(
@@ -289,6 +299,12 @@ class RuntimeResumeCoordinator:
                     session.metadata.get("provider_attempt", 0)
                     if isinstance(session.metadata.get("provider_attempt", 0), int)
                     else 0
+                ),
+                **(
+                    {"reasoning_effort": effective_config.reasoning_effort}
+                    if effective_config.reasoning_effort is not None
+                    and "reasoning_effort" not in session.metadata
+                    else {}
                 ),
             },
         )
@@ -514,6 +530,10 @@ class RuntimeResumeCoordinator:
             failure_kind="mcp_startup_failed",
         )
         effective_config = runtime._effective_runtime_config_from_metadata(session.metadata)
+        try:
+            runtime._validate_reasoning_effort_capability(effective_config)
+        except ValueError as exc:
+            raise RuntimeRequestError(str(exc)) from exc
         tool_registry = runtime._tool_registry_for_effective_config(effective_config)
         skill_registry = runtime._skill_registry_for_effective_config(effective_config)
 
@@ -546,6 +566,12 @@ class RuntimeResumeCoordinator:
                     session.metadata.get("provider_attempt", 0)
                     if isinstance(session.metadata.get("provider_attempt", 0), int)
                     else 0
+                ),
+                **(
+                    {"reasoning_effort": effective_config.reasoning_effort}
+                    if effective_config.reasoning_effort is not None
+                    and "reasoning_effort" not in session.metadata
+                    else {}
                 ),
             },
         )

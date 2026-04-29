@@ -161,6 +161,7 @@ class ToolResultLike(Protocol):
     tool_name: str
     content: str
     data: dict[str, object]
+    reference: str | None
 
 
 class ContextSegmentLike(Protocol):
@@ -3188,6 +3189,98 @@ def test_runtime_resume_uses_persisted_runtime_config_over_fresh_resume_override
         "mode": "disabled",
         "status": "disconnected",
     }
+
+
+def test_runtime_persists_reasoning_effort_in_runtime_config_and_preserves_on_resume(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / ".voidcode.json"
+    config_path.write_text(
+        json.dumps({"reasoning_effort": "low"}),
+        encoding="utf-8",
+    )
+    runtime_request, runtime_class = _load_runtime_types()
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    config_module = importlib.import_module("voidcode.runtime.config")
+    load_runtime_config = cast(Callable[..., object], config_module.load_runtime_config)
+
+    initial_runtime = cast(
+        RuntimeRunner,
+        cast(
+            object,
+            runtime_class(
+                workspace=tmp_path,
+                config=load_runtime_config(tmp_path, reasoning_effort="high"),
+                permission_policy=cast(Callable[..., object], permission_module.PermissionPolicy)(
+                    mode="allow"
+                ),
+            ),
+        ),
+    )
+    _ = (tmp_path / "sample.txt").write_text("reasoning effort\n", encoding="utf-8")
+
+    initial = initial_runtime.run(
+        runtime_request(prompt="read sample.txt", session_id="reasoning-effort-session")
+    )
+
+    initial_runtime_config = cast(dict[str, object], initial.session.metadata["runtime_config"])
+    assert initial_runtime_config["reasoning_effort"] == "high"
+
+    resumed_runtime = cast(
+        RuntimeRunner,
+        cast(
+            object,
+            runtime_class(
+                workspace=tmp_path,
+                config=load_runtime_config(tmp_path, reasoning_effort="medium"),
+                permission_policy=cast(Callable[..., object], permission_module.PermissionPolicy)(
+                    mode="allow"
+                ),
+            ),
+        ),
+    )
+    replay = resumed_runtime.resume("reasoning-effort-session")
+    replay_runtime_config = cast(dict[str, object], replay.session.metadata["runtime_config"])
+
+    assert replay_runtime_config["reasoning_effort"] == "high"
+
+
+def test_runtime_request_metadata_reasoning_effort_overrides_config(tmp_path: Path) -> None:
+    config_path = tmp_path / ".voidcode.json"
+    config_path.write_text(
+        json.dumps({"reasoning_effort": "low"}),
+        encoding="utf-8",
+    )
+    runtime_request, runtime_class = _load_runtime_types()
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    config_module = importlib.import_module("voidcode.runtime.config")
+    load_runtime_config = cast(Callable[..., object], config_module.load_runtime_config)
+
+    runtime = cast(
+        RuntimeRunner,
+        cast(
+            object,
+            runtime_class(
+                workspace=tmp_path,
+                config=load_runtime_config(tmp_path),
+                permission_policy=cast(Callable[..., object], permission_module.PermissionPolicy)(
+                    mode="allow"
+                ),
+            ),
+        ),
+    )
+    _ = (tmp_path / "sample.txt").write_text("override\n", encoding="utf-8")
+
+    response = runtime.run(
+        runtime_request(
+            prompt="read sample.txt",
+            session_id="reasoning-effort-override-session",
+            metadata={"reasoning_effort": "high"},
+        )
+    )
+
+    runtime_config_metadata = cast(dict[str, object], response.session.metadata["runtime_config"])
+    assert runtime_config_metadata["reasoning_effort"] == "high"
 
 
 def test_runtime_denies_non_read_only_tool_on_resume(tmp_path: Path) -> None:
