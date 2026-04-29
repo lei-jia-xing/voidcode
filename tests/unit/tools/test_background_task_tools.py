@@ -213,6 +213,32 @@ class _BlockingUnavailableBackgroundRuntime(_UnavailableBackgroundRuntime):
         )
 
 
+class _TerminalAfterTimeoutBackgroundRuntime(_StubBackgroundRuntime):
+    def load_background_task_result(
+        self,
+        task_id: str,
+        *,
+        emit_result_read_hook: bool = True,
+    ) -> BackgroundTaskResult:
+        assert task_id == "task-1"
+        if not emit_result_read_hook:
+            return BackgroundTaskResult(
+                task_id="task-1",
+                parent_session_id="leader-session",
+                child_session_id="child-session",
+                status="running",
+                result_available=False,
+            )
+        return BackgroundTaskResult(
+            task_id="task-1",
+            parent_session_id="leader-session",
+            child_session_id="child-session",
+            status="completed",
+            summary_output="completed after timeout deadline",
+            result_available=True,
+        )
+
+
 class _EmptyOutputBackgroundRuntime(_StubBackgroundRuntime):
     def session_result(self, *, session_id: str) -> RuntimeSessionResult:
         assert session_id == "child-session"
@@ -378,6 +404,25 @@ def test_background_output_block_timeout_returns_current_state(tmp_path: Path) -
     assert result.data["status"] == "running"
     assert result.data["block_timed_out"] is True
     assert "Timed out waiting" in str(result.data["guidance"])
+
+
+def test_background_output_block_omits_timeout_guidance_when_final_read_is_terminal(
+    tmp_path: Path,
+) -> None:
+    tool = BackgroundOutputTool(runtime=_TerminalAfterTimeoutBackgroundRuntime())
+
+    result = tool.invoke(
+        ToolCall(
+            tool_name="background_output",
+            arguments={"task_id": "task-1", "block": True, "timeout": 1},
+        ),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert result.data["status"] == "completed"
+    assert result.data["block_timed_out"] is False
+    assert "guidance" not in result.data
 
 
 def test_background_output_tool_guides_failed_child_without_retrying(tmp_path: Path) -> None:

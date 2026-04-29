@@ -87,6 +87,8 @@ class BackgroundOutputTool:
                 args.task_id,
                 emit_result_read_hook=True,
             )
+            if block_timed_out and is_background_task_terminal(result.status):
+                block_timed_out = False
         safe_summary = _background_result_safe_summary(result)
         message_payload = {
             **result.delegated_message.as_payload(),
