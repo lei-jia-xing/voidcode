@@ -290,32 +290,13 @@ class ManagedMcpManager:
         _ = parent_session_id
         tools: list[McpToolDescriptor] = []
         for server_name in self._configuration.servers:
-            server_config = self._configuration.servers.get(server_name)
-            if server_config is None:
-                continue
-            key = self._server_key(
-                server_name=server_name,
-                scope=getattr(server_config, "scope", "runtime"),
-                owner_session_id=owner_session_id,
+            tools.extend(
+                self._list_tools_for_server(
+                    server_name=server_name,
+                    workspace=workspace,
+                    owner_session_id=owner_session_id,
+                )
             )
-            running = self._ensure_running(
-                server_name=server_name,
-                workspace=workspace,
-                owner_session_id=owner_session_id,
-            )
-            result = self._call_sdk(
-                running,
-                stage="discovery",
-                method="tools/list",
-                operation=lambda session=running.session: session.list_tools(),
-            )
-            list_result = cast(ListToolsResult, result)
-            server_descriptors: dict[str, McpToolDescriptor] = {}
-            for tool in list_result.tools:
-                descriptor = self._descriptor_from_sdk_tool(server_name=server_name, tool=tool)
-                server_descriptors[descriptor.tool_name] = descriptor
-                tools.append(descriptor)
-            self._tool_descriptors_by_server[key] = server_descriptors
         return tuple(tools)
 
     def call_tool(
@@ -344,10 +325,10 @@ class ManagedMcpManager:
         )
         descriptor = self._tool_descriptors_by_server.get(key, {}).get(tool_name)
         if descriptor is None:
-            _ = self.list_tools(
+            _ = self._list_tools_for_server(
+                server_name=server_name,
                 workspace=workspace,
                 owner_session_id=owner_session_id,
-                parent_session_id=parent_session_id,
             )
             descriptor = self._tool_descriptors_by_server.get(key, {}).get(tool_name)
 
@@ -777,6 +758,42 @@ class ManagedMcpManager:
                 enabled=False,
                 disabled_reason=str(exc),
             )
+
+    def _list_tools_for_server(
+        self,
+        *,
+        server_name: str,
+        workspace: Path,
+        owner_session_id: str | None,
+    ) -> tuple[McpToolDescriptor, ...]:
+        server_config = self._configuration.servers.get(server_name)
+        if server_config is None:
+            return ()
+        key = self._server_key(
+            server_name=server_name,
+            scope=getattr(server_config, "scope", "runtime"),
+            owner_session_id=owner_session_id,
+        )
+        running = self._ensure_running(
+            server_name=server_name,
+            workspace=workspace,
+            owner_session_id=owner_session_id,
+        )
+        result = self._call_sdk(
+            running,
+            stage="discovery",
+            method="tools/list",
+            operation=lambda session=running.session: session.list_tools(),
+        )
+        list_result = cast(ListToolsResult, result)
+        server_descriptors: dict[str, McpToolDescriptor] = {}
+        descriptors: list[McpToolDescriptor] = []
+        for tool in list_result.tools:
+            descriptor = self._descriptor_from_sdk_tool(server_name=server_name, tool=tool)
+            server_descriptors[descriptor.tool_name] = descriptor
+            descriptors.append(descriptor)
+        self._tool_descriptors_by_server[key] = server_descriptors
+        return tuple(descriptors)
 
     @staticmethod
     def _server_key(
