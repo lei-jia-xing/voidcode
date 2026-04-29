@@ -59,7 +59,11 @@ export interface ProviderModelsResult {
     string,
     {
       context_window?: number | null;
+      max_input_tokens?: number | null;
       max_output_tokens?: number | null;
+      supports_reasoning?: boolean | null;
+      supports_reasoning_effort?: boolean | null;
+      default_reasoning_effort?: string | null;
     }
   >;
   source?: string | null;
@@ -164,6 +168,7 @@ export interface EventEnvelope {
   event_type: string;
   source: EventSource;
   payload: Record<string, unknown>;
+  received_at?: number;
 }
 
 export interface RuntimeRequest {
@@ -173,6 +178,7 @@ export interface RuntimeRequest {
   metadata?: {
     skills?: string[];
     provider_stream?: boolean;
+    reasoning_effort?: string;
     [key: string]: unknown;
   };
 }

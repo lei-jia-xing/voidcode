@@ -27,6 +27,8 @@ function App() {
     setAgentPreset,
     providerModel,
     setProviderModel,
+    reasoningEffort,
+    setReasoningEffort,
     workspaces,
     workspacesStatus,
     workspacesError,
@@ -384,10 +386,12 @@ function App() {
               onSubmit={handleSendMessage}
               onAgentPresetChange={setAgentPreset}
               providerModel={providerModel}
+              reasoningEffort={reasoningEffort}
               providers={providers}
               providerModels={providerModels}
               agentPresets={agentPresets}
               onProviderModelChange={setProviderModel}
+              onReasoningEffortChange={setReasoningEffort}
             />
           </>
         ) : (

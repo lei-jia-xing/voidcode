@@ -15,11 +15,17 @@ export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   thinking: string[];
+  thinkingStartedAt?: number;
+  thinkingUpdatedAt?: number;
   tools: {
     id?: string;
     name: string;
     label?: string;
     status: "pending" | "running" | "completed" | "failed";
+    arguments?: Record<string, unknown>;
+    result?: Record<string, unknown>;
+    content?: string | null;
+    error?: string | null;
   }[];
   approval: {
     requestId: string;
@@ -41,6 +47,61 @@ type ToolStatusPayload = {
   status?: unknown;
   label?: unknown;
 };
+
+type ChatTool = ChatMessage["tools"][number];
+
+function objectPayload(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object"
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function toolStatusFromPayload(status: unknown): ChatTool["status"] {
+  return status === "pending" ||
+    status === "running" ||
+    status === "completed" ||
+    status === "failed"
+    ? status
+    : status === "ok"
+      ? "completed"
+      : status === "error"
+        ? "failed"
+        : "completed";
+}
+
+function findTool(
+  tools: ChatMessage["tools"],
+  options: { id?: string; name?: string },
+): ChatTool | undefined {
+  const { id, name } = options;
+  return tools.find((tool) =>
+    id ? tool.id === id : tool.name === name && tool.status === "running",
+  );
+}
+
+function upsertTool(
+  currentAssistant: ChatMessage | null,
+  tool: ChatTool,
+): ChatTool | null {
+  if (!currentAssistant) return null;
+  const existing = findTool(currentAssistant.tools, {
+    id: tool.id,
+    name: tool.name,
+  });
+  if (!existing) {
+    currentAssistant.tools.push(tool);
+    return tool;
+  }
+  existing.name = tool.name;
+  existing.status = tool.status;
+  existing.id = tool.id ?? existing.id;
+  existing.label = tool.label ?? existing.label;
+  existing.arguments = tool.arguments ?? existing.arguments;
+  existing.result = tool.result ?? existing.result;
+  if (tool.content !== undefined) existing.content = tool.content;
+  if (tool.error !== undefined) existing.error = tool.error;
+  return existing;
+}
 
 function parseQuestionPrompts(value: unknown): QuestionPrompt[] {
   if (!Array.isArray(value)) return [];
@@ -96,27 +157,12 @@ function applyToolStatus(
       : undefined;
   const label =
     typeof toolStatus.label === "string" ? toolStatus.label : undefined;
-  const status =
-    toolStatus.status === "pending" ||
-    toolStatus.status === "running" ||
-    toolStatus.status === "completed" ||
-    toolStatus.status === "failed"
-      ? toolStatus.status
-      : "running";
-
-  const existing = currentAssistant.tools.find((tool) =>
-    id ? tool.id === id : tool.name === name && tool.status === "running",
-  );
-
-  if (existing) {
-    existing.name = name;
-    existing.status = status;
-    existing.id = id ?? existing.id;
-    existing.label = label ?? existing.label;
-    return;
-  }
-
-  currentAssistant.tools.push({ id, name, label, status });
+  upsertTool(currentAssistant, {
+    id,
+    name,
+    label,
+    status: toolStatusFromPayload(toolStatus.status),
+  });
 }
 
 export function deriveTasksFromEvents(events: EventEnvelope[]): DerivedTask[] {
@@ -352,6 +398,10 @@ export function deriveChatMessages(
                 : "";
         if (delta) {
           currentAssistant.thinking.push(delta);
+          if (typeof event.received_at === "number") {
+            currentAssistant.thinkingStartedAt ??= event.received_at;
+            currentAssistant.thinkingUpdatedAt = event.received_at;
+          }
         }
       }
     } else if (
@@ -381,7 +431,16 @@ export function deriveChatMessages(
           typeof event.payload?.tool === "string"
             ? event.payload.tool
             : "unknown";
-        currentAssistant.tools.push({ name: toolName, status: "running" });
+        const toolCallId =
+          typeof event.payload?.tool_call_id === "string"
+            ? event.payload.tool_call_id
+            : undefined;
+        upsertTool(currentAssistant, {
+          id: toolCallId,
+          name: toolName,
+          status: "running",
+          arguments: objectPayload(event.payload?.arguments),
+        });
       }
     } else if (event.event_type === "runtime.tool_completed") {
       if (currentAssistant) {
@@ -392,10 +451,25 @@ export function deriveChatMessages(
         const toolName =
           typeof event.payload?.tool === "string" ? event.payload.tool : null;
         if (toolName) {
-          const tool = currentAssistant.tools.find(
-            (t) => t.name === toolName && t.status === "running",
-          );
-          if (tool) tool.status = "completed";
+          const toolCallId =
+            typeof event.payload?.tool_call_id === "string"
+              ? event.payload.tool_call_id
+              : undefined;
+          upsertTool(currentAssistant, {
+            id: toolCallId,
+            name: toolName,
+            status: toolStatusFromPayload(event.payload?.status),
+            arguments: objectPayload(event.payload?.arguments),
+            result: event.payload,
+            content:
+              typeof event.payload?.content === "string"
+                ? event.payload.content
+                : null,
+            error:
+              typeof event.payload?.error === "string"
+                ? event.payload.error
+                : null,
+          });
         }
       }
     } else if (event.event_type === "runtime.approval_requested") {

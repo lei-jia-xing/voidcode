@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -10,18 +11,24 @@ from voidcode.provider.config import (
     GoogleProviderAuthConfig,
     GoogleProviderConfig,
     LiteLLMProviderConfig,
+    SimplifiedProviderConfig,
 )
 from voidcode.provider.copilot import CopilotModelProvider
 from voidcode.provider.errors import (
     provider_execution_error_from_api_payload,
     provider_execution_error_from_stream_payload,
 )
+from voidcode.provider.glm import GLMModelProvider
 from voidcode.provider.google import GoogleModelProvider
 from voidcode.provider.litellm import LiteLLMModelProvider
 from voidcode.provider.openai import OpenAIModelProvider
 from voidcode.provider.opencode_go import OpenCodeGoModelProvider
 from voidcode.provider.protocol import (
     ModelProvider,
+    ProviderAssembledContext,
+    ProviderContextSegment,
+    ProviderContextSegmentLike,
+    ProviderContextWindow,
     ProviderExecutionError,
     ProviderStreamEvent,
     ProviderTokenUsage,
@@ -52,21 +59,11 @@ class _StubContextWindow:
 
 
 @dataclass(frozen=True, slots=True)
-class _StubSegment:
-    role: str
-    content: str | None
-    tool_call_id: str | None = None
-    tool_name: str | None = None
-    tool_arguments: dict[str, object] | None = None
-    metadata: dict[str, object] | None = None
-
-
-@dataclass(frozen=True, slots=True)
 class _StubAssembledContext:
     prompt: str
     tool_results: tuple[ToolResult, ...]
     continuity_state: object | None
-    segments: tuple[_StubSegment, ...]
+    segments: tuple[ProviderContextSegmentLike, ...]
     metadata: dict[str, object]
 
 
@@ -74,12 +71,12 @@ def _assembled_from_legacy(
     *,
     prompt: str,
     tool_results: tuple[ToolResult, ...],
-    context_window: _StubContextWindow,
+    context_window: ProviderContextWindow,
     applied_skills: tuple[dict[str, str], ...],
     skill_prompt_context: str = "",
-) -> _StubAssembledContext:
+) -> ProviderAssembledContext:
     continuity_state = context_window.continuity_state
-    segments: list[_StubSegment] = []
+    segments: list[ProviderContextSegmentLike] = []
     skill_message = skill_prompt_context.strip()
     if not skill_message and applied_skills:
         rendered_skills: list[str] = []
@@ -100,17 +97,17 @@ def _assembled_from_legacy(
                 + "\n\n".join(rendered_skills)
             )
     if skill_message:
-        segments.append(_StubSegment(role="system", content=skill_message))
+        segments.append(ProviderContextSegment(role="system", content=skill_message))
     if continuity_state is not None:
         summary_text = getattr(continuity_state, "summary_text", None)
         if isinstance(summary_text, str) and summary_text.strip():
             segments.append(
-                _StubSegment(
+                ProviderContextSegment(
                     role="system",
                     content=f"Runtime continuity summary:\n{summary_text.strip()}",
                 )
             )
-    segments.append(_StubSegment(role="user", content=prompt))
+    segments.append(ProviderContextSegment(role="user", content=prompt))
     for index, result in enumerate(tool_results, start=1):
         raw_tool_call_id = result.data.get("tool_call_id")
         tool_call_id = (
@@ -119,9 +116,11 @@ def _assembled_from_legacy(
             else f"voidcode_tool_{index}"
         )
         raw_arguments = result.data.get("arguments")
-        tool_arguments = raw_arguments if isinstance(raw_arguments, dict) else {}
+        tool_arguments = (
+            cast(dict[str, object], raw_arguments) if isinstance(raw_arguments, dict) else {}
+        )
         segments.append(
-            _StubSegment(
+            ProviderContextSegment(
                 role="assistant",
                 content=None,
                 tool_call_id=tool_call_id,
@@ -130,7 +129,7 @@ def _assembled_from_legacy(
             )
         )
         segments.append(
-            _StubSegment(
+            ProviderContextSegment(
                 role="tool",
                 content=result.content or "",
                 tool_call_id=tool_call_id,
@@ -154,7 +153,9 @@ def _assembled_from_legacy(
     )
 
 
-def _build_turn_request(*, model_name: str) -> ProviderTurnRequest:
+def _build_turn_request(
+    *, model_name: str, reasoning_effort: str | None = None
+) -> ProviderTurnRequest:
     tool_results: tuple[ToolResult, ...] = ()
     return ProviderTurnRequest(
         assembled_context=_assembled_from_legacy(
@@ -169,25 +170,10 @@ def _build_turn_request(*, model_name: str) -> ProviderTurnRequest:
         raw_model=f"{model_name}/demo",
         provider_name=model_name,
         model_name="demo",
+        reasoning_effort=reasoning_effort,
         attempt=0,
         abort_signal=None,
     )
-
-
-def _prompt_materialization_payload(
-    profile: str,
-    *,
-    model_family_overrides: dict[str, str] | None = None,
-) -> dict[str, object]:
-    payload: dict[str, object] = {
-        "profile": profile,
-        "version": 1,
-        "source": "builtin",
-        "format": "text",
-    }
-    if model_family_overrides is not None:
-        payload["model_family_overrides"] = model_family_overrides
-    return payload
 
 
 def _build_turn_request_with_skill(*, model_name: str) -> ProviderTurnRequest:
@@ -258,6 +244,7 @@ class _StubStreamChunk:
         *,
         tool_calls: list[dict[str, object]] | None = None,
         reasoning_content: str | None = None,
+        reasoning: str | None = None,
         thinking_blocks: list[dict[str, object]] | None = None,
         usage: dict[str, object] | None = None,
     ) -> None:
@@ -265,6 +252,7 @@ class _StubStreamChunk:
         self._finish_reason = finish_reason
         self._tool_calls = tool_calls
         self._reasoning_content = reasoning_content
+        self._reasoning = reasoning
         self._thinking_blocks = thinking_blocks
         self._usage = usage
 
@@ -274,6 +262,7 @@ class _StubStreamChunk:
                 "content": self._text,
                 "tool_calls": self._tool_calls,
                 "reasoning_content": self._reasoning_content,
+                "reasoning": self._reasoning,
                 "thinking_blocks": self._thinking_blocks,
             },
             "finish_reason": self._finish_reason,
@@ -1374,8 +1363,8 @@ def test_provider_adapter_uses_runtime_assembled_context_for_agent_system_messag
             tool_results=(),
             continuity_state=None,
             segments=(
-                _StubSegment(role="system", content="Runtime agent system prompt."),
-                _StubSegment(role="user", content="read sample.txt"),
+                ProviderContextSegment(role="system", content="Runtime agent system prompt."),
+                ProviderContextSegment(role="user", content="read sample.txt"),
             ),
             metadata={},
         ),
@@ -1417,8 +1406,10 @@ def test_provider_adapter_uses_runtime_assembled_context_for_model_family_overri
             tool_results=(),
             continuity_state=None,
             segments=(
-                _StubSegment(role="system", content="Runtime model-family override prompt."),
-                _StubSegment(role="user", content="read sample.txt"),
+                ProviderContextSegment(
+                    role="system", content="Runtime model-family override prompt."
+                ),
+                ProviderContextSegment(role="user", content="read sample.txt"),
             ),
             metadata={},
         ),
@@ -1460,8 +1451,8 @@ def test_provider_adapter_uses_runtime_assembled_context_for_prompt_profile_over
             tool_results=(),
             continuity_state=None,
             segments=(
-                _StubSegment(role="system", content="Runtime prompt-profile message."),
-                _StubSegment(role="user", content="read sample.txt"),
+                ProviderContextSegment(role="system", content="Runtime prompt-profile message."),
+                ProviderContextSegment(role="user", content="read sample.txt"),
             ),
             metadata={},
         ),
@@ -1503,8 +1494,8 @@ def test_provider_adapter_uses_runtime_assembled_context_for_unknown_profile(
             tool_results=(),
             continuity_state=None,
             segments=(
-                _StubSegment(role="system", content="Runtime custom-review prompt."),
-                _StubSegment(role="user", content="read sample.txt"),
+                ProviderContextSegment(role="system", content="Runtime custom-review prompt."),
+                ProviderContextSegment(role="user", content="read sample.txt"),
             ),
             metadata={},
         ),
@@ -1560,6 +1551,67 @@ def test_provider_adapter_propose_turn_uses_model_map_for_litellm_alias(
     assert payload["model"] == "openrouter/openai/gpt-4o"
 
 
+def test_provider_adapter_passes_reasoning_effort_for_direct_litellm_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = LiteLLMModelProvider(
+        config=LiteLLMProviderConfig(base_url="http://localhost:4000")
+    ).turn_provider()
+
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        completion_content="ok",
+    )
+
+    _ = provider.propose_turn(_build_turn_request(model_name="litellm", reasoning_effort="high"))
+
+    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+    assert isinstance(payload_obj, dict)
+    payload = cast(dict[str, object], payload_obj)
+    assert payload["reasoning_effort"] == "high"
+
+
+def test_glm_provider_maps_reasoning_effort_to_thinking_extra_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = GLMModelProvider(config=SimplifiedProviderConfig(api_key="glm-key")).turn_provider()
+
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        completion_content="ok",
+    )
+
+    _ = provider.propose_turn(_build_turn_request(model_name="glm", reasoning_effort="high"))
+
+    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+    assert isinstance(payload_obj, dict)
+    payload = cast(dict[str, object], payload_obj)
+    assert payload.get("reasoning_effort") is None
+    assert payload["extra_body"] == {"thinking": {"type": "enabled"}}
+    assert payload["allowed_openai_params"] == ["extra_body"]
+
+
+def test_glm_provider_maps_disabled_reasoning_effort_to_disabled_thinking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = GLMModelProvider(config=SimplifiedProviderConfig(api_key="glm-key")).turn_provider()
+
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        completion_content="ok",
+    )
+
+    _ = provider.propose_turn(_build_turn_request(model_name="glm", reasoning_effort="none"))
+
+    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+    assert isinstance(payload_obj, dict)
+    payload = cast(dict[str, object], payload_obj)
+    assert payload["extra_body"] == {"thinking": {"type": "disabled"}}
+
+
 @pytest.mark.parametrize(
     ("model_name", "custom_provider"),
     [
@@ -1602,6 +1654,7 @@ def test_opencode_go_provider_routes_model_families_to_required_sdk_adapter(
             raw_model=f"opencode-go/{model_name}",
             provider_name="opencode-go",
             model_name=model_name,
+            reasoning_effort="high",
             attempt=0,
             abort_signal=None,
         )
@@ -1621,6 +1674,9 @@ def test_opencode_go_provider_routes_model_families_to_required_sdk_adapter(
     assert payload["api_base"] == expected_api_base
     assert payload["api_key"] == "opencode-go-key"
     assert payload["timeout"] == 300.0
+    assert "thinking" not in payload
+    assert "reasoning_effort" not in payload
+    assert "extra_body" not in payload
     if model_name in {"minimax-m2.7", "minimax-m2.5"}:
         assert payload["extra_headers"] == {
             "anthropic-version": "2023-06-01",
@@ -1628,6 +1684,75 @@ def test_opencode_go_provider_routes_model_families_to_required_sdk_adapter(
         }
     assert payload.get("tools")
     assert payload.get("tool_choice") == "auto"
+
+
+def test_opencode_go_glm_stream_turn_does_not_send_rejected_tool_stream_param(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from voidcode.provider.config import SimplifiedProviderConfig
+
+    provider = OpenCodeGoModelProvider(config=SimplifiedProviderConfig(api_key="opencode-go-key"))
+    turn_provider = provider.turn_provider()
+    assert isinstance(turn_provider, StreamableTurnProvider)
+
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="stream",
+        stream_tool_chunks=(
+            (
+                [
+                    {
+                        "index": 0,
+                        "id": "call-read",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": '{"filePath":"README.md"}',
+                        },
+                    }
+                ],
+                None,
+            ),
+            (None, "tool_calls"),
+        ),
+    )
+
+    events = list(
+        turn_provider.stream_turn(
+            ProviderTurnRequest(
+                assembled_context=_assembled_from_legacy(
+                    prompt="read README.md",
+                    tool_results=(),
+                    context_window=_StubContextWindow(prompt="read README.md", tool_results=()),
+                    applied_skills=(),
+                ),
+                available_tools=(
+                    ToolDefinition(name="read_file", description="read file", read_only=True),
+                ),
+                raw_model="opencode-go/glm-5.1",
+                provider_name="opencode-go",
+                model_name="glm-5.1",
+                attempt=0,
+                abort_signal=None,
+            )
+        )
+    )
+
+    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+    assert isinstance(payload_obj, dict)
+    payload = cast(dict[str, object], payload_obj)
+    assert payload["stream"] is True
+    assert payload["custom_llm_provider"] == "openai"
+    assert "extra_body" not in payload
+    assert payload["tool_choice"] == "auto"
+
+    tool_events = [event for event in events if event.channel == "tool"]
+    assert len(tool_events) == 1
+    assert tool_events[0].text is not None
+    assert json.loads(tool_events[0].text) == {
+        "arguments": {"filePath": "README.md"},
+        "tool_call_id": "call-read",
+        "tool_name": "read_file",
+    }
 
 
 def test_glm_provider_does_not_append_v1_to_base_url(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1889,6 +2014,48 @@ def test_provider_adapter_stream_turn_emits_reasoning_events_from_reasoning_cont
 
     assert events == [
         ProviderStreamEvent(kind="delta", channel="reasoning", text="Thinking step."),
+        ProviderStreamEvent(kind="delta", channel="text", text="Done."),
+        ProviderStreamEvent(kind="done", done_reason="completed"),
+    ]
+
+
+def test_provider_adapter_stream_turn_emits_reasoning_events_from_reasoning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = OpenAIModelProvider()
+    provider = provider.turn_provider()
+    assert isinstance(provider, StreamableTurnProvider)
+
+    import voidcode.provider.litellm_backend as backend_module
+
+    def _completion(*args: Any, **kwargs: Any):
+        _ = args, kwargs
+        return iter(
+            [
+                _StubStreamChunk(
+                    text=None,
+                    finish_reason=None,
+                    reasoning="Reasoning step.",
+                ),
+                _StubStreamChunk(text="Done.", finish_reason=None),
+                _StubStreamChunk(text=None, finish_reason="stop"),
+            ]
+        )
+
+    if backend_module.litellm_module is None:
+
+        class _FakeLiteLLM:
+            def completion(self, *args: Any, **kwargs: Any):
+                return _completion(*args, **kwargs)
+
+        monkeypatch.setattr(backend_module, "litellm_module", _FakeLiteLLM())
+    else:
+        monkeypatch.setattr(backend_module.litellm_module, "completion", _completion)
+
+    events = list(provider.stream_turn(_build_turn_request(model_name="openai")))
+
+    assert events == [
+        ProviderStreamEvent(kind="delta", channel="reasoning", text="Reasoning step."),
         ProviderStreamEvent(kind="delta", channel="text", text="Done."),
         ProviderStreamEvent(kind="done", done_reason="completed"),
     ]

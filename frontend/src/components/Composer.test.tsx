@@ -62,6 +62,69 @@ describe("Composer", () => {
     expect(onProviderModelChange).toHaveBeenCalledWith("opencode-go/glm-5.2");
   });
 
+  it("shows model context and reasoning effort controls from metadata", () => {
+    const onReasoningEffortChange = vi.fn();
+    render(
+      <Composer
+        {...baseProps}
+        reasoningEffort="high"
+        onReasoningEffortChange={onReasoningEffortChange}
+        providerModels={{
+          "opencode-go": {
+            ...baseProps.providerModels["opencode-go"],
+            model_metadata: {
+              "opencode-go/glm-5.1": {
+                context_window: 198_000,
+                max_output_tokens: 128_000,
+                supports_reasoning: true,
+                supports_reasoning_effort: true,
+                default_reasoning_effort: "medium",
+              },
+            },
+          },
+        }}
+      />,
+    );
+
+    expect(
+      screen.getByText("198K ctx · 128K out · effort medium"),
+    ).toBeInTheDocument();
+
+    const effortSelect = screen.getByRole("combobox", {
+      name: "Reasoning effort",
+    });
+    expect(effortSelect).toHaveValue("high");
+
+    fireEvent.change(effortSelect, { target: { value: "low" } });
+
+    expect(onReasoningEffortChange).toHaveBeenCalledWith("low");
+  });
+
+  it("hides reasoning effort controls for models without effort support", () => {
+    render(
+      <Composer
+        {...baseProps}
+        providerModels={{
+          "opencode-go": {
+            ...baseProps.providerModels["opencode-go"],
+            model_metadata: {
+              "opencode-go/glm-5.1": {
+                context_window: 198_000,
+                supports_reasoning: true,
+                supports_reasoning_effort: false,
+              },
+            },
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText("198K ctx · reasoning")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("combobox", { name: "Reasoning effort" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("canonicalizes bare grouped model aliases before storing selection", () => {
     const onProviderModelChange = vi.fn();
     render(

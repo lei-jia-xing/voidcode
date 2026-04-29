@@ -29,7 +29,23 @@ def test_write_file_tool_writes_utf8_content_inside_workspace(tmp_path: Path) ->
     assert result.data == {
         "path": "nested/output.txt",
         "byte_count": len("hello utf8 π".encode()),
+        "diff": "--- a/nested/output.txt\n+++ b/nested/output.txt\n@@ -0,0 +1 @@\n+hello utf8 π",
     }
+
+
+def test_write_file_tool_returns_diff_for_rewrite(tmp_path: Path) -> None:
+    (tmp_path / "note.txt").write_text("old\n", encoding="utf-8")
+    tool = WriteFileTool()
+
+    result = tool.invoke(
+        ToolCall(
+            tool_name="write_file",
+            arguments={"path": "note.txt", "content": "new\n"},
+        ),
+        workspace=tmp_path,
+    )
+
+    assert result.data["diff"] == ("--- a/note.txt\n+++ b/note.txt\n@@ -1 +1 @@\n-old\n+new\n")
 
 
 def test_write_file_tool_rejects_non_string_arguments(tmp_path: Path) -> None:

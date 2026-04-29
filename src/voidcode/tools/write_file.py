@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import difflib
 from pathlib import Path
 from typing import ClassVar, final
 
@@ -46,6 +47,7 @@ class WriteFileTool:
             raise ValueError("write_file only allows paths inside the workspace")
 
         candidate.parent.mkdir(parents=True, exist_ok=True)
+        old_content = candidate.read_text(encoding="utf-8") if candidate.exists() else ""
         candidate.write_text(args.content, encoding="utf-8")
 
         formatter_result = None
@@ -57,9 +59,21 @@ class WriteFileTool:
         if diagnostics:
             content += f" Formatter warning: {diagnostics[0]['message']}"
 
+        new_content = candidate.read_text(encoding="utf-8")
+        relative_output_path = candidate.relative_to(workspace_root).as_posix()
+        diff = "".join(
+            difflib.unified_diff(
+                old_content.splitlines(keepends=True),
+                new_content.splitlines(keepends=True),
+                fromfile=f"a/{relative_output_path}",
+                tofile=f"b/{relative_output_path}",
+            )
+        )
+
         data: dict[str, object] = {
-            "path": candidate.relative_to(workspace_root).as_posix(),
+            "path": relative_output_path,
             "byte_count": candidate.stat().st_size,
+            "diff": diff,
         }
         if formatter_result is not None and formatter_result.status != "not_configured":
             data["formatter"] = formatter_payload(formatter_result)

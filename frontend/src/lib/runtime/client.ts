@@ -317,6 +317,7 @@ export class RuntimeClient {
               const chunk = JSON.parse(
                 dataLines.join("\n"),
               ) as RuntimeStreamChunk;
+              if (chunk.event) chunk.event.received_at = Date.now();
               yield chunk;
             } catch (e) {
               console.warn(
@@ -350,6 +351,7 @@ export class RuntimeClient {
             const chunk = JSON.parse(
               dataLines.join("\n"),
             ) as RuntimeStreamChunk;
+            if (chunk.event) chunk.event.received_at = Date.now();
             yield chunk;
           } catch (e) {
             console.warn(
@@ -380,6 +382,7 @@ export class RuntimeClient {
     if (dataLines.length > 0) {
       try {
         const chunk = JSON.parse(dataLines.join("\n")) as RuntimeStreamChunk;
+        if (chunk.event) chunk.event.received_at = Date.now();
         yield chunk;
       } catch (e) {
         console.warn(

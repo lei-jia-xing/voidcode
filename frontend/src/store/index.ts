@@ -28,6 +28,7 @@ interface AppState {
 
   agentPreset: string;
   providerModel: string;
+  reasoningEffort: string;
   workspaces: WorkspaceRegistrySnapshot | null;
   workspacesStatus: AsyncStatus;
   workspacesError: string | null;
@@ -91,6 +92,7 @@ interface AppState {
   setLanguage: (lang: "en" | "zh-CN") => void;
   setAgentPreset: (preset: string) => void;
   setProviderModel: (model: string) => void;
+  setReasoningEffort: (effort: string) => void;
   loadWorkspaces: () => Promise<void>;
   switchWorkspace: (path: string) => Promise<void>;
   loadProviders: () => Promise<void>;
@@ -218,12 +220,30 @@ function normalizeProviderModelReference(
   return model;
 }
 
+function selectedModelMetadata(
+  model: string,
+  providers: ProviderSummary[],
+  providerModels: Record<string, ProviderModelsResult>,
+) {
+  const normalized = normalizeProviderModelReference(
+    model,
+    providers,
+    providerModels,
+  );
+  const [providerName, ...modelParts] = normalized.split("/");
+  const modelName = modelParts.join("/");
+  if (!providerName || !modelName) return undefined;
+  const metadata = providerModels[providerName]?.model_metadata ?? {};
+  return metadata[modelName] ?? metadata[normalized];
+}
+
 export const useAppStore = create<AppState>()(
   persist(
     (set, get) => ({
       language: "en",
       agentPreset: "leader",
       providerModel: "opencode-go/glm-5.1",
+      reasoningEffort: "",
       workspaces: null,
       workspacesStatus: "idle",
       workspacesError: null,
@@ -287,6 +307,7 @@ export const useAppStore = create<AppState>()(
       setLanguage: (language) => set({ language }),
       setAgentPreset: (agentPreset) => set({ agentPreset }),
       setProviderModel: (providerModel) => set({ providerModel }),
+      setReasoningEffort: (reasoningEffort) => set({ reasoningEffort }),
 
       loadWorkspaces: async () => {
         set({ workspacesStatus: "loading", workspacesError: null });
@@ -767,22 +788,45 @@ export const useAppStore = create<AppState>()(
             ? (rawMetadata.agent as Record<string, unknown>)
             : {};
         const requestedMaxSteps = rawMetadata.max_steps;
-        const maxSteps =
+        const maxStepsOverride =
           typeof requestedMaxSteps === "number" &&
           Number.isInteger(requestedMaxSteps) &&
           requestedMaxSteps > 0
             ? requestedMaxSteps
-            : 16;
+            : undefined;
         const forwardMetadata = Object.fromEntries(
-          Object.entries(rawMetadata).filter(([key]) => key !== "agent"),
+          Object.entries(rawMetadata).filter(
+            ([key]) =>
+              key !== "agent" &&
+              key !== "max_steps" &&
+              key !== "reasoning_effort",
+          ),
         );
         const forwardAgentMetadata = Object.fromEntries(
           Object.entries(rawAgentMetadata),
         );
 
+        const modelMetadata = selectedModelMetadata(
+          get().providerModel,
+          get().providers,
+          get().providerModels,
+        );
+        const requestedReasoningEffort =
+          typeof rawMetadata.reasoning_effort === "string" &&
+          rawMetadata.reasoning_effort.trim()
+            ? rawMetadata.reasoning_effort.trim()
+            : get().reasoningEffort.trim() ||
+              modelMetadata?.default_reasoning_effort ||
+              "";
         const metadata = {
           ...forwardMetadata,
-          max_steps: maxSteps,
+          ...(maxStepsOverride !== undefined
+            ? { max_steps: maxStepsOverride }
+            : {}),
+          ...(modelMetadata?.supports_reasoning_effort === true &&
+          requestedReasoningEffort
+            ? { reasoning_effort: requestedReasoningEffort }
+            : {}),
           agent: {
             preset: get().agentPreset,
             model: normalizeProviderModelReference(
@@ -1102,6 +1146,7 @@ export const useAppStore = create<AppState>()(
         language: state.language,
         agentPreset: state.agentPreset,
         providerModel: state.providerModel,
+        reasoningEffort: state.reasoningEffort,
         currentSessionId: state.currentSessionId,
         reviewMode: state.reviewMode,
       }),

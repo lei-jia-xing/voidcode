@@ -553,10 +553,8 @@ def infer_model_metadata(provider_name: str, model_name: str) -> ProviderModelMe
             "supports_streaming": True,
             "supports_reasoning": model.startswith(("qwq", "qvq", "qwen3")),
             "supports_json_mode": True,
-            "supports_reasoning_effort": model.startswith(("qwq", "qvq", "qwen3")),
-            "default_reasoning_effort": "medium"
-            if model.startswith(("qwq", "qvq", "qwen3"))
-            else None,
+            "supports_reasoning_effort": False,
+            "default_reasoning_effort": None,
             "supports_interleaved_reasoning": False,
             "modalities_input": ("text", "image")
             if model.startswith(("qvq",)) or "vl" in model
@@ -580,8 +578,11 @@ def infer_model_metadata(provider_name: str, model_name: str) -> ProviderModelMe
             "supports_streaming": True,
             "supports_reasoning": model.startswith(("glm-5", "glm-z1")),
             "supports_json_mode": True,
-            "supports_reasoning_effort": model.startswith(("glm-5", "glm-z1")),
-            "default_reasoning_effort": "medium" if model.startswith(("glm-5", "glm-z1")) else None,
+            "supports_reasoning_effort": provider != "opencode-go"
+            and model.startswith(("glm-5", "glm-z1")),
+            "default_reasoning_effort": "medium"
+            if provider != "opencode-go" and model.startswith(("glm-5", "glm-z1"))
+            else None,
             "supports_interleaved_reasoning": False,
             "modalities_input": ("text", "image")
             if model.startswith("glm-4v") or "vision" in model
@@ -601,8 +602,8 @@ def infer_model_metadata(provider_name: str, model_name: str) -> ProviderModelMe
             "supports_streaming": True,
             "supports_reasoning": "thinking" in model,
             "supports_json_mode": True,
-            "supports_reasoning_effort": "thinking" in model,
-            "default_reasoning_effort": "medium" if "thinking" in model else None,
+            "supports_reasoning_effort": False,
+            "default_reasoning_effort": None,
             "supports_interleaved_reasoning": False,
             "modalities_input": ("text",),
             "modalities_output": ("text",),
@@ -628,10 +629,8 @@ def infer_model_metadata(provider_name: str, model_name: str) -> ProviderModelMe
             "supports_streaming": True,
             "supports_reasoning": model.startswith(("minimax-m2", "mimo-v2.5")),
             "supports_json_mode": True,
-            "supports_reasoning_effort": model.startswith(("minimax-m2", "mimo-v2.5")),
-            "default_reasoning_effort": "medium"
-            if model.startswith(("minimax-m2", "mimo-v2.5"))
-            else None,
+            "supports_reasoning_effort": False,
+            "default_reasoning_effort": None,
             "supports_interleaved_reasoning": False,
             "modalities_input": ("text", "image")
             if model.startswith("mimo-v2-omni")

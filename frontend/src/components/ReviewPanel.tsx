@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ChevronRight,
@@ -14,6 +14,11 @@ import type {
   ReviewFileDiff,
   WorkspaceReviewSnapshot,
 } from "../lib/runtime/types";
+
+const DEFAULT_PANEL_WIDTH = 384;
+const MIN_PANEL_WIDTH = 384;
+const MAX_PANEL_WIDTH = 960;
+const MIN_MAIN_CONTENT_WIDTH = 280;
 
 interface ReviewPanelProps {
   isOpen: boolean;
@@ -129,6 +134,8 @@ export function ReviewPanel({
   onSelectPath,
 }: ReviewPanelProps) {
   const { t } = useTranslation();
+  const [panelWidth, setPanelWidth] = useState(DEFAULT_PANEL_WIDTH);
+  const [isResizing, setIsResizing] = useState(false);
 
   const selectedChangedFile = useMemo(
     () =>
@@ -136,6 +143,43 @@ export function ReviewPanel({
       null,
     [snapshot, selectedPath],
   );
+
+  const resizeToClientX = useCallback((clientX: number) => {
+    const availableWidth = window.innerWidth;
+    const maxWidth = Math.max(
+      MIN_PANEL_WIDTH,
+      Math.min(MAX_PANEL_WIDTH, availableWidth - MIN_MAIN_CONTENT_WIDTH),
+    );
+    const nextWidth = Math.min(
+      maxWidth,
+      Math.max(MIN_PANEL_WIDTH, availableWidth - clientX),
+    );
+    setPanelWidth(nextWidth);
+  }, []);
+
+  useEffect(() => {
+    if (!isResizing) return;
+
+    const handlePointerMove = (event: PointerEvent) => {
+      event.preventDefault();
+      resizeToClientX(event.clientX);
+    };
+    const handlePointerUp = () => setIsResizing(false);
+
+    const previousCursor = document.body.style.cursor;
+    const previousUserSelect = document.body.style.userSelect;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+
+    return () => {
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+    };
+  }, [isResizing, resizeToClientX]);
 
   if (!isOpen) {
     return null;
@@ -145,7 +189,23 @@ export function ReviewPanel({
   const showEmptyChanges = snapshot && snapshot.changed_files.length === 0;
 
   return (
-    <aside className="w-[24rem] border-l border-slate-800 bg-[#0c0c0e] flex-shrink-0 flex flex-col min-w-0">
+    <aside
+      className="relative border-l border-slate-800 bg-[#0c0c0e] flex-shrink-0 flex flex-col min-w-0"
+      style={{ width: `${panelWidth}px` }}
+    >
+      <button
+        type="button"
+        aria-label="Resize review panel"
+        aria-orientation="vertical"
+        className={`absolute inset-y-0 left-0 z-10 w-2 -translate-x-1 cursor-col-resize transition-colors hover:bg-indigo-500/30 ${
+          isResizing ? "bg-indigo-500/40" : "bg-transparent"
+        }`}
+        onPointerDown={(event) => {
+          event.preventDefault();
+          setIsResizing(true);
+          resizeToClientX(event.clientX);
+        }}
+      />
       <div className="h-14 border-b border-slate-800 px-4 flex items-center justify-between">
         <div>
           <div className="text-sm font-medium text-slate-200">
@@ -200,7 +260,7 @@ export function ReviewPanel({
       </div>
 
       <div className="flex min-h-0 flex-1">
-        <div className="w-[13rem] border-r border-slate-800 overflow-y-auto px-2 py-3">
+        <div className="w-[13rem] flex-shrink-0 border-r border-slate-800 overflow-y-auto px-2 py-3">
           {status === "loading" && (
             <div className="flex items-center gap-2 px-2 text-xs text-slate-500">
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -290,7 +350,7 @@ export function ReviewPanel({
             ))}
         </div>
 
-        <div className="flex-1 overflow-y-auto px-4 py-3">
+        <div className="min-w-0 flex-1 overflow-y-auto px-4 py-3">
           {!selectedPath && (
             <div className="text-xs text-slate-500">
               {t("review.selectFile")}
@@ -336,7 +396,7 @@ export function ReviewPanel({
               )}
 
               {diffStatus === "success" && diff?.diff && (
-                <pre className="overflow-x-auto rounded-xl border border-slate-800 bg-slate-950/80 p-3 text-[11px] leading-relaxed text-slate-300 whitespace-pre-wrap font-mono">
+                <pre className="overflow-x-hidden rounded-xl border border-slate-800 bg-slate-950/80 p-3 text-[11px] leading-relaxed text-slate-300 whitespace-pre-wrap break-words font-mono">
                   {diff.diff}
                 </pre>
               )}
