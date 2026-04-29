@@ -91,7 +91,29 @@ _HOOKS_CONFIG_KEYS = frozenset(
         "on_background_task_failed",
         "on_background_task_cancelled",
         "on_delegated_result_available",
+        "on_context_pressure",
         "formatter_presets",
+    }
+)
+_CONTEXT_WINDOW_CONFIG_KEYS = frozenset(
+    {
+        "version",
+        "auto_compaction",
+        "max_tool_results",
+        "max_tool_result_tokens",
+        "max_context_ratio",
+        "model_context_window_tokens",
+        "reserved_output_tokens",
+        "minimum_retained_tool_results",
+        "recent_tool_result_count",
+        "recent_tool_result_tokens",
+        "default_tool_result_tokens",
+        "per_tool_result_tokens",
+        "tokenizer_model",
+        "continuity_preview_items",
+        "continuity_preview_chars",
+        "context_pressure_threshold",
+        "context_pressure_cooldown_steps",
     }
 )
 _FORMATTER_PRESET_CONFIG_KEYS = frozenset(
@@ -224,6 +246,8 @@ class RuntimeContextWindowConfig:
     tokenizer_model: str | None = None
     continuity_preview_items: int = 3
     continuity_preview_chars: int = 80
+    context_pressure_threshold: float = 0.7
+    context_pressure_cooldown_steps: int = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -722,6 +746,10 @@ def _parse_hooks_config(raw_hooks: object) -> RuntimeHooksConfig | None:
         hooks_payload.get("on_delegated_result_available"),
         field_path="hooks.on_delegated_result_available",
     )
+    on_context_pressure = _parse_command_list(
+        hooks_payload.get("on_context_pressure"),
+        field_path="hooks.on_context_pressure",
+    )
     formatter_presets: dict[str, RuntimeFormatterPresetConfig] = _parse_formatter_presets_config(
         hooks_payload.get("formatter_presets"),
         field_path="hooks.formatter_presets",
@@ -739,6 +767,7 @@ def _parse_hooks_config(raw_hooks: object) -> RuntimeHooksConfig | None:
         on_background_task_failed=on_background_task_failed,
         on_background_task_cancelled=on_background_task_cancelled,
         on_delegated_result_available=on_delegated_result_available,
+        on_context_pressure=on_context_pressure,
         formatter_presets=formatter_presets,
     )
 
@@ -1012,6 +1041,8 @@ class _RuntimeContextWindowValidationModel(BaseModel):
     tokenizer_model: str | None = None
     continuity_preview_items: int = 3
     continuity_preview_chars: int = 80
+    context_pressure_threshold: float = 0.7
+    context_pressure_cooldown_steps: int = 3
 
     @field_validator("auto_compaction", mode="before")
     @classmethod
@@ -1104,6 +1135,40 @@ class _RuntimeContextWindowValidationModel(BaseModel):
             )
         return parsed
 
+    @field_validator("context_pressure_threshold", mode="before")
+    @classmethod
+    def _validate_context_pressure_threshold(cls, value: object) -> float:
+        if value is None:
+            return 0.7
+        if isinstance(value, bool) or not isinstance(value, int | float):
+            raise ValueError(
+                "runtime config field 'context_window.context_pressure_threshold' must be a number"
+            )
+        parsed = float(value)
+        if not 0 < parsed <= 1:
+            raise ValueError(
+                "runtime config field 'context_window.context_pressure_threshold' must be greater "
+                "than 0 and less than or equal to 1"
+            )
+        return parsed
+
+    @field_validator("context_pressure_cooldown_steps", mode="before")
+    @classmethod
+    def _validate_context_pressure_cooldown_steps(cls, value: object) -> int:
+        if value is None:
+            return 3
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise ValueError(
+                "runtime config field 'context_window.context_pressure_cooldown_steps' "
+                "must be an integer"
+            )
+        if value < 1:
+            raise ValueError(
+                "runtime config field 'context_window.context_pressure_cooldown_steps' "
+                "must be greater than or equal to 1"
+            )
+        return value
+
     @field_validator("per_tool_result_tokens", mode="before")
     @classmethod
     def _validate_per_tool_result_tokens(cls, value: object) -> dict[str, int]:
@@ -1155,6 +1220,8 @@ class _RuntimeContextWindowValidationModel(BaseModel):
             tokenizer_model=self.tokenizer_model,
             continuity_preview_items=self.continuity_preview_items,
             continuity_preview_chars=self.continuity_preview_chars,
+            context_pressure_threshold=self.context_pressure_threshold,
+            context_pressure_cooldown_steps=self.context_pressure_cooldown_steps,
         )
 
 
@@ -1555,6 +1622,11 @@ def _parse_context_window_config(raw_context_window: object) -> RuntimeContextWi
         raise ValueError("runtime config field 'context_window' must be an object when provided")
 
     context_window_payload = cast(dict[str, object], raw_context_window)
+    _reject_unknown_config_keys(
+        context_window_payload,
+        allowed_keys=_CONTEXT_WINDOW_CONFIG_KEYS,
+        field_path="context_window",
+    )
     return cast(
         RuntimeContextWindowConfig | None,
         _parse_runtime_config_section(
@@ -2000,6 +2072,8 @@ def serialize_runtime_context_window_config(
         "recent_tool_result_count": context_window.recent_tool_result_count,
         "continuity_preview_items": context_window.continuity_preview_items,
         "continuity_preview_chars": context_window.continuity_preview_chars,
+        "context_pressure_threshold": context_window.context_pressure_threshold,
+        "context_pressure_cooldown_steps": context_window.context_pressure_cooldown_steps,
     }
     if context_window.max_tool_result_tokens is not None:
         payload["max_tool_result_tokens"] = context_window.max_tool_result_tokens

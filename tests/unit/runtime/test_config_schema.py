@@ -92,6 +92,7 @@ def test_runtime_config_json_schema_exposes_core_fields() -> None:
     }
     hooks_schema = cast(dict[str, object], properties["hooks"])
     hooks_properties = cast(dict[str, object], hooks_schema["properties"])
+    assert hooks_properties["on_context_pressure"] == {"$ref": "#/$defs/commandList"}
     formatter_presets = cast(dict[str, object], hooks_properties["formatter_presets"])
     assert formatter_presets["additionalProperties"] == {"$ref": "#/$defs/formatterPresetConfig"}
     formatter_preset_config = cast(dict[str, object], defs["formatterPresetConfig"])
@@ -114,6 +115,15 @@ def test_runtime_config_json_schema_exposes_core_fields() -> None:
     ):
         numeric_property = cast(dict[str, object], context_window_properties[key])
         assert numeric_property["minimum"] == 1
+    pressure_threshold = cast(
+        dict[str, object], context_window_properties["context_pressure_threshold"]
+    )
+    assert pressure_threshold["exclusiveMinimum"] == 0
+    assert pressure_threshold["maximum"] == 1
+    pressure_cooldown = cast(
+        dict[str, object], context_window_properties["context_pressure_cooldown_steps"]
+    )
+    assert pressure_cooldown["minimum"] == 1
     tools_config = cast(dict[str, object], defs["toolsConfig"])
     assert tools_config["additionalProperties"] is False
     tools_properties = cast(dict[str, object], tools_config["properties"])

@@ -4298,6 +4298,10 @@ class VoidCodeRuntime:
         elif response_session.status == "completed" and (
             event.event_type == "graph.response_ready"
             or (event.event_type == "graph.loop_step" and event.payload.get("phase") == "finalize")
+            or event.event_type
+            in {
+                "runtime.acp_disconnected",
+            }
         ):
             status = "completed"
         return VoidCodeRuntime._session_with_status(response_session, status)
@@ -4528,6 +4532,8 @@ class VoidCodeRuntime:
             tokenizer_model=policy.tokenizer_model,
             continuity_preview_items=policy.continuity_preview_items,
             continuity_preview_chars=policy.continuity_preview_chars,
+            context_pressure_threshold=policy.context_pressure_threshold,
+            context_pressure_cooldown_steps=policy.context_pressure_cooldown_steps,
         )
 
     @staticmethod
@@ -4565,6 +4571,8 @@ class VoidCodeRuntime:
             tokenizer_model=config.tokenizer_model,
             continuity_preview_items=config.continuity_preview_items,
             continuity_preview_chars=config.continuity_preview_chars,
+            context_pressure_threshold=config.context_pressure_threshold,
+            context_pressure_cooldown_steps=config.context_pressure_cooldown_steps,
         )
 
     def _prepare_provider_context_window(

@@ -58,6 +58,7 @@ def test_runtime_hooks_config_exposes_async_lifecycle_surfaces() -> None:
         on_background_task_failed=(("python", "scripts/task_failed.py"),),
         on_background_task_cancelled=(("python", "scripts/task_cancelled.py"),),
         on_delegated_result_available=(("python", "scripts/delegated_result.py"),),
+        on_context_pressure=(("python", "scripts/context_pressure.py"),),
     )
 
     assert hooks.commands_for_surface("session_start") == (("python", "scripts/session_start.py"),)
@@ -74,6 +75,9 @@ def test_runtime_hooks_config_exposes_async_lifecycle_surfaces() -> None:
     )
     assert hooks.commands_for_surface("delegated_result_available") == (
         ("python", "scripts/delegated_result.py"),
+    )
+    assert hooks.commands_for_surface("context_pressure") == (
+        ("python", "scripts/context_pressure.py"),
     )
 
 

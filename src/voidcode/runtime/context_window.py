@@ -69,6 +69,8 @@ class ContextWindowPolicy:
     tokenizer_model: str | None = None
     continuity_preview_items: int = 3
     continuity_preview_chars: int = 80
+    context_pressure_threshold: float = 0.7
+    context_pressure_cooldown_steps: int = 3
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "per_tool_result_tokens", dict(self.per_tool_result_tokens))
@@ -101,6 +103,10 @@ class ContextWindowPolicy:
             raise ValueError("continuity_preview_items must be >= 1")
         if self.continuity_preview_chars < 1:
             raise ValueError("continuity_preview_chars must be >= 1")
+        if not 0 < self.context_pressure_threshold <= 1:
+            raise ValueError("context_pressure_threshold must be > 0 and <= 1")
+        if self.context_pressure_cooldown_steps < 1:
+            raise ValueError("context_pressure_cooldown_steps must be >= 1")
 
     def metadata_payload(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -128,6 +134,8 @@ class ContextWindowPolicy:
             payload["per_tool_result_tokens"] = dict(self.per_tool_result_tokens)
         if self.tokenizer_model is not None:
             payload["tokenizer_model"] = self.tokenizer_model
+        payload["context_pressure_threshold"] = self.context_pressure_threshold
+        payload["context_pressure_cooldown_steps"] = self.context_pressure_cooldown_steps
         return payload
 
 
@@ -467,6 +475,15 @@ def _coerce_int(payload: Mapping[str, object], key: str, *, default: int) -> int
     return value
 
 
+def _coerce_float(payload: Mapping[str, object], key: str, *, default: float) -> float:
+    raw = payload.get(key)
+    if raw is None:
+        return default
+    if isinstance(raw, bool) or not isinstance(raw, int | float):
+        raise ValueError(f"context window policy field '{key}' must be a number")
+    return float(raw)
+
+
 def context_window_policy_from_payload(raw_payload: object) -> ContextWindowPolicy:
     if not isinstance(raw_payload, dict):
         raise ValueError("context window policy payload must be an object")
@@ -527,6 +544,16 @@ def context_window_policy_from_payload(raw_payload: object) -> ContextWindowPoli
             payload,
             "continuity_preview_chars",
             default=ContextWindowPolicy().continuity_preview_chars,
+        ),
+        context_pressure_threshold=_coerce_float(
+            payload,
+            "context_pressure_threshold",
+            default=ContextWindowPolicy().context_pressure_threshold,
+        ),
+        context_pressure_cooldown_steps=_coerce_int(
+            payload,
+            "context_pressure_cooldown_steps",
+            default=ContextWindowPolicy().context_pressure_cooldown_steps,
         ),
     )
 

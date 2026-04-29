@@ -101,6 +101,7 @@ def runtime_config_json_schema() -> dict[str, object]:
                     "on_background_task_failed": {"$ref": "#/$defs/commandList"},
                     "on_background_task_cancelled": {"$ref": "#/$defs/commandList"},
                     "on_delegated_result_available": {"$ref": "#/$defs/commandList"},
+                    "on_context_pressure": {"$ref": "#/$defs/commandList"},
                     "formatter_presets": {
                         "type": "object",
                         "additionalProperties": {"$ref": "#/$defs/formatterPresetConfig"},
@@ -330,6 +331,12 @@ def runtime_config_json_schema() -> dict[str, object]:
                     "tokenizer_model": {"type": "string", "minLength": 1},
                     "continuity_preview_items": {"type": "integer", "minimum": 1},
                     "continuity_preview_chars": {"type": "integer", "minimum": 1},
+                    "context_pressure_threshold": {
+                        "type": "number",
+                        "exclusiveMinimum": 0,
+                        "maximum": 1,
+                    },
+                    "context_pressure_cooldown_steps": {"type": "integer", "minimum": 1},
                 },
             },
             "lspServerConfig": {

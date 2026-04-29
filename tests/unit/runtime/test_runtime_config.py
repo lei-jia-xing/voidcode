@@ -322,6 +322,8 @@ def test_runtime_config_loads_context_window_policy_from_repo_file(tmp_path: Pat
                     "tokenizer_model": "gpt-4o",
                     "continuity_preview_items": 4,
                     "continuity_preview_chars": 120,
+                    "context_pressure_threshold": 0.75,
+                    "context_pressure_cooldown_steps": 5,
                 }
             }
         ),
@@ -345,6 +347,8 @@ def test_runtime_config_loads_context_window_policy_from_repo_file(tmp_path: Pat
         tokenizer_model="gpt-4o",
         continuity_preview_items=4,
         continuity_preview_chars=120,
+        context_pressure_threshold=0.75,
+        context_pressure_cooldown_steps=5,
     )
 
 
@@ -353,6 +357,8 @@ def test_runtime_context_window_config_serializes_for_session_resume() -> None:
         max_tool_results=5,
         reserved_output_tokens=100,
         per_tool_result_tokens={"shell_exec": 400},
+        context_pressure_threshold=0.72,
+        context_pressure_cooldown_steps=4,
     )
 
     payload = serialize_runtime_context_window_config(config)
@@ -449,6 +455,7 @@ def test_runtime_config_parses_async_lifecycle_hook_surfaces(tmp_path: Path) -> 
                     "on_background_task_failed": [["python", "scripts/task_failed.py"]],
                     "on_background_task_cancelled": [["python", "scripts/task_cancelled.py"]],
                     "on_delegated_result_available": [["python", "scripts/delegated_result.py"]],
+                    "on_context_pressure": [["python", "scripts/context_pressure.py"]],
                 }
             }
         ),
@@ -468,6 +475,7 @@ def test_runtime_config_parses_async_lifecycle_hook_surfaces(tmp_path: Path) -> 
         on_background_task_failed=(("python", "scripts/task_failed.py"),),
         on_background_task_cancelled=(("python", "scripts/task_cancelled.py"),),
         on_delegated_result_available=(("python", "scripts/delegated_result.py"),),
+        on_context_pressure=(("python", "scripts/context_pressure.py"),),
     )
 
 
@@ -1777,6 +1785,18 @@ def test_runtime_config_rejects_invalid_repo_local_execution_engine(tmp_path: Pa
             "runtime config field 'context_window.reserved_output_tokens'"
             ".*greater than or equal to 1",
             id="context-window-reserved-output-zero",
+        ),
+        pytest.param(
+            {"context_window": {"context_pressure_threshold": 0}},
+            "runtime config field 'context_window.context_pressure_threshold'"
+            ".*greater than 0 and less than or equal to 1",
+            id="context-window-pressure-threshold-zero",
+        ),
+        pytest.param(
+            {"context_window": {"context_pressure_cooldown_steps": 0}},
+            "runtime config field 'context_window.context_pressure_cooldown_steps'"
+            ".*greater than or equal to 1",
+            id="context-window-pressure-cooldown-zero",
         ),
     ],
 )

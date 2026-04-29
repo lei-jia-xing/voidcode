@@ -65,6 +65,7 @@ from voidcode.runtime.events import (
     RUNTIME_BACKGROUND_TASK_COMPLETED,
     RUNTIME_BACKGROUND_TASK_FAILED,
     RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL,
+    RUNTIME_CONTEXT_PRESSURE,
     RUNTIME_MCP_SERVER_FAILED,
     RUNTIME_MCP_SERVER_STARTED,
     RUNTIME_MCP_SERVER_STOPPED,
@@ -6148,6 +6149,143 @@ def test_runtime_resume_stream_replay_keeps_failed_status_on_trailing_acp_discon
     assert replay_chunks[-1].session.status == "failed"
 
 
+def test_runtime_resume_stream_replay_keeps_running_for_midrun_mcp_stop_event(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path)
+    store = _private_attr(runtime, "_session_store")
+    store.save_run(
+        workspace=tmp_path,
+        request=RuntimeRequest(prompt="mcp replay", session_id="mcp-stop-replay"),
+        response=RuntimeResponse(
+            session=SessionState(
+                session=runtime_service_module.SessionRef(id="mcp-stop-replay"),
+                status="completed",
+                turn=1,
+            ),
+            events=(
+                EventEnvelope(
+                    session_id="mcp-stop-replay",
+                    sequence=1,
+                    event_type="runtime.request_received",
+                    source="runtime",
+                    payload={"prompt": "mcp replay"},
+                ),
+                EventEnvelope(
+                    session_id="mcp-stop-replay",
+                    sequence=2,
+                    event_type="runtime.mcp_server_stopped",
+                    source="runtime",
+                    payload={
+                        "server": "demo",
+                        "scope": "runtime",
+                        "workspace_root": str(tmp_path),
+                    },
+                ),
+                EventEnvelope(
+                    session_id="mcp-stop-replay",
+                    sequence=3,
+                    event_type="graph.response_ready",
+                    source="graph",
+                    payload={},
+                ),
+            ),
+            output="done",
+        ),
+    )
+
+    replay_chunks = list(runtime.resume_stream("mcp-stop-replay"))
+    mcp_stopped_statuses = [
+        chunk.session.status
+        for chunk in replay_chunks
+        if chunk.kind == "event"
+        and chunk.event is not None
+        and chunk.event.event_type == "runtime.mcp_server_stopped"
+    ]
+    response_ready_statuses = [
+        chunk.session.status
+        for chunk in replay_chunks
+        if chunk.kind == "event"
+        and chunk.event is not None
+        and chunk.event.event_type == "graph.response_ready"
+    ]
+
+    assert mcp_stopped_statuses == ["running"]
+    assert response_ready_statuses == ["completed"]
+
+
+def test_runtime_resume_stream_replay_keeps_running_for_session_end_hook_event(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path)
+    store = _private_attr(runtime, "_session_store")
+    store.save_run(
+        workspace=tmp_path,
+        request=RuntimeRequest(prompt="session-end replay", session_id="session-end-replay"),
+        response=RuntimeResponse(
+            session=SessionState(
+                session=runtime_service_module.SessionRef(id="session-end-replay"),
+                status="completed",
+                turn=1,
+            ),
+            events=(
+                EventEnvelope(
+                    session_id="session-end-replay",
+                    sequence=1,
+                    event_type="runtime.request_received",
+                    source="runtime",
+                    payload={"prompt": "session-end replay"},
+                ),
+                EventEnvelope(
+                    session_id="session-end-replay",
+                    sequence=2,
+                    event_type="runtime.session_ended",
+                    source="runtime",
+                    payload={"session_status": "completed"},
+                ),
+                EventEnvelope(
+                    session_id="session-end-replay",
+                    sequence=3,
+                    event_type="runtime.mcp_server_stopped",
+                    source="runtime",
+                    payload={
+                        "server": "demo",
+                        "scope": "runtime",
+                        "workspace_root": str(tmp_path),
+                    },
+                ),
+                EventEnvelope(
+                    session_id="session-end-replay",
+                    sequence=4,
+                    event_type="graph.response_ready",
+                    source="graph",
+                    payload={},
+                ),
+            ),
+            output="done",
+        ),
+    )
+
+    replay_chunks = list(runtime.resume_stream("session-end-replay"))
+    session_end_statuses = [
+        chunk.session.status
+        for chunk in replay_chunks
+        if chunk.kind == "event"
+        and chunk.event is not None
+        and chunk.event.event_type == "runtime.session_ended"
+    ]
+    response_ready_statuses = [
+        chunk.session.status
+        for chunk in replay_chunks
+        if chunk.kind == "event"
+        and chunk.event is not None
+        and chunk.event.event_type == "graph.response_ready"
+    ]
+
+    assert session_end_statuses == ["running"]
+    assert response_ready_statuses == ["completed"]
+
+
 def test_runtime_emits_skills_loaded_catalog_without_default_full_injection(tmp_path: Path) -> None:
     skill_dir = tmp_path / ".voidcode" / "skills" / "demo"
     _write_demo_skill(
@@ -7845,6 +7983,233 @@ def test_runtime_provider_compaction_emits_continuity_state_and_persists_metadat
     }
     replay_runtime_state = cast(dict[str, object], replay.session.metadata["runtime_state"])
     assert replay_runtime_state["continuity"] == expected_continuity
+
+
+def test_runtime_emits_context_pressure_with_cooldown_edge_control(tmp_path: Path) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("x" * 300, encoding="utf-8")
+    created_providers: list[_ScriptedTurnProvider] = []
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(
+                    ProviderTurnResult(tool_call=ToolCall("read_file", {"filePath": "sample.txt"})),
+                    ProviderTurnResult(tool_call=ToolCall("read_file", {"filePath": "sample.txt"})),
+                    ProviderTurnResult(tool_call=ToolCall("read_file", {"filePath": "sample.txt"})),
+                    ProviderTurnResult(output="done"),
+                ),
+                created_providers=created_providers,
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            context_window=RuntimeContextWindowConfig(
+                max_tool_result_tokens=1,
+                context_pressure_threshold=0.7,
+                context_pressure_cooldown_steps=2,
+            ),
+        ),
+        model_provider_registry=registry,
+    )
+
+    response = runtime.run(
+        RuntimeRequest(prompt="read sample.txt\nread sample.txt\nread sample.txt")
+    )
+
+    pressure_events = [
+        event for event in response.events if event.event_type == RUNTIME_CONTEXT_PRESSURE
+    ]
+    assert response.session.status == "completed"
+    assert len(pressure_events) == 2
+    assert pressure_events[0].payload["reason"] == "token_budget_ratio_exceeded"
+    first_pressure_ratio = cast(float, pressure_events[0].payload["pressure_ratio"])
+    first_threshold = cast(float, pressure_events[0].payload["threshold"])
+    assert first_pressure_ratio >= first_threshold
+    second_count = cast(int, pressure_events[1].payload["original_tool_result_count"])
+    first_count = cast(int, pressure_events[0].payload["original_tool_result_count"])
+    assert second_count - first_count >= 2
+
+
+def test_runtime_context_pressure_hook_failure_is_non_fatal(tmp_path: Path) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("x" * 300, encoding="utf-8")
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(
+                    ProviderTurnResult(tool_call=ToolCall("read_file", {"filePath": "sample.txt"})),
+                    ProviderTurnResult(output="done"),
+                ),
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            context_window=RuntimeContextWindowConfig(
+                max_tool_result_tokens=1,
+                context_pressure_threshold=0.7,
+                context_pressure_cooldown_steps=1,
+            ),
+            hooks=RuntimeHooksConfig(
+                enabled=True,
+                on_context_pressure=((sys.executable, "-c", "raise SystemExit(7)"),),
+            ),
+        ),
+        model_provider_registry=registry,
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="read sample.txt"))
+
+    assert response.session.status == "completed"
+    pressure_events = [
+        event for event in response.events if event.event_type == RUNTIME_CONTEXT_PRESSURE
+    ]
+    assert pressure_events
+    assert any(event.payload.get("kind") == "pressure_signal" for event in pressure_events)
+    assert any(event.payload.get("kind") == "hook_result" for event in pressure_events)
+    assert any(event.payload.get("hook_status") == "error" for event in pressure_events)
+    assert not any(event.event_type == "runtime.failed" for event in response.events)
+
+
+def test_runtime_context_pressure_payload_reason_is_consistently_exceeded(tmp_path: Path) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("x" * 300, encoding="utf-8")
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(
+                    ProviderTurnResult(tool_call=ToolCall("read_file", {"filePath": "sample.txt"})),
+                    ProviderTurnResult(output="done"),
+                ),
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            context_window=RuntimeContextWindowConfig(
+                max_tool_result_tokens=1,
+                context_pressure_threshold=0.7,
+                context_pressure_cooldown_steps=1,
+            ),
+        ),
+        model_provider_registry=registry,
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="read sample.txt"))
+    pressure_events = [
+        event for event in response.events if event.event_type == RUNTIME_CONTEXT_PRESSURE
+    ]
+
+    assert pressure_events
+    assert all(
+        event.payload["reason"] == "token_budget_ratio_exceeded" for event in pressure_events
+    )
+
+
+def test_runtime_context_pressure_replay_keeps_running_status_until_terminal_event(
+    tmp_path: Path,
+) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("x" * 300, encoding="utf-8")
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(
+                    ProviderTurnResult(tool_call=ToolCall("read_file", {"filePath": "sample.txt"})),
+                    ProviderTurnResult(output="done"),
+                ),
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            context_window=RuntimeContextWindowConfig(
+                max_tool_result_tokens=1,
+                context_pressure_threshold=0.7,
+                context_pressure_cooldown_steps=1,
+            ),
+        ),
+        model_provider_registry=registry,
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="read sample.txt", session_id="pressure-replay"))
+    replay_chunks = list(runtime.resume_stream("pressure-replay"))
+    replay_pressure_sessions = [
+        chunk.session.status
+        for chunk in replay_chunks
+        if chunk.kind == "event"
+        and chunk.event is not None
+        and chunk.event.event_type == RUNTIME_CONTEXT_PRESSURE
+    ]
+
+    assert response.session.status == "completed"
+    assert replay_pressure_sessions
+    assert all(status == "running" for status in replay_pressure_sessions)
+
+
+def test_runtime_memory_refreshed_replay_keeps_running_status_until_terminal_event(
+    tmp_path: Path,
+) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("x" * 300, encoding="utf-8")
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(
+                    ProviderTurnResult(tool_call=ToolCall("read_file", {"filePath": "sample.txt"})),
+                    ProviderTurnResult(tool_call=ToolCall("read_file", {"filePath": "sample.txt"})),
+                    ProviderTurnResult(output="done"),
+                ),
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            context_window=RuntimeContextWindowConfig(
+                max_tool_result_tokens=1,
+            ),
+        ),
+        model_provider_registry=registry,
+    )
+
+    response = runtime.run(
+        RuntimeRequest(
+            prompt="read sample.txt\nread sample.txt", session_id="memory-refresh-replay"
+        )
+    )
+    replay_chunks = list(runtime.resume_stream("memory-refresh-replay"))
+    replay_memory_sessions = [
+        chunk.session.status
+        for chunk in replay_chunks
+        if chunk.kind == "event"
+        and chunk.event is not None
+        and chunk.event.event_type == RUNTIME_MEMORY_REFRESHED
+    ]
+
+    assert response.session.status == "completed"
+    assert replay_memory_sessions
+    assert all(status == "running" for status in replay_memory_sessions)
 
 
 def test_runtime_provider_turn_usage_is_persisted_in_session_metadata(tmp_path: Path) -> None:

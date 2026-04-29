@@ -30,6 +30,7 @@ from .context_window import (
 )
 from .contracts import RuntimeStreamChunk
 from .events import (
+    RUNTIME_CONTEXT_PRESSURE,
     RUNTIME_MEMORY_REFRESHED,
     RUNTIME_QUESTION_REQUESTED,
     RUNTIME_SKILL_LOADED,
@@ -129,6 +130,64 @@ class RuntimeRunLoopCoordinator:
                 ),
                 metadata=graph_request.metadata,
             )
+            effective_runtime_config = runtime._effective_runtime_config_from_metadata(
+                session.metadata
+            )
+            context_window_config = effective_runtime_config.context_window
+            pressure_threshold = (
+                context_window_config.context_pressure_threshold
+                if context_window_config is not None
+                else 0.7
+            )
+            pressure_cooldown_steps = (
+                context_window_config.context_pressure_cooldown_steps
+                if context_window_config is not None
+                else 3
+            )
+            pressure_payload = self._build_context_pressure_payload(
+                session=session,
+                context_window=context_window,
+                threshold=pressure_threshold,
+            )
+            if pressure_payload is not None and self._should_emit_context_pressure(
+                session=session,
+                pressure_ratio=cast(float, pressure_payload["pressure_ratio"]),
+                threshold=pressure_threshold,
+                cooldown_steps=pressure_cooldown_steps,
+                tool_result_count=context_window.original_tool_result_count,
+            ):
+                session = self._session_with_context_pressure_state(
+                    session=session,
+                    pressure_ratio=cast(float, pressure_payload["pressure_ratio"]),
+                    threshold=pressure_threshold,
+                    tool_result_count=context_window.original_tool_result_count,
+                )
+                sequence += 1
+                yield RuntimeStreamChunk(
+                    kind="event",
+                    session=session,
+                    event=EventEnvelope(
+                        session_id=session.session.id,
+                        sequence=sequence,
+                        event_type=RUNTIME_CONTEXT_PRESSURE,
+                        source="runtime",
+                        payload=pressure_payload,
+                    ),
+                )
+                hook_outcome = runtime._run_lifecycle_hooks(
+                    session=session,
+                    sequence=sequence,
+                    surface="context_pressure",
+                    payload=pressure_payload,
+                )
+                yield from hook_outcome.chunks
+                sequence = hook_outcome.last_sequence
+                if hook_outcome.failed_error is not None:
+                    logger.warning(
+                        "context_pressure hook failed for %s: %s",
+                        session.session.id,
+                        hook_outcome.failed_error,
+                    )
             if context_window.compacted and reinjected_continuity is None:
                 token_metadata: dict[str, object] = {}
                 if context_window.token_budget is not None:
@@ -165,8 +224,7 @@ class RuntimeRunLoopCoordinator:
                     ),
                 )
             tool_exception_recovery_enabled = (
-                runtime._effective_runtime_config_from_metadata(session.metadata).execution_engine
-                == "provider"
+                effective_runtime_config.execution_engine == "provider"
             )
             try:
                 graph_step = graph.step(
@@ -733,6 +791,109 @@ class RuntimeRunLoopCoordinator:
                     },
                 )
             )
+
+    @staticmethod
+    def _build_context_pressure_payload(
+        *,
+        session: SessionState,
+        context_window: RuntimeContextWindow,
+        threshold: float,
+    ) -> dict[str, object] | None:
+        budget = context_window.token_budget
+        estimated_tokens = context_window.original_tool_result_tokens
+        if budget is None or estimated_tokens is None or budget <= 0 or estimated_tokens <= 0:
+            return None
+        pressure_ratio = estimated_tokens / budget
+        payload: dict[str, object] = {
+            "kind": "pressure_signal",
+            "session_id": session.session.id,
+            "estimated_tokens": estimated_tokens,
+            "budget_max_tokens": budget,
+            "pressure_ratio": pressure_ratio,
+            "threshold": threshold,
+            "reason": "token_budget_ratio_exceeded",
+            "compacted": context_window.compacted,
+            "token_estimate_source": context_window.token_estimate_source,
+            "original_tool_result_count": context_window.original_tool_result_count,
+            "retained_tool_result_count": context_window.retained_tool_result_count,
+        }
+        if context_window.summary_anchor is not None:
+            payload["summary_anchor"] = context_window.summary_anchor
+        if context_window.summary_source is not None:
+            payload["summary_source"] = context_window.summary_source
+        if context_window.continuity_state is not None:
+            payload["continuity_state"] = context_window.continuity_state.metadata_payload()
+        return payload
+
+    @staticmethod
+    def _should_emit_context_pressure(
+        *,
+        session: SessionState,
+        pressure_ratio: float,
+        threshold: float,
+        cooldown_steps: int,
+        tool_result_count: int,
+    ) -> bool:
+        if pressure_ratio < threshold:
+            return False
+        raw_runtime_state = session.metadata.get("runtime_state")
+        runtime_state = (
+            cast(dict[str, object], raw_runtime_state)
+            if isinstance(raw_runtime_state, dict)
+            else {}
+        )
+        current_run_id_raw = runtime_state.get("run_id")
+        current_run_id = current_run_id_raw if isinstance(current_run_id_raw, str) else None
+        raw_pressure_state = runtime_state.get("context_pressure")
+        pressure_state = (
+            cast(dict[str, object], raw_pressure_state)
+            if isinstance(raw_pressure_state, dict)
+            else {}
+        )
+        last_count_raw = pressure_state.get("last_emitted_tool_result_count")
+        last_count = (
+            last_count_raw
+            if isinstance(last_count_raw, int) and not isinstance(last_count_raw, bool)
+            else None
+        )
+        if last_count is None:
+            return True
+        last_run_id_raw = pressure_state.get("last_emitted_run_id")
+        last_run_id = last_run_id_raw if isinstance(last_run_id_raw, str) else None
+        if current_run_id is not None and last_run_id is not None and current_run_id != last_run_id:
+            return True
+        return (tool_result_count - last_count) >= cooldown_steps
+
+    @staticmethod
+    def _session_with_context_pressure_state(
+        *,
+        session: SessionState,
+        pressure_ratio: float,
+        threshold: float,
+        tool_result_count: int,
+    ) -> SessionState:
+        raw_runtime_state = session.metadata.get("runtime_state")
+        runtime_state = (
+            dict(cast(dict[str, object], raw_runtime_state))
+            if isinstance(raw_runtime_state, dict)
+            else {}
+        )
+        runtime_state["context_pressure"] = {
+            "last_emitted_tool_result_count": tool_result_count,
+            "last_pressure_ratio": pressure_ratio,
+            "threshold": threshold,
+            "last_emitted_run_id": (
+                runtime_state.get("run_id")
+                if isinstance(runtime_state.get("run_id"), str)
+                else None
+            ),
+        }
+        return SessionState(
+            session=session.session,
+            status=session.status,
+            turn=session.turn,
+            metadata={**session.metadata, "runtime_state": runtime_state},
+        )
 
     def _drain_runtime_events(
         self,

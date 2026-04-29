@@ -13,6 +13,7 @@ from voidcode.runtime.events import (
     RUNTIME_BACKGROUND_TASK_COMPLETED,
     RUNTIME_BACKGROUND_TASK_FAILED,
     RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL,
+    RUNTIME_CONTEXT_PRESSURE,
     RUNTIME_DELEGATED_RESULT_AVAILABLE,
     RUNTIME_LSP_SERVER_FAILED,
     RUNTIME_LSP_SERVER_STARTED,
@@ -53,6 +54,7 @@ def test_runtime_event_types_include_stable_emitted_events() -> None:
 def test_future_additive_event_types_cover_async_lifecycle_surfaces() -> None:
     assert PROTOTYPE_ADDITIVE_EVENT_TYPES == (
         RUNTIME_MEMORY_REFRESHED,
+        RUNTIME_CONTEXT_PRESSURE,
         RUNTIME_SESSION_STARTED,
         RUNTIME_SESSION_ENDED,
         RUNTIME_SESSION_IDLE,
