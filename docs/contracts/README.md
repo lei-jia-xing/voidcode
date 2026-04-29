@@ -32,6 +32,7 @@
 - [`agent-tool-enforcement.md`](./agent-tool-enforcement.md) — agent preset 中 tool allowlist/default tool set 如何进入 runtime enforcement
 - [`runtime-config.md`](./runtime-config.md) — MVP 配置界面及优先级
 - [`runtime-lifecycle-hooks.md`](./runtime-lifecycle-hooks.md) — richer lifecycle hook phases 的 runtime-owned 执行契约
+- [`background-task-delegation.md`](./background-task-delegation.md) — delegated/background task parent/child linkage、结果读取、retry/cancel 与 fake-provider/fake-MCP 验证立场
 - [`stream-transport.md`](./stream-transport.md) — 运行时流的交付与重放预期
 
 ## 相关 Issue
@@ -46,6 +47,7 @@
 - #175 在 runtime 中稳定 `RuntimeRequest.metadata` schema
 - #169 runtime enforcement of agent tool allowlists/default tool sets
 - #170 richer runtime lifecycle hook execution
+- #289 delegated child execution E2E baseline
 
 ## 相关代码
 

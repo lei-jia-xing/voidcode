@@ -37,6 +37,11 @@ uv run voidcode sessions list --json --workspace .
 uv run voidcode sessions resume <session-id> --workspace .
 uv run voidcode commands list --workspace .
 uv run voidcode commands show review --workspace .
+# Delegated/background task surfaces
+uv run voidcode tasks list --workspace .
+uv run voidcode tasks status <task-id> --workspace .
+uv run voidcode tasks output <task-id> --workspace .
+uv run voidcode tasks cancel <task-id> --workspace .
 ```
 
 CLI 的默认输出面向人工阅读：`run` 会隐藏原始事件转储，只展示关键进度、最终结果和 session id。需要脚本消费时使用 `--json`；在 JSON 模式下，stdout 仅保留机器可解析的 JSON，进度/诊断信息输出到 stderr。
@@ -108,6 +113,24 @@ Python 测试现在同时包含示例型测试和一小批基于 Hypothesis 的 
 - replay 缺口是事件持久化问题，还是执行路径本身没有发出事件。
 
 当前不建议为这类分析优先新增第二套结构化日志。只要问题属于 session truth、审批、hook、tool execution 或 replay，一般都应先扩展或使用现有 `EventEnvelope` transcript，而不是并行维护另一套不可重放的日志面。
+
+### Delegated / background task 调试
+
+当前 delegated child execution 是 runtime-owned surface，不是 CLI、HTTP 或 ACP 各自维护的执行路径。排查这类问题时按以下边界验证：
+
+- `docs/contracts/background-task-delegation.md` 是 parent/child linkage、notification、result、retry/cancel 语义的权威文档。
+- `task` 工具负责 category / `subagent_type` routing 校验；runtime 负责 child session、tool allowlist guardrail、hooks、MCP lifecycle 与持久化。
+- `background_output` 可以读取摘要，也可以用 bounded `full_session=true` 查看 child transcript；`message_limit` 被限制在 1 到 100，失败结果只建议在用户明确要求时用 `session_id` 继续或重试。
+- `background_cancel` 对 unknown、running、completed、cancelled 等状态返回确定性 payload，不应被包装成未验证的文本约定。
+- CI 与本地测试使用 fake provider 和 fake MCP 覆盖 delegated/MCP lifecycle；不需要 live provider，也不需要真实 `npx @playwright/mcp` 才能验证这些契约。
+
+相关验证命令：
+
+```bash
+uv run pytest tests/unit/runtime/test_runtime_events.py tests/unit/interface/test_cli_delegated_parity.py
+uv run pytest tests/unit/tools/test_background_task_tools.py tests/unit/runtime/test_mcp.py -k "background or cancel or output or mcp"
+mise run check
+```
 
 ## 前端开发
 
