@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import asdict
@@ -147,6 +148,38 @@ class SessionStore(Protocol):
         include_queued: bool = True,
     ) -> tuple[BackgroundTaskState, ...]: ...
 
+    def prune_sessions(
+        self,
+        *,
+        workspace: Path,
+        keep_last_n: int = 50,
+        older_than_ms: int | None = None,
+    ) -> int: ...
+
+    def prune_events(
+        self,
+        *,
+        workspace: Path,
+        keep_last_per_session: int = 500,
+        older_than_ms: int | None = None,
+    ) -> int: ...
+
+    def prune_notifications(
+        self,
+        *,
+        workspace: Path,
+        keep_last_n: int = 100,
+        older_than_ms: int | None = None,
+    ) -> int: ...
+
+    def prune_background_tasks(
+        self,
+        *,
+        workspace: Path,
+        keep_last_n: int = 50,
+        older_than_ms: int | None = None,
+    ) -> int: ...
+
 
 @runtime_checkable
 class SessionEventAppender(Protocol):
@@ -261,6 +294,10 @@ class SqliteSessionStore:
         connection = sqlite3.connect(database_path)
         try:
             connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA journal_mode=WAL")
+            connection.execute("PRAGMA busy_timeout=5000")
+            connection.execute("PRAGMA synchronous=NORMAL")
+            connection.execute("PRAGMA wal_checkpoint(PASSIVE)")
             self._ensure_schema(connection=connection, database_path=database_path)
             yield connection
         finally:
@@ -1068,71 +1105,77 @@ class SqliteSessionStore:
         dedupe_key: str | None = None,
     ) -> EventEnvelope | None:
         with self._connect(workspace) as connection:
-            payload = self._enriched_background_task_event_payload(
-                connection=connection,
-                workspace=workspace,
-                event_type=event_type,
-                payload=payload,
-            )
-            updated_at = self._next_timestamp(connection=connection)
-            sequence_row = cast(
-                sqlite3.Row | None,
-                connection.execute(
-                    """
-                    UPDATE sessions
-                    SET updated_at = ?, last_event_sequence = last_event_sequence + 1
-                    WHERE workspace = ? AND session_id = ?
-                    RETURNING last_event_sequence
-                    """,
-                    (updated_at, str(workspace), session_id),
-                ).fetchone(),
-            )
-            if sequence_row is None:
-                raise UnknownSessionError(f"unknown session: {session_id}")
-            if dedupe_key is not None:
-                delivered_at = self._next_timestamp(connection=connection)
-                inserted_delivery = connection.execute(
-                    """
-                    INSERT OR IGNORE INTO session_event_deliveries (
-                        workspace, session_id, dedupe_key, delivered_at
-                    ) VALUES (?, ?, ?, ?)
-                    """,
-                    (str(workspace), session_id, dedupe_key, delivered_at),
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                payload = self._enriched_background_task_event_payload(
+                    connection=connection,
+                    workspace=workspace,
+                    event_type=event_type,
+                    payload=payload,
                 )
-                if inserted_delivery.rowcount == 0:
-                    _ = connection.execute(
+                updated_at = self._next_timestamp(connection=connection)
+                sequence_row = cast(
+                    sqlite3.Row | None,
+                    connection.execute(
                         """
                         UPDATE sessions
-                        SET updated_at = ?, last_event_sequence = last_event_sequence - 1
+                        SET updated_at = ?, last_event_sequence = last_event_sequence + 1
                         WHERE workspace = ? AND session_id = ?
+                        RETURNING last_event_sequence
                         """,
                         (updated_at, str(workspace), session_id),
+                    ).fetchone(),
+                )
+                if sequence_row is None:
+                    connection.rollback()
+                    raise UnknownSessionError(f"unknown session: {session_id}")
+                if dedupe_key is not None:
+                    delivered_at = self._next_timestamp(connection=connection)
+                    inserted_delivery = connection.execute(
+                        """
+                        INSERT OR IGNORE INTO session_event_deliveries (
+                            workspace, session_id, dedupe_key, delivered_at
+                        ) VALUES (?, ?, ?, ?)
+                        """,
+                        (str(workspace), session_id, dedupe_key, delivered_at),
                     )
-                    connection.commit()
-                    return None
-            sequence = cast(int, sequence_row["last_event_sequence"])
-            event = EventEnvelope(
-                session_id=session_id,
-                sequence=sequence,
-                event_type=event_type,
-                source=source,
-                payload=payload,
-            )
-            _ = connection.execute(
-                """
-                INSERT INTO session_events (session_id, sequence, event_type, source, payload_json)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (
-                    event.session_id,
-                    event.sequence,
-                    event.event_type,
-                    event.source,
-                    json.dumps(event.payload, sort_keys=True),
-                ),
-            )
-            connection.commit()
-            return event
+                    if inserted_delivery.rowcount == 0:
+                        _ = connection.execute(
+                            """
+                            UPDATE sessions
+                            SET updated_at = ?, last_event_sequence = last_event_sequence - 1
+                            WHERE workspace = ? AND session_id = ?
+                            """,
+                            (updated_at, str(workspace), session_id),
+                        )
+                        connection.commit()
+                        return None
+                sequence = cast(int, sequence_row["last_event_sequence"])
+                event = EventEnvelope(
+                    session_id=session_id,
+                    sequence=sequence,
+                    event_type=event_type,
+                    source=source,
+                    payload=payload,
+                )
+                _ = connection.execute(
+                    """
+                    INSERT INTO session_events (session_id, sequence, event_type, source, payload_json)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        event.session_id,
+                        event.sequence,
+                        event.event_type,
+                        event.source,
+                        json.dumps(event.payload, sort_keys=True),
+                    ),
+                )
+                connection.commit()
+                return event
+            except Exception:
+                connection.rollback()
+                raise
 
     def _sync_background_task_durable_state(
         self,
@@ -1922,13 +1965,162 @@ class SqliteSessionStore:
         return row
 
     def _next_background_task_timestamp(self, *, connection: sqlite3.Connection) -> int:
-        row = cast(
-            sqlite3.Row,
-            connection.execute(
-                "SELECT COALESCE(MAX(updated_at), 0) + 1 AS next_ts FROM background_tasks"
-            ).fetchone(),
-        )
-        return cast(int, row["next_ts"])
+        return int(time.time_ns() / 1_000_000)
+
+    def prune_sessions(
+        self,
+        *,
+        workspace: Path,
+        keep_last_n: int = 50,
+        older_than_ms: int | None = None,
+    ) -> int:
+        with self._connect(workspace) as connection:
+            cutoff = older_than_ms
+            if cutoff is not None:
+                now = self._next_timestamp(connection=connection)
+                cutoff = now - cutoff
+            deleted = cast(
+                sqlite3.Cursor,
+                connection.execute(
+                    """
+                    DELETE FROM sessions
+                    WHERE workspace = ?
+                      AND session_id NOT IN (
+                          SELECT session_id FROM sessions
+                          WHERE workspace = ?
+                          ORDER BY updated_at DESC, session_id ASC
+                          LIMIT ?
+                      )
+                      AND (1 = ? OR updated_at < ?)
+                    """,
+                    (
+                        str(workspace),
+                        str(workspace),
+                        keep_last_n,
+                        1 if cutoff is None else 0,
+                        cutoff if cutoff is not None else 0,
+                    ),
+                ),
+            )
+            connection.commit()
+            return deleted.rowcount
+
+    def prune_events(
+        self,
+        *,
+        workspace: Path,
+        keep_last_per_session: int = 500,
+        older_than_ms: int | None = None,
+    ) -> int:
+        with self._connect(workspace) as connection:
+            cutoff = older_than_ms
+            if cutoff is not None:
+                now = self._next_timestamp(connection=connection)
+                cutoff = now - cutoff
+            deleted = cast(
+                sqlite3.Cursor,
+                connection.execute(
+                    """
+                    DELETE FROM session_events
+                    WHERE (session_id, sequence) NOT IN (
+                          SELECT session_id, sequence FROM (
+                              SELECT session_id, sequence,
+                                     ROW_NUMBER() OVER (
+                                         PARTITION BY session_id ORDER BY sequence DESC
+                                     ) AS rn
+                              FROM session_events
+                          ) WHERE rn <= ?
+                      )
+                      AND (1 = ? OR session_id IN (
+                          SELECT session_id FROM sessions WHERE workspace = ? AND updated_at < ?
+                      ))
+                    """,
+                    (
+                        keep_last_per_session,
+                        1 if cutoff is None else 0,
+                        str(workspace),
+                        cutoff if cutoff is not None else 0,
+                    ),
+                ),
+            )
+            connection.commit()
+            return deleted.rowcount
+
+    def prune_notifications(
+        self,
+        *,
+        workspace: Path,
+        keep_last_n: int = 100,
+        older_than_ms: int | None = None,
+    ) -> int:
+        with self._connect(workspace) as connection:
+            cutoff = older_than_ms
+            if cutoff is not None:
+                now = self._next_timestamp(connection=connection)
+                cutoff = now - cutoff
+            deleted = cast(
+                sqlite3.Cursor,
+                connection.execute(
+                    """
+                    DELETE FROM session_notifications
+                    WHERE workspace = ?
+                      AND notification_id NOT IN (
+                          SELECT notification_id FROM session_notifications
+                          WHERE workspace = ?
+                          ORDER BY created_at DESC, notification_id DESC
+                          LIMIT ?
+                      )
+                      AND (1 = ? OR created_at < ?)
+                    """,
+                    (
+                        str(workspace),
+                        str(workspace),
+                        keep_last_n,
+                        1 if cutoff is None else 0,
+                        cutoff if cutoff is not None else 0,
+                    ),
+                ),
+            )
+            connection.commit()
+            return deleted.rowcount
+
+    def prune_background_tasks(
+        self,
+        *,
+        workspace: Path,
+        keep_last_n: int = 50,
+        older_than_ms: int | None = None,
+    ) -> int:
+        with self._connect(workspace) as connection:
+            cutoff = older_than_ms
+            if cutoff is not None:
+                now = self._next_timestamp(connection=connection)
+                cutoff = now - cutoff
+            deleted = cast(
+                sqlite3.Cursor,
+                connection.execute(
+                    """
+                    DELETE FROM background_tasks
+                    WHERE workspace = ?
+                      AND task_id NOT IN (
+                          SELECT task_id FROM background_tasks
+                          WHERE workspace = ?
+                          ORDER BY updated_at DESC, task_id ASC
+                          LIMIT ?
+                      )
+                      AND (1 = ? OR updated_at < ?)
+                    """,
+                    (
+                        str(workspace),
+                        str(workspace),
+                        keep_last_n,
+                        1 if cutoff is None else 0,
+                        cutoff if cutoff is not None else 0,
+                    ),
+                ),
+            )
+            connection.commit()
+            return deleted.rowcount
 
     def _linked_session_background_task_runtime_state(
         self,
@@ -2296,10 +2488,4 @@ class SqliteSessionStore:
         return self._next_timestamp(connection=connection)
 
     def _next_timestamp(self, *, connection: sqlite3.Connection) -> int:
-        row = cast(
-            sqlite3.Row,
-            connection.execute(
-                "SELECT COALESCE(MAX(updated_at), 0) + 1 AS next_ts FROM sessions"
-            ).fetchone(),
-        )
-        return cast(int, row["next_ts"])
+        return int(time.time_ns() / 1_000_000)
