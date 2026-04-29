@@ -1,7 +1,13 @@
 import { render, screen, fireEvent } from "@testing-library/react";
 import { describe, it, expect, vi } from "vitest";
 import { ChatThread } from "./ChatThread";
+import { estimateStreamedTextHeight } from "../lib/runtime/text-layout";
 import "../i18n";
+
+vi.mock("@chenglou/pretext", () => ({
+  prepare: vi.fn((text: string) => ({ text })),
+  layout: vi.fn(() => ({ height: 46, lineCount: 2 })),
+}));
 
 vi.mock("react-markdown", () => ({
   default: ({ children }: { children: string }) => <div>{children}</div>,
@@ -81,6 +87,59 @@ describe("ChatThread", () => {
     expect(screen.getByText("hi there")).toBeInTheDocument();
     expect(screen.queryByText("Assistant")).not.toBeInTheDocument();
     expect(screen.queryByLabelText(/avatar/i)).not.toBeInTheDocument();
+  });
+
+  it("uses pretext to reserve streamed assistant text height", () => {
+    render(
+      <ChatThread
+        {...baseProps}
+        messages={[
+          {
+            id: "msg-1",
+            role: "assistant",
+            content: "streaming markdown text",
+            thinking: [],
+            tools: [],
+            approval: null,
+            status: "in_progress",
+            sequence: 1,
+          },
+        ]}
+      />,
+    );
+
+    expect(
+      screen.getByText("streaming markdown text").parentElement,
+    ).toHaveAttribute("data-pretext-estimated-height", "46");
+  });
+
+  it("does not reserve pretext height for completed assistant text", () => {
+    render(
+      <ChatThread
+        {...baseProps}
+        messages={[
+          {
+            id: "msg-1",
+            role: "assistant",
+            content: "completed markdown text",
+            thinking: [],
+            tools: [],
+            approval: null,
+            status: "completed",
+            sequence: 1,
+          },
+        ]}
+      />,
+    );
+
+    expect(
+      screen.getByText("completed markdown text").parentElement,
+    ).not.toHaveAttribute("data-pretext-estimated-height");
+  });
+
+  it("exposes a pretext-backed text height estimator", () => {
+    expect(estimateStreamedTextHeight("hello world")).toBe(46);
+    expect(estimateStreamedTextHeight("   ")).toBe(0);
   });
 
   it("renders loading placeholder without avatar", () => {

@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -14,6 +14,10 @@ import {
 } from "lucide-react";
 import { ChatMessage } from "../lib/runtime/event-parser";
 import type { QuestionAnswer } from "../lib/runtime/types";
+import {
+  estimateStreamedTextHeight,
+  STREAM_TEXT_ESTIMATE_WIDTH,
+} from "../lib/runtime/text-layout";
 
 type ChatTool = ChatMessage["tools"][number];
 
@@ -39,6 +43,51 @@ function formatThinkingDuration(startedAt?: number, updatedAt?: number) {
   if (elapsedMs < 1000) return "<1s";
   if (elapsedMs < 10_000) return `${(elapsedMs / 1000).toFixed(1)}s`;
   return `${Math.round(elapsedMs / 1000)}s`;
+}
+
+function StreamingMarkdown({
+  content,
+  active,
+}: {
+  content: string;
+  active: boolean;
+}) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [measuredWidth, setMeasuredWidth] = useState(
+    STREAM_TEXT_ESTIMATE_WIDTH,
+  );
+
+  useEffect(() => {
+    if (!active) return;
+    const element = containerRef.current;
+    if (!element || typeof ResizeObserver === "undefined") return;
+
+    const updateWidth = () => {
+      const nextWidth = Math.round(element.getBoundingClientRect().width);
+      if (nextWidth > 0) setMeasuredWidth(nextWidth);
+    };
+    updateWidth();
+
+    const observer = new ResizeObserver(updateWidth);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [active]);
+
+  const estimatedHeight = useMemo(
+    () => (active ? estimateStreamedTextHeight(content, measuredWidth) : 0),
+    [active, content, measuredWidth],
+  );
+
+  return (
+    <div
+      ref={containerRef}
+      className="markdown-body"
+      data-pretext-estimated-height={estimatedHeight || undefined}
+      style={estimatedHeight > 0 ? { minHeight: estimatedHeight } : undefined}
+    >
+      <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+    </div>
+  );
 }
 
 function ThinkingBlock({
@@ -741,11 +790,10 @@ export function ChatThread({
                   />
                   <ToolActivities tools={message.tools} />
                   {assistantContent && (
-                    <div className="markdown-body">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                        {assistantContent}
-                      </ReactMarkdown>
-                    </div>
+                    <StreamingMarkdown
+                      content={assistantContent}
+                      active={message.status === "in_progress"}
+                    />
                   )}
                   {message.approval && isWaitingApproval && (
                     <ApprovalCard
