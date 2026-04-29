@@ -787,7 +787,16 @@ class ManagedMcpManager:
             existing_state = self._server_states.get(
                 server_name, McpServerRuntimeState(server_name=server_name)
             )
-            if not (
+            remaining_session_owner = self._remaining_session_owner_for_server(key)
+            if remaining_session_owner is not None:
+                self._server_states[server_name] = McpServerRuntimeState(
+                    server_name=server_name,
+                    status="running",
+                    workspace_root=str(remaining_session_owner.workspace_root),
+                    command=list(existing_state.command),
+                    retry_available=False,
+                )
+            elif not (
                 preserve_failed_state
                 and existing_state.status == "failed"
                 and existing_state.workspace_root == str(workspace_root)
@@ -814,6 +823,14 @@ class ManagedMcpManager:
                     },
                 )
             )
+
+    def _remaining_session_owner_for_server(self, key: _McpServerKey) -> _RunningMcpServer | None:
+        if key.scope != "session":
+            return None
+        for running_key, running in self._running_servers.items():
+            if running_key.scope == "session" and running_key.server_name == key.server_name:
+                return running
+        return None
 
     def _record_server_reused(self, *, key: _McpServerKey, workspace_root: Path) -> None:
         self._record_event(

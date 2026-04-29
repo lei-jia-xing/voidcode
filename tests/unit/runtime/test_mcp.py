@@ -1340,10 +1340,20 @@ stops.write_text(
         "runtime.mcp_server_released",
         "runtime.mcp_server_stopped",
     ]
+    assert manager.current_state().servers["session"].status == "running"
     assert stops_path.read_text(encoding="utf-8").splitlines() == ["stop"]
     assert [
         tool.tool_name for tool in manager.list_tools(workspace=tmp_path, owner_session_id="b")
     ] == ["echo"]
+
+    released_b_events: tuple[McpRuntimeEvent, ...] = release_session(session_id="b")
+
+    assert [event.event_type for event in released_b_events][-2:] == [
+        "runtime.mcp_server_released",
+        "runtime.mcp_server_stopped",
+    ]
+    assert manager.current_state().servers["session"].status == "stopped"
+    assert stops_path.read_text(encoding="utf-8").splitlines() == ["stop", "stop"]
 
 
 def test_mcp_manager_idle_cleans_abandoned_session_scoped_servers(tmp_path: Path) -> None:
