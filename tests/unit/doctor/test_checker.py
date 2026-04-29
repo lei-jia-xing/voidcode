@@ -158,7 +158,7 @@ class TestMcpServerChecker:
         from voidcode.mcp.config import McpServerConfig
 
         config = McpServerConfig(
-            command=("python", "--version"),
+            command=("python", "--api-key", "secret-token"),
             transport="stdio",
         )
         checker = McpServerChecker("test-mcp", config)
@@ -168,13 +168,16 @@ class TestMcpServerChecker:
         assert result.status == CapabilityCheckStatus.READY
         assert result.name == "mcp:test-mcp"
         assert result.check_type == DoctorCheckType.MCP_SERVER.value
+        assert result.details["scope"] == "runtime"
+        assert result.details["command"] == ["python", "--api-key", "<redacted>"]
+        assert "secret-token" not in str(result.details)
 
     def test_check_with_missing_mcp_server(self) -> None:
         """Test checker with a missing MCP server."""
         from voidcode.mcp.config import McpServerConfig
 
         config = McpServerConfig(
-            command=("missing-mcp-server-xyz",),
+            command=("missing-mcp-server-xyz", "--token=secret-token"),
             transport="stdio",
         )
         checker = McpServerChecker("missing-mcp", config)
@@ -182,6 +185,13 @@ class TestMcpServerChecker:
 
         assert result.status == CapabilityCheckStatus.NOT_FOUND
         assert result.error_message is not None
+        assert result.details["scope"] == "runtime"
+        assert result.details["command"] == [
+            "missing-mcp-server-xyz",
+            "--token=<redacted>",
+        ]
+        assert "secret-token" not in result.error_message
+        assert "secret-token" not in str(result.details)
 
     def test_check_with_no_command(self) -> None:
         """Test checker with MCP config that has no command."""

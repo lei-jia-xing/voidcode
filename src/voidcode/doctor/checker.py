@@ -13,6 +13,8 @@ if TYPE_CHECKING:
     from ..lsp.presets import LspServerPreset
     from ..mcp.config import McpServerConfig
 
+from ..mcp.redaction import format_redacted_mcp_command, redact_mcp_command
+
 # Timeout for executable checks
 _EXECUTABLE_CHECK_TIMEOUT = 5.0
 
@@ -257,7 +259,7 @@ class LspServerChecker:
                 details={
                     "server_name": self._server_name,
                     "preset_id": preset_id,
-                    "command": list(command),
+                    "command": redact_mcp_command(command),
                     "languages": list(self._preset.languages) if self._preset.languages else [],
                     "extensions": list(self._preset.extensions) if self._preset.extensions else [],
                 },
@@ -269,13 +271,13 @@ class LspServerChecker:
             check_type=DoctorCheckType.LSP_SERVER.value,
             details={
                 "server_name": self._server_name,
-                "command": list(command),
+                "command": redact_mcp_command(command),
                 "languages": list(self._preset.languages) if self._preset.languages else [],
                 "extensions": list(self._preset.extensions) if self._preset.extensions else [],
             },
             error_message=(
                 f"LSP server '{self._server_name}' command '{executable}' not found in PATH. "
-                f"Full command: {' '.join(command)}"
+                f"Full command: {format_redacted_mcp_command(command)}"
             ),
         )
 
@@ -302,6 +304,7 @@ class McpServerChecker:
                 details={
                     "server_name": self._server_name,
                     "transport": self._config.transport,
+                    "scope": getattr(self._config, "scope", "runtime"),
                 },
                 error_message=f"MCP server '{self._server_name}' has no command configured",
             )
@@ -314,6 +317,7 @@ class McpServerChecker:
                 check_type=DoctorCheckType.MCP_SERVER.value,
                 details={
                     "server_name": self._server_name,
+                    "scope": getattr(self._config, "scope", "runtime"),
                 },
                 error_message=f"MCP server '{self._server_name}' has empty command",
             )
@@ -325,8 +329,9 @@ class McpServerChecker:
                 check_type=DoctorCheckType.MCP_SERVER.value,
                 details={
                     "server_name": self._server_name,
-                    "command": list(command),
+                    "command": redact_mcp_command(command),
                     "transport": self._config.transport,
+                    "scope": getattr(self._config, "scope", "runtime"),
                     "has_env": bool(self._config.env),
                 },
             )
@@ -337,11 +342,12 @@ class McpServerChecker:
             check_type=DoctorCheckType.MCP_SERVER.value,
             details={
                 "server_name": self._server_name,
-                "command": list(command),
+                "command": redact_mcp_command(command),
                 "transport": self._config.transport,
+                "scope": getattr(self._config, "scope", "runtime"),
             },
             error_message=(
                 f"MCP server '{self._server_name}' command '{executable}' not found in PATH. "
-                f"Full command: {' '.join(command)}"
+                f"Full command: {format_redacted_mcp_command(command)}"
             ),
         )
