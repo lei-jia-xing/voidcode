@@ -20,6 +20,7 @@ VoidCode 是一个受 OpenCode 和 Claude Code 启发而开发的 pre-MVP 本地
 - 运行时负责协调会话、权限、钩子（hooks）、工具注册、流式传输和存储
 - 运行时选择并驱动具体的 execution engine / orchestration path
 - 某些 graph path 使用 LangGraph，另一些则由 runtime 直接驱动的 graph implementation 承担
+- delegated child execution 也从 runtime 进入，使用 parent / child session linkage、background task lifecycle 与 runtime-owned result retrieval，而不是客户端或 ACP 侧的旁路执行
 
 有两个边界尤为重要：
 
@@ -48,6 +49,7 @@ VoidCode 使用 LangGraph 作为编排引擎，而不是整个产品运行时。
 - 基于 SQLite 的存储抽象
 - 面向 CLI 或未来客户端的流式传输
 - 上下文管理与压缩
+- delegated child routing、background result retrieval、cancel/retry guidance 与 lifecycle hook guardrails
 
 ### `ProviderSingleAgentGraph` 负责（当前已实现的 provider-backed execution engine 路径）
 
@@ -55,7 +57,7 @@ VoidCode 使用 LangGraph 作为编排引擎，而不是整个产品运行时。
 - 不依赖 LangGraph，由 runtime 直接驱动
 - 代表后续 provider-backed execution engine 的产品主路径方向
 
-**核心架构决策：** 运行时统一持有执行治理；LangGraph 当前仅覆盖 deterministic/read-only 参考与 debug slice 的编排，provider-backed 执行路径由 runtime 直接驱动，并代表真实 agent 行为的主推荐路径。未来如果 multi-agent workflow 扩展 graph 编排范围，runtime 仍保持系统控制面地位。ACP 是单独的控制面 / 协议边界，与 execution engine 是不同维度，不应混为一谈。
+**核心架构决策：** 运行时统一持有执行治理；LangGraph 当前仅覆盖 deterministic/read-only 参考与 debug slice 的编排，provider-backed 执行路径由 runtime 直接驱动，并代表真实 agent 行为的主推荐路径。当前已交付的是 runtime-owned delegated child execution 基线，不是任意拓扑 multi-agent 平台。未来如果 multi-agent workflow 扩展 graph 编排范围，runtime 仍保持系统控制面地位。ACP 是单独的控制面 / 协议边界，与 execution engine 是不同维度，不应混为一谈。
 
 ## 关键组件
 
@@ -90,9 +92,9 @@ graph 是执行引擎和编排层，当前包含两条并行路径：
 
 `lsp/`、`skills/`、`provider/`、`acp/` 与 `mcp/` 当前主要承担能力边界与后续抽离方向的定义。其中部分实现仍位于 `runtime/` 下，但目录边界已经存在，不应再被文档忽略。
 
-### `agent/`（规划中）
+### `agent/`
 
-未来的 `voidcode.agent` 将作为预定义 agent 定义与 agent preset/configuration 的边界，用于声明具体 agent 的配置元数据：
+`voidcode.agent` 已存在，并作为预定义 agent 定义与 agent preset/configuration 的声明边界，用于描述具体 agent 的配置元数据：
 
 - prompt / profile 定义
 - hook 绑定
@@ -101,7 +103,21 @@ graph 是执行引擎和编排层，当前包含两条并行路径：
 - tool allowlist / default tool set
 - provider / model preference metadata
 
-`voidcode.agent` 不拥有 session state、审批/权限、持久化、事件路由、transport 或 provider invocation loop。这些仍由 `voidcode.runtime` 持有；`voidcode.graph` 继续负责步骤推进与编排；`hook/`、`skills/`、`mcp/`、`tools/`、`provider/` 仍是可复用能力层。后续 multi-agent workflow 扩展在编排层面的作用范围可以扩大，但不影响 runtime-owned 治理和 agent/ 配置边界的分离。
+`voidcode.agent` 不拥有 session state、审批/权限、持久化、事件路由、transport 或 provider invocation loop。这些仍由 `voidcode.runtime` 持有；`voidcode.graph` 继续负责步骤推进与编排；`hook/`、`skills/`、`mcp/`、`tools/`、`provider/` 仍是可复用能力层。当前 runtime 会消费 `leader` / `product` 顶层 preset，并允许受支持的 child preset 通过 delegated path 执行；后续 multi-agent workflow 扩展在编排层面的作用范围可以扩大，但不影响 runtime-owned 治理和 agent/ 配置边界的分离。
+
+### Delegated child execution 与明确非目标
+
+当前已经实现的 delegated/subagent 行为保持收敛：
+
+- 顶层 active run 默认是 `leader`，也可显式选择 `product`。
+- `task` 工具会先验证 category / `subagent_type` routing，再创建 runtime-owned background task 与 child session lineage。
+- 支持的 child preset 是 `advisor`、`explore`、`product`、`researcher`、`worker`；它们不等价于可任意直接启动的顶层 agent。
+- runtime 根据 agent manifest 和 request tool config 收窄 provider 可见工具，并在实际 tool lookup 时再次执行 allowlist guardrail。
+- `skill_refs` 是 manifest/catalog 默认选择；`force_load_skills` 与 delegated `load_skills` 只在目标 run 或 child session 注入完整 skill body，不从 parent 泄漏到 child。
+- MCP server lifecycle 由 runtime 以 runtime scope 或 session scope 管理，并通过 fake MCP 覆盖测试；当前不宣称 workspace-scoped MCP、MCP marketplace 或动态 agent marketplace。
+- 背景结果通过 `background_output` / `load_background_task_result` 读取，可选择有界 full-session transcript；失败输出只给出显式 user-request retry guidance，不做无限自动重试。
+
+以下能力仍不属于当前实现：workspace-scoped MCP、provider/agent marketplace、动态 agent 发现、直接 agent-to-agent bus、任意拓扑 multi-agent orchestration，以及 #285 context assembly / compaction 的完整产品化语义。
 
 ### `tui/`
 
@@ -129,4 +145,4 @@ MVP 旨在包括：
 - 至少一个可用的入口点，例如 CLI
 - 一个可工作的无头运行时基础
 
-MVP 明确推迟了更深层次的 IDE 集成、云端协作、插件市场，以及更复杂的 workflow 编排范围扩展与 ACP 扩展；这些方向在 post-MVP 阶段继续推进时，也应通过 runtime-owned 治理与 planned `agent/` 边界进入系统，而不是绕过运行时。
+MVP 明确推迟了更深层次的 IDE 集成、云端协作、插件市场，以及更复杂的 workflow 编排范围扩展与 ACP 扩展；这些方向在 post-MVP 阶段继续推进时，也应通过 runtime-owned 治理与现有 `agent/` 声明边界进入系统，而不是绕过运行时。
