@@ -65,6 +65,7 @@ from voidcode.runtime.events import (
     RUNTIME_BACKGROUND_TASK_COMPLETED,
     RUNTIME_BACKGROUND_TASK_FAILED,
     RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL,
+    RUNTIME_CONTEXT_PRESSURE,
     RUNTIME_MCP_SERVER_FAILED,
     RUNTIME_MCP_SERVER_STARTED,
     RUNTIME_MCP_SERVER_STOPPED,
@@ -7839,6 +7840,185 @@ def test_runtime_provider_compaction_emits_continuity_state_and_persists_metadat
     }
     replay_runtime_state = cast(dict[str, object], replay.session.metadata["runtime_state"])
     assert replay_runtime_state["continuity"] == expected_continuity
+
+
+def test_runtime_emits_context_pressure_with_cooldown_edge_control(tmp_path: Path) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("x" * 300, encoding="utf-8")
+    created_providers: list[_ScriptedTurnProvider] = []
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(
+                    ProviderTurnResult(tool_call=ToolCall("read_file", {"filePath": "sample.txt"})),
+                    ProviderTurnResult(tool_call=ToolCall("read_file", {"filePath": "sample.txt"})),
+                    ProviderTurnResult(tool_call=ToolCall("read_file", {"filePath": "sample.txt"})),
+                    ProviderTurnResult(output="done"),
+                ),
+                created_providers=created_providers,
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            context_window=RuntimeContextWindowConfig(
+                max_tool_result_tokens=1,
+                context_pressure_threshold=0.7,
+                context_pressure_cooldown_steps=2,
+            ),
+        ),
+        model_provider_registry=registry,
+    )
+
+    response = runtime.run(
+        RuntimeRequest(prompt="read sample.txt\nread sample.txt\nread sample.txt")
+    )
+
+    pressure_events = [
+        event for event in response.events if event.event_type == RUNTIME_CONTEXT_PRESSURE
+    ]
+    assert response.session.status == "completed"
+    assert len(pressure_events) == 2
+    assert pressure_events[0].payload["reason"] == "token_budget_ratio_exceeded"
+    first_pressure_ratio = cast(float, pressure_events[0].payload["pressure_ratio"])
+    first_threshold = cast(float, pressure_events[0].payload["threshold"])
+    assert first_pressure_ratio >= first_threshold
+    second_count = cast(int, pressure_events[1].payload["original_tool_result_count"])
+    first_count = cast(int, pressure_events[0].payload["original_tool_result_count"])
+    assert second_count - first_count >= 2
+
+
+def test_runtime_context_pressure_hook_failure_is_non_fatal(tmp_path: Path) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("x" * 300, encoding="utf-8")
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(
+                    ProviderTurnResult(tool_call=ToolCall("read_file", {"filePath": "sample.txt"})),
+                    ProviderTurnResult(output="done"),
+                ),
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            context_window=RuntimeContextWindowConfig(
+                max_tool_result_tokens=1,
+                context_pressure_threshold=0.7,
+                context_pressure_cooldown_steps=1,
+            ),
+            hooks=RuntimeHooksConfig(
+                enabled=True,
+                on_context_pressure=((sys.executable, "-c", "raise SystemExit(7)"),),
+            ),
+        ),
+        model_provider_registry=registry,
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="read sample.txt"))
+
+    assert response.session.status == "completed"
+    pressure_events = [
+        event for event in response.events if event.event_type == RUNTIME_CONTEXT_PRESSURE
+    ]
+    assert pressure_events
+    assert any(event.payload.get("kind") == "pressure_signal" for event in pressure_events)
+    assert any(event.payload.get("kind") == "hook_result" for event in pressure_events)
+    assert any(event.payload.get("hook_status") == "error" for event in pressure_events)
+    assert not any(event.event_type == "runtime.failed" for event in response.events)
+
+
+def test_runtime_context_pressure_payload_reason_is_consistently_exceeded(tmp_path: Path) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("x" * 300, encoding="utf-8")
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(
+                    ProviderTurnResult(tool_call=ToolCall("read_file", {"filePath": "sample.txt"})),
+                    ProviderTurnResult(output="done"),
+                ),
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            context_window=RuntimeContextWindowConfig(
+                max_tool_result_tokens=1,
+                context_pressure_threshold=0.7,
+                context_pressure_cooldown_steps=1,
+            ),
+        ),
+        model_provider_registry=registry,
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="read sample.txt"))
+    pressure_events = [
+        event for event in response.events if event.event_type == RUNTIME_CONTEXT_PRESSURE
+    ]
+
+    assert pressure_events
+    assert all(
+        event.payload["reason"] == "token_budget_ratio_exceeded" for event in pressure_events
+    )
+
+
+def test_runtime_context_pressure_replay_uses_completed_status_for_completed_session(
+    tmp_path: Path,
+) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("x" * 300, encoding="utf-8")
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(
+                    ProviderTurnResult(tool_call=ToolCall("read_file", {"filePath": "sample.txt"})),
+                    ProviderTurnResult(output="done"),
+                ),
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            context_window=RuntimeContextWindowConfig(
+                max_tool_result_tokens=1,
+                context_pressure_threshold=0.7,
+                context_pressure_cooldown_steps=1,
+            ),
+        ),
+        model_provider_registry=registry,
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="read sample.txt", session_id="pressure-replay"))
+    replay_chunks = list(runtime.resume_stream("pressure-replay"))
+    replay_pressure_sessions = [
+        chunk.session.status
+        for chunk in replay_chunks
+        if chunk.kind == "event"
+        and chunk.event is not None
+        and chunk.event.event_type == RUNTIME_CONTEXT_PRESSURE
+    ]
+
+    assert response.session.status == "completed"
+    assert replay_pressure_sessions
+    assert all(status == "completed" for status in replay_pressure_sessions)
 
 
 def test_runtime_provider_turn_usage_is_persisted_in_session_metadata(tmp_path: Path) -> None:
