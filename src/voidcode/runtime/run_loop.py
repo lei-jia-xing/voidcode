@@ -41,6 +41,7 @@ from .events import (
 from .permission import PendingApproval, PermissionPolicy, PermissionResolution
 from .question import PendingQuestion
 from .session import SessionState
+from .tool_display import build_tool_display, build_tool_status
 
 if TYPE_CHECKING:
     from .service import ToolRegistry, VoidCodeRuntime
@@ -611,6 +612,15 @@ class RuntimeRunLoopCoordinator:
                 session.metadata
             ).tool_timeout_seconds
             sequence += 1
+            start_args = dict(plan_tool_call.arguments)
+            started_display = build_tool_display(plan_tool_call.tool_name, start_args)
+            started_status = build_tool_status(
+                plan_tool_call.tool_name,
+                tool_call_id,
+                phase="running",
+                status="running",
+                display=started_display,
+            )
             yield RuntimeStreamChunk(
                 kind="event",
                 session=session,
@@ -619,7 +629,12 @@ class RuntimeRunLoopCoordinator:
                     sequence=sequence,
                     event_type=RUNTIME_TOOL_STARTED,
                     source="runtime",
-                    payload={"tool": plan_tool_call.tool_name},
+                    payload={
+                        "tool": plan_tool_call.tool_name,
+                        "tool_call_id": tool_call_id,
+                        "display": started_display,
+                        "tool_status": started_status,
+                    },
                 ),
             )
             if _is_abort_requested(graph_request):
@@ -792,6 +807,21 @@ class RuntimeRunLoopCoordinator:
                 "error": tool_result.error,
             }
             completed_payload.setdefault("tool", tool_result.tool_name)
+
+            completed_display = build_tool_display(
+                plan_tool_call.tool_name,
+                sanitized_arguments,
+                result_data=tool_result.data,
+            )
+            completed_status = build_tool_status(
+                plan_tool_call.tool_name,
+                tool_call_id,
+                phase="completed" if tool_result.status == "ok" else "failed",
+                status="completed" if tool_result.status == "ok" else "failed",
+                display=completed_display,
+            )
+            completed_payload["display"] = completed_display
+            completed_payload["tool_status"] = completed_status
 
             sequence += 1
             yield RuntimeStreamChunk(

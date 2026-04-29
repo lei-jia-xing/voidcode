@@ -623,3 +623,59 @@ def test_tool_native_timeout_error_before_runtime_cap_does_not_emit_runtime_tool
     assert len(completed_events) == 1
     assert completed_events[0].payload["status"] == "error"
     assert completed_events[0].payload["error"] == "tool-native timeout"
+
+
+def test_tool_started_event_includes_display_and_tool_status_metadata(
+    tmp_path: Path,
+) -> None:
+    runtime = _make_runtime(tmp_path, _InstantTool(), tool_timeout_seconds=None)
+
+    chunks = list(runtime.run_stream(RuntimeRequest(prompt="go")))
+    started_events = [
+        chunk.event
+        for chunk in chunks
+        if chunk.kind == "event"
+        and chunk.event is not None
+        and chunk.event.event_type == "runtime.tool_started"
+    ]
+
+    assert len(started_events) >= 1, "expected at least one runtime.tool_started event"
+    payload = started_events[0].payload
+
+    assert "display" in payload
+    assert "tool_status" in payload
+    assert "tool" in payload
+
+
+def test_tool_completed_event_includes_tool_status_metadata(
+    tmp_path: Path,
+) -> None:
+    runtime = _make_runtime(tmp_path, _InstantTool(), tool_timeout_seconds=None)
+
+    chunks = list(runtime.run_stream(RuntimeRequest(prompt="go")))
+    completed_events = [
+        chunk.event
+        for chunk in chunks
+        if chunk.kind == "event"
+        and chunk.event is not None
+        and chunk.event.event_type == "runtime.tool_completed"
+    ]
+
+    assert len(completed_events) >= 1, "expected at least one runtime.tool_completed event"
+    payload = completed_events[0].payload
+
+    assert "display" in payload
+    assert "tool_status" in payload
+    assert "tool" in payload
+
+    display_value = payload["display"]
+    assert isinstance(display_value, dict)
+    assert display_value["kind"] == "generic"
+    assert display_value["title"] == "instant_tool"
+    assert display_value["summary"] == "instant_tool"
+
+    tool_status_value = payload["tool_status"]
+    assert isinstance(tool_status_value, dict)
+    typed_ts = cast(dict[str, object], tool_status_value)
+    nested_display = typed_ts.get("display")
+    assert isinstance(nested_display, dict)

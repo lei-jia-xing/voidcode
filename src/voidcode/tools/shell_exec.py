@@ -76,6 +76,10 @@ class ShellExecTool:
                 "type": "integer",
                 "description": "Timeout in seconds (max 120)",
             },
+            "description": {
+                "type": "string",
+                "description": "Human-readable description of the command",
+            },
         },
         read_only=False,
     )
