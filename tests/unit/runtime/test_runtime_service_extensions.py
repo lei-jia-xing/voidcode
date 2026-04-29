@@ -17,6 +17,7 @@ from unittest.mock import Mock
 
 import pytest
 
+import voidcode.runtime.background_tasks as runtime_background_tasks_module
 import voidcode.runtime.service as runtime_service_module
 from voidcode.acp import AcpRequestEnvelope, AcpResponseEnvelope
 from voidcode.agent import LEADER_AGENT_MANIFEST, get_builtin_agent_manifest, render_agent_prompt
@@ -1075,8 +1076,25 @@ def test_runtime_background_task_started_hook_runs_outside_queue_lock(
     )
     lifecycle_calls: list[str] = []
 
+    class _SynchronousThread:
+        def __init__(
+            self,
+            *,
+            target: Any,
+            args: tuple[object, ...],
+            name: str,
+            daemon: bool,
+        ) -> None:
+            _ = name, daemon
+            self._target = target
+            self._args = args
+
+        def start(self) -> None:
+            self._target(*self._args)
+
     def no_op_worker(task_id: str) -> None:
         _ = task_id
+        lifecycle_calls.append("worker_started")
 
     def assert_started_hook_not_locked(
         *,
@@ -1088,8 +1106,10 @@ def test_runtime_background_task_started_hook_runs_outside_queue_lock(
         _ = task, session_id, extra_payload
         lifecycle_calls.append(surface)
         assert cast(Any, supervisor._queue_lock)._is_owned() is False  # pyright: ignore[reportPrivateUsage]
+        assert "worker_started" not in lifecycle_calls
 
     monkeypatch.setattr(runtime, "_run_background_task_worker", no_op_worker)
+    monkeypatch.setattr(runtime_background_tasks_module.threading, "Thread", _SynchronousThread)
     monkeypatch.setattr(
         supervisor,
         "run_background_task_lifecycle_surface",
@@ -1098,7 +1118,7 @@ def test_runtime_background_task_started_hook_runs_outside_queue_lock(
 
     supervisor._drain_background_task_queue()  # pyright: ignore[reportPrivateUsage]
 
-    assert lifecycle_calls == ["background_task_started"]
+    assert lifecycle_calls == ["background_task_started", "worker_started"]
 
 
 def test_runtime_background_task_concurrency_limit_queues_and_drains(tmp_path: Path) -> None:

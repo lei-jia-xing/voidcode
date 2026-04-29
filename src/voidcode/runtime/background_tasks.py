@@ -339,7 +339,9 @@ class RuntimeBackgroundTaskSupervisor:
     def _drain_background_task_queue(self) -> None:
         runtime = self._runtime
         failed_tasks: list[BackgroundTaskState] = []
-        started_tasks: list[BackgroundTaskState] = []
+        started_tasks: list[
+            tuple[BackgroundTaskState, threading.Thread, _BackgroundTaskConcurrencyIdentity]
+        ] = []
         with self._queue_lock:
             summaries = sorted(
                 runtime._session_store.list_background_tasks(workspace=runtime._workspace),
@@ -391,26 +393,26 @@ class RuntimeBackgroundTaskSupervisor:
                     daemon=True,
                 )
                 runtime._background_task_threads[task.task.id] = worker
-                try:
-                    worker.start()
-                except RuntimeError as exc:
-                    runtime._background_task_threads.pop(task.task.id, None)
-                    self._release_slot(identity)
-                    failed_task = runtime._session_store.mark_background_task_terminal(
-                        workspace=runtime._workspace,
-                        task_id=task.task.id,
-                        status="failed",
-                        error=str(exc),
-                    )
-                    failed_tasks.append(failed_task)
-                    continue
-                started_tasks.append(running_task)
-        for started_task in started_tasks:
+                started_tasks.append((running_task, worker, identity))
+        for started_task, worker, identity in started_tasks:
             self.run_background_task_lifecycle_surface(
                 task=started_task,
                 surface="background_task_started",
                 session_id=started_task.session_id or started_task.parent_session_id or "runtime",
             )
+            try:
+                worker.start()
+            except RuntimeError as exc:
+                with self._queue_lock:
+                    runtime._background_task_threads.pop(started_task.task.id, None)
+                    self._release_slot(identity)
+                failed_task = runtime._session_store.mark_background_task_terminal(
+                    workspace=runtime._workspace,
+                    task_id=started_task.task.id,
+                    status="failed",
+                    error=str(exc),
+                )
+                failed_tasks.append(failed_task)
         for failed_task in failed_tasks:
             self.run_background_task_lifecycle_hook(failed_task)
 
