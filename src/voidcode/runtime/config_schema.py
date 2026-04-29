@@ -12,6 +12,7 @@ from .config import (
     EXECUTION_ENGINE_ENV_VAR,
     MAX_STEPS_ENV_VAR,
     MODEL_ENV_VAR,
+    REASONING_EFFORT_ENV_VAR,
     RUNTIME_CONFIG_FILE_NAME,
     TOOL_TIMEOUT_ENV_VAR,
     runtime_config_path,
@@ -45,7 +46,7 @@ def runtime_config_json_schema() -> dict[str, object]:
             "Resolves alongside environment variables "
             f"({APPROVAL_MODE_ENV_VAR}, {MODEL_ENV_VAR}, "
             f"{EXECUTION_ENGINE_ENV_VAR}, {MAX_STEPS_ENV_VAR}, "
-            f"{TOOL_TIMEOUT_ENV_VAR}) and the user-level "
+            f"{TOOL_TIMEOUT_ENV_VAR}, {REASONING_EFFORT_ENV_VAR}) and the user-level "
             "`~/.config/voidcode/config.json`."
         ),
         "type": "object",
@@ -82,6 +83,16 @@ def runtime_config_json_schema() -> dict[str, object]:
                 "type": "integer",
                 "minimum": 1,
                 "description": "Timeout applied to each tool execution.",
+            },
+            "reasoning_effort": {
+                "type": "string",
+                "minLength": 1,
+                "description": (
+                    "Optional runtime-owned reasoning-effort hint forwarded to the active "
+                    "provider when supported (for example, 'low', 'medium', 'high'). Runtime "
+                    "rejects this hint when the resolved model explicitly does not support "
+                    "reasoning effort."
+                ),
             },
             "hooks": {
                 "type": "object",
@@ -467,6 +478,7 @@ def generate_starter_runtime_config(
     if max_steps is not None:
         payload["max_steps"] = max_steps
     if include_examples:
+        payload["reasoning_effort"] = "medium"
         payload["tools"] = {"builtin": {"enabled": True}}
         payload["skills"] = {"enabled": True}
     return payload
