@@ -370,3 +370,8 @@ All plan target ranges resolved successfully — no deviations needed:
 ### Final T12 gate
 - Final post-commit `mise run check` passed on 2026-04-29: Ruff passed, basedpyright reported 0 errors/warnings, Python pytest reported `1637 passed`, frontend lint/typecheck passed, and frontend Vitest reported `11 files / 143 tests passed`.
 - Full output was saved to `.sisyphus/evidence/task-12-mise-check.txt`.
+
+### PR result
+- Branch `feat/web-opencode-ui-redesign` was pushed with upstream `origin/feat/web-opencode-ui-redesign`.
+- GitHub PR created: https://github.com/lei-jia-xing/voidcode/pull/319
+- PR URL saved to `.sisyphus/evidence/task-12-pr.txt`.
