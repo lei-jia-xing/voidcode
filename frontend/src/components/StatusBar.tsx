@@ -1,6 +1,6 @@
 import { useId, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { GitBranch, Server, Boxes, Network } from "lucide-react";
+import { Server, Boxes, Network } from "lucide-react";
 import type {
   McpServerStatusDetail,
   RuntimeStatusSnapshot,
@@ -16,16 +16,8 @@ interface StatusBarProps {
   onRetryMcp?: () => void;
 }
 
-function statusDotClass(
-  state: string | undefined,
-  kind: "git" | "capability",
-): string {
+function statusDotClass(state: string | undefined): string {
   if (!state) return "bg-[var(--vc-text-subtle)]";
-  if (kind === "git") {
-    if (state === "git_ready") return "bg-[var(--vc-confirm-text)]";
-    if (state === "git_error") return "bg-[var(--vc-danger-text)]";
-    return "bg-[var(--vc-text-subtle)]";
-  }
   if (state === "running") return "bg-[var(--vc-confirm-text)]";
   if (state === "failed") return "bg-[var(--vc-danger-text)]";
   if (state === "stopped") return "bg-[var(--vc-text-subtle)]";
@@ -68,31 +60,27 @@ export function StatusBar({
         aria-controls={detailId}
       >
         <span className="flex items-center gap-1">
-          <GitBranch className="w-3 h-3" />
+          <Network className="w-3 h-3" />
           <span
-            className={`w-1.5 h-1.5 rounded-full ${statusDotClass(snapshot?.git.state, "git")}`}
+            className={`w-1.5 h-1.5 rounded-full ${statusDotClass(snapshot?.acp?.state)}`}
           />
+          <span className="hidden sm:inline">{t("status.server")}</span>
         </span>
         <span className="w-px h-3 bg-[var(--vc-border-subtle)]" />
         <span className="flex items-center gap-1">
           <Server className="w-3 h-3" />
           <span
-            className={`w-1.5 h-1.5 rounded-full ${statusDotClass(snapshot?.lsp.state, "capability")}`}
+            className={`w-1.5 h-1.5 rounded-full ${statusDotClass(snapshot?.lsp.state)}`}
           />
+          <span className="hidden sm:inline">{t("status.lsp")}</span>
         </span>
         <span className="w-px h-3 bg-[var(--vc-border-subtle)]" />
         <span className="flex items-center gap-1">
           <Boxes className="w-3 h-3" />
           <span
-            className={`w-1.5 h-1.5 rounded-full ${statusDotClass(snapshot?.mcp.state, "capability")}`}
+            className={`w-1.5 h-1.5 rounded-full ${statusDotClass(snapshot?.mcp.state)}`}
           />
-        </span>
-        <span className="w-px h-3 bg-[var(--vc-border-subtle)]" />
-        <span className="flex items-center gap-1">
-          <Network className="w-3 h-3" />
-          <span
-            className={`w-1.5 h-1.5 rounded-full ${statusDotClass(snapshot?.acp?.state, "capability")}`}
-          />
+          <span className="hidden sm:inline">{t("status.mcp")}</span>
         </span>
       </ControlButton>
 
@@ -108,11 +96,11 @@ export function StatusBar({
           )}
           <div className="flex items-center justify-between">
             <span className="text-xs text-[var(--vc-text-muted)] flex items-center gap-1.5">
-              <GitBranch className="w-3 h-3" />
-              {t("status.git")}
+              <Network className="w-3 h-3" />
+              {t("status.server")}
             </span>
             <span className="text-xs font-mono text-[var(--vc-text-primary)]">
-              {snapshot?.git.state ?? t("status.unknown")}
+              {snapshot?.acp?.state ?? t("status.unknown")}
             </span>
           </div>
           <div className="flex items-center justify-between">
@@ -131,15 +119,6 @@ export function StatusBar({
             </span>
             <span className="text-xs font-mono text-[var(--vc-text-primary)]">
               {snapshot?.mcp.state ?? t("status.unknown")}
-            </span>
-          </div>
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-[var(--vc-text-muted)] flex items-center gap-1.5">
-              <Network className="w-3 h-3" />
-              {t("status.acp")}
-            </span>
-            <span className="text-xs font-mono text-[var(--vc-text-primary)]">
-              {snapshot?.acp?.state ?? t("status.unknown")}
             </span>
           </div>
           {snapshot?.mcp.error && (

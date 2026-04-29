@@ -417,9 +417,9 @@ test.describe('VoidCode Web Launcher', () => {
     await input.fill('browser QA tool surfaces');
     await input.press('Enter');
 
-    await expect(page.getByRole('button', { name: /show details for context/i })).toBeVisible({ timeout: 10000 });
-    await expect(page.getByText('2 context tools')).toBeVisible();
-    await page.getByRole('button', { name: /show details for context/i }).click();
+    await expect(page.getByRole('button', { name: /show details for project lookups/i })).toBeVisible({ timeout: 10000 });
+    await expect(page.getByText('2 lookups')).toBeVisible();
+    await page.getByRole('button', { name: /show details for project lookups/i }).click();
     await expect(page.getByText('Read README.md')).toBeVisible();
     await expect(page.getByText('Search TODO')).toBeVisible();
 
@@ -450,9 +450,16 @@ test.describe('VoidCode Web Launcher', () => {
     await page.screenshot({ path: path.join(evidenceDir, 'task-11-layout-buttons.png'), fullPage: true });
     await page.getByRole('button', { name: 'Close review panel' }).click();
 
-    await page.getByRole('button', { name: 'Toggle runtime status' }).click();
-    await expect(page.getByText('ACP')).toBeVisible();
-    await expect(page.getByText(/last request: handshake/)).toBeVisible();
+    const statusToggle = page.getByRole('button', { name: 'Toggle runtime status' });
+    await statusToggle.click();
+    const statusDetailId = await statusToggle.getAttribute('aria-controls');
+    if (!statusDetailId) throw new Error('Runtime status toggle should control a detail popover');
+    const statusDetail = page.locator(`[id="${statusDetailId}"]`);
+    await expect(statusDetail.getByText('Server', { exact: true })).toBeVisible();
+    await expect(statusDetail.getByText('LSP', { exact: true })).toBeVisible();
+    await expect(statusDetail.getByText('MCP', { exact: true })).toBeVisible();
+    await expect(statusDetail.getByText(/transport: connected/)).toBeVisible();
+    await expect(statusDetail.getByText(/last request: handshake/)).toBeVisible();
     await page.getByRole('button', { name: 'Retry MCP' }).click();
 
     await page.getByRole('button', { name: 'Settings' }).click();

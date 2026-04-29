@@ -155,7 +155,7 @@ describe("App", () => {
     expect(mockStore.loadSettings).toHaveBeenCalled();
   });
 
-  it("renders ACP status details in the runtime status popover", () => {
+  it("renders Server LSP and MCP status details without Git in the runtime status popover", () => {
     (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
       ...mockStore,
       workspaces: {
@@ -185,8 +185,46 @@ describe("App", () => {
     render(<App />);
     fireEvent.click(screen.getByLabelText("Toggle runtime status"));
 
-    expect(screen.getByText("ACP")).toBeInTheDocument();
+    expect(screen.getAllByText("Server").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText("LSP").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText("MCP").length).toBeGreaterThanOrEqual(1);
+    expect(screen.queryByText("Git")).not.toBeInTheDocument();
     expect(screen.getByText(/last request: handshake/)).toBeInTheDocument();
+  });
+
+  it("renders visible sessions and review toggles in the workspace header", () => {
+    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      ...mockStore,
+      workspaces: {
+        current: {
+          path: "/workspace",
+          label: "workspace",
+          available: true,
+          current: true,
+          last_opened_at: 1,
+        },
+        recent: [],
+        candidates: [],
+      },
+    });
+
+    render(<App />);
+
+    const sessionsToggle = screen.getByRole("button", {
+      name: "Toggle sessions",
+    });
+    const reviewToggle = screen.getByRole("button", { name: "Toggle review" });
+
+    expect(sessionsToggle).toHaveTextContent("Sessions");
+    expect(screen.getByText("Review")).toBeInTheDocument();
+    expect(sessionsToggle).toHaveAttribute("aria-expanded", "true");
+    expect(reviewToggle).toHaveAttribute("aria-expanded", "false");
+
+    fireEvent.click(sessionsToggle);
+    expect(sessionsToggle).toHaveAttribute("aria-expanded", "false");
+
+    fireEvent.click(reviewToggle);
+    expect(reviewToggle).toHaveAttribute("aria-expanded", "true");
   });
 
   it("renders project-picker-first empty state when no current workspace exists", () => {
@@ -261,7 +299,7 @@ describe("App", () => {
     expect(screen.getByText("Here is the README content.")).toBeInTheDocument();
   });
 
-  it("renders thinking block only when reasoning events exist", () => {
+  it("does not render thinking block for reasoning events", () => {
     (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
       ...mockStore,
       workspaces: {
@@ -296,7 +334,7 @@ describe("App", () => {
 
     render(<App />);
 
-    expect(screen.getByText("Thinking")).toBeInTheDocument();
+    expect(screen.queryByText("Thinking")).not.toBeInTheDocument();
   });
 
   it("renders streamed assistant text before the final response event", () => {
@@ -764,6 +802,81 @@ describe("App", () => {
     const promptElements = screen.getAllByText("test prompt subtitle");
     expect(promptElements.length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText("session-123456789")).toBeInTheDocument();
+  });
+
+  it("renders concise deterministic titles for long session prompts in header and sidebar", () => {
+    const longPrompt =
+      "Implement the remaining opencode-style frontend chrome fixes from user feedback by editing the top chrome controls and composer footer selectors.";
+    const conciseTitle =
+      "Implement the remaining opencode-style frontend chrome…";
+    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      ...mockStore,
+      workspaces: {
+        current: {
+          path: "/workspace",
+          label: "workspace",
+          available: true,
+          current: true,
+          last_opened_at: 1,
+        },
+        recent: [],
+        candidates: [],
+      },
+      currentSessionId: "session-123456789",
+      sessions: [
+        {
+          session: { id: "session-123456789" },
+          status: "completed",
+          turn: 5,
+          prompt: longPrompt,
+          updated_at: 1000,
+        },
+      ],
+    });
+
+    render(<App />);
+
+    expect(screen.getAllByText(conciseTitle).length).toBeGreaterThanOrEqual(2);
+    expect(screen.queryByText(longPrompt)).not.toBeInTheDocument();
+  });
+
+  it("shortens the live Vulkan Chinese prompt without keeping request boilerplate", () => {
+    const vulkanPrompt =
+      "请你作为 leader agent，在当前仓库中实现一个最小 Vulkan 三角形示例。要求：先检查项目结构和可用构建方式，再创建必要的源文件/构建配置/README说明；尽量保持最小可运行，不要做无关功能。";
+    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      ...mockStore,
+      workspaces: {
+        current: {
+          path: "/workspace",
+          label: "workspace",
+          available: true,
+          current: true,
+          last_opened_at: 1,
+        },
+        recent: [],
+        candidates: [],
+      },
+      currentSessionId: "session-vulkan-123",
+      sessions: [
+        {
+          session: { id: "session-vulkan-123" },
+          status: "completed",
+          turn: 2,
+          prompt: vulkanPrompt,
+          updated_at: 1000,
+        },
+      ],
+    });
+
+    render(<App />);
+
+    const titleElements = screen.getAllByText("最小 Vulkan 三角形示例");
+    expect(titleElements.length).toBeGreaterThanOrEqual(2);
+    expect(screen.queryByText(vulkanPrompt)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/请你作为 leader agent，在当前仓库中/),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/要求：先检查项目结构/)).not.toBeInTheDocument();
   });
 
   it("falls back to the replayed request prompt in the header when summary prompt is unavailable", () => {
