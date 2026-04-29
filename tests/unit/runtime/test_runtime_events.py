@@ -452,3 +452,29 @@ def test_skill_tool_display_uses_name_argument() -> None:
     assert display["title"] == "Skill"
     assert display["summary"] == "frontend-ui-ux"
     assert display["args"] == ["frontend-ui-ux", "legacy-skill"]
+
+
+def test_background_cancel_display_uses_camel_case_task_id_argument() -> None:
+    """Started-event display must use the canonical background_cancel argument."""
+    display = build_tool_display("background_cancel", {"taskId": "task-123"})
+
+    assert display["kind"] == "background"
+    assert display["title"] == "Background"
+    assert display["summary"] == "task-123"
+    assert display["args"] == ["task-123"]
+
+
+def test_background_cancel_display_accepts_legacy_task_id_argument() -> None:
+    """Legacy result-shaped cancellation data should remain displayable."""
+    display = build_tool_display("background_cancel", {"task_id": "legacy-task"})
+
+    assert display["summary"] == "legacy-task"
+    assert display["args"] == ["legacy-task"]
+
+
+def test_background_output_display_keeps_snake_case_task_id_argument() -> None:
+    """background_output uses snake_case task_id and should not depend on taskId."""
+    display = build_tool_display("background_output", {"task_id": "output-task"})
+
+    assert display["summary"] == "output-task"
+    assert display["args"] == ["output-task"]

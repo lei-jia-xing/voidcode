@@ -263,10 +263,15 @@ def build_tool_display(
             # description is already shown as summary; keep args cleaner
             pass
 
-    elif tool_name in {"background_output", "background_cancel"}:
+    elif tool_name == "background_output":
         task_id = _first_primitive(arguments, "task_id")
         summary = task_id if task_id else title
         args = _extract_primitive_args(arguments, "task_id")
+
+    elif tool_name == "background_cancel":
+        task_id = _first_primitive(arguments, "taskId", "task_id")
+        summary = task_id if task_id else title
+        args = _extract_primitive_args(arguments, "taskId", "task_id")
 
     elif tool_name == "skill":
         skill_name = _first_primitive(arguments, "name", "skill")
