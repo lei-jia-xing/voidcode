@@ -10,6 +10,15 @@ type PermissionDecision = Literal["allow", "deny", "ask"]
 type PermissionResolution = Literal["allow", "deny"]
 
 
+# External directory permission surface (planned, tracked by #338):
+# - external_directory_read / external_directory_write / optional execute
+# - all candidate paths must be canonicalized via os.path.realpath before matching
+# - symlink escape determined by real path, not raw input
+# - default policy: workspace internal keeps current defaults; external defaults to ask/deny
+# - reference: https://opencode.ai/docs/permissions/#external-directories
+# - community feedback on read/write split: https://github.com/sst/opencode/issues/5395
+
+
 @dataclass(frozen=True, slots=True)
 class PermissionOutcome:
     decision: PermissionDecision

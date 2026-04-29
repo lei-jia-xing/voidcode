@@ -267,6 +267,46 @@ workspace 本地覆盖路径保持为：
 
 `<workspace>/.voidcode.json`
 
+## 外部目录权限（External Directory Permission）
+
+> 状态：规划中，由 #338 跟踪。
+
+OpenCode 通过 `external_directory` permission 控制 tool call 访问 workspace 外部路径的能力，适用于 `read`、`edit`、`glob`、`grep` 以及许多 `bash` 命令。默认 `external_directory` 策略为 `ask`。
+
+- 参考文档：[OpenCode Permissions - External Directories](https://opencode.ai/docs/permissions/#external-directories)
+
+社区反馈已将 `external_directory` 拆分为 read/write 两套权限纳入规划（参考 [sst/opencode#5395](https://github.com/sst/opencode/issues/5395)），以便表达"允许读取外部参考资料但禁止修改"的场景。VoidCode 计划采用：
+
+- `external_directory_read`
+- `external_directory_write`
+- 可选：`external_directory_execute` / `external_directory_bash_cwd`
+
+默认策略：workspace 内保持现有默认；workspace 外默认 `ask` 或 `deny`，不要默认 `allow`；read 与 write 分离。
+
+示例配置形状（规划中）：
+
+```json
+{
+  "permission": {
+    "external_directory_read": {
+      "~/.config/voidcode/skills/**": "allow",
+      "~/reference-docs/**": "allow",
+      "*": "ask"
+    },
+    "external_directory_write": {
+      "*": "deny"
+    }
+  }
+}
+```
+
+实现注意事项：
+- 所有候选路径必须 canonicalize/realpath 后再做归属判定
+- symlink escape 必须按真实路径判定，而非原始输入路径
+- approval prompt 应明确显示外部绝对路径、操作类型、匹配到的 permission rule
+- tool result 中外部路径应显示 absolute path，不要伪装成 workspace-relative `../../..`
+- runtime events 应记录 external access decision
+
 ## 关于 LSP 和 ACP 基础设施状态的说明
 
 在当前切片中，`acp` 已进入最小的 runtime-managed transport/lifecycle 路径；`lsp` 也已经拥有最小 runtime-managed 基线，但两者都仍保持严格收敛的 MVP 范围。
