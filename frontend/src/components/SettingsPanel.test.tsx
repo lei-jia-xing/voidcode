@@ -43,8 +43,8 @@ describe("SettingsPanel", () => {
 
     expect(screen.getByText("GLM")).toBeInTheDocument();
     expect(screen.getByText("OpenAI")).toBeInTheDocument();
-    expect(screen.getByTitle("Configured")).toBeInTheDocument();
-    expect(screen.getByTitle("Not configured")).toBeInTheDocument();
+    expect(screen.getByText("Configured")).toBeInTheDocument();
+    expect(screen.getByText("Not configured")).toBeInTheDocument();
   });
 
   it("groups configured provider models and saves canonical model references", () => {
@@ -185,7 +185,7 @@ describe("SettingsPanel", () => {
     const onClose = vi.fn();
     render(<SettingsPanel {...baseProps} onClose={onClose} />);
 
-    const closeButton = screen.getByRole("button", { name: "Close" });
+    const closeButton = screen.getAllByRole("button", { name: "Close" })[1];
     fireEvent.click(closeButton);
 
     expect(onClose).toHaveBeenCalled();

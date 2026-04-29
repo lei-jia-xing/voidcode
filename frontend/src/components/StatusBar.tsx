@@ -1,10 +1,11 @@
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { GitBranch, Server, Boxes, Network } from "lucide-react";
 import type {
   McpServerStatusDetail,
   RuntimeStatusSnapshot,
 } from "../lib/runtime/types";
+import { ControlButton } from "./ui";
 
 interface StatusBarProps {
   snapshot: RuntimeStatusSnapshot | null;
@@ -19,16 +20,16 @@ function statusDotClass(
   state: string | undefined,
   kind: "git" | "capability",
 ): string {
-  if (!state) return "bg-slate-600";
+  if (!state) return "bg-[var(--vc-text-subtle)]";
   if (kind === "git") {
-    if (state === "git_ready") return "bg-emerald-500";
-    if (state === "git_error") return "bg-rose-500";
-    return "bg-slate-600";
+    if (state === "git_ready") return "bg-[var(--vc-confirm-text)]";
+    if (state === "git_error") return "bg-[var(--vc-danger-text)]";
+    return "bg-[var(--vc-text-subtle)]";
   }
-  if (state === "running") return "bg-emerald-500";
-  if (state === "failed") return "bg-rose-500";
-  if (state === "stopped") return "bg-amber-500";
-  return "bg-slate-600";
+  if (state === "running") return "bg-[var(--vc-confirm-text)]";
+  if (state === "failed") return "bg-[var(--vc-danger-text)]";
+  if (state === "stopped") return "bg-[var(--vc-text-subtle)]";
+  return "bg-[var(--vc-text-subtle)]";
 }
 
 export function StatusBar({
@@ -41,6 +42,7 @@ export function StatusBar({
 }: StatusBarProps) {
   const { t } = useTranslation();
   const [showDetail, setShowDetail] = useState(false);
+  const detailId = useId();
   const mcpDetails = snapshot?.mcp.details;
   const acpDetails = snapshot?.acp?.details;
   const mcpServers = useMemo(
@@ -56,12 +58,14 @@ export function StatusBar({
 
   return (
     <div className="relative">
-      <button
-        type="button"
+      <ControlButton
+        compact
+        variant="secondary"
         onClick={() => setShowDetail(!showDetail)}
-        className="inline-flex items-center gap-2 rounded-lg border border-slate-800 bg-slate-900/60 px-2.5 py-1 text-xs text-slate-400 hover:border-slate-700 hover:bg-slate-800/60"
+        className="text-[var(--vc-text-muted)]"
         aria-label={t("status.toggleAria")}
         aria-expanded={showDetail}
+        aria-controls={detailId}
       >
         <span className="flex items-center gap-1">
           <GitBranch className="w-3 h-3" />
@@ -69,80 +73,87 @@ export function StatusBar({
             className={`w-1.5 h-1.5 rounded-full ${statusDotClass(snapshot?.git.state, "git")}`}
           />
         </span>
-        <span className="w-px h-3 bg-slate-800" />
+        <span className="w-px h-3 bg-[var(--vc-border-subtle)]" />
         <span className="flex items-center gap-1">
           <Server className="w-3 h-3" />
           <span
             className={`w-1.5 h-1.5 rounded-full ${statusDotClass(snapshot?.lsp.state, "capability")}`}
           />
         </span>
-        <span className="w-px h-3 bg-slate-800" />
+        <span className="w-px h-3 bg-[var(--vc-border-subtle)]" />
         <span className="flex items-center gap-1">
           <Boxes className="w-3 h-3" />
           <span
             className={`w-1.5 h-1.5 rounded-full ${statusDotClass(snapshot?.mcp.state, "capability")}`}
           />
         </span>
-        <span className="w-px h-3 bg-slate-800" />
+        <span className="w-px h-3 bg-[var(--vc-border-subtle)]" />
         <span className="flex items-center gap-1">
           <Network className="w-3 h-3" />
           <span
             className={`w-1.5 h-1.5 rounded-full ${statusDotClass(snapshot?.acp?.state, "capability")}`}
           />
         </span>
-      </button>
+      </ControlButton>
 
       {showDetail && (
-        <div className="absolute right-0 top-full mt-2 w-64 rounded-lg border border-slate-800 bg-[#0c0c0e] shadow-xl z-50 p-3 space-y-2">
+        <div
+          id={detailId}
+          className="absolute right-0 top-full mt-2 w-64 rounded-lg border border-[color:var(--vc-border-subtle)] bg-[var(--vc-bg)] shadow-xl z-50 p-3 space-y-2"
+        >
           {status === "error" && (
-            <div className="text-xs text-rose-400">
+            <div className="text-xs text-[var(--vc-danger-text)]">
               {t("status.loadError", { message: error })}
             </div>
           )}
           <div className="flex items-center justify-between">
-            <span className="text-xs text-slate-400 flex items-center gap-1.5">
+            <span className="text-xs text-[var(--vc-text-muted)] flex items-center gap-1.5">
               <GitBranch className="w-3 h-3" />
               {t("status.git")}
             </span>
-            <span className="text-xs font-mono text-slate-300">
+            <span className="text-xs font-mono text-[var(--vc-text-primary)]">
               {snapshot?.git.state ?? t("status.unknown")}
             </span>
           </div>
           <div className="flex items-center justify-between">
-            <span className="text-xs text-slate-400 flex items-center gap-1.5">
+            <span className="text-xs text-[var(--vc-text-muted)] flex items-center gap-1.5">
               <Server className="w-3 h-3" />
               {t("status.lsp")}
             </span>
-            <span className="text-xs font-mono text-slate-300">
+            <span className="text-xs font-mono text-[var(--vc-text-primary)]">
               {snapshot?.lsp.state ?? t("status.unknown")}
             </span>
           </div>
           <div className="flex items-center justify-between">
-            <span className="text-xs text-slate-400 flex items-center gap-1.5">
+            <span className="text-xs text-[var(--vc-text-muted)] flex items-center gap-1.5">
               <Boxes className="w-3 h-3" />
               {t("status.mcp")}
             </span>
-            <span className="text-xs font-mono text-slate-300">
+            <span className="text-xs font-mono text-[var(--vc-text-primary)]">
               {snapshot?.mcp.state ?? t("status.unknown")}
             </span>
           </div>
           <div className="flex items-center justify-between">
-            <span className="text-xs text-slate-400 flex items-center gap-1.5">
+            <span className="text-xs text-[var(--vc-text-muted)] flex items-center gap-1.5">
               <Network className="w-3 h-3" />
               {t("status.acp")}
             </span>
-            <span className="text-xs font-mono text-slate-300">
+            <span className="text-xs font-mono text-[var(--vc-text-primary)]">
               {snapshot?.acp?.state ?? t("status.unknown")}
             </span>
           </div>
           {snapshot?.mcp.error && (
-            <div className="text-xs text-rose-400">{snapshot.mcp.error}</div>
+            <div className="text-xs text-[var(--vc-danger-text)]">
+              {snapshot.mcp.error}
+            </div>
           )}
           {snapshot?.acp?.error && (
-            <div className="text-xs text-rose-400">{snapshot.acp.error}</div>
+            <div className="text-xs text-[var(--vc-danger-text)]">
+              {snapshot.acp.error}
+            </div>
           )}
           {acpDetails && Object.keys(acpDetails).length > 0 && (
-            <div className="rounded-md bg-slate-900/70 px-2 py-1.5 text-[10px] text-slate-500">
+            <div className="rounded-md bg-[var(--vc-surface-1)] px-2 py-1.5 text-[10px] text-[var(--vc-text-subtle)]">
               {typeof acpDetails.status === "string" && (
                 <div>
                   {t("status.acpTransport")}: {acpDetails.status}
@@ -156,27 +167,27 @@ export function StatusBar({
             </div>
           )}
           {mcpServers.length > 0 && (
-            <div className="space-y-1 border-t border-slate-800 pt-2">
+            <div className="space-y-1 border-t border-[color:var(--vc-border-subtle)] pt-2">
               {mcpServers.map((server) => (
                 <div
                   key={server.server}
-                  className="rounded-md bg-slate-900/70 px-2 py-1.5"
+                  className="rounded-md bg-[var(--vc-surface-1)] px-2 py-1.5"
                 >
                   <div className="flex items-center justify-between gap-2">
-                    <span className="text-[11px] font-medium text-slate-200">
+                    <span className="text-[11px] font-medium text-[var(--vc-text-primary)]">
                       {server.server}
                     </span>
-                    <span className="text-[10px] font-mono text-slate-400">
+                    <span className="text-[10px] font-mono text-[var(--vc-text-muted)]">
                       {server.status}
                     </span>
                   </div>
                   {server.stage && (
-                    <div className="text-[10px] text-slate-500">
+                    <div className="text-[10px] text-[var(--vc-text-subtle)]">
                       {server.stage}
                     </div>
                   )}
                   {server.error && (
-                    <div className="text-[10px] text-rose-400">
+                    <div className="text-[10px] text-[var(--vc-danger-text)]">
                       {server.error}
                     </div>
                   )}
@@ -185,21 +196,22 @@ export function StatusBar({
             </div>
           )}
           {mcpRetryError && (
-            <div className="text-xs text-rose-400">
+            <div className="text-xs text-[var(--vc-danger-text)]">
               {t("status.retryError", { message: mcpRetryError })}
             </div>
           )}
           {mcpRetryAvailable && onRetryMcp && (
-            <button
-              type="button"
+            <ControlButton
+              compact
+              variant="secondary"
               onClick={onRetryMcp}
               disabled={mcpRetryStatus === "loading"}
-              className="w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1.5 text-xs text-slate-200 hover:bg-slate-800 disabled:opacity-50"
+              className="w-full"
             >
               {mcpRetryStatus === "loading"
                 ? t("status.retrying")
                 : t("status.retryMcp")}
-            </button>
+            </ControlButton>
           )}
         </div>
       )}
