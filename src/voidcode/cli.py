@@ -123,6 +123,9 @@ def _handle_run_command(args: argparse.Namespace) -> int:
                 interactive=interactive,
                 emit_events=interactive and not json_output,
             )
+        except KeyboardInterrupt:
+            print("Interrupted current run.", file=sys.stderr)
+            return 130
         except ValueError as exc:
             raise SystemExit(f"error: {exc}") from None
 
@@ -162,7 +165,14 @@ def _run_with_inline_approval(
     interactive: bool,
     emit_events: bool,
 ) -> RuntimeStreamResult:
-    result = _consume_runtime_stream(runtime.run_stream(request), emit_events=emit_events)
+    result = _consume_runtime_stream(
+        runtime.run_stream(request),
+        emit_events=emit_events,
+        on_interrupt=lambda session_id: runtime.cancel_session(
+            session_id,
+            reason="cli KeyboardInterrupt",
+        ),
+    )
 
     while interactive:
         approval_event = _pending_approval_event(result.session, _last_event(result))
@@ -175,6 +185,10 @@ def _run_with_inline_approval(
                 approval_decision=_prompt_for_approval(approval_event),
             ),
             emit_events=emit_events,
+            on_interrupt=lambda session_id: runtime.cancel_session(
+                session_id,
+                reason="cli KeyboardInterrupt",
+            ),
         )
         result = RuntimeStreamResult(
             output=resumed_result.output,
@@ -194,22 +208,32 @@ def _consume_runtime_stream(
     chunks: Iterator[RuntimeStreamChunk],
     *,
     emit_events: bool,
+    on_interrupt: Callable[[str], object] | None = None,
 ) -> RuntimeStreamResult:
     output: str | None = None
     final_session: SessionState | None = None
     events: list[EventEnvelope] = []
 
-    for chunk in chunks:
-        final_session = chunk.session
-        if chunk.event is not None:
-            if emit_events:
-                print(
-                    format_event(chunk.event.event_type, chunk.event.source, chunk.event.payload),
-                    flush=True,
-                )
-            events.append(chunk.event)
-        if chunk.kind == "output":
-            output = chunk.output
+    try:
+        for chunk in chunks:
+            final_session = chunk.session
+            if chunk.event is not None:
+                if emit_events:
+                    print(
+                        format_event(
+                            chunk.event.event_type,
+                            chunk.event.source,
+                            chunk.event.payload,
+                        ),
+                        flush=True,
+                    )
+                events.append(chunk.event)
+            if chunk.kind == "output":
+                output = chunk.output
+    except KeyboardInterrupt:
+        if final_session is not None and on_interrupt is not None:
+            on_interrupt(final_session.session.id)
+        raise
 
     if final_session is None:
         raise ValueError("runtime stream emitted no chunks")

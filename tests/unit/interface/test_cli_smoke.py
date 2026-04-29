@@ -635,6 +635,32 @@ def test_run_command_loads_config_and_forwards_it_to_runtime() -> None:
     runtime_class.return_value.resume.assert_not_called()
 
 
+def test_run_command_ctrl_c_cancels_active_runtime_session(capsys: Any) -> None:
+    cli = importlib.import_module("voidcode.cli")
+    workspace = Path("/tmp/demo-workspace")
+    config = SimpleNamespace(approval_mode="allow")
+
+    def _interrupted_stream() -> Iterable[_StubChunk]:
+        yield _make_chunk(
+            session_id="interrupt-session",
+            status="running",
+            event=_runtime_event("runtime.request_received", prompt="slow"),
+        )
+        raise KeyboardInterrupt
+
+    with patch.object(cli, "load_runtime_config", autospec=True, return_value=config):
+        with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+            runtime_class.return_value.run_stream.return_value = _interrupted_stream()
+            result = cli.main(["run", "slow", "--workspace", str(workspace)])
+
+    assert result == 130
+    runtime_class.return_value.cancel_session.assert_called_once_with(
+        "interrupt-session",
+        reason="cli KeyboardInterrupt",
+    )
+    assert "Interrupted current run." in capsys.readouterr().err
+
+
 def test_run_command_accepts_agent_skills_max_steps_and_provider_stream_flags() -> None:
     cli = importlib.import_module("voidcode.cli")
     workspace = Path("/tmp/demo-workspace")
