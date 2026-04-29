@@ -4,7 +4,7 @@
 
 ## 当前状态
 
-VoidCode 仍处于 pre-MVP 开发阶段。路线图从基础工作贯穿至 MVP 集成。仓库已经完成了初始环境/引导工作，现在还包括了一个稳定的 deterministic reference/debug engine 和已落地的 provider-backed execution path。同时，为工具、技能以及 LSP/ACP 的载体预留了初始扩展基础设施，而更广泛的 MVP 实现和 IDE 集成在当前阶段尚不在范围内。post-MVP 的明确方向之一是 multi-agent 支持，但这不会改变 runtime 作为系统控制面的边界。
+VoidCode 仍处于 pre-MVP 开发阶段。路线图从基础工作贯穿至 MVP 集成。仓库已经完成了初始环境/引导工作，现在还包括了一个稳定的 deterministic reference/debug engine、已落地的 provider-backed execution path，以及 runtime-owned delegated child execution 基线。同时，为工具、技能以及 LSP/ACP/MCP 的载体预留了初始扩展基础设施，而更广泛的 MVP 实现和 IDE 集成在当前阶段尚不在范围内。post-MVP 的明确方向之一是 multi-agent 支持，但这不会改变 runtime 作为系统控制面的边界。
 
 ## MVP 边界
 
@@ -24,6 +24,9 @@ VoidCode 仍处于 pre-MVP 开发阶段。路线图从基础工作贯穿至 MVP 
 - 云端协作
 - IDE 插件
 - 插件市场支持
+- workspace-scoped MCP、MCP marketplace 或动态 agent marketplace
+- 直接 agent-to-agent bus
+- #285 context assembly / compaction 的完整产品化语义
 - 高级 MCP 生态系统工作
 - 复杂的视觉工作台
 
@@ -51,7 +54,7 @@ VoidCode 仍处于 pre-MVP 开发阶段。路线图从基础工作贯穿至 MVP 
 
 将工具和扩展作为运行时的一等公民，包含元数据、注册、内置功能和统一的执行管线。此 Epic 还包括作为运行时管理接口的技能、语言服务器（LSP）和智能体通信协议（ACP）的基础设施。
 
-**当前状态：** 部分完成。内置工具和技能发现已实现。LSP 已具备 read-only runtime-managed 基线（manager、tool、事件与测试），并且仓库已经补齐了 `lsp/`、`skills/`、`provider/`、`acp/`、`mcp/` 等能力层边界目录文档；独立的 LSP server preset/config 模块也已经落地，主流 workspace 的 implicit defaults 也已进入可用状态。MCP 已具备 runtime-managed lifecycle、tool discovery、tool call 集成 groundwork，但当前仍是 config-gated / opt-in 能力（#107 目标：稳定化当前边界，而非新增功能）。ACP 已进入最小的 runtime-managed transport / lifecycle 路径，但仍未扩展为更宽的协作控制面。
+**当前状态：** 部分完成。内置工具和技能发现已实现。`skill_refs` 已作为 manifest/catalog 默认选择进入 runtime skill application，`force_load_skills` 与 delegated `load_skills` 则只为目标 run / child session 注入完整 skill body。LSP 已具备 read-only runtime-managed 基线（manager、tool、事件与测试），并且仓库已经补齐了 `lsp/`、`skills/`、`provider/`、`acp/`、`mcp/` 等能力层边界目录文档；独立的 LSP server preset/config 模块也已经落地，主流 workspace 的 implicit defaults 也已进入可用状态。MCP 已具备 runtime-managed lifecycle、tool discovery、tool call 集成 groundwork，支持 runtime scope 与 session scope 生命周期，但当前仍是 config-gated / opt-in 能力（#107 目标：稳定化当前边界，而非新增功能），不包含 workspace-scoped MCP 或 marketplace。ACP 已进入最小的 runtime-managed transport / lifecycle 路径，但仍未扩展为更宽的协作控制面或直接 agent-to-agent bus。
 
 **技术细节：** `ProviderSingleAgentGraph` 代表当前已实现的 provider-backed execution path，直接调用 `SingleAgentProvider.propose_turn()`，不依赖 LangGraph；当前顶层兼容默认 execution engine 仍是 deterministic，用于无凭据本地演示、测试和参考/debug harness。产品化主路径应继续收敛到配置了 model/provider 的 provider-backed execution，因此仅 `DeterministicReadOnlyGraph` 使用 LangGraph `StateGraph` 这一事实不应被表述为“LangGraph 已退出主路径”。
 
@@ -117,10 +120,11 @@ VoidCode 仍处于 pre-MVP 开发阶段。路线图从基础工作贯穿至 MVP 
 
 ### 1. 先处理当前仍然打开的 runtime / client parity / tooling gap
 
-最近已经完成了 agent preset 的最小 runtime 接入、runtime-managed skill execution 的最小模型，以及 Session Continuity Memory 第一切片。因此“当前最直接的剩余主线”已经不再是 `#152` / `#153` 这类最小接入问题，而是这些能力的深化与产品化收口：
+最近已经完成了 agent preset 的最小 runtime 接入、runtime-managed skill execution 的最小模型、Session Continuity Memory 第一切片，以及 delegated child execution 的 E2E 基线。因此“当前最直接的剩余主线”已经不再是 `#152` / `#153` 这类最小接入问题，而是这些能力的深化与产品化收口：
 
 - 更完整的 agent preset/runtime consumption 与验证闭环；
 - 更真实的 skill context / capability binding / execution semantics；
+- delegated child execution 的产品化打磨，但不扩大成任意拓扑 multi-agent 平台；
 - continuity memory 在 provider-backed execution 中的后续 shape、reinjection 与验证；
 - CLI + Web 主路径上的 first-task success rate 与默认可用性问题。
 
@@ -150,7 +154,7 @@ VoidCode 仍处于 pre-MVP 开发阶段。路线图从基础工作贯穿至 MVP 
 
 ## Post-MVP 明确方向：预定义 agent 与 multi-agent
 
-multi-agent 支持已经是明确的 post-MVP 方向。当前推荐的进入方式不是让 runtime 失去控制面地位，而是在既有边界之上继续使用已经存在的 `src/voidcode/agent/` 作为预定义 agent 的声明式配置边界，并在其之上补齐真正的执行语义，例如：
+multi-agent 支持已经是明确的 post-MVP 方向。当前推荐的进入方式不是让 runtime 失去控制面地位，而是在既有边界之上继续使用已经存在的 `src/voidcode/agent/` 作为预定义 agent 的声明式配置边界，并在当前 delegated child execution 基线之上补齐真正的协作语义，例如：
 
 - prompt / profile
 - hook 绑定
