@@ -87,9 +87,14 @@ _HOOKS_CONFIG_KEYS = frozenset(
         "on_session_start",
         "on_session_end",
         "on_session_idle",
+        "on_background_task_registered",
+        "on_background_task_started",
+        "on_background_task_progress",
         "on_background_task_completed",
         "on_background_task_failed",
         "on_background_task_cancelled",
+        "on_background_task_notification_enqueued",
+        "on_background_task_result_read",
         "on_delegated_result_available",
         "on_context_pressure",
         "formatter_presets",
@@ -730,6 +735,18 @@ def _parse_hooks_config(raw_hooks: object) -> RuntimeHooksConfig | None:
         hooks_payload.get("on_session_idle"),
         field_path="hooks.on_session_idle",
     )
+    on_background_task_registered = _parse_command_list(
+        hooks_payload.get("on_background_task_registered"),
+        field_path="hooks.on_background_task_registered",
+    )
+    on_background_task_started = _parse_command_list(
+        hooks_payload.get("on_background_task_started"),
+        field_path="hooks.on_background_task_started",
+    )
+    on_background_task_progress = _parse_command_list(
+        hooks_payload.get("on_background_task_progress"),
+        field_path="hooks.on_background_task_progress",
+    )
     on_background_task_completed = _parse_command_list(
         hooks_payload.get("on_background_task_completed"),
         field_path="hooks.on_background_task_completed",
@@ -741,6 +758,14 @@ def _parse_hooks_config(raw_hooks: object) -> RuntimeHooksConfig | None:
     on_background_task_cancelled = _parse_command_list(
         hooks_payload.get("on_background_task_cancelled"),
         field_path="hooks.on_background_task_cancelled",
+    )
+    on_background_task_notification_enqueued = _parse_command_list(
+        hooks_payload.get("on_background_task_notification_enqueued"),
+        field_path="hooks.on_background_task_notification_enqueued",
+    )
+    on_background_task_result_read = _parse_command_list(
+        hooks_payload.get("on_background_task_result_read"),
+        field_path="hooks.on_background_task_result_read",
     )
     on_delegated_result_available = _parse_command_list(
         hooks_payload.get("on_delegated_result_available"),
@@ -763,9 +788,14 @@ def _parse_hooks_config(raw_hooks: object) -> RuntimeHooksConfig | None:
         on_session_start=on_session_start,
         on_session_end=on_session_end,
         on_session_idle=on_session_idle,
+        on_background_task_registered=on_background_task_registered,
+        on_background_task_started=on_background_task_started,
+        on_background_task_progress=on_background_task_progress,
         on_background_task_completed=on_background_task_completed,
         on_background_task_failed=on_background_task_failed,
         on_background_task_cancelled=on_background_task_cancelled,
+        on_background_task_notification_enqueued=on_background_task_notification_enqueued,
+        on_background_task_result_read=on_background_task_result_read,
         on_delegated_result_available=on_delegated_result_available,
         on_context_pressure=on_context_pressure,
         formatter_presets=formatter_presets,

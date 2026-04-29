@@ -17,7 +17,13 @@ from voidcode.tools import BackgroundCancelTool, BackgroundOutputTool, ToolCall
 
 
 class _StubBackgroundRuntime:
-    def load_background_task_result(self, task_id: str) -> BackgroundTaskResult:
+    def load_background_task_result(
+        self,
+        task_id: str,
+        *,
+        emit_result_read_hook: bool = True,
+    ) -> BackgroundTaskResult:
+        _ = emit_result_read_hook
         assert task_id == "task-1"
         return BackgroundTaskResult(
             task_id="task-1",
@@ -65,7 +71,13 @@ class _StubBackgroundRuntime:
 
 
 class _RawPreviewBackgroundRuntime(_StubBackgroundRuntime):
-    def load_background_task_result(self, task_id: str) -> BackgroundTaskResult:
+    def load_background_task_result(
+        self,
+        task_id: str,
+        *,
+        emit_result_read_hook: bool = True,
+    ) -> BackgroundTaskResult:
+        _ = emit_result_read_hook
         assert task_id == "task-1"
         return BackgroundTaskResult(
             task_id="task-1",
@@ -105,7 +117,13 @@ class _ManyEventBackgroundRuntime(_StubBackgroundRuntime):
 
 
 class _FailedBackgroundRuntime(_StubBackgroundRuntime):
-    def load_background_task_result(self, task_id: str) -> BackgroundTaskResult:
+    def load_background_task_result(
+        self,
+        task_id: str,
+        *,
+        emit_result_read_hook: bool = True,
+    ) -> BackgroundTaskResult:
+        _ = emit_result_read_hook
         assert task_id == "task-1"
         return BackgroundTaskResult(
             task_id="task-1",
@@ -117,8 +135,33 @@ class _FailedBackgroundRuntime(_StubBackgroundRuntime):
         )
 
 
+class _InterruptedBackgroundRuntime(_StubBackgroundRuntime):
+    def load_background_task_result(
+        self,
+        task_id: str,
+        *,
+        emit_result_read_hook: bool = True,
+    ) -> BackgroundTaskResult:
+        _ = emit_result_read_hook
+        assert task_id == "task-1"
+        return BackgroundTaskResult(
+            task_id="task-1",
+            parent_session_id="leader-session",
+            child_session_id="child-session",
+            status="interrupted",
+            error="background task interrupted before completion",
+            result_available=True,
+        )
+
+
 class _UnavailableBackgroundRuntime(_StubBackgroundRuntime):
-    def load_background_task_result(self, task_id: str) -> BackgroundTaskResult:
+    def load_background_task_result(
+        self,
+        task_id: str,
+        *,
+        emit_result_read_hook: bool = True,
+    ) -> BackgroundTaskResult:
+        _ = emit_result_read_hook
         assert task_id == "task-1"
         return BackgroundTaskResult(
             task_id="task-1",
@@ -130,7 +173,13 @@ class _UnavailableBackgroundRuntime(_StubBackgroundRuntime):
 
 
 class _ApprovalBlockedBackgroundRuntime(_StubBackgroundRuntime):
-    def load_background_task_result(self, task_id: str) -> BackgroundTaskResult:
+    def load_background_task_result(
+        self,
+        task_id: str,
+        *,
+        emit_result_read_hook: bool = True,
+    ) -> BackgroundTaskResult:
+        _ = emit_result_read_hook
         assert task_id == "task-1"
         return BackgroundTaskResult(
             task_id="task-1",
@@ -162,9 +211,44 @@ class _BlockingUnavailableBackgroundRuntime(_UnavailableBackgroundRuntime):
     def __init__(self) -> None:
         self.load_count = 0
 
-    def load_background_task_result(self, task_id: str) -> BackgroundTaskResult:
+    def load_background_task_result(
+        self,
+        task_id: str,
+        *,
+        emit_result_read_hook: bool = True,
+    ) -> BackgroundTaskResult:
+        _ = emit_result_read_hook
         self.load_count += 1
-        return super().load_background_task_result(task_id)
+        return super().load_background_task_result(
+            task_id,
+            emit_result_read_hook=emit_result_read_hook,
+        )
+
+
+class _TerminalAfterTimeoutBackgroundRuntime(_StubBackgroundRuntime):
+    def load_background_task_result(
+        self,
+        task_id: str,
+        *,
+        emit_result_read_hook: bool = True,
+    ) -> BackgroundTaskResult:
+        assert task_id == "task-1"
+        if not emit_result_read_hook:
+            return BackgroundTaskResult(
+                task_id="task-1",
+                parent_session_id="leader-session",
+                child_session_id="child-session",
+                status="running",
+                result_available=False,
+            )
+        return BackgroundTaskResult(
+            task_id="task-1",
+            parent_session_id="leader-session",
+            child_session_id="child-session",
+            status="completed",
+            summary_output="completed after timeout deadline",
+            result_available=True,
+        )
 
 
 class _EmptyOutputBackgroundRuntime(_StubBackgroundRuntime):
@@ -334,6 +418,25 @@ def test_background_output_block_timeout_returns_current_state(tmp_path: Path) -
     assert "Timed out waiting" in str(result.data["guidance"])
 
 
+def test_background_output_block_omits_timeout_guidance_when_final_read_is_terminal(
+    tmp_path: Path,
+) -> None:
+    tool = BackgroundOutputTool(runtime=_TerminalAfterTimeoutBackgroundRuntime())
+
+    result = tool.invoke(
+        ToolCall(
+            tool_name="background_output",
+            arguments={"task_id": "task-1", "block": True, "timeout": 1},
+        ),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert result.data["status"] == "completed"
+    assert result.data["block_timed_out"] is False
+    assert "guidance" not in result.data
+
+
 def test_background_output_tool_guides_failed_child_without_retrying(tmp_path: Path) -> None:
     tool = BackgroundOutputTool(runtime=_FailedBackgroundRuntime())
 
@@ -348,6 +451,24 @@ def test_background_output_tool_guides_failed_child_without_retrying(tmp_path: P
     assert "session_id='child-session'" in result.content
     assert "After repeated failures" in result.content
     assert "do not retry automatically" in str(result.data["guidance"])
+
+
+def test_background_output_tool_handles_interrupted_terminal_state(tmp_path: Path) -> None:
+    tool = BackgroundOutputTool(runtime=_InterruptedBackgroundRuntime())
+
+    result = tool.invoke(
+        ToolCall(tool_name="background_output", arguments={"task_id": "task-1"}),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert result.data["status"] == "interrupted"
+    assert result.data["result_available"] is True
+    assert result.data["retrieval_instruction"] == 'background_output(task_id="task-1")'
+    handoff = result.data["handoff_summary"]
+    assert isinstance(handoff, dict)
+    assert handoff["blocked_reason"] == "background task interrupted before completion"
+    assert "interrupted before completion" in str(result.data["guidance"])
 
 
 def test_background_output_tool_guides_unavailable_result_without_looping(tmp_path: Path) -> None:

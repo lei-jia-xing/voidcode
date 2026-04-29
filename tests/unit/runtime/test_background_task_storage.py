@@ -284,6 +284,87 @@ def test_background_task_storage_prune_retains_sessions_referenced_by_kept_tasks
     )
 
 
+def test_background_task_storage_prunes_interrupted_tasks_and_child_sessions(
+    tmp_path: Path,
+) -> None:
+    store = SqliteSessionStore()
+    old_request = RuntimeRequest(prompt="old interrupted child", session_id="child-old")
+    old_response = RuntimeResponse(
+        session=SessionState(session=SessionRef(id="child-old"), status="failed", turn=1),
+        events=(
+            EventEnvelope(
+                session_id="child-old",
+                sequence=1,
+                event_type="runtime.failed",
+                source="runtime",
+                payload={"error": "background task interrupted before completion"},
+            ),
+        ),
+    )
+    new_request = RuntimeRequest(prompt="new child", session_id="child-new")
+    new_response = RuntimeResponse(
+        session=SessionState(session=SessionRef(id="child-new"), status="completed", turn=1),
+        events=(
+            EventEnvelope(
+                session_id="child-new",
+                sequence=1,
+                event_type="runtime.request_received",
+                source="runtime",
+                payload={"prompt": "new child"},
+            ),
+        ),
+        output="new child output",
+    )
+    store.save_run(workspace=tmp_path, request=old_request, response=old_response)
+    store.save_run(workspace=tmp_path, request=new_request, response=new_response)
+    store.create_background_task(
+        workspace=tmp_path,
+        task=BackgroundTaskState(
+            task=BackgroundTaskRef(id="task-old-interrupted"),
+            status="interrupted",
+            request=BackgroundTaskRequestSnapshot(prompt="old interrupted child"),
+            session_id="child-old",
+            error="background task interrupted before completion",
+            result_available=True,
+            created_at=1,
+            updated_at=1,
+            finished_at=1,
+        ),
+    )
+    store.create_background_task(
+        workspace=tmp_path,
+        task=BackgroundTaskState(
+            task=BackgroundTaskRef(id="task-new-completed"),
+            status="completed",
+            request=BackgroundTaskRequestSnapshot(prompt="new child"),
+            session_id="child-new",
+            result_available=True,
+            created_at=2,
+            updated_at=2,
+            finished_at=2,
+        ),
+    )
+
+    counts = store.prune_runtime_storage(
+        workspace=tmp_path,
+        keep_sessions=1,
+        keep_background_tasks=1,
+    )
+
+    assert counts["background_tasks"] == 1
+    assert counts["sessions"] == 1
+    assert [task.task.id for task in store.list_background_tasks(workspace=tmp_path)] == [
+        "task-new-completed"
+    ]
+    with pytest.raises(ValueError, match="unknown background task: task-old-interrupted"):
+        _ = store.load_background_task(workspace=tmp_path, task_id="task-old-interrupted")
+    with pytest.raises(ValueError, match="unknown session: child-old"):
+        _ = store.load_session_result(workspace=tmp_path, session_id="child-old")
+    assert store.load_session_result(workspace=tmp_path, session_id="child-new").output == (
+        "new child output"
+    )
+
+
 def test_background_task_storage_lists_by_parent_session_and_preserves_order(
     tmp_path: Path,
 ) -> None:
@@ -929,7 +1010,7 @@ def test_background_task_storage_fail_incomplete_preserves_waiting_approval_task
     assert [task.task.id for task in failed] == ["task-interrupted"]
     assert waiting.status == "running"
     assert waiting.error is None
-    assert interrupted.status == "failed"
+    assert interrupted.status == "interrupted"
     assert interrupted.error == "background task interrupted before completion"
 
 
@@ -1034,7 +1115,7 @@ def test_background_task_storage_does_not_overwrite_queued_cancelled_task_when_m
 
 @pytest.mark.parametrize(
     "status",
-    cast(tuple[BackgroundTaskStatus, ...], ("completed", "failed", "cancelled")),
+    cast(tuple[BackgroundTaskStatus, ...], ("completed", "failed", "cancelled", "interrupted")),
 )
 def test_background_task_storage_does_not_overwrite_terminal_task_when_marking_running(
     tmp_path: Path,
@@ -1108,7 +1189,9 @@ def test_background_task_storage_rejects_non_terminal_status_in_terminal_marker(
 
     with pytest.raises(
         ValueError,
-        match="background task terminal status must be completed, failed, or cancelled",
+        match=(
+            "background task terminal status must be completed, failed, cancelled, or interrupted"
+        ),
     ):
         _ = store.mark_background_task_terminal(
             workspace=tmp_path,
@@ -1133,7 +1216,7 @@ def test_background_task_storage_reconciles_incomplete_tasks_on_restart(tmp_path
     )
 
     assert [task.task.id for task in reconciled] == ["task-e", "task-f"]
-    assert all(task.status == "failed" for task in reconciled)
+    assert all(task.status == "interrupted" for task in reconciled)
     assert all(task.error == "background task interrupted before completion" for task in reconciled)
 
 

@@ -32,6 +32,8 @@ from typing import Any, Protocol, cast
 
 import pytest
 
+from voidcode.runtime.task import is_background_task_terminal
+
 pytestmark = pytest.mark.usefixtures("_force_deterministic_engine_default")
 
 
@@ -273,7 +275,7 @@ def _wait_for_background_task_terminal(
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         task = runtime.load_background_task(task_id)
-        if task.status in {"completed", "failed", "cancelled"}:
+        if is_background_task_terminal(task.status):
             return
         time.sleep(0.01)
     raise AssertionError(f"background task did not reach terminal state: {task_id}")
@@ -807,7 +809,7 @@ def test_http_background_task_output_endpoint_exposes_typed_delegated_payload_fo
     deadline = time.monotonic() + 2.0
     while time.monotonic() < deadline:
         task = runtime.load_background_task(started.task.id)
-        if task.status in {"completed", "failed", "cancelled"}:
+        if is_background_task_terminal(task.status):
             break
         time.sleep(0.01)
     else:

@@ -73,7 +73,7 @@
 
 runtime 已有的基础能力：
 
-- `BackgroundTaskState`，包含 `queued/running/completed/failed/cancelled` 状态
+- `BackgroundTaskState`，包含 `queued/running/completed/failed/cancelled/interrupted` 状态
 - `start_background_task` / `load_background_task` / `list_background_tasks` / `cancel_background_task`
 - workspace-local 的后台任务持久化
 - 已有的 session truth，以及通过 `resume(session_id)` 恢复 transcript 的路径
@@ -146,6 +146,7 @@ class BackgroundTaskResult:
         "completed",
         "failed",
         "cancelled",
+        "interrupted",
     ]
     approval_blocked: bool
     summary_output: str | None
@@ -170,6 +171,7 @@ def load_background_task_result(task_id: str) -> BackgroundTaskResult: ...
 - 当 child session 的 `SessionState.status == "waiting"` 时，`approval_blocked` 应为 `true`
 - `background_output(full_session=true)` 可以返回 bounded child transcript metadata；`message_limit` 当前被限制在 1 到 100，避免把完整 session 无界塞回 leader context
 - failed child result 只提供显式 user-request retry / continuation guidance，建议使用 `session_id=<child_session_id>` 继续；不能由工具自动无限重试
+- interrupted child result 是确定性终态，表示 runtime 在重启/中断/超时类场景中无法证明 child 已完成；它与 failed 一样可读取错误摘要，但不能被 late child completion 回退或覆盖
 
 ## Transcript 恢复契约
 
@@ -238,7 +240,7 @@ leader notification 必须表现为**附加到 parent session 上的 runtime eve
 - `task_id`
 - `parent_session_id`
 - `child_session_id`（可选；如果失败发生在 child session 建立之前可为空）
-- `status: "failed"`
+- `status: "failed" | "interrupted"`
 - `error`
 - `result_available: true`
 
@@ -346,9 +348,24 @@ Leader 读取结果时应遵守以下规则：
 - CLI `voidcode tasks status/output/list/cancel --json` 返回 machine-readable payload，并保留 readable 默认输出；结构化字段应包含 `task_id`、`parent_session_id`、`requested_child_session_id`、`child_session_id`、approval / question request id、`result_available`、`error_type` 与 `next_steps`。
 - CLI readable 默认输出应继续先暴露兼容的 `TASK ...` correlation record，并在 waiting / running / failed / completed 等状态下打印 concrete next-step commands（例如 `sessions resume <child_session_id>`、`tasks output <task_id>`、`tasks cancel <task_id>`）。
 - `block=true` 等待超时时返回 `block_timed_out`，同时保留当前 task state，而不是把任务误标为失败。
-- failed child 输出可以提示用户显式请求 retry/continue，并使用 `session_id=<child_session_id>` 继承 child context；工具本身不得自动进入无限 retry loop。
+- failed/interrupted child 输出可以提示用户显式请求 retry/continue，并使用 `session_id=<child_session_id>` 继承 child context；工具本身不得自动进入无限 retry loop。
 - repeated child failure 应升级给 leader / user，而不是继续隐藏在后台循环里。
 - `background_cancel` 对 unknown task 返回稳定 `status="unknown"` payload；对 running task 标记 cancel requested；对 completed/cancelled 等 terminal task 返回其 terminal state，不描述成新取消。
+- `background_output` 的 payload 应包含 `retrieval_instruction` 与 compact `handoff_summary`，至少表达 objective、completed work、open questions、files touched、verification、blocked/error reason；未知项用空值或空列表表达，不能要求客户端推断。
+
+## Lifecycle hooks
+
+runtime 公开以下 background/delegation hook surfaces，全部由 runtime truth 触发，hook 不能改写 task truth：
+
+- `background_task_registered`
+- `background_task_started`
+- `background_task_progress`
+- `background_task_completed`
+- `background_task_failed`
+- `background_task_cancelled`
+- `background_task_notification_enqueued`
+- `background_task_result_read`
+- `delegated_result_available`
 
 ## Polling 与 Notification 的关系
 
@@ -404,6 +421,5 @@ mise run check
 - 完整的 async leader/worker orchestration 语义
 - scheduler integration
 - UI-specific presentation choices
-- 建立在这些事件之上的 richer lifecycle hooks
 - workspace-scoped MCP、marketplace、dynamic agents、direct agent-to-agent bus
 - #285 context assembly / compaction 的完整产品化语义

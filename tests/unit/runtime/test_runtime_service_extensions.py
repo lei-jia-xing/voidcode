@@ -17,6 +17,7 @@ from unittest.mock import Mock
 
 import pytest
 
+import voidcode.runtime.background_tasks as runtime_background_tasks_module
 import voidcode.runtime.service as runtime_service_module
 from voidcode.acp import AcpRequestEnvelope, AcpResponseEnvelope
 from voidcode.agent import LEADER_AGENT_MANIFEST, get_builtin_agent_manifest, render_agent_prompt
@@ -104,7 +105,12 @@ from voidcode.runtime.service import (
     VoidCodeRuntime,
 )
 from voidcode.runtime.session import SessionRef
-from voidcode.runtime.task import BackgroundTaskState
+from voidcode.runtime.task import (
+    BackgroundTaskRef,
+    BackgroundTaskRequestSnapshot,
+    BackgroundTaskState,
+    is_background_task_terminal,
+)
 from voidcode.skills import SkillRegistry
 from voidcode.tools import ToolCall
 from voidcode.tools.contracts import ToolDefinition, ToolResult
@@ -857,7 +863,7 @@ def _wait_for_background_task(
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
         task = runtime.load_background_task(task_id)
-        if task.status in ("completed", "failed", "cancelled"):
+        if is_background_task_terminal(task.status):
             return task
         time.sleep(0.01)
     raise AssertionError(f"background task {task_id} did not reach terminal state")
@@ -1003,6 +1009,149 @@ def test_runtime_background_task_executes_through_existing_runtime_path(tmp_path
     assert resumed.session.metadata["background_run"] is True
     assert resumed.output == "background hello"
     assert completed == loaded
+
+
+@pytest.mark.parametrize(
+    "hooks",
+    (
+        RuntimeHooksConfig(enabled=False),
+        RuntimeHooksConfig(enabled=True),
+        None,
+    ),
+)
+def test_runtime_background_task_progress_hooks_skip_result_load_when_no_commands(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    hooks: RuntimeHooksConfig | None,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_BackgroundTaskSuccessGraph(),
+        config=RuntimeConfig(hooks=hooks),
+    )
+    supervisor = runtime._background_task_supervisor  # pyright: ignore[reportPrivateUsage]
+    task = BackgroundTaskState(
+        task=BackgroundTaskRef(id="task-progress-no-hooks"),
+        status="running",
+        request=BackgroundTaskRequestSnapshot(
+            prompt="background progress",
+            parent_session_id="leader-session",
+        ),
+        session_id="child-session",
+    )
+
+    def fail_background_task_result(*, task: BackgroundTaskState) -> None:
+        _ = task
+        raise AssertionError("progress hook no-op must not load background task result")
+
+    monkeypatch.setattr(supervisor, "background_task_result", fail_background_task_result)
+
+    supervisor.run_background_task_lifecycle_surface(
+        task=task,
+        surface="background_task_progress",
+        session_id="child-session",
+        extra_payload={
+            "progress_event_type": "graph.model_turn",
+            "progress_event_sequence": 1,
+        },
+    )
+
+
+def test_runtime_background_task_started_hook_runs_outside_queue_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    supervisor = runtime._background_task_supervisor  # pyright: ignore[reportPrivateUsage]
+    task = BackgroundTaskState(
+        task=BackgroundTaskRef(id="task-started-hook-lock"),
+        request=BackgroundTaskRequestSnapshot(
+            prompt="background started hook",
+            parent_session_id="leader-session",
+        ),
+    )
+    runtime._session_store.create_background_task(  # pyright: ignore[reportPrivateUsage]
+        workspace=tmp_path,
+        task=task,
+    )
+    lifecycle_calls: list[str] = []
+    worker_started = threading.Event()
+
+    def no_op_worker(task_id: str) -> None:
+        _ = task_id
+        lifecycle_calls.append("worker_started")
+        worker_started.set()
+
+    def assert_started_hook_not_locked(
+        *,
+        task: BackgroundTaskState,
+        surface: str,
+        session_id: str,
+        extra_payload: dict[str, object] | None = None,
+    ) -> None:
+        _ = task, session_id, extra_payload
+        lifecycle_calls.append(surface)
+        assert cast(Any, supervisor._queue_lock)._is_owned() is False  # pyright: ignore[reportPrivateUsage]
+        assert worker_started.is_set() is False
+
+    monkeypatch.setattr(runtime, "_run_background_task_worker", no_op_worker)
+    monkeypatch.setattr(
+        supervisor,
+        "run_background_task_lifecycle_surface",
+        assert_started_hook_not_locked,
+    )
+
+    supervisor._drain_background_task_queue()  # pyright: ignore[reportPrivateUsage]
+
+    assert worker_started.wait(timeout=2.0)
+    assert lifecycle_calls == ["background_task_started", "worker_started"]
+
+
+def test_runtime_background_task_started_hook_skips_when_thread_start_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    supervisor = runtime._background_task_supervisor  # pyright: ignore[reportPrivateUsage]
+    task = BackgroundTaskState(
+        task=BackgroundTaskRef(id="task-start-fails"),
+        request=BackgroundTaskRequestSnapshot(
+            prompt="background start failure",
+            parent_session_id="leader-session",
+        ),
+    )
+    runtime._session_store.create_background_task(  # pyright: ignore[reportPrivateUsage]
+        workspace=tmp_path,
+        task=task,
+    )
+    lifecycle_calls: list[str] = []
+
+    class _FailingThread:
+        def __init__(self, **kwargs: object) -> None:
+            _ = kwargs
+
+        def start(self) -> None:
+            raise RuntimeError("thread start failed")
+
+    def record_lifecycle(
+        *,
+        task: BackgroundTaskState,
+        surface: str,
+        session_id: str,
+        extra_payload: dict[str, object] | None = None,
+    ) -> None:
+        _ = task, session_id, extra_payload
+        lifecycle_calls.append(surface)
+
+    monkeypatch.setattr(runtime_background_tasks_module.threading, "Thread", _FailingThread)
+    monkeypatch.setattr(supervisor, "run_background_task_lifecycle_surface", record_lifecycle)
+
+    supervisor._drain_background_task_queue()  # pyright: ignore[reportPrivateUsage]
+
+    failed = runtime.load_background_task("task-start-fails")
+    assert failed.status == "failed"
+    assert failed.error == "thread start failed"
+    assert lifecycle_calls == ["background_task_failed"]
 
 
 def test_runtime_background_task_concurrency_limit_queues_and_drains(tmp_path: Path) -> None:
@@ -3749,7 +3898,7 @@ def test_runtime_background_task_approval_resume_overrides_stale_failed_task_sta
     _ = initial_runtime._session_store.mark_background_task_terminal(  # pyright: ignore[reportPrivateUsage]
         workspace=tmp_path,
         task_id=started.task.id,
-        status="failed",
+        status="interrupted",
         error="background task interrupted before completion",
     )
 
@@ -3769,11 +3918,11 @@ def test_runtime_background_task_approval_resume_overrides_stale_failed_task_sta
     finalized = resumed_runtime.load_background_task(started.task.id)
     result = resumed_runtime.load_background_task_result(started.task.id)
 
-    assert stale.status == "failed"
+    assert stale.status == "interrupted"
     assert resumed.session.status == "completed"
-    assert finalized.status == "failed"
+    assert finalized.status == "interrupted"
     assert finalized.error == "background task interrupted before completion"
-    assert result.status == "failed"
+    assert result.status == "interrupted"
     assert result.error == "background task interrupted before completion"
 
 

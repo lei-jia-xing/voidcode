@@ -966,10 +966,10 @@ def test_runtime_background_subagent_queue_running_completed_states_respect_conc
         assert second_queued.status == "queued"
         release.set()
         first_done = _wait_for_background_task_status(
-            runtime, first.task.id, {"completed", "failed", "cancelled"}
+            runtime, first.task.id, {"completed", "failed", "cancelled", "interrupted"}
         )
         second_done = _wait_for_background_task_status(
-            runtime, second.task.id, {"completed", "failed", "cancelled"}
+            runtime, second.task.id, {"completed", "failed", "cancelled", "interrupted"}
         )
 
     assert first_done.status == "completed"
@@ -1987,6 +1987,7 @@ def test_runtime_skips_hooks_for_nested_hook_launched_runtime_invocations(tmp_pa
                 "approval_mode": "allow",
                 "hooks": {
                     "enabled": True,
+                    "timeout_seconds": 90,
                     "pre_tool": [[sys.executable, "-c", hook_script]],
                 },
             }
@@ -2504,7 +2505,7 @@ def test_runtime_background_task_persists_and_can_be_loaded_from_fresh_runtime(
     terminal_task = None
     while time.time() < deadline:
         current = first_runtime.load_background_task(task.task.id)
-        if current.status in ("completed", "failed", "cancelled"):
+        if current.status in ("completed", "failed", "cancelled", "interrupted"):
             terminal_task = current
             break
         time.sleep(0.01)
@@ -2539,7 +2540,7 @@ def test_runtime_lists_background_tasks_by_parent_session_from_fresh_runtime(
     deadline = time.time() + 2
     while time.time() < deadline:
         current = first_runtime.load_background_task(leader_task.task.id)
-        if current.status in ("completed", "failed", "cancelled"):
+        if current.status in ("completed", "failed", "cancelled", "interrupted"):
             break
         time.sleep(0.01)
 
