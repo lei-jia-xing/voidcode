@@ -4,7 +4,7 @@ import json
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Protocol, cast, final, runtime_checkable
 
@@ -147,6 +147,19 @@ class SessionStore(Protocol):
         include_queued: bool = True,
     ) -> tuple[BackgroundTaskState, ...]: ...
 
+    def storage_diagnostics(self, *, workspace: Path) -> dict[str, object]: ...
+
+    def prune_runtime_storage(
+        self,
+        *,
+        workspace: Path,
+        keep_sessions: int | None = None,
+        keep_background_tasks: int | None = None,
+        older_than: int | None = None,
+    ) -> dict[str, int]: ...
+
+    def reset_runtime_storage(self, *, workspace: Path) -> dict[str, object]: ...
+
 
 @runtime_checkable
 class SessionEventAppender(Protocol):
@@ -162,10 +175,18 @@ class SessionEventAppender(Protocol):
     ) -> EventEnvelope | None: ...
 
 
+@dataclass(frozen=True, slots=True)
+class _SQLitePolicy:
+    busy_timeout_ms: int = 5_000
+    synchronous: str = "NORMAL"
+    wal_autocheckpoint_pages: int = 1_000
+
+
 @final
 class SqliteSessionStore:
     _database_path: Path | None
     _RESUME_CHECKPOINT_KINDS = frozenset({"approval_wait", "question_wait", "terminal"})
+    _sqlite_policy = _SQLitePolicy()
 
     _CANONICAL_SCHEMA: dict[str, tuple[tuple[str, str, int, str | None, int], ...]] = {
         "sessions": (
@@ -237,6 +258,10 @@ class SqliteSessionStore:
             ("dedupe_key", "TEXT", 1, None, 3),
             ("delivered_at", "INTEGER", 1, None, 0),
         ),
+        "storage_sequences": (
+            ("scope", "TEXT", 0, None, 1),
+            ("value", "INTEGER", 1, None, 0),
+        ),
     }
     _CANONICAL_UNIQUE_INDEXES: dict[str, frozenset[tuple[str, ...]]] = {
         "sessions": frozenset(),
@@ -244,6 +269,7 @@ class SqliteSessionStore:
         "background_tasks": frozenset(),
         "session_notifications": frozenset({("workspace", "dedupe_key")}),
         "session_event_deliveries": frozenset(),
+        "storage_sequences": frozenset(),
     }
 
     def __init__(self, *, database_path: Path | None = None) -> None:
@@ -258,13 +284,38 @@ class SqliteSessionStore:
     def _connect(self, workspace: Path) -> Iterator[sqlite3.Connection]:
         database_path = self._resolve_database_path(workspace)
         database_path.parent.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(database_path)
+        connection = sqlite3.connect(
+            database_path,
+            timeout=self._sqlite_policy.busy_timeout_ms / 1_000,
+            isolation_level=None,
+        )
         try:
             connection.row_factory = sqlite3.Row
+            self._configure_connection(connection=connection)
             self._ensure_schema(connection=connection, database_path=database_path)
             yield connection
         finally:
             connection.close()
+
+    def _configure_connection(self, *, connection: sqlite3.Connection) -> None:
+        _ = connection.execute(f"PRAGMA busy_timeout = {self._sqlite_policy.busy_timeout_ms}")
+        _ = connection.execute("PRAGMA journal_mode = WAL")
+        _ = connection.execute(f"PRAGMA synchronous = {self._sqlite_policy.synchronous}")
+        _ = connection.execute("PRAGMA foreign_keys = ON")
+        _ = connection.execute(
+            f"PRAGMA wal_autocheckpoint = {self._sqlite_policy.wal_autocheckpoint_pages}"
+        )
+        _ = connection.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
+
+    @contextmanager
+    def _write_connect(self, workspace: Path) -> Iterator[sqlite3.Connection]:
+        with self._connect(workspace) as connection:
+            _ = connection.execute("BEGIN IMMEDIATE")
+            try:
+                yield connection
+            except Exception:
+                connection.rollback()
+                raise
 
     def _ensure_schema(self, *, connection: sqlite3.Connection, database_path: Path) -> None:
         _ = connection.execute(
@@ -359,8 +410,26 @@ class SqliteSessionStore:
             )
             """
         )
+        _ = connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS storage_sequences (
+                scope TEXT PRIMARY KEY,
+                value INTEGER NOT NULL
+            )
+            """
+        )
         self._assert_canonical_schema(connection=connection, database_path=database_path)
+        self._ensure_storage_sequences(connection=connection)
         connection.commit()
+
+    @staticmethod
+    def _ensure_storage_sequences(*, connection: sqlite3.Connection) -> None:
+        _ = connection.execute(
+            "INSERT OR IGNORE INTO storage_sequences (scope, value) VALUES ('sessions', 0)"
+        )
+        _ = connection.execute(
+            "INSERT OR IGNORE INTO storage_sequences (scope, value) VALUES ('background_tasks', 0)"
+        )
 
     @classmethod
     def _assert_canonical_schema(
@@ -491,9 +560,18 @@ class SqliteSessionStore:
 
     @staticmethod
     def _raise_schema_mismatch(*, database_path: Path, detail: str) -> None:
+        workspace = (
+            database_path.parent.parent if database_path.parent.name == ".voidcode" else None
+        )
+        reset_command = (
+            f"uv run voidcode storage reset --workspace {workspace}"
+            if workspace is not None
+            else f"remove '{database_path}' plus matching -wal/-shm files"
+        )
         raise RuntimeError(
             "sqlite runtime schema mismatch: "
-            f"{detail}. Remove '{database_path}' and rerun to reset local runtime storage."
+            f"{detail}. This pre-MVP build does not migrate old schemas. "
+            f"Reset local runtime storage with: {reset_command}."
         )
 
     @staticmethod
@@ -775,7 +853,7 @@ class SqliteSessionStore:
         clear_pending_approval: bool = True,
     ) -> None:
         session_id = response.session.session.id
-        with self._connect(workspace) as connection:
+        with self._write_connect(workspace) as connection:
             updated_at = self._write_session_snapshot(
                 connection=connection,
                 workspace=workspace,
@@ -846,7 +924,7 @@ class SqliteSessionStore:
         response: RuntimeResponse,
         pending_approval: PendingApproval,
     ) -> None:
-        with self._connect(workspace) as connection:
+        with self._write_connect(workspace) as connection:
             updated_at = self._write_session_snapshot(
                 connection=connection,
                 workspace=workspace,
@@ -929,7 +1007,7 @@ class SqliteSessionStore:
         )
 
     def clear_pending_approval(self, *, workspace: Path, session_id: str) -> None:
-        with self._connect(workspace) as connection:
+        with self._write_connect(workspace) as connection:
             _ = connection.execute(
                 "UPDATE sessions SET pending_approval_json = NULL WHERE workspace = ? AND session_id = ?",  # noqa: E501
                 (str(workspace), session_id),
@@ -944,7 +1022,7 @@ class SqliteSessionStore:
         response: RuntimeResponse,
         pending_question: PendingQuestion,
     ) -> None:
-        with self._connect(workspace) as connection:
+        with self._write_connect(workspace) as connection:
             updated_at = self._write_session_snapshot(
                 connection=connection,
                 workspace=workspace,
@@ -1025,7 +1103,7 @@ class SqliteSessionStore:
         )
 
     def clear_pending_question(self, *, workspace: Path, session_id: str) -> None:
-        with self._connect(workspace) as connection:
+        with self._write_connect(workspace) as connection:
             _ = connection.execute(
                 (
                     "UPDATE sessions SET pending_question_json = NULL "
@@ -1067,7 +1145,7 @@ class SqliteSessionStore:
         payload: dict[str, object],
         dedupe_key: str | None = None,
     ) -> EventEnvelope | None:
-        with self._connect(workspace) as connection:
+        with self._write_connect(workspace) as connection:
             payload = self._enriched_background_task_event_payload(
                 connection=connection,
                 workspace=workspace,
@@ -1450,7 +1528,7 @@ class SqliteSessionStore:
     ) -> None:
         task_id = validate_background_task_id(task.task.id)
         routing = task.routing_identity
-        with self._connect(workspace) as connection:
+        with self._write_connect(workspace) as connection:
             linked_session_id = task.session_id or task.request.session_id
             initial_runtime_state = self._linked_session_background_task_runtime_state(
                 connection=connection,
@@ -1559,7 +1637,7 @@ class SqliteSessionStore:
         session_id: str,
     ) -> BackgroundTaskState:
         task_id = validate_background_task_id(task_id)
-        with self._connect(workspace) as connection:
+        with self._write_connect(workspace) as connection:
             current = self._background_task_runtime_row(
                 connection=connection,
                 workspace=workspace,
@@ -1609,7 +1687,7 @@ class SqliteSessionStore:
                 "background task terminal status must be completed, failed, or cancelled"
             )
         task_id = validate_background_task_id(task_id)
-        with self._connect(workspace) as connection:
+        with self._write_connect(workspace) as connection:
             current = self._background_task_runtime_row(
                 connection=connection,
                 workspace=workspace,
@@ -1660,7 +1738,7 @@ class SqliteSessionStore:
         task_id: str,
     ) -> BackgroundTaskState:
         task_id = validate_background_task_id(task_id)
-        with self._connect(workspace) as connection:
+        with self._write_connect(workspace) as connection:
             current = self._background_task_runtime_row(
                 connection=connection,
                 workspace=workspace,
@@ -1735,7 +1813,7 @@ class SqliteSessionStore:
             if include_queued
             else "background_tasks.status = 'running'"
         )
-        with self._connect(workspace) as connection:
+        with self._write_connect(workspace) as connection:
             rows = cast(
                 list[sqlite3.Row],
                 connection.execute(
@@ -1826,7 +1904,7 @@ class SqliteSessionStore:
         cancellation_cause: str | None = None,
     ) -> BackgroundTaskState:
         task_id = validate_background_task_id(task_id)
-        with self._connect(workspace) as connection:
+        with self._write_connect(workspace) as connection:
             current = self._background_task_runtime_row(
                 connection=connection,
                 workspace=workspace,
@@ -1922,13 +2000,7 @@ class SqliteSessionStore:
         return row
 
     def _next_background_task_timestamp(self, *, connection: sqlite3.Connection) -> int:
-        row = cast(
-            sqlite3.Row,
-            connection.execute(
-                "SELECT COALESCE(MAX(updated_at), 0) + 1 AS next_ts FROM background_tasks"
-            ).fetchone(),
-        )
-        return cast(int, row["next_ts"])
+        return self._next_sequence_value(connection=connection, scope="background_tasks")
 
     def _linked_session_background_task_runtime_state(
         self,
@@ -1955,7 +2027,7 @@ class SqliteSessionStore:
     def acknowledge_notification(
         self, *, workspace: Path, notification_id: str
     ) -> RuntimeNotification:
-        with self._connect(workspace) as connection:
+        with self._write_connect(workspace) as connection:
             existing_row = cast(
                 sqlite3.Row | None,
                 connection.execute(
@@ -2000,6 +2072,336 @@ class SqliteSessionStore:
                 ).fetchone(),
             )
         return self._notification_from_row(row)
+
+    def storage_diagnostics(self, *, workspace: Path) -> dict[str, object]:
+        database_path = self._resolve_database_path(workspace)
+        with self._connect(workspace) as connection:
+            journal_mode = self._pragma_scalar(connection=connection, name="journal_mode")
+            synchronous = self._pragma_scalar(connection=connection, name="synchronous")
+            busy_timeout = self._pragma_scalar(connection=connection, name="busy_timeout")
+            foreign_keys = self._pragma_scalar(connection=connection, name="foreign_keys")
+            wal_autocheckpoint = self._pragma_scalar(
+                connection=connection,
+                name="wal_autocheckpoint",
+            )
+            checkpoint = self._wal_checkpoint(connection=connection, mode="PASSIVE")
+            counts = self._storage_table_counts(connection=connection, workspace=workspace)
+            task_status_counts = self._background_task_status_counts(
+                connection=connection,
+                workspace=workspace,
+            )
+            pending_counts = self._pending_state_counts(
+                connection=connection,
+                workspace=workspace,
+            )
+        return {
+            "database_path": str(database_path),
+            "database_exists": database_path.exists(),
+            "sqlite_version": sqlite3.sqlite_version,
+            "connection_policy": {
+                "journal_mode": journal_mode,
+                "synchronous": synchronous,
+                "busy_timeout_ms": busy_timeout,
+                "foreign_keys": foreign_keys,
+                "wal_autocheckpoint_pages": wal_autocheckpoint,
+            },
+            "checkpoint": checkpoint,
+            "file_sizes": self._database_file_sizes(database_path),
+            "counts": counts,
+            "background_task_status_counts": task_status_counts,
+            "pending_counts": pending_counts,
+        }
+
+    def prune_runtime_storage(
+        self,
+        *,
+        workspace: Path,
+        keep_sessions: int | None = None,
+        keep_background_tasks: int | None = None,
+        older_than: int | None = None,
+    ) -> dict[str, int]:
+        if keep_sessions is not None and keep_sessions < 0:
+            raise ValueError("keep_sessions must be non-negative when provided")
+        if keep_background_tasks is not None and keep_background_tasks < 0:
+            raise ValueError("keep_background_tasks must be non-negative when provided")
+        if older_than is not None and older_than < 0:
+            raise ValueError("older_than must be non-negative when provided")
+        with self._write_connect(workspace) as connection:
+            session_ids = self._prunable_session_ids(
+                connection=connection,
+                workspace=workspace,
+                keep_sessions=keep_sessions,
+                older_than=older_than,
+            )
+            task_ids = self._prunable_background_task_ids(
+                connection=connection,
+                workspace=workspace,
+                keep_background_tasks=keep_background_tasks,
+                older_than=older_than,
+            )
+            counts = {
+                "session_events": self._delete_for_ids(
+                    connection=connection,
+                    table="session_events",
+                    column="session_id",
+                    ids=session_ids,
+                ),
+                "session_event_deliveries": self._delete_for_ids(
+                    connection=connection,
+                    table="session_event_deliveries",
+                    column="session_id",
+                    ids=session_ids,
+                    workspace=workspace,
+                ),
+                "session_notifications": self._delete_for_ids(
+                    connection=connection,
+                    table="session_notifications",
+                    column="session_id",
+                    ids=session_ids,
+                    workspace=workspace,
+                ),
+                "sessions": self._delete_for_ids(
+                    connection=connection,
+                    table="sessions",
+                    column="session_id",
+                    ids=session_ids,
+                    workspace=workspace,
+                ),
+                "background_tasks": self._delete_for_ids(
+                    connection=connection,
+                    table="background_tasks",
+                    column="task_id",
+                    ids=task_ids,
+                    workspace=workspace,
+                ),
+            }
+            connection.commit()
+            _ = self._wal_checkpoint(connection=connection, mode="PASSIVE")
+        return counts
+
+    def reset_runtime_storage(self, *, workspace: Path) -> dict[str, object]:
+        database_path = self._resolve_database_path(workspace)
+        removed: list[str] = []
+        for path in (
+            database_path,
+            database_path.with_name(f"{database_path.name}-wal"),
+            database_path.with_name(f"{database_path.name}-shm"),
+        ):
+            if path.exists():
+                path.unlink()
+                removed.append(str(path))
+        return {
+            "database_path": str(database_path),
+            "removed": removed,
+            "reset": bool(removed),
+        }
+
+    @staticmethod
+    def _pragma_scalar(*, connection: sqlite3.Connection, name: str) -> object:
+        row = connection.execute(f"PRAGMA {name}").fetchone()
+        return None if row is None else cast(object, row[0])
+
+    @staticmethod
+    def _wal_checkpoint(*, connection: sqlite3.Connection, mode: str) -> dict[str, int]:
+        row = connection.execute(f"PRAGMA wal_checkpoint({mode})").fetchone()
+        if row is None:
+            return {"busy": 0, "log_pages": 0, "checkpointed_pages": 0}
+        return {
+            "busy": int(row[0]),
+            "log_pages": int(row[1]),
+            "checkpointed_pages": int(row[2]),
+        }
+
+    @staticmethod
+    def _database_file_sizes(database_path: Path) -> dict[str, int]:
+        candidates = {
+            "database": database_path,
+            "wal": database_path.with_name(f"{database_path.name}-wal"),
+            "shm": database_path.with_name(f"{database_path.name}-shm"),
+        }
+        return {
+            name: path.stat().st_size if path.exists() else 0 for name, path in candidates.items()
+        }
+
+    @staticmethod
+    def _storage_table_counts(*, connection: sqlite3.Connection, workspace: Path) -> dict[str, int]:
+        scoped_tables = ("sessions", "background_tasks", "session_notifications")
+        counts = {
+            table: int(
+                connection.execute(
+                    f"SELECT COUNT(*) FROM {table} WHERE workspace = ?",
+                    (str(workspace),),
+                ).fetchone()[0]
+            )
+            for table in scoped_tables
+        }
+        session_ids = tuple(
+            cast(str, row["session_id"])
+            for row in cast(
+                list[sqlite3.Row],
+                connection.execute(
+                    "SELECT session_id FROM sessions WHERE workspace = ?",
+                    (str(workspace),),
+                ).fetchall(),
+            )
+        )
+        counts["session_events"] = SqliteSessionStore._count_for_ids(
+            connection=connection,
+            table="session_events",
+            column="session_id",
+            ids=session_ids,
+        )
+        counts["session_event_deliveries"] = SqliteSessionStore._count_for_ids(
+            connection=connection,
+            table="session_event_deliveries",
+            column="session_id",
+            ids=session_ids,
+        )
+        return counts
+
+    @staticmethod
+    def _background_task_status_counts(
+        *, connection: sqlite3.Connection, workspace: Path
+    ) -> dict[str, int]:
+        return {
+            cast(str, row["status"]): cast(int, row["count"])
+            for row in cast(
+                list[sqlite3.Row],
+                connection.execute(
+                    """
+                    SELECT status, COUNT(*) AS count
+                    FROM background_tasks
+                    WHERE workspace = ?
+                    GROUP BY status
+                    ORDER BY status ASC
+                    """,
+                    (str(workspace),),
+                ).fetchall(),
+            )
+        }
+
+    @staticmethod
+    def _pending_state_counts(*, connection: sqlite3.Connection, workspace: Path) -> dict[str, int]:
+        row = connection.execute(
+            """
+            SELECT
+                SUM(CASE WHEN pending_approval_json IS NOT NULL THEN 1 ELSE 0 END) AS approvals,
+                SUM(CASE WHEN pending_question_json IS NOT NULL THEN 1 ELSE 0 END) AS questions
+            FROM sessions
+            WHERE workspace = ?
+            """,
+            (str(workspace),),
+        ).fetchone()
+        if row is None:
+            return {"pending_approvals": 0, "pending_questions": 0}
+        return {
+            "pending_approvals": int(row[0] or 0),
+            "pending_questions": int(row[1] or 0),
+        }
+
+    @staticmethod
+    def _count_for_ids(
+        *, connection: sqlite3.Connection, table: str, column: str, ids: tuple[str, ...]
+    ) -> int:
+        if not ids:
+            return 0
+        placeholders = ", ".join("?" for _ in ids)
+        return int(
+            connection.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE {column} IN ({placeholders})",
+                ids,
+            ).fetchone()[0]
+        )
+
+    @staticmethod
+    def _delete_for_ids(
+        *,
+        connection: sqlite3.Connection,
+        table: str,
+        column: str,
+        ids: tuple[str, ...],
+        workspace: Path | None = None,
+    ) -> int:
+        if not ids:
+            return 0
+        placeholders = ", ".join("?" for _ in ids)
+        workspace_clause = " AND workspace = ?" if workspace is not None else ""
+        parameters: tuple[object, ...] = (*ids, str(workspace)) if workspace is not None else ids
+        cursor = connection.execute(
+            f"DELETE FROM {table} WHERE {column} IN ({placeholders}){workspace_clause}",
+            parameters,
+        )
+        return cursor.rowcount
+
+    @staticmethod
+    def _prunable_session_ids(
+        *,
+        connection: sqlite3.Connection,
+        workspace: Path,
+        keep_sessions: int | None,
+        older_than: int | None,
+    ) -> tuple[str, ...]:
+        conditions = ["workspace = ?", "status IN ('completed', 'failed')"]
+        parameters: list[object] = [str(workspace)]
+        if older_than is not None:
+            conditions.append("updated_at < ?")
+            parameters.append(older_than)
+        keep_clause = ""
+        if keep_sessions is not None:
+            keep_clause = (
+                "AND session_id NOT IN ("
+                "SELECT session_id FROM sessions "
+                "WHERE workspace = ? AND status IN ('completed', 'failed') "
+                "ORDER BY updated_at DESC, session_id ASC LIMIT ?"
+                ")"
+            )
+            parameters.extend([str(workspace), keep_sessions])
+        rows = connection.execute(
+            f"""
+            SELECT session_id
+            FROM sessions
+            WHERE {" AND ".join(conditions)}
+              {keep_clause}
+            ORDER BY updated_at ASC, session_id ASC
+            """,
+            tuple(parameters),
+        ).fetchall()
+        return tuple(cast(str, row["session_id"]) for row in cast(list[sqlite3.Row], rows))
+
+    @staticmethod
+    def _prunable_background_task_ids(
+        *,
+        connection: sqlite3.Connection,
+        workspace: Path,
+        keep_background_tasks: int | None,
+        older_than: int | None,
+    ) -> tuple[str, ...]:
+        conditions = ["workspace = ?", "status IN ('completed', 'failed', 'cancelled')"]
+        parameters: list[object] = [str(workspace)]
+        if older_than is not None:
+            conditions.append("updated_at < ?")
+            parameters.append(older_than)
+        keep_clause = ""
+        if keep_background_tasks is not None:
+            keep_clause = (
+                "AND task_id NOT IN ("
+                "SELECT task_id FROM background_tasks "
+                "WHERE workspace = ? AND status IN ('completed', 'failed', 'cancelled') "
+                "ORDER BY updated_at DESC, task_id ASC LIMIT ?"
+                ")"
+            )
+            parameters.extend([str(workspace), keep_background_tasks])
+        rows = connection.execute(
+            f"""
+            SELECT task_id
+            FROM background_tasks
+            WHERE {" AND ".join(conditions)}
+              {keep_clause}
+            ORDER BY updated_at ASC, task_id ASC
+            """,
+            tuple(parameters),
+        ).fetchall()
+        return tuple(cast(str, row["task_id"]) for row in cast(list[sqlite3.Row], rows))
 
     @staticmethod
     def _result_summary(*, response: RuntimeResponse, prompt: str) -> tuple[str, str | None]:
@@ -2295,11 +2697,23 @@ class SqliteSessionStore:
             return cast(int, row["created_at"])
         return self._next_timestamp(connection=connection)
 
-    def _next_timestamp(self, *, connection: sqlite3.Connection) -> int:
+    @staticmethod
+    def _next_sequence_value(*, connection: sqlite3.Connection, scope: str) -> int:
         row = cast(
-            sqlite3.Row,
+            sqlite3.Row | None,
             connection.execute(
-                "SELECT COALESCE(MAX(updated_at), 0) + 1 AS next_ts FROM sessions"
+                """
+                UPDATE storage_sequences
+                SET value = value + 1
+                WHERE scope = ?
+                RETURNING value
+                """,
+                (scope,),
             ).fetchone(),
         )
-        return cast(int, row["next_ts"])
+        if row is None:
+            raise RuntimeError(f"runtime storage sequence is missing: {scope}")
+        return cast(int, row["value"])
+
+    def _next_timestamp(self, *, connection: sqlite3.Connection) -> int:
+        return self._next_sequence_value(connection=connection, scope="sessions")

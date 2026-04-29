@@ -2293,6 +2293,26 @@ class VoidCodeRuntime:
             raise ValueError(f"unknown notification: {notification_id}")
         return notification
 
+    def storage_diagnostics(self) -> dict[str, object]:
+        return self._session_store.storage_diagnostics(workspace=self._workspace)
+
+    def prune_runtime_storage(
+        self,
+        *,
+        keep_sessions: int | None = None,
+        keep_background_tasks: int | None = None,
+        older_than: int | None = None,
+    ) -> dict[str, int]:
+        return self._session_store.prune_runtime_storage(
+            workspace=self._workspace,
+            keep_sessions=keep_sessions,
+            keep_background_tasks=keep_background_tasks,
+            older_than=older_than,
+        )
+
+    def reset_runtime_storage(self) -> dict[str, object]:
+        return self._session_store.reset_runtime_storage(workspace=self._workspace)
+
     def effective_runtime_config(self, *, session_id: str | None = None) -> EffectiveRuntimeConfig:
         if session_id is None:
             return self._effective_runtime_config_from_metadata(None)

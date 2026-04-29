@@ -4,7 +4,7 @@ import sqlite3
 import threading
 from contextlib import closing
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -118,6 +118,32 @@ def test_session_storage_bootstraps_canonical_schema_for_fresh_database(tmp_path
     assert any(row[2] == 1 and row[3] == "u" for row in notification_indexes)
 
 
+def test_session_storage_configures_sqlite_operability_pragmas(tmp_path: Path) -> None:
+    database_path = tmp_path / "operability.sqlite3"
+    store = SqliteSessionStore(database_path=database_path)
+
+    store.list_sessions(workspace=tmp_path)
+
+    diagnostics = store.storage_diagnostics(workspace=tmp_path)
+
+    assert diagnostics["database_path"] == str(database_path)
+    assert diagnostics["database_exists"] is True
+    assert diagnostics["connection_policy"] == {
+        "journal_mode": "wal",
+        "synchronous": 1,
+        "busy_timeout_ms": 5000,
+        "foreign_keys": 1,
+        "wal_autocheckpoint_pages": 1000,
+    }
+    assert diagnostics["counts"] == {
+        "sessions": 0,
+        "background_tasks": 0,
+        "session_notifications": 0,
+        "session_events": 0,
+        "session_event_deliveries": 0,
+    }
+
+
 def test_session_storage_rejects_non_canonical_schema_missing_runtime_columns(
     tmp_path: Path,
 ) -> None:
@@ -196,7 +222,9 @@ def test_session_storage_rejects_non_canonical_schema_missing_runtime_columns(
         RuntimeError,
         match=(
             r"table 'sessions' missing columns: .*"
-            r"Remove '.*[\\/]invalid-sessions\.sqlite3' and rerun to reset local runtime storage\."
+            r"This pre-MVP build does not migrate old schemas\. "
+            r"Reset local runtime storage with: remove '.*[\\/]invalid-sessions\.sqlite3' "
+            r"plus matching -wal/-shm files\."
         ),
     ):
         store.list_sessions(workspace=tmp_path)
@@ -314,7 +342,9 @@ def test_session_storage_rejects_non_canonical_schema_with_wrong_existing_table_
         RuntimeError,
         match=(
             r"table 'session_event_deliveries' missing columns: dedupe_key.*"
-            r"Remove '.*[\\/]wrong-table-shape\.sqlite3' and rerun to reset local runtime storage\."
+            r"This pre-MVP build does not migrate old schemas\. "
+            r"Reset local runtime storage with: remove '.*[\\/]wrong-table-shape\.sqlite3' "
+            r"plus matching -wal/-shm files\."
         ),
     ):
         store.list_notifications(workspace=tmp_path)
@@ -582,6 +612,49 @@ def test_session_storage_append_session_event_allocates_sequences_atomically(
     assert len(events) == 2
     assert {event.sequence for event in events} == {2, 3}
     assert [event.sequence for event in loaded.events[-2:]] == [2, 3]
+
+
+def test_session_storage_prunes_terminal_sessions_and_dependent_rows(tmp_path: Path) -> None:
+    store = SqliteSessionStore()
+
+    for session_id, status in (
+        ("old-terminal", "completed"),
+        ("new-terminal", "completed"),
+        ("waiting-session", "waiting"),
+    ):
+        store.save_run(
+            workspace=tmp_path,
+            request=RuntimeRequest(prompt=session_id, session_id=session_id),
+            response=RuntimeResponse(
+                session=SessionState(
+                    session=SessionRef(id=session_id),
+                    status=cast(Any, status),
+                    turn=1,
+                    metadata={},
+                ),
+                events=(
+                    EventEnvelope(
+                        session_id=session_id,
+                        sequence=1,
+                        event_type="graph.response_ready",
+                        source="graph",
+                    ),
+                ),
+                output="done" if status == "completed" else None,
+            ),
+        )
+
+    counts = store.prune_runtime_storage(workspace=tmp_path, keep_sessions=1)
+
+    assert counts["sessions"] == 1
+    assert counts["session_events"] == 1
+    assert counts["session_notifications"] == 1
+    assert [session.session.id for session in store.list_sessions(workspace=tmp_path)] == [
+        "waiting-session",
+        "new-terminal",
+    ]
+    with pytest.raises(ValueError, match="unknown session: old-terminal"):
+        _ = store.load_session_result(workspace=tmp_path, session_id="old-terminal")
 
 
 def test_session_storage_persists_pending_question_and_question_notification(

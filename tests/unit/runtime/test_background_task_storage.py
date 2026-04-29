@@ -177,6 +177,38 @@ def test_background_task_storage_create_assigns_store_timestamps_and_orders_by_l
     assert [task.task.id for task in listed] == ["task-ts-2", "task-ts-1"]
 
 
+def test_background_task_storage_prunes_only_terminal_tasks(tmp_path: Path) -> None:
+    store = SqliteSessionStore()
+    for task_id in ("task-old", "task-new", "task-running"):
+        store.create_background_task(workspace=tmp_path, task=_task(task_id=task_id))
+    _ = store.mark_background_task_terminal(
+        workspace=tmp_path,
+        task_id="task-old",
+        status="completed",
+    )
+    _ = store.mark_background_task_terminal(
+        workspace=tmp_path,
+        task_id="task-new",
+        status="failed",
+        error="boom",
+    )
+    _ = store.mark_background_task_running(
+        workspace=tmp_path,
+        task_id="task-running",
+        session_id="session-running",
+    )
+
+    counts = store.prune_runtime_storage(workspace=tmp_path, keep_background_tasks=1)
+
+    assert counts["background_tasks"] == 1
+    assert [task.task.id for task in store.list_background_tasks(workspace=tmp_path)] == [
+        "task-running",
+        "task-new",
+    ]
+    with pytest.raises(ValueError, match="unknown background task: task-old"):
+        _ = store.load_background_task(workspace=tmp_path, task_id="task-old")
+
+
 def test_background_task_storage_lists_by_parent_session_and_preserves_order(
     tmp_path: Path,
 ) -> None:
