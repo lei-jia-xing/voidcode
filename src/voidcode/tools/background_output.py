@@ -70,6 +70,11 @@ class BackgroundOutputTool:
                 break
             time.sleep(0.05)
             result = self._runtime.load_background_task_result(args.task_id)
+        safe_summary = _background_result_safe_summary(result)
+        message_payload = {
+            **result.delegated_message.as_payload(),
+            "summary_output": safe_summary,
+        }
 
         payload: dict[str, object] = {
             "task_id": result.task_id,
@@ -77,17 +82,15 @@ class BackgroundOutputTool:
             "parent_session_id": result.parent_session_id,
             "child_session_id": result.child_session_id,
             "approval_blocked": result.approval_blocked,
-            "summary_output": result.summary_output,
+            "summary_output": safe_summary,
             "error": result.error,
             "result_available": result.result_available,
             "delegation": result.delegated_execution.as_payload(),
-            "message": result.delegated_message.as_payload(),
+            "message": message_payload,
             "block_timed_out": block_timed_out,
         }
         content = (
-            result.summary_output
-            or result.error
-            or f"Background task {result.task_id}: {result.status}"
+            safe_summary or result.error or f"Background task {result.task_id}: {result.status}"
         )
         empty_child_output = False
 
@@ -96,30 +99,56 @@ class BackgroundOutputTool:
             empty_child_output = (
                 session_result.status == "completed" and session_result.output == ""
             )
+            safe_summary = _background_session_safe_summary(
+                result=result,
+                session_result=session_result,
+            )
             transcript_events = session_result.transcript[: args.message_limit]
             transcript = [
                 {
                     "sequence": event.sequence,
                     "event_type": event.event_type,
                     "source": event.source,
-                    "payload": dict(event.payload),
                 }
                 for event in transcript_events
             ]
+            output_available = session_result.output is not None
+            full_session_reference = f"session:{session_result.session.session.id}"
             payload["session"] = {
                 "session_id": session_result.session.session.id,
                 "child_session_id": session_result.session.session.id,
                 "status": session_result.status,
                 "summary": session_result.summary,
-                "output": session_result.output,
                 "error": session_result.error,
                 "last_event_sequence": session_result.last_event_sequence,
                 "message_limit": args.message_limit,
                 "transcript_count": len(transcript),
                 "transcript_truncated": len(session_result.transcript) > len(transcript),
                 "transcript": transcript,
+                "output_available": output_available,
+                "full_output_preserved": output_available,
+                "full_session_reference": full_session_reference,
+                "retrieval_hint": (
+                    "Use sessions resume "
+                    f"{session_result.session.session.id} or "
+                    f"background_output(task_id='{result.task_id}', "
+                    "full_session=true) from an operator context to inspect full child output."
+                ),
             }
-            content = session_result.output or session_result.summary or content
+            payload["summary_output"] = safe_summary
+            payload["message"] = {
+                **result.delegated_message.as_payload(),
+                "summary_output": safe_summary,
+            }
+            content = _background_session_digest(
+                result=result,
+                session_result=session_result,
+                safe_summary=safe_summary,
+                transcript_count=len(transcript),
+                transcript_truncated=len(session_result.transcript) > len(transcript),
+                output_available=output_available,
+                full_session_reference=full_session_reference,
+            )
 
         guidance = _background_output_guidance(
             result=result,
@@ -136,6 +165,7 @@ class BackgroundOutputTool:
             status="ok",
             content=content,
             data=payload,
+            reference=_background_result_reference(result),
         )
 
 
@@ -179,3 +209,83 @@ def _background_output_guidance(
             "retries."
         )
     return None
+
+
+def _background_session_digest(
+    *,
+    result: BackgroundTaskResult,
+    session_result: RuntimeSessionResult,
+    safe_summary: str,
+    transcript_count: int,
+    transcript_truncated: bool,
+    output_available: bool,
+    full_session_reference: str,
+) -> str:
+    lines = [
+        "Background task result digest:",
+        f"- task_id: {result.task_id}",
+        f"- status: {result.status}",
+        f"- child_session_id: {session_result.session.session.id}",
+        f"- summary: {safe_summary}",
+        f"- full_output_preserved: {str(output_available).lower()}",
+        f"- transcript_events_listed: {transcript_count}",
+        f"- transcript_truncated: {str(transcript_truncated).lower()}",
+        f"- retrieval_pointer: {full_session_reference}",
+    ]
+    if session_result.error:
+        lines.append(f"- error: {session_result.error}")
+    lines.append(
+        "Use the child session reference to retrieve full output; raw child output is not injected "
+        "into active provider context."
+    )
+    return "\n".join(lines)
+
+
+def _background_result_safe_summary(result: BackgroundTaskResult) -> str | None:
+    if result.child_session_id is None:
+        return result.summary_output
+    if result.status == "completed":
+        return (
+            f"Completed child session {result.child_session_id}; full output is preserved outside "
+            "active context."
+        )
+    if result.status == "failed":
+        return (
+            f"Failed child session {result.child_session_id}; "
+            "inspect the child session for details."
+        )
+    if result.approval_blocked:
+        return result.summary_output
+    if result.summary_output:
+        return (
+            f"{result.status.title()} child session {result.child_session_id}; "
+            "details preserved by reference."
+        )
+    return None
+
+
+def _background_session_safe_summary(
+    *,
+    result: BackgroundTaskResult,
+    session_result: RuntimeSessionResult,
+) -> str:
+    child_session_id = session_result.session.session.id
+    if session_result.status == "completed":
+        return (
+            f"Completed child session {child_session_id}; full output is preserved outside "
+            "active context."
+        )
+    if session_result.status == "failed":
+        return f"Failed child session {child_session_id}; inspect the child session for details."
+    if result.summary_output:
+        return (
+            f"{result.status.title()} child session {child_session_id}; "
+            "details preserved by reference."
+        )
+    return f"Background task {result.task_id}: {result.status}"
+
+
+def _background_result_reference(result: BackgroundTaskResult) -> str | None:
+    if result.child_session_id is None:
+        return None
+    return f"session:{result.child_session_id}"

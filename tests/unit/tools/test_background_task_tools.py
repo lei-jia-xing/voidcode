@@ -64,6 +64,19 @@ class _StubBackgroundRuntime:
         )
 
 
+class _RawPreviewBackgroundRuntime(_StubBackgroundRuntime):
+    def load_background_task_result(self, task_id: str) -> BackgroundTaskResult:
+        assert task_id == "task-1"
+        return BackgroundTaskResult(
+            task_id="task-1",
+            parent_session_id="leader-session",
+            child_session_id="child-session",
+            status="completed",
+            summary_output="Completed: raw child secret sentinel",
+            result_available=True,
+        )
+
+
 class _ManyEventBackgroundRuntime(_StubBackgroundRuntime):
     def session_result(self, *, session_id: str) -> RuntimeSessionResult:
         assert session_id == "child-session"
@@ -188,7 +201,11 @@ def test_background_output_tool_returns_task_summary(tmp_path: Path) -> None:
     )
 
     assert result.status == "ok"
-    assert result.content == "done"
+    assert result.content is not None
+    assert "Background task result digest:" in result.content
+    assert "child_session_id: child-session" in result.content
+    assert "raw child output is not injected" in result.content
+    assert result.reference == "session:child-session"
     assert result.data["task_id"] == "task-1"
     delegation_payload = result.data["delegation"]
     assert isinstance(delegation_payload, dict)
@@ -200,6 +217,29 @@ def test_background_output_tool_returns_task_summary(tmp_path: Path) -> None:
     assert isinstance(session_payload, dict)
     assert session_payload["session_id"] == "child-session"
     assert session_payload["child_session_id"] == "child-session"
+    assert session_payload["output_available"] is True
+    assert session_payload["full_output_preserved"] is True
+    assert session_payload["full_session_reference"] == "session:child-session"
+    assert "output" not in session_payload
+
+
+def test_background_output_default_returns_safe_summary_reference(tmp_path: Path) -> None:
+    tool = BackgroundOutputTool(runtime=_RawPreviewBackgroundRuntime())
+
+    result = tool.invoke(
+        ToolCall(tool_name="background_output", arguments={"task_id": "task-1"}),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert result.content is not None
+    assert "Completed child session child-session" in result.content
+    assert "raw child secret sentinel" not in result.content
+    assert result.data["summary_output"] == (
+        "Completed child session child-session; full output is preserved outside active context."
+    )
+    assert "raw child secret sentinel" not in str(result.data["message"])
+    assert result.reference == "session:child-session"
 
 
 def test_background_output_tool_bounds_full_session_transcript(tmp_path: Path) -> None:
@@ -221,6 +261,7 @@ def test_background_output_tool_bounds_full_session_transcript(tmp_path: Path) -
     transcript = cast(list[dict[str, object]], session_payload["transcript"])
     assert isinstance(transcript, list)
     assert transcript[-1]["sequence"] == 100
+    assert "payload" not in transcript[-1]
 
 
 def test_background_output_block_timeout_returns_current_state(tmp_path: Path) -> None:
