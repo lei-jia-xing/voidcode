@@ -13,10 +13,13 @@ This module imports from there and adds runtime-specific implementation.
 from __future__ import annotations
 
 import os
-from contextlib import AbstractContextManager
+import threading
+import time
+from contextlib import AbstractContextManager, suppress
+from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
-from typing import IO, Any, cast
+from typing import IO, Any, Literal, cast
 
 from anyio.from_thread import BlockingPortal, start_blocking_portal
 from mcp import ClientSession, StdioServerParameters
@@ -43,12 +46,17 @@ from ..mcp import (
 )
 from .config import RuntimeMcpConfig
 from .events import (
+    RUNTIME_MCP_SERVER_ACQUIRED,
     RUNTIME_MCP_SERVER_FAILED,
+    RUNTIME_MCP_SERVER_IDLE_CLEANED,
+    RUNTIME_MCP_SERVER_RELEASED,
+    RUNTIME_MCP_SERVER_REUSED,
     RUNTIME_MCP_SERVER_STARTED,
     RUNTIME_MCP_SERVER_STOPPED,
 )
 
 DEFAULT_MCP_REQUEST_TIMEOUT_SECONDS = 2.0
+DEFAULT_SESSION_MCP_IDLE_TIMEOUT_SECONDS = 300.0
 _RECOVERABLE_MCP_CALL_ERROR_CODES = frozenset(
     {
         McpErrorCode.TOOL_NOT_FOUND,
@@ -76,8 +84,14 @@ class DisabledMcpManager:
     def current_state(self) -> McpManagerState:
         return McpManagerState(configuration=self._configuration)
 
-    def list_tools(self, *, workspace: Path) -> tuple[McpToolDescriptor, ...]:
-        _ = workspace
+    def list_tools(
+        self,
+        *,
+        workspace: Path,
+        owner_session_id: str | None = None,
+        parent_session_id: str | None = None,
+    ) -> tuple[McpToolDescriptor, ...]:
+        _ = workspace, owner_session_id, parent_session_id
         raise ValueError("MCP runtime support is disabled")
 
     def call_tool(
@@ -87,8 +101,10 @@ class DisabledMcpManager:
         tool_name: str,
         arguments: dict[str, object],
         workspace: Path,
+        owner_session_id: str | None = None,
+        parent_session_id: str | None = None,
     ) -> McpToolCallResult:
-        _ = server_name, tool_name, arguments, workspace
+        _ = server_name, tool_name, arguments, workspace, owner_session_id, parent_session_id
         raise ValueError("MCP runtime support is disabled")
 
     def shutdown(self) -> tuple[McpRuntimeEvent, ...]:
@@ -110,6 +126,9 @@ class DisabledMcpManager:
 class _RunningMcpServer:
     """Runtime-specific SDK session and context-manager handles."""
 
+    scope: Literal["runtime", "session"]
+    owner_session_id: str | None
+
     def __init__(
         self,
         *,
@@ -120,6 +139,8 @@ class _RunningMcpServer:
         session: ClientSession,
         stderr_log: IO[str],
         initialize_result: InitializeResult,
+        scope: Literal["runtime", "session"],
+        owner_session_id: str | None,
     ) -> None:
         self.server_name = server_name
         self.workspace_root = workspace_root
@@ -128,6 +149,21 @@ class _RunningMcpServer:
         self.session = session
         self.stderr_log = stderr_log
         self.initialize_result = initialize_result
+        self.scope = scope
+        self.owner_session_id = owner_session_id
+        self.references = 0
+        self.last_used_at = time.monotonic()
+        # The Python SDK ClientSession is shared per configured server process.
+        # Serialize list/call operations per server so concurrent runtime and
+        # subagent calls do not interleave mutable SDK session state.
+        self.call_lock = threading.RLock()
+
+
+@dataclass(frozen=True, slots=True)
+class _McpServerKey:
+    server_name: str
+    scope: Literal["runtime", "session"]
+    owner_session_id: str | None = None
 
 
 # =============================================================================
@@ -145,8 +181,9 @@ class ManagedMcpManager:
         diagnostics_collector: McpDiagnosticsCollector | None = None,
     ) -> None:
         self._configuration = McpConfigState.from_runtime_config(config)
-        self._running_servers: dict[str, _RunningMcpServer] = {}
+        self._running_servers: dict[_McpServerKey, _RunningMcpServer] = {}
         self._pending_events: list[McpRuntimeEvent] = []
+        self._state_lock = threading.RLock()
         self._diagnostics_collector = diagnostics_collector
         self._server_states: dict[str, McpServerRuntimeState] = {
             name: McpServerRuntimeState(
@@ -167,16 +204,28 @@ class ManagedMcpManager:
         return self._configuration
 
     def current_state(self) -> McpManagerState:
-        return McpManagerState(
-            mode="managed",
-            configuration=self._configuration,
-            servers=dict(self._server_states),
-        )
+        with self._state_lock:
+            return McpManagerState(
+                mode="managed",
+                configuration=self._configuration,
+                servers=dict(self._server_states),
+            )
 
-    def list_tools(self, *, workspace: Path) -> tuple[McpToolDescriptor, ...]:
+    def list_tools(
+        self,
+        *,
+        workspace: Path,
+        owner_session_id: str | None = None,
+        parent_session_id: str | None = None,
+    ) -> tuple[McpToolDescriptor, ...]:
+        _ = parent_session_id
         tools: list[McpToolDescriptor] = []
         for server_name in self._configuration.servers:
-            running = self._ensure_running(server_name=server_name, workspace=workspace)
+            running = self._ensure_running(
+                server_name=server_name,
+                workspace=workspace,
+                owner_session_id=owner_session_id,
+            )
             result = self._call_sdk(
                 running,
                 stage="discovery",
@@ -195,8 +244,15 @@ class ManagedMcpManager:
         tool_name: str,
         arguments: dict[str, object],
         workspace: Path,
+        owner_session_id: str | None = None,
+        parent_session_id: str | None = None,
     ) -> McpToolCallResult:
-        running = self._ensure_running(server_name=server_name, workspace=workspace)
+        _ = parent_session_id
+        running = self._ensure_running(
+            server_name=server_name,
+            workspace=workspace,
+            owner_session_id=owner_session_id,
+        )
         result = self._call_sdk(
             running,
             stage="call",
@@ -217,33 +273,70 @@ class ManagedMcpManager:
         )
 
     def shutdown(self) -> tuple[McpRuntimeEvent, ...]:
-        for server_name in tuple(self._running_servers):
-            self._stop_running_server(server_name)
-        if self._portal_context is not None:
-            self._portal_context.__exit__(None, None, None)
-            self._portal_context = None
-            self._portal = None
+        with self._state_lock:
+            for key in tuple(self._running_servers):
+                self._stop_running_server(key)
+            if self._portal_context is not None:
+                self._portal_context.__exit__(None, None, None)
+                self._portal_context = None
+                self._portal = None
         return self.drain_events()
 
     def drain_events(self) -> tuple[McpRuntimeEvent, ...]:
-        events = tuple(self._pending_events)
-        self._pending_events.clear()
-        return events
+        with self._state_lock:
+            events = tuple(self._pending_events)
+            self._pending_events.clear()
+            return events
 
     def retry_connections(self, *, workspace: Path) -> None:
         for server_name in self._configuration.servers:
             self._ensure_running(server_name=server_name, workspace=workspace)
 
+    def release_session(self, *, session_id: str) -> tuple[McpRuntimeEvent, ...]:
+        with self._state_lock:
+            for key in tuple(self._running_servers):
+                if key.scope == "session" and key.owner_session_id == session_id:
+                    self._record_server_released(key=key, reason="session_finished")
+                    self._stop_running_server(key)
+        return self.drain_events()
+
+    def cleanup_idle_session_servers(
+        self,
+        *,
+        max_idle_seconds: float = DEFAULT_SESSION_MCP_IDLE_TIMEOUT_SECONDS,
+        active_session_ids: set[str] | None = None,
+    ) -> tuple[McpRuntimeEvent, ...]:
+        now = time.monotonic()
+        active_ids = active_session_ids or set()
+        with self._state_lock:
+            for key, running in tuple(self._running_servers.items()):
+                if key.scope != "session":
+                    continue
+                abandoned = (
+                    active_session_ids is not None and key.owner_session_id not in active_ids
+                )
+                idle = now - running.last_used_at >= max_idle_seconds
+                if abandoned or idle:
+                    self._record_server_idle_cleaned(
+                        key=key,
+                        workspace_root=running.workspace_root,
+                        reason="abandoned" if abandoned else "idle_timeout",
+                    )
+                    self._stop_running_server(key)
+        return self.drain_events()
+
     @property
     def _request_timeout(self) -> timedelta:
         return timedelta(seconds=self._request_timeout_seconds)
 
-    def _ensure_running(self, *, server_name: str, workspace: Path) -> _RunningMcpServer:
+    def _ensure_running(
+        self,
+        *,
+        server_name: str,
+        workspace: Path,
+        owner_session_id: str | None = None,
+    ) -> _RunningMcpServer:
         """Ensure MCP server is running, start if needed."""
-        running = self._running_servers.get(server_name)
-        if running is not None:
-            return running
-
         server_config = self._configuration.servers.get(server_name)
         if server_config is None:
             diagnostic = create_diagnostic(
@@ -258,13 +351,27 @@ class ManagedMcpManager:
                 f"Available servers: {list(self._configuration.servers.keys())}"
             )
             self._record_failure_event(
-                server_name=server_name,
+                key=_McpServerKey(server_name=server_name, scope="runtime"),
                 workspace_root=workspace.resolve(),
                 stage="startup",
                 error=message,
                 diagnostic=diagnostic,
             )
             raise ValueError(message)
+
+        scope = getattr(server_config, "scope", "runtime")
+        key = self._server_key(
+            server_name=server_name,
+            scope=scope,
+            owner_session_id=owner_session_id,
+        )
+        with self._state_lock:
+            running = self._running_servers.get(key)
+            if running is not None:
+                running.last_used_at = time.monotonic()
+                self._record_server_reused(key=key, workspace_root=running.workspace_root)
+                self._record_server_acquired(key=key, workspace_root=running.workspace_root)
+                return running
 
         if not server_config.command:
             diagnostic = create_diagnostic(
@@ -279,7 +386,7 @@ class ManagedMcpManager:
                 "Please configure mcp.servers.{server_name}.command in .voidcode.json"
             )
             self._record_failure_event(
-                server_name=server_name,
+                key=key,
                 workspace_root=workspace.resolve(),
                 stage="startup",
                 error=message,
@@ -287,12 +394,21 @@ class ManagedMcpManager:
             )
             raise ValueError(message)
 
-        portal = self._ensure_portal()
         workspace_root = workspace.resolve()
-        stderr_log = open(os.devnull, "w", encoding="utf-8")  # noqa: SIM115 - closed in shutdown
+        stderr_log: IO[str] | None = None
         transport_context: AbstractContextManager[tuple[object, object]] | None = None
         session_context: AbstractContextManager[ClientSession] | None = None
+        self._state_lock.acquire()
         try:
+            running = self._running_servers.get(key)
+            if running is not None:
+                running.last_used_at = time.monotonic()
+                self._record_server_reused(key=key, workspace_root=running.workspace_root)
+                self._record_server_acquired(key=key, workspace_root=running.workspace_root)
+                self._state_lock.release()
+                return running
+            portal = self._ensure_portal()
+            stderr_log = open(os.devnull, "w", encoding="utf-8")  # noqa: SIM115 - closed in shutdown
             params = StdioServerParameters(
                 command=server_config.command[0],
                 args=list(server_config.command[1:]),
@@ -318,7 +434,7 @@ class ManagedMcpManager:
             session = pending_session_context.__enter__()
             session_context = pending_session_context
             self._record_server_started(
-                server_name=server_name,
+                key=key,
                 workspace_root=workspace_root,
                 command=list(server_config.command),
             )
@@ -353,13 +469,14 @@ class ManagedMcpManager:
                 f"{server_config.command[0]}"
             )
             self._record_failure_event(
-                server_name=server_name,
+                key=key,
                 workspace_root=workspace_root,
                 stage="startup",
                 error=message,
                 command=list(server_config.command),
                 diagnostic=diagnostic,
             )
+            self._state_lock.release()
             raise ValueError(message) from exc
         except Exception as exc:
             self._close_partial_server(
@@ -379,7 +496,7 @@ class ManagedMcpManager:
                 fallback=f"MCP[{server_name}]: failed to initialize server",
             )
             self._record_failure_event(
-                server_name=server_name,
+                key=key,
                 workspace_root=workspace_root,
                 stage="startup",
                 error=message,
@@ -389,10 +506,11 @@ class ManagedMcpManager:
             )
             if transport_context is not None:
                 self._record_server_stopped(
-                    server_name=server_name,
+                    key=key,
                     workspace_root=workspace_root,
                     preserve_failed_state=True,
                 )
+            self._state_lock.release()
             raise ValueError(message) from exc
 
         running = _RunningMcpServer(
@@ -403,9 +521,21 @@ class ManagedMcpManager:
             session=session,
             stderr_log=stderr_log,
             initialize_result=initialize_result,
+            scope=key.scope,
+            owner_session_id=key.owner_session_id,
         )
-        self._running_servers[server_name] = running
+        with self._state_lock:
+            existing = self._running_servers.get(key)
+            if existing is not None:
+                self._terminate_running_server(running)
+                existing.last_used_at = time.monotonic()
+                self._record_server_reused(key=key, workspace_root=existing.workspace_root)
+                self._state_lock.release()
+                return existing
+            self._running_servers[key] = running
+            self._record_server_acquired(key=key, workspace_root=running.workspace_root)
         _ = initialize_result
+        self._state_lock.release()
         return running
 
     def _ensure_portal(self) -> BlockingPortal:
@@ -427,7 +557,9 @@ class ManagedMcpManager:
         tool_name: str | None = None,
     ) -> object:
         try:
-            return self._ensure_portal().call(operation)
+            with running.call_lock:
+                running.last_used_at = time.monotonic()
+                return self._ensure_portal().call(operation)
         except Exception as exc:
             diagnostic = self._diagnostic_for_exception(
                 exc,
@@ -442,7 +574,13 @@ class ManagedMcpManager:
                 fallback=f"MCP[{running.server_name}]: {method} failed",
             )
             self._record_failure_event(
-                server_name=running.server_name,
+                key=_McpServerKey(
+                    server_name=running.server_name,
+                    scope=running.scope,
+                    owner_session_id=(
+                        running.owner_session_id if running.scope == "session" else None
+                    ),
+                ),
                 workspace_root=running.workspace_root,
                 stage=stage,
                 error=message,
@@ -450,7 +588,11 @@ class ManagedMcpManager:
                 diagnostic=diagnostic,
             )
             if self._should_stop_running_server(exc, stage=stage):
-                self._stop_running_server_by_name(running.server_name)
+                self._stop_running_server_by_name(
+                    server_name=running.server_name,
+                    scope=running.scope,
+                    owner_session_id=running.owner_session_id,
+                )
             raise ValueError(message) from exc
 
     def _should_stop_running_server(self, exc: Exception, *, stage: str) -> bool:
@@ -495,20 +637,55 @@ class ManagedMcpManager:
             safety=safety,
         )
 
-    def _stop_running_server(self, server_name: str) -> None:
-        running = self._running_servers.pop(server_name, None)
+    @staticmethod
+    def _server_key(
+        *,
+        server_name: str,
+        scope: str,
+        owner_session_id: str | None,
+    ) -> _McpServerKey:
+        parsed_scope: Literal["runtime", "session"] = "session" if scope == "session" else "runtime"
+        owner = owner_session_id if parsed_scope == "session" else None
+        if parsed_scope == "session" and not owner:
+            raise ValueError(
+                f"MCP[{server_name}]: session-scoped server requires an owning session id"
+            )
+        return _McpServerKey(
+            server_name=server_name,
+            scope=parsed_scope,
+            owner_session_id=owner,
+        )
+
+    def _stop_running_server(self, key: _McpServerKey) -> None:
+        running = self._running_servers.pop(key, None)
         if running is None:
             return
         self._terminate_running_server(running)
-        self._record_server_stopped(server_name=server_name, workspace_root=running.workspace_root)
+        self._record_server_stopped(key=key, workspace_root=running.workspace_root)
 
-    def _stop_running_server_by_name(self, server_name: str) -> None:
-        self._stop_running_server(server_name)
+    def _stop_running_server_by_name(
+        self,
+        *,
+        server_name: str,
+        scope: Literal["runtime", "session"],
+        owner_session_id: str | None,
+    ) -> None:
+        key = _McpServerKey(
+            server_name=server_name,
+            scope=scope,
+            owner_session_id=owner_session_id if scope == "session" else None,
+        )
+        with self._state_lock:
+            running = self._running_servers.pop(key, None)
+        if running is None:
+            return
+        self._terminate_running_server(running)
+        self._record_server_stopped(key=key, workspace_root=running.workspace_root)
 
     def _record_failure_event(
         self,
         *,
-        server_name: str,
+        key: _McpServerKey,
         workspace_root: Path,
         stage: str,
         error: str,
@@ -516,8 +693,11 @@ class ManagedMcpManager:
         command: list[str] | None = None,
         diagnostic: McpDiagnostic | None = None,
     ) -> None:
+        server_name = key.server_name
         payload: dict[str, object] = {
             "server": server_name,
+            "scope": key.scope,
+            **({"owner_session_id": key.owner_session_id} if key.owner_session_id else {}),
             "workspace_root": str(workspace_root),
             "state": "failed",
             "stage": stage,
@@ -535,79 +715,172 @@ class ManagedMcpManager:
                 "message": diagnostic.message,
                 "details": diagnostic.details or {},
             }
-        self._server_states[server_name] = McpServerRuntimeState(
-            server_name=server_name,
-            status="failed",
-            workspace_root=str(workspace_root),
-            stage=stage,
-            error=error,
-            command=list(
-                command
-                or self._server_states.get(
-                    server_name, McpServerRuntimeState(server_name=server_name)
-                ).command
-            ),
-            retry_available=True,
-        )
-        self._record_event(McpRuntimeEvent(event_type=RUNTIME_MCP_SERVER_FAILED, payload=payload))
+        with self._state_lock:
+            self._server_states[server_name] = McpServerRuntimeState(
+                server_name=server_name,
+                status="failed",
+                workspace_root=str(workspace_root),
+                stage=stage,
+                error=error,
+                command=list(
+                    command
+                    or self._server_states.get(
+                        server_name, McpServerRuntimeState(server_name=server_name)
+                    ).command
+                ),
+                retry_available=True,
+            )
+            self._record_event(
+                McpRuntimeEvent(event_type=RUNTIME_MCP_SERVER_FAILED, payload=payload)
+            )
 
     def _record_server_started(
         self,
         *,
-        server_name: str,
+        key: _McpServerKey,
         workspace_root: Path,
         command: list[str] | None = None,
     ) -> None:
-        self._server_states[server_name] = McpServerRuntimeState(
-            server_name=server_name,
-            status="running",
-            workspace_root=str(workspace_root),
-            command=list(
-                command
-                or self._server_states.get(
-                    server_name, McpServerRuntimeState(server_name=server_name)
-                ).command
-            ),
-            retry_available=False,
-        )
-        self._record_event(
-            McpRuntimeEvent(
-                event_type=RUNTIME_MCP_SERVER_STARTED,
-                payload={
-                    "server": server_name,
-                    "workspace_root": str(workspace_root),
-                    "state": "starting",
-                    "client_foundation": "python-mcp-sdk",
-                },
+        server_name = key.server_name
+        with self._state_lock:
+            self._server_states[server_name] = McpServerRuntimeState(
+                server_name=server_name,
+                status="running",
+                workspace_root=str(workspace_root),
+                command=list(
+                    command
+                    or self._server_states.get(
+                        server_name, McpServerRuntimeState(server_name=server_name)
+                    ).command
+                ),
+                retry_available=False,
             )
-        )
+            self._record_event(
+                McpRuntimeEvent(
+                    event_type=RUNTIME_MCP_SERVER_STARTED,
+                    payload={
+                        "server": server_name,
+                        "scope": key.scope,
+                        **(
+                            {"owner_session_id": key.owner_session_id}
+                            if key.owner_session_id
+                            else {}
+                        ),
+                        "workspace_root": str(workspace_root),
+                        "state": "starting",
+                        "client_foundation": "python-mcp-sdk",
+                    },
+                )
+            )
 
     def _record_server_stopped(
         self,
         *,
-        server_name: str,
+        key: _McpServerKey,
         workspace_root: Path,
         preserve_failed_state: bool = False,
     ) -> None:
-        existing_state = self._server_states.get(
-            server_name, McpServerRuntimeState(server_name=server_name)
-        )
-        if not (
-            preserve_failed_state
-            and existing_state.status == "failed"
-            and existing_state.workspace_root == str(workspace_root)
-        ):
-            self._server_states[server_name] = McpServerRuntimeState(
-                server_name=server_name,
-                status="stopped",
-                workspace_root=str(workspace_root),
-                command=list(existing_state.command),
-                retry_available=bool(self._configuration.servers),
+        server_name = key.server_name
+        with self._state_lock:
+            existing_state = self._server_states.get(
+                server_name, McpServerRuntimeState(server_name=server_name)
             )
+            if not (
+                preserve_failed_state
+                and existing_state.status == "failed"
+                and existing_state.workspace_root == str(workspace_root)
+            ):
+                self._server_states[server_name] = McpServerRuntimeState(
+                    server_name=server_name,
+                    status="stopped",
+                    workspace_root=str(workspace_root),
+                    command=list(existing_state.command),
+                    retry_available=bool(self._configuration.servers),
+                )
+            self._record_event(
+                McpRuntimeEvent(
+                    event_type=RUNTIME_MCP_SERVER_STOPPED,
+                    payload={
+                        "server": server_name,
+                        "scope": key.scope,
+                        **(
+                            {"owner_session_id": key.owner_session_id}
+                            if key.owner_session_id
+                            else {}
+                        ),
+                        "workspace_root": str(workspace_root),
+                    },
+                )
+            )
+
+    def _record_server_reused(self, *, key: _McpServerKey, workspace_root: Path) -> None:
         self._record_event(
             McpRuntimeEvent(
-                event_type=RUNTIME_MCP_SERVER_STOPPED,
-                payload={"server": server_name, "workspace_root": str(workspace_root)},
+                event_type=RUNTIME_MCP_SERVER_REUSED,
+                payload={
+                    "server": key.server_name,
+                    "scope": key.scope,
+                    **({"owner_session_id": key.owner_session_id} if key.owner_session_id else {}),
+                    "workspace_root": str(workspace_root),
+                },
+            )
+        )
+
+    def _record_server_acquired(self, *, key: _McpServerKey, workspace_root: Path) -> None:
+        running = self._running_servers.get(key)
+        if running is not None:
+            running.references += 1
+        self._record_event(
+            McpRuntimeEvent(
+                event_type=RUNTIME_MCP_SERVER_ACQUIRED,
+                payload={
+                    "server": key.server_name,
+                    "scope": key.scope,
+                    **({"owner_session_id": key.owner_session_id} if key.owner_session_id else {}),
+                    "workspace_root": str(workspace_root),
+                },
+            )
+        )
+
+    def _record_server_released(self, *, key: _McpServerKey, reason: str) -> None:
+        running = self._running_servers.get(key)
+        workspace_root = running.workspace_root if running is not None else None
+        if running is not None and running.references > 0:
+            running.references -= 1
+        self._record_event(
+            McpRuntimeEvent(
+                event_type=RUNTIME_MCP_SERVER_RELEASED,
+                payload={
+                    "server": key.server_name,
+                    "scope": key.scope,
+                    **({"owner_session_id": key.owner_session_id} if key.owner_session_id else {}),
+                    **(
+                        {"workspace_root": str(workspace_root)}
+                        if workspace_root is not None
+                        else {}
+                    ),
+                    "reason": reason,
+                },
+            )
+        )
+
+    def _record_server_idle_cleaned(
+        self,
+        *,
+        key: _McpServerKey,
+        workspace_root: Path,
+        reason: str,
+    ) -> None:
+        self._record_event(
+            McpRuntimeEvent(
+                event_type=RUNTIME_MCP_SERVER_IDLE_CLEANED,
+                payload={
+                    "server": key.server_name,
+                    "scope": key.scope,
+                    **({"owner_session_id": key.owner_session_id} if key.owner_session_id else {}),
+                    "workspace_root": str(workspace_root),
+                    "reason": reason,
+                },
             )
         )
 
@@ -680,13 +953,16 @@ class ManagedMcpManager:
         *,
         session_context: AbstractContextManager[ClientSession] | None,
         transport_context: AbstractContextManager[tuple[object, object]] | None,
-        stderr_log: IO[str],
+        stderr_log: IO[str] | None,
     ) -> None:
         if session_context is not None:
-            session_context.__exit__(None, None, None)
+            with suppress(Exception):
+                session_context.__exit__(None, None, None)
         if transport_context is not None:
-            transport_context.__exit__(None, None, None)
-        stderr_log.close()
+            with suppress(Exception):
+                transport_context.__exit__(None, None, None)
+        if stderr_log is not None:
+            stderr_log.close()
 
     @staticmethod
     def _terminate_running_server(running: _RunningMcpServer) -> None:
@@ -695,7 +971,8 @@ class ManagedMcpManager:
         running.stderr_log.close()
 
     def _record_event(self, event: McpRuntimeEvent) -> None:
-        self._pending_events.append(event)
+        with self._state_lock:
+            self._pending_events.append(event)
 
 
 # =============================================================================

@@ -66,6 +66,7 @@ from ..tools.contracts import (
 )
 from ..tools.guidance import definition_with_guidance
 from ..tools.question import QuestionTool
+from ..tools.runtime_context import current_runtime_tool_context
 from ..tools.skill import SkillTool
 from ..tools.task import TaskTool
 from .acp import AcpAdapter, AcpAdapterState, build_acp_adapter
@@ -147,7 +148,11 @@ from .events import (
     RUNTIME_LSP_SERVER_STARTED,
     RUNTIME_LSP_SERVER_STARTUP_REJECTED,
     RUNTIME_LSP_SERVER_STOPPED,
+    RUNTIME_MCP_SERVER_ACQUIRED,
     RUNTIME_MCP_SERVER_FAILED,
+    RUNTIME_MCP_SERVER_IDLE_CLEANED,
+    RUNTIME_MCP_SERVER_RELEASED,
+    RUNTIME_MCP_SERVER_REUSED,
     RUNTIME_MCP_SERVER_STARTED,
     RUNTIME_MCP_SERVER_STOPPED,
     RUNTIME_QUESTION_ANSWERED,
@@ -918,6 +923,7 @@ class VoidCodeRuntime:
             return ()
         from ..tools.mcp import McpTool
 
+        context = current_runtime_tool_context()
         return tuple(
             McpTool(
                 server_name=tool.server_name,
@@ -927,7 +933,10 @@ class VoidCodeRuntime:
                 safety=tool.safety,
                 requester=self.request_mcp_tool,
             )
-            for tool in self._mcp_manager.list_tools(workspace=self._workspace)
+            for tool in self._mcp_manager.list_tools(
+                workspace=self._workspace,
+                owner_session_id=context.session_id if context is not None else None,
+            )
         )
 
     def _refresh_mcp_tools(self) -> None:
@@ -946,7 +955,12 @@ class VoidCodeRuntime:
         failure_kind: str,
     ) -> tuple[tuple[RuntimeStreamChunk, ...], SessionState, int, RuntimeStreamChunk | None]:
         try:
-            self._refresh_mcp_tools()
+            if self._mcp_manager.current_state().mode != "managed":
+                return (), session, sequence, None
+            merged_tools = dict(self._base_tool_registry.tools)
+            for tool in self._build_mcp_tools_for_owner(owner_session_id=session.session.id):
+                merged_tools[tool.definition.name] = tool
+            self._tool_registry = ToolRegistry(tools=merged_tools)
         except Exception:
             logger.info(
                 "continuing session %s after MCP tool refresh failure",
@@ -966,6 +980,26 @@ class VoidCodeRuntime:
             last_sequence = emitted_events[-1].sequence if emitted_events else sequence
             return emitted, session, last_sequence, None
         return (), session, sequence, None
+
+    def _build_mcp_tools_for_owner(self, *, owner_session_id: str | None) -> tuple[Tool, ...]:
+        if self._mcp_manager.current_state().mode != "managed":
+            return ()
+        from ..tools.mcp import McpTool
+
+        return tuple(
+            McpTool(
+                server_name=tool.server_name,
+                tool_name=tool.tool_name,
+                description=tool.description,
+                input_schema=tool.input_schema,
+                safety=tool.safety,
+                requester=self.request_mcp_tool,
+            )
+            for tool in self._mcp_manager.list_tools(
+                workspace=self._workspace,
+                owner_session_id=owner_session_id,
+            )
+        )
 
     def _tool_registry_for_effective_config(
         self,
@@ -989,6 +1023,38 @@ class VoidCodeRuntime:
                 scoped_registry = scoped_registry.filtered(agent.tools.default)
 
         return scoped_registry
+
+    def _delegation_tool_policy_error(
+        self,
+        *,
+        session: SessionState,
+        tool_name: str,
+    ) -> str | None:
+        # Runtime-owned child preset governance: provider-visible schemas are already
+        # narrowed, but malicious/raw provider tool calls still need a clear policy
+        # denial before normal lookup can obscure the reason as an unknown tool.
+        if runtime_subagent_route_from_metadata(session.metadata) is None:
+            return None
+        effective_config = self._effective_runtime_config_from_metadata(session.metadata)
+        agent = effective_config.agent
+        if agent is None:
+            return None
+        manifest = get_builtin_agent_manifest(agent.preset)
+        if manifest is None or not manifest.tool_allowlist:
+            return None
+        if self._tool_name_matches_patterns(tool_name, manifest.tool_allowlist):
+            return None
+        if tool_name not in self._base_tool_registry.tools:
+            return None
+        return (
+            "delegation policy denied tool "
+            f"'{tool_name}' for child preset '{agent.preset}'; this preset may only call "
+            "tools allowed by its manifest tool_allowlist"
+        )
+
+    @staticmethod
+    def _tool_name_matches_patterns(tool_name: str, patterns: Iterable[str]) -> bool:
+        return any(fnmatchcase(tool_name, pattern) for pattern in patterns if pattern)
 
     def current_lsp_state(self) -> LspManagerState:
         return self._lsp_manager.current_state()
@@ -1025,11 +1091,38 @@ class VoidCodeRuntime:
         arguments: dict[str, object],
         workspace: Path,
     ):
+        context = current_runtime_tool_context()
         return self._mcp_manager.call_tool(
             server_name=server_name,
             tool_name=tool_name,
             arguments=arguments,
             workspace=workspace,
+            owner_session_id=context.session_id if context is not None else None,
+            parent_session_id=context.parent_session_id if context is not None else None,
+        )
+
+    def _release_mcp_session(self, session_id: str) -> tuple[EventEnvelope, ...]:
+        release = getattr(self._mcp_manager, "release_session", None)
+        if not callable(release):
+            return ()
+        return self._envelopes_for_mcp_events(
+            session_id=session_id,
+            start_sequence=1,
+            mcp_events=cast(tuple[object, ...], release(session_id=session_id)),
+        )
+
+    def cleanup_idle_mcp_sessions(
+        self,
+        *,
+        max_idle_seconds: float = 300.0,
+    ) -> tuple[EventEnvelope, ...]:
+        cleanup = getattr(self._mcp_manager, "cleanup_idle_session_servers", None)
+        if not callable(cleanup):
+            return ()
+        return self._envelopes_for_mcp_events(
+            session_id="runtime",
+            start_sequence=1,
+            mcp_events=cast(tuple[object, ...], cleanup(max_idle_seconds=max_idle_seconds)),
         )
 
     def shutdown_mcp(self) -> tuple[EventEnvelope, ...]:
@@ -1661,12 +1754,27 @@ class VoidCodeRuntime:
             payload={"session_status": finalized_session.status},
         )
         yield from end_hook_outcome.chunks
+        release_sequence = end_hook_outcome.last_sequence
         if end_hook_outcome.failed_error is not None:
             logger.warning(
                 "session_end hook failed for %s: %s",
                 session.session.id,
                 end_hook_outcome.failed_error,
             )
+        release_session = getattr(self._mcp_manager, "release_session", None)
+        release_events: tuple[object, ...] = ()
+        if callable(release_session):
+            release_events = cast(
+                tuple[object, ...],
+                release_session(session_id=finalized_session.session.id),
+            )
+        for event in self._envelopes_for_mcp_events(
+            session_id=finalized_session.session.id,
+            start_sequence=release_sequence + 1,
+            mcp_events=release_events,
+        ):
+            release_sequence = event.sequence
+            yield RuntimeStreamChunk(kind="event", session=finalized_session, event=event)
 
     def _execute_graph_loop(
         self,
@@ -4691,7 +4799,14 @@ class VoidCodeRuntime:
         force_load_skill_names = request_force_load_skill_names
         if force_load_skill_names is None:
             return ()
-        return build_runtime_contexts(skill_registry, skill_names=force_load_skill_names)
+        deduped_force_load_skill_names: list[str] = []
+        for skill_name in force_load_skill_names:
+            if skill_name not in deduped_force_load_skill_names:
+                deduped_force_load_skill_names.append(skill_name)
+        return build_runtime_contexts(
+            skill_registry,
+            skill_names=tuple(deduped_force_load_skill_names),
+        )
 
     @staticmethod
     def _request_skill_names_from_metadata(
@@ -4755,16 +4870,30 @@ class VoidCodeRuntime:
             key="force_load_skills",
         )
         contexts = self._applied_skill_contexts(skill_registry, metadata, agent)
+        effective_selected_skill_names = self._effective_selected_skill_names(
+            selected_skill_names,
+            force_load_skill_names,
+        )
         return build_skill_execution_snapshot(
             contexts,
             source=source,
-            selected_skill_names=(
-                force_load_skill_names
-                if force_load_skill_names is not None
-                else selected_skill_names
-            ),
+            selected_skill_names=effective_selected_skill_names,
             binding_snapshot=binding_snapshot,
         )
+
+    @staticmethod
+    def _effective_selected_skill_names(
+        selected_skill_names: tuple[str, ...] | None,
+        force_load_skill_names: tuple[str, ...] | None,
+    ) -> tuple[str, ...] | None:
+        if force_load_skill_names is None:
+            return selected_skill_names
+
+        merged_names: list[str] = []
+        for skill_name in (*(selected_skill_names or ()), *force_load_skill_names):
+            if skill_name not in merged_names:
+                merged_names.append(skill_name)
+        return tuple(merged_names)
 
     def _skill_binding_snapshot(
         self,
@@ -5474,6 +5603,10 @@ class VoidCodeRuntime:
     ) -> tuple[EventEnvelope, ...]:
         known_event_types = {
             RUNTIME_MCP_SERVER_FAILED,
+            RUNTIME_MCP_SERVER_ACQUIRED,
+            RUNTIME_MCP_SERVER_IDLE_CLEANED,
+            RUNTIME_MCP_SERVER_RELEASED,
+            RUNTIME_MCP_SERVER_REUSED,
             RUNTIME_MCP_SERVER_STARTED,
             RUNTIME_MCP_SERVER_STOPPED,
         }
@@ -5878,6 +6011,7 @@ class VoidCodeRuntime:
 
     def _unregister_active_session_id(self, session_id: str) -> None:
         _ACTIVE_SESSION_REGISTRY.unregister(workspace=self._workspace, session_id=session_id)
+        _ = self._release_mcp_session(session_id)
 
     def _active_session_metadata(self, session_id: str) -> dict[str, object] | None:
         return _ACTIVE_SESSION_REGISTRY.metadata(

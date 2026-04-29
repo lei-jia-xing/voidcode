@@ -418,6 +418,22 @@ class RuntimeRunLoopCoordinator:
                 ),
             )
 
+            delegation_policy_error = runtime._delegation_tool_policy_error(
+                session=session,
+                tool_name=plan_tool_call.tool_name,
+            )
+            if delegation_policy_error is not None:
+                yield runtime._failed_chunk(
+                    session=session,
+                    sequence=sequence + 1,
+                    error=delegation_policy_error,
+                    payload={
+                        "kind": "delegation_tool_policy_denied",
+                        "tool": plan_tool_call.tool_name,
+                    },
+                )
+                raise ValueError(delegation_policy_error)
+
             try:
                 tool = tool_registry.resolve(plan_tool_call.tool_name)
             except Exception as exc:
