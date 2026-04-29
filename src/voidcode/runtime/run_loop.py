@@ -568,12 +568,19 @@ class RuntimeRunLoopCoordinator:
                     )
                     approval_resolution = None
                 else:
-                    msg = (
-                        f"graph step produced a different tool call "
-                        f"({plan_tool_call.tool_name}) than the pending "
-                        f"approval ({pending.tool_name})"
+                    # Tool call changed on replay (non-deterministic model output) —
+                    # treat the new call as a fresh permission check instead of
+                    # failing the approval flow.  This keeps the session usable
+                    # even when the provider produces different arguments for
+                    # the same tool on replay.
+                    approval_resolution = None
+                    permission_chunks = runtime._resolve_permission(
+                        session=session,
+                        tool=tool.definition,
+                        tool_call=plan_tool_call,
+                        sequence=sequence,
+                        permission_policy=active_permission_policy,
                     )
-                    raise ValueError(msg)
             else:
                 permission_chunks = runtime._resolve_permission(
                     session=session,

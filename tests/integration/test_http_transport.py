@@ -1724,7 +1724,7 @@ def test_transport_rejects_invalid_approval_resolution_payload(
     assert response.json() == {"error": expected_error}
 
 
-def test_transport_returns_not_found_when_approval_resolution_has_no_pending_request(
+def test_transport_returns_conflict_when_approval_resolution_has_no_pending_request(
     tmp_path: Path,
 ) -> None:
     sample_file = tmp_path / "sample.txt"
@@ -1748,7 +1748,7 @@ def test_transport_returns_not_found_when_approval_resolution_has_no_pending_req
         ).encode("utf-8"),
     )
 
-    assert response.status == 404
+    assert response.status == 409
     assert response.json() == {"error": "no pending approval for session: completed-session"}
 
 

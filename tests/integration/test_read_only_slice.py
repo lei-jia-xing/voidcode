@@ -2997,6 +2997,87 @@ def test_runtime_rejects_stale_duplicate_approval_replay_after_resolution_even_i
         )
 
 
+class _DivergentWriteFileGraph:
+    """Graph that returns different write_file arguments on consecutive steps."""
+
+    def __init__(self) -> None:
+        self._call_count = 0
+
+    def step(
+        self,
+        request: object,
+        tool_results: tuple[object, ...],
+        *,
+        session: object,
+    ) -> object:
+        _ = request, session
+        self._call_count += 1
+        if not tool_results:
+            suffix = "first" if self._call_count == 1 else "second"
+            return _GraphStep(
+                events=(),
+                tool_call=cast(
+                    ToolCallFactory,
+                    importlib.import_module("voidcode.tools.contracts").ToolCall,
+                )(
+                    tool_name="write_file",
+                    arguments={
+                        "path": "divergent.txt",
+                        "content": f"body-{suffix}",
+                    },
+                ),
+            )
+        return _GraphStep(events=(), tool_call=None, output="written", is_finished=True)
+
+
+def test_runtime_approval_resume_gracefully_reemits_when_tool_call_diverges(
+    tmp_path: Path,
+) -> None:
+    """On resume, the graph may produce a different tool call than the original
+    pending approval (non-deterministic provider output).  Instead of raising
+    a ValueError, the runtime should fall through to a fresh permission check
+    so the session remains usable."""
+    runtime_request, runtime_class = _load_runtime_types()
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    permission_policy = cast(Callable[..., object], permission_module.PermissionPolicy)
+    policy = permission_policy(mode="ask")
+    runtime = cast(
+        RuntimeRunner,
+        cast(
+            object,
+            runtime_class(
+                workspace=tmp_path,
+                graph=_DivergentWriteFileGraph(),
+                permission_policy=policy,
+            ),
+        ),
+    )
+
+    waiting = runtime.run(
+        runtime_request(prompt="write divergent.txt", session_id="divergent-approval")
+    )
+    assert waiting.session.status == "waiting"
+    assert waiting.events[-1].event_type == "runtime.approval_requested"
+    original_request_id = cast(str, waiting.events[-1].payload["request_id"])
+
+    # Resume with approval for the original tool call.  The graph now
+    # produces write_file "body-second" which does NOT match the pending
+    # approval (different content argument).  The fix ensures this does
+    # NOT raise ValueError but re-emits a fresh approval.
+    result = runtime.resume(
+        "divergent-approval",
+        approval_request_id=original_request_id,
+        approval_decision="allow",
+    )
+    assert result.session.status == "waiting", f"expected waiting, got {result.session.status}"
+    approval_events = [e for e in result.events if e.event_type == "runtime.approval_requested"]
+    assert len(approval_events) >= 1
+    new_request_id = cast(str, approval_events[-1].payload["request_id"])
+    assert new_request_id != original_request_id, (
+        "new approval must have different request_id from original"
+    )
+
+
 def test_runtime_resumes_multi_step_loop_with_approval_and_stable_replay(tmp_path: Path) -> None:
     _ = (tmp_path / "source.txt").write_text("alpha\nbeta alpha\n", encoding="utf-8")
     runtime_request, runtime = _approval_runtime(tmp_path, mode="ask")
