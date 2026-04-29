@@ -4,7 +4,7 @@ import os
 import signal
 import subprocess
 from pathlib import Path
-from typing import ClassVar, final
+from typing import Any, ClassVar, final
 
 from pydantic import ValidationError
 
@@ -26,7 +26,13 @@ def _truncate(text: str | None) -> tuple[str, bool]:
     return text[:MAX_OUTPUT_CHARS], True
 
 
-def kill_timed_out_process(process: subprocess.Popen[str]) -> None:
+def _decode_process_output(payload: bytes | None) -> str:
+    if payload is None:
+        return ""
+    return payload.decode("utf-8", errors="replace")
+
+
+def kill_timed_out_process(process: subprocess.Popen[Any]) -> None:
     if os.name == "nt":
         taskkill_succeeded = False
         try:
@@ -120,9 +126,6 @@ class ShellExecTool:
                 shell=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
                 start_new_session=True,
                 creationflags=creationflags,
             )
@@ -130,7 +133,7 @@ class ShellExecTool:
             raise ValueError(f"shell_exec failed to execute command: {exc}") from exc
 
         try:
-            stdout, stderr = process.communicate(timeout=timeout_seconds)
+            stdout_bytes, stderr_bytes = process.communicate(timeout=timeout_seconds)
         except subprocess.TimeoutExpired as exc:
             kill_timed_out_process(process)
             process.communicate()
@@ -139,6 +142,9 @@ class ShellExecTool:
                     f"tool '{self.definition.name}' exceeded runtime timeout of {timeout_seconds}s"
                 ) from exc
             raise ValueError(f"shell_exec command timed out after {timeout_seconds}s") from exc
+
+        stdout = _decode_process_output(stdout_bytes)
+        stderr = _decode_process_output(stderr_bytes)
 
         output = stdout
         if stderr:
