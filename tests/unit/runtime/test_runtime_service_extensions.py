@@ -1056,6 +1056,51 @@ def test_runtime_background_task_progress_hooks_skip_result_load_when_no_command
     )
 
 
+def test_runtime_background_task_started_hook_runs_outside_queue_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    supervisor = runtime._background_task_supervisor  # pyright: ignore[reportPrivateUsage]
+    task = BackgroundTaskState(
+        task=BackgroundTaskRef(id="task-started-hook-lock"),
+        request=BackgroundTaskRequestSnapshot(
+            prompt="background started hook",
+            parent_session_id="leader-session",
+        ),
+    )
+    runtime._session_store.create_background_task(  # pyright: ignore[reportPrivateUsage]
+        workspace=tmp_path,
+        task=task,
+    )
+    lifecycle_calls: list[str] = []
+
+    def no_op_worker(task_id: str) -> None:
+        _ = task_id
+
+    def assert_started_hook_not_locked(
+        *,
+        task: BackgroundTaskState,
+        surface: str,
+        session_id: str,
+        extra_payload: dict[str, object] | None = None,
+    ) -> None:
+        _ = task, session_id, extra_payload
+        lifecycle_calls.append(surface)
+        assert cast(Any, supervisor._queue_lock)._is_owned() is False  # pyright: ignore[reportPrivateUsage]
+
+    monkeypatch.setattr(runtime, "_run_background_task_worker", no_op_worker)
+    monkeypatch.setattr(
+        supervisor,
+        "run_background_task_lifecycle_surface",
+        assert_started_hook_not_locked,
+    )
+
+    supervisor._drain_background_task_queue()  # pyright: ignore[reportPrivateUsage]
+
+    assert lifecycle_calls == ["background_task_started"]
+
+
 def test_runtime_background_task_concurrency_limit_queues_and_drains(tmp_path: Path) -> None:
     graph = _BlockingBackgroundTaskGraph()
     runtime = VoidCodeRuntime(

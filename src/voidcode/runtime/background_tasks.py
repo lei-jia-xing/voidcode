@@ -339,6 +339,7 @@ class RuntimeBackgroundTaskSupervisor:
     def _drain_background_task_queue(self) -> None:
         runtime = self._runtime
         failed_tasks: list[BackgroundTaskState] = []
+        started_tasks: list[BackgroundTaskState] = []
         with self._queue_lock:
             summaries = sorted(
                 runtime._session_store.list_background_tasks(workspace=runtime._workspace),
@@ -383,13 +384,6 @@ class RuntimeBackgroundTaskSupervisor:
                 if running_task.status != "running":
                     self._release_slot(identity)
                     continue
-                self.run_background_task_lifecycle_surface(
-                    task=running_task,
-                    surface="background_task_started",
-                    session_id=running_task.session_id
-                    or running_task.parent_session_id
-                    or "runtime",
-                )
                 worker = threading.Thread(
                     target=runtime._run_background_task_worker,
                     args=(task.task.id,),
@@ -410,6 +404,13 @@ class RuntimeBackgroundTaskSupervisor:
                     )
                     failed_tasks.append(failed_task)
                     continue
+                started_tasks.append(running_task)
+        for started_task in started_tasks:
+            self.run_background_task_lifecycle_surface(
+                task=started_task,
+                surface="background_task_started",
+                session_id=started_task.session_id or started_task.parent_session_id or "runtime",
+            )
         for failed_task in failed_tasks:
             self.run_background_task_lifecycle_hook(failed_task)
 
