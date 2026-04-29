@@ -180,9 +180,19 @@ CLI / server 可以通过 `--approval-mode allow|deny|ask` 或等价 runtime con
 
 Agent 不处理 approval UI；CLI / Web 客户端把 `allow` 或 `deny` 决策交回 runtime，runtime 再恢复或终止 session。
 
+当请求涉及 workspace 外路径时，approval payload 会额外包含：
+
+- `path_scope`: `external`
+- `operation_class`: `read` / `write` / `execute`
+- `canonical_path`: canonical absolute path
+- `matched_rule`: 命中的 external permission rule
+- `policy_surface`: `external_directory_read` 或 `external_directory_write`
+
+对应的 `runtime.approval_resolved` payload 在 external 场景下也会携带上述上下文字段，便于审计与客户端提示。
+
 ## 通用安全与路径规则
 
-- 文件路径参数默认相对当前 workspace root 解析；路径逃逸 workspace 会失败。
+- 文件路径参数默认相对当前 workspace root 解析；当路径解析到 workspace 外时，会进入 runtime-owned external directory permission surface，而不是静默绕过治理。
 - 文本文件工具默认使用 UTF-8；不支持二进制文件编辑。
 - 搜索 / list / glob 会忽略常见生成目录，如 `.git`、`node_modules`、`__pycache__`、`dist`、`build`、`.venv` 等。
 - `web_fetch` 只允许 `http://` 与 `https://`，并阻止 localhost、private、loopback、link-local、reserved、multicast、metadata host 等目标。
