@@ -56,6 +56,23 @@ class _StubRuntime:
         print("runtime debug should go to stderr")
         yield from self.chunks
 
+    def cancel_session(
+        self,
+        session_id: str,
+        *,
+        run_id: str | None = None,
+        reason: str | None = None,
+    ) -> dict[str, object]:
+        _ = run_id
+        return {
+            "session_id": session_id,
+            "status": "interrupted",
+            "interrupted": True,
+            "cancelled": True,
+            "run_id": "run-1",
+            "reason": reason,
+        }
+
 
 class _SlowRuntime:
     def run_stream(self, request: RuntimeRequest) -> Iterator[Any]:
@@ -273,7 +290,37 @@ def test_cancel_returns_limited_success_without_crashing() -> None:
     assert messages[1]["result"]["cancelled"] is False
     assert messages[1]["result"]["stopReason"] == "not_active"
     assert messages[1]["result"]["supported"] is False
-    assert "limited" in messages[1]["result"]["message"]
+    assert messages[1]["result"]["runtimeCancel"] is None
+
+
+def test_cancel_delegates_to_runtime_when_runtime_session_exists() -> None:
+    runtime = _StubRuntime(
+        [
+            _StubChunk(
+                kind="event",
+                session=_StubSession(_StubSessionRef("runtime-1")),
+                event=_StubEvent(
+                    session_id="runtime-1",
+                    sequence=1,
+                    event_type="runtime.request_received",
+                    source="runtime",
+                    payload={"prompt": "hello"},
+                ),
+            ),
+        ]
+    )
+    with patch("voidcode.acp.stdio.uuid4", return_value=SimpleNamespace(hex="abc")):
+        messages, _ = _run_server(
+            runtime,
+            _request("session/new", 1),
+            _request("session/prompt", 2, {"sessionId": "acp-session-abc", "prompt": "hello"}),
+            _request("session/cancel", 3, {"sessionId": "acp-session-abc"}),
+        )
+
+    cancel_result = messages[-1]["result"]
+    assert cancel_result["cancelled"] is True
+    assert cancel_result["supported"] is True
+    assert cancel_result["runtimeCancel"]["session_id"] == "runtime-1"
 
 
 def test_cancel_notification_writes_no_response() -> None:

@@ -36,6 +36,14 @@ type JsonRpcId = str | int | None
 class AcpRuntime(Protocol):
     def run_stream(self, request: RuntimeRequest) -> Iterator[RuntimeStreamChunk]: ...
 
+    def cancel_session(
+        self,
+        session_id: str,
+        *,
+        run_id: str | None = None,
+        reason: str | None = None,
+    ) -> object: ...
+
 
 @dataclass(slots=True)
 class AcpSessionBinding:
@@ -293,16 +301,29 @@ class StdioAcpServer:
         if binding is None:
             raise ValueError(f"unknown ACP session id: {acp_session_id}")
         binding.cancel_requested = True
+        cancel_payload: dict[str, object] | None = None
+        if binding.runtime_session_id is not None:
+            cancel_session = getattr(self.runtime, "cancel_session", None)
+            if callable(cancel_session):
+                result = cancel_session(
+                    binding.runtime_session_id,
+                    reason="acp session/cancel",
+                )
+                as_payload = getattr(result, "as_payload", None)
+                if callable(as_payload):
+                    cancel_payload = cast(dict[str, object], as_payload())
+                elif isinstance(result, dict):
+                    cancel_payload = cast(dict[str, object], result)
+        interrupted = (
+            bool(cancel_payload.get("interrupted")) if cancel_payload is not None else False
+        )
         return {
             "sessionId": acp_session_id,
             "runtimeSessionId": binding.runtime_session_id,
-            "cancelled": False,
-            "stopReason": "cancelled" if binding.active else "not_active",
-            "supported": False,
-            "message": (
-                "No active interrupt is available for the minimal stdio ACP facade; "
-                "cancellation is best-effort and currently limited."
-            ),
+            "cancelled": interrupted,
+            "stopReason": "cancelled" if interrupted or binding.active else "not_active",
+            "supported": cancel_payload is not None,
+            "runtimeCancel": cancel_payload,
         }
 
     def _write_runtime_event_update(
