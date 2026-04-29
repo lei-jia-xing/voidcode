@@ -689,6 +689,67 @@ def test_cli_tasks_status_supports_json_guidance(capsys: Any) -> None:
     assert any("provider inspect" in step for step in payload["task"]["next_steps"])
 
 
+def test_cli_tasks_guidance_quotes_workspace_with_spaces(capsys: Any) -> None:
+    cli = importlib.import_module("voidcode.cli")
+    workspace = Path("/tmp/demo workspace")
+    task_state = SimpleNamespace(
+        task=SimpleNamespace(id="task-spaces"),
+        status="running",
+        parent_session_id="leader-session",
+        request=SimpleNamespace(session_id="requested-child"),
+        child_session_id="child-session",
+        approval_request_id="approval-1",
+        question_request_id=None,
+        result_available=False,
+        cancellation_cause=None,
+        error=None,
+        routing_identity=None,
+    )
+
+    with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+        runtime_class.return_value.load_background_task.return_value = task_state
+        result = cli.main(["tasks", "status", "task-spaces", "--workspace", str(workspace)])
+
+    captured = capsys.readouterr()
+    assert result == 0
+    assert "--workspace '/tmp/demo workspace'" in captured.out
+
+
+def test_cli_tasks_json_guidance_quotes_workspace_with_shell_metacharacters(
+    capsys: Any,
+) -> None:
+    cli = importlib.import_module("voidcode.cli")
+    workspace = Path("/tmp/demo repo; rm -rf no")
+    task_state = SimpleNamespace(
+        task=SimpleNamespace(id="task-shell"),
+        status="completed",
+        parent_session_id="leader-session",
+        request=SimpleNamespace(session_id="requested-child"),
+        child_session_id="child-session",
+        approval_request_id=None,
+        question_request_id=None,
+        result_available=True,
+        cancellation_cause=None,
+        error=None,
+        routing_identity=None,
+    )
+
+    with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+        runtime_class.return_value.load_background_task.return_value = task_state
+        result = cli.main(
+            ["tasks", "status", "task-shell", "--workspace", str(workspace), "--json"]
+        )
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert result == 0
+    assert payload["task"]["next_steps"] == [
+        "Read output: voidcode tasks output task-shell --workspace '/tmp/demo repo; rm -rf no'",
+        "Replay child session: voidcode sessions resume child-session "
+        "--workspace '/tmp/demo repo; rm -rf no'",
+    ]
+
+
 def test_cli_tasks_surfaces_real_runtime_completed_delegated_lifecycle(
     tmp_path: Path, capsys: Any
 ) -> None:

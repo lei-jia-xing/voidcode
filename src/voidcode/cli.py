@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
 import sys
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
@@ -460,7 +461,7 @@ def _background_task_next_steps(
     result_available: bool,
     error: str | None,
 ) -> list[str]:
-    workspace_arg = f"--workspace {workspace}"
+    workspace_arg = f"--workspace {shlex.quote(str(workspace))}"
     steps: list[str] = []
     if approval_request_id is not None and child_session_id is not None:
         steps.append(
