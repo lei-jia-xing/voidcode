@@ -277,6 +277,8 @@ def _background_session_safe_summary(
         )
     if session_result.status == "failed":
         return f"Failed child session {child_session_id}; inspect the child session for details."
+    if result.approval_blocked and result.summary_output:
+        return result.summary_output
     if result.summary_output:
         return (
             f"{result.status.title()} child session {child_session_id}; "
