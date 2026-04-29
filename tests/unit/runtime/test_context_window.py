@@ -9,6 +9,7 @@ from voidcode.runtime.context_window import (
     ContextWindowPolicy,
     RuntimeContinuityState,
     context_window_policy_from_payload,
+    continuity_state_from_metadata_payload,
     continuity_summary_metadata,
     count_text_tokens,
     normalize_read_file_output,
@@ -102,13 +103,15 @@ def test_prepare_provider_context_compacts_old_results_and_reports_metadata() ->
     assert context.summary_anchor is not None
     assert context.summary_anchor.startswith("continuity:")
     assert context.summary_source == {"tool_result_start": 0, "tool_result_end": 2}
-    assert context.metadata_payload()["continuity_state"] == {
-        "summary_text": context.continuity_state.summary_text,
-        "dropped_tool_result_count": 2,
-        "retained_tool_result_count": 2,
-        "source": "tool_result_window",
-        "version": 1,
-    }
+    continuity_payload = context.metadata_payload()["continuity_state"]
+    assert isinstance(continuity_payload, dict)
+    assert continuity_payload["summary_text"] == context.continuity_state.summary_text
+    assert continuity_payload["objective"] == "read sample.txt"
+    assert continuity_payload["current_goal"] == "read sample.txt"
+    assert continuity_payload["dropped_tool_result_count"] == 2
+    assert continuity_payload["retained_tool_result_count"] == 2
+    assert continuity_payload["source"] == "tool_result_window"
+    assert continuity_payload["version"] == 2
     assert context.metadata_payload()["summary_anchor"] == context.summary_anchor
     assert context.metadata_payload()["summary_source"] == context.summary_source
 
@@ -126,11 +129,10 @@ def test_prepare_provider_context_uses_explicit_continuity_preview_policy() -> N
     )
 
     assert context.continuity_state is not None
-    assert context.continuity_state.summary_text == (
-        "Compacted 3 earlier tool results:\n"
-        '1. read_file ok content_preview="conte..."\n'
-        "... and 2 more"
-    )
+    assert "## Objective\nread sample.txt" in context.continuity_state.summary_text
+    assert "Compacted 3 earlier tool results:" in context.continuity_state.summary_text
+    assert '1. read_file ok content_preview="conte..."' in context.continuity_state.summary_text
+    assert "... and 2 more" in context.continuity_state.summary_text
 
 
 def test_prepare_provider_context_compacts_by_absolute_token_budget() -> None:
@@ -494,10 +496,35 @@ def test_prepare_provider_context_continuity_metadata_includes_version() -> None
 
     assert context.continuity_state is not None
     payload = context.continuity_state.metadata_payload()
-    assert payload.get("version") == 1
+    assert payload.get("version") == 2
     assert payload.get("source") == "tool_result_window"
     assert payload.get("dropped_tool_result_count") == 1
     assert payload.get("retained_tool_result_count") == 1
+    assert payload.get("objective") == "read sample.txt"
+
+
+def test_continuity_state_metadata_payload_round_trips_v2_fields() -> None:
+    state = RuntimeContinuityState(
+        summary_text="summary",
+        objective="ship feature",
+        current_goal="fix tests",
+        verbatim_user_constraints=("Never drop raw output",),
+        progress_completed=("Implemented digest",),
+        blockers_open_questions=("Need review",),
+        key_decisions=("Use runtime-owned summary",),
+        relevant_files_commands_errors=("src/voidcode/runtime/context_window.py",),
+        verification_state=("pytest passed",),
+        delegated_task_summaries=("task_id=task-1 child_session_id=session-1",),
+        recent_tail=("background_output ok",),
+        dropped_tool_result_count=2,
+        retained_tool_result_count=1,
+        source="tool_result_window",
+        version=2,
+    )
+
+    restored = continuity_state_from_metadata_payload(state.metadata_payload())
+
+    assert restored == state
 
 
 def test_normalize_read_file_output_preserves_showing_lines_footer() -> None:

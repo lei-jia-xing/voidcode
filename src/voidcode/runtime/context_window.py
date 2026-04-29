@@ -18,6 +18,16 @@ def _empty_tool_limits() -> dict[str, int]:
 @dataclass(frozen=True, slots=True)
 class RuntimeContinuityState:
     summary_text: str | None = None
+    objective: str | None = None
+    current_goal: str | None = None
+    verbatim_user_constraints: tuple[str, ...] = ()
+    progress_completed: tuple[str, ...] = ()
+    blockers_open_questions: tuple[str, ...] = ()
+    key_decisions: tuple[str, ...] = ()
+    relevant_files_commands_errors: tuple[str, ...] = ()
+    verification_state: tuple[str, ...] = ()
+    delegated_task_summaries: tuple[str, ...] = ()
+    recent_tail: tuple[str, ...] = ()
     dropped_tool_result_count: int = 0
     retained_tool_result_count: int = 0
     source: str = "tool_result_window"
@@ -30,15 +40,25 @@ class RuntimeContinuityState:
     # semantics. This is incremented when the shape evolves and is included
     # in the serialized payload so consumers can decide how to handle newer
     # fields.
-    version: int = 1
+    version: int = 2
 
     def metadata_payload(self) -> dict[str, object]:
         payload: dict[str, object] = {
             "summary_text": self.summary_text,
+            "objective": self.objective,
+            "current_goal": self.current_goal,
+            "verbatim_user_constraints": list(self.verbatim_user_constraints),
+            "progress_completed": list(self.progress_completed),
+            "blockers_open_questions": list(self.blockers_open_questions),
+            "key_decisions": list(self.key_decisions),
+            "relevant_files_commands_errors": list(self.relevant_files_commands_errors),
+            "verification_state": list(self.verification_state),
+            "delegated_task_summaries": list(self.delegated_task_summaries),
+            "recent_tail": list(self.recent_tail),
             "dropped_tool_result_count": self.dropped_tool_result_count,
             "retained_tool_result_count": self.retained_tool_result_count,
             "source": self.source,
-            "version": self.version,
+            "version": 2,
         }
         if self.original_tool_result_tokens is not None:
             payload["original_tool_result_tokens"] = self.original_tool_result_tokens
@@ -232,6 +252,200 @@ def _tool_result_preview(result: ToolResult, *, max_preview_chars: int) -> str:
         preview_label = "content_preview" if content else "error_preview"
         parts.append(f'{preview_label}="{clipped}"')
     return " ".join(parts)
+
+
+def _metadata_string_tuple(payload: Mapping[str, object], key: str) -> tuple[str, ...]:
+    raw = payload.get(key)
+    if not isinstance(raw, list | tuple):
+        return ()
+    raw_items = cast(list[object] | tuple[object, ...], raw)
+    values: list[str] = []
+    for item in raw_items:
+        if isinstance(item, str) and item.strip():
+            values.append(item.strip())
+    return tuple(values)
+
+
+def continuity_state_from_metadata_payload(
+    payload: Mapping[str, object],
+) -> RuntimeContinuityState | None:
+    summary_text = payload.get("summary_text")
+    if summary_text is not None and not isinstance(summary_text, str):
+        return None
+    objective = payload.get("objective")
+    if objective is not None and not isinstance(objective, str):
+        objective = None
+    current_goal = payload.get("current_goal")
+    if current_goal is not None and not isinstance(current_goal, str):
+        current_goal = None
+    dropped = payload.get("dropped_tool_result_count")
+    retained = payload.get("retained_tool_result_count")
+    source = payload.get("source")
+    if not isinstance(dropped, int) or isinstance(dropped, bool):
+        return None
+    if not isinstance(retained, int) or isinstance(retained, bool):
+        return None
+    if not isinstance(source, str):
+        return None
+
+    def _optional_int(value: object) -> int | None:
+        if value is None:
+            return None
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+        raise ValueError
+
+    try:
+        original_token_count = _optional_int(payload.get("original_tool_result_tokens"))
+        retained_token_count = _optional_int(payload.get("retained_tool_result_tokens"))
+        dropped_token_count = _optional_int(payload.get("dropped_tool_result_tokens"))
+        resolved_token_budget = _optional_int(payload.get("token_budget"))
+    except ValueError:
+        return None
+    token_estimate_source = payload.get("token_estimate_source")
+    if token_estimate_source is not None and not isinstance(token_estimate_source, str):
+        return None
+    version = payload.get("version")
+    if version is not None and (not isinstance(version, int) or isinstance(version, bool)):
+        return None
+    return RuntimeContinuityState(
+        summary_text=summary_text,
+        objective=objective,
+        current_goal=current_goal,
+        verbatim_user_constraints=_metadata_string_tuple(payload, "verbatim_user_constraints"),
+        progress_completed=_metadata_string_tuple(payload, "progress_completed"),
+        blockers_open_questions=_metadata_string_tuple(payload, "blockers_open_questions"),
+        key_decisions=_metadata_string_tuple(payload, "key_decisions"),
+        relevant_files_commands_errors=_metadata_string_tuple(
+            payload,
+            "relevant_files_commands_errors",
+        ),
+        verification_state=_metadata_string_tuple(payload, "verification_state"),
+        delegated_task_summaries=_metadata_string_tuple(payload, "delegated_task_summaries"),
+        recent_tail=_metadata_string_tuple(payload, "recent_tail"),
+        dropped_tool_result_count=dropped,
+        retained_tool_result_count=retained,
+        source=source,
+        original_tool_result_tokens=original_token_count,
+        retained_tool_result_tokens=retained_token_count,
+        dropped_tool_result_tokens=dropped_token_count,
+        token_budget=resolved_token_budget,
+        token_estimate_source=token_estimate_source,
+        version=version if version is not None else 1,
+    )
+
+
+def _previous_continuity_state(
+    session_metadata: Mapping[str, object],
+) -> RuntimeContinuityState | None:
+    runtime_state = session_metadata.get("runtime_state")
+    if not isinstance(runtime_state, dict):
+        return None
+    continuity = cast(dict[str, object], runtime_state).get("continuity")
+    if not isinstance(continuity, dict):
+        return None
+    return continuity_state_from_metadata_payload(cast(dict[str, object], continuity))
+
+
+def _merge_unique_strings(*groups: tuple[str, ...], limit: int = 12) -> tuple[str, ...]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for group in groups:
+        for value in group:
+            stripped = value.strip()
+            if not stripped or stripped in seen:
+                continue
+            seen.add(stripped)
+            merged.append(stripped)
+            if len(merged) >= limit:
+                return tuple(merged)
+    return tuple(merged)
+
+
+def _line_preview(value: str, *, limit: int) -> str:
+    collapsed = " ".join(part.strip() for part in value.splitlines() if part.strip())
+    if len(collapsed) <= limit:
+        return collapsed
+    return f"{collapsed[:limit]}..."
+
+
+def _constraint_lines(prompt: str) -> tuple[str, ...]:
+    constraints: list[str] = []
+    markers = ("must", "must not", "never", "always", "do not", "don't", "forbidden")
+    for raw_line in prompt.splitlines():
+        line = raw_line.strip(" -\t")
+        lowered = line.lower()
+        if line and any(marker in lowered for marker in markers):
+            constraints.append(line)
+    return tuple(constraints[:8])
+
+
+def _facts_from_tool_results(
+    results: tuple[ToolResult, ...], *, preview_item_limit: int, preview_char_limit: int
+) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+    progress: list[str] = []
+    blockers: list[str] = []
+    refs: list[str] = []
+    delegated: list[str] = []
+    for result in results[:preview_item_limit]:
+        preview = _tool_result_preview(result, max_preview_chars=preview_char_limit)
+        if result.status == "ok":
+            progress.append(f"Tool result compacted: {preview}")
+        else:
+            blockers.append(f"Tool error compacted: {preview}")
+        path = result.data.get("path")
+        if isinstance(path, str) and path:
+            refs.append(f"file:{path}")
+        command = result.data.get("command")
+        if isinstance(command, str) and command:
+            refs.append(f"command:{command}")
+        if result.tool_name in {"task", "background_output"}:
+            task_id = result.data.get("task_id")
+            child_session_id = result.data.get("child_session_id")
+            summary_output = result.data.get("summary_output")
+            parts = [f"tool={result.tool_name}"]
+            if isinstance(task_id, str):
+                parts.append(f"task_id={task_id}")
+            if isinstance(child_session_id, str):
+                parts.append(f"child_session_id={child_session_id}")
+            if isinstance(summary_output, str) and summary_output:
+                parts.append(f"summary={_line_preview(summary_output, limit=preview_char_limit)}")
+            delegated.append(" ".join(parts))
+    return tuple(progress), tuple(blockers), tuple(refs), tuple(delegated)
+
+
+def _continuity_summary_text(state: RuntimeContinuityState) -> str:
+    sections: list[str] = []
+
+    def add_section(title: str, values: tuple[str, ...] | str | None) -> None:
+        if isinstance(values, str):
+            value = values.strip()
+            if value:
+                sections.append(f"## {title}\n{value}")
+            return
+        if not values:
+            return
+        lines = "\n".join(f"- {value}" for value in values if value.strip())
+        if lines:
+            sections.append(f"## {title}\n{lines}")
+
+    add_section("Objective", state.objective)
+    add_section("Current Goal", state.current_goal)
+    add_section("Constraints", state.verbatim_user_constraints)
+    add_section("Progress Completed", state.progress_completed)
+    add_section("Blockers / Open Questions", state.blockers_open_questions)
+    add_section("Key Decisions", state.key_decisions)
+    add_section("Relevant Files / Commands / Errors", state.relevant_files_commands_errors)
+    add_section("Verification State", state.verification_state)
+    add_section("Delegated / Background Tasks", state.delegated_task_summaries)
+    add_section("Recent Verbatim Tail", state.recent_tail)
+    sections.append(
+        "## Compaction Metadata\n"
+        f"- Dropped tool results: {state.dropped_tool_result_count}\n"
+        f"- Retained tool results: {state.retained_tool_result_count}\n"
+        f"- Source: {state.source}"
+    )
+    return "\n\n".join(sections)
 
 
 _UNICODE_TOKEN_ESTIMATE_SOURCE = "unicode_aware_chars"
@@ -595,7 +809,10 @@ def normalize_read_file_output(content: str | None) -> str | None:
 
 def _build_continuity_state(
     *,
+    prompt: str,
+    session_metadata: Mapping[str, object],
     dropped_results: tuple[ToolResult, ...],
+    retained_results: tuple[ToolResult, ...],
     retained_count: int,
     preview_item_limit: int,
     preview_char_limit: int,
@@ -606,8 +823,41 @@ def _build_continuity_state(
     token_estimate_source: str | None = None,
 ) -> RuntimeContinuityState:
     dropped_count = len(dropped_results)
+    previous = _previous_continuity_state(session_metadata)
+    objective = previous.objective if previous is not None else None
+    if objective is None:
+        objective = _line_preview(prompt, limit=160) if prompt.strip() else None
+    current_goal = _line_preview(prompt, limit=160) if prompt.strip() else objective
+    progress, blockers, refs, delegated = _facts_from_tool_results(
+        dropped_results,
+        preview_item_limit=preview_item_limit,
+        preview_char_limit=preview_char_limit,
+    )
+    retained_tail = tuple(
+        _tool_result_preview(result, max_preview_chars=preview_char_limit)
+        for result in retained_results[-preview_item_limit:]
+    )
+    previous_constraints = previous.verbatim_user_constraints if previous is not None else ()
+    previous_progress = previous.progress_completed if previous is not None else ()
+    previous_blockers = previous.blockers_open_questions if previous is not None else ()
+    previous_decisions = previous.key_decisions if previous is not None else ()
+    previous_refs = previous.relevant_files_commands_errors if previous is not None else ()
+    previous_verification = previous.verification_state if previous is not None else ()
+    previous_delegated = previous.delegated_task_summaries if previous is not None else ()
+    previous_tail = previous.recent_tail if previous is not None else ()
+    constraints = _merge_unique_strings(previous_constraints, _constraint_lines(prompt), limit=12)
     if dropped_count == 0:
         return RuntimeContinuityState(
+            objective=objective,
+            current_goal=current_goal,
+            verbatim_user_constraints=constraints,
+            progress_completed=previous_progress,
+            blockers_open_questions=previous_blockers,
+            key_decisions=previous_decisions,
+            relevant_files_commands_errors=previous_refs,
+            verification_state=previous_verification,
+            delegated_task_summaries=previous_delegated,
+            recent_tail=_merge_unique_strings(retained_tail, previous_tail, limit=8),
             retained_tool_result_count=retained_count,
             original_tool_result_tokens=original_tokens,
             retained_tool_result_tokens=retained_tokens,
@@ -625,9 +875,18 @@ def _build_continuity_state(
     remaining = dropped_count - preview_count
     if remaining > 0:
         lines.append(f"... and {remaining} more")
-
-    return RuntimeContinuityState(
-        summary_text="\n".join(lines),
+    legacy_summary = "\n".join(lines)
+    state_without_summary = RuntimeContinuityState(
+        objective=objective,
+        current_goal=current_goal,
+        verbatim_user_constraints=constraints,
+        progress_completed=_merge_unique_strings(previous_progress, progress, limit=16),
+        blockers_open_questions=_merge_unique_strings(previous_blockers, blockers, limit=12),
+        key_decisions=previous_decisions,
+        relevant_files_commands_errors=_merge_unique_strings(previous_refs, refs, limit=16),
+        verification_state=previous_verification,
+        delegated_task_summaries=_merge_unique_strings(previous_delegated, delegated, limit=12),
+        recent_tail=_merge_unique_strings(retained_tail, previous_tail, limit=8),
         dropped_tool_result_count=dropped_count,
         retained_tool_result_count=retained_count,
         source="tool_result_window",
@@ -636,6 +895,29 @@ def _build_continuity_state(
         dropped_tool_result_tokens=dropped_tokens,
         token_budget=token_budget,
         token_estimate_source=token_estimate_source,
+    )
+    canonical_summary = _continuity_summary_text(state_without_summary)
+    return RuntimeContinuityState(
+        summary_text=f"{canonical_summary}\n\n## Dropped Tool Preview\n{legacy_summary}",
+        objective=state_without_summary.objective,
+        current_goal=state_without_summary.current_goal,
+        verbatim_user_constraints=state_without_summary.verbatim_user_constraints,
+        progress_completed=state_without_summary.progress_completed,
+        blockers_open_questions=state_without_summary.blockers_open_questions,
+        key_decisions=state_without_summary.key_decisions,
+        relevant_files_commands_errors=state_without_summary.relevant_files_commands_errors,
+        verification_state=state_without_summary.verification_state,
+        delegated_task_summaries=state_without_summary.delegated_task_summaries,
+        recent_tail=state_without_summary.recent_tail,
+        dropped_tool_result_count=state_without_summary.dropped_tool_result_count,
+        retained_tool_result_count=state_without_summary.retained_tool_result_count,
+        source=state_without_summary.source,
+        original_tool_result_tokens=state_without_summary.original_tool_result_tokens,
+        retained_tool_result_tokens=state_without_summary.retained_tool_result_tokens,
+        dropped_tool_result_tokens=state_without_summary.dropped_tool_result_tokens,
+        token_budget=state_without_summary.token_budget,
+        token_estimate_source=state_without_summary.token_estimate_source,
+        version=2,
     )
 
 
@@ -781,7 +1063,10 @@ def prepare_provider_context(
 
     continuity_state = (
         _build_continuity_state(
+            prompt=prompt,
+            session_metadata=session_metadata,
             dropped_results=dropped_results,
+            retained_results=retained_results,
             retained_count=retained_count,
             preview_item_limit=effective_policy.continuity_preview_items,
             preview_char_limit=effective_policy.continuity_preview_chars,
