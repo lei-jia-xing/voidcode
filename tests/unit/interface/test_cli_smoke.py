@@ -1905,7 +1905,7 @@ def test_doctor_json_reports_first_task_readiness_missing_model() -> None:
     assert payload["first_task_readiness"]["status"] == "not_ready"
     assert payload["first_task_readiness"]["details"]["workspace_config_valid"] is True
     assert "local_tools" in payload["first_task_readiness"]["details"]
-    assert "provider/model" in payload["first_task_readiness"]["blockers"][0]
+    assert payload["first_task_readiness"]["blockers"] == ["provider.readiness check is missing"]
     assert "config init --execution-engine provider" in payload["first_task_readiness"]["next_step"]
     assert "api_key" not in result.stdout
     assert "Traceback" not in result.stderr

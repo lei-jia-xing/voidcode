@@ -129,6 +129,18 @@ class TestCreateDoctorForConfig:
             CapabilityCheckStatus.NOT_FOUND,
         }
 
+    def test_skips_provider_readiness_for_deterministic_config_without_model(
+        self, tmp_path: Path
+    ) -> None:
+        config = RuntimeConfig(execution_engine="deterministic")
+
+        doctor = create_doctor_for_config(tmp_path, config)
+
+        readiness_results = [
+            result for result in doctor.results if result.name == "provider.readiness"
+        ]
+        assert readiness_results == []
+
     def test_adds_provider_readiness_check_for_provider_config(self, tmp_path: Path) -> None:
         config = RuntimeConfig(
             model="openai/gpt-4o",
@@ -147,8 +159,8 @@ class TestCreateDoctorForConfig:
         assert readiness.error_message is not None
         assert "openai.api_key" in readiness.error_message
 
-    def test_adds_provider_readiness_check_for_missing_model(self, tmp_path: Path) -> None:
-        config = RuntimeConfig()
+    def test_adds_provider_readiness_check_for_provider_missing_model(self, tmp_path: Path) -> None:
+        config = RuntimeConfig(execution_engine="provider")
 
         doctor = create_doctor_for_config(tmp_path, config)
 

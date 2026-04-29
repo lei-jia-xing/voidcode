@@ -43,6 +43,28 @@ class TestCreateReport:
         assert report.is_healthy is True
         assert report.has_errors is False
 
+    def test_create_report_without_provider_check_stays_healthy(self) -> None:
+        results = [
+            CapabilityCheckResult(
+                status=CapabilityCheckStatus.READY,
+                name="ast-grep",
+                check_type="executable",
+                details={"command": "ast-grep"},
+            )
+        ]
+
+        report = create_report(results)
+
+        assert report.is_healthy is True
+        assert report.has_errors is False
+        assert report.first_task_readiness is not None
+        assert report.first_task_readiness.status == "not_ready"
+        assert report.first_task_readiness.details["workspace_config_valid"] is True
+        assert report.first_task_readiness.details["local_tools"] == [
+            {"name": "ast-grep", "status": "ready"}
+        ]
+        assert report.first_task_readiness.blockers == ["provider.readiness check is missing"]
+
     def test_create_report_with_missing(self) -> None:
         """Test report creation with missing capabilities."""
         results = [

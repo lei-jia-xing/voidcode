@@ -135,8 +135,15 @@ def _create_first_task_readiness(
         return FirstTaskReadiness(
             status="not_ready",
             summary="No provider-backed readiness check ran for the first coding task.",
-            next_step=f"Configure a provider/model, then run `{doctor_command}` again.",
+            next_step=(
+                "Run `voidcode config init --execution-engine provider --model provider/model"
+                f"{workspace_arg}` with a real provider/model, then run `{doctor_command}` again."
+            ),
             blockers=["provider.readiness check is missing"],
+            details={
+                "workspace_config_valid": True,
+                "local_tools": _local_tool_availability(results),
+            },
         )
 
     provider_details = dict(provider_result.details)
