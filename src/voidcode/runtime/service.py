@@ -1001,6 +1001,7 @@ class VoidCodeRuntime:
                 workspace=self._workspace,
                 owner_session_id=owner_session_id,
             )
+            if tool.enabled
         )
 
     def _tool_registry_for_effective_config(
