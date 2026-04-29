@@ -88,6 +88,15 @@ class _CapturingTurnProvider:
         return ProviderTurnResult(output="done")
 
 
+class _AbortSignal:
+    def __init__(self, *, cancelled: bool = False) -> None:
+        self._cancelled = cancelled
+
+    @property
+    def cancelled(self) -> bool:
+        return self._cancelled
+
+
 class _MixedNonStreamingTurnProvider:
     name = "opencode"
 
@@ -357,6 +366,33 @@ def test_provider_provider_graph_requests_tool_on_first_turn() -> None:
         "streaming": False,
         "prompt": "read sample.txt",
     }
+
+
+def test_provider_graph_passes_runtime_abort_signal_to_provider() -> None:
+    provider = _CapturingTurnProvider()
+    provider_model = resolve_provider_model(
+        "opencode/gpt-5.4",
+        registry=ModelProviderRegistry.with_defaults(),
+    )
+    graph = ProviderGraph(provider=provider, provider_model=provider_model)
+    request_context = RuntimeContextWindow(prompt="stop")
+    abort_signal = _AbortSignal(cancelled=True)
+
+    _ = graph.step(
+        request=GraphRunRequest(
+            session=_session(),
+            prompt="stop",
+            available_tools=_tool_definitions(),
+            context_window=request_context,
+            assembled_context=_assembled_from_context_window(request_context),
+            abort_signal=abort_signal,
+        ),
+        tool_results=(),
+        session=_session(),
+    )
+
+    assert provider.requests[0].abort_signal is abort_signal
+    assert provider.requests[0].abort_signal.cancelled is True
 
 
 def test_provider_provider_graph_finalizes_after_tool_result() -> None:

@@ -115,13 +115,21 @@ class ProviderGraph:
             ),
         )
 
+        abort_signal = request.abort_signal or cast(ProviderAbortSignal, self._abort_signal)
         abort_requested = request.metadata.get("abort_requested", False)
         if isinstance(abort_requested, bool):
-            self._abort_signal.set_cancelled(abort_requested)
+            if abort_requested and hasattr(abort_signal, "set_cancelled"):
+                cast(_GraphAbortSignal, abort_signal).set_cancelled(True)
         else:
-            self._abort_signal.set_cancelled(
-                str(abort_requested).strip().lower() not in {"false", "0", "no", "off", ""}
-            )
+            should_abort = str(abort_requested).strip().lower() not in {
+                "false",
+                "0",
+                "no",
+                "off",
+                "",
+            }
+            if should_abort and hasattr(abort_signal, "set_cancelled"):
+                cast(_GraphAbortSignal, abort_signal).set_cancelled(True)
         turn_request = ProviderTurnRequest(
             assembled_context=request.assembled_context,
             bounded_context_window=request.context_window,
@@ -132,7 +140,7 @@ class ProviderGraph:
             agent_preset=cast(dict[str, object] | None, request.metadata.get("agent_preset")),
             reasoning_effort=cast(str | None, request.metadata.get("reasoning_effort")),
             attempt=cast(int, request.metadata.get("provider_attempt", 0)),
-            abort_signal=cast(ProviderAbortSignal, self._abort_signal),
+            abort_signal=abort_signal,
         )
 
         if streaming_enabled and isinstance(self._provider, StreamableTurnProvider):
