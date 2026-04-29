@@ -58,6 +58,8 @@ describe("App", () => {
     setReviewMode: vi.fn(),
     sessions: [],
     currentSessionId: null,
+    sessionSidebarWidth: 344,
+    setSessionSidebarWidth: vi.fn(),
     currentSessionState: null,
     currentSessionEvents: [],
     currentSessionOutput: null,

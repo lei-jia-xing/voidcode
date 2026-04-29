@@ -21,6 +21,7 @@ type PersistedState = {
     currentSessionId: string | null;
     agentPreset?: "leader";
     providerModel?: string;
+    sessionSidebarWidth?: number;
   };
   version: number;
 };
@@ -278,6 +279,7 @@ describe("useAppStore integration flow", () => {
       agentsError: null,
       sessions: [],
       currentSessionId: null,
+      sessionSidebarWidth: 344,
       currentSessionState: null,
       currentSessionEvents: [],
       currentSessionOutput: null,
@@ -485,6 +487,134 @@ describe("useAppStore integration flow", () => {
     expect(state.currentSessionEvents).toEqual(completedResponse.events);
   });
 
+  it("preserves backend tool display metadata while streaming and replaying", async () => {
+    const sessionId = "session-tool-display";
+    const requestReceived = makeEvent(
+      1,
+      "runtime.request_received",
+      { prompt: "run npm test" },
+      "runtime",
+      sessionId,
+    );
+    const shellStarted = makeEvent(
+      2,
+      "runtime.tool_started",
+      {
+        tool: "shell_exec",
+        tool_call_id: "shell-1",
+        display: {
+          kind: "shell",
+          title: "Shell",
+          summary: "Run test suite",
+          args: ["npm test"],
+          copyable: { command: "npm test" },
+        },
+        tool_status: {
+          invocation_id: "shell-1",
+          tool_name: "shell_exec",
+          phase: "running",
+          status: "running",
+          display: {
+            kind: "shell",
+            title: "Shell",
+            summary: "Run test suite",
+            args: ["npm test"],
+            copyable: { command: "npm test" },
+          },
+        },
+      },
+      "runtime",
+      sessionId,
+    );
+    const shellCompleted = makeEvent(
+      3,
+      "runtime.tool_completed",
+      {
+        tool: "shell_exec",
+        tool_call_id: "shell-1",
+        status: "ok",
+        arguments: { command: "npm test" },
+        data: { command: "npm test", exit_code: 0, stdout: "2 passed" },
+        display: {
+          kind: "shell",
+          title: "Shell",
+          summary: "Run test suite",
+          args: ["npm test"],
+          copyable: { command: "npm test", output: "2 passed" },
+        },
+        tool_status: {
+          invocation_id: "shell-1",
+          tool_name: "shell_exec",
+          phase: "completed",
+          status: "completed",
+          display: {
+            kind: "shell",
+            title: "Shell",
+            summary: "Run test suite",
+            args: ["npm test"],
+            copyable: { command: "npm test", output: "2 passed" },
+          },
+        },
+      },
+      "runtime",
+      sessionId,
+    );
+    const responseReady = makeEvent(
+      4,
+      "graph.response_ready",
+      { output: "Tests passed" },
+      "graph",
+      sessionId,
+    );
+    const completedResponse = makeRuntimeResponse(
+      sessionId,
+      "completed",
+      [requestReceived, shellStarted, shellCompleted, responseReady],
+      "Tests passed",
+    );
+
+    async function* stream() {
+      yield makeStreamChunk(sessionId, "running", requestReceived);
+      yield makeStreamChunk(sessionId, "running", shellStarted);
+      yield makeStreamChunk(sessionId, "completed", shellCompleted);
+      yield makeStreamChunk(sessionId, "completed", responseReady);
+      yield makeStreamChunk(sessionId, "completed", null, "Tests passed");
+    }
+
+    runtimeClientMocks.runStreamMock.mockReturnValue(stream());
+    runtimeClientMocks.getSessionReplayMock.mockResolvedValue(
+      completedResponse,
+    );
+    runtimeClientMocks.listSessionsMock.mockResolvedValue([
+      makeStoredSessionSummary(sessionId, "completed", "run npm test"),
+    ]);
+
+    await useAppStore.getState().runTask("run npm test");
+
+    let state = useAppStore.getState();
+    expect(state.currentSessionEvents[1]?.payload.tool_status).toMatchObject({
+      invocation_id: "shell-1",
+      display: { summary: "Run test suite" },
+    });
+    expect(state.currentSessionEvents[2]?.payload.display).toEqual({
+      kind: "shell",
+      title: "Shell",
+      summary: "Run test suite",
+      args: ["npm test"],
+      copyable: { command: "npm test", output: "2 passed" },
+    });
+
+    await state.selectSession(sessionId);
+
+    state = useAppStore.getState();
+    expect(state.currentSessionEvents).toEqual(completedResponse.events);
+    expect(state.currentSessionEvents[2]?.payload.tool_status).toMatchObject({
+      invocation_id: "shell-1",
+      status: "completed",
+      display: { copyable: { command: "npm test", output: "2 passed" } },
+    });
+  });
+
   it("handles run -> waiting question -> answer through the real store", async () => {
     const sessionId = "session-question";
     const requestId = "question-1";
@@ -688,6 +818,15 @@ describe("useAppStore integration flow", () => {
     expect(runtimeClientMocks.getSessionReplayMock).toHaveBeenCalledWith(
       sessionId,
     );
+  });
+
+  it("persists the expanded session sidebar width", async () => {
+    useAppStore.getState().setSessionSidebarWidth(380);
+
+    const persisted = JSON.parse(localStorage.getItem("app-storage") ?? "{}");
+
+    expect(useAppStore.getState().sessionSidebarWidth).toBe(380);
+    expect(persisted.state.sessionSidebarWidth).toBe(380);
   });
 
   it("falls back to no active session if persisted session is stale", async () => {
