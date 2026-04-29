@@ -91,9 +91,11 @@ def _handle_run_command(args: argparse.Namespace) -> int:
     workspace = cast(Path, args.workspace)
     request_text = cast(str, args.request)
     json_output = cast(bool, getattr(args, "json", False))
+    cli_reasoning_effort = cast(str | None, getattr(args, "reasoning_effort", None))
     config = load_runtime_config(
         workspace,
         approval_mode=cast(PermissionDecision | None, getattr(args, "approval_mode", None)),
+        reasoning_effort=cli_reasoning_effort,
     )
     runtime = VoidCodeRuntime(workspace=workspace, config=config)
     try:
@@ -104,6 +106,8 @@ def _handle_run_command(args: argparse.Namespace) -> int:
             metadata["skills"] = cast(list[str], args.skills)
         if getattr(args, "max_steps", None) is not None:
             metadata["max_steps"] = cast(int, args.max_steps)
+        if cli_reasoning_effort is not None:
+            metadata["reasoning_effort"] = cli_reasoning_effort
         if getattr(args, "provider_stream", None) is not None:
             metadata["provider_stream"] = cast(bool, args.provider_stream)
         request = RuntimeRequest(
@@ -1048,6 +1052,7 @@ def _handle_config_show_command(args: argparse.Namespace) -> int:
             "model": effective_config.model,
             "execution_engine": effective_config.execution_engine,
             "max_steps": effective_config.max_steps,
+            "reasoning_effort": getattr(effective_config, "reasoning_effort", None),
             "agent": serialize_runtime_agent_config(getattr(effective_config, "agent", None)),
             "agents": agents,
             "categories": categories,
@@ -1609,6 +1614,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-steps",
         type=int,
         help="Optional max graph steps override for this run.",
+    )
+    _ = run_parser.add_argument(
+        "--reasoning-effort",
+        dest="reasoning_effort",
+        help=(
+            "Optional runtime-owned reasoning-effort hint forwarded to the active "
+            "provider when supported (for example, 'low', 'medium', 'high'). Overrides "
+            "any reasoning_effort configured in .voidcode.json or VOIDCODE_REASONING_EFFORT."
+        ),
     )
     _ = run_parser.add_argument(
         "--json",
