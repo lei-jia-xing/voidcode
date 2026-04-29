@@ -13,6 +13,7 @@ import {
   AlertCircle,
 } from "lucide-react";
 import { ChatMessage } from "../lib/runtime/event-parser";
+import type { QuestionAnswer } from "../lib/runtime/types";
 
 interface ChatThreadProps {
   messages: ChatMessage[];
@@ -21,6 +22,10 @@ interface ChatThreadProps {
   isApprovalSubmitting: boolean;
   approvalError: string | null;
   onResolveApproval: (decision: "allow" | "deny") => void;
+  isWaitingQuestion?: boolean;
+  isQuestionSubmitting?: boolean;
+  questionError?: string | null;
+  onAnswerQuestion?: (answers: QuestionAnswer[]) => void;
 }
 
 function ThinkingBlock({ thinking }: { thinking: string[] }) {
@@ -51,6 +56,135 @@ function ThinkingBlock({ thinking }: { thinking: string[] }) {
           {content}
         </div>
       )}
+    </div>
+  );
+}
+
+function QuestionCard({
+  question,
+  isSubmitting,
+  onAnswer,
+}: {
+  question: NonNullable<ChatMessage["question"]>;
+  isSubmitting: boolean;
+  onAnswer: (answers: QuestionAnswer[]) => void;
+}) {
+  const { t } = useTranslation();
+  const [values, setValues] = useState<Record<string, string[]>>({});
+
+  const prompts = question.prompts.length
+    ? question.prompts
+    : [{ header: "Question", question: null, multiple: false, options: [] }];
+
+  const canSubmit = prompts.every((prompt) =>
+    (values[prompt.header] ?? []).some((value) => value.trim()),
+  );
+
+  const toggleOption = (
+    header: string,
+    label: string,
+    multiple: boolean,
+    checked: boolean,
+  ) => {
+    setValues((current) => {
+      if (!multiple) {
+        return { ...current, [header]: [label] };
+      }
+
+      const selected = current[header] ?? [];
+      return {
+        ...current,
+        [header]: checked
+          ? [...selected, label]
+          : selected.filter((item) => item !== label),
+      };
+    });
+  };
+
+  return (
+    <div className="mt-3 rounded-lg border border-sky-500/20 bg-sky-500/10 p-4">
+      <div className="flex items-center gap-2 mb-3">
+        <PauseCircle className="w-5 h-5 text-sky-300 flex-shrink-0" />
+        <div>
+          <p className="text-sm font-medium text-sky-200">
+            {t("question.heading")}
+          </p>
+          <p className="mt-0.5 text-sm text-slate-300">
+            {t("question.message", {
+              tool: question.tool || t("question.unknownTool"),
+            })}
+          </p>
+        </div>
+      </div>
+      <div className="space-y-3">
+        {prompts.map((prompt) => (
+          <label key={prompt.header} className="block">
+            <span className="text-xs font-medium text-slate-300">
+              {prompt.header}
+            </span>
+            {prompt.question && (
+              <span className="mt-1 block text-xs text-slate-400">
+                {prompt.question}
+              </span>
+            )}
+            <div className="mt-2 space-y-2">
+              {prompt.options.map((option) => {
+                const selected = values[prompt.header] ?? [];
+                const checked = selected.includes(option.label);
+                return (
+                  <label
+                    key={option.label}
+                    className="flex items-start gap-2 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200"
+                  >
+                    <input
+                      type={prompt.multiple ? "checkbox" : "radio"}
+                      name={`question-${question.requestId}-${prompt.header}`}
+                      checked={checked}
+                      onChange={(event) =>
+                        toggleOption(
+                          prompt.header,
+                          option.label,
+                          prompt.multiple,
+                          event.target.checked,
+                        )
+                      }
+                      disabled={isSubmitting}
+                      className="mt-0.5"
+                    />
+                    <span>
+                      <span className="block font-medium">{option.label}</span>
+                      {option.description && (
+                        <span className="mt-0.5 block text-xs text-slate-500">
+                          {option.description}
+                        </span>
+                      )}
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+          </label>
+        ))}
+      </div>
+      <div className="mt-4 flex justify-end">
+        <button
+          type="button"
+          onClick={() =>
+            onAnswer(
+              prompts.map((prompt) => ({
+                header: prompt.header,
+                answers: (values[prompt.header] ?? []).filter((value) =>
+                  value.trim(),
+                ),
+              })),
+            )
+          }
+          disabled={isSubmitting || !canSubmit}
+          className="rounded-lg border border-sky-500/20 bg-sky-500/10 px-4 py-2 text-sm font-medium text-sky-200 transition-colors hover:bg-sky-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {isSubmitting ? t("question.submitting") : t("question.submit")}
+        </button>
+      </div>
     </div>
   );
 }
@@ -156,7 +290,7 @@ function StatusIndicator({ status }: { status: ChatMessage["status"] }) {
     return (
       <span className="inline-flex items-center gap-1 text-[11px] text-amber-400">
         <PauseCircle className="w-3 h-3" />
-        Waiting for approval
+        Waiting for input
       </span>
     );
   }
@@ -178,6 +312,10 @@ export function ChatThread({
   isApprovalSubmitting,
   approvalError,
   onResolveApproval,
+  isWaitingQuestion = false,
+  isQuestionSubmitting = false,
+  questionError = null,
+  onAnswerQuestion = () => undefined,
 }: ChatThreadProps) {
   const { t } = useTranslation();
 
@@ -204,9 +342,6 @@ export function ChatThread({
               >
                 <div className="flex-1 flex justify-end">
                   <div className="max-w-[85%]">
-                    <div className="mb-1 text-right text-[11px] font-medium uppercase tracking-wider text-slate-400">
-                      You
-                    </div>
                     <div className="bg-indigo-600 text-indigo-50 rounded-2xl rounded-tr-sm px-4 py-3">
                       <p className="text-sm leading-relaxed whitespace-pre-wrap">
                         {message.content}
@@ -221,10 +356,7 @@ export function ChatThread({
           return (
             <div key={message.id} className="flex items-start gap-3">
               <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 mb-1">
-                  <span className="text-[11px] font-medium uppercase tracking-wider text-slate-400">
-                    {t("chat.assistantName")}
-                  </span>
+                <div className="flex items-center gap-2 mb-1 min-h-4">
                   <StatusIndicator status={message.status} />
                 </div>
                 <div className="bg-slate-800/40 border border-slate-800 rounded-2xl rounded-tl-sm px-4 py-3">
@@ -244,6 +376,13 @@ export function ChatThread({
                       onResolve={onResolveApproval}
                     />
                   )}
+                  {message.question && isWaitingQuestion && (
+                    <QuestionCard
+                      question={message.question}
+                      isSubmitting={isQuestionSubmitting}
+                      onAnswer={onAnswerQuestion}
+                    />
+                  )}
                 </div>
               </div>
             </div>
@@ -256,9 +395,6 @@ export function ChatThread({
             <div className="flex items-start gap-3">
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 mb-1">
-                  <span className="text-[11px] font-medium uppercase tracking-wider text-slate-400">
-                    {t("chat.assistantName")}
-                  </span>
                   <StatusIndicator status="in_progress" />
                 </div>
                 <div className="bg-slate-800/40 border border-slate-800 rounded-2xl rounded-tl-sm px-4 py-3">
@@ -276,6 +412,15 @@ export function ChatThread({
             <div className="flex-1 min-w-0">
               <div className="bg-rose-500/10 border border-rose-500/20 rounded-2xl rounded-tl-sm px-4 py-3 text-sm text-rose-300">
                 {t("approval.error", { message: approvalError })}
+              </div>
+            </div>
+          </div>
+        )}
+        {questionError && (
+          <div className="flex items-start gap-3">
+            <div className="flex-1 min-w-0">
+              <div className="bg-rose-500/10 border border-rose-500/20 rounded-2xl rounded-tl-sm px-4 py-3 text-sm text-rose-300">
+                {t("question.error", { message: questionError })}
               </div>
             </div>
           </div>

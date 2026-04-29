@@ -19,6 +19,10 @@ describe("ChatThread", () => {
     isApprovalSubmitting: false,
     approvalError: null,
     onResolveApproval: vi.fn(),
+    isWaitingQuestion: false,
+    isQuestionSubmitting: false,
+    questionError: null,
+    onAnswerQuestion: vi.fn(),
   };
 
   it("renders welcome state without avatar graphics", () => {
@@ -31,7 +35,7 @@ describe("ChatThread", () => {
     expect(screen.queryByLabelText(/avatar/i)).not.toBeInTheDocument();
   });
 
-  it("renders user messages with role label and no avatar", () => {
+  it("renders user messages without role label or avatar", () => {
     render(
       <ChatThread
         {...baseProps}
@@ -50,12 +54,12 @@ describe("ChatThread", () => {
       />,
     );
 
-    expect(screen.getByText("You")).toBeInTheDocument();
     expect(screen.getByText("hello")).toBeInTheDocument();
+    expect(screen.queryByText("You")).not.toBeInTheDocument();
     expect(screen.queryByLabelText(/avatar/i)).not.toBeInTheDocument();
   });
 
-  it("renders assistant messages with role label and no avatar", () => {
+  it("renders assistant messages without role label or avatar", () => {
     render(
       <ChatThread
         {...baseProps}
@@ -74,8 +78,8 @@ describe("ChatThread", () => {
       />,
     );
 
-    expect(screen.getByText("Assistant")).toBeInTheDocument();
     expect(screen.getByText("hi there")).toBeInTheDocument();
+    expect(screen.queryByText("Assistant")).not.toBeInTheDocument();
     expect(screen.queryByLabelText(/avatar/i)).not.toBeInTheDocument();
   });
 
@@ -99,8 +103,8 @@ describe("ChatThread", () => {
       />,
     );
 
-    expect(screen.getByText("Assistant")).toBeInTheDocument();
     expect(screen.getByText("Thinking...")).toBeInTheDocument();
+    expect(screen.queryByText("Assistant")).not.toBeInTheDocument();
     expect(screen.queryByLabelText(/avatar/i)).not.toBeInTheDocument();
   });
 
@@ -142,6 +146,50 @@ describe("ChatThread", () => {
     expect(screen.getByText("Approval Required")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Allow" }));
     expect(onResolve).toHaveBeenCalledWith("allow");
+  });
+
+  it("renders question card and submits answers", () => {
+    const onAnswer = vi.fn();
+    render(
+      <ChatThread
+        {...baseProps}
+        isWaitingQuestion
+        messages={[
+          {
+            id: "msg-1",
+            role: "assistant",
+            content: "",
+            thinking: [],
+            tools: [],
+            status: "waiting",
+            approval: null,
+            question: {
+              requestId: "question-1",
+              tool: "question",
+              prompts: [
+                {
+                  header: "Direction",
+                  question: "Which path should I take?",
+                  multiple: false,
+                  options: [
+                    { label: "simple", description: "Use the simple path" },
+                  ],
+                },
+              ],
+            },
+            sequence: 1,
+          },
+        ]}
+        onAnswerQuestion={onAnswer}
+      />,
+    );
+
+    fireEvent.click(screen.getByLabelText(/simple/));
+    fireEvent.click(screen.getByRole("button", { name: "Submit Answer" }));
+
+    expect(onAnswer).toHaveBeenCalledWith([
+      { header: "Direction", answers: ["simple"] },
+    ]);
   });
 
   it("renders thinking block when reasoning exists", () => {
