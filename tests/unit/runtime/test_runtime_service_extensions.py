@@ -2679,7 +2679,10 @@ def test_runtime_load_background_task_result_exposes_completed_child_summary(
     assert result.child_session_id == completed.session_id
     assert result.status == "completed"
     assert result.approval_blocked is False
-    assert result.summary_output == "Completed: background child"
+    assert result.summary_output == (
+        f"Completed child session {completed.session_id}; full output is preserved outside "
+        "active context."
+    )
     assert result.error is None
     assert result.result_available is True
 
@@ -2744,14 +2747,18 @@ def test_runtime_background_task_completion_emits_parent_session_event_once(
     completed_delegated = completed_events[0].delegated_lifecycle
     assert completed_delegated is not None
     assert completed_delegated.delegation.delegated_task_id == started.task.id
-    assert completed_delegated.message.summary_output == "Completed: background child"
+    safe_summary = (
+        f"Completed child session {completed.session_id}; full output is preserved outside "
+        "active context."
+    )
+    assert completed_delegated.message.summary_output == safe_summary
     assert completed_events[0].payload == {
         "task_id": started.task.id,
         "parent_session_id": "leader-session",
         "requested_child_session_id": cast(str, completed.session_id),
         "child_session_id": cast(str, completed.session_id),
         "status": "completed",
-        "summary_output": "Completed: background child",
+        "summary_output": safe_summary,
         "result_available": True,
         "delegation": {
             "parent_session_id": "leader-session",
@@ -2771,7 +2778,7 @@ def test_runtime_background_task_completion_emits_parent_session_event_once(
         "message": {
             "kind": "delegated_lifecycle",
             "status": "completed",
-            "summary_output": "Completed: background child",
+            "summary_output": safe_summary,
             "error": None,
             "approval_blocked": False,
             "result_available": True,
@@ -3019,13 +3026,16 @@ def test_runtime_reconciles_persisted_child_terminal_truth_and_backfills_parent_
     assert reconciled.status == "completed"
     assert reconciled.session_id == "child-session"
     assert len(recovered_events) == 1
+    safe_summary = (
+        "Completed child session child-session; full output is preserved outside active context."
+    )
     assert recovered_events[0].payload == {
         "task_id": "task-recover",
         "parent_session_id": "leader-session",
         "requested_child_session_id": "child-session",
         "child_session_id": "child-session",
         "status": "completed",
-        "summary_output": "Completed: background child",
+        "summary_output": safe_summary,
         "result_available": True,
         "delegation": {
             "parent_session_id": "leader-session",
@@ -3045,7 +3055,7 @@ def test_runtime_reconciles_persisted_child_terminal_truth_and_backfills_parent_
         "message": {
             "kind": "delegated_lifecycle",
             "status": "completed",
-            "summary_output": "Completed: background child",
+            "summary_output": safe_summary,
             "error": None,
             "approval_blocked": False,
             "result_available": True,
@@ -6991,20 +7001,20 @@ def test_runtime_approval_resume_preserves_canonical_continuity_state(tmp_path: 
             session_id="continuity-approval",
         )
     )
-    initial_continuity = {
-        "summary_text": (
-            "Compacted 1 earlier tool results:\n"
-            '1. read_file ok path=sample.txt content_preview="alpha"'
-        ),
-        "dropped_tool_result_count": 1,
-        "retained_tool_result_count": 1,
-        "source": "tool_result_window",
-        "version": 1,
-    }
-
     assert waiting.session.status == "waiting"
     waiting_runtime_state = cast(dict[str, object], waiting.session.metadata["runtime_state"])
-    assert waiting_runtime_state["continuity"] == initial_continuity
+    initial_continuity = cast(dict[str, object], waiting_runtime_state["continuity"])
+    assert initial_continuity["objective"] == "read sample.txt read sample.txt write beta.txt 2"
+    assert initial_continuity["current_goal"] == "read sample.txt read sample.txt write beta.txt 2"
+    assert initial_continuity["dropped_tool_result_count"] == 1
+    assert initial_continuity["retained_tool_result_count"] == 1
+    assert initial_continuity["source"] == "tool_result_window"
+    assert initial_continuity["version"] == 2
+    assert "## Objective" in cast(str, initial_continuity["summary_text"])
+    assert "Compacted 1 earlier tool results:" in cast(
+        str,
+        initial_continuity["summary_text"],
+    )
     initial_continuity_summary = cast(
         dict[str, object], waiting_runtime_state["continuity_summary"]
     )
@@ -7020,19 +7030,19 @@ def test_runtime_approval_resume_preserves_canonical_continuity_state(tmp_path: 
         approval_decision="allow",
     )
 
-    expected_resumed_continuity = {
-        "summary_text": (
-            "Compacted 2 earlier tool results:\n"
-            '1. read_file ok path=sample.txt content_preview="alpha"\n'
-            '2. read_file ok path=sample.txt content_preview="alpha"'
-        ),
-        "dropped_tool_result_count": 2,
-        "retained_tool_result_count": 1,
-        "source": "tool_result_window",
-        "version": 1,
-    }
     resumed_runtime_state = cast(dict[str, object], resumed.session.metadata["runtime_state"])
-    assert resumed_runtime_state["continuity"] == expected_resumed_continuity
+    expected_resumed_continuity = cast(dict[str, object], resumed_runtime_state["continuity"])
+    assert expected_resumed_continuity["objective"] == (
+        "read sample.txt read sample.txt write beta.txt 2"
+    )
+    assert expected_resumed_continuity["dropped_tool_result_count"] == 2
+    assert expected_resumed_continuity["retained_tool_result_count"] == 1
+    assert expected_resumed_continuity["source"] == "tool_result_window"
+    assert expected_resumed_continuity["version"] == 2
+    assert "Compacted 2 earlier tool results:" in cast(
+        str,
+        expected_resumed_continuity["summary_text"],
+    )
     resumed_continuity_summary = cast(
         dict[str, object], resumed_runtime_state["continuity_summary"]
     )
@@ -7962,16 +7972,6 @@ def test_runtime_provider_compaction_emits_continuity_state_and_persists_metadat
     )
     replay = runtime.resume("continuity-session")
 
-    expected_continuity = {
-        "summary_text": (
-            "Compacted 1 earlier tool results:\n"
-            '1. read_file ok path=sample.txt content_preview="alpha"'
-        ),
-        "dropped_tool_result_count": 1,
-        "retained_tool_result_count": 1,
-        "source": "tool_result_window",
-        "version": 1,
-    }
     memory_events = [
         event for event in response.events if event.event_type == RUNTIME_MEMORY_REFRESHED
     ]
@@ -7983,6 +7983,18 @@ def test_runtime_provider_compaction_emits_continuity_state_and_persists_metadat
     assert isinstance(summary_anchor, str)
     assert summary_anchor.startswith("continuity:")
     assert summary_source == {"tool_result_start": 0, "tool_result_end": 1}
+    expected_continuity = cast(dict[str, object], memory_events[0].payload["continuity_state"])
+    assert expected_continuity["objective"] == "read sample.txt read sample.txt"
+    assert expected_continuity["current_goal"] == "read sample.txt read sample.txt"
+    assert expected_continuity["dropped_tool_result_count"] == 1
+    assert expected_continuity["retained_tool_result_count"] == 1
+    assert expected_continuity["source"] == "tool_result_window"
+    assert expected_continuity["version"] == 2
+    assert "## Objective" in cast(str, expected_continuity["summary_text"])
+    assert "Compacted 1 earlier tool results:" in cast(
+        str,
+        expected_continuity["summary_text"],
+    )
     assert memory_events[0].payload == {
         "reason": "tool_result_window",
         "original_tool_result_count": 2,

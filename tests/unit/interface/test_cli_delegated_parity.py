@@ -800,7 +800,8 @@ def test_cli_tasks_surfaces_real_runtime_completed_delegated_lifecycle(
     assert f"child_session_id={completed.child_session_id}" in status_output
     assert "result_available=True" in status_output
     assert f"TASK id={started.task.id} status=completed" in task_output
-    assert "summary_output='Completed: hello'" in task_output
+    assert "summary_output='Completed child session " in task_output
+    assert "summary_output='Completed: hello'" not in task_output
     assert "RESULT\nhello\n" in task_output
     assert f"TASK id={started.task.id} status=completed" in list_output
     assert f"TASK id={started.task.id} status=completed" in filtered_output

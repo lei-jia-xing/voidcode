@@ -885,7 +885,9 @@ def test_runtime_background_subagent_e2e_collects_background_output_result(
     reloaded = runtime.load_background_task(task_id)
 
     assert response.session.status == "completed"
-    assert response.output == "child background final"
+    assert response.output is not None
+    assert "Background task result digest:" in response.output
+    assert "raw child output is not injected" in response.output
     assert task_completed.payload["delegation"] == {
         "mode": "background",
         "subagent_type": "explore",
@@ -896,11 +898,17 @@ def test_runtime_background_subagent_e2e_collects_background_output_result(
     assert reloaded.status == "completed"
     assert background_completed.payload["status"] == "ok"
     assert cast(dict[str, object], background_completed.payload["message"])["status"] == "completed"
-    assert background_completed.payload["summary_output"] == "Completed: child background final"
-    assert background_completed.payload["result_available"] is True
-    assert cast(dict[str, object], background_completed.payload["session"])["output"] == (
-        "child background final"
+    assert str(background_completed.payload["summary_output"]).startswith(
+        "Completed child session "
     )
+    assert background_completed.payload["result_available"] is True
+    session_payload = cast(dict[str, object], background_completed.payload["session"])
+    assert session_payload["output_available"] is True
+    assert session_payload["full_output_preserved"] is True
+    assert session_payload["full_session_reference"] == (
+        f"session:{session_payload['child_session_id']}"
+    )
+    assert "output" not in session_payload
 
 
 def test_runtime_background_subagent_queue_running_completed_states_respect_concurrency(
@@ -1190,10 +1198,12 @@ def test_runtime_delegated_mcp_and_background_hook_events_have_exact_metadata(
     assert delegation["selected_preset"] == "explore"
     assert delegation["selected_execution_engine"] == "provider"
     assert delegation["lifecycle_status"] == "completed"
+    assert str(message["summary_output"]).startswith("Completed child session ")
+    assert "child background final" not in str(message["summary_output"])
     assert message == {
         "kind": "delegated_lifecycle",
         "status": "completed",
-        "summary_output": "Completed: child background final",
+        "summary_output": message["summary_output"],
         "error": None,
         "approval_blocked": False,
         "result_available": True,
@@ -1228,7 +1238,8 @@ def test_runtime_background_restart_reconcile_reloads_terminal_delegated_result(
     assert completed.status == "completed"
     assert reloaded.status == "completed"
     assert task_result.status == "completed"
-    assert task_result.summary_output == "Completed: child background final"
+    assert str(task_result.summary_output).startswith("Completed child session ")
+    assert "child background final" not in str(task_result.summary_output)
     assert task_result.result_available is True
 
 
@@ -1348,11 +1359,16 @@ def test_provider_background_output_full_session_is_tool_result_not_hidden_conte
     assert response.output == "parent collected transcript"
     assert "child transcript sentinel" not in _request_text(after_task_request)
     assert background_output_result.tool_name == "background_output"
-    assert background_output_session["output"] == "child transcript sentinel"
+    assert background_output_session["output_available"] is True
+    assert background_output_session["full_output_preserved"] is True
+    assert "output" not in background_output_session
     assert isinstance(background_output_session["transcript_count"], int)
     assert background_output_session["transcript_count"] > 0
     assert background_tool_segments
-    assert background_tool_segments[0].content == "child transcript sentinel"
+    assert isinstance(background_tool_segments[0].content, str)
+    assert "Background task result digest:" in background_tool_segments[0].content
+    assert "child transcript sentinel" not in background_tool_segments[0].content
+    assert background_output_result.reference == background_output_session["full_session_reference"]
     assert all(
         "child transcript sentinel" not in segment.content
         for segment in after_background_context.segments

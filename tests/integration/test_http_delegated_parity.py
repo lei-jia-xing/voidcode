@@ -843,10 +843,12 @@ def test_http_background_task_output_endpoint_exposes_typed_delegated_payload_fo
         "result_available": True,
         "cancellation_cause": None,
     }
+    assert str(message["summary_output"]).startswith("Completed child session ")
+    assert "Completed: hello" not in str(message["summary_output"])
     assert message == {
         "kind": "delegated_lifecycle",
         "status": "completed",
-        "summary_output": "Completed: hello",
+        "summary_output": message["summary_output"],
         "error": None,
         "approval_blocked": False,
         "result_available": True,
