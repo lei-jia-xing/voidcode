@@ -1853,7 +1853,12 @@ def test_config_init_writes_starter_config_and_refuses_overwrite() -> None:
         written_payload = json.loads((workspace / ".voidcode.json").read_text(encoding="utf-8"))
 
     assert first.returncode == 0
-    assert json.loads(first.stdout)["config_path"].endswith(".voidcode.json")
+    first_payload = json.loads(first.stdout)
+    assert first_payload["config_path"].endswith(".voidcode.json")
+    assert first_payload["next_command"] == f"voidcode doctor --workspace {workspace}"
+    assert first_payload["first_task_command"] == (
+        f'voidcode run "read README.md" --workspace {workspace}'
+    )
     assert written_payload == {
         "$schema": "https://voidcode.dev/schemas/runtime-config.schema.json",
         "approval_mode": "ask",
@@ -1879,6 +1884,75 @@ def test_config_init_provider_requires_model_without_traceback() -> None:
     assert result.returncode != 0
     assert result.stdout == ""
     assert "requires model" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_doctor_json_reports_first_task_readiness_missing_model() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        env = with_src_pythonpath(os.environ.copy())
+
+        result = _run_module_cli(
+            "doctor",
+            "--workspace",
+            str(workspace),
+            "--json",
+            env=env,
+        )
+
+    payload = json.loads(result.stdout)
+    assert result.returncode != 0
+    assert payload["first_task_readiness"]["status"] == "not_ready"
+    assert payload["first_task_readiness"]["details"]["workspace_config_valid"] is True
+    assert "local_tools" in payload["first_task_readiness"]["details"]
+    assert "provider/model" in payload["first_task_readiness"]["blockers"][0]
+    assert "config init --execution-engine provider" in payload["first_task_readiness"]["next_step"]
+    assert "api_key" not in result.stdout
+    assert "Traceback" not in result.stderr
+
+
+def test_doctor_json_reports_invalid_config_first_task_readiness() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        (workspace / ".voidcode.json").write_text("{", encoding="utf-8")
+        env = with_src_pythonpath(os.environ.copy())
+
+        result = _run_module_cli(
+            "doctor",
+            "--workspace",
+            str(workspace),
+            "--json",
+            env=env,
+        )
+
+    payload = json.loads(result.stdout)
+    assert result.returncode != 0
+    assert payload["first_task_readiness"]["status"] == "not_ready"
+    assert payload["first_task_readiness"]["details"]["workspace_config_valid"] is False
+    assert "runtime config" in payload["first_task_readiness"]["blockers"][0]
+    assert "Traceback" not in result.stderr
+
+
+def test_doctor_human_reports_first_task_readiness_without_leaking_auth() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        (workspace / ".voidcode.json").write_text(
+            json.dumps({"model": "openai/gpt-4o", "execution_engine": "provider"}),
+            encoding="utf-8",
+        )
+        env = with_src_pythonpath(os.environ.copy())
+        env["OPENAI_API_KEY"] = "doctor-secret"
+
+        result = _run_module_cli(
+            "doctor",
+            "--workspace",
+            str(workspace),
+            env=env,
+        )
+
+    assert "First task readiness:" in result.stdout
+    assert "doctor-secret" not in result.stdout
+    assert "doctor-secret" not in result.stderr
     assert "Traceback" not in result.stderr
 
 

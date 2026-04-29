@@ -1068,7 +1068,16 @@ def _handle_config_init_command(args: argparse.Namespace) -> int:
             f"error: runtime config already exists: {config_path}; pass --force to overwrite"
         )
     written_path = write_runtime_config_payload(workspace, payload)
-    print(json.dumps({"workspace": str(workspace), "config_path": str(written_path)}))
+    print(
+        json.dumps(
+            {
+                "workspace": str(workspace),
+                "config_path": str(written_path),
+                "next_command": f"voidcode doctor --workspace {workspace}",
+                "first_task_command": f'voidcode run "read README.md" --workspace {workspace}',
+            }
+        )
+    )
     return 0
 
 
