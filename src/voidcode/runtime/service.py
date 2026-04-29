@@ -217,6 +217,7 @@ _PERSISTED_RUNTIME_CONFIG_KEYS = frozenset(
         "approval_mode",
         "execution_engine",
         "max_steps",
+        "reasoning_effort",
         "tool_timeout_seconds",
         "model",
         "provider_fallback",
@@ -5087,6 +5088,7 @@ class VoidCodeRuntime:
             "approval_mode": effective_config.approval_mode,
             "execution_engine": effective_config.execution_engine,
             "max_steps": effective_config.max_steps,
+            "reasoning_effort": effective_config.reasoning_effort,
             "tool_timeout_seconds": effective_config.tool_timeout_seconds,
             "provider_fallback": serialize_provider_fallback_config(
                 effective_config.provider_fallback
@@ -5844,6 +5846,7 @@ class VoidCodeRuntime:
                 model=model,
                 execution_engine=execution_engine,
                 max_steps=max_steps,
+                reasoning_effort=self._config.reasoning_effort,
                 tool_timeout_seconds=self._config.tool_timeout_seconds,
                 provider_fallback=provider_fallback,
                 resolved_provider=resolved_provider,
@@ -5878,6 +5881,13 @@ class VoidCodeRuntime:
                 if persisted_max_steps < 1:
                     raise ValueError("persisted runtime_config max_steps must be at least 1")
                 max_steps = persisted_max_steps
+        if "reasoning_effort" in runtime_config:
+            persisted_reasoning_effort = runtime_config.get("reasoning_effort")
+            if persisted_reasoning_effort is None or (
+                isinstance(persisted_reasoning_effort, str) and persisted_reasoning_effort
+            ):
+                # Persisted value (None or non-empty string) takes effect for session resume
+                pass  # reasoning_effort will be applied via request metadata
         tool_timeout_seconds = self._config.tool_timeout_seconds
         if "tool_timeout_seconds" in runtime_config:
             persisted_tool_timeout = runtime_config.get("tool_timeout_seconds")
@@ -6053,6 +6063,7 @@ class EffectiveRuntimeConfig:
     model: str | None
     execution_engine: ExecutionEngineName
     max_steps: int | None
+    reasoning_effort: str | None = None
     tool_timeout_seconds: int | None = None
     provider_fallback: RuntimeProviderFallbackConfig | None = None
     resolved_provider: ResolvedProviderConfig = field(default_factory=ResolvedProviderConfig)

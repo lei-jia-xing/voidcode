@@ -37,6 +37,7 @@ APPROVAL_MODE_ENV_VAR = "VOIDCODE_APPROVAL_MODE"
 MODEL_ENV_VAR = "VOIDCODE_MODEL"
 EXECUTION_ENGINE_ENV_VAR = "VOIDCODE_EXECUTION_ENGINE"
 MAX_STEPS_ENV_VAR = "VOIDCODE_MAX_STEPS"
+REASONING_EFFORT_ENV_VAR = "VOIDCODE_REASONING_EFFORT"
 TOOL_TIMEOUT_ENV_VAR = "VOIDCODE_TOOL_TIMEOUT_SECONDS"
 _VALID_APPROVAL_MODES = ("allow", "deny", "ask")
 _VALID_TUI_COMMANDS = ("command_palette", "session_new", "session_resume")
@@ -51,6 +52,7 @@ _TOP_LEVEL_ENV_VARS = (
     MODEL_ENV_VAR,
     EXECUTION_ENGINE_ENV_VAR,
     MAX_STEPS_ENV_VAR,
+    REASONING_EFFORT_ENV_VAR,
     TOOL_TIMEOUT_ENV_VAR,
 )
 _ENV_SETTINGS_LOCK = Lock()
@@ -61,6 +63,7 @@ _REPO_CONFIG_KEYS = frozenset(
         "model",
         "execution_engine",
         "max_steps",
+        "reasoning_effort",
         "tool_timeout_seconds",
         "hooks",
         "tools",
@@ -163,6 +166,10 @@ class _EnvironmentRuntimeSettings(BaseSettings):
         validation_alias=EXECUTION_ENGINE_ENV_VAR,
     )
     max_steps: int | None = Field(default=None, validation_alias=MAX_STEPS_ENV_VAR)
+    reasoning_effort: str | None = Field(
+        default=None,
+        validation_alias=REASONING_EFFORT_ENV_VAR,
+    )
     tool_timeout_seconds: int | None = Field(
         default=None,
         validation_alias=TOOL_TIMEOUT_ENV_VAR,
@@ -204,6 +211,11 @@ class _EnvironmentRuntimeSettings(BaseSettings):
     @classmethod
     def _validate_tool_timeout_seconds(cls, value: object) -> int | None:
         return _parse_environment_tool_timeout_seconds(value)
+
+    @field_validator("reasoning_effort", mode="before")
+    @classmethod
+    def _validate_reasoning_effort(cls, value: object) -> str | None:
+        return _parse_environment_reasoning_effort(value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -357,6 +369,7 @@ class RuntimeConfig:
     model: str | None = None
     execution_engine: ExecutionEngineName = DEFAULT_EXECUTION_ENGINE
     max_steps: int | None = None
+    reasoning_effort: str | None = None
     tool_timeout_seconds: int | None = None
     hooks: RuntimeHooksConfig | None = None
     tools: RuntimeToolsConfig | None = None
@@ -382,6 +395,7 @@ class RuntimeConfigOverrides:
     model: str | None = None
     execution_engine: ExecutionEngineName | None = None
     max_steps: int | None = None
+    reasoning_effort: str | None = None
     tool_timeout_seconds: int | None = None
     tool_timeout_seconds_configured: bool = False
     hooks: RuntimeHooksConfig | None = None
@@ -488,6 +502,7 @@ def load_runtime_config(
     model: str | None = None,
     execution_engine: ExecutionEngineName | None = None,
     max_steps: int | None = None,
+    reasoning_effort: str | None = None,
     tool_timeout_seconds: int | None = None,
     env: Mapping[str, str] | None = None,
 ) -> RuntimeConfig:
@@ -526,6 +541,11 @@ def load_runtime_config(
             explicit=max_steps,
             repo_local=repo_local.max_steps,
             environment=env_overrides.max_steps,
+        ),
+        reasoning_effort=_resolve_reasoning_effort(
+            explicit=reasoning_effort,
+            repo_local=repo_local.reasoning_effort,
+            environment=env_overrides.reasoning_effort,
         ),
         tool_timeout_seconds=_resolve_tool_timeout_seconds(
             explicit=tool_timeout_seconds,
@@ -593,6 +613,13 @@ def _load_repo_local_config(
         allow_none=True,
     )
 
+    raw_reasoning_effort = payload.get("reasoning_effort")
+    parsed_reasoning_effort = _parse_reasoning_effort(
+        raw_reasoning_effort,
+        source=f"runtime config field 'reasoning_effort' in {config_path}",
+        allow_none=True,
+    )
+
     tool_timeout_seconds_configured = "tool_timeout_seconds" in payload
     parsed_tool_timeout_seconds = _parse_tool_timeout_seconds(
         payload.get("tool_timeout_seconds"),
@@ -649,6 +676,7 @@ def _load_repo_local_config(
         model=raw_model,
         execution_engine=parsed_execution_engine,
         max_steps=parsed_max_steps,
+        reasoning_effort=parsed_reasoning_effort,
         tool_timeout_seconds=parsed_tool_timeout_seconds,
         tool_timeout_seconds_configured=tool_timeout_seconds_configured,
         hooks=hooks,
@@ -2567,6 +2595,7 @@ def _load_environment_runtime_config(env: Mapping[str, str] | None) -> RuntimeCo
         model=settings.model,
         execution_engine=settings.execution_engine,
         max_steps=settings.max_steps,
+        reasoning_effort=settings.reasoning_effort,
         tool_timeout_seconds=settings.tool_timeout_seconds,
     )
 
@@ -2760,6 +2789,54 @@ def _parse_environment_tool_timeout_seconds(raw_value: object) -> int | None:
         source=f"environment variable {TOOL_TIMEOUT_ENV_VAR}",
         allow_none=True,
     )
+
+
+def _parse_environment_reasoning_effort(raw_value: object) -> str | None:
+    if raw_value is None:
+        return None
+    if isinstance(raw_value, str):
+        value = raw_value.strip()
+        if value == "":
+            return None
+        return value
+    if isinstance(raw_value, str):
+        return raw_value
+    raise ValueError(
+        f"environment variable {REASONING_EFFORT_ENV_VAR} must be a string when provided"
+    )
+
+
+def _parse_reasoning_effort(
+    raw_value: object,
+    *,
+    source: str,
+    allow_none: bool = False,
+) -> str | None:
+    if raw_value is None:
+        if allow_none:
+            return None
+        raise ValueError(f"{source} must be a non-empty string")
+    if not isinstance(raw_value, str):
+        raise ValueError(f"{source} must be a string")
+    value = raw_value.strip()
+    if not value:
+        if allow_none:
+            return None
+        raise ValueError(f"{source} must be a non-empty string")
+    return value
+
+
+def _resolve_reasoning_effort(
+    *,
+    explicit: str | None,
+    repo_local: str | None,
+    environment: str | None,
+) -> str | None:
+    if explicit is not None:
+        return explicit
+    if repo_local is not None:
+        return repo_local
+    return environment
 
 
 def _resolve_tool_timeout_seconds(

@@ -13,6 +13,7 @@ from .config import (
     MAX_STEPS_ENV_VAR,
     MODEL_ENV_VAR,
     RUNTIME_CONFIG_FILE_NAME,
+    REASONING_EFFORT_ENV_VAR,
     TOOL_TIMEOUT_ENV_VAR,
     runtime_config_path,
 )
@@ -45,6 +46,7 @@ def runtime_config_json_schema() -> dict[str, object]:
             "Resolves alongside environment variables "
             f"({APPROVAL_MODE_ENV_VAR}, {MODEL_ENV_VAR}, "
             f"{EXECUTION_ENGINE_ENV_VAR}, {MAX_STEPS_ENV_VAR}, "
+            f"{REASONING_EFFORT_ENV_VAR}, "
             f"{TOOL_TIMEOUT_ENV_VAR}) and the user-level "
             "`~/.config/voidcode/config.json`."
         ),
@@ -76,6 +78,16 @@ def runtime_config_json_schema() -> dict[str, object]:
                 "description": (
                     "Maximum graph step budget for a single run. Omit this field for "
                     "the provider default of no fixed step cap."
+                ),
+            },
+            "reasoning_effort": {
+                "type": "string",
+                "description": (
+                    "Runtime-level hint for reasoning effort. "
+                    "Supported values depend on the provider/model. "
+                    "Common values include: low, medium, high, xhigh. "
+                    "Empty string is treated as unset. "
+                    "Environment variable: " + REASONING_EFFORT_ENV_VAR
                 ),
             },
             "tool_timeout_seconds": {
@@ -426,6 +438,7 @@ def generate_starter_runtime_config(
     model: str | None = None,
     execution_engine: str | None = None,
     max_steps: int | None = None,
+    reasoning_effort: str | None = None,
     include_examples: bool = False,
     include_schema_reference: bool = True,
 ) -> dict[str, object]:
@@ -443,6 +456,9 @@ def generate_starter_runtime_config(
         )
     if max_steps is not None and max_steps < 1:
         raise ValueError("max_steps must be an integer greater than or equal to 1")
+    if reasoning_effort is not None:
+        if not reasoning_effort or not isinstance(reasoning_effort, str):
+            raise ValueError("reasoning_effort must be a non-empty string when provided")
     if model is not None:
         _validate_model_reference(model)
     if execution_engine == "provider" and model is None:
@@ -461,6 +477,8 @@ def generate_starter_runtime_config(
         payload["execution_engine"] = execution_engine
     if max_steps is not None:
         payload["max_steps"] = max_steps
+    if reasoning_effort is not None:
+        payload["reasoning_effort"] = reasoning_effort
     if include_examples:
         payload["tools"] = {"builtin": {"enabled": True}}
         payload["skills"] = {"enabled": True}
