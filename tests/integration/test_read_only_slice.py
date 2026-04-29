@@ -119,6 +119,8 @@ class RuntimeRunner(Protocol):
 
     def list_sessions(self) -> tuple[StoredSessionSummaryLike, ...]: ...
 
+    def session_result(self, *, session_id: str) -> RuntimeResponseLike: ...
+
     def resume(
         self,
         session_id: str,
@@ -1083,6 +1085,127 @@ def test_runtime_delegated_skill_loaded_child_records_exact_skill_metadata(
         isinstance(content, str) and "Use the delegated integration skill body." in content
         for content in system_contents
     )
+
+
+def test_provider_runtime_persists_and_injects_runtime_todo_state(tmp_path: Path) -> None:
+    contracts_module = importlib.import_module("voidcode.runtime.contracts")
+    config_module = importlib.import_module("voidcode.runtime.config")
+    model_provider_module = importlib.import_module("voidcode.provider.registry")
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    provider_protocol_module = importlib.import_module("voidcode.runtime.provider_protocol")
+    service_module = importlib.import_module("voidcode.runtime.service")
+    tool_contracts_module = importlib.import_module("voidcode.tools.contracts")
+    runtime_request = cast(Callable[..., RuntimeRequestLike], contracts_module.RuntimeRequest)
+    requests: list[object] = []
+
+    class _TodoModelProvider:
+        def turn_provider(self) -> object:
+            class _Provider:
+                name = "opencode"
+
+                def propose_turn(self, request: object) -> object:
+                    requests.append(request)
+                    if len(requests) == 1:
+                        return provider_protocol_module.ProviderTurnResult(
+                            tool_call=tool_contracts_module.ToolCall(
+                                tool_name="todo_write",
+                                arguments={
+                                    "todos": [
+                                        {
+                                            "content": "make todo runtime-owned",
+                                            "status": "in_progress",
+                                            "priority": "high",
+                                        },
+                                        {
+                                            "content": "document completed setup",
+                                            "status": "completed",
+                                            "priority": "low",
+                                        },
+                                    ]
+                                },
+                            )
+                        )
+                    if len(requests) == 2:
+                        return provider_protocol_module.ProviderTurnResult(
+                            tool_call=tool_contracts_module.ToolCall(
+                                tool_name="todo_write",
+                                arguments={
+                                    "todos": [
+                                        {
+                                            "content": "verify latest todo context only",
+                                            "status": "pending",
+                                            "priority": "medium",
+                                        }
+                                    ]
+                                },
+                            )
+                        )
+                    return provider_protocol_module.ProviderTurnResult(output="done")
+
+            return _Provider()
+
+    runtime = cast(
+        RuntimeRunner,
+        service_module.VoidCodeRuntime(
+            workspace=tmp_path,
+            config=config_module.RuntimeConfig(
+                approval_mode="allow",
+                execution_engine="provider",
+                model="opencode/gpt-5.4",
+                context_window=config_module.RuntimeContextWindowConfig(max_tool_results=1),
+            ),
+            permission_policy=permission_module.PermissionPolicy(mode="allow"),
+            model_provider_registry=model_provider_module.ModelProviderRegistry(
+                providers={"opencode": _TodoModelProvider()}
+            ),
+        ),
+    )
+
+    response = runtime.run(
+        runtime_request(prompt="track todo state", session_id="runtime-todo-session")
+    )
+    loaded = runtime.session_result(session_id="runtime-todo-session")
+    todo_events = tuple(
+        event for event in response.events if event.event_type == "runtime.todo_updated"
+    )
+    second_request_system_segments = [
+        segment.content
+        for segment in _assembled_context(requests[1]).segments
+        if segment.role == "system"
+    ]
+    third_request_system_segments = [
+        segment.content
+        for segment in _assembled_context(requests[2]).segments
+        if segment.role == "system"
+    ]
+
+    assert response.session.status == "completed"
+    assert len(todo_events) == 2
+    todo_event = todo_events[0]
+    latest_todo_event = todo_events[1]
+    assert todo_event.payload["active_count"] == 1
+    assert todo_event.payload["pending_count"] == 0
+    assert todo_event.payload["in_progress_count"] == 1
+    assert todo_event.payload["completed_count"] == 1
+    assert latest_todo_event.payload["pending_count"] == 1
+    assert any(
+        isinstance(content, str)
+        and "Runtime-managed todo state is active" in content
+        and "make todo runtime-owned" in content
+        and "document completed setup" not in content
+        for content in second_request_system_segments
+    )
+    latest_todo_segments = [
+        content
+        for content in third_request_system_segments
+        if isinstance(content, str) and content.startswith("Runtime-managed todo state is active")
+    ]
+    assert len(latest_todo_segments) == 1
+    assert "verify latest todo context only" in latest_todo_segments[0]
+    assert "make todo runtime-owned" not in latest_todo_segments[0]
+    raw_runtime_state = loaded.session.metadata["runtime_state"]
+    assert isinstance(raw_runtime_state, dict)
+    assert "todos" in raw_runtime_state
 
 
 def test_runtime_delegated_mcp_and_background_hook_events_have_exact_metadata(

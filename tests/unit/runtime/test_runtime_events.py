@@ -31,6 +31,7 @@ from voidcode.runtime.events import (
     RUNTIME_SKILL_LOADED,
     RUNTIME_SKILLS_APPLIED,
     RUNTIME_SKILLS_BINDING_MISMATCH,
+    RUNTIME_TODO_UPDATED,
     RUNTIME_TOOL_STARTED,
     DelegatedExecutionPayload,
     DelegatedLifecycleEventPayload,
@@ -75,6 +76,7 @@ def test_future_additive_event_types_cover_async_lifecycle_surfaces() -> None:
         RUNTIME_BACKGROUND_TASK_RESULT_READ,
         RUNTIME_DELEGATED_RESULT_AVAILABLE,
         RUNTIME_SKILL_LOADED,
+        RUNTIME_TODO_UPDATED,
     )
 
 

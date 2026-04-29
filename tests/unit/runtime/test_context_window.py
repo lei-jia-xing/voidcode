@@ -8,6 +8,7 @@ from unittest.mock import patch
 from voidcode.runtime.context_window import (
     ContextWindowPolicy,
     RuntimeContinuityState,
+    assemble_provider_context,
     context_window_policy_from_payload,
     continuity_state_from_metadata_payload,
     continuity_summary_metadata,
@@ -76,6 +77,50 @@ def test_prepare_provider_context_keeps_results_within_limit() -> None:
     assert context.retained_tool_result_count == 2
     assert context.max_tool_result_count == 3
     assert context.continuity_state is None
+
+
+def test_assemble_provider_context_injects_active_runtime_todos() -> None:
+    assembled = assemble_provider_context(
+        prompt="continue",
+        tool_results=(),
+        session_metadata={
+            "runtime_state": {
+                "todos": {
+                    "version": 1,
+                    "revision": 12,
+                    "todos": [
+                        {
+                            "content": "implement runtime todo state",
+                            "status": "in_progress",
+                            "priority": "high",
+                            "position": 1,
+                            "updated_at": 12,
+                        },
+                        {
+                            "content": "old finished task",
+                            "status": "completed",
+                            "priority": "low",
+                            "position": 2,
+                            "updated_at": 12,
+                        },
+                    ],
+                }
+            }
+        },
+        policy=ContextWindowPolicy(max_tool_results=0),
+    )
+
+    system_segments = [
+        segment.content for segment in assembled.segments if segment.role == "system"
+    ]
+
+    assert any(
+        isinstance(content, str)
+        and "Runtime-managed todo state is active" in content
+        and "implement runtime todo state" in content
+        and "old finished task" not in content
+        for content in system_segments
+    )
 
 
 def test_prepare_provider_context_compacts_old_results_and_reports_metadata() -> None:
