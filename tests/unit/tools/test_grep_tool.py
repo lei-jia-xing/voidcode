@@ -226,11 +226,14 @@ def test_grep_tool_rejects_invalid_arguments_and_non_utf8_files(tmp_path: Path) 
             workspace=tmp_path,
         )
 
-    with pytest.raises(ValueError, match="inside the workspace"):
-        tool.invoke(
-            ToolCall(tool_name="grep", arguments={"pattern": "alpha", "path": "../escape.txt"}),
-            workspace=tmp_path,
-        )
+    outside = tmp_path.parent / "outside-grep.txt"
+    outside.write_text("alpha\n", encoding="utf-8")
+    external = tool.invoke(
+        ToolCall(tool_name="grep", arguments={"pattern": "alpha", "path": str(outside)}),
+        workspace=tmp_path,
+    )
+    assert external.status == "ok"
+    assert external.data["path"] == str(outside.resolve())
 
     result = tool.invoke(
         ToolCall(tool_name="grep", arguments={"pattern": "x", "path": "sample.bin"}),

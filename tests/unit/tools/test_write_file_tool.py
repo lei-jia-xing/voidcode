@@ -64,20 +64,25 @@ def test_write_file_tool_rejects_non_string_arguments(tmp_path: Path) -> None:
         )
 
 
-def test_write_file_tool_rejects_paths_outside_workspace(tmp_path: Path) -> None:
+def test_write_file_tool_allows_absolute_paths_outside_workspace(tmp_path: Path) -> None:
     tool = WriteFileTool()
+    outside = tmp_path.parent / "outside-write.txt"
 
-    with pytest.raises(ValueError, match="inside the workspace"):
-        tool.invoke(
-            ToolCall(
-                tool_name="write_file",
-                arguments={"path": "../escape.txt", "content": "nope"},
-            ),
-            workspace=tmp_path,
-        )
+    result = tool.invoke(
+        ToolCall(
+            tool_name="write_file",
+            arguments={"path": str(outside), "content": "ok"},
+        ),
+        workspace=tmp_path,
+    )
+
+    assert outside.read_text(encoding="utf-8") == "ok"
+    assert result.data["path"] == str(outside.resolve())
 
 
-def test_write_file_tool_rejects_symlink_escape(tmp_path: Path) -> None:
+def test_write_file_tool_allows_symlink_escape_when_runtime_permission_allows(
+    tmp_path: Path,
+) -> None:
     outside_dir = tmp_path.parent / "outside_write_escape"
     outside_dir.mkdir(exist_ok=True)
     link_dir = tmp_path / "linkdir"
@@ -87,14 +92,15 @@ def test_write_file_tool_rejects_symlink_escape(tmp_path: Path) -> None:
         pytest.skip("symlink is not available on this platform")
 
     tool = WriteFileTool()
-    with pytest.raises(ValueError, match="inside the workspace"):
-        tool.invoke(
-            ToolCall(
-                tool_name="write_file",
-                arguments={"path": "linkdir/escape.txt", "content": "nope"},
-            ),
-            workspace=tmp_path,
-        )
+    result = tool.invoke(
+        ToolCall(
+            tool_name="write_file",
+            arguments={"path": "linkdir/escape.txt", "content": "ok"},
+        ),
+        workspace=tmp_path,
+    )
+    assert (outside_dir / "escape.txt").read_text(encoding="utf-8") == "ok"
+    assert result.data["path"] == str((outside_dir / "escape.txt").resolve())
 
 
 def test_write_file_tool_runs_formatter_after_writing(tmp_path: Path) -> None:

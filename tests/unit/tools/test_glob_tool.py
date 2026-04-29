@@ -85,14 +85,19 @@ def test_glob_tool_respects_path_argument(tmp_path: Path) -> None:
     assert "root.txt" not in content
 
 
-def test_glob_tool_rejects_path_outside_workspace(tmp_path: Path) -> None:
+def test_glob_tool_allows_path_outside_workspace(tmp_path: Path) -> None:
     tool = GlobTool()
+    outside = tmp_path.parent / "outside-glob"
+    outside.mkdir(exist_ok=True)
+    (outside / "a.txt").write_text("a", encoding="utf-8")
 
-    with pytest.raises(ValueError, match="inside the workspace"):
-        tool.invoke(
-            ToolCall(tool_name="glob", arguments={"pattern": "*.txt", "path": "../escape"}),
-            workspace=tmp_path,
-        )
+    result = tool.invoke(
+        ToolCall(tool_name="glob", arguments={"pattern": "*.txt", "path": str(outside)}),
+        workspace=tmp_path,
+    )
+    assert result.status == "ok"
+    assert result.data["path"] == str(outside.resolve())
+    assert str((outside / "a.txt").resolve()) in cast(str, result.content)
 
 
 def test_glob_tool_ignores_common_directories(tmp_path: Path) -> None:

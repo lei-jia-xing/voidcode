@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, cast
 
 import pytest
 
@@ -12,6 +12,7 @@ from voidcode.tools import (
     ReadFileTool,
     ShellExecTool,
     ToolCall,
+    ToolResult,
     WebFetchTool,
     WriteFileTool,
 )
@@ -29,7 +30,7 @@ class _InvokableTool(Protocol):
         (EditTool(), {"path": "link.txt", "oldString": "a", "newString": "b"}),
     ],
 )
-def test_workspace_symlink_escape_is_blocked(
+def test_workspace_symlink_escape_resolves_to_external_path(
     tmp_path: Path,
     tool: _InvokableTool,
     arguments: dict[str, object],
@@ -44,14 +45,18 @@ def test_workspace_symlink_escape_is_blocked(
     except OSError:
         pytest.skip("symlink is not available on this platform")
 
-    with pytest.raises(ValueError, match="inside the workspace"):
+    result = cast(
+        ToolResult,
         tool.invoke(
             ToolCall(tool_name="matrix", arguments=arguments),
             workspace=tmp_path,
-        )
+        ),
+    )
+    assert result.status == "ok"
+    assert isinstance(result.data.get("path"), str)
 
 
-def test_apply_patch_symlink_escape_is_blocked(tmp_path: Path) -> None:
+def test_apply_patch_symlink_escape_is_processed_by_tool(tmp_path: Path) -> None:
     outside_dir = tmp_path.parent / "matrix-outside-dir"
     outside_dir.mkdir(exist_ok=True)
     link_dir = tmp_path / "linkdir"
@@ -68,11 +73,12 @@ def test_apply_patch_symlink_escape_is_blocked(tmp_path: Path) -> None:
             "*** End Patch",
         ]
     )
-    with pytest.raises(ValueError, match="inside the workspace"):
-        ApplyPatchTool().invoke(
-            ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
-            workspace=tmp_path,
-        )
+    result = ApplyPatchTool().invoke(
+        ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
+        workspace=tmp_path,
+    )
+    assert result.status == "ok"
+    assert (outside_dir / "escaped.txt").exists()
 
 
 @pytest.mark.parametrize(

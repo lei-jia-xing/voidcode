@@ -307,6 +307,27 @@ class _AstGrepReplaceGraph:
         return _GraphStep(events=(), tool_call=None, output="applied", is_finished=True)
 
 
+class _SingleToolGraph:
+    def __init__(self, tool_name: str, arguments: dict[str, object]) -> None:
+        self._tool_name = tool_name
+        self._arguments = arguments
+
+    def step(self, request: object, tool_results: tuple[object, ...], *, session: object) -> object:
+        _ = request, session
+        if not tool_results:
+            return _GraphStep(
+                events=(),
+                tool_call=cast(
+                    ToolCallFactory,
+                    importlib.import_module("voidcode.tools.contracts").ToolCall,
+                )(
+                    tool_name=self._tool_name,
+                    arguments=self._arguments,
+                ),
+            )
+        return _GraphStep(events=(), tool_call=None, output="done", is_finished=True)
+
+
 def _approval_runtime(
     tmp_path: Path, *, mode: str = "ask"
 ) -> tuple[RuntimeRequestFactory, RuntimeRunner]:
@@ -2309,6 +2330,109 @@ def test_runtime_requests_approval_for_ast_grep_replace_when_policy_is_ask(tmp_p
         "lang": "python",
         "apply": True,
     }
+
+
+def test_runtime_requests_external_read_approval_with_context_payload(tmp_path: Path) -> None:
+    runtime_request, runtime_class = _load_runtime_types()
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    config_module = importlib.import_module("voidcode.runtime.config")
+
+    policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="allow")
+    runtime_config = cast(Callable[..., object], config_module.RuntimeConfig)
+    permission_config = cast(
+        Callable[..., object],
+        config_module.ExternalDirectoryPermissionConfig,
+    )
+    policy_config = cast(Callable[..., object], config_module.ExternalDirectoryPolicy)
+
+    outside_root = tmp_path.parent / "external-read-fixture"
+    outside_root.mkdir(parents=True, exist_ok=True)
+    outside_file = outside_root / "ref.txt"
+    outside_file.write_text("external\n", encoding="utf-8")
+
+    runtime = cast(
+        RuntimeRunner,
+        cast(
+            object,
+            runtime_class(
+                workspace=tmp_path,
+                config=runtime_config(
+                    approval_mode="allow",
+                    permission=permission_config(
+                        read=policy_config(rules=(("*", "ask"),)),
+                        write=policy_config(rules=(("*", "deny"),)),
+                    ),
+                ),
+                graph=_SingleToolGraph(
+                    "read_file",
+                    {"filePath": str(outside_file)},
+                ),
+                permission_policy=policy,
+            ),
+        ),
+    )
+
+    waiting = runtime.run(runtime_request(prompt="external read", session_id="external-read-ask"))
+    assert waiting.session.status == "waiting"
+    approval_event = waiting.events[-1]
+    assert approval_event.event_type == "runtime.approval_requested"
+    assert approval_event.payload["tool"] == "read_file"
+    assert approval_event.payload["path_scope"] == "external"
+    assert approval_event.payload["operation_class"] == "read"
+    assert approval_event.payload["matched_rule"] == "*"
+    assert approval_event.payload["policy_surface"] == "external_directory_read"
+    assert approval_event.payload["canonical_path"] == str(outside_file.resolve())
+
+
+def test_runtime_denies_external_write_when_permission_rule_denies(tmp_path: Path) -> None:
+    runtime_request, runtime_class = _load_runtime_types()
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    config_module = importlib.import_module("voidcode.runtime.config")
+
+    policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="allow")
+    runtime_config = cast(Callable[..., object], config_module.RuntimeConfig)
+    permission_config = cast(
+        Callable[..., object],
+        config_module.ExternalDirectoryPermissionConfig,
+    )
+    policy_config = cast(Callable[..., object], config_module.ExternalDirectoryPolicy)
+
+    outside_root = tmp_path.parent / "external-write-fixture"
+    outside_root.mkdir(parents=True, exist_ok=True)
+    outside_file = outside_root / "danger.txt"
+
+    runtime = cast(
+        RuntimeRunner,
+        cast(
+            object,
+            runtime_class(
+                workspace=tmp_path,
+                config=runtime_config(
+                    approval_mode="allow",
+                    permission=permission_config(
+                        read=policy_config(rules=(("*", "ask"),)),
+                        write=policy_config(rules=(("*", "deny"),)),
+                    ),
+                ),
+                graph=_SingleToolGraph(
+                    "write_file",
+                    {"path": str(outside_file), "content": "blocked"},
+                ),
+                permission_policy=policy,
+            ),
+        ),
+    )
+
+    denied = runtime.run(runtime_request(prompt="external write", session_id="external-write-deny"))
+    assert denied.session.status == "failed"
+    assert denied.events[-2].event_type == "runtime.approval_resolved"
+    assert denied.events[-2].payload["decision"] == "deny"
+    assert denied.events[-2].payload["path_scope"] == "external"
+    assert denied.events[-2].payload["operation_class"] == "write"
+    assert denied.events[-2].payload["matched_rule"] == "*"
+    assert denied.events[-2].payload["policy_surface"] == "external_directory_write"
+    assert denied.events[-2].payload["canonical_path"] == str(outside_file.resolve())
+    assert outside_file.exists() is False
 
 
 def test_runtime_executes_deterministic_graph_and_emits_events(tmp_path: Path) -> None:
