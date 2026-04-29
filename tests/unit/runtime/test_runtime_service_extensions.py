@@ -1667,6 +1667,35 @@ def test_runtime_cancel_session_interrupts_active_run(tmp_path: Path) -> None:
     assert failed_events[-1].payload["reason"] == "test cancellation"
 
 
+def test_runtime_cancel_session_preserves_older_overlapping_run_after_newer_run_finishes(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+
+    first_stream = runtime.run_stream(RuntimeRequest(prompt="first", session_id="overlap-cancel"))
+    first_chunk = next(first_stream)
+    second_stream = runtime.run_stream(RuntimeRequest(prompt="second", session_id="overlap-cancel"))
+    second_chunk = next(second_stream)
+    second_remaining = list(second_stream)
+
+    result = runtime.cancel_session("overlap-cancel", reason="cancel older run")
+    first_remaining = list(first_stream)
+
+    first_failed_events = [
+        chunk.event
+        for chunk in first_remaining
+        if chunk.event is not None and chunk.event.event_type == "runtime.failed"
+    ]
+    assert first_chunk.session.status == "running"
+    assert second_chunk.session.status == "running"
+    assert second_remaining[-1].session.status == "completed"
+    assert result.status == "interrupted"
+    assert result.interrupted is True
+    assert first_failed_events
+    assert first_failed_events[-1].payload["kind"] == "interrupted"
+    assert first_failed_events[-1].payload["reason"] == "cancel older run"
+
+
 def test_runtime_cancel_session_rejects_stale_run_id(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
 
