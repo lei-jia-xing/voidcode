@@ -6,6 +6,7 @@ from typing import ClassVar
 from pydantic import ValidationError
 
 from ..hook.config import RuntimeHooksConfig
+from ..security.path_policy import resolve_workspace_path
 from ._formatter import (
     FormatterExecutionResult,
     FormatterExecutor,
@@ -81,14 +82,17 @@ class MultiEditTool:
                     raise ValueError(f"multi_edit edit #{idx} replaceAll must be boolean") from exc
             raise ValueError("multi_edit requires an array edits argument") from exc
 
-        workspace_root = workspace.resolve()
-        target = (workspace_root / Path(args.path)).resolve()
-        if not target.is_relative_to(workspace_root):
-            raise ValueError("multi_edit only allows paths inside the workspace")
+        resolution = resolve_workspace_path(
+            workspace=workspace,
+            raw_path=args.path,
+            containment_error="multi_edit only allows paths inside the workspace",
+        )
+        workspace_root = resolution.workspace_root
+        target = resolution.candidate
         if not target.exists() or not target.is_file():
             raise ValueError(f"multi_edit target does not exist: {args.path}")
 
-        relative_target = target.relative_to(workspace_root).as_posix()
+        relative_target = resolution.relative_path
         content_before = read_utf8_text(target)
 
         applied = 0

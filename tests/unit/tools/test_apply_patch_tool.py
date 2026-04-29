@@ -685,3 +685,28 @@ def test_apply_patch_raises_helpful_error_when_git_is_missing(
             ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
             workspace=tmp_path,
         )
+
+
+def test_apply_patch_rejects_structured_symlink_escape(tmp_path: Path) -> None:
+    outside_dir = tmp_path.parent / "outside_patch_escape"
+    outside_dir.mkdir(exist_ok=True)
+    link_dir = tmp_path / "linkdir"
+    try:
+        link_dir.symlink_to(outside_dir, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlink is not available on this platform")
+
+    patch_text = "\n".join(
+        [
+            "*** Begin Patch",
+            "*** Add File: linkdir/escape.txt",
+            "+escaped",
+            "*** End Patch",
+        ]
+    )
+
+    with pytest.raises(ValueError, match="inside the workspace"):
+        ApplyPatchTool().invoke(
+            ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
+            workspace=tmp_path,
+        )

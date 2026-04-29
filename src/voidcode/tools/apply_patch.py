@@ -12,6 +12,7 @@ from unidiff import PatchSet
 from unidiff.errors import UnidiffParseError
 
 from ..hook.config import RuntimeHooksConfig
+from ..security.path_policy import resolve_workspace_path
 from ._formatter import FormatterExecutor, formatter_diagnostics, formatter_payload
 from .contracts import ToolCall, ToolDefinition, ToolResult
 
@@ -42,10 +43,11 @@ class _PreparedMarkerChange:
 
 
 def _assert_within_workspace(workspace: Path, rel_path: Path) -> None:
-    root = workspace.resolve()
-    candidate = (root / rel_path).resolve()
-    if not candidate.is_relative_to(root):
-        raise ValueError("patch operation must affect paths inside the workspace")
+    _ = resolve_workspace_path(
+        workspace=workspace,
+        raw_path=rel_path.as_posix(),
+        containment_error="patch operation must affect paths inside the workspace",
+    )
 
 
 def _strip_heredoc(input_text: str) -> str:
@@ -539,8 +541,13 @@ def _formatter_feedback_for_changes(
         path_value = change.get("path")
         if not isinstance(path_value, str):
             continue
-        candidate = (workspace / path_value).resolve()
-        if not candidate.is_relative_to(workspace) or not candidate.is_file():
+        resolution = resolve_workspace_path(
+            workspace=workspace,
+            raw_path=path_value,
+            containment_error="patch operation must affect paths inside the workspace",
+        )
+        candidate = resolution.candidate
+        if not candidate.is_file():
             continue
         result = executor.run(candidate)
         if result.status != "not_configured":

@@ -123,6 +123,26 @@ def test_edit_tool_rejects_path_outside_workspace(tmp_path: Path) -> None:
         )
 
 
+def test_edit_tool_rejects_symlink_escape(tmp_path: Path) -> None:
+    outside = tmp_path.parent / "outside_edit_escape.txt"
+    outside.write_text("alpha", encoding="utf-8")
+    link = tmp_path / "link.txt"
+    try:
+        link.symlink_to(outside)
+    except OSError:
+        pytest.skip("symlink is not available on this platform")
+
+    tool = EditTool()
+    with pytest.raises(ValueError, match="inside the workspace"):
+        tool.invoke(
+            ToolCall(
+                tool_name="edit",
+                arguments={"path": "link.txt", "oldString": "alpha", "newString": "beta"},
+            ),
+            workspace=tmp_path,
+        )
+
+
 def test_edit_tool_rejects_nonexistent_file(tmp_path: Path) -> None:
     tool = EditTool()
 

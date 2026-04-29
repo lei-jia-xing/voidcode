@@ -3,13 +3,16 @@ from __future__ import annotations
 from difflib import get_close_matches
 from pathlib import Path
 
+from ..security.path_policy import resolve_workspace_path as _resolve_workspace_path
+
 
 def resolve_workspace_path(*, workspace: Path, raw_path: str) -> tuple[Path, str]:
-    workspace_root = workspace.resolve()
-    candidate = (workspace_root / Path(raw_path)).resolve()
-    if not candidate.is_relative_to(workspace_root):
-        raise ValueError("path must be inside the workspace")
-    return candidate, candidate.relative_to(workspace_root).as_posix()
+    resolution = _resolve_workspace_path(
+        workspace=workspace,
+        raw_path=raw_path,
+        containment_error="path must be inside the workspace",
+    )
+    return resolution.candidate, resolution.relative_path
 
 
 def suggest_workspace_paths(*, workspace: Path, raw_path: str, limit: int = 5) -> list[str]:

@@ -8,6 +8,7 @@ from typing import ClassVar
 from rapidfuzz.distance import Levenshtein
 
 from ..hook.config import RuntimeHooksConfig
+from ..security.path_policy import resolve_workspace_path
 from ._formatter import (
     FormatterExecutionResult,
     FormatterExecutor,
@@ -464,12 +465,13 @@ class EditTool:
         if not isinstance(replace_all, bool):
             raise ValueError("edit replaceAll must be a boolean")
 
-        relative_path = Path(path_value)
-        workspace_root = workspace.resolve()
-        candidate = (workspace_root / relative_path).resolve()
-
-        if not candidate.is_relative_to(workspace_root):
-            raise ValueError("edit only allows paths inside the workspace")
+        resolution = resolve_workspace_path(
+            workspace=workspace,
+            raw_path=path_value,
+            containment_error="edit only allows paths inside the workspace",
+        )
+        workspace_root = resolution.workspace_root
+        candidate = resolution.candidate
 
         if not candidate.exists():
             raise ValueError(f"edit target does not exist: {path_value}")

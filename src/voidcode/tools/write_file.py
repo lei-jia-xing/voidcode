@@ -7,6 +7,7 @@ from typing import ClassVar, final
 from pydantic import ValidationError
 
 from ..hook.config import RuntimeHooksConfig
+from ..security.path_policy import resolve_workspace_path
 from ._formatter import FormatterExecutor, formatter_diagnostics, formatter_payload
 from ._pydantic_args import WriteFileArgs
 from .contracts import ToolCall, ToolDefinition, ToolResult
@@ -39,12 +40,13 @@ class WriteFileTool:
                 raise ValueError("write_file requires a string content argument") from exc
             raise ValueError("write_file requires a string path argument") from exc
 
-        relative_path = Path(args.path)
-        workspace_root = workspace.resolve()
-        candidate = (workspace_root / relative_path).resolve()
-
-        if not candidate.is_relative_to(workspace_root):
-            raise ValueError("write_file only allows paths inside the workspace")
+        resolution = resolve_workspace_path(
+            workspace=workspace,
+            raw_path=args.path,
+            containment_error="write_file only allows paths inside the workspace",
+        )
+        workspace_root = resolution.workspace_root
+        candidate = resolution.candidate
 
         candidate.parent.mkdir(parents=True, exist_ok=True)
         old_content = candidate.read_text(encoding="utf-8") if candidate.exists() else ""
@@ -55,7 +57,7 @@ class WriteFileTool:
             formatter_result = FormatterExecutor(self._hooks_config, workspace_root).run(candidate)
 
         diagnostics = formatter_diagnostics(formatter_result)
-        content = f"Wrote file successfully: {candidate.relative_to(workspace_root).as_posix()}"
+        content = f"Wrote file successfully: {resolution.relative_path}"
         if diagnostics:
             content += f" Formatter warning: {diagnostics[0]['message']}"
 
@@ -71,7 +73,7 @@ class WriteFileTool:
         )
 
         data: dict[str, object] = {
-            "path": relative_output_path,
+            "path": resolution.relative_path,
             "byte_count": candidate.stat().st_size,
             "diff": diff,
         }
