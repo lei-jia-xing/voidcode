@@ -7,6 +7,7 @@ from typing import Protocol
 from pydantic import BaseModel, ValidationError, field_validator
 
 from ..runtime.contracts import BackgroundTaskResult, RuntimeSessionResult
+from ..runtime.task import is_background_task_terminal
 from .contracts import ToolCall, ToolDefinition, ToolResult
 
 
@@ -64,7 +65,7 @@ class BackgroundOutputTool:
         deadline = time.monotonic() + max(args.timeout, 1) / 1000
         result = self._runtime.load_background_task_result(args.task_id)
         block_timed_out = False
-        while args.block and result.status not in {"completed", "failed", "cancelled"}:
+        while args.block and not is_background_task_terminal(result.status):
             if time.monotonic() >= deadline:
                 block_timed_out = True
                 break
@@ -81,12 +82,14 @@ class BackgroundOutputTool:
             "status": result.status,
             "parent_session_id": result.parent_session_id,
             "child_session_id": result.child_session_id,
+            "retrieval_instruction": f'background_output(task_id="{result.task_id}")',
             "approval_blocked": result.approval_blocked,
             "summary_output": safe_summary,
             "error": result.error,
             "result_available": result.result_available,
             "delegation": result.delegated_execution.as_payload(),
             "message": message_payload,
+            "handoff_summary": _background_task_handoff_summary(result=result),
             "block_timed_out": block_timed_out,
         }
         content = (
@@ -197,6 +200,12 @@ def _background_output_guidance(
         )
     if result.status == "cancelled":
         return "The delegated child was cancelled; do not retry automatically."
+    if result.status == "interrupted":
+        return (
+            "The delegated child was interrupted before completion. Treat this as a terminal "
+            "runtime outcome, inspect the returned error/session details, and do not retry "
+            "automatically unless the user explicitly asks."
+        )
     if not result.result_available:
         return (
             "No child result is available yet. Report the current status or call background_output "
@@ -291,3 +300,20 @@ def _background_result_reference(result: BackgroundTaskResult) -> str | None:
     if result.child_session_id is None:
         return None
     return f"session:{result.child_session_id}"
+
+
+def _background_task_handoff_summary(*, result: BackgroundTaskResult) -> dict[str, object]:
+    blocked_reason = result.error or result.cancellation_cause
+    if result.status == "cancelled" and blocked_reason is None:
+        blocked_reason = "cancelled by parent"
+    return {
+        "objective": result.delegated_execution.routing.as_payload()
+        if result.delegated_execution.routing is not None
+        else None,
+        "completed_work": result.summary_output if result.status == "completed" else None,
+        "open_questions": result.approval_blocked,
+        "files_touched": (),
+        "verification": (),
+        "blocked_reason": blocked_reason,
+        "retrieval_instruction": f'background_output(task_id="{result.task_id}")',
+    }

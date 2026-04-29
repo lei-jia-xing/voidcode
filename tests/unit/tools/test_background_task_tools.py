@@ -117,6 +117,19 @@ class _FailedBackgroundRuntime(_StubBackgroundRuntime):
         )
 
 
+class _InterruptedBackgroundRuntime(_StubBackgroundRuntime):
+    def load_background_task_result(self, task_id: str) -> BackgroundTaskResult:
+        assert task_id == "task-1"
+        return BackgroundTaskResult(
+            task_id="task-1",
+            parent_session_id="leader-session",
+            child_session_id="child-session",
+            status="interrupted",
+            error="background task interrupted before completion",
+            result_available=True,
+        )
+
+
 class _UnavailableBackgroundRuntime(_StubBackgroundRuntime):
     def load_background_task_result(self, task_id: str) -> BackgroundTaskResult:
         assert task_id == "task-1"
@@ -348,6 +361,24 @@ def test_background_output_tool_guides_failed_child_without_retrying(tmp_path: P
     assert "session_id='child-session'" in result.content
     assert "After repeated failures" in result.content
     assert "do not retry automatically" in str(result.data["guidance"])
+
+
+def test_background_output_tool_handles_interrupted_terminal_state(tmp_path: Path) -> None:
+    tool = BackgroundOutputTool(runtime=_InterruptedBackgroundRuntime())
+
+    result = tool.invoke(
+        ToolCall(tool_name="background_output", arguments={"task_id": "task-1"}),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert result.data["status"] == "interrupted"
+    assert result.data["result_available"] is True
+    assert result.data["retrieval_instruction"] == 'background_output(task_id="task-1")'
+    handoff = result.data["handoff_summary"]
+    assert isinstance(handoff, dict)
+    assert handoff["blocked_reason"] == "background task interrupted before completion"
+    assert "interrupted before completion" in str(result.data["guidance"])
 
 
 def test_background_output_tool_guides_unavailable_result_without_looping(tmp_path: Path) -> None:
