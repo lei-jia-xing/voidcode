@@ -499,3 +499,11 @@ When `approval_resolution` is provided but the replayed tool call differs from t
 - File Tree selection remains path-transparent: `ReviewPanel` still calls `onSelectPath(node.path)`, and store coverage verifies a nested special-character path can resolve to `state: "clean"` without surfacing a diff error.
 - Launcher e2e coverage now asserts the mocked diff route receives `/api/review/diff/src/app.ts` and not `src%2Fapp.ts`, then clicks the File Tree row and verifies diff text renders.
 - Verification: LSP diagnostics clean on all T19-touched frontend files; focused Vitest (`App`, `ReviewPanel`, `store.integration`, `client.integration`) passed 73 tests; frontend lint/typecheck passed; frontend build passed with known Vite warnings; Playwright e2e passed 5/5 after rebuilding assets.
+
+---
+
+## P2: background_cancel display metadata taskId fix
+
+- `background_cancel` pre-result display metadata must read the tool input contract key `taskId`, because `runtime.tool_started` only has original arguments; `task_id` remains a defensive legacy/result-shaped fallback.
+- `background_output` should keep using snake_case `task_id`; avoid broad key normalization in `tool_display.py` so unrelated tool display arguments are not changed.
+- Regression coverage belongs in `tests/unit/runtime/test_runtime_events.py` beside the existing pure `build_tool_display()` metadata contracts.
