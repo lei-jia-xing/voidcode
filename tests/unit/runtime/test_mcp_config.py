@@ -23,6 +23,7 @@ def test_runtime_config_parses_mcp_stdio_servers(tmp_path: Path) -> None:
                             "transport": "stdio",
                             "command": ["python", "tests/fixtures/echo_mcp.py"],
                             "env": {"ECHO_MODE": "1"},
+                            "scope": "session",
                         }
                     },
                 }
@@ -40,6 +41,7 @@ def test_runtime_config_parses_mcp_stdio_servers(tmp_path: Path) -> None:
                 transport="stdio",
                 command=("python", "tests/fixtures/echo_mcp.py"),
                 env={"ECHO_MODE": "1"},
+                scope="session",
             )
         },
     )
@@ -141,6 +143,11 @@ def test_parse_mcp_config_defaults_transport_and_preserves_public_dataclasses() 
             {"servers": {"echo": {"command": ["python"], "env": {1: "enabled"}}}},
             "runtime config field 'mcp.servers.echo.env' keys must be strings",
             id="env-key-type",
+        ),
+        pytest.param(
+            {"servers": {"echo": {"command": ["python"], "scope": "workspace"}}},
+            "runtime config field 'mcp.servers.echo.scope' must be one of: runtime, session",
+            id="scope-value",
         ),
         pytest.param(
             {"request_timeout_seconds": 0},

@@ -68,6 +68,15 @@ def test_runtime_config_json_schema_exposes_core_fields() -> None:
     mcp_servers = cast(dict[str, object], mcp_properties["servers"])
     mcp_server_schema = cast(dict[str, object], mcp_servers["additionalProperties"])
     assert mcp_server_schema["required"] == ["command"]
+    mcp_server_properties = cast(dict[str, object], mcp_server_schema["properties"])
+    assert mcp_server_properties["scope"] == {
+        "type": "string",
+        "enum": ["runtime", "session"],
+        "description": (
+            "Runtime-scoped servers are shared by the runtime; "
+            "session-scoped servers are isolated per session."
+        ),
+    }
     background_task_schema = cast(dict[str, object], properties["background_task"])
     background_task_properties = cast(dict[str, object], background_task_schema["properties"])
     assert background_task_properties["default_concurrency"] == {

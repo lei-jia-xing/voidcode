@@ -144,6 +144,14 @@ def runtime_config_json_schema() -> dict[str, object]:
                                     "type": "object",
                                     "additionalProperties": {"type": "string"},
                                 },
+                                "scope": {
+                                    "type": "string",
+                                    "enum": ["runtime", "session"],
+                                    "description": (
+                                        "Runtime-scoped servers are shared by the runtime; "
+                                        "session-scoped servers are isolated per session."
+                                    ),
+                                },
                             },
                         },
                     },
