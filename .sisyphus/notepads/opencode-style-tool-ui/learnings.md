@@ -514,3 +514,11 @@ When `approval_resolution` is provided but the replayed tool call differs from t
 
 - `frontend/src/store/index.ts::resolveApproval` catch-path replay recovery must recompute `runStatus` with `runStatusForReplay(replay.session)`. Keeping the initial catch fallback `runStatus: "idle"` preserves composer recovery when replay reload fails, while successful replay replacement follows the backend session status.
 - Regression coverage in `frontend/src/store.integration.test.ts` keeps the existing waiting replay case idle and adds the rejected-approval/running-replay case, asserting both `currentSessionState.status` and `runStatus` stay `"running"`.
+
+---
+
+## P1/P2: Approval in-flight and replay-failure rollback
+
+- Approval clicks should keep the optimistic local `runtime.approval_resolved` event while leaving `approvalStatus: "submitting"` until `RuntimeClient.resolveApproval()` settles, so deny can set `runStatus: "idle"` without unblocking overlapping actions.
+- Capture pre-optimistic session/events/output before appending the synthetic resolution. If both approval POST and recovery replay fail, restore that snapshot and keep `approvalStatus: "error"` so the original `runtime.approval_requested` remains retryable.
+- If recovery replay succeeds after approval POST failure, replace state from replay and keep deriving `runStatus` via `runStatusForReplay(replay.session)`.

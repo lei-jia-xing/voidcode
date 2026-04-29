@@ -580,7 +580,7 @@ describe("useAppStore integration flow", () => {
       requestId,
       "allow",
     );
-    expect(state.approvalStatus).toBe("success");
+    expect(state.approvalStatus).toBe("submitting");
     expect(state.approvalError).toBeNull();
     expect(state.runStatus).toBe("running");
     expect(state.currentSessionState?.status).toBe("running");
@@ -605,6 +605,101 @@ describe("useAppStore integration flow", () => {
     expect(state.currentSessionState?.status).toBe("completed");
     expect(state.currentSessionOutput).toBe("done");
     expect(state.currentSessionEvents).toEqual(completedResponse.events);
+  });
+
+  it("keeps deny approval submitting while the resolution POST is in flight", async () => {
+    const sessionId = "approval-slow-deny";
+    const requestId = "approval-deny-slow-1";
+    const requestReceived = makeEvent(
+      1,
+      "runtime.request_received",
+      { prompt: "write denied.txt hello" },
+      "runtime",
+      sessionId,
+    );
+    const approvalRequested = makeEvent(
+      2,
+      "runtime.approval_requested",
+      {
+        request_id: requestId,
+        tool: "write_file",
+        target_summary: "denied.txt",
+        decision: "ask",
+      },
+      "runtime",
+      sessionId,
+    );
+    const approvalResolved = makeEvent(
+      3,
+      "runtime.approval_resolved",
+      { request_id: requestId, decision: "deny" },
+      "runtime",
+      sessionId,
+    );
+    const failedEvent = makeEvent(
+      4,
+      "runtime.failed",
+      { error: "permission denied" },
+      "runtime",
+      sessionId,
+    );
+    const failedResponse = makeRuntimeResponse(
+      sessionId,
+      "failed",
+      [requestReceived, approvalRequested, approvalResolved, failedEvent],
+      null,
+    );
+    const slowApproval = createDeferred<RuntimeResponse>();
+
+    async function* stream() {
+      yield makeStreamChunk(sessionId, "running", requestReceived);
+      yield makeStreamChunk(sessionId, "waiting", approvalRequested);
+    }
+
+    runtimeClientMocks.runStreamMock.mockReturnValue(stream());
+    runtimeClientMocks.resolveApprovalMock.mockReturnValue(
+      slowApproval.promise,
+    );
+    runtimeClientMocks.getSessionReplayMock.mockResolvedValue(failedResponse);
+    runtimeClientMocks.listSessionsMock.mockResolvedValue([
+      makeStoredSessionSummary(sessionId, "failed", "write denied.txt hello"),
+    ]);
+
+    await useAppStore.getState().runTask("write denied.txt hello");
+
+    const approvalPromise = useAppStore.getState().resolveApproval("deny");
+    await Promise.resolve();
+
+    let state = useAppStore.getState();
+    expect(runtimeClientMocks.resolveApprovalMock).toHaveBeenCalledWith(
+      sessionId,
+      requestId,
+      "deny",
+    );
+    expect(state.approvalStatus).toBe("submitting");
+    expect(state.approvalError).toBeNull();
+    expect(state.runStatus).toBe("idle");
+    expect(state.currentSessionState?.status).toBe("failed");
+    expect(state.currentSessionEvents.map((event) => event.event_type)).toEqual(
+      [
+        "runtime.request_received",
+        "runtime.approval_requested",
+        "runtime.approval_resolved",
+      ],
+    );
+    expect(state.currentSessionEvents[2]?.payload).toEqual({
+      request_id: requestId,
+      decision: "deny",
+    });
+
+    slowApproval.resolve(failedResponse);
+    await approvalPromise;
+
+    state = useAppStore.getState();
+    expect(state.approvalStatus).toBe("idle");
+    expect(state.runStatus).toBe("idle");
+    expect(state.currentSessionState?.status).toBe("failed");
+    expect(state.currentSessionEvents).toEqual(failedResponse.events);
   });
 
   it("preserves backend tool display metadata while streaming and replaying", async () => {
@@ -2096,6 +2191,97 @@ describe("useAppStore integration flow", () => {
 
     // Sessions list was refreshed.
     expect(runtimeClientMocks.listSessionsMock).toHaveBeenCalled();
+  });
+
+  it("rolls back optimistic approval when resolution and recovery replay both fail", async () => {
+    const sessionId = "approval-rollback";
+    const requestId = "approval-retry-123";
+    const requestReceived = makeEvent(
+      1,
+      "runtime.request_received",
+      { prompt: "write rollback.txt retry" },
+      "runtime",
+      sessionId,
+    );
+    const approvalRequested = makeEvent(
+      2,
+      "runtime.approval_requested",
+      { request_id: requestId, tool: "write_file", decision: "ask" },
+      "runtime",
+      sessionId,
+    );
+    const approvalResolved = makeEvent(
+      3,
+      "runtime.approval_resolved",
+      { request_id: requestId, decision: "allow" },
+      "runtime",
+      sessionId,
+    );
+    const toolCompleted = makeEvent(
+      4,
+      "runtime.tool_completed",
+      { path: "rollback.txt" },
+      "tool",
+      sessionId,
+    );
+    const completedResponse = makeRuntimeResponse(
+      sessionId,
+      "completed",
+      [requestReceived, approvalRequested, approvalResolved, toolCompleted],
+      "retry ok",
+    );
+
+    async function* stream() {
+      yield makeStreamChunk(sessionId, "running", requestReceived);
+      yield makeStreamChunk(sessionId, "waiting", approvalRequested);
+    }
+
+    runtimeClientMocks.runStreamMock.mockReturnValue(stream());
+    runtimeClientMocks.resolveApprovalMock
+      .mockRejectedValueOnce(new Error("approval post failed"))
+      .mockResolvedValueOnce(completedResponse);
+    runtimeClientMocks.getSessionReplayMock.mockRejectedValue(
+      new Error("replay failed"),
+    );
+    runtimeClientMocks.listSessionsMock.mockResolvedValue([
+      makeStoredSessionSummary(
+        sessionId,
+        "waiting",
+        "write rollback.txt retry",
+      ),
+    ]);
+
+    await useAppStore.getState().runTask("write rollback.txt retry");
+
+    await useAppStore.getState().resolveApproval("allow");
+
+    let state = useAppStore.getState();
+    expect(runtimeClientMocks.resolveApprovalMock).toHaveBeenCalledTimes(1);
+    expect(state.approvalStatus).toBe("error");
+    expect(state.approvalError).toBe("approval post failed");
+    expect(state.currentSessionState?.status).toBe("waiting");
+    expect(state.currentSessionOutput).toBeNull();
+    expect(state.currentSessionEvents).toEqual([
+      requestReceived,
+      approvalRequested,
+    ]);
+    expect(
+      state.currentSessionEvents.some(
+        (event) => event.event_type === "runtime.approval_resolved",
+      ),
+    ).toBe(false);
+
+    await useAppStore.getState().resolveApproval("allow");
+
+    state = useAppStore.getState();
+    expect(runtimeClientMocks.resolveApprovalMock).toHaveBeenNthCalledWith(
+      2,
+      sessionId,
+      requestId,
+      "allow",
+    );
+    expect(state.currentSessionState?.status).toBe("completed");
+    expect(state.currentSessionOutput).toBe("retry ok");
   });
 
   it("keeps composer disabled when approval failure replay is still running", async () => {

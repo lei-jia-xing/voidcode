@@ -958,7 +958,10 @@ export const useAppStore = create<AppState>()(
         const {
           currentSessionId,
           currentSessionEvents,
+          currentSessionState,
+          currentSessionOutput,
           replayStatus,
+          replayError,
           runStatus,
           approvalStatus,
           loadSessions,
@@ -983,12 +986,22 @@ export const useAppStore = create<AppState>()(
         }
 
         let shouldPollReplay = true;
+        const preOptimisticState = {
+          currentSessionEvents,
+          currentSessionState,
+          currentSessionOutput,
+          replayStatus,
+          replayError,
+          runStatus,
+        };
         const locallyResolvedEvents = appendLocalApprovalResolution(
           currentSessionEvents,
           currentSessionId,
           requestId,
           decision,
         );
+        const localResolutionEvent =
+          locallyResolvedEvents[locallyResolvedEvents.length - 1];
         set((state) => ({
           currentSessionEvents: locallyResolvedEvents,
           currentSessionState: state.currentSessionState
@@ -999,7 +1012,7 @@ export const useAppStore = create<AppState>()(
             : state.currentSessionState,
           runStatus: decision === "allow" ? "running" : "idle",
           runError: null,
-          approvalStatus: "success",
+          approvalStatus: "submitting",
           approvalError: null,
           replayStatus: "success",
           replayError: null,
@@ -1088,7 +1101,20 @@ export const useAppStore = create<AppState>()(
               });
             }
           } catch {
-            // Best-effort reload.
+            if (
+              get().currentSessionId === currentSessionId &&
+              localResolutionEvent &&
+              get().currentSessionEvents.includes(localResolutionEvent)
+            ) {
+              set({
+                currentSessionState: preOptimisticState.currentSessionState,
+                currentSessionEvents: preOptimisticState.currentSessionEvents,
+                currentSessionOutput: preOptimisticState.currentSessionOutput,
+                replayStatus: preOptimisticState.replayStatus,
+                replayError: preOptimisticState.replayError,
+                runStatus: preOptimisticState.runStatus,
+              });
+            }
           }
           await loadSessions();
         }
