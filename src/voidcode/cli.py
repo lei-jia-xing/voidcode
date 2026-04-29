@@ -168,8 +168,9 @@ def _run_with_inline_approval(
     result = _consume_runtime_stream(
         runtime.run_stream(request),
         emit_events=emit_events,
-        on_interrupt=lambda session_id: runtime.cancel_session(
+        on_interrupt=lambda session_id, run_id: runtime.cancel_session(
             session_id,
+            run_id=run_id,
             reason="cli KeyboardInterrupt",
         ),
     )
@@ -185,8 +186,9 @@ def _run_with_inline_approval(
                 approval_decision=_prompt_for_approval(approval_event),
             ),
             emit_events=emit_events,
-            on_interrupt=lambda session_id: runtime.cancel_session(
+            on_interrupt=lambda session_id, run_id: runtime.cancel_session(
                 session_id,
+                run_id=run_id,
                 reason="cli KeyboardInterrupt",
             ),
         )
@@ -208,7 +210,7 @@ def _consume_runtime_stream(
     chunks: Iterator[RuntimeStreamChunk],
     *,
     emit_events: bool,
-    on_interrupt: Callable[[str], object] | None = None,
+    on_interrupt: Callable[[str, str | None], object] | None = None,
 ) -> RuntimeStreamResult:
     output: str | None = None
     final_session: SessionState | None = None
@@ -232,13 +234,25 @@ def _consume_runtime_stream(
                 output = chunk.output
     except KeyboardInterrupt:
         if final_session is not None and on_interrupt is not None:
-            on_interrupt(final_session.session.id)
+            on_interrupt(
+                final_session.session.id,
+                _run_id_from_session_metadata(final_session.metadata),
+            )
         raise
 
     if final_session is None:
         raise ValueError("runtime stream emitted no chunks")
 
     return RuntimeStreamResult(output=output, session=final_session, events=tuple(events))
+
+
+def _run_id_from_session_metadata(metadata: dict[str, object]) -> str | None:
+    runtime_state = metadata.get("runtime_state")
+    if not isinstance(runtime_state, dict):
+        return None
+    typed_runtime_state = cast(dict[str, object], runtime_state)
+    raw_run_id = typed_runtime_state.get("run_id")
+    return raw_run_id if isinstance(raw_run_id, str) and raw_run_id else None
 
 
 def _last_event(result: RuntimeStreamResult) -> EventEnvelope | None:

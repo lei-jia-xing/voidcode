@@ -191,11 +191,20 @@ def _runtime_event(
 
 
 def _make_chunk(
-    *, session_id: str, status: str, event: _StubEvent | None = None, output: str | None = None
+    *,
+    session_id: str,
+    status: str,
+    event: _StubEvent | None = None,
+    output: str | None = None,
+    metadata: dict[str, object] | None = None,
 ) -> _StubChunk:
     return _StubChunk(
         kind="output" if output is not None else "event",
-        session=_StubSession(session=_StubSessionRef(id=session_id), status=status),
+        session=_StubSession(
+            session=_StubSessionRef(id=session_id),
+            status=status,
+            metadata=metadata,
+        ),
         event=event,
         output=output,
     )
@@ -645,6 +654,7 @@ def test_run_command_ctrl_c_cancels_active_runtime_session(capsys: Any) -> None:
             session_id="interrupt-session",
             status="running",
             event=_runtime_event("runtime.request_received", prompt="slow"),
+            metadata={"runtime_state": {"run_id": "cli-run-1"}},
         )
         raise KeyboardInterrupt
 
@@ -656,6 +666,7 @@ def test_run_command_ctrl_c_cancels_active_runtime_session(capsys: Any) -> None:
     assert result == 130
     runtime_class.return_value.cancel_session.assert_called_once_with(
         "interrupt-session",
+        run_id="cli-run-1",
         reason="cli KeyboardInterrupt",
     )
     assert "Interrupted current run." in capsys.readouterr().err
