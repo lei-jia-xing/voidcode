@@ -487,6 +487,117 @@ describe("useAppStore integration flow", () => {
     expect(state.currentSessionEvents).toEqual(completedResponse.events);
   });
 
+  it("acknowledges approval immediately while a resumed run is still resolving", async () => {
+    const sessionId = "approval-slow-resume";
+    const requestId = "approval-slow-1";
+    const requestReceived = makeEvent(
+      1,
+      "runtime.request_received",
+      { prompt: "write slow.txt hello" },
+      "runtime",
+      sessionId,
+    );
+    const approvalRequested = makeEvent(
+      2,
+      "runtime.approval_requested",
+      {
+        request_id: requestId,
+        tool: "write_file",
+        target_summary: "slow.txt",
+        decision: "ask",
+      },
+      "runtime",
+      sessionId,
+    );
+    const approvalResolved = makeEvent(
+      3,
+      "runtime.approval_resolved",
+      { request_id: requestId, decision: "allow" },
+      "runtime",
+      sessionId,
+    );
+    const toolStarted = makeEvent(
+      4,
+      "runtime.tool_started",
+      { tool: "write_file", tool_call_id: "write-1" },
+      "runtime",
+      sessionId,
+    );
+    const responseReady = makeEvent(
+      5,
+      "graph.response_ready",
+      { output_preview: "done" },
+      "graph",
+      sessionId,
+    );
+    const completedResponse = makeRuntimeResponse(
+      sessionId,
+      "completed",
+      [
+        requestReceived,
+        approvalRequested,
+        approvalResolved,
+        toolStarted,
+        responseReady,
+      ],
+      "done",
+    );
+    const slowApproval = createDeferred<RuntimeResponse>();
+
+    async function* stream() {
+      yield makeStreamChunk(sessionId, "running", requestReceived);
+      yield makeStreamChunk(sessionId, "waiting", approvalRequested);
+    }
+
+    runtimeClientMocks.runStreamMock.mockReturnValue(stream());
+    runtimeClientMocks.resolveApprovalMock.mockReturnValue(
+      slowApproval.promise,
+    );
+    runtimeClientMocks.getSessionReplayMock.mockResolvedValue(
+      completedResponse,
+    );
+    runtimeClientMocks.listSessionsMock.mockResolvedValue([
+      makeStoredSessionSummary(sessionId, "completed", "write slow.txt hello"),
+    ]);
+
+    await useAppStore.getState().runTask("write slow.txt hello");
+
+    const approvalPromise = useAppStore.getState().resolveApproval("allow");
+    await Promise.resolve();
+
+    let state = useAppStore.getState();
+    expect(runtimeClientMocks.resolveApprovalMock).toHaveBeenCalledWith(
+      sessionId,
+      requestId,
+      "allow",
+    );
+    expect(state.approvalStatus).toBe("success");
+    expect(state.approvalError).toBeNull();
+    expect(state.runStatus).toBe("running");
+    expect(state.currentSessionState?.status).toBe("running");
+    expect(state.currentSessionEvents.map((event) => event.event_type)).toEqual(
+      [
+        "runtime.request_received",
+        "runtime.approval_requested",
+        "runtime.approval_resolved",
+      ],
+    );
+    expect(state.currentSessionEvents[2]?.payload).toEqual({
+      request_id: requestId,
+      decision: "allow",
+    });
+
+    slowApproval.resolve(completedResponse);
+    await approvalPromise;
+
+    state = useAppStore.getState();
+    expect(state.approvalStatus).toBe("idle");
+    expect(state.runStatus).toBe("idle");
+    expect(state.currentSessionState?.status).toBe("completed");
+    expect(state.currentSessionOutput).toBe("done");
+    expect(state.currentSessionEvents).toEqual(completedResponse.events);
+  });
+
   it("preserves backend tool display metadata while streaming and replaying", async () => {
     const sessionId = "session-tool-display";
     const requestReceived = makeEvent(
@@ -1868,5 +1979,92 @@ describe("useAppStore integration flow", () => {
     expect(state.providerValidationResults).toEqual({});
     expect(state.providerValidationStatus).toEqual({});
     expect(state.providerValidationError).toEqual({});
+  });
+
+  it("recovers composer state after approval resolution failure", async () => {
+    const sessionId = "approval-recover";
+    const requestReceived = makeEvent(
+      1,
+      "runtime.request_received",
+      { prompt: "write approval-recover.txt recover" },
+      "runtime",
+      sessionId,
+    );
+    const requestId = "approval-def456";
+    const approvalRequested = makeEvent(
+      2,
+      "runtime.approval_requested",
+      { request_id: requestId, tool: "write_file", decision: "ask" },
+      "runtime",
+      sessionId,
+    );
+
+    // Recovery payload: backend may return a fresh waiting state
+    // (e.g. re-emitted approval) or any terminal state after the
+    // approval error.  The important thing is that the store uses
+    // this data to replace the stale waiting session.
+    const recoveryResponse = makeRuntimeResponse(
+      sessionId,
+      "waiting",
+      [requestReceived, approvalRequested],
+      null,
+    );
+
+    async function* stream() {
+      yield makeStreamChunk(sessionId, "running", requestReceived);
+      yield makeStreamChunk(sessionId, "waiting", approvalRequested);
+    }
+
+    const approvalFailureMessage = "Failed to resolve approval";
+
+    runtimeClientMocks.runStreamMock.mockReturnValue(stream());
+    runtimeClientMocks.resolveApprovalMock.mockRejectedValue(
+      new Error(approvalFailureMessage),
+    );
+    runtimeClientMocks.getSessionReplayMock.mockResolvedValue(recoveryResponse);
+    runtimeClientMocks.listSessionsMock.mockResolvedValue([
+      makeStoredSessionSummary(
+        sessionId,
+        "waiting",
+        "write approval-recover.txt recover",
+      ),
+    ]);
+
+    await useAppStore.getState().runTask("write approval-recover.txt recover");
+
+    let state = useAppStore.getState();
+    expect(state.currentSessionId).toBe(sessionId);
+    expect(state.currentSessionState?.status).toBe("waiting");
+
+    // Trigger approval — expect it to fail and then recover.
+    await state.resolveApproval("allow");
+
+    state = useAppStore.getState();
+
+    // Approval failure recorded.
+    expect(runtimeClientMocks.resolveApprovalMock).toHaveBeenCalledWith(
+      sessionId,
+      requestId,
+      "allow",
+    );
+    expect(state.approvalStatus).toBe("error");
+    expect(state.approvalError).toBe(approvalFailureMessage);
+
+    // Composer must recover — runStatus goes back to idle so the
+    // composer-disabled guard no longer blocks user input.
+    expect(state.runStatus).toBe("idle");
+
+    // Session replay was fetched after the error so the UI reflects
+    // the latest backend state rather than stale waiting data.
+    expect(runtimeClientMocks.getSessionReplayMock).toHaveBeenCalledWith(
+      sessionId,
+    );
+    expect(state.currentSessionState).toEqual(recoveryResponse.session);
+    expect(state.currentSessionEvents).toEqual(recoveryResponse.events);
+    expect(state.replayStatus).toBe("success");
+    expect(state.replayError).toBeNull();
+
+    // Sessions list was refreshed.
+    expect(runtimeClientMocks.listSessionsMock).toHaveBeenCalled();
   });
 });
