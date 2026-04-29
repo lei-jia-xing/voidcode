@@ -350,3 +350,14 @@ Two issues:
 - Root cause: encoding an entire review path with `encodeURIComponent(path)` produced `%2F` inside a single route segment, which can fail at the browser/server/proxy layer before the backend can return a useful JSON error.
 - E2E gotcha: `voidcode web` launcher tests serve built frontend assets, so run `bun run --cwd frontend build` before `bun run --cwd frontend test:e2e` when validating source changes against the launcher shell.
 - Non-blocking e2e selector fixes were needed in the touched launcher test: close the review panel before clicking the separate Code Review header control because the right panel can intercept that header click at the test viewport, and target the changed-file row (`M src/app.ts`) to avoid strict text ambiguity.
+
+---
+
+## T20: Upstream master sync for PR #319
+
+**Date:** 2026-04-30T00:24:00+08:00
+
+- Merged `origin/master` into `feat/web-opencode-ui-redesign` rather than rebasing because the PR branch already had pushed history; this preserved PR history and allowed a normal push.
+- First upstream merge conflict files: `tests/unit/runtime/test_runtime_events.py` and `tests/unit/tools/test_shell_exec_tool.py`; resolution kept both master's delegated/truncation assertions and the PR branch's tool-display / shell description coverage.
+- Follow-up master update `baf197d feat(runtime): add reasoning effort config (#331)` merged cleanly with no conflicts.
+- Verification after the final merge: focused frontend tests passed 73/73, frontend lint/typecheck passed, and `mise run check` passed with 1696 backend tests plus frontend lint/typecheck/Vitest 155/155.
