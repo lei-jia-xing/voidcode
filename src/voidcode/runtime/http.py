@@ -46,7 +46,7 @@ from .contracts import (
 from .events import DelegatedLifecycleEventPayload, EventEnvelope
 from .permission import PermissionResolution
 from .question import QuestionResponse
-from .service import VoidCodeRuntime
+from .service import ActiveRunInterruptResult, VoidCodeRuntime
 from .session import SessionRef, SessionState, StoredSessionSummary
 from .task import (
     BackgroundTaskRequestSnapshot,
@@ -76,6 +76,14 @@ class RuntimeTransport(Protocol):
     ) -> tuple[StoredBackgroundTaskSummary, ...]: ...
 
     def cancel_background_task(self, task_id: str) -> BackgroundTaskState: ...
+
+    def cancel_session(
+        self,
+        session_id: str,
+        *,
+        run_id: str | None = None,
+        reason: str | None = None,
+    ) -> ActiveRunInterruptResult: ...
 
     def list_sessions(self) -> tuple[StoredSessionSummary, ...]: ...
 
@@ -206,6 +214,21 @@ class _ApprovalResolutionRequestPayload(_HttpBoundaryModel):
         if value not in ("allow", "deny"):
             raise ValueError("must be 'allow' or 'deny'")
         return cast(str, value)
+
+
+class _SessionCancelRequestPayload(_HttpBoundaryModel):
+    run_id: str | None = None
+    reason: str | None = None
+
+    @field_validator("run_id", "reason", mode="before")
+    @classmethod
+    def _validate_optional_string(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError("must be a string when provided")
+        stripped = value.strip()
+        return stripped or None
 
 
 class _SettingsRequestPayload(BaseModel):
@@ -608,6 +631,9 @@ class RuntimeTransportApp:
             is_undo_route = session_path.endswith("/undo")
             is_revert_route = session_path.endswith("/revert")
             is_unrevert_route = session_path.endswith("/unrevert")
+            is_cancel_route = session_path.endswith("/cancel") or session_path.endswith(
+                "/interrupt"
+            )
             session_id = (
                 session_path.removesuffix("/tasks")
                 if is_task_list_route
@@ -625,6 +651,10 @@ class RuntimeTransportApp:
                 if is_revert_route
                 else session_path.removesuffix("/unrevert")
                 if is_unrevert_route
+                else session_path.removesuffix("/cancel")
+                if session_path.endswith("/cancel")
+                else session_path.removesuffix("/interrupt")
+                if session_path.endswith("/interrupt")
                 else session_path
             )
             try:
@@ -664,8 +694,22 @@ class RuntimeTransportApp:
                 if is_revert_route
                 else session_path.removesuffix("/unrevert")
                 if is_unrevert_route
+                else session_path.removesuffix("/cancel")
+                if session_path.endswith("/cancel")
+                else session_path.removesuffix("/interrupt")
+                if session_path.endswith("/interrupt")
                 else session_path
             )
+            if is_cancel_route:
+                if method != "POST":
+                    await self._json_response(
+                        send,
+                        status=405,
+                        payload={"error": "method not allowed"},
+                    )
+                    return
+                await self._handle_cancel_session(session_id=session_id, receive=receive, send=send)
+                return
             if is_approval_route:
                 if method != "POST":
                     await self._json_response(
@@ -1115,6 +1159,31 @@ class RuntimeTransportApp:
             status=200,
             payload=self._serialize_background_task_state(task),
         )
+
+    async def _handle_cancel_session(
+        self,
+        *,
+        session_id: str,
+        receive: Receive,
+        send: Send,
+    ) -> None:
+        try:
+            body = await self._read_body(receive)
+            payload = self._parse_session_cancel_request(body)
+        except ValueError as exc:
+            await self._json_response(send, status=400, payload={"error": str(exc)})
+            return
+        with self._active_request_scope():
+            runtime = self._runtime_factory()
+            try:
+                result = runtime.cancel_session(
+                    session_id,
+                    run_id=payload.run_id,
+                    reason=payload.reason,
+                )
+            finally:
+                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
+        await self._json_response(send, status=200, payload=result.as_payload())
 
     async def _handle_list_notifications(self, send: Send) -> None:
         with self._active_request_scope():
@@ -1569,6 +1638,18 @@ class RuntimeTransportApp:
             raise ValueError(_format_http_validation_error(error)) from exc
 
         return cast(str, payload.request_id), cast(PermissionResolution, payload.decision)
+
+    def _parse_session_cancel_request(self, body: bytes) -> _SessionCancelRequestPayload:
+        if not body.strip():
+            return _SessionCancelRequestPayload()
+        raw_payload = _parse_json_body(body)
+        if not isinstance(raw_payload, dict):
+            raise ValueError("request body must be a JSON object")
+        try:
+            return _SessionCancelRequestPayload.model_validate(raw_payload)
+        except ValidationError as exc:
+            error = cast(dict[str, object], exc.errors(include_url=False)[0])
+            raise ValueError(_format_http_validation_error(error)) from exc
 
     def _parse_settings_request(self, body: bytes) -> dict[str, str | None]:
         raw_payload = _parse_json_body(body)

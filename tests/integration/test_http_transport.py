@@ -347,6 +347,64 @@ def test_transport_agents_endpoint_serializes_stable_summary_fields() -> None:
     ]
 
 
+def test_transport_session_cancel_endpoint_calls_runtime_cancel_session() -> None:
+    runtime_http = importlib.import_module("voidcode.runtime.http")
+    RuntimeTransportApp = runtime_http.RuntimeTransportApp
+    ActiveRunInterruptResult = runtime_http.ActiveRunInterruptResult
+
+    class SessionCancelRuntime:
+        calls: list[tuple[str, str | None, str | None]] = []
+
+        def cancel_session(
+            self,
+            session_id: str,
+            *,
+            run_id: str | None = None,
+            reason: str | None = None,
+        ) -> object:
+            self.calls.append((session_id, run_id, reason))
+            return ActiveRunInterruptResult(
+                session_id=session_id,
+                status="interrupted",
+                run_id=run_id,
+                reason=reason,
+            )
+
+    app = RuntimeTransportApp(runtime_factory=SessionCancelRuntime)
+
+    response = _run_app(
+        app,
+        method="POST",
+        path="/api/sessions/session-cancel/cancel",
+        body=json.dumps({"run_id": "run-1", "reason": "operator"}).encode("utf-8"),
+    )
+
+    assert response.status == 200
+    assert response.json() == {
+        "session_id": "session-cancel",
+        "status": "interrupted",
+        "interrupted": True,
+        "cancelled": True,
+        "run_id": "run-1",
+        "reason": "operator",
+    }
+    assert SessionCancelRuntime.calls == [("session-cancel", "run-1", "operator")]
+
+
+def test_transport_session_cancel_endpoint_rejects_non_post() -> None:
+    runtime_http = importlib.import_module("voidcode.runtime.http")
+    RuntimeTransportApp = runtime_http.RuntimeTransportApp
+
+    class SessionCancelRuntime:
+        pass
+
+    app = RuntimeTransportApp(runtime_factory=SessionCancelRuntime)
+
+    response = _run_app(app, method="GET", path="/api/sessions/session-cancel/cancel")
+
+    assert response.status == 405
+
+
 def _parse_sse_payloads(response: _TransportResponse) -> list[dict[str, object]]:
     frames = [frame for frame in response.body.decode("utf-8").split("\n\n") if frame]
     payloads: list[dict[str, object]] = []
