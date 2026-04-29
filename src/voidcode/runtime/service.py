@@ -905,6 +905,8 @@ class VoidCodeRuntime:
     def _validate_reasoning_effort_capability(self, config: EffectiveRuntimeConfig) -> None:
         if config.reasoning_effort is None:
             return
+        if config.execution_engine != "provider":
+            return
         active_target = config.resolved_provider.active_target.selection
         provider_name = active_target.provider
         model_name = active_target.model

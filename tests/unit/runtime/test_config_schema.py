@@ -145,7 +145,6 @@ def test_generate_starter_runtime_config_excludes_secrets() -> None:
         "model": "opencode-go/glm-5",
         "execution_engine": "provider",
         "max_steps": 7,
-        "reasoning_effort": "medium",
         "tools": {"builtin": {"enabled": True}},
         "skills": {"enabled": True},
     }

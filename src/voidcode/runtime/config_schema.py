@@ -478,7 +478,6 @@ def generate_starter_runtime_config(
     if max_steps is not None:
         payload["max_steps"] = max_steps
     if include_examples:
-        payload["reasoning_effort"] = "medium"
         payload["tools"] = {"builtin": {"enabled": True}}
         payload["skills"] = {"enabled": True}
     return payload

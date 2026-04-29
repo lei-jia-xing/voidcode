@@ -2123,7 +2123,6 @@ def test_config_init_prints_starter_config_without_writing() -> None:
         "model": "opencode-go/glm-5",
         "execution_engine": "provider",
         "max_steps": 8,
-        "reasoning_effort": "medium",
         "tools": {"builtin": {"enabled": True}},
         "skills": {"enabled": True},
     }

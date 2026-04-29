@@ -2204,6 +2204,7 @@ def test_runtime_fails_fast_when_reasoning_effort_set_on_unsupported_model(
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         config=RuntimeConfig(
+            execution_engine="provider",
             model="openai/gpt-4o",
             reasoning_effort="high",
         ),
@@ -2228,7 +2229,7 @@ def test_runtime_fails_fast_when_request_metadata_reasoning_effort_unsupported(
     }
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        config=RuntimeConfig(model="openai/gpt-4o"),
+        config=RuntimeConfig(execution_engine="provider", model="openai/gpt-4o"),
         model_provider_registry=registry,
     )
 
@@ -2239,6 +2240,36 @@ def test_runtime_fails_fast_when_request_metadata_reasoning_effort_unsupported(
                 metadata={"reasoning_effort": "high"},
             )
         )
+
+
+def test_runtime_allows_reasoning_effort_on_unsupported_model_for_deterministic_engine(
+    tmp_path: Path,
+) -> None:
+    registry = ModelProviderRegistry.with_defaults()
+    registry.model_catalog = {
+        "openai": ProviderModelCatalog(
+            provider="openai",
+            models=("gpt-4o",),
+            refreshed=True,
+            model_metadata={"gpt-4o": ProviderModelMetadata(supports_reasoning_effort=False)},
+        )
+    }
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=DeterministicGraph(),
+        config=RuntimeConfig(
+            execution_engine="deterministic",
+            model="openai/gpt-4o",
+            reasoning_effort="high",
+        ),
+        model_provider_registry=registry,
+    )
+    _ = (tmp_path / "README.md").write_text("sample\n", encoding="utf-8")
+
+    response = runtime.run(RuntimeRequest(prompt="read README.md"))
+
+    runtime_config_metadata = cast(dict[str, object], response.session.metadata["runtime_config"])
+    assert runtime_config_metadata["reasoning_effort"] == "high"
 
 
 def test_runtime_allows_reasoning_effort_when_metadata_unknown(tmp_path: Path) -> None:
