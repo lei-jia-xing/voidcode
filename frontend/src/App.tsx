@@ -17,6 +17,7 @@ import {
   CheckCircle2,
   XCircle,
   GitCompare,
+  FolderTree,
   PanelLeft,
 } from "lucide-react";
 import { StatusBar } from "./components/StatusBar";
@@ -248,6 +249,16 @@ function App() {
     void loadSessionDebug(currentSessionId);
   };
 
+  const handleReviewSurfaceToggle = (mode: "changes" | "files") => {
+    if (showReview && reviewMode === mode) {
+      setShowReview(false);
+      return;
+    }
+
+    setReviewMode(mode);
+    setShowReview(true);
+  };
+
   const composerDisabled =
     isRunning ||
     isReplayLoading ||
@@ -338,13 +349,32 @@ function App() {
 
                 <ControlButton
                   compact
-                  variant={showReview ? "secondary" : "ghost"}
-                  onClick={() => setShowReview((value) => !value)}
-                  aria-label={t("review.toggle")}
-                  aria-expanded={showReview}
+                  variant={
+                    showReview && reviewMode === "files" ? "secondary" : "ghost"
+                  }
+                  onClick={() => handleReviewSurfaceToggle("files")}
+                  aria-label={t("review.toggleFileTree")}
+                  aria-expanded={showReview && reviewMode === "files"}
+                  aria-pressed={showReview && reviewMode === "files"}
+                >
+                  <FolderTree className="w-4 h-4" />
+                  <span>{t("review.fileTree")}</span>
+                </ControlButton>
+
+                <ControlButton
+                  compact
+                  variant={
+                    showReview && reviewMode === "changes"
+                      ? "secondary"
+                      : "ghost"
+                  }
+                  onClick={() => handleReviewSurfaceToggle("changes")}
+                  aria-label={t("review.toggleCodeReview")}
+                  aria-expanded={showReview && reviewMode === "changes"}
+                  aria-pressed={showReview && reviewMode === "changes"}
                 >
                   <GitCompare className="w-4 h-4" />
-                  <span>{t("review.title")}</span>
+                  <span>{t("review.codeReview")}</span>
                 </ControlButton>
 
                 <ControlButton
