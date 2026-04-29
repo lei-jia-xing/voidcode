@@ -674,6 +674,7 @@ export const useAppStore = create<AppState>()(
             sessionDebugStatus: "idle",
             sessionDebugError: null,
           });
+          await get().loadBackgroundTasks();
           return;
         }
 
@@ -996,12 +997,15 @@ export const useAppStore = create<AppState>()(
       },
 
       loadBackgroundTasks: async () => {
+        const scopedSessionId = get().currentSessionId;
         set({ backgroundTasksStatus: "loading", backgroundTasksError: null });
         try {
-          const currentSessionId = get().currentSessionId;
-          const backgroundTasks = currentSessionId
-            ? await RuntimeClient.listSessionBackgroundTasks(currentSessionId)
+          const backgroundTasks = scopedSessionId
+            ? await RuntimeClient.listSessionBackgroundTasks(scopedSessionId)
             : await RuntimeClient.listBackgroundTasks();
+          if (get().currentSessionId !== scopedSessionId) {
+            return;
+          }
           set({
             backgroundTasks,
             backgroundTasksStatus: "success",

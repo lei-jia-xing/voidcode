@@ -790,6 +790,58 @@ describe("useAppStore integration flow", () => {
     expect(state.backgroundTasks).toEqual([secondTask]);
   });
 
+  it("reloads global background tasks when selecting a new session", async () => {
+    const sessionTask = makeBackgroundTaskSummary("task-a", "old session task");
+    const globalTask = makeBackgroundTaskSummary("task-global", "global task");
+    useAppStore.setState({
+      currentSessionId: "session-1",
+      backgroundTasks: [sessionTask],
+    });
+    runtimeClientMocks.listBackgroundTasksMock.mockResolvedValue([globalTask]);
+
+    await useAppStore.getState().selectSession("");
+
+    const state = useAppStore.getState();
+    expect(runtimeClientMocks.listBackgroundTasksMock).toHaveBeenCalled();
+    expect(
+      runtimeClientMocks.listSessionBackgroundTasksMock,
+    ).not.toHaveBeenCalled();
+    expect(state.currentSessionId).toBeNull();
+    expect(state.backgroundTasks).toEqual([globalTask]);
+  });
+
+  it("ignores stale background task responses after session scope changes", async () => {
+    const staleTask = makeBackgroundTaskSummary("task-stale", "stale task");
+    const currentTask = makeBackgroundTaskSummary(
+      "task-current",
+      "current task",
+    );
+    const firstRequest = createDeferred<BackgroundTaskSummary[]>();
+    useAppStore.setState({ currentSessionId: "session-1" });
+    runtimeClientMocks.listSessionBackgroundTasksMock.mockReturnValueOnce(
+      firstRequest.promise,
+    );
+
+    const staleLoad = useAppStore.getState().loadBackgroundTasks();
+    useAppStore.setState({ currentSessionId: "session-2" });
+    runtimeClientMocks.listSessionBackgroundTasksMock.mockResolvedValueOnce([
+      currentTask,
+    ]);
+    await useAppStore.getState().loadBackgroundTasks();
+
+    firstRequest.resolve([staleTask]);
+    await staleLoad;
+
+    const state = useAppStore.getState();
+    expect(
+      runtimeClientMocks.listSessionBackgroundTasksMock,
+    ).toHaveBeenNthCalledWith(1, "session-1");
+    expect(
+      runtimeClientMocks.listSessionBackgroundTasksMock,
+    ).toHaveBeenNthCalledWith(2, "session-2");
+    expect(state.backgroundTasks).toEqual([currentTask]);
+  });
+
   it("surfaces approval lookup failure when no pending request exists", async () => {
     const sessionId = "broken-session";
     const requestReceived = makeEvent(
