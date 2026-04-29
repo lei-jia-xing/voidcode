@@ -375,3 +375,104 @@ All plan target ranges resolved successfully — no deviations needed:
 - Branch `feat/web-opencode-ui-redesign` was pushed with upstream `origin/feat/web-opencode-ui-redesign`.
 - GitHub PR created: https://github.com/lei-jia-xing/voidcode/pull/319
 - PR URL saved to `.sisyphus/evidence/task-12-pr.txt`.
+
+---
+
+## T13: Approval flow blocker fix (post-PR live QA bug)
+
+**Date:** 2026-04-29T21:00:00+08:00
+
+### Root cause
+Provider model non-determinism causes different tool call arguments on approval replay. The original `run_loop.py` raised `ValueError` which the HTTP handler returned as 404, and the frontend kept the composer disabled because `currentSessionState.status` stayed `"waiting"`.
+
+### Key fix: Re-emit as fresh approval instead of ValueError
+When `approval_resolution` is provided but the replayed tool call differs from the pending approval (same tool_name, different arguments), clear the stale `approval_resolution` and fall through to `_resolve_permission()`. This creates a new pending approval for the updated tool call, keeping the session usable.
+
+### Files changed
+- `src/voidcode/runtime/run_loop.py` — Replaced ValueError with fallthrough to normal permission check
+- `src/voidcode/runtime/http.py` — 404 → 409 for approval ValueErrors (better HTTP semantics)
+- `frontend/src/store/index.ts` — After approval error, reload session from backend and set `runStatus: "idle"` to recover composer
+- `tests/integration/test_read_only_slice.py` — Added `_DivergentWriteFileGraph` mock + regression test
+- `tests/integration/test_http_transport.py` — Updated test to expect 409 (renamed: `_returns_conflict_`)
+
+### Patterns learned
+- Approval replay must tolerate provider non-determinism — the model may legitimately produce different arguments for the same tool on re-evaluation
+- Stateful mock graphs with `_call_count` can simulate non-deterministic behavior in deterministic test engines
+- `RuntimeFactory` protocol explicitly accepts `graph: object | None`, enabling graph injection tests
+- The `ToolCallFactory` protocol cast pattern is: `cast(ToolCallFactory, importlib.import_module(...).ToolCall)`
+
+### Verification
+- 14 approval-related integration tests pass (130 total in affected files)
+- Frontend: 11 files, 143 tests pass; lint/typecheck clean
+- Zero diagnostics on all 5 modified files
+
+### T13 correction: Store regression test for approval error recovery
+- Added `recovers composer state after approval resolution failure` to `frontend/src/store.integration.test.ts`
+- Uses `mockRejectedValue` on `resolveApprovalMock` to simulate approval failure, then verifies `runStatus === "idle"`, `approvalStatus === "error"`, replay data loaded, and sessions refreshed
+- 32 store integration tests pass (31 existing + 1 new)
+
+---
+
+## P2: Skill display metadata canonical argument
+
+- `src/voidcode/tools/skill.py` defines the skill tool input contract with `name` (plus optional `user_message`); `skill` only appears in successful result data under `data["skill"]["name"]`.
+- `build_tool_display("skill", ...)` should therefore derive started/display metadata from `arguments["name"]`, with `arguments["skill"]` only as a legacy defensive fallback.
+- Regression coverage lives in `tests/unit/runtime/test_runtime_events.py` and asserts `name` wins even when a legacy `skill` key is also present.
+
+---
+
+## T14: Opencode-style frontend chrome corrections
+
+**Date:** 2026-04-29T21:46:00+08:00
+
+### Files modified
+- `frontend/src/components/sessionTitle.ts` — Added deterministic concise prompt titles with session-id fallback for long/noisy session prompts.
+- `frontend/src/App.tsx` / `SessionSidebar.tsx` — Moved sidebar expansion to `App`, added visible `Files` and `Review` header controls, and reused concise titles in header/sidebar rows.
+- `frontend/src/components/Composer.tsx` — Flattened composer footer selectors into quiet text controls with a subtle separator instead of nested bordered selector boxes.
+- `frontend/src/components/StatusBar.tsx` — Removed Git from compact status/details and grouped Server/LSP/MCP in the top-right status control.
+- `frontend/src/i18n/locales/en.json` / `zh-CN.json` — Added localized file-tree/review/server labels.
+- `frontend/src/App.test.tsx`, `Composer.test.tsx`, `SessionSidebar.test.tsx` — Added coverage for concise titles, visible toggles, no-Git status popover, and accessible flat composer selectors.
+
+### Patterns confirmed
+- The opencode-like chrome target works best as text-first controls using existing `ControlButton` and `--vc-*` tokens; avoid new colored accents and avoid nested bordered controls in the composer footer.
+- Sidebar expansion must be controlled by `App` when a header toggle also controls it; component tests should assert `onExpandedChange(false)` then rerender collapsed.
+- Runtime status should present ACP transport as user-facing `Server` while keeping internal `acp` detail fields for transport/last-request diagnostics.
+
+### Verification
+- LSP diagnostics on all modified frontend files: zero diagnostics.
+- `bun run --cwd frontend test:run -- src/App.test.tsx src/components/Composer.test.tsx src/components/SessionSidebar.test.tsx` — 47 passed.
+- `bun run --cwd frontend lint` — passed.
+- `bun run --cwd frontend typecheck` — passed.
+
+---
+
+## T15: User-facing tool labels and safe Thinking affordance
+
+**Date:** 2026-04-29T22:10:00+08:00
+
+- Provider `graph.provider_stream` reasoning payloads may contain raw chain-of-thought, code-like fragments, or internal scratch text. The frontend should treat reasoning events as a presence/timing signal only, never as user-rendered content.
+- The safe UI pattern is to keep the compact `Thinking` disclosure and duration affordance, but show a localized placeholder when expanded so users understand reasoning happened without exposing internal provider text.
+- Read/list/grep/glob grouped activity is clearer as `Project lookups` / `{{count}} lookups`; avoid user-facing `Context` because it reads like a mysterious separate tool.
+
+## T16: Remove visible Thinking block
+
+**Date:** 2026-04-29T22:14:00+08:00
+
+- User rejected even the safe placeholder Thinking affordance; normal chat should show no message-level Thinking disclosure/button/panel for reasoning events, while keeping the transient running placeholder `chat.thinking` before assistant output.
+
+---
+
+## T17: Post-PR approval acknowledgement follow-up
+
+**Date:** 2026-04-29T22:45:00+08:00
+
+- `frontend/src/store/index.ts::resolveApproval` now acknowledges approvals locally before awaiting the non-streaming approval POST. It appends a local `runtime.approval_resolved` event, clears the stale pending approval card, and marks allow as running / deny as settled so the UI no longer stays on `Submitting...` for the whole resumed run.
+- Pending approval lookup now ignores already-resolved request IDs, preventing old approval cards from reappearing after the local acknowledgement.
+- While the approval POST is in flight, the store polls session replay best-effort and skips stale replay payloads that still show the same pending request, allowing fresh progress or a fresh approval to appear without overwriting the local ack with old waiting state.
+- Regression coverage in `frontend/src/store.integration.test.ts` simulates a slow `RuntimeClient.resolveApproval` promise and verifies immediate `approvalStatus === "success"`, `runStatus === "running"`, local `runtime.approval_resolved`, and final replay replacement once the promise resolves.
+
+### Verification
+- LSP diagnostics on `frontend/src/store/index.ts` and `frontend/src/store.integration.test.ts`: zero diagnostics.
+- `bun run --cwd frontend test:run -- src/store.integration.test.ts src/components/ChatThread.test.tsx` — 2 files / 60 tests passed.
+- `bun run --cwd frontend lint` — passed.
+- `bun run --cwd frontend typecheck` — passed.
