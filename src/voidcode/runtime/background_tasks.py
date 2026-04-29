@@ -892,6 +892,11 @@ class RuntimeBackgroundTaskSupervisor:
         extra_payload: dict[str, object] | None = None,
     ) -> None:
         runtime = self._runtime
+        hooks = runtime._config.hooks
+        if hooks is None or hooks.enabled is not True:
+            return
+        if not hooks.commands_for_surface(surface):
+            return
         result = self.background_task_result(task=task)
         selected_preset = result.delegated_execution.selected_preset
         child_session_id = task.session_id

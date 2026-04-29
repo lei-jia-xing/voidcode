@@ -104,7 +104,12 @@ from voidcode.runtime.service import (
     VoidCodeRuntime,
 )
 from voidcode.runtime.session import SessionRef
-from voidcode.runtime.task import BackgroundTaskState, is_background_task_terminal
+from voidcode.runtime.task import (
+    BackgroundTaskRef,
+    BackgroundTaskRequestSnapshot,
+    BackgroundTaskState,
+    is_background_task_terminal,
+)
 from voidcode.skills import SkillRegistry
 from voidcode.tools import ToolCall
 from voidcode.tools.contracts import ToolDefinition, ToolResult
@@ -1003,6 +1008,52 @@ def test_runtime_background_task_executes_through_existing_runtime_path(tmp_path
     assert resumed.session.metadata["background_run"] is True
     assert resumed.output == "background hello"
     assert completed == loaded
+
+
+@pytest.mark.parametrize(
+    "hooks",
+    (
+        RuntimeHooksConfig(enabled=False),
+        RuntimeHooksConfig(enabled=True),
+        None,
+    ),
+)
+def test_runtime_background_task_progress_hooks_skip_result_load_when_no_commands(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    hooks: RuntimeHooksConfig | None,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_BackgroundTaskSuccessGraph(),
+        config=RuntimeConfig(hooks=hooks),
+    )
+    supervisor = runtime._background_task_supervisor  # pyright: ignore[reportPrivateUsage]
+    task = BackgroundTaskState(
+        task=BackgroundTaskRef(id="task-progress-no-hooks"),
+        status="running",
+        request=BackgroundTaskRequestSnapshot(
+            prompt="background progress",
+            parent_session_id="leader-session",
+        ),
+        session_id="child-session",
+    )
+
+    def fail_background_task_result(*, task: BackgroundTaskState) -> None:
+        _ = task
+        raise AssertionError("progress hook no-op must not load background task result")
+
+    monkeypatch.setattr(supervisor, "background_task_result", fail_background_task_result)
+
+    supervisor.run_background_task_lifecycle_surface(
+        task=task,
+        surface="background_task_progress",
+        session_id="child-session",
+        extra_payload={
+            "progress_event_type": "graph.model_turn",
+            "progress_event_sequence": 1,
+        },
+    )
 
 
 def test_runtime_background_task_concurrency_limit_queues_and_drains(tmp_path: Path) -> None:
