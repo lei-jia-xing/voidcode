@@ -518,20 +518,18 @@ export function deriveChatMessages(
       event.payload?.channel === "reasoning"
     ) {
       if (currentAssistant) {
-        const delta =
+        const hasReasoningPayload = Boolean(
           typeof event.payload?.delta === "string"
-            ? event.payload.delta
+            ? event.payload.delta.trim()
             : typeof event.payload?.content === "string"
-              ? event.payload.content
+              ? event.payload.content.trim()
               : typeof event.payload?.text === "string"
-                ? event.payload.text
-                : "";
-        if (delta) {
-          currentAssistant.thinking.push(delta);
-          if (typeof event.received_at === "number") {
-            currentAssistant.thinkingStartedAt ??= event.received_at;
-            currentAssistant.thinkingUpdatedAt = event.received_at;
-          }
+                ? event.payload.text.trim()
+                : "",
+        );
+        if (hasReasoningPayload && typeof event.received_at === "number") {
+          currentAssistant.thinkingStartedAt ??= event.received_at;
+          currentAssistant.thinkingUpdatedAt = event.received_at;
         }
       }
     } else if (

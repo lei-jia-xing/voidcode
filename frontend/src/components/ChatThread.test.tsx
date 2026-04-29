@@ -259,7 +259,7 @@ describe("ChatThread", () => {
     ]);
   });
 
-  it("renders thinking block when reasoning exists", () => {
+  it("does not render message-level thinking block when reasoning exists", () => {
     render(
       <ChatThread
         {...baseProps}
@@ -280,9 +280,50 @@ describe("ChatThread", () => {
       />,
     );
 
-    expect(screen.getByText("Thinking")).toBeInTheDocument();
-    expect(screen.getByText("(1.6s)")).toBeInTheDocument();
-    expect(screen.queryByText(/steps/)).not.toBeInTheDocument();
+    expect(screen.queryByText("Thinking")).not.toBeInTheDocument();
+    expect(screen.queryByText("(1.6s)")).not.toBeInTheDocument();
+    expect(screen.queryByText(/step 1/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/step 2/)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/internal chain-of-thought is hidden for safety/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it("suppresses raw code-like provider reasoning without a Thinking disclosure", () => {
+    const events: EventEnvelope[] = [
+      {
+        session_id: "session-1",
+        sequence: 1,
+        event_type: "runtime.request_received",
+        source: "runtime",
+        payload: { prompt: "debug auth" },
+      },
+      {
+        session_id: "session-1",
+        sequence: 2,
+        event_type: "graph.provider_stream",
+        source: "graph",
+        payload: {
+          channel: "reasoning",
+          text: "const token = process.env.SECRET;\n```ts\nreturn token;\n```",
+        },
+        received_at: 1000,
+      },
+    ];
+
+    render(
+      <ChatThread {...baseProps} messages={deriveChatMessages(events, null)} />,
+    );
+
+    expect(screen.queryByText("Thinking")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /thinking/i }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/process\.env\.SECRET/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/return token/)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/internal chain-of-thought is hidden for safety/i),
+    ).not.toBeInTheDocument();
   });
 
   it("renders structured tool activities", () => {
@@ -420,6 +461,7 @@ describe("ChatThread", () => {
       screen.getByText("Review completed implementation work"),
     ).toBeInTheDocument();
     expect(screen.getByText(/SKILL\.md/)).toBeInTheDocument();
+    expect(screen.getByText("User request")).toBeInTheDocument();
     expect(screen.getByText("check changes")).toBeInTheDocument();
   });
 
@@ -847,7 +889,7 @@ describe("Tool Card Display Contract", () => {
     expect(screen.queryByText(/hidden/)).not.toBeInTheDocument();
   });
 
-  it("groups multiple context tools into one compact disclosure", () => {
+  it("groups multiple project lookup tools into one compact disclosure", () => {
     const { container } = render(
       <ChatThread
         {...baseProps}
@@ -894,15 +936,15 @@ describe("Tool Card Display Contract", () => {
       />,
     );
 
-    expect(screen.getByText("Context")).toBeInTheDocument();
-    expect(screen.getByText("2 context tools")).toBeInTheDocument();
+    expect(screen.getByText("Project lookups")).toBeInTheDocument();
+    expect(screen.getByText("2 lookups")).toBeInTheDocument();
     expect(
       container.querySelector('[data-tool-row="context-group"] button')
         ?.className,
     ).not.toContain("border");
     expect(screen.queryByText("Read src/app.ts")).not.toBeInTheDocument();
     fireEvent.click(
-      screen.getByRole("button", { name: /show details for context/i }),
+      screen.getByRole("button", { name: /show details for project lookups/i }),
     );
     expect(screen.getByText("Read src/app.ts")).toBeInTheDocument();
     expect(screen.getByText("Search TODO")).toBeInTheDocument();
@@ -1082,10 +1124,10 @@ describe("Tool Card Display Contract", () => {
       <ChatThread {...baseProps} messages={messages} />,
     );
 
-    expect(screen.getByText("Context")).toBeInTheDocument();
-    expect(screen.getByText("2 context tools")).toBeInTheDocument();
+    expect(screen.getByText("Project lookups")).toBeInTheDocument();
+    expect(screen.getByText("2 lookups")).toBeInTheDocument();
     fireEvent.click(
-      screen.getByRole("button", { name: /show details for context/i }),
+      screen.getByRole("button", { name: /show details for project lookups/i }),
     );
     expect(screen.getByText("Read README.md")).toBeInTheDocument();
     expect(screen.getByText("Search TODO")).toBeInTheDocument();

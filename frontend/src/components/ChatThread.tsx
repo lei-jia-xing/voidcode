@@ -41,17 +41,6 @@ interface ChatThreadProps {
   onAnswerQuestion?: (answers: QuestionAnswer[]) => void;
 }
 
-function formatThinkingDuration(startedAt?: number, updatedAt?: number) {
-  if (typeof startedAt !== "number" || typeof updatedAt !== "number") {
-    return null;
-  }
-
-  const elapsedMs = Math.max(0, updatedAt - startedAt);
-  if (elapsedMs < 1000) return "<1s";
-  if (elapsedMs < 10_000) return `${(elapsedMs / 1000).toFixed(1)}s`;
-  return `${Math.round(elapsedMs / 1000)}s`;
-}
-
 function StreamingMarkdown({
   content,
   active,
@@ -93,54 +82,6 @@ function StreamingMarkdown({
       style={estimatedHeight > 0 ? { minHeight: estimatedHeight } : undefined}
     >
       <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
-    </div>
-  );
-}
-
-function ThinkingBlock({
-  thinking,
-  startedAt,
-  updatedAt,
-}: {
-  thinking: string[];
-  startedAt?: number;
-  updatedAt?: number;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const panelId = useId();
-  const content = useMemo(() => thinking.join(""), [thinking]);
-  const duration = formatThinkingDuration(startedAt, updatedAt);
-
-  if (thinking.length === 0) return null;
-
-  return (
-    <div className="mb-3">
-      <ControlButton
-        compact
-        variant="ghost"
-        onClick={() => setExpanded(!expanded)}
-        className="mb-1 justify-start px-0 text-[var(--vc-text-subtle)]"
-        aria-expanded={expanded}
-        aria-controls={panelId}
-      >
-        {expanded ? (
-          <ChevronDown className="w-3.5 h-3.5" />
-        ) : (
-          <ChevronRight className="w-3.5 h-3.5" />
-        )}
-        <span className="font-medium">Thinking</span>
-        {duration && (
-          <span className="text-[var(--vc-text-subtle)]">({duration})</span>
-        )}
-      </ControlButton>
-      {expanded && (
-        <div
-          id={panelId}
-          className="bg-[var(--vc-surface-1)] border border-[color:var(--vc-border-subtle)] rounded-lg p-3 font-mono text-xs text-[var(--vc-text-muted)] leading-relaxed overflow-x-auto"
-        >
-          {content}
-        </div>
-      )}
     </div>
   );
 }
@@ -534,6 +475,7 @@ function ShellTerminalBlock({
 }
 
 function SkillToolActivity({ tool }: { tool: ChatTool }) {
+  const { t } = useTranslation();
   const data = resultData(tool);
   const skill = nestedRecord(data, "skill");
   const name =
@@ -564,7 +506,7 @@ function SkillToolActivity({ tool }: { tool: ChatTool }) {
       )}
       {userMessage && (
         <ToolDetailBlock
-          label="Context"
+          label={t("tool.skill.userRequest")}
           value={userMessage}
           copyValue={userMessage}
         />
@@ -1149,11 +1091,6 @@ export function ChatThread({
                   <StatusIndicator status={message.status} />
                 </div>
                 <div className="space-y-3">
-                  <ThinkingBlock
-                    thinking={message.thinking}
-                    startedAt={message.thinkingStartedAt}
-                    updatedAt={message.thinkingUpdatedAt}
-                  />
                   <ToolActivities tools={message.tools} />
                   {assistantContent && (
                     <StreamingMarkdown
