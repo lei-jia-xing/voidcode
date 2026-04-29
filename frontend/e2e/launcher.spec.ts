@@ -156,7 +156,11 @@ async function installMockRuntime(page: Page) {
   await page.route('**/api/status', async (route) => route.fulfill(jsonResponse(statusSnapshot)));
   await page.route('**/api/status/mcp/retry', async (route) => route.fulfill(jsonResponse(statusSnapshot)));
   await page.route('**/api/review', async (route) => route.fulfill(jsonResponse(reviewSnapshot)));
-  await page.route('**/api/review/diff/src%2Fapp.ts', async (route) => route.fulfill(jsonResponse({ root: '/workspace', path: 'src/app.ts', state: 'changed', diff: '--- a/src/app.ts\n+++ b/src/app.ts\n@@ -1 +1 @@\n-old\n+new' })));
+  await page.route('**/api/review/diff/src/app.ts', async (route) => {
+    expect(route.request().url()).toContain('/api/review/diff/src/app.ts');
+    expect(route.request().url()).not.toContain('src%2Fapp.ts');
+    await route.fulfill(jsonResponse({ root: '/workspace', path: 'src/app.ts', state: 'changed', diff: '--- a/src/app.ts\n+++ b/src/app.ts\n@@ -1 +1 @@\n-old\n+new' }));
+  });
   await page.route('**/api/settings', async (route) => route.fulfill(jsonResponse({ provider: 'opencode-go', model: 'opencode-go/glm-5.1', provider_api_key_present: true })));
   await page.route('**/api/notifications', async (route) => route.fulfill(jsonResponse([])));
   await page.route('**/api/tasks', async (route) => route.fulfill(jsonResponse([])));
@@ -397,6 +401,8 @@ test.describe('VoidCode Web Launcher', () => {
   });
 
   test('should cover browser UI controls and monochrome tool layout', async ({ page }) => {
+    test.setTimeout(60000);
+
     await installMockRuntime(page);
     const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
     const evidenceDir = path.join(rootDir, '.sisyphus/evidence');
@@ -412,6 +418,22 @@ test.describe('VoidCode Web Launcher', () => {
     await expect(page.locator('aside').first()).toHaveCSS('--session-sidebar-width', '448px');
     await page.reload();
     await expect(page.locator('aside').first()).toHaveCSS('--session-sidebar-width', '448px');
+
+    await page.getByRole('button', { name: 'Toggle file tree' }).click();
+    await expect(page.getByRole('complementary').filter({ hasText: 'Review' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Toggle file tree' })).toHaveAttribute('aria-expanded', 'true');
+    await page.getByRole('button', { name: 'Files' }).click();
+    await expect(page.getByRole('button', { name: 'Files' })).toHaveAttribute('aria-pressed', 'true');
+    await page.getByRole('button', { name: 'app.ts' }).click();
+    await expect(page.getByText('--- a/src/app.ts')).toBeVisible();
+    await page.getByRole('button', { name: 'Close review panel' }).click();
+    await page.getByRole('button', { name: 'Toggle code review' }).click();
+    await expect(page.getByRole('button', { name: 'Toggle code review' })).toHaveAttribute('aria-expanded', 'true');
+    await expect(page.getByRole('button', { name: 'Changes' })).toHaveAttribute('aria-pressed', 'true');
+    await page.getByRole('button', { name: 'Refresh' }).first().click();
+    await expect(page.getByRole('button', { name: 'M src/app.ts' })).toBeVisible();
+    await page.screenshot({ path: path.join(evidenceDir, 'task-11-layout-buttons.png'), fullPage: true });
+    await page.getByRole('button', { name: 'Close review panel' }).click();
 
     const input = page.locator('textarea');
     await input.fill('browser QA tool surfaces');
@@ -440,15 +462,6 @@ test.describe('VoidCode Web Launcher', () => {
     await page.getByRole('button', { name: 'Allow' }).click();
     await expect(page.getByText('Browser QA completed.')).toBeVisible();
     await expect(page.getByText('Browser QA completed.').locator('xpath=ancestor::*[contains(@class, "markdown-body")][1]')).toHaveCount(1);
-
-    await page.getByRole('button', { name: 'Review' }).click();
-    await expect(page.getByRole('complementary').filter({ hasText: 'Review' })).toBeVisible();
-    await page.getByRole('button', { name: 'Files' }).click();
-    await expect(page.getByRole('button', { name: 'Files' })).toHaveAttribute('aria-pressed', 'true');
-    await page.getByRole('button', { name: 'Refresh' }).first().click();
-    await expect(page.getByText('src/app.ts')).toBeVisible();
-    await page.screenshot({ path: path.join(evidenceDir, 'task-11-layout-buttons.png'), fullPage: true });
-    await page.getByRole('button', { name: 'Close review panel' }).click();
 
     const statusToggle = page.getByRole('button', { name: 'Toggle runtime status' });
     await statusToggle.click();
