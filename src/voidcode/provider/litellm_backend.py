@@ -33,6 +33,10 @@ from .protocol import (
 )
 
 _DEFAULT_COMPLETION_TIMEOUT_SECONDS = 300.0
+_DIRECT_REASONING_EFFORT_PROVIDERS = frozenset(
+    {"openai", "anthropic", "google", "gemini", "vertex_ai", "litellm", "grok"}
+)
+_THINKING_DISABLED_EFFORTS = frozenset({"none", "off", "disable", "disabled"})
 
 
 def _usage_int(raw: object) -> int:
@@ -67,6 +71,21 @@ def _extract_token_usage(payload: dict[str, object]) -> ProviderTokenUsage | Non
         or _usage_int(completion_details_payload.get("cached_tokens")),
     )
     return parsed if parsed.total_tokens > 0 else None
+
+
+def _merge_extra_body(kwargs: dict[str, object], extra_body: dict[str, object]) -> None:
+    existing = kwargs.get("extra_body")
+    merged = dict(cast(dict[str, object], existing)) if isinstance(existing, dict) else {}
+    merged.update(extra_body)
+    kwargs["extra_body"] = merged
+
+
+def _allow_openai_param(kwargs: dict[str, object], param: str) -> None:
+    existing = kwargs.get("allowed_openai_params")
+    params = list(cast(list[object], existing)) if isinstance(existing, list) else []
+    if param not in params:
+        params.append(param)
+    kwargs["allowed_openai_params"] = params
 
 
 def _is_object_json_schema(schema: dict[str, object]) -> bool:
@@ -181,8 +200,33 @@ class LiteLLMBackendSingleAgentProvider:
         return f"{stripped}/v1"
 
     def _completion_kwargs_for_request(self, request: ProviderTurnRequest) -> dict[str, object]:
-        _ = request
-        return dict(self.completion_kwargs or {})
+        kwargs = dict(self.completion_kwargs or {})
+        if not request.reasoning_effort:
+            return kwargs
+
+        effort = request.reasoning_effort.strip()
+        if not effort:
+            return kwargs
+
+        provider_name = (request.provider_name or self.name).lower()
+        model_name = (request.model_name or "").lower()
+        if provider_name == "opencode-go":
+            return kwargs
+        if provider_name == "glm" or model_name.startswith(("glm-5", "glm-z1")):
+            thinking_type = (
+                "disabled" if effort.lower() in _THINKING_DISABLED_EFFORTS else "enabled"
+            )
+            _merge_extra_body(kwargs, {"thinking": {"type": thinking_type}})
+            _allow_openai_param(kwargs, "extra_body")
+            return kwargs
+        if provider_name in _DIRECT_REASONING_EFFORT_PROVIDERS:
+            kwargs["reasoning_effort"] = request.reasoning_effort
+        return kwargs
+
+    def _stream_completion_kwargs_for_request(
+        self, request: ProviderTurnRequest
+    ) -> dict[str, object]:
+        return self._completion_kwargs_for_request(request)
 
     def _build_messages(self, request: ProviderTurnRequest) -> list[dict[str, object]]:
         assembled_context = request.assembled_context
@@ -468,7 +512,7 @@ class LiteLLMBackendSingleAgentProvider:
             "num_retries": 0,
             **self._auth_kwargs(),
         }
-        payload.update(self._completion_kwargs_for_request(request))
+        payload.update(self._stream_completion_kwargs_for_request(request))
         if request.available_tools:
             payload["tools"] = [self._to_tool_schema(tool) for tool in request.available_tools]
             payload["tool_choice"] = "auto"
@@ -502,7 +546,7 @@ class LiteLLMBackendSingleAgentProvider:
                 delta_obj = first_choice.get("delta")
                 if isinstance(delta_obj, dict):
                     delta = cast(dict[str, object], delta_obj)
-                    reasoning_obj = delta.get("reasoning_content")
+                    reasoning_obj = delta.get("reasoning_content") or delta.get("reasoning")
                     if isinstance(reasoning_obj, str) and reasoning_obj:
                         yield ProviderStreamEvent(
                             kind="delta", channel="reasoning", text=reasoning_obj
