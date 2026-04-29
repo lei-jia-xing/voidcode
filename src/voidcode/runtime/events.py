@@ -45,17 +45,18 @@ type ExistingEventType = Literal[
     "runtime.failed",
 ]
 type PrototypeAdditiveEventType = Literal[
-    "runtime.memory_refreshed",
-    "runtime.session_started",
-    "runtime.session_ended",
-    "runtime.session_idle",
-    "runtime.skills_binding_mismatch",
-    "runtime.background_task_waiting_approval",
-    "runtime.background_task_completed",
-    "runtime.background_task_failed",
-    "runtime.background_task_cancelled",
-    "runtime.delegated_result_available",
-    "runtime.skill_loaded",
+     "runtime.memory_refreshed",
+     "runtime.session_started",
+     "runtime.session_ended",
+     "runtime.session_idle",
+     "runtime.skills_binding_mismatch",
+     "runtime.background_task_waiting_approval",
+     "runtime.background_task_completed",
+     "runtime.background_task_failed",
+     "runtime.background_task_cancelled",
+     "runtime.delegated_result_available",
+     "runtime.skill_loaded",
+     "runtime.context_pressure",
 ]
 type DelegatedBackgroundTaskEventType = Literal[
     "runtime.background_task_waiting_approval",
@@ -134,6 +135,7 @@ RUNTIME_DELEGATED_RESULT_AVAILABLE: Final[PrototypeAdditiveEventType] = (
     "runtime.delegated_result_available"
 )
 RUNTIME_SKILL_LOADED: Final[PrototypeAdditiveEventType] = "runtime.skill_loaded"
+RUNTIME_CONTEXT_PRESSURE: Final[PrototypeAdditiveEventType] = "runtime.context_pressure"
 
 EMITTED_EVENT_TYPES: Final[tuple[ExistingEventType, ...]] = (
     RUNTIME_REQUEST_RECEIVED,
@@ -185,6 +187,7 @@ PROTOTYPE_ADDITIVE_EVENT_TYPES: Final[tuple[PrototypeAdditiveEventType, ...]] = 
     RUNTIME_BACKGROUND_TASK_CANCELLED,
     RUNTIME_DELEGATED_RESULT_AVAILABLE,
     RUNTIME_SKILL_LOADED,
+    RUNTIME_CONTEXT_PRESSURE,
 )
 KNOWN_EVENT_TYPES: Final[tuple[KnownEventType, ...]] = (
     *EMITTED_EVENT_TYPES,

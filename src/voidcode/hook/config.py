@@ -15,6 +15,7 @@ type RuntimeHookSurface = Literal[
     "background_task_failed",
     "background_task_cancelled",
     "delegated_result_available",
+    "context_pressure",
 ]
 
 type FormatterCwdPolicy = Literal["workspace", "nearest_root", "file_directory"]
@@ -173,6 +174,7 @@ class RuntimeHooksConfig:
     on_background_task_failed: tuple[tuple[str, ...], ...] = ()
     on_background_task_cancelled: tuple[tuple[str, ...], ...] = ()
     on_delegated_result_available: tuple[tuple[str, ...], ...] = ()
+    on_context_pressure: tuple[tuple[str, ...], ...] = ()
     formatter_presets: Mapping[str, RuntimeFormatterPresetConfig] = field(
         default_factory=_empty_formatter_presets
     )
@@ -188,6 +190,7 @@ class RuntimeHooksConfig:
             "background_task_failed": self.on_background_task_failed,
             "background_task_cancelled": self.on_background_task_cancelled,
             "delegated_result_available": self.on_delegated_result_available,
+            "context_pressure": self.on_context_pressure,
         }[surface]
 
     def resolve_formatter(self, file_path: Path) -> tuple[str, RuntimeFormatterPresetConfig] | None:

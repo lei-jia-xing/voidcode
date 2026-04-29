@@ -13,6 +13,7 @@ from ..runtime.events import (
     RUNTIME_BACKGROUND_TASK_CANCELLED,
     RUNTIME_BACKGROUND_TASK_COMPLETED,
     RUNTIME_BACKGROUND_TASK_FAILED,
+    RUNTIME_CONTEXT_PRESSURE,
     RUNTIME_DELEGATED_RESULT_AVAILABLE,
     RUNTIME_SESSION_ENDED,
     RUNTIME_SESSION_IDLE,
@@ -195,6 +196,7 @@ def _event_type_for_surface(surface: RuntimeHookSurface) -> str:
         "background_task_failed": RUNTIME_BACKGROUND_TASK_FAILED,
         "background_task_cancelled": RUNTIME_BACKGROUND_TASK_CANCELLED,
         "delegated_result_available": RUNTIME_DELEGATED_RESULT_AVAILABLE,
+        "context_pressure": RUNTIME_CONTEXT_PRESSURE,
     }[surface]
 
 

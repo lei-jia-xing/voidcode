@@ -91,6 +91,7 @@ _HOOKS_CONFIG_KEYS = frozenset(
         "on_background_task_failed",
         "on_background_task_cancelled",
         "on_delegated_result_available",
+        "on_context_pressure",
         "formatter_presets",
     }
 )
@@ -224,6 +225,8 @@ class RuntimeContextWindowConfig:
     tokenizer_model: str | None = None
     continuity_preview_items: int = 3
     continuity_preview_chars: int = 80
+    context_pressure_threshold: float = 0.6
+    context_pressure_cooldown_seconds: float = 60.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -722,6 +725,10 @@ def _parse_hooks_config(raw_hooks: object) -> RuntimeHooksConfig | None:
         hooks_payload.get("on_delegated_result_available"),
         field_path="hooks.on_delegated_result_available",
     )
+    on_context_pressure = _parse_command_list(
+        hooks_payload.get("on_context_pressure"),
+        field_path="hooks.on_context_pressure",
+    )
     formatter_presets: dict[str, RuntimeFormatterPresetConfig] = _parse_formatter_presets_config(
         hooks_payload.get("formatter_presets"),
         field_path="hooks.formatter_presets",
@@ -739,6 +746,7 @@ def _parse_hooks_config(raw_hooks: object) -> RuntimeHooksConfig | None:
         on_background_task_failed=on_background_task_failed,
         on_background_task_cancelled=on_background_task_cancelled,
         on_delegated_result_available=on_delegated_result_available,
+        on_context_pressure=on_context_pressure,
         formatter_presets=formatter_presets,
     )
 
