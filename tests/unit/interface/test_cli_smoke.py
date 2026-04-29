@@ -106,6 +106,24 @@ def _expected_agent_models(global_model: str | None) -> dict[str, dict[str, obje
     }
 
 
+def _expected_unconfigured_mcp_status() -> dict[str, object]:
+    return {
+        "state": "unconfigured",
+        "error": None,
+        "details": {
+            "mode": "disabled",
+            "configured": False,
+            "configured_enabled": False,
+            "configured_server_count": 0,
+            "active_server_count": 0,
+            "running_server_count": 0,
+            "failed_server_count": 0,
+            "retry_available": False,
+            "servers": [],
+        },
+    }
+
+
 class _StubTtyStderr:
     def __init__(self) -> None:
         self.writes: list[str] = []
@@ -1395,6 +1413,7 @@ def test_config_show_outputs_workspace_effective_config() -> None:
             "fallback_chain": ["repo/model"],
         },
         "context_budget": {"context_window": None, "max_output_tokens": None},
+        "mcp": _expected_unconfigured_mcp_status(),
     }
     assert "Traceback" not in result.stderr
 
@@ -1622,6 +1641,7 @@ def test_config_show_outputs_resumed_session_effective_config() -> None:
             "fallback_chain": ["repo/model", "repo/session-fallback"],
         },
         "context_budget": {"context_window": None, "max_output_tokens": None},
+        "mcp": _expected_unconfigured_mcp_status(),
     }
     assert "Traceback" not in result.stderr
 
@@ -1667,6 +1687,9 @@ def test_config_show_delegates_to_runtime_effective_config(capsys: Any) -> None:
                 fallback_chain=("runtime/model",),
             )
             runtime_class.return_value.provider_readiness.return_value = readiness
+            runtime_class.return_value.current_status.return_value = SimpleNamespace(
+                mcp=SimpleNamespace(**_expected_unconfigured_mcp_status())
+            )
             result = cli.main(
                 [
                     "config",
@@ -1691,6 +1714,7 @@ def test_config_show_delegates_to_runtime_effective_config(capsys: Any) -> None:
     runtime_class.return_value.effective_category_model_config.assert_called_once_with(
         session_id="config-session"
     )
+    runtime_class.return_value.current_status.assert_called_once_with()
     assert json.loads(captured.out) == {
         "workspace": str(workspace),
         "session_id": "config-session",
@@ -1731,7 +1755,142 @@ def test_config_show_delegates_to_runtime_effective_config(capsys: Any) -> None:
             "fallback_chain": ["runtime/model"],
         },
         "context_budget": {"context_window": None, "max_output_tokens": None},
+        "mcp": _expected_unconfigured_mcp_status(),
     }
+
+
+def test_config_show_outputs_mcp_visibility_without_secrets() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        (workspace / ".voidcode.json").write_text(
+            json.dumps(
+                {
+                    "mcp": {
+                        "enabled": False,
+                        "servers": {
+                            "context7": {
+                                "command": [
+                                    "env",
+                                    "API_KEY=secret-token",
+                                    "context7",
+                                    "--token=other-secret",
+                                ],
+                                "scope": "session",
+                                "env": {"MCP_TOKEN": "secret-token"},
+                            }
+                        },
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        env = with_src_pythonpath(os.environ.copy())
+
+        result = _run_module_cli(
+            "config",
+            "show",
+            "--workspace",
+            str(workspace),
+            env=env,
+        )
+
+    payload = json.loads(result.stdout)
+    server = payload["mcp"]["details"]["servers"][0]
+    assert result.returncode == 0
+    assert payload["mcp"]["state"] == "unconfigured"
+    assert payload["mcp"]["details"]["configured"] is True
+    assert payload["mcp"]["details"]["configured_enabled"] is False
+    assert server["server"] == "context7"
+    assert server["status"] == "disabled"
+    assert server["scope"] == "session"
+    assert server["transport"] == "stdio"
+    assert server["command"] == [
+        "env",
+        "API_KEY=<redacted>",
+        "context7",
+        "--token=<redacted>",
+    ]
+    assert "MCP_TOKEN" not in result.stdout
+    assert "secret-token" not in result.stdout
+    assert "other-secret" not in result.stdout
+
+
+def test_mcp_list_outputs_passive_runtime_status() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        (workspace / ".voidcode.json").write_text(
+            json.dumps(
+                {
+                    "mcp": {
+                        "enabled": False,
+                        "servers": {
+                            "context7": {
+                                "command": ["context7", "--api-key", "secret-token"],
+                                "scope": "runtime",
+                            }
+                        },
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        env = with_src_pythonpath(os.environ.copy())
+
+        result = _run_module_cli(
+            "mcp",
+            "list",
+            "--workspace",
+            str(workspace),
+            "--json",
+            env=env,
+        )
+
+    payload = json.loads(result.stdout)
+    assert result.returncode == 0
+    assert payload["workspace"] == str(workspace)
+    assert payload["mcp"]["details"]["servers"][0]["server"] == "context7"
+    assert payload["mcp"]["details"]["servers"][0]["scope"] == "runtime"
+    assert payload["mcp"]["details"]["servers"][0]["command"] == [
+        "context7",
+        "--api-key",
+        "<redacted>",
+    ]
+    assert "secret-token" not in result.stdout
+
+
+def test_doctor_json_redacts_mcp_command_secrets() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        (workspace / ".voidcode.json").write_text(
+            json.dumps(
+                {
+                    "mcp": {
+                        "enabled": True,
+                        "servers": {
+                            "context7": {
+                                "command": ["python", "--api-key", "secret-token"],
+                                "scope": "runtime",
+                            }
+                        },
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        env = with_src_pythonpath(os.environ.copy())
+
+        result = _run_module_cli(
+            "doctor",
+            "--workspace",
+            str(workspace),
+            "--json",
+            env=env,
+        )
+
+    payload = json.loads(result.stdout)
+    mcp_result = next(item for item in payload["results"] if item["name"] == "mcp:context7")
+    assert mcp_result["details"]["command"] == ["python", "--api-key", "<redacted>"]
+    assert "secret-token" not in result.stdout
 
 
 def test_config_show_invalid_workspace_returns_error() -> None:
