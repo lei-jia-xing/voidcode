@@ -49,7 +49,7 @@ from ..provider.models import (
     ResolvedProviderConfig,
     ResolvedProviderModel,
 )
-from ..provider.protocol import ProviderTokenUsage
+from ..provider.protocol import ProviderAbortSignal, ProviderTokenUsage
 from ..provider.registry import ModelProviderRegistry
 from ..provider.resolution import resolve_provider_config
 from ..provider.snapshot import (
@@ -291,6 +291,54 @@ class _ActiveSessionKey:
     session_id: str
 
 
+@dataclass(slots=True)
+class _ActiveRunAbortSignal:
+    _cancelled: bool = False
+    _reason: str | None = None
+
+    @property
+    def cancelled(self) -> bool:
+        return self._cancelled
+
+    @property
+    def reason(self) -> str | None:
+        return self._reason
+
+    def set_cancelled(self, value: bool, *, reason: str | None = None) -> None:
+        self._cancelled = value
+        if value:
+            self._reason = reason
+
+
+@dataclass(frozen=True, slots=True)
+class ActiveRunInterruptResult:
+    session_id: str
+    status: Literal["interrupted", "not_active", "stale"]
+    run_id: str | None = None
+    reason: str | None = None
+
+    @property
+    def interrupted(self) -> bool:
+        return self.status == "interrupted"
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "session_id": self.session_id,
+            "status": self.status,
+            "interrupted": self.interrupted,
+            "cancelled": self.interrupted,
+            "run_id": self.run_id,
+            "reason": self.reason,
+        }
+
+
+@dataclass(slots=True)
+class _ActiveRunHandle:
+    run_id: str
+    abort_signal: _ActiveRunAbortSignal
+    metadata: dict[str, object]
+
+
 def _provider_target_label(target: ResolvedProviderModel) -> str:
     provider = target.selection.provider
     model = target.selection.model
@@ -305,14 +353,26 @@ def _provider_target_label(target: ResolvedProviderModel) -> str:
 
 class _ActiveSessionRegistry:
     def __init__(self) -> None:
-        self._counts: dict[_ActiveSessionKey, int] = {}
-        self._metadata: dict[_ActiveSessionKey, dict[str, object]] = {}
+        self._runs: dict[_ActiveSessionKey, _ActiveRunHandle] = {}
         self._lock = threading.Lock()
 
-    def register(self, *, workspace: Path, session_id: str) -> None:
+    def register(
+        self,
+        *,
+        workspace: Path,
+        session_id: str,
+        run_id: str,
+        metadata: dict[str, object],
+    ) -> ProviderAbortSignal:
         key = _ActiveSessionKey(workspace=workspace, session_id=session_id)
+        abort_signal = _ActiveRunAbortSignal()
         with self._lock:
-            self._counts[key] = self._counts.get(key, 0) + 1
+            self._runs[key] = _ActiveRunHandle(
+                run_id=run_id,
+                abort_signal=abort_signal,
+                metadata=dict(metadata),
+            )
+        return abort_signal
 
     def remember_metadata(
         self,
@@ -320,35 +380,80 @@ class _ActiveSessionRegistry:
         workspace: Path,
         session_id: str,
         metadata: dict[str, object],
+        run_id: str | None = None,
     ) -> None:
         key = _ActiveSessionKey(workspace=workspace, session_id=session_id)
         with self._lock:
-            if key not in self._counts:
+            handle = self._runs.get(key)
+            if handle is None or (run_id is not None and handle.run_id != run_id):
                 return
-            self._metadata[key] = dict(metadata)
+            handle.metadata = dict(metadata)
 
-    def unregister(self, *, workspace: Path, session_id: str) -> None:
+    def unregister(self, *, workspace: Path, session_id: str, run_id: str | None = None) -> None:
         key = _ActiveSessionKey(workspace=workspace, session_id=session_id)
         with self._lock:
-            count = self._counts.get(key)
-            if count is None:
+            handle = self._runs.get(key)
+            if handle is None or (run_id is not None and handle.run_id != run_id):
                 return
-            if count <= 1:
-                self._counts.pop(key, None)
-                self._metadata.pop(key, None)
-                return
-            self._counts[key] = count - 1
+            self._runs.pop(key, None)
 
     def contains(self, *, workspace: Path, session_id: str) -> bool:
         key = _ActiveSessionKey(workspace=workspace, session_id=session_id)
         with self._lock:
-            return key in self._counts
+            return key in self._runs
 
     def metadata(self, *, workspace: Path, session_id: str) -> dict[str, object] | None:
         key = _ActiveSessionKey(workspace=workspace, session_id=session_id)
         with self._lock:
-            metadata = self._metadata.get(key)
-            return dict(metadata) if metadata is not None else None
+            handle = self._runs.get(key)
+            return dict(handle.metadata) if handle is not None else None
+
+    def abort_signal(
+        self,
+        *,
+        workspace: Path,
+        session_id: str,
+        run_id: str,
+    ) -> ProviderAbortSignal | None:
+        key = _ActiveSessionKey(workspace=workspace, session_id=session_id)
+        with self._lock:
+            handle = self._runs.get(key)
+            if handle is None or handle.run_id != run_id:
+                return None
+            return handle.abort_signal
+
+    def interrupt(
+        self,
+        *,
+        workspace: Path,
+        session_id: str,
+        run_id: str | None = None,
+        reason: str | None = None,
+    ) -> ActiveRunInterruptResult:
+        key = _ActiveSessionKey(workspace=workspace, session_id=session_id)
+        with self._lock:
+            handle = self._runs.get(key)
+            if handle is None:
+                return ActiveRunInterruptResult(
+                    session_id=session_id,
+                    status="not_active",
+                    run_id=run_id,
+                    reason=reason,
+                )
+            if run_id is not None and handle.run_id != run_id:
+                return ActiveRunInterruptResult(
+                    session_id=session_id,
+                    status="stale",
+                    run_id=handle.run_id,
+                    reason=reason,
+                )
+            handle.abort_signal.set_cancelled(True, reason=reason)
+            return ActiveRunInterruptResult(
+                session_id=session_id,
+                status="interrupted",
+                run_id=handle.run_id,
+                reason=reason,
+            )
 
 
 _ACTIVE_SESSION_REGISTRY = _ActiveSessionRegistry()
@@ -1412,8 +1517,9 @@ class VoidCodeRuntime:
         )
         session_id = self._resolve_session_id(request)
         run_id = os.urandom(8).hex()
-        self._register_active_session_id(
+        abort_signal = self._register_active_session_id(
             session_id,
+            run_id=run_id,
             metadata={
                 "prompt": request.prompt,
                 "run_id": run_id,
@@ -1427,7 +1533,12 @@ class VoidCodeRuntime:
             final_session: SessionState | None = None
 
             try:
-                for chunk in self._stream_chunks(request, session_id=session_id, run_id=run_id):
+                for chunk in self._stream_chunks(
+                    request,
+                    session_id=session_id,
+                    run_id=run_id,
+                    abort_signal=abort_signal,
+                ):
                     final_session = chunk.session
                     if chunk.event is not None:
                         events.append(chunk.event)
@@ -1459,7 +1570,7 @@ class VoidCodeRuntime:
             response = RuntimeResponse(session=final_session, events=tuple(events), output=output)
             self._persist_response(request=request, response=response)
         finally:
-            self._unregister_active_session_id(session_id)
+            self._unregister_active_session_id(session_id, run_id=run_id)
 
     def run(self, request: RuntimeRequest) -> RuntimeResponse:
         events: list[EventEnvelope] = []
@@ -1550,6 +1661,7 @@ class VoidCodeRuntime:
         *,
         session_id: str | None = None,
         run_id: str | None = None,
+        abort_signal: ProviderAbortSignal | None = None,
     ) -> Iterator[RuntimeStreamChunk]:
         resolved_session_id = session_id or self._resolve_session_id(request)
         effective_config = self._runtime_config_for_request(request)
@@ -1766,6 +1878,7 @@ class VoidCodeRuntime:
                     else {}
                 ),
             },
+            abort_signal=abort_signal,
         )
         tool_results: list[ToolResult] = []
         graph = self._graph_for_session_metadata(session.metadata)
@@ -6178,24 +6291,65 @@ class VoidCodeRuntime:
     def _register_active_session_id(
         self,
         session_id: str,
+        *,
+        run_id: str,
         metadata: dict[str, object] | None = None,
-    ) -> None:
-        _ACTIVE_SESSION_REGISTRY.register(workspace=self._workspace, session_id=session_id)
-        if metadata is not None:
-            _ACTIVE_SESSION_REGISTRY.remember_metadata(
-                workspace=self._workspace,
-                session_id=session_id,
-                metadata=metadata,
-            )
+    ) -> ProviderAbortSignal:
+        return _ACTIVE_SESSION_REGISTRY.register(
+            workspace=self._workspace,
+            session_id=session_id,
+            run_id=run_id,
+            metadata=metadata or {},
+        )
 
-    def _unregister_active_session_id(self, session_id: str) -> None:
-        _ACTIVE_SESSION_REGISTRY.unregister(workspace=self._workspace, session_id=session_id)
+    def _unregister_active_session_id(self, session_id: str, *, run_id: str | None = None) -> None:
+        _ACTIVE_SESSION_REGISTRY.unregister(
+            workspace=self._workspace,
+            session_id=session_id,
+            run_id=run_id,
+        )
 
     def _active_session_metadata(self, session_id: str) -> dict[str, object] | None:
         return _ACTIVE_SESSION_REGISTRY.metadata(
             workspace=self._workspace,
             session_id=session_id,
         )
+
+    def _active_run_abort_signal(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+    ) -> ProviderAbortSignal | None:
+        return _ACTIVE_SESSION_REGISTRY.abort_signal(
+            workspace=self._workspace,
+            session_id=session_id,
+            run_id=run_id,
+        )
+
+    def interrupt_active_run(
+        self,
+        session_id: str,
+        *,
+        run_id: str | None = None,
+        reason: str | None = None,
+    ) -> ActiveRunInterruptResult:
+        validate_session_id(session_id)
+        return _ACTIVE_SESSION_REGISTRY.interrupt(
+            workspace=self._workspace,
+            session_id=session_id,
+            run_id=run_id,
+            reason=reason,
+        )
+
+    def cancel_session(
+        self,
+        session_id: str,
+        *,
+        run_id: str | None = None,
+        reason: str | None = None,
+    ) -> ActiveRunInterruptResult:
+        return self.interrupt_active_run(session_id, run_id=run_id, reason=reason)
 
     def _session_belongs_to_workspace(self, session_id: str) -> bool:
         try:

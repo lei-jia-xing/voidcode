@@ -5,6 +5,8 @@ from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 
+from ..provider.protocol import ProviderAbortSignal
+
 
 @dataclass(frozen=True, slots=True)
 class RuntimeToolInvocationContext:
@@ -12,6 +14,7 @@ class RuntimeToolInvocationContext:
     parent_session_id: str | None = None
     delegation_depth: int = 0
     remaining_spawn_budget: int | None = None
+    abort_signal: ProviderAbortSignal | None = None
 
 
 _CURRENT_RUNTIME_TOOL_CONTEXT: ContextVar[RuntimeToolInvocationContext | None] = ContextVar(

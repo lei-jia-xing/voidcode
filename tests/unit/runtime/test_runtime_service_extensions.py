@@ -1645,6 +1645,51 @@ def test_runtime_session_debug_snapshot_marks_active_running_session(tmp_path: P
     _ = list(stream)
 
 
+def test_runtime_cancel_session_interrupts_active_run(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+
+    stream = runtime.run_stream(RuntimeRequest(prompt="cancel me", session_id="active-cancel"))
+    first_chunk = next(stream)
+    result = runtime.cancel_session("active-cancel", reason="test cancellation")
+    remaining_chunks = list(stream)
+
+    failed_events = [
+        chunk.event
+        for chunk in remaining_chunks
+        if chunk.event is not None and chunk.event.event_type == "runtime.failed"
+    ]
+    assert first_chunk.session.status == "running"
+    assert result.status == "interrupted"
+    assert result.interrupted is True
+    assert failed_events
+    assert failed_events[-1].payload["kind"] == "interrupted"
+    assert failed_events[-1].payload["cancelled"] is True
+    assert failed_events[-1].payload["reason"] == "test cancellation"
+
+
+def test_runtime_cancel_session_rejects_stale_run_id(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+
+    stream = runtime.run_stream(RuntimeRequest(prompt="stale cancel", session_id="stale-cancel"))
+    first_chunk = next(stream)
+    result = runtime.cancel_session("stale-cancel", run_id="older-run")
+    remaining_chunks = list(stream)
+
+    assert first_chunk.session.status == "running"
+    assert result.status == "stale"
+    assert result.interrupted is False
+    assert remaining_chunks[-1].session.status == "completed"
+
+
+def test_runtime_cancel_session_returns_not_active_for_idle_session(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+
+    result = runtime.cancel_session("idle-cancel")
+
+    assert result.status == "not_active"
+    assert result.interrupted is False
+
+
 def test_runtime_session_debug_snapshot_prefers_active_state_for_reused_session_id(
     tmp_path: Path,
 ) -> None:
@@ -1700,7 +1745,8 @@ def test_runtime_session_debug_snapshot_preserves_fresh_terminal_state_while_act
     deferred_unregister_session_id: str | None = None
     original_unregister = runtime._unregister_active_session_id  # pyright: ignore[reportPrivateUsage]
 
-    def _defer_unregister(session_id: str) -> None:
+    def _defer_unregister(session_id: str, *, run_id: str | None = None) -> None:
+        _ = run_id
         nonlocal deferred_unregister_session_id
         deferred_unregister_session_id = session_id
 
