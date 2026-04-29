@@ -103,4 +103,124 @@ describe("RuntimeClient integration contract", () => {
     });
     expect(chunks[1].output).toBe("done");
   });
+
+  it("preserves structured backend error payloads", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: false,
+      status: 400,
+      statusText: "Bad Request",
+      clone() {
+        return this;
+      },
+      json: async () => ({ error: "prompt must be a non-empty string" }),
+    } as Response);
+
+    await expect(RuntimeClient.listSessions()).rejects.toThrow(
+      "Failed to list sessions: prompt must be a non-empty string",
+    );
+  });
+
+  it("recovers after malformed SSE data and fragmented chunks", async () => {
+    const encoder = new TextEncoder();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode(": ignored\r\n"));
+        controller.enqueue(encoder.encode("data: {bad json}\n\n"));
+        controller.enqueue(
+          encoder.encode(
+            'data: {"kind":"output","session":{"session":{"id":"session-1"},"status":"completed","turn":1,"metadata":{}},',
+          ),
+        );
+        controller.enqueue(
+          encoder.encode('"event":null,"output":"split done"}'),
+        );
+        controller.close();
+      },
+    });
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      body,
+    } as Response);
+
+    const chunks = [];
+    for await (const chunk of RuntimeClient.runStream({ prompt: "read" })) {
+      chunks.push(chunk);
+    }
+
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0].output).toBe("split done");
+  });
+
+  it("answers questions and loads runtime operations endpoints", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async (input, init) => {
+        const url = String(input);
+        if (url.endsWith("/question")) {
+          expect(init?.method).toBe("POST");
+          expect(init?.body).toBe(
+            JSON.stringify({
+              request_id: "question-1",
+              responses: [{ header: "Direction", answers: ["left"] }],
+            }),
+          );
+          return {
+            ok: true,
+            json: async () => ({
+              session: {
+                session: { id: "session-1" },
+                status: "completed",
+                turn: 1,
+                metadata: {},
+              },
+              events: [],
+              output: "answered",
+            }),
+          } as Response;
+        }
+        if (url === "/api/notifications") {
+          return { ok: true, json: async () => [] } as Response;
+        }
+        if (url === "/api/tasks") {
+          return { ok: true, json: async () => [] } as Response;
+        }
+        if (url.endsWith("/debug")) {
+          return {
+            ok: true,
+            json: async () => ({
+              session: {
+                session: { id: "session-1" },
+                status: "completed",
+                turn: 1,
+                metadata: {},
+              },
+              prompt: "read",
+              persisted_status: "completed",
+              current_status: "completed",
+              active: false,
+              resumable: false,
+              replayable: true,
+              terminal: true,
+            }),
+          } as Response;
+        }
+        throw new Error(`unexpected URL: ${url}`);
+      });
+
+    const answer = await RuntimeClient.answerQuestion(
+      "session-1",
+      "question-1",
+      [{ header: "Direction", answers: ["left"] }],
+    );
+    const notifications = await RuntimeClient.listNotifications();
+    const tasks = await RuntimeClient.listBackgroundTasks();
+    const debug = await RuntimeClient.getSessionDebug("session-1");
+
+    expect(answer.output).toBe("answered");
+    expect(notifications).toEqual([]);
+    expect(tasks).toEqual([]);
+    expect(debug.prompt).toBe("read");
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
 });
