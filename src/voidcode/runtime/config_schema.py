@@ -60,6 +60,7 @@ def runtime_config_json_schema() -> dict[str, object]:
                 "enum": ["allow", "deny", "ask"],
                 "description": "Default approval policy for tool execution.",
             },
+            "permission": {"$ref": "#/$defs/permissionConfig"},
             "model": {
                 "type": "string",
                 "minLength": 1,
@@ -415,6 +416,22 @@ def runtime_config_json_schema() -> dict[str, object]:
                 "additionalProperties": True,
                 "properties": {
                     "model": {"type": "string", "minLength": 1},
+                },
+            },
+            "permissionConfig": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "external_directory_read": {"$ref": "#/$defs/permissionRules"},
+                    "external_directory_write": {"$ref": "#/$defs/permissionRules"},
+                },
+            },
+            "permissionRules": {
+                "type": "object",
+                "description": "Ordered path-glob permission map. First matching pattern applies.",
+                "additionalProperties": {
+                    "type": "string",
+                    "enum": ["allow", "deny", "ask"],
                 },
             },
             "customAgentConfig": {
