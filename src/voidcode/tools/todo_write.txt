@@ -17,4 +17,4 @@ Task states:
 - completed
 - cancelled
 
-Keep items concrete and current. Treat data.summary and data.path as the stable result fields.
+Keep items concrete and current. Treat data.summary as the stable result field.
