@@ -95,4 +95,52 @@ describe("Tool Status Contract", () => {
       },
     ]);
   });
+
+  it("derives pending question prompts for chat", () => {
+    const events: EventEnvelope[] = [
+      {
+        session_id: "test",
+        sequence: 1,
+        event_type: "runtime.request_received",
+        source: "runtime",
+        payload: { prompt: "Ask the user" },
+      },
+      {
+        session_id: "test",
+        sequence: 2,
+        event_type: "runtime.question_requested",
+        source: "runtime",
+        payload: {
+          request_id: "question-1",
+          tool: "question",
+          question_count: 1,
+          questions: [
+            {
+              header: "Direction",
+              question: "Which path?",
+              multiple: false,
+              options: [{ label: "left", description: "Use left" }],
+            },
+          ],
+        },
+      },
+    ];
+
+    const messages = deriveChatMessages(events, null);
+    const assistantMessage = messages.find((m) => m.role === "assistant");
+
+    expect(assistantMessage?.status).toBe("waiting");
+    expect(assistantMessage?.question).toEqual({
+      requestId: "question-1",
+      tool: "question",
+      prompts: [
+        {
+          header: "Direction",
+          question: "Which path?",
+          multiple: false,
+          options: [{ label: "left", description: "Use left" }],
+        },
+      ],
+    });
+  });
 });

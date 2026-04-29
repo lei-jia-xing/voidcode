@@ -1,4 +1,4 @@
-import { EventEnvelope } from "./types";
+import { EventEnvelope, QuestionPrompt } from "./types";
 
 export interface DerivedTask {
   id: string;
@@ -26,6 +26,11 @@ export interface ChatMessage {
     tool: string;
     targetSummary: string;
   } | null;
+  question?: {
+    requestId: string;
+    tool: string;
+    prompts: QuestionPrompt[];
+  } | null;
   status: "in_progress" | "completed" | "failed" | "waiting";
   sequence: number;
 }
@@ -36,6 +41,40 @@ type ToolStatusPayload = {
   status?: unknown;
   label?: unknown;
 };
+
+function parseQuestionPrompts(value: unknown): QuestionPrompt[] {
+  if (!Array.isArray(value)) return [];
+
+  return value
+    .filter(
+      (item): item is Record<string, unknown> =>
+        Boolean(item) && typeof item === "object",
+    )
+    .map((item) => {
+      const options = Array.isArray(item.options)
+        ? item.options
+            .filter(
+              (option): option is Record<string, unknown> =>
+                Boolean(option) && typeof option === "object",
+            )
+            .map((option) => ({
+              label: typeof option.label === "string" ? option.label : "",
+              description:
+                typeof option.description === "string"
+                  ? option.description
+                  : null,
+            }))
+            .filter((option) => option.label.length > 0)
+        : [];
+
+      return {
+        header: typeof item.header === "string" ? item.header : "Question",
+        question: typeof item.question === "string" ? item.question : null,
+        multiple: item.multiple === true,
+        options,
+      };
+    });
+}
 
 function getToolStatusPayload(event: EventEnvelope): ToolStatusPayload | null {
   const toolStatus = event.payload?.tool_status;
@@ -188,6 +227,26 @@ export function deriveTasksFromEvents(events: EventEnvelope[]): DerivedTask[] {
           events: [event],
         });
       }
+    } else if (
+      event.event_type === "runtime.question_requested" ||
+      event.event_type === "runtime.question_answered"
+    ) {
+      const toolName =
+        typeof event.payload?.tool === "string"
+          ? event.payload.tool
+          : "unknown";
+      tasks.push({
+        id: `question-${event.sequence}`,
+        titleKey: "task.question",
+        titleValues: { tool: toolName },
+        type: "approval",
+        status:
+          event.event_type === "runtime.question_requested"
+            ? "waiting"
+            : "completed",
+        sequence: event.sequence,
+        events: [event],
+      });
     } else {
       if (currentToolTask) {
         currentToolTask.events.push(event);
@@ -261,6 +320,7 @@ export function deriveChatMessages(
         thinking: [],
         tools: [],
         approval: null,
+        question: null,
         status: "completed",
         sequence: event.sequence,
       });
@@ -272,6 +332,7 @@ export function deriveChatMessages(
         thinking: [],
         tools: [],
         approval: null,
+        question: null,
         status: "in_progress",
         sequence: event.sequence,
       };
@@ -345,6 +406,20 @@ export function deriveChatMessages(
           tool: String(event.payload?.tool || ""),
           targetSummary: String(event.payload?.target_summary || ""),
         };
+      }
+    } else if (event.event_type === "runtime.question_requested") {
+      if (currentAssistant) {
+        currentAssistant.status = "waiting";
+        currentAssistant.question = {
+          requestId: String(event.payload?.request_id || ""),
+          tool: String(event.payload?.tool || ""),
+          prompts: parseQuestionPrompts(event.payload?.questions),
+        };
+      }
+    } else if (event.event_type === "runtime.question_answered") {
+      if (currentAssistant && currentAssistant.status === "waiting") {
+        currentAssistant.status = "in_progress";
+        currentAssistant.question = null;
       }
     } else if (event.event_type === "runtime.approval_resolved") {
       if (currentAssistant) {
