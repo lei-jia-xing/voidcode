@@ -54,9 +54,14 @@ def test_runtime_hooks_config_exposes_async_lifecycle_surfaces() -> None:
         on_session_start=(("python", "scripts/session_start.py"),),
         on_session_end=(("python", "scripts/session_end.py"),),
         on_session_idle=(("python", "scripts/session_idle.py"),),
+        on_background_task_registered=(("python", "scripts/task_registered.py"),),
+        on_background_task_started=(("python", "scripts/task_started.py"),),
+        on_background_task_progress=(("python", "scripts/task_progress.py"),),
         on_background_task_completed=(("python", "scripts/task_completed.py"),),
         on_background_task_failed=(("python", "scripts/task_failed.py"),),
         on_background_task_cancelled=(("python", "scripts/task_cancelled.py"),),
+        on_background_task_notification_enqueued=(("python", "scripts/task_notify.py"),),
+        on_background_task_result_read=(("python", "scripts/task_result_read.py"),),
         on_delegated_result_available=(("python", "scripts/delegated_result.py"),),
         on_context_pressure=(("python", "scripts/context_pressure.py"),),
     )
@@ -64,6 +69,15 @@ def test_runtime_hooks_config_exposes_async_lifecycle_surfaces() -> None:
     assert hooks.commands_for_surface("session_start") == (("python", "scripts/session_start.py"),)
     assert hooks.commands_for_surface("session_end") == (("python", "scripts/session_end.py"),)
     assert hooks.commands_for_surface("session_idle") == (("python", "scripts/session_idle.py"),)
+    assert hooks.commands_for_surface("background_task_registered") == (
+        ("python", "scripts/task_registered.py"),
+    )
+    assert hooks.commands_for_surface("background_task_started") == (
+        ("python", "scripts/task_started.py"),
+    )
+    assert hooks.commands_for_surface("background_task_progress") == (
+        ("python", "scripts/task_progress.py"),
+    )
     assert hooks.commands_for_surface("background_task_completed") == (
         ("python", "scripts/task_completed.py"),
     )
@@ -72,6 +86,12 @@ def test_runtime_hooks_config_exposes_async_lifecycle_surfaces() -> None:
     )
     assert hooks.commands_for_surface("background_task_cancelled") == (
         ("python", "scripts/task_cancelled.py"),
+    )
+    assert hooks.commands_for_surface("background_task_notification_enqueued") == (
+        ("python", "scripts/task_notify.py"),
+    )
+    assert hooks.commands_for_surface("background_task_result_read") == (
+        ("python", "scripts/task_result_read.py"),
     )
     assert hooks.commands_for_surface("delegated_result_available") == (
         ("python", "scripts/delegated_result.py"),

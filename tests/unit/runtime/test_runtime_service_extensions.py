@@ -104,7 +104,7 @@ from voidcode.runtime.service import (
     VoidCodeRuntime,
 )
 from voidcode.runtime.session import SessionRef
-from voidcode.runtime.task import BackgroundTaskState
+from voidcode.runtime.task import BackgroundTaskState, is_background_task_terminal
 from voidcode.skills import SkillRegistry
 from voidcode.tools import ToolCall
 from voidcode.tools.contracts import ToolDefinition, ToolResult
@@ -857,7 +857,7 @@ def _wait_for_background_task(
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
         task = runtime.load_background_task(task_id)
-        if task.status in ("completed", "failed", "cancelled"):
+        if is_background_task_terminal(task.status):
             return task
         time.sleep(0.01)
     raise AssertionError(f"background task {task_id} did not reach terminal state")
@@ -3749,7 +3749,7 @@ def test_runtime_background_task_approval_resume_overrides_stale_failed_task_sta
     _ = initial_runtime._session_store.mark_background_task_terminal(  # pyright: ignore[reportPrivateUsage]
         workspace=tmp_path,
         task_id=started.task.id,
-        status="failed",
+        status="interrupted",
         error="background task interrupted before completion",
     )
 
@@ -3769,11 +3769,11 @@ def test_runtime_background_task_approval_resume_overrides_stale_failed_task_sta
     finalized = resumed_runtime.load_background_task(started.task.id)
     result = resumed_runtime.load_background_task_result(started.task.id)
 
-    assert stale.status == "failed"
+    assert stale.status == "interrupted"
     assert resumed.session.status == "completed"
-    assert finalized.status == "failed"
+    assert finalized.status == "interrupted"
     assert finalized.error == "background task interrupted before completion"
-    assert result.status == "failed"
+    assert result.status == "interrupted"
     assert result.error == "background task interrupted before completion"
 
 

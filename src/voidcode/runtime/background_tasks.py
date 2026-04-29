@@ -118,6 +118,17 @@ class RuntimeBackgroundTaskSupervisor:
         runtime._session_store.create_background_task(
             workspace=runtime._workspace, task=initial_state
         )
+        registered_task = runtime._session_store.load_background_task(
+            workspace=runtime._workspace,
+            task_id=task_id,
+        )
+        self.run_background_task_lifecycle_surface(
+            task=registered_task,
+            surface="background_task_registered",
+            session_id=registered_task.parent_session_id
+            or registered_task.request.session_id
+            or "runtime",
+        )
         self._drain_background_task_queue()
         return runtime.load_background_task(task_id)
 
@@ -372,6 +383,13 @@ class RuntimeBackgroundTaskSupervisor:
                 if running_task.status != "running":
                     self._release_slot(identity)
                     continue
+                self.run_background_task_lifecycle_surface(
+                    task=running_task,
+                    surface="background_task_started",
+                    session_id=running_task.session_id
+                    or running_task.parent_session_id
+                    or "runtime",
+                )
                 worker = threading.Thread(
                     target=runtime._run_background_task_worker,
                     args=(task.task.id,),
@@ -398,7 +416,16 @@ class RuntimeBackgroundTaskSupervisor:
     def load_background_task_result(self, task_id: str) -> BackgroundTaskResult:
         task = self._runtime.load_background_task(task_id)
         self.backfill_parent_background_task_event(task=task)
-        return self.background_task_result(task=task)
+        result = self.background_task_result(task=task)
+        self.run_background_task_lifecycle_surface(
+            task=task,
+            surface="background_task_result_read",
+            session_id=task.parent_session_id
+            or task.session_id
+            or task.request.session_id
+            or "runtime",
+        )
+        return result
 
     def cancel_background_task(self, task_id: str) -> BackgroundTaskState:
         runtime = self._runtime
@@ -579,7 +606,7 @@ class RuntimeBackgroundTaskSupervisor:
     def emit_background_task_parent_terminal_event(self, *, task: BackgroundTaskState) -> None:
         runtime = self._runtime
         parent_session_id = task.parent_session_id
-        if parent_session_id is None or task.status not in ("completed", "failed", "cancelled"):
+        if parent_session_id is None or not is_background_task_terminal(task.status):
             return
         session_event_appender = runtime._session_store
         if not isinstance(session_event_appender, SessionEventAppender):
@@ -592,6 +619,7 @@ class RuntimeBackgroundTaskSupervisor:
             "completed": RUNTIME_BACKGROUND_TASK_COMPLETED,
             "failed": RUNTIME_BACKGROUND_TASK_FAILED,
             "cancelled": RUNTIME_BACKGROUND_TASK_CANCELLED,
+            "interrupted": RUNTIME_BACKGROUND_TASK_FAILED,
         }
         event_type = event_type_by_status[task.status]
         result, delegation_payload, message_payload = self._delegated_lifecycle_payloads(result)
@@ -608,14 +636,14 @@ class RuntimeBackgroundTaskSupervisor:
             payload["child_session_id"] = result.child_session_id
         if task.status == "completed" and result.summary_output is not None:
             payload["summary_output"] = result.summary_output
-        if task.status in ("failed", "cancelled") and result.error is not None:
+        if task.status in ("failed", "cancelled", "interrupted") and result.error is not None:
             payload["error"] = result.error
         if task.approval_request_id is not None:
             payload["approval_request_id"] = task.approval_request_id
         if task.question_request_id is not None:
             payload["question_request_id"] = task.question_request_id
         try:
-            _ = session_event_appender.append_session_event(
+            appended = session_event_appender.append_session_event(
                 workspace=runtime._workspace,
                 session_id=parent_session_id,
                 event_type=event_type,
@@ -623,6 +651,16 @@ class RuntimeBackgroundTaskSupervisor:
                 payload=payload,
                 dedupe_key=f"{event_type}:{task.task.id}",
             )
+            if appended is not None:
+                self.run_background_task_lifecycle_surface(
+                    task=task,
+                    surface="background_task_notification_enqueued",
+                    session_id=parent_session_id,
+                    extra_payload={
+                        "notification_event_type": event_type,
+                        "notification_event_sequence": appended.sequence,
+                    },
+                )
             runtime._append_parent_acp_delegated_lifecycle_event(
                 task=task,
                 lifecycle_status=task.status,
@@ -644,7 +682,7 @@ class RuntimeBackgroundTaskSupervisor:
     def backfill_parent_background_task_event(self, *, task: BackgroundTaskState) -> None:
         if task.parent_session_id is None:
             return
-        if task.status in ("completed", "failed", "cancelled"):
+        if is_background_task_terminal(task.status):
             self.emit_background_task_parent_terminal_event(task=task)
             return
         if task.status != "running":
@@ -711,7 +749,7 @@ class RuntimeBackgroundTaskSupervisor:
         result = self.background_task_result(task=task)
         result, delegation_payload, message_payload = self._delegated_lifecycle_payloads(result)
         try:
-            _ = session_event_appender.append_session_event(
+            appended = session_event_appender.append_session_event(
                 workspace=runtime._workspace,
                 session_id=parent_session_id,
                 event_type=RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL,
@@ -733,6 +771,16 @@ class RuntimeBackgroundTaskSupervisor:
                 },
                 dedupe_key=dedupe_key,
             )
+            if appended is not None:
+                self.run_background_task_lifecycle_surface(
+                    task=task,
+                    surface="background_task_notification_enqueued",
+                    session_id=parent_session_id,
+                    extra_payload={
+                        "notification_event_type": RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL,
+                        "notification_event_sequence": appended.sequence,
+                    },
+                )
             acp_payload: dict[str, object] = {
                 "task_id": task.task.id,
                 "parent_session_id": parent_session_id,
@@ -807,6 +855,7 @@ class RuntimeBackgroundTaskSupervisor:
             "completed": "background_task_completed",
             "failed": "background_task_failed",
             "cancelled": "background_task_cancelled",
+            "interrupted": "background_task_failed",
         }
         surface = surface_by_status.get(task.status)
         if surface is None:
@@ -939,6 +988,14 @@ class RuntimeBackgroundTaskSupervisor:
                         self._release_slot(slot_identity)
                     slot_reserved = False
                     slot_identity = None
+                else:
+                    self.run_background_task_lifecycle_surface(
+                        task=running_task,
+                        surface="background_task_started",
+                        session_id=running_task.session_id
+                        or running_task.parent_session_id
+                        or "runtime",
+                    )
             else:
                 running_task = task
                 slot_reserved = True
@@ -990,6 +1047,15 @@ class RuntimeBackgroundTaskSupervisor:
                     final_session = chunk.session
                     if chunk.event is not None:
                         events.append(chunk.event)
+                        self.run_background_task_lifecycle_surface(
+                            task=dispatch_task,
+                            surface="background_task_progress",
+                            session_id=session_id,
+                            extra_payload={
+                                "progress_event_type": chunk.event.event_type,
+                                "progress_event_sequence": chunk.event.sequence,
+                            },
+                        )
                         fallback_identity = self._fallback_identity_for_event(chunk.event)
                         if fallback_identity is not None and fallback_identity != slot_identity:
                             with self._queue_lock:
