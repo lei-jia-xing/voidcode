@@ -173,6 +173,41 @@ describe("RuntimeClient integration contract", () => {
     );
   });
 
+  it("loads review diffs with path-safe nested file URLs", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        root: "/workspace",
+        path: "src/app.ts",
+        state: "changed",
+        diff: "diff --git a/src/app.ts b/src/app.ts",
+      }),
+    } as Response);
+
+    await RuntimeClient.getReviewDiff("src/app.ts");
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/review/diff/src/app.ts");
+    expect(fetchMock).not.toHaveBeenCalledWith("/api/review/diff/src%2Fapp.ts");
+  });
+
+  it("escapes special filename characters without encoding path separators", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        root: "/workspace",
+        path: "src/app file #1.ts",
+        state: "clean",
+        diff: null,
+      }),
+    } as Response);
+
+    await RuntimeClient.getReviewDiff("src/app file #1.ts");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/review/diff/src/app%20file%20%231.ts",
+    );
+  });
+
   it("recovers after malformed SSE data and fragmented chunks", async () => {
     const encoder = new TextEncoder();
     const body = new ReadableStream<Uint8Array>({
