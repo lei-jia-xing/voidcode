@@ -1106,6 +1106,39 @@ def test_mcp_manager_emits_failure_event_when_startup_command_is_missing(tmp_pat
     assert failure_events[0].payload["command"] == ["voidcode-mcp-missing-binary"]
 
 
+def test_mcp_manager_redacts_failure_event_command_secrets(tmp_path: Path) -> None:
+    manager = build_mcp_manager(
+        RuntimeMcpConfig(
+            enabled=True,
+            servers={
+                "missing": RuntimeMcpServerConfig(
+                    transport="stdio",
+                    command=(
+                        "voidcode-mcp-missing-binary",
+                        "--api-key",
+                        "secret-token",
+                        "ACCESS_TOKEN=other-secret",
+                    ),
+                )
+            },
+        )
+    )
+
+    with pytest.raises(ValueError, match="command not found"):
+        manager.list_tools(workspace=tmp_path)
+
+    failure_event = manager.drain_events()[0]
+    assert failure_event.payload["command"] == [
+        "voidcode-mcp-missing-binary",
+        "--api-key",
+        "<redacted>",
+        "ACCESS_TOKEN=<redacted>",
+    ]
+    assert failure_event.payload["cmd"] == failure_event.payload["command"]
+    assert "secret-token" not in str(failure_event.payload)
+    assert "other-secret" not in str(failure_event.payload)
+
+
 def test_mcp_manager_preserves_failed_state_after_startup_failure_stop_event(
     tmp_path: Path,
 ) -> None:

@@ -43,6 +43,7 @@ from ..mcp import (
     McpToolDescriptor,
     McpToolSafety,
     create_diagnostic,
+    redact_mcp_command,
 )
 from .config import RuntimeMcpConfig
 from .events import (
@@ -190,6 +191,7 @@ class ManagedMcpManager:
                 server_name=name,
                 status="stopped",
                 command=list(server.command),
+                scope=getattr(server, "scope", "runtime"),
             )
             for name, server in self._configuration.servers.items()
         }
@@ -708,8 +710,9 @@ class ManagedMcpManager:
         if method is not None:
             payload["method"] = method
         if command is not None:
-            payload["command"] = command
-            payload["cmd"] = command
+            redacted_command = redact_mcp_command(command)
+            payload["command"] = redacted_command
+            payload["cmd"] = redacted_command
         if diagnostic is not None:
             payload["diagnostic"] = {
                 "severity": diagnostic.severity,
@@ -730,6 +733,7 @@ class ManagedMcpManager:
                         server_name, McpServerRuntimeState(server_name=server_name)
                     ).command
                 ),
+                scope=key.scope,
                 retry_available=True,
             )
             self._record_event(
@@ -755,6 +759,7 @@ class ManagedMcpManager:
                         server_name, McpServerRuntimeState(server_name=server_name)
                     ).command
                 ),
+                scope=key.scope,
                 retry_available=False,
             )
             self._record_event(
@@ -794,6 +799,7 @@ class ManagedMcpManager:
                     status="running",
                     workspace_root=str(remaining_session_owner.workspace_root),
                     command=list(existing_state.command),
+                    scope=remaining_session_owner.scope,
                     retry_available=False,
                 )
             elif not (
@@ -806,6 +812,7 @@ class ManagedMcpManager:
                     status="stopped",
                     workspace_root=str(workspace_root),
                     command=list(existing_state.command),
+                    scope=key.scope,
                     retry_available=bool(self._configuration.servers),
                 )
             self._record_event(

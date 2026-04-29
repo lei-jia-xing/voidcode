@@ -105,6 +105,7 @@ class McpServerRuntimeState:
     stage: str | None = None
     error: str | None = None
     command: list[str] = field(default_factory=list)
+    scope: Literal["runtime", "session"] = "runtime"
     retry_available: bool = False
 
 
