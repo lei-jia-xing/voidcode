@@ -7,6 +7,7 @@ import { Composer } from "./components/Composer";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { OpenProjectModal } from "./components/OpenProjectModal";
 import { ReviewPanel } from "./components/ReviewPanel";
+import { RuntimeOpsPanel } from "./components/RuntimeOpsPanel";
 import { deriveChatMessages } from "./lib/runtime/event-parser";
 import { RuntimeClient } from "./lib/runtime/client";
 import {
@@ -79,6 +80,23 @@ function App() {
     runError,
     approvalStatus,
     approvalError,
+    questionStatus,
+    questionError,
+    answerQuestion,
+    notifications,
+    notificationsStatus,
+    notificationsError,
+    loadNotifications,
+    acknowledgeNotification,
+    backgroundTasks,
+    backgroundTasksStatus,
+    backgroundTasksError,
+    loadBackgroundTasks,
+    cancelBackgroundTask,
+    sessionDebug,
+    sessionDebugStatus,
+    sessionDebugError,
+    loadSessionDebug,
     settings,
     settingsStatus,
     settingsError,
@@ -90,6 +108,7 @@ function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showProjects, setShowProjects] = useState(false);
   const [showReview, setShowReview] = useState(false);
+  const [showRuntimeOps, setShowRuntimeOps] = useState(false);
   const [runtimeTestStatus, setRuntimeTestStatus] = useState<
     "idle" | "testing" | "success" | "error"
   >("idle");
@@ -101,6 +120,17 @@ function App() {
   const isReplayLoading = replayStatus === "loading";
   const isApprovalSubmitting = approvalStatus === "submitting";
   const isWaitingApproval = currentSessionState?.status === "waiting";
+  const isQuestionSubmitting = questionStatus === "submitting";
+  const latestWaitingEvent = [...currentSessionEvents]
+    .reverse()
+    .find(
+      (event) =>
+        event.event_type === "runtime.approval_requested" ||
+        event.event_type === "runtime.question_requested",
+    );
+  const isWaitingQuestion =
+    currentSessionState?.status === "waiting" &&
+    latestWaitingEvent?.event_type === "runtime.question_requested";
 
   const chatMessages = useMemo(
     () =>
@@ -127,13 +157,17 @@ function App() {
     void loadSettings?.();
     void loadStatus?.();
     void loadReview?.();
+    void loadNotifications?.();
+    void loadBackgroundTasks?.();
   }, [
     loadAgents,
     loadProviders,
     loadReview,
+    loadBackgroundTasks,
     loadSettings,
     loadStatus,
     loadWorkspaces,
+    loadNotifications,
   ]);
 
   useEffect(() => {
@@ -193,8 +227,16 @@ function App() {
     void resolveApproval(decision);
   };
 
+  const handleLoadSessionDebug = () => {
+    void loadSessionDebug(currentSessionId);
+  };
+
   const composerDisabled =
-    isRunning || isReplayLoading || isWaitingApproval || isApprovalSubmitting;
+    isRunning ||
+    isReplayLoading ||
+    isWaitingApproval ||
+    isApprovalSubmitting ||
+    isQuestionSubmitting;
   const hasCurrentWorkspace = Boolean(workspaces?.current);
 
   return (
@@ -278,6 +320,19 @@ function App() {
 
                 <button
                   type="button"
+                  onClick={() => setShowRuntimeOps((value) => !value)}
+                  title={t("runtimeOps.title")}
+                  className={`rounded-lg border px-2 py-1.5 text-xs font-medium transition-colors ${
+                    showRuntimeOps
+                      ? "border-sky-500/30 bg-sky-500/10 text-sky-300"
+                      : "border-slate-700 text-slate-400 hover:bg-slate-800/60 hover:text-slate-200"
+                  }`}
+                >
+                  <Server className="w-4 h-4" />
+                </button>
+
+                <button
+                  type="button"
                   onClick={testRuntime}
                   disabled={runtimeTestStatus === "testing"}
                   title={t("debug.testRuntime")}
@@ -315,6 +370,10 @@ function App() {
                 isApprovalSubmitting={isApprovalSubmitting}
                 approvalError={approvalError}
                 onResolveApproval={handleResolveApproval}
+                isWaitingQuestion={isWaitingQuestion}
+                isQuestionSubmitting={isQuestionSubmitting}
+                questionError={questionError}
+                onAnswerQuestion={answerQuestion}
               />
             </div>
 
@@ -392,6 +451,30 @@ function App() {
         onSelectPath={(path) => {
           void selectReviewPath(path);
         }}
+      />
+
+      <RuntimeOpsPanel
+        isOpen={showRuntimeOps}
+        currentSessionId={currentSessionId}
+        debugSnapshot={sessionDebug}
+        debugStatus={sessionDebugStatus}
+        debugError={sessionDebugError}
+        notifications={notifications}
+        notificationsStatus={notificationsStatus}
+        notificationsError={notificationsError}
+        backgroundTasks={backgroundTasks}
+        backgroundTasksStatus={backgroundTasksStatus}
+        backgroundTasksError={backgroundTasksError}
+        onClose={() => setShowRuntimeOps(false)}
+        onRefreshNotifications={loadNotifications}
+        onAcknowledgeNotification={(notificationId) => {
+          void acknowledgeNotification(notificationId);
+        }}
+        onRefreshTasks={loadBackgroundTasks}
+        onCancelTask={(taskId) => {
+          void cancelBackgroundTask(taskId);
+        }}
+        onRefreshDebug={handleLoadSessionDebug}
       />
 
       <SettingsPanel
