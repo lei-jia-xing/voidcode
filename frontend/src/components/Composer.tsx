@@ -12,25 +12,33 @@ interface ComposerProps {
   isRunning: boolean;
   agentPreset?: string;
   providerModel?: string;
+  reasoningEffort?: string;
   agentPresets?: AgentSummary[];
   providers?: ProviderSummary[];
   providerModels?: Record<string, ProviderModelsResult>;
   onAgentPresetChange?: (preset: string) => void;
   onProviderModelChange?: (model: string) => void;
+  onReasoningEffortChange?: (effort: string) => void;
   placeholder?: string;
   onSubmit: (message: string) => void;
 }
+
+type ProviderModelMetadata = NonNullable<
+  ProviderModelsResult["model_metadata"]
+>[string];
 
 export function Composer({
   disabled,
   isRunning,
   agentPreset,
   providerModel,
+  reasoningEffort = "",
   agentPresets,
   providers,
   providerModels,
   onAgentPresetChange,
   onProviderModelChange,
+  onReasoningEffortChange,
   placeholder,
   onSubmit,
 }: ComposerProps) {
@@ -58,6 +66,24 @@ export function Composer({
         canonicalModelReference(group.provider.name, model) === selectedModel,
     ),
   );
+  const selectedModelMetadata = useMemo(() => {
+    for (const { provider, models } of availableModelGroups) {
+      for (const model of models) {
+        const canonical = canonicalModelReference(provider.name, model);
+        if (canonical !== selectedModel) continue;
+        const metadata = providerModels?.[provider.name]?.model_metadata ?? {};
+        return metadata[model] ?? metadata[canonical];
+      }
+    }
+    return undefined;
+  }, [availableModelGroups, providerModels, selectedModel]);
+  const supportsReasoningEffort =
+    selectedModelMetadata?.supports_reasoning_effort === true;
+  const effectiveReasoningEffort =
+    reasoningEffort ||
+    selectedModelMetadata?.default_reasoning_effort ||
+    "medium";
+  const contextLabel = formatModelContext(selectedModelMetadata);
   const selectableAgentPresets = useMemo(() => {
     return (agentPresets ?? []).filter((agent) => agent.selectable !== false);
   }, [agentPresets]);
@@ -135,6 +161,10 @@ export function Composer({
   const handleModelSelect = (nextModel: string) => {
     onProviderModelChange?.(nextModel);
     setShowModelMenu(false);
+  };
+
+  const handleEffortSelect = (event: React.ChangeEvent<HTMLSelectElement>) => {
+    onReasoningEffortChange?.(event.target.value);
   };
 
   return (
@@ -250,7 +280,17 @@ export function Composer({
                                     : "text-slate-300 hover:bg-slate-800/60"
                                 }`}
                               >
-                                {displayModelName(model, provider.name)}
+                                <span className="block">
+                                  {displayModelName(model, provider.name)}
+                                </span>
+                                <span className="mt-0.5 block text-[10px] text-slate-500">
+                                  {formatModelContext(
+                                    providerModels?.[provider.name]
+                                      ?.model_metadata?.[model] ??
+                                      providerModels?.[provider.name]
+                                        ?.model_metadata?.[value],
+                                  )}
+                                </span>
                               </button>
                             );
                           })}
@@ -259,6 +299,29 @@ export function Composer({
                     </div>
                   )}
                 </div>
+              )}
+              {selectedModelAvailable && contextLabel && (
+                <span className="rounded border border-slate-800 px-2 py-1 text-slate-500">
+                  {contextLabel}
+                </span>
+              )}
+              {selectedModelAvailable && supportsReasoningEffort && (
+                <label className="inline-flex items-center gap-1 text-slate-500">
+                  <span>Effort</span>
+                  <select
+                    aria-label="Reasoning effort"
+                    value={effectiveReasoningEffort}
+                    onChange={handleEffortSelect}
+                    disabled={disabled}
+                    className="rounded border border-slate-700 bg-slate-950 px-1.5 py-1 text-slate-300 disabled:opacity-50"
+                  >
+                    <option value="minimal">minimal</option>
+                    <option value="low">low</option>
+                    <option value="medium">medium</option>
+                    <option value="high">high</option>
+                    <option value="xhigh">xhigh</option>
+                  </select>
+                </label>
               )}
             </div>
           )}
@@ -282,4 +345,29 @@ function canonicalModelReference(providerName: string, model: string): string {
   return model.startsWith(`${providerName}/`)
     ? model
     : `${providerName}/${model}`;
+}
+
+function formatModelContext(
+  metadata: ProviderModelMetadata | undefined,
+): string {
+  if (!metadata) return "";
+  const parts: string[] = [];
+  if (typeof metadata.context_window === "number") {
+    parts.push(`${formatTokenCount(metadata.context_window)} ctx`);
+  }
+  if (typeof metadata.max_output_tokens === "number") {
+    parts.push(`${formatTokenCount(metadata.max_output_tokens)} out`);
+  }
+  if (metadata.supports_reasoning_effort === true) {
+    parts.push(`effort ${metadata.default_reasoning_effort ?? "available"}`);
+  } else if (metadata.supports_reasoning === true) {
+    parts.push("reasoning");
+  }
+  return parts.join(" · ");
+}
+
+function formatTokenCount(value: number): string {
+  if (value >= 1_000_000) return `${Math.round(value / 100_000) / 10}M`;
+  if (value >= 1_000) return `${Math.round(value / 100) / 10}K`;
+  return String(value);
 }
