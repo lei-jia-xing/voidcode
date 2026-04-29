@@ -701,11 +701,73 @@ class RuntimeRunLoopCoordinator:
                             },
                         ),
                     )
+                    timeout_sanitized_args = sanitize_tool_arguments(dict(plan_tool_call.arguments))
+                    failed_display = build_tool_display(
+                        plan_tool_call.tool_name, timeout_sanitized_args
+                    )
+                    failed_status = build_tool_status(
+                        plan_tool_call.tool_name,
+                        tool_call_id,
+                        phase="failed",
+                        status="failed",
+                        display=failed_display,
+                    )
+                    sequence += 1
+                    yield RuntimeStreamChunk(
+                        kind="event",
+                        session=session,
+                        event=EventEnvelope(
+                            session_id=session.session.id,
+                            sequence=sequence,
+                            event_type="runtime.tool_completed",
+                            source="tool",
+                            payload={
+                                "tool": plan_tool_call.tool_name,
+                                "tool_call_id": tool_call_id,
+                                "arguments": timeout_sanitized_args,
+                                "status": "error",
+                                "error": str(exc),
+                                "display": failed_display,
+                                "tool_status": failed_status,
+                            },
+                        ),
+                    )
                     yield runtime._failed_chunk(
                         session=session, sequence=sequence + 1, error=str(exc)
                     )
                     return
                 if not tool_exception_recovery_enabled and not _is_tool_timeout_like_exception(exc):
+                    error_sanitized_args = sanitize_tool_arguments(dict(plan_tool_call.arguments))
+                    failed_display = build_tool_display(
+                        plan_tool_call.tool_name, error_sanitized_args
+                    )
+                    failed_status = build_tool_status(
+                        plan_tool_call.tool_name,
+                        tool_call_id,
+                        phase="failed",
+                        status="failed",
+                        display=failed_display,
+                    )
+                    sequence += 1
+                    yield RuntimeStreamChunk(
+                        kind="event",
+                        session=session,
+                        event=EventEnvelope(
+                            session_id=session.session.id,
+                            sequence=sequence,
+                            event_type="runtime.tool_completed",
+                            source="tool",
+                            payload={
+                                "tool": plan_tool_call.tool_name,
+                                "tool_call_id": tool_call_id,
+                                "arguments": error_sanitized_args,
+                                "status": "error",
+                                "error": str(exc),
+                                "display": failed_display,
+                                "tool_status": failed_status,
+                            },
+                        ),
+                    )
                     yield runtime._failed_chunk(
                         session=session, sequence=sequence + 1, error=str(exc)
                     )

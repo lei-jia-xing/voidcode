@@ -361,3 +361,34 @@ Two issues:
 - First upstream merge conflict files: `tests/unit/runtime/test_runtime_events.py` and `tests/unit/tools/test_shell_exec_tool.py`; resolution kept both master's delegated/truncation assertions and the PR branch's tool-display / shell description coverage.
 - Follow-up master update `baf197d feat(runtime): add reasoning effort config (#331)` merged cleanly with no conflicts.
 - Verification after the final merge: focused frontend tests passed 73/73, frontend lint/typecheck passed, and `mise run check` passed with 1696 backend tests plus frontend lint/typecheck/Vitest 155/155.
+
+---
+
+## P2: Badge Emit terminal tool status on timeout/error exits
+
+**Date:** 2026-04-30T00:50:00+08:00
+
+### Problem
+When a tool emits `runtime.tool_started` (with `tool_status.phase="running"`, `tool_status.status="running"`) and then exits early via runtime timeout or unrecovered tool exception, no terminal per-tool status event was emitted. The frontend's tool rows remained in "running" state indefinitely.
+
+### Root cause
+Two exit paths in `run_loop.py::execute_graph_loop` exited without emitting `runtime.tool_completed`:
+
+1. **Timeout path (line ~634, now ~686):** After draining events, emitting `runtime.tool_timeout`, and `runtime.failed`, the generator returns without any `runtime.tool_completed`.
+2. **Unrecovered exception path (line ~654, now ~724):** After emitting `runtime.failed`, the generator raises without any `runtime.tool_completed`.
+
+Both paths had already emitted `runtime.tool_started` with `tool_status.status="running"` — but no terminal event to transition that tool row to a settled state.
+
+### Fix
+Added terminal `runtime.tool_completed` with `payload.status="error"` and `payload.tool_status.status="failed"` in both exit paths, using the same `build_tool_display()`/`build_tool_status()` builders as the normal completion path. The event is emitted with sanitized arguments, the correct `tool_call_id`, and `display`/`tool_status` mirror metadata.
+
+### Verification
+- Focused pytest: 20/20 passed (including 2 new regression tests)
+- Ruff: All checks passed on both modified files
+- Basedpyright: 0 errors, 0 warnings, 0 notes on both modified files
+- LSP diagnostics: zero on both files
+
+### No regressions
+- Existing events (`runtime.tool_timeout`, `runtime.failed`) preserved — additive only.
+- Recovered exceptions (tool-native timeout-like) continue through normal `runtime.tool_completed` path unchanged.
+- Permission/lookup/pre-hook failures that occur before `runtime.tool_started` are not touched.

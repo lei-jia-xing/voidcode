@@ -522,3 +522,34 @@ When `approval_resolution` is provided but the replayed tool call differs from t
 - Approval clicks should keep the optimistic local `runtime.approval_resolved` event while leaving `approvalStatus: "submitting"` until `RuntimeClient.resolveApproval()` settles, so deny can set `runStatus: "idle"` without unblocking overlapping actions.
 - Capture pre-optimistic session/events/output before appending the synthetic resolution. If both approval POST and recovery replay fail, restore that snapshot and keep `approvalStatus: "error"` so the original `runtime.approval_requested` remains retryable.
 - If recovery replay succeeds after approval POST failure, replace state from replay and keep deriving `runStatus` via `runStatusForReplay(replay.session)`.
+
+---
+
+## P2: Badge Emit terminal tool status on timeout/error exits
+
+**Date:** 2026-04-30
+
+### Files modified
+- `src/voidcode/runtime/run_loop.py` — Added terminal `runtime.tool_completed` with error status in two exit paths:
+  1. **Timeout path** (after `runtime.tool_timeout`, before `runtime.failed`/`return`): Emits a `runtime.tool_completed` event with `status="error"`, `tool_status.phase="failed"`, `tool_status.status="failed"`, using the same `tool_call_id`, sanitized arguments, and display metadata as normal failed completions.
+  2. **Unrecovered exception path** (before `runtime.failed`/`raise`): Same terminal `runtime.tool_completed` with error status, built identically with `build_tool_display`/`build_tool_status` builders.
+- `tests/unit/runtime/test_tool_execution_timeout.py` — Added `_FatalExceptionTool` class and two regression tests:
+  - `test_timeout_exit_emits_terminal_tool_status_with_error`: Verifies ShellExecTool runtime timeout produces one `runtime.tool_completed` with error payload, proper `tool_status` shape, and correct event ordering (started → completed).
+  - `test_unrecovered_exception_emits_terminal_tool_status_before_failure`: Uses `_FatalExceptionTool` (raises `ValueError` in deterministic mode where `tool_exception_recovery_enabled` is `False`) to verify unrecovered exception emits `runtime.tool_completed` with error before `runtime.failed`, with correct event ordering (started → completed → failed).
+
+### Patterns used
+- Reuses existing `build_tool_display()` and `build_tool_status()` from `tool_display.py` for schema consistency — terminal failed status is identical in structure to normal failed `runtime.tool_completed` events.
+- Computes `sanitized_arguments` inside the exception handler block using `sanitize_tool_arguments()` (already imported) since the normal path's sanitization at line 669 is after the exception handling branches.
+- Terminal status only emitted after `runtime.tool_started` — permission/lookup/pre-hook failures that occur before `runtime.tool_started` are intentionally not touched.
+- Existing events (`runtime.tool_timeout`, `runtime.failed`) are preserved — the fix is purely additive.
+- Recovered exceptions (tool-native timeout-like exceptions that produce a `ToolResult(status="error")`) continue through the normal `runtime.tool_completed` path unchanged.
+
+### Verification
+- `uv run python -X utf8 -m pytest tests/unit/runtime/test_tool_execution_timeout.py -v` — 20 passed (18 existing + 2 new).
+- `uv run ruff check src/voidcode/runtime/run_loop.py tests/unit/runtime/test_tool_execution_timeout.py` — All checks passed.
+- `uv run basedpyright src/voidcode/runtime/run_loop.py tests/unit/runtime/test_tool_execution_timeout.py` — 0 errors, 0 warnings, 0 notes.
+- LSP diagnostics on both modified files: zero diagnostics.
+
+### Key decisions
+- The terminal event uses `event_type="runtime.tool_completed"` with `source="tool"` — matching the normal completion event type rather than inventing a new event type. The `payload.status == "error"` and `payload.tool_status.status == "failed"` distinguish it as a terminal failure.
+- The unrecovered exception test uses `try/except ValueError` around stream iteration because the exception propagates through `run_stream()` → `_run_with_persistence()` → `_stream_chunks()` → `execute_graph_loop()`, and `_run_with_persistence` persists the session then re-raises. The manually-collected chunks still contain all yielded events up to the raise point.
