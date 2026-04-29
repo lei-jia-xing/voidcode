@@ -899,6 +899,46 @@ def _handle_tasks_list_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def _handle_storage_diagnostics_command(args: argparse.Namespace) -> int:
+    workspace = cast(Path, args.workspace)
+    runtime = VoidCodeRuntime(workspace=workspace)
+    try:
+        diagnostics = runtime.storage_diagnostics()
+    finally:
+        _close_runtime(runtime)
+    print_json({"workspace": str(workspace), "storage": diagnostics})
+    return EXIT_SUCCESS
+
+
+def _handle_storage_prune_command(args: argparse.Namespace) -> int:
+    workspace = cast(Path, args.workspace)
+    runtime = VoidCodeRuntime(workspace=workspace)
+    try:
+        try:
+            counts = runtime.prune_runtime_storage(
+                keep_sessions=cast(int | None, args.keep_sessions),
+                keep_background_tasks=cast(int | None, args.keep_background_tasks),
+                older_than=cast(int | None, args.older_than),
+            )
+        except ValueError as exc:
+            raise SystemExit(f"error: {exc}") from None
+    finally:
+        _close_runtime(runtime)
+    print_json({"workspace": str(workspace), "pruned": counts})
+    return EXIT_SUCCESS
+
+
+def _handle_storage_reset_command(args: argparse.Namespace) -> int:
+    workspace = cast(Path, args.workspace)
+    runtime = VoidCodeRuntime(workspace=workspace)
+    try:
+        result = runtime.reset_runtime_storage()
+    finally:
+        _close_runtime(runtime)
+    print_json({"workspace": str(workspace), "storage": result})
+    return EXIT_SUCCESS
+
+
 def _handle_server_command(args: argparse.Namespace) -> int:
     workspace = cast(Path, args.workspace)
     config = load_runtime_config(
@@ -1621,6 +1661,12 @@ def build_parser() -> argparse.ArgumentParser:
     tasks_parser = subparsers.add_parser("tasks", help="Inspect delegated background tasks.")
     tasks_subparsers = tasks_parser.add_subparsers(dest="tasks_command")
 
+    storage_parser = subparsers.add_parser(
+        "storage",
+        help="Inspect and maintain the local runtime SQLite store.",
+    )
+    storage_subparsers = storage_parser.add_subparsers(dest="storage_command")
+
     config_parser = subparsers.add_parser("config", help="Inspect effective runtime configuration.")
     config_subparsers = config_parser.add_subparsers(dest="config_command")
 
@@ -1927,6 +1973,63 @@ def build_parser() -> argparse.ArgumentParser:
     )
     tasks_list_parser.set_defaults(handler=_handle_tasks_list_command)
 
+    storage_diagnostics_parser = storage_subparsers.add_parser(
+        "diagnostics",
+        help="Show SQLite runtime storage policy, checkpoint, size, and row counts.",
+    )
+    _ = storage_diagnostics_parser.add_argument(
+        "--workspace",
+        type=Path,
+        default=Path.cwd(),
+        help="Workspace root used to resolve the local session database.",
+    )
+    _ = storage_diagnostics_parser.add_argument(
+        "--json",
+        action="store_true",
+        default=True,
+        help="Output storage diagnostics as JSON (default).",
+    )
+    storage_diagnostics_parser.set_defaults(handler=_handle_storage_diagnostics_command)
+
+    storage_prune_parser = storage_subparsers.add_parser(
+        "prune",
+        help="Prune terminal sessions and terminal background tasks from local storage.",
+    )
+    _ = storage_prune_parser.add_argument(
+        "--workspace",
+        type=Path,
+        default=Path.cwd(),
+        help="Workspace root used to resolve the local session database.",
+    )
+    _ = storage_prune_parser.add_argument(
+        "--keep-sessions",
+        type=int,
+        help="Keep the newest N sessions and prune older terminal sessions.",
+    )
+    _ = storage_prune_parser.add_argument(
+        "--keep-background-tasks",
+        type=int,
+        help="Keep the newest N background tasks and prune older terminal tasks.",
+    )
+    _ = storage_prune_parser.add_argument(
+        "--older-than",
+        type=int,
+        help="Only prune records with updated_at lower than this runtime timestamp.",
+    )
+    storage_prune_parser.set_defaults(handler=_handle_storage_prune_command)
+
+    storage_reset_parser = storage_subparsers.add_parser(
+        "reset",
+        help="Delete the local pre-MVP runtime SQLite database and WAL/SHM files.",
+    )
+    _ = storage_reset_parser.add_argument(
+        "--workspace",
+        type=Path,
+        default=Path.cwd(),
+        help="Workspace root used to resolve the local session database.",
+    )
+    storage_reset_parser.set_defaults(handler=_handle_storage_reset_command)
+
     # Capability doctor command
     doctor_parser = subparsers.add_parser(
         "doctor",
@@ -1973,3 +2076,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return handler(args)
     except SystemExit as exc:
         return _handle_cli_system_exit(exc)
+    except RuntimeError as exc:
+        message = f"error: {exc}"
+        print(message, file=sys.stderr)
+        return _classify_cli_error(message)

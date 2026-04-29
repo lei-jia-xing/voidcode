@@ -261,6 +261,56 @@ def test_top_level_help_includes_examples() -> None:
     assert "voidcode commands list" in result.stdout
 
 
+def test_storage_diagnostics_outputs_json() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        env = with_src_pythonpath(os.environ.copy())
+
+        result = _run_module_cli(
+            "storage",
+            "diagnostics",
+            "--workspace",
+            str(workspace),
+            env=env,
+        )
+
+    payload = json.loads(result.stdout)
+    assert result.returncode == 0
+    assert payload["workspace"] == str(workspace)
+    assert payload["storage"]["connection_policy"]["journal_mode"] == "wal"
+    assert payload["storage"]["connection_policy"]["busy_timeout_ms"] == 5000
+
+
+def test_storage_reset_removes_local_database_files() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        (workspace / "sample.txt").write_text("sample\n", encoding="utf-8")
+        env = with_src_pythonpath(os.environ.copy())
+        setup_result = _run_module_cli(
+            "run",
+            "read sample.txt",
+            "--workspace",
+            str(workspace),
+            "--session-id",
+            "reset-session",
+            env=env,
+        )
+        reset_result = _run_module_cli(
+            "storage",
+            "reset",
+            "--workspace",
+            str(workspace),
+            env=env,
+        )
+        database_path = workspace / ".voidcode" / "sessions.sqlite3"
+
+    payload = json.loads(reset_result.stdout)
+    assert setup_result.returncode == 0
+    assert reset_result.returncode == 0
+    assert str(database_path) in payload["storage"]["removed"]
+    assert database_path.exists() is False
+
+
 def test_web_command_forwards_runtime_config_and_server_entry() -> None:
     cli = importlib.import_module("voidcode.cli")
     workspace = Path("/tmp/web-workspace")
