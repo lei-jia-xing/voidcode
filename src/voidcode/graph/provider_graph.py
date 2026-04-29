@@ -115,11 +115,9 @@ class ProviderGraph:
             ),
         )
 
-        abort_signal = request.abort_signal or cast(ProviderAbortSignal, self._abort_signal)
         abort_requested = request.metadata.get("abort_requested", False)
         if isinstance(abort_requested, bool):
-            if abort_requested and hasattr(abort_signal, "set_cancelled"):
-                cast(_GraphAbortSignal, abort_signal).set_cancelled(True)
+            should_abort = abort_requested
         else:
             should_abort = str(abort_requested).strip().lower() not in {
                 "false",
@@ -128,6 +126,12 @@ class ProviderGraph:
                 "off",
                 "",
             }
+
+        if request.abort_signal is None:
+            self._abort_signal.set_cancelled(should_abort)
+            abort_signal = cast(ProviderAbortSignal, self._abort_signal)
+        else:
+            abort_signal = request.abort_signal
             if should_abort and hasattr(abort_signal, "set_cancelled"):
                 cast(_GraphAbortSignal, abort_signal).set_cancelled(True)
         turn_request = ProviderTurnRequest(
