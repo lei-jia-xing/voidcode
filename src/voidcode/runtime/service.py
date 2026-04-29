@@ -219,6 +219,7 @@ _PERSISTED_RUNTIME_CONFIG_KEYS = frozenset(
         "execution_engine",
         "max_steps",
         "tool_timeout_seconds",
+        "reasoning_effort",
         "model",
         "provider_fallback",
         "resolved_provider",
@@ -269,6 +270,7 @@ _SKILL_BINDING_SCOPE_KEYS = (
     "execution_engine",
     "max_steps",
     "tool_timeout_seconds",
+    "reasoning_effort",
     "model",
     "provider_fallback",
     "resolved_provider",
@@ -866,20 +868,59 @@ class VoidCodeRuntime:
             except ValueError as exc:
                 raise RuntimeRequestError(str(exc)) from exc
         request_max_steps = request.metadata.get("max_steps")
+        request_reasoning_effort = request.metadata.get("reasoning_effort")
         if request_max_steps is not None:
             assert isinstance(request_max_steps, int)
-            return EffectiveRuntimeConfig(
+            resolved = EffectiveRuntimeConfig(
                 approval_mode=resolved.approval_mode,
                 model=resolved.model,
                 execution_engine=resolved.execution_engine,
                 max_steps=request_max_steps,
                 tool_timeout_seconds=resolved.tool_timeout_seconds,
+                reasoning_effort=resolved.reasoning_effort,
                 provider_fallback=resolved.provider_fallback,
                 resolved_provider=resolved.resolved_provider,
                 agent=resolved.agent,
                 context_window=resolved.context_window,
             )
+        if isinstance(request_reasoning_effort, str) and request_reasoning_effort:
+            resolved = EffectiveRuntimeConfig(
+                approval_mode=resolved.approval_mode,
+                model=resolved.model,
+                execution_engine=resolved.execution_engine,
+                max_steps=resolved.max_steps,
+                tool_timeout_seconds=resolved.tool_timeout_seconds,
+                reasoning_effort=request_reasoning_effort,
+                provider_fallback=resolved.provider_fallback,
+                resolved_provider=resolved.resolved_provider,
+                agent=resolved.agent,
+                context_window=resolved.context_window,
+            )
+        try:
+            self._validate_reasoning_effort_capability(resolved)
+        except ValueError as exc:
+            raise RuntimeRequestError(str(exc)) from exc
         return resolved
+
+    def _validate_reasoning_effort_capability(self, config: EffectiveRuntimeConfig) -> None:
+        if config.reasoning_effort is None:
+            return
+        if config.execution_engine != "provider":
+            return
+        active_target = config.resolved_provider.active_target.selection
+        provider_name = active_target.provider
+        model_name = active_target.model
+        if provider_name is None or model_name is None:
+            return
+        metadata = self._metadata_for_provider_model(provider_name, model_name)
+        if metadata is None:
+            return
+        if metadata.supports_reasoning_effort is False:
+            raise ValueError(
+                "reasoning_effort is configured but model "
+                f"'{provider_name}/{model_name}' does not support reasoning effort; "
+                "remove the reasoning_effort hint or pick a reasoning-effort capable model"
+            )
 
     def _build_skill_registry(self, skills_config: RuntimeSkillsConfig | None) -> SkillRegistry:
         if skills_config is None or skills_config.enabled is not True:
@@ -1712,6 +1753,12 @@ class VoidCodeRuntime:
                 "provider_stream": _coerce_bool_like(
                     request_metadata.get("provider_stream", False),
                     False,
+                ),
+                **(
+                    {"reasoning_effort": effective_config.reasoning_effort}
+                    if effective_config.reasoning_effort is not None
+                    and "reasoning_effort" not in request_metadata
+                    else {}
                 ),
             },
         )
@@ -3702,6 +3749,7 @@ class VoidCodeRuntime:
             "delegation",
             "max_steps",
             "provider_stream",
+            "reasoning_effort",
             "skills",
             "background_run",
             "background_task_id",
@@ -5158,6 +5206,8 @@ class VoidCodeRuntime:
             runtime_config_metadata["context_window"] = serialized_context_window
         if effective_config.model is not None:
             runtime_config_metadata["model"] = effective_config.model
+        if effective_config.reasoning_effort is not None:
+            runtime_config_metadata["reasoning_effort"] = effective_config.reasoning_effort
         serialized_agent = serialize_runtime_agent_config(effective_config.agent)
         if serialized_agent is not None:
             runtime_config_metadata["agent"] = serialized_agent
@@ -5271,6 +5321,7 @@ class VoidCodeRuntime:
             execution_engine=execution_engine,
             max_steps=resolved.max_steps,
             tool_timeout_seconds=resolved.tool_timeout_seconds,
+            reasoning_effort=resolved.reasoning_effort,
             provider_fallback=provider_fallback,
             resolved_provider=resolved_provider,
             agent=merged_agent,
@@ -5842,6 +5893,7 @@ class VoidCodeRuntime:
         model = self._config.model
         execution_engine = self._config.execution_engine
         max_steps = self._config.max_steps
+        reasoning_effort = self._config.reasoning_effort
         provider_fallback = self._config.provider_fallback
         agent = self._config.agent
         if agent is None and execution_engine == "provider":
@@ -5903,6 +5955,7 @@ class VoidCodeRuntime:
                 execution_engine=execution_engine,
                 max_steps=max_steps,
                 tool_timeout_seconds=self._config.tool_timeout_seconds,
+                reasoning_effort=reasoning_effort,
                 provider_fallback=provider_fallback,
                 resolved_provider=resolved_provider,
                 agent=agent,
@@ -5949,6 +6002,16 @@ class VoidCodeRuntime:
                         "persisted runtime_config tool_timeout_seconds must be at least 1"
                     )
                 tool_timeout_seconds = persisted_tool_timeout
+        if "reasoning_effort" in runtime_config:
+            persisted_reasoning_effort = runtime_config.get("reasoning_effort")
+            if persisted_reasoning_effort is None:
+                reasoning_effort = None
+            elif isinstance(persisted_reasoning_effort, str) and persisted_reasoning_effort:
+                reasoning_effort = persisted_reasoning_effort
+            else:
+                raise ValueError(
+                    "persisted runtime_config reasoning_effort must be a non-empty string"
+                )
         provider_fallback = None
         if "provider_fallback" in runtime_config:
             try:
@@ -6014,6 +6077,7 @@ class VoidCodeRuntime:
             execution_engine=execution_engine,
             max_steps=max_steps,
             tool_timeout_seconds=tool_timeout_seconds,
+            reasoning_effort=reasoning_effort,
             provider_fallback=provider_fallback,
             resolved_provider=resolved_provider,
             agent=agent,
@@ -6037,6 +6101,7 @@ class VoidCodeRuntime:
             effective_config.execution_engine == self._initial_effective_config.execution_engine
             and effective_config.model == self._initial_effective_config.model
             and effective_config.max_steps == self._initial_effective_config.max_steps
+            and effective_config.reasoning_effort == self._initial_effective_config.reasoning_effort
             and effective_config.provider_fallback
             == self._initial_effective_config.provider_fallback
             and effective_config.agent == self._initial_effective_config.agent
@@ -6112,6 +6177,7 @@ class EffectiveRuntimeConfig:
     execution_engine: ExecutionEngineName
     max_steps: int | None
     tool_timeout_seconds: int | None = None
+    reasoning_effort: str | None = None
     provider_fallback: RuntimeProviderFallbackConfig | None = None
     resolved_provider: ResolvedProviderConfig = field(default_factory=ResolvedProviderConfig)
     agent: RuntimeAgentConfig | None = None
