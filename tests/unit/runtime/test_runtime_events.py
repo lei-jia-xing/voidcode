@@ -234,3 +234,34 @@ def test_acp_delegated_lifecycle_uses_top_level_message_state_when_message_missi
     assert delegated.message.status == "waiting_approval"
     assert delegated.message.approval_blocked is True
     assert delegated.message.result_available is True
+
+
+def test_delegated_lifecycle_preserves_interrupted_status_on_failed_event() -> None:
+    event = EventEnvelope(
+        session_id="leader-session",
+        sequence=1,
+        event_type=RUNTIME_BACKGROUND_TASK_FAILED,
+        source="runtime",
+        payload={
+            "session_id": "child-session",
+            "parent_session_id": "leader-session",
+            "delegation": {
+                "parent_session_id": "leader-session",
+                "child_session_id": "child-session",
+                "delegated_task_id": "task-1",
+                "lifecycle_status": "interrupted",
+            },
+            "message": {
+                "status": "interrupted",
+                "error": "background task interrupted before completion",
+                "result_available": True,
+            },
+        },
+    )
+
+    delegated = event.delegated_lifecycle
+
+    assert delegated is not None
+    assert delegated.delegation.lifecycle_status == "interrupted"
+    assert delegated.message.status == "interrupted"
+    assert delegated.message.error == "background task interrupted before completion"

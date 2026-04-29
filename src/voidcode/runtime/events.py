@@ -266,6 +266,17 @@ _DELEGATED_EVENT_STATUS_BY_TYPE: Final[
     RUNTIME_DELEGATED_RESULT_AVAILABLE: "completed",
     RUNTIME_ACP_DELEGATED_LIFECYCLE: "running",
 }
+_DELEGATED_LIFECYCLE_STATUSES: Final[frozenset[DelegatedLifecycleStatus]] = frozenset(
+    {
+        "queued",
+        "running",
+        "waiting_approval",
+        "completed",
+        "failed",
+        "cancelled",
+        "interrupted",
+    }
+)
 
 
 def _string_or_none(value: object) -> str | None:
@@ -381,9 +392,7 @@ class DelegatedExecutionPayload:
             _mapping_or_none(payload.get("routing"))
         )
         raw_status = payload.get("lifecycle_status")
-        parsed_status = (
-            raw_status if raw_status in _DELEGATED_EVENT_STATUS_BY_TYPE.values() else None
-        )
+        parsed_status = raw_status if raw_status in _DELEGATED_LIFECYCLE_STATUSES else None
         return cls(
             parent_session_id=_string_or_none(payload.get("parent_session_id")),
             requested_child_session_id=_string_or_none(payload.get("requested_child_session_id")),
@@ -394,10 +403,7 @@ class DelegatedExecutionPayload:
             routing=nested_routing,
             selected_preset=_string_or_none(payload.get("selected_preset")),
             selected_execution_engine=_string_or_none(payload.get("selected_execution_engine")),
-            lifecycle_status=cast(
-                DelegatedLifecycleStatus | None,
-                parsed_status or lifecycle_status,
-            ),
+            lifecycle_status=parsed_status or lifecycle_status,
             approval_blocked=_bool_or_default(payload.get("approval_blocked")),
             result_available=_bool_or_default(payload.get("result_available")),
             cancellation_cause=_string_or_none(payload.get("cancellation_cause")),
@@ -433,11 +439,9 @@ class DelegatedLifecycleMessage:
         if payload is None:
             return cls(status=default_status)
         raw_status = payload.get("status")
-        status = (
-            raw_status if raw_status in _DELEGATED_EVENT_STATUS_BY_TYPE.values() else default_status
-        )
+        status = raw_status if raw_status in _DELEGATED_LIFECYCLE_STATUSES else default_status
         return cls(
-            status=cast(DelegatedLifecycleStatus | None, status),
+            status=status,
             summary_output=_string_or_none(payload.get("summary_output")),
             error=_string_or_none(payload.get("error")),
             approval_blocked=_bool_or_default(payload.get("approval_blocked")),
