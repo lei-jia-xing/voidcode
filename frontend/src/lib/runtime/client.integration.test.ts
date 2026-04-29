@@ -63,13 +63,13 @@ describe("RuntimeClient integration contract", () => {
     expect(snapshot.acp?.details?.last_request_type).toBe("handshake");
   });
 
-  it("parses streamed SSE chunks and preserves backend tool status payloads", async () => {
+  it("parses streamed SSE chunks and preserves backend tool status display payloads", async () => {
     const encoder = new TextEncoder();
     const body = new ReadableStream<Uint8Array>({
       start(controller) {
         controller.enqueue(
           encoder.encode(
-            'data: {"kind":"event","session":{"session":{"id":"session-1"},"status":"running","turn":1,"metadata":{}},"event":{"session_id":"session-1","sequence":1,"event_type":"runtime.tool_started","source":"runtime","payload":{"tool_status":{"tool_name":"read_file","invocation_id":"call-1","phase":"running","status":"running","label":"Reading file"}},"tool_status":{"tool_name":"read_file","invocation_id":"call-1","phase":"running","status":"running","label":"Reading file"}},"output":null}\n\n',
+            'data: {"kind":"event","session":{"session":{"id":"session-1"},"status":"running","turn":1,"metadata":{}},"event":{"session_id":"session-1","sequence":1,"event_type":"runtime.tool_started","source":"runtime","payload":{"tool":"read_file","tool_call_id":"call-1","display":{"kind":"context","title":"Read","summary":"Read README.md","args":["README.md"],"copyable":{"path":"README.md"}},"tool_status":{"tool_name":"read_file","invocation_id":"call-1","phase":"running","status":"running","label":"Read README.md","display":{"kind":"context","title":"Read","summary":"Read README.md","args":["README.md"],"copyable":{"path":"README.md"}}}},"tool_status":{"tool_name":"read_file","invocation_id":"call-1","phase":"running","status":"running","label":"Read README.md","display":{"kind":"context","title":"Read","summary":"Read README.md","args":["README.md"],"copyable":{"path":"README.md"}}}},"output":null}\n\n',
           ),
         );
         controller.enqueue(
@@ -99,9 +99,62 @@ describe("RuntimeClient integration contract", () => {
       invocation_id: "call-1",
       phase: "running",
       status: "running",
-      label: "Reading file",
+      label: "Read README.md",
+      display: {
+        kind: "context",
+        title: "Read",
+        summary: "Read README.md",
+        args: ["README.md"],
+        copyable: { path: "README.md" },
+      },
+    });
+    expect(chunks[0].event?.payload.display).toEqual({
+      kind: "context",
+      title: "Read",
+      summary: "Read README.md",
+      args: ["README.md"],
+      copyable: { path: "README.md" },
     });
     expect(chunks[1].output).toBe("done");
+  });
+
+  it("preserves failed shell display metadata and details from streamed events", async () => {
+    const encoder = new TextEncoder();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(
+          encoder.encode(
+            'data: {"kind":"event","session":{"session":{"id":"session-1"},"status":"failed","turn":1,"metadata":{}},"event":{"session_id":"session-1","sequence":2,"event_type":"runtime.tool_completed","source":"runtime","payload":{"tool":"shell_exec","tool_call_id":"shell-1","status":"error","arguments":{"command":"npm test"},"error":"process failed","data":{"command":"npm test","exit_code":2,"stderr":"boom"},"display":{"kind":"shell","title":"Shell","summary":"Run tests","args":["npm test"],"copyable":{"command":"npm test","output":"boom"}},"tool_status":{"tool_name":"shell_exec","invocation_id":"shell-1","phase":"completed","status":"failed","display":{"kind":"shell","title":"Shell","summary":"Run tests","args":["npm test"],"copyable":{"command":"npm test","output":"boom"}}}}},"output":null}\n\n',
+          ),
+        );
+        controller.close();
+      },
+    });
+
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      body,
+    } as Response);
+
+    const chunks = [];
+    for await (const chunk of RuntimeClient.runStream({
+      prompt: "run tests",
+    })) {
+      chunks.push(chunk);
+    }
+
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0].event?.payload.tool_status).toMatchObject({
+      invocation_id: "shell-1",
+      tool_name: "shell_exec",
+      status: "failed",
+      display: {
+        kind: "shell",
+        summary: "Run tests",
+        copyable: { command: "npm test", output: "boom" },
+      },
+    });
+    expect(chunks[0].event?.payload.error).toBe("process failed");
   });
 
   it("preserves structured backend error payloads", async () => {

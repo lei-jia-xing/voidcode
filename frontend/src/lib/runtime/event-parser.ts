@@ -1,4 +1,9 @@
-import { EventEnvelope, QuestionPrompt } from "./types";
+import {
+  EventEnvelope,
+  QuestionPrompt,
+  ToolDisplay,
+  ToolStatusPayload,
+} from "./types";
 
 export interface DerivedTask {
   id: string;
@@ -21,6 +26,13 @@ export interface ChatMessage {
     id?: string;
     name: string;
     label?: string;
+    summary?: string;
+    display?: ToolDisplay;
+    copyable?: Record<string, unknown>;
+    legacy?: {
+      label: string;
+      summary: string;
+    };
     status: "pending" | "running" | "completed" | "failed";
     arguments?: Record<string, unknown>;
     result?: Record<string, unknown>;
@@ -41,19 +53,106 @@ export interface ChatMessage {
   sequence: number;
 }
 
-type ToolStatusPayload = {
-  invocation_id?: unknown;
-  tool_name?: unknown;
-  status?: unknown;
-  label?: unknown;
-};
-
 type ChatTool = ChatMessage["tools"][number];
+
+const LEGACY_TOOL_LABELS: Record<string, string> = {
+  read: "Read",
+  read_file: "Read",
+  write: "Write",
+  write_file: "Write",
+  edit: "Edit",
+  shell_exec: "Command",
+  grep: "Search",
+  glob: "Find files",
+  list: "List",
+  todo_write: "Update todos",
+  task: "Start subagent",
+  skill: "Load skill",
+};
 
 function objectPayload(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object"
     ? (value as Record<string, unknown>)
     : undefined;
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0
+    ? value
+    : undefined;
+}
+
+function parseToolDisplay(value: unknown): ToolDisplay | undefined {
+  const record = objectPayload(value);
+  if (!record) return undefined;
+
+  const kind = nonEmptyString(record.kind);
+  const title = nonEmptyString(record.title);
+  const summary = nonEmptyString(record.summary);
+  if (!kind || !title || !summary) return undefined;
+
+  const args = Array.isArray(record.args)
+    ? record.args.filter(
+        (item): item is string =>
+          typeof item === "string" && item.trim().length > 0,
+      )
+    : undefined;
+  const copyable = objectPayload(record.copyable);
+  return {
+    kind,
+    title,
+    summary,
+    ...(args && args.length > 0 ? { args } : {}),
+    ...(copyable ? { copyable } : {}),
+    ...(typeof record.hidden === "boolean" ? { hidden: record.hidden } : {}),
+  };
+}
+
+function firstPayloadString(
+  payload: Record<string, unknown>,
+  keys: string[],
+): string | undefined {
+  for (const key of keys) {
+    const value = nonEmptyString(payload[key]);
+    if (value) return value;
+  }
+  return undefined;
+}
+
+function legacyToolMetadata(
+  name: string,
+  payload: Record<string, unknown>,
+): { label: string; summary: string } {
+  const base = LEGACY_TOOL_LABELS[name] ?? name;
+  const target =
+    firstPayloadString(payload, [
+      "target_summary",
+      "description",
+      "path",
+      "filePath",
+      "pattern",
+      "query",
+      "url",
+      "command",
+      "name",
+    ]) ??
+    firstPayloadString(objectPayload(payload.arguments) ?? {}, [
+      "description",
+      "path",
+      "filePath",
+      "pattern",
+      "query",
+      "url",
+      "command",
+      "name",
+    ]);
+
+  const summary = target ? `${base}: ${target}` : base;
+  return { label: summary, summary };
+}
+
+function hasOwnPayloadKey(payload: Record<string, unknown>, key: string) {
+  return Object.prototype.hasOwnProperty.call(payload, key);
 }
 
 function toolStatusFromPayload(status: unknown): ChatTool["status"] {
@@ -96,6 +195,10 @@ function upsertTool(
   existing.status = tool.status;
   existing.id = tool.id ?? existing.id;
   existing.label = tool.label ?? existing.label;
+  existing.summary = tool.summary ?? existing.summary;
+  existing.display = tool.display ?? existing.display;
+  existing.copyable = tool.copyable ?? existing.copyable;
+  existing.legacy = tool.legacy ?? existing.legacy;
   existing.arguments = tool.arguments ?? existing.arguments;
   existing.result = tool.result ?? existing.result;
   if (tool.content !== undefined) existing.content = tool.content;
@@ -146,6 +249,7 @@ function getToolStatusPayload(event: EventEnvelope): ToolStatusPayload | null {
 function applyToolStatus(
   currentAssistant: ChatMessage | null,
   toolStatus: ToolStatusPayload,
+  eventPayload?: Record<string, unknown>,
 ) {
   if (!currentAssistant) return;
 
@@ -155,13 +259,39 @@ function applyToolStatus(
     typeof toolStatus.invocation_id === "string"
       ? toolStatus.invocation_id
       : undefined;
-  const label =
-    typeof toolStatus.label === "string" ? toolStatus.label : undefined;
+  const display =
+    parseToolDisplay(toolStatus.display) ??
+    parseToolDisplay(eventPayload?.display);
+  const label = nonEmptyString(toolStatus.label) ?? display?.summary;
+  const summary = display?.summary ?? label;
+  const content =
+    eventPayload && hasOwnPayloadKey(eventPayload, "content")
+      ? (nonEmptyString(eventPayload.content) ?? null)
+      : undefined;
+  const error =
+    eventPayload && hasOwnPayloadKey(eventPayload, "error")
+      ? (nonEmptyString(eventPayload.error) ?? null)
+      : undefined;
+  const result =
+    eventPayload &&
+    (toolStatus.status === "completed" ||
+      toolStatus.status === "failed" ||
+      eventPayload.status === "ok" ||
+      eventPayload.status === "error")
+      ? eventPayload
+      : undefined;
   upsertTool(currentAssistant, {
     id,
     name,
     label,
+    summary,
+    display,
+    copyable: display?.copyable,
     status: toolStatusFromPayload(toolStatus.status),
+    arguments: objectPayload(eventPayload?.arguments),
+    result,
+    content,
+    error,
   });
 }
 
@@ -424,7 +554,7 @@ export function deriveChatMessages(
     } else if (event.event_type === "graph.tool_request_created") {
       if (currentAssistant) {
         if (toolStatus) {
-          applyToolStatus(currentAssistant, toolStatus);
+          applyToolStatus(currentAssistant, toolStatus, event.payload);
           continue;
         }
         const toolName =
@@ -435,9 +565,13 @@ export function deriveChatMessages(
           typeof event.payload?.tool_call_id === "string"
             ? event.payload.tool_call_id
             : undefined;
+        const legacy = legacyToolMetadata(toolName, event.payload);
         upsertTool(currentAssistant, {
           id: toolCallId,
           name: toolName,
+          label: legacy.label,
+          summary: legacy.summary,
+          legacy,
           status: "running",
           arguments: objectPayload(event.payload?.arguments),
         });
@@ -445,7 +579,7 @@ export function deriveChatMessages(
     } else if (event.event_type === "runtime.tool_completed") {
       if (currentAssistant) {
         if (toolStatus) {
-          applyToolStatus(currentAssistant, toolStatus);
+          applyToolStatus(currentAssistant, toolStatus, event.payload);
           continue;
         }
         const toolName =
@@ -455,9 +589,13 @@ export function deriveChatMessages(
             typeof event.payload?.tool_call_id === "string"
               ? event.payload.tool_call_id
               : undefined;
+          const legacy = legacyToolMetadata(toolName, event.payload);
           upsertTool(currentAssistant, {
             id: toolCallId,
             name: toolName,
+            label: legacy.label,
+            summary: legacy.summary,
+            legacy,
             status: toolStatusFromPayload(event.payload?.status),
             arguments: objectPayload(event.payload?.arguments),
             result: event.payload,
@@ -521,7 +659,7 @@ export function deriveChatMessages(
         currentAssistant.status = "failed";
       }
     } else if (toolStatus) {
-      applyToolStatus(currentAssistant, toolStatus);
+      applyToolStatus(currentAssistant, toolStatus, event.payload);
     }
   }
 
