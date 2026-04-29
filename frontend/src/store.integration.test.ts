@@ -946,7 +946,7 @@ describe("useAppStore integration flow", () => {
     expect(runtimeClientMocks.getReviewMock).toHaveBeenCalled();
   });
 
-  it("uses a 16 step budget for web agent runs when no override is provided", async () => {
+  it("omits max_steps for web agent runs when no override is provided", async () => {
     const sessionId = "session-default-steps";
     const requestReceived = makeEvent(
       1,
@@ -972,7 +972,124 @@ describe("useAppStore integration flow", () => {
       prompt: "write hello.c",
       session_id: null,
       metadata: {
-        max_steps: 16,
+        agent: {
+          preset: "leader",
+          model: "opencode-go/glm-5.1",
+          execution_engine: "provider",
+        },
+      },
+    });
+  });
+
+  it("sends reasoning_effort only when the selected model supports it", async () => {
+    const sessionId = "session-reasoning-effort";
+    const requestReceived = makeEvent(
+      1,
+      "runtime.request_received",
+      { prompt: "think carefully" },
+      "runtime",
+      sessionId,
+    );
+
+    async function* stream() {
+      yield makeStreamChunk(sessionId, "completed", requestReceived);
+      yield makeStreamChunk(sessionId, "completed", null, "ok");
+    }
+
+    runtimeClientMocks.runStreamMock.mockReturnValue(stream());
+    runtimeClientMocks.listSessionsMock.mockResolvedValue([
+      makeStoredSessionSummary(sessionId, "completed", "think carefully"),
+    ]);
+    useAppStore.setState({
+      reasoningEffort: "high",
+      providerModel: "glm/glm-5",
+      providers: [
+        { name: "glm", label: "GLM", configured: true, current: true },
+      ],
+      providerModels: {
+        glm: {
+          provider: "glm",
+          configured: true,
+          models: ["glm-5"],
+          model_metadata: {
+            "glm-5": {
+              supports_reasoning_effort: true,
+              default_reasoning_effort: "medium",
+            },
+          },
+        },
+      },
+    });
+
+    await useAppStore.getState().runTask("think carefully");
+
+    expect(runtimeClientMocks.runStreamMock).toHaveBeenCalledWith({
+      prompt: "think carefully",
+      session_id: null,
+      metadata: {
+        reasoning_effort: "high",
+        agent: {
+          preset: "leader",
+          model: "glm/glm-5",
+          execution_engine: "provider",
+        },
+      },
+    });
+  });
+
+  it("omits reasoning_effort when the selected model does not support it", async () => {
+    const sessionId = "session-no-reasoning-effort";
+    const requestReceived = makeEvent(
+      1,
+      "runtime.request_received",
+      { prompt: "plain run" },
+      "runtime",
+      sessionId,
+    );
+
+    async function* stream() {
+      yield makeStreamChunk(sessionId, "completed", requestReceived);
+      yield makeStreamChunk(sessionId, "completed", null, "ok");
+    }
+
+    runtimeClientMocks.runStreamMock.mockReturnValue(stream());
+    runtimeClientMocks.listSessionsMock.mockResolvedValue([
+      makeStoredSessionSummary(sessionId, "completed", "plain run"),
+    ]);
+    useAppStore.setState({
+      reasoningEffort: "high",
+      providerModel: "opencode-go/glm-5.1",
+      providers: [
+        {
+          name: "opencode-go",
+          label: "OpenCode Go",
+          configured: true,
+          current: true,
+        },
+      ],
+      providerModels: {
+        "opencode-go": {
+          provider: "opencode-go",
+          configured: true,
+          models: ["glm-5.1"],
+          model_metadata: {
+            "glm-5.1": {
+              supports_reasoning_effort: false,
+              default_reasoning_effort: null,
+            },
+          },
+        },
+      },
+    });
+
+    await useAppStore.getState().runTask("plain run", {
+      metadata: { reasoning_effort: "xhigh" },
+    });
+
+    expect(runtimeClientMocks.runStreamMock).toHaveBeenCalledWith({
+      prompt: "plain run",
+      session_id: null,
+      metadata: {
         agent: {
           preset: "leader",
           model: "opencode-go/glm-5.1",
@@ -1036,7 +1153,6 @@ describe("useAppStore integration flow", () => {
       prompt: "run current provider alias",
       session_id: null,
       metadata: {
-        max_steps: 16,
         agent: {
           preset: "leader",
           model: "opencode-go/kimi-k2.6",
@@ -1096,7 +1212,6 @@ describe("useAppStore integration flow", () => {
       prompt: "run unique alias",
       session_id: null,
       metadata: {
-        max_steps: 16,
         agent: {
           preset: "leader",
           model: "kimi/kimi-k2.6",
@@ -1156,7 +1271,6 @@ describe("useAppStore integration flow", () => {
       prompt: "run qualified alias",
       session_id: null,
       metadata: {
-        max_steps: 16,
         agent: {
           preset: "leader",
           model: "kimi/kimi-k2.6",
@@ -1222,7 +1336,6 @@ describe("useAppStore integration flow", () => {
       prompt: "run ambiguous alias",
       session_id: null,
       metadata: {
-        max_steps: 16,
         agent: {
           preset: "leader",
           model: "kimi-k2.6",
@@ -1282,7 +1395,6 @@ describe("useAppStore integration flow", () => {
       prompt: "run unknown alias",
       session_id: null,
       metadata: {
-        max_steps: 16,
         agent: {
           preset: "leader",
           model: "mystery-model",
@@ -1351,7 +1463,6 @@ describe("useAppStore integration flow", () => {
       prompt: "new run",
       session_id: null,
       metadata: {
-        max_steps: 16,
         agent: {
           preset: "leader",
           model: "opencode-go/glm-5.1",
@@ -1392,7 +1503,6 @@ describe("useAppStore integration flow", () => {
       prompt: "start new",
       session_id: null,
       metadata: {
-        max_steps: 16,
         agent: {
           preset: "leader",
           model: "opencode-go/glm-5.1",
@@ -1476,7 +1586,6 @@ describe("useAppStore integration flow", () => {
       prompt: "hydrated qualified model",
       session_id: null,
       metadata: {
-        max_steps: 16,
         agent: {
           preset: "leader",
           model: "opencode-go/kimi-k2.6",
@@ -1530,7 +1639,6 @@ describe("useAppStore integration flow", () => {
       prompt: "use configured model",
       session_id: null,
       metadata: {
-        max_steps: 16,
         agent: {
           preset: "leader",
           model: "opencode-go/kimi-k2.6",
