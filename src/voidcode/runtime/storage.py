@@ -430,6 +430,9 @@ class SqliteSessionStore:
         _ = connection.execute(
             "INSERT OR IGNORE INTO storage_sequences (scope, value) VALUES ('background_tasks', 0)"
         )
+        _ = connection.execute(
+            "INSERT OR IGNORE INTO storage_sequences (scope, value) VALUES ('auxiliary', 0)"
+        )
 
     @classmethod
     def _assert_canonical_schema(
@@ -1168,7 +1171,7 @@ class SqliteSessionStore:
             if sequence_row is None:
                 raise UnknownSessionError(f"unknown session: {session_id}")
             if dedupe_key is not None:
-                delivered_at = self._next_timestamp(connection=connection)
+                delivered_at = self._next_auxiliary_timestamp(connection=connection)
                 inserted_delivery = connection.execute(
                     """
                     INSERT OR IGNORE INTO session_event_deliveries (
@@ -2002,6 +2005,9 @@ class SqliteSessionStore:
     def _next_background_task_timestamp(self, *, connection: sqlite3.Connection) -> int:
         return self._next_sequence_value(connection=connection, scope="background_tasks")
 
+    def _next_auxiliary_timestamp(self, *, connection: sqlite3.Connection) -> int:
+        return self._next_sequence_value(connection=connection, scope="auxiliary")
+
     def _linked_session_background_task_runtime_state(
         self,
         *,
@@ -2044,7 +2050,7 @@ class SqliteSessionStore:
                 raise ValueError(f"unknown notification: {notification_id}")
             acknowledged_at = cast(int | None, existing_row["acknowledged_at"])
             if acknowledged_at is None:
-                acknowledged_at = self._next_timestamp(connection=connection)
+                acknowledged_at = self._next_auxiliary_timestamp(connection=connection)
                 _ = connection.execute(
                     """
                     UPDATE session_notifications
@@ -2127,17 +2133,23 @@ class SqliteSessionStore:
         if older_than is not None and older_than < 0:
             raise ValueError("older_than must be non-negative when provided")
         with self._write_connect(workspace) as connection:
-            session_ids = self._prunable_session_ids(
-                connection=connection,
-                workspace=workspace,
-                keep_sessions=keep_sessions,
-                older_than=older_than,
-            )
             task_ids = self._prunable_background_task_ids(
                 connection=connection,
                 workspace=workspace,
                 keep_background_tasks=keep_background_tasks,
                 older_than=older_than,
+            )
+            retained_background_task_session_ids = self._retained_background_task_session_ids(
+                connection=connection,
+                workspace=workspace,
+                pruned_task_ids=task_ids,
+            )
+            session_ids = self._prunable_session_ids(
+                connection=connection,
+                workspace=workspace,
+                keep_sessions=keep_sessions,
+                older_than=older_than,
+                protected_session_ids=retained_background_task_session_ids,
             )
             counts = {
                 "session_events": self._delete_for_ids(
@@ -2340,12 +2352,18 @@ class SqliteSessionStore:
         workspace: Path,
         keep_sessions: int | None,
         older_than: int | None,
+        protected_session_ids: tuple[str, ...] = (),
     ) -> tuple[str, ...]:
         conditions = ["workspace = ?", "status IN ('completed', 'failed')"]
         parameters: list[object] = [str(workspace)]
         if older_than is not None:
             conditions.append("updated_at < ?")
             parameters.append(older_than)
+        protected_clause = ""
+        if protected_session_ids:
+            protected_placeholders = ", ".join("?" for _ in protected_session_ids)
+            protected_clause = f"AND session_id NOT IN ({protected_placeholders})"
+            parameters.extend(protected_session_ids)
         keep_clause = ""
         if keep_sessions is not None:
             keep_clause = (
@@ -2361,8 +2379,34 @@ class SqliteSessionStore:
             SELECT session_id
             FROM sessions
             WHERE {" AND ".join(conditions)}
+              {protected_clause}
               {keep_clause}
             ORDER BY updated_at ASC, session_id ASC
+            """,
+            tuple(parameters),
+        ).fetchall()
+        return tuple(cast(str, row["session_id"]) for row in cast(list[sqlite3.Row], rows))
+
+    @staticmethod
+    def _retained_background_task_session_ids(
+        *,
+        connection: sqlite3.Connection,
+        workspace: Path,
+        pruned_task_ids: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        pruned_clause = ""
+        parameters: list[object] = [str(workspace)]
+        if pruned_task_ids:
+            pruned_placeholders = ", ".join("?" for _ in pruned_task_ids)
+            pruned_clause = f"AND task_id NOT IN ({pruned_placeholders})"
+            parameters.extend(pruned_task_ids)
+        rows = connection.execute(
+            f"""
+            SELECT DISTINCT session_id
+            FROM background_tasks
+            WHERE workspace = ?
+              AND session_id IS NOT NULL
+              {pruned_clause}
             """,
             tuple(parameters),
         ).fetchall()
@@ -2464,7 +2508,7 @@ class SqliteSessionStore:
                   AND status = 'unread'
                 """,
                 (
-                    self._next_timestamp(connection=connection),
+                    self._next_auxiliary_timestamp(connection=connection),
                     str(workspace),
                     session_id,
                 ),
@@ -2482,7 +2526,7 @@ class SqliteSessionStore:
                   AND notification_id != ?
                 """,
                 (
-                    self._next_timestamp(connection=connection),
+                    self._next_auxiliary_timestamp(connection=connection),
                     str(workspace),
                     session_id,
                     notification["notification_id"],
@@ -2500,7 +2544,7 @@ class SqliteSessionStore:
                   AND status = 'unread'
                 """,
                 (
-                    self._next_timestamp(connection=connection),
+                    self._next_auxiliary_timestamp(connection=connection),
                     str(workspace),
                     session_id,
                 ),
@@ -2518,7 +2562,7 @@ class SqliteSessionStore:
                   AND notification_id != ?
                 """,
                 (
-                    self._next_timestamp(connection=connection),
+                    self._next_auxiliary_timestamp(connection=connection),
                     str(workspace),
                     session_id,
                     notification["notification_id"],
@@ -2543,7 +2587,7 @@ class SqliteSessionStore:
                 json.dumps(notification["payload"], sort_keys=True),
                 notification["event_sequence"],
                 notification["dedupe_key"],
-                self._next_timestamp(connection=connection),
+                self._next_auxiliary_timestamp(connection=connection),
                 None,
             ),
         )
@@ -2695,7 +2739,7 @@ class SqliteSessionStore:
         )
         if row is not None:
             return cast(int, row["created_at"])
-        return self._next_timestamp(connection=connection)
+        return self._next_auxiliary_timestamp(connection=connection)
 
     @staticmethod
     def _next_sequence_value(*, connection: sqlite3.Connection, scope: str) -> int:

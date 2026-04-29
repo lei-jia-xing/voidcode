@@ -209,6 +209,81 @@ def test_background_task_storage_prunes_only_terminal_tasks(tmp_path: Path) -> N
         _ = store.load_background_task(workspace=tmp_path, task_id="task-old")
 
 
+def test_background_task_storage_prune_retains_sessions_referenced_by_kept_tasks(
+    tmp_path: Path,
+) -> None:
+    store = SqliteSessionStore()
+    old_request = RuntimeRequest(prompt="old child", session_id="child-old")
+    old_response = RuntimeResponse(
+        session=SessionState(session=SessionRef(id="child-old"), status="completed", turn=1),
+        events=(
+            EventEnvelope(
+                session_id="child-old",
+                sequence=1,
+                event_type="runtime.request_received",
+                source="runtime",
+                payload={"prompt": "old child"},
+            ),
+        ),
+        output="old child output",
+    )
+    new_request = RuntimeRequest(prompt="new child", session_id="child-new")
+    new_response = RuntimeResponse(
+        session=SessionState(session=SessionRef(id="child-new"), status="completed", turn=1),
+        events=(
+            EventEnvelope(
+                session_id="child-new",
+                sequence=1,
+                event_type="runtime.request_received",
+                source="runtime",
+                payload={"prompt": "new child"},
+            ),
+        ),
+        output="new child output",
+    )
+    store.save_run(workspace=tmp_path, request=old_request, response=old_response)
+    store.save_run(workspace=tmp_path, request=new_request, response=new_response)
+    store.create_background_task(
+        workspace=tmp_path,
+        task=BackgroundTaskState(
+            task=BackgroundTaskRef(id="task-old"),
+            status="completed",
+            request=BackgroundTaskRequestSnapshot(prompt="old child"),
+            session_id="child-old",
+            created_at=1,
+            updated_at=1,
+            finished_at=1,
+        ),
+    )
+    store.create_background_task(
+        workspace=tmp_path,
+        task=BackgroundTaskState(
+            task=BackgroundTaskRef(id="task-new"),
+            status="completed",
+            request=BackgroundTaskRequestSnapshot(prompt="new child"),
+            session_id="child-new",
+            created_at=2,
+            updated_at=2,
+            finished_at=2,
+        ),
+    )
+
+    counts = store.prune_runtime_storage(
+        workspace=tmp_path,
+        keep_sessions=1,
+        keep_background_tasks=2,
+    )
+
+    assert counts["background_tasks"] == 0
+    assert counts["sessions"] == 0
+    assert store.load_session_result(workspace=tmp_path, session_id="child-old").output == (
+        "old child output"
+    )
+    assert store.load_session_result(workspace=tmp_path, session_id="child-new").output == (
+        "new child output"
+    )
+
+
 def test_background_task_storage_lists_by_parent_session_and_preserves_order(
     tmp_path: Path,
 ) -> None:
