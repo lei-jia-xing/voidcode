@@ -419,6 +419,189 @@ def _background_task_fields(task: BackgroundTaskState) -> list[tuple[str, object
     return fields
 
 
+def _background_task_routing_payload(routing: object | None) -> dict[str, object] | None:
+    if routing is None:
+        return None
+    return {
+        key: value
+        for key, value in {
+            "mode": getattr(routing, "mode", None),
+            "category": getattr(routing, "category", None),
+            "subagent_type": getattr(routing, "subagent_type", None),
+            "description": getattr(routing, "description", None),
+            "command": getattr(routing, "command", None),
+        }.items()
+        if value is not None
+    }
+
+
+def _background_task_error_type(error: str | None) -> str | None:
+    if error is None:
+        return None
+    normalized = error.lower()
+    if any(token in normalized for token in ("provider", "model", "api key", "unreachable")):
+        return "provider"
+    if any(
+        token in normalized
+        for token in ("tool", "write_file", "read_file", "shell_exec", "permission")
+    ):
+        return "tool"
+    return "runtime"
+
+
+def _background_task_next_steps(
+    *,
+    task_id: str,
+    status: str,
+    workspace: Path,
+    child_session_id: str | None,
+    approval_request_id: str | None,
+    question_request_id: str | None,
+    result_available: bool,
+    error: str | None,
+) -> list[str]:
+    workspace_arg = f"--workspace {workspace}"
+    steps: list[str] = []
+    if approval_request_id is not None and child_session_id is not None:
+        steps.append(
+            "Resolve approval: "
+            f"voidcode sessions resume {child_session_id} {workspace_arg} "
+            f"--approval-request-id {approval_request_id} --approval-decision allow"
+        )
+        steps.append(f"Cancel delegated task: voidcode tasks cancel {task_id} {workspace_arg}")
+    elif question_request_id is not None and child_session_id is not None:
+        steps.append(
+            "Inspect waiting child session before answering questions: "
+            f"voidcode sessions debug {child_session_id} {workspace_arg}"
+        )
+        steps.append(f"Cancel delegated task: voidcode tasks cancel {task_id} {workspace_arg}")
+    elif status in {"queued", "running"}:
+        steps.append(f"Refresh state: voidcode tasks status {task_id} {workspace_arg}")
+        steps.append(f"Read partial result view: voidcode tasks output {task_id} {workspace_arg}")
+        steps.append(f"Cancel delegated task: voidcode tasks cancel {task_id} {workspace_arg}")
+    elif status == "completed":
+        steps.append(f"Read output: voidcode tasks output {task_id} {workspace_arg}")
+        if child_session_id is not None:
+            steps.append(
+                f"Replay child session: voidcode sessions resume {child_session_id} {workspace_arg}"
+            )
+    elif status == "failed":
+        error_type = _background_task_error_type(error)
+        if result_available:
+            steps.append(f"Inspect failure output: voidcode tasks output {task_id} {workspace_arg}")
+        if child_session_id is not None:
+            steps.append(
+                f"Resume child context: voidcode sessions resume {child_session_id} {workspace_arg}"
+            )
+        if error_type == "provider":
+            steps.append("Check provider configuration: voidcode provider inspect <provider>")
+        elif error_type == "tool":
+            steps.append(
+                "Inspect the child session events to find the failed tool call and approval state."
+            )
+        else:
+            steps.append(
+                "Inspect runtime events and retry explicitly from the parent flow if needed."
+            )
+    elif status == "cancelled":
+        steps.append(f"Inspect final task state: voidcode tasks status {task_id} {workspace_arg}")
+    return steps
+
+
+def _background_task_state_payload(
+    task: BackgroundTaskState, *, workspace: Path
+) -> dict[str, object]:
+    error = getattr(task, "error", None)
+    cancellation_cause = getattr(task, "cancellation_cause", None)
+    error_type = _background_task_error_type(error)
+    next_steps = _background_task_next_steps(
+        task_id=task.task.id,
+        status=task.status,
+        workspace=workspace,
+        child_session_id=task.child_session_id,
+        approval_request_id=task.approval_request_id,
+        question_request_id=task.question_request_id,
+        result_available=task.result_available,
+        error=error,
+    )
+    payload: dict[str, object] = {
+        "task_id": task.task.id,
+        "status": task.status,
+        "parent_session_id": task.parent_session_id,
+        "requested_child_session_id": task.request.session_id,
+        "child_session_id": task.child_session_id,
+        "approval_request_id": task.approval_request_id,
+        "question_request_id": task.question_request_id,
+        "approval_blocked": task.approval_request_id is not None,
+        "result_available": task.result_available,
+        "cancellation_cause": cancellation_cause,
+        "error": error,
+        "error_type": error_type,
+        "routing": _background_task_routing_payload(task.routing_identity),
+        "next_steps": next_steps,
+    }
+    return payload
+
+
+def _background_task_result_payload(
+    result: BackgroundTaskResult, *, workspace: Path
+) -> dict[str, object]:
+    cancellation_cause = getattr(result, "cancellation_cause", None)
+    error_type = _background_task_error_type(result.error)
+    next_steps = _background_task_next_steps(
+        task_id=result.task_id,
+        status=result.status,
+        workspace=workspace,
+        child_session_id=result.child_session_id,
+        approval_request_id=result.approval_request_id,
+        question_request_id=result.question_request_id,
+        result_available=result.result_available,
+        error=result.error,
+    )
+    return {
+        "task_id": result.task_id,
+        "status": result.status,
+        "parent_session_id": result.parent_session_id,
+        "requested_child_session_id": result.requested_child_session_id,
+        "child_session_id": result.child_session_id,
+        "approval_request_id": result.approval_request_id,
+        "question_request_id": result.question_request_id,
+        "approval_blocked": result.approval_blocked,
+        "result_available": result.result_available,
+        "summary_output": result.summary_output,
+        "error": result.error,
+        "error_type": error_type,
+        "cancellation_cause": cancellation_cause,
+        "routing": _background_task_routing_payload(result.routing),
+        "next_steps": next_steps,
+    }
+
+
+def _background_task_summary_payload(task: StoredBackgroundTaskSummary) -> dict[str, object]:
+    error = getattr(task, "error", None)
+    return {
+        "task_id": task.task.id,
+        "status": task.status,
+        "child_session_id": task.session_id,
+        "created_at": task.created_at,
+        "updated_at": task.updated_at,
+        "prompt": task.prompt,
+        "error": error,
+        "error_type": _background_task_error_type(error),
+    }
+
+
+def _print_background_task_guidance(payload: dict[str, object]) -> None:
+    error_type = payload.get("error_type")
+    if error_type is not None:
+        print(f"ERROR type={error_type} summary={payload.get('error')!r}")
+    next_steps = payload.get("next_steps")
+    if isinstance(next_steps, list) and next_steps:
+        print("NEXT")
+        for index, step in enumerate(cast(list[str], next_steps), start=1):
+            print(f"  {index}. {step}")
+
+
 def _format_background_task_state(task: BackgroundTaskState) -> str:
     return _format_named_record("TASK", _background_task_fields(task))
 
@@ -439,6 +622,9 @@ def _background_task_result_fields(result: BackgroundTaskResult) -> list[tuple[s
         fields.append(("summary_output", repr(result.summary_output)))
     if result.error is not None:
         fields.append(("error", result.error))
+    cancellation_cause = getattr(result, "cancellation_cause", None)
+    if cancellation_cause is not None:
+        fields.append(("cancellation_cause", cancellation_cause))
     routing = result.routing
     if routing is not None:
         fields.append(("delegation_mode", routing.mode))
@@ -458,17 +644,18 @@ def _format_background_task_result(result: BackgroundTaskResult) -> str:
 
 
 def _format_background_task_summary(task: StoredBackgroundTaskSummary) -> str:
-    return _format_named_record(
-        "TASK",
-        [
-            ("id", task.task.id),
-            ("status", task.status),
-            ("session_id", task.session_id),
-            ("created_at", task.created_at),
-            ("updated_at", task.updated_at),
-            ("prompt", repr(task.prompt)),
-        ],
-    )
+    fields: list[tuple[str, object]] = [
+        ("id", task.task.id),
+        ("status", task.status),
+        ("child_session_id", task.session_id),
+        ("created_at", task.created_at),
+        ("updated_at", task.updated_at),
+        ("prompt", repr(task.prompt)),
+    ]
+    error = getattr(task, "error", None)
+    if error is not None:
+        fields.append(("error", error))
+    return _format_named_record("TASK", fields)
 
 
 def _serialize_session_debug_snapshot(snapshot: RuntimeSessionDebugSnapshot) -> dict[str, object]:
@@ -600,6 +787,7 @@ def _handle_sessions_debug_command(args: argparse.Namespace) -> int:
 def _handle_tasks_status_command(args: argparse.Namespace) -> int:
     workspace = cast(Path, args.workspace)
     task_id = cast(str, args.task_id)
+    json_output = cast(bool, getattr(args, "json", False))
     runtime = VoidCodeRuntime(workspace=workspace)
     try:
         try:
@@ -609,13 +797,19 @@ def _handle_tasks_status_command(args: argparse.Namespace) -> int:
     finally:
         _close_runtime(runtime)
 
+    payload = _background_task_state_payload(task, workspace=workspace)
+    if json_output:
+        print_json({"workspace": str(workspace), "task": payload})
+        return 0
     print(_format_background_task_state(task))
+    _print_background_task_guidance(payload)
     return 0
 
 
 def _handle_tasks_output_command(args: argparse.Namespace) -> int:
     workspace = cast(Path, args.workspace)
     task_id = cast(str, args.task_id)
+    json_output = cast(bool, getattr(args, "json", False))
     runtime = VoidCodeRuntime(workspace=workspace)
     task_result: BackgroundTaskResult | None = None
     session_output: str | None = None
@@ -635,17 +829,24 @@ def _handle_tasks_output_command(args: argparse.Namespace) -> int:
         _close_runtime(runtime)
 
     assert task_result is not None
-    print(_format_background_task_result(task_result))
     fallback_output = (
         task_result.summary_output if task_result.summary_output is not None else task_result.error
     )
-    _print_runtime_output(session_output if session_output is not None else fallback_output)
+    output = session_output if session_output is not None else fallback_output
+    payload = _background_task_result_payload(task_result, workspace=workspace)
+    if json_output:
+        print_json({"workspace": str(workspace), "task": payload, "output": output})
+        return 0
+    print(_format_background_task_result(task_result))
+    _print_background_task_guidance(payload)
+    _print_runtime_output(output)
     return 0
 
 
 def _handle_tasks_cancel_command(args: argparse.Namespace) -> int:
     workspace = cast(Path, args.workspace)
     task_id = cast(str, args.task_id)
+    json_output = cast(bool, getattr(args, "json", False))
     runtime = VoidCodeRuntime(workspace=workspace)
     try:
         try:
@@ -655,13 +856,19 @@ def _handle_tasks_cancel_command(args: argparse.Namespace) -> int:
     finally:
         _close_runtime(runtime)
 
+    payload = _background_task_state_payload(task, workspace=workspace)
+    if json_output:
+        print_json({"workspace": str(workspace), "task": payload})
+        return 0
     print(_format_background_task_state(task))
+    _print_background_task_guidance(payload)
     return 0
 
 
 def _handle_tasks_list_command(args: argparse.Namespace) -> int:
     workspace = cast(Path, args.workspace)
     parent_session_id = cast(str | None, getattr(args, "parent_session_id", None))
+    json_output = cast(bool, getattr(args, "json", False))
     runtime = VoidCodeRuntime(workspace=workspace)
     try:
         try:
@@ -674,6 +881,16 @@ def _handle_tasks_list_command(args: argparse.Namespace) -> int:
             raise SystemExit(f"error: {exc}") from None
     finally:
         _close_runtime(runtime)
+
+    if json_output:
+        print_json(
+            {
+                "workspace": str(workspace),
+                "parent_session_id": parent_session_id,
+                "tasks": [_background_task_summary_payload(task) for task in tasks],
+            }
+        )
+        return 0
 
     for task in tasks:
         print(_format_background_task_summary(task))
@@ -1551,6 +1768,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=Path.cwd(),
         help="Workspace root used to resolve the local session database.",
     )
+    _ = tasks_status_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Output delegated task state as JSON.",
+    )
     tasks_status_parser.set_defaults(handler=_handle_tasks_status_command)
 
     tasks_output_parser = tasks_subparsers.add_parser(
@@ -1563,6 +1785,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=Path.cwd(),
         help="Workspace root used to resolve the local session database.",
     )
+    _ = tasks_output_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Output delegated task result and guidance as JSON.",
+    )
     tasks_output_parser.set_defaults(handler=_handle_tasks_output_command)
 
     tasks_cancel_parser = tasks_subparsers.add_parser(
@@ -1574,6 +1801,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=Path.cwd(),
         help="Workspace root used to resolve the local session database.",
+    )
+    _ = tasks_cancel_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Output cancelled delegated task state as JSON.",
     )
     tasks_cancel_parser.set_defaults(handler=_handle_tasks_cancel_command)
 
@@ -1588,6 +1820,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--parent-session",
         dest="parent_session_id",
         help="Optional parent session identifier used to filter delegated tasks.",
+    )
+    _ = tasks_list_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Output delegated task summaries as JSON.",
     )
     tasks_list_parser.set_defaults(handler=_handle_tasks_list_command)
 

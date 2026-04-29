@@ -18,6 +18,7 @@ Day-1 delegated lifecycle surfaces covered:
 from __future__ import annotations
 
 import importlib
+import json
 import os
 import subprocess
 import sys
@@ -643,6 +644,49 @@ def test_cli_tasks_status_delegates_to_runtime_load_background_task(capsys: Any)
     assert "approval_request_id=approval-1" in captured.out
     assert "delegation_mode=background" in captured.out
     assert "category=quick" in captured.out
+    assert "NEXT" in captured.out
+    assert "voidcode sessions resume child-session" in captured.out
+    assert "--approval-request-id approval-1 --approval-decision allow" in captured.out
+
+
+def test_cli_tasks_status_supports_json_guidance(capsys: Any) -> None:
+    cli = importlib.import_module("voidcode.cli")
+    workspace = Path("/tmp/demo-workspace")
+    task_state = SimpleNamespace(
+        task=SimpleNamespace(id="task-json"),
+        status="failed",
+        parent_session_id="leader-session",
+        request=SimpleNamespace(session_id="requested-child"),
+        child_session_id="child-session",
+        approval_request_id=None,
+        question_request_id=None,
+        result_available=True,
+        cancellation_cause=None,
+        error="provider execution requires a configured provider/model",
+        routing_identity=SimpleNamespace(
+            mode="background",
+            category=None,
+            subagent_type="worker",
+            description="Run child",
+            command=None,
+        ),
+    )
+
+    with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+        runtime_class.return_value.load_background_task.return_value = task_state
+        result = cli.main(["tasks", "status", "task-json", "--workspace", str(workspace), "--json"])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert result == 0
+    assert payload["workspace"] == str(workspace)
+    assert payload["task"]["task_id"] == "task-json"
+    assert payload["task"]["parent_session_id"] == "leader-session"
+    assert payload["task"]["requested_child_session_id"] == "requested-child"
+    assert payload["task"]["child_session_id"] == "child-session"
+    assert payload["task"]["error_type"] == "provider"
+    assert payload["task"]["routing"]["subagent_type"] == "worker"
+    assert any("provider inspect" in step for step in payload["task"]["next_steps"])
 
 
 def test_cli_tasks_surfaces_real_runtime_completed_delegated_lifecycle(
@@ -738,7 +782,48 @@ def test_cli_tasks_output_delegates_to_runtime_and_prints_child_result(capsys: A
     runtime.session_result.assert_called_once_with(session_id="child-session")
     assert "TASK id=task-1 status=completed" in captured.out
     assert "subagent_type=explore" in captured.out
+    assert "NEXT" in captured.out
+    assert "voidcode sessions resume child-session" in captured.out
     assert "RESULT\nchild output\n" in captured.out
+
+
+def test_cli_tasks_output_supports_json_failure_guidance(capsys: Any) -> None:
+    cli = importlib.import_module("voidcode.cli")
+    workspace = Path("/tmp/demo-workspace")
+    task_result = SimpleNamespace(
+        task_id="task-failed-json",
+        status="failed",
+        parent_session_id="leader-session",
+        requested_child_session_id="requested-child",
+        child_session_id="child-session",
+        approval_request_id=None,
+        question_request_id=None,
+        approval_blocked=False,
+        result_available=True,
+        summary_output="Failed: child tool failed",
+        error="tool write_file failed",
+        cancellation_cause=None,
+        routing=None,
+    )
+    session_result = SimpleNamespace(output="tool failure details\n")
+
+    with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+        runtime = runtime_class.return_value
+        runtime.load_background_task_result.return_value = task_result
+        runtime.session_result.return_value = session_result
+        result = cli.main(
+            ["tasks", "output", "task-failed-json", "--workspace", str(workspace), "--json"]
+        )
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert result == 0
+    assert payload["task"]["task_id"] == "task-failed-json"
+    assert payload["task"]["error_type"] == "tool"
+    assert payload["task"]["parent_session_id"] == "leader-session"
+    assert payload["task"]["child_session_id"] == "child-session"
+    assert payload["output"] == "tool failure details\n"
+    assert any("child session events" in step for step in payload["task"]["next_steps"])
 
 
 def test_cli_tasks_surfaces_real_runtime_waiting_approval_and_cancel(
@@ -959,6 +1044,44 @@ def test_cli_tasks_list_lists_all_background_tasks(capsys: Any) -> None:
     assert "TASK id=task-2 status=completed" in captured.out
     assert "prompt='Investigate'" in captured.out
     assert "prompt='Summarize'" in captured.out
+
+
+def test_cli_tasks_list_supports_json(capsys: Any) -> None:
+    cli = importlib.import_module("voidcode.cli")
+    workspace = Path("/tmp/demo-workspace")
+    tasks = (
+        SimpleNamespace(
+            task=SimpleNamespace(id="task-1"),
+            status="queued",
+            session_id=None,
+            created_at=1,
+            updated_at=2,
+            prompt="Investigate",
+            error=None,
+        ),
+        SimpleNamespace(
+            task=SimpleNamespace(id="task-2"),
+            status="failed",
+            session_id="child-session",
+            created_at=3,
+            updated_at=4,
+            prompt="Summarize",
+            error="runtime failed",
+        ),
+    )
+
+    with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+        runtime_class.return_value.list_background_tasks.return_value = tasks
+        result = cli.main(["tasks", "list", "--workspace", str(workspace), "--json"])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert result == 0
+    assert payload["workspace"] == str(workspace)
+    assert payload["parent_session_id"] is None
+    assert payload["tasks"][0]["task_id"] == "task-1"
+    assert payload["tasks"][1]["child_session_id"] == "child-session"
+    assert payload["tasks"][1]["error_type"] == "runtime"
 
 
 def test_cli_tasks_list_filters_by_parent_session(capsys: Any) -> None:
