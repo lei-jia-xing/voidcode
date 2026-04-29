@@ -11,6 +11,17 @@ from voidcode.runtime.contracts import RuntimeRequest
 from voidcode.runtime.service import ToolRegistry, VoidCodeRuntime
 from voidcode.tools import ShellExecTool
 from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolResult
+from voidcode.tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
+
+
+class _AbortSignal:
+    def __init__(self, *, cancelled: bool = False, reason: str | None = None) -> None:
+        self._cancelled = cancelled
+        self.reason = reason
+
+    @property
+    def cancelled(self) -> bool:
+        return self._cancelled
 
 
 class _InstantTool:
@@ -198,6 +209,27 @@ def test_tool_completes_normally_within_timeout(tmp_path: Path) -> None:
     assert "runtime.tool_completed" in event_types
     assert "runtime.tool_timeout" not in event_types
     assert "runtime.failed" not in event_types
+
+
+def test_shell_exec_returns_interrupted_result_when_runtime_abort_is_set(tmp_path: Path) -> None:
+    tool = ShellExecTool()
+    command = f'"{sys.executable}" -c "import time; time.sleep(10)"'
+
+    with bind_runtime_tool_context(
+        RuntimeToolInvocationContext(
+            session_id="shell-abort",
+            abort_signal=_AbortSignal(cancelled=True, reason="test abort"),
+        )
+    ):
+        result = tool.invoke(
+            ToolCall(tool_name="shell_exec", arguments={"command": command, "timeout": 30}),
+            workspace=tmp_path,
+        )
+
+    assert result.status == "error"
+    assert result.data["interrupted"] is True
+    assert result.data["cancelled"] is True
+    assert result.data["reason"] == "test abort"
 
 
 def test_slow_tool_that_finishes_within_timeout_is_not_interrupted(tmp_path: Path) -> None:

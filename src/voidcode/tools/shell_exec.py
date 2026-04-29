@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
+import time
 from pathlib import Path
 from typing import Any, ClassVar, final
 
@@ -14,6 +15,7 @@ from ..security.shell_policy import (
 )
 from ._pydantic_args import ShellExecArgs
 from .contracts import RuntimeToolTimeoutError, ToolCall, ToolDefinition, ToolResult
+from .runtime_context import current_runtime_tool_context
 
 MAX_OUTPUT_CHARS = 200_000
 
@@ -132,16 +134,37 @@ class ShellExecTool:
         except OSError as exc:
             raise ValueError(f"shell_exec failed to execute command: {exc}") from exc
 
-        try:
-            stdout_bytes, stderr_bytes = process.communicate(timeout=timeout_seconds)
-        except subprocess.TimeoutExpired as exc:
-            kill_timed_out_process(process)
-            process.communicate()
+        runtime_context = current_runtime_tool_context()
+        abort_signal = runtime_context.abort_signal if runtime_context is not None else None
+        deadline = time.monotonic() + timeout_seconds
+        stdout_bytes = b""
+        stderr_bytes = b""
+        timed_out = False
+        aborted = False
+        while True:
+            if abort_signal is not None and abort_signal.cancelled:
+                aborted = True
+                kill_timed_out_process(process)
+                stdout_bytes, stderr_bytes = process.communicate()
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = True
+                kill_timed_out_process(process)
+                stdout_bytes, stderr_bytes = process.communicate()
+                break
+            try:
+                stdout_bytes, stderr_bytes = process.communicate(timeout=min(0.05, remaining))
+                break
+            except subprocess.TimeoutExpired:
+                continue
+
+        if timed_out:
             if runtime_timeout_selected:
                 raise RuntimeToolTimeoutError(
                     f"tool '{self.definition.name}' exceeded runtime timeout of {timeout_seconds}s"
-                ) from exc
-            raise ValueError(f"shell_exec command timed out after {timeout_seconds}s") from exc
+                )
+            raise ValueError(f"shell_exec command timed out after {timeout_seconds}s")
 
         stdout = _decode_process_output(stdout_bytes)
         stderr = _decode_process_output(stderr_bytes)
@@ -153,6 +176,30 @@ class ShellExecTool:
         content, content_truncated = _truncate(output)
         stdout, stdout_truncated = _truncate(stdout)
         stderr, stderr_truncated = _truncate(stderr)
+
+        if aborted:
+            reason = getattr(abort_signal, "reason", None)
+            content = "User aborted the command."
+            return ToolResult(
+                tool_name=self.definition.name,
+                status="error",
+                content=content,
+                error=content,
+                data={
+                    "command": command_text,
+                    "exit_code": process.returncode,
+                    "stdout": stdout,
+                    "stderr": stderr,
+                    "timeout": timeout_seconds,
+                    "truncated": stdout_truncated or stderr_truncated,
+                    "interrupted": True,
+                    "cancelled": True,
+                    "reason": reason if isinstance(reason, str) else None,
+                },
+                truncated=stdout_truncated or stderr_truncated,
+                partial=stdout_truncated or stderr_truncated,
+                timeout_seconds=timeout_seconds,
+            )
 
         return ToolResult(
             tool_name=self.definition.name,
