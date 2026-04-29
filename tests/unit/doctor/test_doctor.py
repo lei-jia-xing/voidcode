@@ -14,7 +14,7 @@ from voidcode.doctor.checker import (
     DoctorCheckType,
 )
 from voidcode.provider.config import OpenAIProviderConfig, ProviderConfigs
-from voidcode.runtime.config import RuntimeConfig
+from voidcode.runtime.config import RuntimeConfig, RuntimeMcpConfig, RuntimeMcpServerConfig
 
 
 class TestCapabilityDoctor:
@@ -101,6 +101,37 @@ class TestCreateDoctorForConfig:
 
         # Should not raise and should have at least ast-grep
         assert len(doctor.results) >= 1
+        mcp_result = next(result for result in doctor.results if result.name == "mcp")
+        assert mcp_result.status == CapabilityCheckStatus.NOT_CONFIGURED
+        assert mcp_result.details["configured_enabled"] is False
+
+    def test_reports_disabled_mcp_configuration(self) -> None:
+        config = RuntimeConfig(
+            mcp=RuntimeMcpConfig(
+                enabled=False,
+                servers={
+                    "context7": RuntimeMcpServerConfig(command=("context7",), scope="session")
+                },
+            )
+        )
+
+        doctor = create_doctor_for_config(Path("/tmp"), config)
+
+        mcp_result = next(result for result in doctor.results if result.name == "mcp")
+        assert mcp_result.status == CapabilityCheckStatus.NOT_CONFIGURED
+        assert mcp_result.details["configured"] is True
+        assert mcp_result.details["configured_enabled"] is False
+        assert mcp_result.details["configured_server_count"] == 1
+
+    def test_reports_enabled_mcp_without_servers(self) -> None:
+        config = RuntimeConfig(mcp=RuntimeMcpConfig(enabled=True, servers={}))
+
+        doctor = create_doctor_for_config(Path("/tmp"), config)
+
+        mcp_result = next(result for result in doctor.results if result.name == "mcp")
+        assert mcp_result.status == CapabilityCheckStatus.NOT_CONFIGURED
+        assert mcp_result.details["configured_enabled"] is True
+        assert mcp_result.details["configured_server_count"] == 0
 
     def test_skips_formatter_checks_when_hooks_disabled(self) -> None:
         """Formatter checks should be skipped when hooks.enabled is False."""

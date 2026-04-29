@@ -188,6 +188,16 @@ def _format_details(result: CapabilityCheckResult) -> list[str]:
 
     if "command" in d and result.status != CapabilityCheckStatus.READY:
         details.append(f"command: {d['command']}")
+    if "transport" in d:
+        details.append(f"transport: {d['transport']}")
+    if "scope" in d:
+        details.append(f"scope: {d['scope']}")
+    if "configured_enabled" in d:
+        details.append(f"configured_enabled: {d['configured_enabled']}")
+    if "configured_server_count" in d:
+        details.append(f"configured_server_count: {d['configured_server_count']}")
+    if "scope_boundary" in d:
+        details.append(f"scope_boundary: {d['scope_boundary']}")
     if "available_commands" in d:
         details.append(f"available: {', '.join(d['available_commands'])}")
     if "languages" in d and d["languages"]:

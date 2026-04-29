@@ -246,9 +246,55 @@ def create_doctor_for_config(
                 if preset:
                     doctor.add_lsp_server_check(server_name, preset)
 
-    # Check MCP servers (only when mcp.enabled is True).
+    # Always report MCP configuration state so disabled/unconfigured MCP is visible.
     mcp_config = config.mcp
-    if mcp_config is not None and mcp_config.enabled is True and mcp_config.servers:
+    if mcp_config is None:
+        doctor.add_result(
+            CapabilityCheckResult(
+                status=CapabilityCheckStatus.NOT_CONFIGURED,
+                name="mcp",
+                check_type=DoctorCheckType.MCP_SERVER.value,
+                details={
+                    "configured": False,
+                    "configured_enabled": False,
+                    "scope_boundary": "runtime/session-scoped when configured",
+                },
+                error_message=(
+                    "MCP is not configured; set mcp.enabled and mcp.servers to enable it."
+                ),
+            )
+        )
+    elif mcp_config.enabled is not True:
+        doctor.add_result(
+            CapabilityCheckResult(
+                status=CapabilityCheckStatus.NOT_CONFIGURED,
+                name="mcp",
+                check_type=DoctorCheckType.MCP_SERVER.value,
+                details={
+                    "configured": bool(mcp_config.servers),
+                    "configured_enabled": False,
+                    "configured_server_count": len(mcp_config.servers or {}),
+                    "scope_boundary": "runtime/session-scoped when enabled",
+                },
+                error_message="MCP is disabled; set mcp.enabled=true to run configured servers.",
+            )
+        )
+    elif not mcp_config.servers:
+        doctor.add_result(
+            CapabilityCheckResult(
+                status=CapabilityCheckStatus.NOT_CONFIGURED,
+                name="mcp",
+                check_type=DoctorCheckType.MCP_SERVER.value,
+                details={
+                    "configured": False,
+                    "configured_enabled": True,
+                    "configured_server_count": 0,
+                    "scope_boundary": "runtime/session-scoped when servers are configured",
+                },
+                error_message="MCP is enabled but no servers are configured.",
+            )
+        )
+    else:
         for server_name, server_config in mcp_config.servers.items():
             doctor.add_mcp_server_check(server_name, server_config)
 
