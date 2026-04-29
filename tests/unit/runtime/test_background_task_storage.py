@@ -929,7 +929,7 @@ def test_background_task_storage_fail_incomplete_preserves_waiting_approval_task
     assert [task.task.id for task in failed] == ["task-interrupted"]
     assert waiting.status == "running"
     assert waiting.error is None
-    assert interrupted.status == "failed"
+    assert interrupted.status == "interrupted"
     assert interrupted.error == "background task interrupted before completion"
 
 
@@ -1034,7 +1034,7 @@ def test_background_task_storage_does_not_overwrite_queued_cancelled_task_when_m
 
 @pytest.mark.parametrize(
     "status",
-    cast(tuple[BackgroundTaskStatus, ...], ("completed", "failed", "cancelled")),
+    cast(tuple[BackgroundTaskStatus, ...], ("completed", "failed", "cancelled", "interrupted")),
 )
 def test_background_task_storage_does_not_overwrite_terminal_task_when_marking_running(
     tmp_path: Path,
@@ -1108,7 +1108,9 @@ def test_background_task_storage_rejects_non_terminal_status_in_terminal_marker(
 
     with pytest.raises(
         ValueError,
-        match="background task terminal status must be completed, failed, or cancelled",
+        match=(
+            "background task terminal status must be completed, failed, cancelled, or interrupted"
+        ),
     ):
         _ = store.mark_background_task_terminal(
             workspace=tmp_path,
@@ -1133,7 +1135,7 @@ def test_background_task_storage_reconciles_incomplete_tasks_on_restart(tmp_path
     )
 
     assert [task.task.id for task in reconciled] == ["task-e", "task-f"]
-    assert all(task.status == "failed" for task in reconciled)
+    assert all(task.status == "interrupted" for task in reconciled)
     assert all(task.error == "background task interrupted before completion" for task in reconciled)
 
 

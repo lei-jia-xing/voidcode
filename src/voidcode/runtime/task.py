@@ -10,6 +10,7 @@ type BackgroundTaskStatus = Literal[
     "completed",
     "failed",
     "cancelled",
+    "interrupted",
 ]
 type SubagentExecutionMode = Literal["sync", "background"]
 type SubagentResultOwner = Literal["child_session"]
@@ -94,15 +95,16 @@ _CATEGORY_TO_SUBAGENT_PRESET: dict[str, SubagentExecutablePreset] = {
 SUPPORTED_SUBAGENT_CATEGORIES: tuple[str, ...] = tuple(sorted(_CATEGORY_TO_SUBAGENT_PRESET))
 
 _CALLABLE_SUBAGENT_PRESETS = frozenset({"advisor", "explore", "product", "researcher", "worker"})
-_BACKGROUND_TASK_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
+_BACKGROUND_TASK_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled", "interrupted"})
 _BACKGROUND_TASK_ALLOWED_TRANSITIONS: dict[
     BackgroundTaskStatus, frozenset[BackgroundTaskStatus]
 ] = {
-    "queued": frozenset({"running", "completed", "failed", "cancelled"}),
-    "running": frozenset({"completed", "failed", "cancelled"}),
+    "queued": frozenset({"running", "completed", "failed", "cancelled", "interrupted"}),
+    "running": frozenset({"completed", "failed", "cancelled", "interrupted"}),
     "completed": frozenset(),
     "failed": frozenset(),
     "cancelled": frozenset(),
+    "interrupted": frozenset(),
 }
 
 

@@ -661,6 +661,7 @@ class SqliteSessionStore:
             "completed",
             "failed",
             "cancelled",
+            "interrupted",
         )
         if value not in allowed:
             raise ValueError(f"invalid background task status: {value}")
@@ -1747,9 +1748,10 @@ class SqliteSessionStore:
         status: BackgroundTaskStatus,
         error: str | None = None,
     ) -> BackgroundTaskState:
-        if status not in ("completed", "failed", "cancelled"):
+        if status not in ("completed", "failed", "cancelled", "interrupted"):
             raise ValueError(
-                "background task terminal status must be completed, failed, or cancelled"
+                "background task terminal status must be completed, failed, cancelled, "
+                "or interrupted"
             )
         task_id = validate_background_task_id(task_id)
         with self._write_connect(workspace) as connection:
@@ -1768,7 +1770,7 @@ class SqliteSessionStore:
             cancellation_cause = cast(str | None, current["cancellation_cause"])
             if status == "cancelled" and error is not None:
                 cancellation_cause = error
-            result_available = 1 if status in ("completed", "failed") else 0
+            result_available = 1 if status in ("completed", "failed", "interrupted") else 0
             updated_at = self._next_background_task_timestamp(connection=connection)
             _ = connection.execute(
                 """
@@ -1939,7 +1941,7 @@ class SqliteSessionStore:
                     _ = connection.execute(
                         """
                         UPDATE background_tasks
-                        SET status = 'failed',
+                        SET status = 'interrupted',
                             error = ?,
                             finished_at = ?,
                             updated_at = ?,

@@ -72,6 +72,7 @@ type DelegatedLifecycleStatus = Literal[
     "completed",
     "failed",
     "cancelled",
+    "interrupted",
 ]
 type KnownEventType = ExistingEventType | PrototypeAdditiveEventType
 
