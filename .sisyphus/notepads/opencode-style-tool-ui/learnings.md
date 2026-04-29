@@ -476,3 +476,26 @@ When `approval_resolution` is provided but the replayed tool call differs from t
 - `bun run --cwd frontend test:run -- src/store.integration.test.ts src/components/ChatThread.test.tsx` — 2 files / 60 tests passed.
 - `bun run --cwd frontend lint` — passed.
 - `bun run --cwd frontend typecheck` — passed.
+
+---
+
+## T18: Separate file tree and code review header controls
+
+**Date:** 2026-04-29T23:24:00+08:00
+
+- `frontend/src/App.tsx` now keeps `Sessions` for the left session sidebar and exposes distinct `File Tree` / `Code Review` header controls for the shared `ReviewPanel`.
+- The header controls reuse `ControlButton` plus `--vc-*` monochrome tokens; `File Tree` sets `reviewMode: "files"`, `Code Review` sets `reviewMode: "changes"`, and clicking the already-active review surface closes the panel.
+- Localized EN/zh-CN labels use distinct file-tree/code-review wording (`File Tree`/`文件树`, `Code Review`/`代码审查`) with separate aria labels.
+- Regression coverage in `frontend/src/App.test.tsx` asserts the generic `Toggle review` button is absent and the two controls set independent modes; stale Playwright selectors in `frontend/e2e/launcher.spec.ts` were updated to the new header aria labels.
+- Verification: zero LSP diagnostics on all touched frontend files; `bun run --cwd frontend test:run -- src/App.test.tsx` passed (27 tests); `bun run --cwd frontend lint` passed; `bun run --cwd frontend typecheck` passed.
+
+---
+
+## T19: File Tree diff URL encoding fix
+
+**Date:** 2026-04-29T23:35:00+08:00
+
+- `RuntimeClient.getReviewDiff(path)` must encode path segments separately (`path.split("/").map(encodeURIComponent).join("/")`) so nested review paths request `/api/review/diff/src/app.ts` instead of the proxy-hostile `/api/review/diff/src%2Fapp.ts`.
+- File Tree selection remains path-transparent: `ReviewPanel` still calls `onSelectPath(node.path)`, and store coverage verifies a nested special-character path can resolve to `state: "clean"` without surfacing a diff error.
+- Launcher e2e coverage now asserts the mocked diff route receives `/api/review/diff/src/app.ts` and not `src%2Fapp.ts`, then clicks the File Tree row and verifies diff text renders.
+- Verification: LSP diagnostics clean on all T19-touched frontend files; focused Vitest (`App`, `ReviewPanel`, `store.integration`, `client.integration`) passed 73 tests; frontend lint/typecheck passed; frontend build passed with known Vite warnings; Playwright e2e passed 5/5 after rebuilding assets.

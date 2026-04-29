@@ -331,3 +331,22 @@ Two issues:
 - Replay polling intentionally ignores stale payloads that still expose the same pending approval request. This prevents local acknowledgement from being overwritten by an old waiting replay while still allowing a different fresh approval or terminal/running progress to replace the optimistic state.
 - No backend route was needed; the existing replay endpoint is enough for best-effort progress refresh while preserving the prior 409/divergent replay recovery behavior.
 - Residual warning remains unchanged: Vitest still prints the existing Vite React SWC recommendation during startup; tests pass and this change did not introduce it.
+
+---
+
+## T18: Separate file tree/code review chrome fix
+
+**Date:** 2026-04-29T23:24:00+08:00
+
+- No new implementation issues introduced.
+- Existing non-blocking test noise remains unchanged: Vitest prints the Vite React SWC recommendation and jsdom canvas `getContext()` notices while the focused App test passes.
+
+---
+
+## T19: File Tree diff URL bug follow-up
+
+**Date:** 2026-04-29T23:35:00+08:00
+
+- Root cause: encoding an entire review path with `encodeURIComponent(path)` produced `%2F` inside a single route segment, which can fail at the browser/server/proxy layer before the backend can return a useful JSON error.
+- E2E gotcha: `voidcode web` launcher tests serve built frontend assets, so run `bun run --cwd frontend build` before `bun run --cwd frontend test:e2e` when validating source changes against the launcher shell.
+- Non-blocking e2e selector fixes were needed in the touched launcher test: close the review panel before clicking the separate Code Review header control because the right panel can intercept that header click at the test viewport, and target the changed-file row (`M src/app.ts`) to avoid strict text ambiguity.
