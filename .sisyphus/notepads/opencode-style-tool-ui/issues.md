@@ -273,3 +273,61 @@
 - Initial `mise run check` failed on three Ruff issues: one long line in `src/voidcode/runtime/tool_display.py` and two stale `getattr(args, "description")` assertions in `tests/unit/tools/test_shell_exec_tool.py`. Fixed directly; diagnostics stayed clean.
 - Second `mise run check` failed on three integration tests in `tests/integration/test_read_only_slice.py` that asserted exact pre-metadata payload dictionaries. Updated those assertions to keep the old-field checks and explicitly verify additive `display` / `tool_status` metadata.
 - Final `mise run check` passed. Remaining console warnings are the already-known Vite React SWC recommendation and jsdom canvas `getContext()` notices.
+
+---
+
+## T13: Live QA blocker — approval flow divergence on resume
+
+**Date:** 2026-04-29T21:00:00+08:00
+
+### Problem
+User reported "我们的appoval 有问题" after live Playwright QA. When sending a leader task from the web UI, clicking "allow" on a `todo_write` approval showed:
+- Browser console: `404 Not Found` for `/api/sessions/session-59862f2be76b43b08bd7056ea2d83aa9/approval`
+- UI: `Approval failed: Failed to resolve approval: graph step produced a different tool call (todo_write) than the pending approval (todo_write)`
+- Composer permanently disabled
+
+### Root cause
+Two issues:
+
+1. **Backend `run_loop.py`**: On approval resume, the graph re-runs the provider model which may produce a different tool call than the original — same `tool_name` but different `arguments` (non-deterministic model output). The strict comparison `dict(plan_tool_call.arguments) == pending.arguments` raised `ValueError`, which the HTTP handler returned as 404.
+
+2. **Frontend `store/index.ts`**: After the approval error, `currentSessionState.status` remained `"waiting"` so `composerDisabled` stayed `true` (blocked by `isWaitingApproval`). The catch block only set `approvalStatus: "error"` without recovering composer state.
+
+### Fixes applied
+
+1. **`src/voidcode/runtime/run_loop.py`** (line 530-536): Instead of raising `ValueError` on tool call mismatch, clear the stale `approval_resolution` and fall through to normal `_resolve_permission()`. This re-emits a fresh approval request for the new tool call, keeping the session usable.
+
+2. **`src/voidcode/runtime/http.py`** (line 1307): Changed status code from 404 to 409 for approval resolution ValueErrors. 409 (Conflict) better describes the state mismatch semantics.
+
+3. **`frontend/src/store/index.ts`** (catch block of `resolveApproval`): After approval error, reload session from backend via `getSessionReplay()` to pick up any re-emitted approval state. Set `runStatus: "idle"` so the composer recovers.
+
+4. **`tests/integration/test_read_only_slice.py`**: Added `test_runtime_approval_resume_gracefully_reemits_when_tool_call_diverges` — a stateful mock graph that returns different `write_file` arguments on consecutive steps, verifying the re-emit behavior.
+
+5. **`tests/integration/test_http_transport.py`**: Updated `test_transport_returns_not_found_when_approval_resolution_has_no_pending_request` to expect 409 instead of 404 (renamed to `_returns_conflict_`).
+
+### Verification
+- 14 approval-related integration tests pass (including new regression test) — 130 total in the affected test files
+- Frontend: 11 test files, 143 tests pass; lint clean; typecheck passes
+- Zero diagnostics on all 5 modified files
+- CLI approval behavior preserved (deterministic graph produces identical output on replay)
+
+---
+
+## T14 live QA miss: Chinese prompt title still too raw
+
+**Date:** 2026-04-29T21:51:00+08:00
+
+- Live browser QA showed the Vulkan prompt header as `请你作为 leader agent，在当前仓库中实现一个最小 Vulkan 三角形示例`, because the first Chinese sentence was under the previous 56-character title threshold.
+- Fix: `frontend/src/components/sessionTitle.ts` now strips deterministic Chinese request boilerplate (`请你作为 ...，`, `在当前仓库中`, leading `实现一个`, etc.) before length checks, producing `最小 Vulkan 三角形示例` for the exact live QA prompt.
+- Regression coverage added in `frontend/src/App.test.tsx` and `frontend/src/components/SessionSidebar.test.tsx`; focused test pair passes 33/33, lint/typecheck clean.
+
+---
+
+## T17: Post-PR approval acknowledgement follow-up
+
+**Date:** 2026-04-29T22:45:00+08:00
+
+- Resolved the user-hostile slow approval state: the frontend no longer keeps `approvalStatus: "submitting"` while the backend approval POST runs the resumed task to completion.
+- Replay polling intentionally ignores stale payloads that still expose the same pending approval request. This prevents local acknowledgement from being overwritten by an old waiting replay while still allowing a different fresh approval or terminal/running progress to replace the optimistic state.
+- No backend route was needed; the existing replay endpoint is enough for best-effort progress refresh while preserving the prior 409/divergent replay recovery behavior.
+- Residual warning remains unchanged: Vitest still prints the existing Vite React SWC recommendation during startup; tests pass and this change did not introduce it.
