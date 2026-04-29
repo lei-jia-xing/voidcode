@@ -15,6 +15,7 @@ from .contracts import (
     RuntimeRequest,
     RuntimeResponse,
     RuntimeSessionResult,
+    RuntimeSessionRevertMarker,
     UnknownSessionError,
 )
 from .events import (
@@ -57,6 +58,16 @@ class SessionStore(Protocol):
     def load_session(self, *, workspace: Path, session_id: str) -> RuntimeResponse: ...
 
     def load_session_result(self, *, workspace: Path, session_id: str) -> RuntimeSessionResult: ...
+
+    def revert_session(
+        self, *, workspace: Path, session_id: str, sequence: int
+    ) -> RuntimeSessionRevertMarker: ...
+
+    def undo_session(self, *, workspace: Path, session_id: str) -> RuntimeSessionRevertMarker: ...
+
+    def unrevert_session(
+        self, *, workspace: Path, session_id: str
+    ) -> RuntimeSessionRevertMarker | None: ...
 
     def list_notifications(self, *, workspace: Path) -> tuple[RuntimeNotification, ...]: ...
 
@@ -1485,6 +1496,19 @@ class SqliteSessionStore:
         return row is not None
 
     def load_session(self, *, workspace: Path, session_id: str) -> RuntimeResponse:
+        return self._load_session_response(
+            workspace=workspace,
+            session_id=session_id,
+            filter_reverted=True,
+        )
+
+    def _load_session_response(
+        self,
+        *,
+        workspace: Path,
+        session_id: str,
+        filter_reverted: bool,
+    ) -> RuntimeResponse:
         with self._connect(workspace) as connection:
             session_row = cast(
                 sqlite3.Row | None,
@@ -1530,12 +1554,25 @@ class SqliteSessionStore:
             )
             for row in event_rows
         )
-        return RuntimeResponse(
-            session=session, events=events, output=cast(str | None, session_row["output"])
-        )
+        marker = self._revert_marker_from_metadata(session.metadata)
+        output = cast(str | None, session_row["output"])
+        if filter_reverted and marker is not None and marker.active:
+            events = tuple(event for event in events if event.sequence < marker.sequence)
+            session = SessionState(
+                session=session.session,
+                status=session.status,
+                turn=session.turn,
+                metadata=self._active_revert_metadata(session.metadata),
+            )
+            output = None
+        return RuntimeResponse(session=session, events=events, output=output)
 
     def load_session_result(self, *, workspace: Path, session_id: str) -> RuntimeSessionResult:
-        response = self.load_session(workspace=workspace, session_id=session_id)
+        response = self._load_session_response(
+            workspace=workspace,
+            session_id=session_id,
+            filter_reverted=False,
+        )
         with self._connect(workspace) as connection:
             row = cast(
                 sqlite3.Row | None,
@@ -1561,7 +1598,196 @@ class SqliteSessionStore:
             error=error,
             transcript=response.events,
             last_event_sequence=response.events[-1].sequence if response.events else 0,
+            revert_marker=self._revert_marker_from_metadata(response.session.metadata),
         )
+
+    @staticmethod
+    def _revert_marker_from_metadata(
+        metadata: dict[str, object],
+    ) -> RuntimeSessionRevertMarker | None:
+        raw_marker = metadata.get("conversation_revert")
+        if not isinstance(raw_marker, dict):
+            return None
+        marker_payload = cast(dict[object, object], raw_marker)
+        raw_sequence = marker_payload.get("sequence")
+        if not isinstance(raw_sequence, int) or isinstance(raw_sequence, bool) or raw_sequence < 1:
+            return None
+        raw_active = marker_payload.get("active", True)
+        active = raw_active if isinstance(raw_active, bool) else True
+        return RuntimeSessionRevertMarker(sequence=raw_sequence, active=active)
+
+    @staticmethod
+    def _metadata_with_revert_marker(
+        metadata: dict[str, object],
+        marker: RuntimeSessionRevertMarker | None,
+    ) -> dict[str, object]:
+        next_metadata = dict(metadata)
+        if marker is None:
+            next_metadata.pop("conversation_revert", None)
+            return next_metadata
+        next_metadata["conversation_revert"] = {
+            "sequence": marker.sequence,
+            "active": marker.active,
+        }
+        return next_metadata
+
+    @staticmethod
+    def _active_revert_metadata(metadata: dict[str, object]) -> dict[str, object]:
+        next_metadata = dict(metadata)
+        raw_runtime_state = next_metadata.get("runtime_state")
+        if not isinstance(raw_runtime_state, dict):
+            return next_metadata
+        runtime_state = dict(cast(dict[str, object], raw_runtime_state))
+        runtime_state.pop("continuity", None)
+        next_metadata["runtime_state"] = runtime_state
+        return next_metadata
+
+    def _session_metadata_and_events(
+        self,
+        *,
+        connection: sqlite3.Connection,
+        workspace: Path,
+        session_id: str,
+    ) -> tuple[dict[str, object], tuple[EventEnvelope, ...]]:
+        session_row = cast(
+            sqlite3.Row | None,
+            connection.execute(
+                """
+                SELECT metadata_json
+                FROM sessions
+                WHERE workspace = ? AND session_id = ?
+                """,
+                (str(workspace), session_id),
+            ).fetchone(),
+        )
+        if session_row is None:
+            raise UnknownSessionError(f"unknown session: {session_id}")
+        event_rows = cast(
+            list[sqlite3.Row],
+            connection.execute(
+                """
+                SELECT sequence, event_type, source, payload_json
+                FROM session_events
+                WHERE session_id = ?
+                ORDER BY sequence ASC
+                """,
+                (session_id,),
+            ).fetchall(),
+        )
+        events = tuple(
+            EventEnvelope(
+                session_id=session_id,
+                sequence=cast(int, row["sequence"]),
+                event_type=cast(str, row["event_type"]),
+                source=self._parse_event_source(cast(str, row["source"])),
+                payload=cast(dict[str, object], json.loads(cast(str, row["payload_json"]))),
+            )
+            for row in event_rows
+        )
+        return cast(dict[str, object], json.loads(cast(str, session_row["metadata_json"]))), events
+
+    def _write_revert_marker(
+        self,
+        *,
+        connection: sqlite3.Connection,
+        workspace: Path,
+        session_id: str,
+        marker: RuntimeSessionRevertMarker | None,
+    ) -> None:
+        metadata, _events = self._session_metadata_and_events(
+            connection=connection,
+            workspace=workspace,
+            session_id=session_id,
+        )
+        updated_at = self._next_timestamp(connection=connection)
+        _ = connection.execute(
+            """
+            UPDATE sessions
+            SET metadata_json = ?, updated_at = ?
+            WHERE workspace = ? AND session_id = ?
+            """,
+            (
+                json.dumps(self._metadata_with_revert_marker(metadata, marker), sort_keys=True),
+                updated_at,
+                str(workspace),
+                session_id,
+            ),
+        )
+
+    def revert_session(
+        self, *, workspace: Path, session_id: str, sequence: int
+    ) -> RuntimeSessionRevertMarker:
+        if sequence < 1:
+            raise ValueError("revert sequence must be a positive integer")
+        with self._write_connect(workspace) as connection:
+            _metadata, events = self._session_metadata_and_events(
+                connection=connection,
+                workspace=workspace,
+                session_id=session_id,
+            )
+            if not any(event.sequence == sequence for event in events):
+                raise ValueError(f"session {session_id} has no event sequence {sequence}")
+            marker = RuntimeSessionRevertMarker(sequence=sequence, active=True)
+            self._write_revert_marker(
+                connection=connection,
+                workspace=workspace,
+                session_id=session_id,
+                marker=marker,
+            )
+            connection.commit()
+            return marker
+
+    def undo_session(self, *, workspace: Path, session_id: str) -> RuntimeSessionRevertMarker:
+        with self._write_connect(workspace) as connection:
+            metadata, events = self._session_metadata_and_events(
+                connection=connection,
+                workspace=workspace,
+                session_id=session_id,
+            )
+            active_marker = self._revert_marker_from_metadata(metadata)
+            active_cutoff = active_marker.sequence if active_marker is not None else None
+            candidate = next(
+                (
+                    event
+                    for event in reversed(events)
+                    if event.event_type == "runtime.request_received"
+                    and (active_cutoff is None or event.sequence < active_cutoff)
+                ),
+                None,
+            )
+            if candidate is None:
+                raise ValueError(f"session {session_id} has no user turn to undo")
+            marker = RuntimeSessionRevertMarker(sequence=candidate.sequence, active=True)
+            self._write_revert_marker(
+                connection=connection,
+                workspace=workspace,
+                session_id=session_id,
+                marker=marker,
+            )
+            connection.commit()
+            return marker
+
+    def unrevert_session(
+        self, *, workspace: Path, session_id: str
+    ) -> RuntimeSessionRevertMarker | None:
+        with self._write_connect(workspace) as connection:
+            metadata, _events = self._session_metadata_and_events(
+                connection=connection,
+                workspace=workspace,
+                session_id=session_id,
+            )
+            marker = self._revert_marker_from_metadata(metadata)
+            if marker is None:
+                connection.commit()
+                return None
+            self._write_revert_marker(
+                connection=connection,
+                workspace=workspace,
+                session_id=session_id,
+                marker=None,
+            )
+            connection.commit()
+            return marker
 
     def list_notifications(self, *, workspace: Path) -> tuple[RuntimeNotification, ...]:
         with self._connect(workspace) as connection:

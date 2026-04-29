@@ -62,6 +62,114 @@ def test_session_storage_persists_parent_lineage_across_read_surfaces(tmp_path: 
     assert notifications[0].session.parent_id == "leader-session"
 
 
+def test_session_storage_revert_marker_filters_active_view_only(tmp_path: Path) -> None:
+    store = SqliteSessionStore()
+    request = RuntimeRequest(prompt="mistaken request", session_id="undo-session")
+    response = RuntimeResponse(
+        session=SessionState(
+            session=SessionRef(id="undo-session"),
+            status="completed",
+            turn=1,
+            metadata={"runtime_state": {"continuity": {"facts": ["bad context"]}, "run_id": "r1"}},
+        ),
+        events=(
+            EventEnvelope(
+                session_id="undo-session",
+                sequence=1,
+                event_type="runtime.request_received",
+                source="runtime",
+                payload={"prompt": "mistaken request"},
+            ),
+            EventEnvelope(
+                session_id="undo-session",
+                sequence=2,
+                event_type="runtime.tool_completed",
+                source="runtime",
+                payload={"tool": "read_file", "status": "ok", "content": "context"},
+            ),
+            EventEnvelope(
+                session_id="undo-session",
+                sequence=3,
+                event_type="graph.response_ready",
+                source="graph",
+                payload={"response": "bad branch"},
+            ),
+        ),
+        output="bad branch",
+    )
+    store.save_run(workspace=tmp_path, request=request, response=response)
+
+    marker = store.revert_session(workspace=tmp_path, session_id="undo-session", sequence=2)
+    active = store.load_session(workspace=tmp_path, session_id="undo-session")
+    result = store.load_session_result(workspace=tmp_path, session_id="undo-session")
+
+    assert marker.sequence == 2
+    assert [event.sequence for event in active.events] == [1]
+    assert active.output is None
+    assert active.session.metadata["runtime_state"] == {"run_id": "r1"}
+    assert [event.sequence for event in result.transcript] == [1, 2, 3]
+    assert result.output == "bad branch"
+    assert result.revert_marker is not None
+    assert result.revert_marker.sequence == 2
+
+    restored = store.unrevert_session(workspace=tmp_path, session_id="undo-session")
+
+    assert restored is not None
+    assert restored.sequence == 2
+    assert [
+        event.sequence
+        for event in store.load_session(workspace=tmp_path, session_id="undo-session").events
+    ] == [1, 2, 3]
+
+
+def test_session_storage_undo_uses_latest_visible_user_turn(tmp_path: Path) -> None:
+    store = SqliteSessionStore()
+    request = RuntimeRequest(prompt="second", session_id="multi-turn-session")
+    response = RuntimeResponse(
+        session=SessionState(
+            session=SessionRef(id="multi-turn-session"), status="completed", turn=2
+        ),
+        events=(
+            EventEnvelope(
+                session_id="multi-turn-session",
+                sequence=1,
+                event_type="runtime.request_received",
+                source="runtime",
+                payload={"prompt": "first"},
+            ),
+            EventEnvelope(
+                session_id="multi-turn-session",
+                sequence=2,
+                event_type="graph.response_ready",
+                source="graph",
+            ),
+            EventEnvelope(
+                session_id="multi-turn-session",
+                sequence=3,
+                event_type="runtime.request_received",
+                source="runtime",
+                payload={"prompt": "second"},
+            ),
+            EventEnvelope(
+                session_id="multi-turn-session",
+                sequence=4,
+                event_type="graph.response_ready",
+                source="graph",
+            ),
+        ),
+        output="second output",
+    )
+    store.save_run(workspace=tmp_path, request=request, response=response)
+
+    marker = store.undo_session(workspace=tmp_path, session_id="multi-turn-session")
+
+    assert marker.sequence == 3
+    assert [
+        event.sequence
+        for event in store.load_session(workspace=tmp_path, session_id="multi-turn-session").events
+    ] == [1, 2]
+
+
 def test_session_storage_bootstraps_canonical_schema_for_fresh_database(tmp_path: Path) -> None:
     database_path = tmp_path / "fresh-sessions.sqlite3"
     store = SqliteSessionStore(database_path=database_path)
