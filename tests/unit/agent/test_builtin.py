@@ -69,6 +69,21 @@ def test_builtin_agent_manifests_declare_top_level_selectability() -> None:
     )
 
 
+def test_builtin_subagent_tool_allowlists_enforce_role_boundaries() -> None:
+    write_tools = {"write_file", "edit", "multi_edit", "apply_patch"}
+
+    for preset in ("advisor", "explore"):
+        manifest = get_builtin_agent_manifest(preset)
+        assert manifest is not None
+        assert write_tools.isdisjoint(manifest.tool_allowlist)
+        assert "task" not in manifest.tool_allowlist
+
+    worker = get_builtin_agent_manifest("worker")
+    assert worker is not None
+    assert write_tools.issubset(worker.tool_allowlist)
+    assert "task" not in worker.tool_allowlist
+
+
 def test_prompt_profile_selection_uses_materialization_fallback() -> None:
     manifest = get_builtin_agent_manifest("leader")
 
@@ -189,6 +204,7 @@ def test_agent_manifest_exposes_live_default_vs_intent_field_semantics() -> None
         model_preference="opencode/gpt-5.4",
         tool_allowlist=("read_file",),
         skill_refs=("demo",),
+        preset_hook_refs=("role_reminder",),
         routing_hints={"tier": "primary"},
         top_level_selectable=True,
         prompt_materialization=AgentPromptMaterialization(profile="leader"),
@@ -199,6 +215,7 @@ def test_agent_manifest_exposes_live_default_vs_intent_field_semantics() -> None
         "execution_engine",
         "model_preference",
         "tool_allowlist",
+        "preset_hook_refs",
         "top_level_selectable",
         "prompt_materialization",
     )
@@ -207,6 +224,18 @@ def test_agent_manifest_exposes_live_default_vs_intent_field_semantics() -> None
     assert manifest.field_semantic("top_level_selectable") == "live_default"
     assert manifest.field_semantic("prompt_materialization") == "live_default"
     assert manifest.field_semantic("routing_hints") == "intent"
+
+
+def test_builtin_agent_manifests_use_explicit_preset_hook_refs_not_formatter_refs() -> None:
+    leader = get_builtin_agent_manifest("leader")
+    worker = get_builtin_agent_manifest("worker")
+
+    assert leader is not None
+    assert worker is not None
+    assert "delegation_guard" in leader.preset_hook_refs
+    assert "background_output_quality_guidance" in leader.preset_hook_refs
+    assert "todo_continuation_guidance" in leader.preset_hook_refs
+    assert worker.preset_hook_refs == ("role_reminder", "delegation_guard")
 
 
 def test_validate_builtin_agent_manifests_rejects_unknown_prompt_profile() -> None:
