@@ -340,7 +340,12 @@ class RuntimeBackgroundTaskSupervisor:
         runtime = self._runtime
         failed_tasks: list[BackgroundTaskState] = []
         started_tasks: list[
-            tuple[BackgroundTaskState, threading.Thread, _BackgroundTaskConcurrencyIdentity]
+            tuple[
+                BackgroundTaskState,
+                threading.Thread,
+                _BackgroundTaskConcurrencyIdentity,
+                threading.Event,
+            ]
         ] = []
         with self._queue_lock:
             summaries = sorted(
@@ -386,20 +391,24 @@ class RuntimeBackgroundTaskSupervisor:
                 if running_task.status != "running":
                     self._release_slot(identity)
                     continue
+                worker_start_gate = threading.Event()
+
+                def run_worker_after_started_hook(
+                    *,
+                    background_task_id: str = task.task.id,
+                    start_gate: threading.Event = worker_start_gate,
+                ) -> None:
+                    start_gate.wait()
+                    runtime._run_background_task_worker(background_task_id)
+
                 worker = threading.Thread(
-                    target=runtime._run_background_task_worker,
-                    args=(task.task.id,),
+                    target=run_worker_after_started_hook,
                     name=f"voidcode-background-task-{task.task.id}",
                     daemon=True,
                 )
                 runtime._background_task_threads[task.task.id] = worker
-                started_tasks.append((running_task, worker, identity))
-        for started_task, worker, identity in started_tasks:
-            self.run_background_task_lifecycle_surface(
-                task=started_task,
-                surface="background_task_started",
-                session_id=started_task.session_id or started_task.parent_session_id or "runtime",
-            )
+                started_tasks.append((running_task, worker, identity, worker_start_gate))
+        for started_task, worker, identity, worker_start_gate in started_tasks:
             try:
                 worker.start()
             except RuntimeError as exc:
@@ -413,6 +422,17 @@ class RuntimeBackgroundTaskSupervisor:
                     error=str(exc),
                 )
                 failed_tasks.append(failed_task)
+                continue
+            try:
+                self.run_background_task_lifecycle_surface(
+                    task=started_task,
+                    surface="background_task_started",
+                    session_id=(
+                        started_task.session_id or started_task.parent_session_id or "runtime"
+                    ),
+                )
+            finally:
+                worker_start_gate.set()
         for failed_task in failed_tasks:
             self.run_background_task_lifecycle_hook(failed_task)
 
