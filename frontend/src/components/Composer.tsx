@@ -197,7 +197,7 @@ export function Composer({
           </div>
 
           {selectableAgentPresets.length > 0 && (
-            <div className="flex flex-wrap items-center gap-2 border-t border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] px-3 py-1.5 text-xs">
+            <div className="flex flex-wrap items-center gap-1.5 border-t border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] px-3 py-1.5 text-xs">
               <div className="relative" ref={agentMenuRef}>
                 <button
                   id="composer-agent"
@@ -209,7 +209,7 @@ export function Composer({
                     setShowAgentMenu((open) => !open);
                   }}
                   disabled={disabled}
-                  className="max-w-[180px] truncate rounded border border-[color:var(--vc-border-subtle)] px-2 py-1 text-left text-[var(--vc-text-muted)] disabled:opacity-50 hover:border-[color:var(--vc-border-strong)] hover:text-[var(--vc-text-primary)]"
+                  className="max-w-[180px] truncate rounded-md px-1.5 py-1 text-left text-[var(--vc-text-muted)] transition-colors disabled:opacity-50 hover:bg-[var(--vc-surface-2)] hover:text-[var(--vc-text-primary)] focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--vc-focus-ring)]"
                 >
                   {selectedAgentLabel}
                 </button>
@@ -238,6 +238,10 @@ export function Composer({
               </div>
 
               {availableModelGroups.length > 0 && (
+                <span className="h-3 w-px bg-[var(--vc-border-subtle)]" />
+              )}
+
+              {availableModelGroups.length > 0 && (
                 <div className="relative min-w-0 flex-1" ref={modelMenuRef}>
                   <button
                     id="composer-model"
@@ -249,7 +253,7 @@ export function Composer({
                       setShowModelMenu((open) => !open);
                     }}
                     disabled={disabled}
-                    className="w-full truncate rounded border border-[color:var(--vc-border-subtle)] px-2 py-1 text-left text-[var(--vc-text-muted)] disabled:opacity-50 hover:border-[color:var(--vc-border-strong)] hover:text-[var(--vc-text-primary)]"
+                    className="w-full truncate rounded-md px-1.5 py-1 text-left text-[var(--vc-text-muted)] transition-colors disabled:opacity-50 hover:bg-[var(--vc-surface-2)] hover:text-[var(--vc-text-primary)] focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--vc-focus-ring)]"
                   >
                     {selectedModelAvailable
                       ? selectedModelLabel
@@ -301,7 +305,7 @@ export function Composer({
                 </div>
               )}
               {selectedModelAvailable && contextLabel && (
-                <span className="rounded border border-[color:var(--vc-border-subtle)] px-2 py-1 text-[var(--vc-text-subtle)]">
+                <span className="px-1.5 py-1 text-[var(--vc-text-subtle)]">
                   {contextLabel}
                 </span>
               )}
@@ -313,7 +317,7 @@ export function Composer({
                     value={effectiveReasoningEffort}
                     onChange={handleEffortSelect}
                     disabled={disabled}
-                    className="rounded border border-[color:var(--vc-border-subtle)] bg-[var(--vc-bg)] px-1.5 py-1 text-[var(--vc-text-muted)] disabled:opacity-50 focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--vc-focus-ring)]"
+                    className="rounded-md bg-transparent px-1 py-1 text-[var(--vc-text-muted)] disabled:opacity-50 hover:bg-[var(--vc-surface-2)] hover:text-[var(--vc-text-primary)] focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--vc-focus-ring)]"
                   >
                     <option value="minimal">minimal</option>
                     <option value="low">low</option>
