@@ -3971,12 +3971,28 @@ class VoidCodeRuntime:
             session_id=session_id,
             approval_request_id=approval_request_id,
         )
-        yield from self._resume_pending_approval_stream(
-            session_id=session_id,
-            approval_request_id=approval_request_id,
-            approval_decision=approval_decision,
-            finalize_background_task=True,
+        run_id = os.urandom(8).hex()
+        abort_signal = self._register_active_session_id(
+            session_id,
+            run_id=run_id,
+            metadata={
+                "resume": True,
+                "resume_kind": "approval",
+                "approval_request_id": approval_request_id,
+                "run_id": run_id,
+            },
         )
+        try:
+            yield from self._resume_pending_approval_stream(
+                session_id=session_id,
+                approval_request_id=approval_request_id,
+                approval_decision=approval_decision,
+                run_id=run_id,
+                abort_signal=abort_signal,
+                finalize_background_task=True,
+            )
+        finally:
+            self._unregister_active_session_id(session_id, run_id=run_id)
 
     def _validate_resume_targets_owned_request(
         self,
@@ -4093,12 +4109,28 @@ class VoidCodeRuntime:
             session_id=session_id,
             question_request_id=question_request_id,
         )
-        yield from self._answer_pending_question_stream(
-            session_id=session_id,
-            question_request_id=question_request_id,
-            responses=responses,
-            finalize_background_task=True,
+        run_id = os.urandom(8).hex()
+        abort_signal = self._register_active_session_id(
+            session_id,
+            run_id=run_id,
+            metadata={
+                "resume": True,
+                "resume_kind": "question",
+                "question_request_id": question_request_id,
+                "run_id": run_id,
+            },
         )
+        try:
+            yield from self._answer_pending_question_stream(
+                session_id=session_id,
+                question_request_id=question_request_id,
+                responses=responses,
+                run_id=run_id,
+                abort_signal=abort_signal,
+                finalize_background_task=True,
+            )
+        finally:
+            self._unregister_active_session_id(session_id, run_id=run_id)
 
     def _pending_approval_from_response(self, response: RuntimeResponse) -> PendingApproval:
         approval_event = next(
@@ -4355,12 +4387,16 @@ class VoidCodeRuntime:
         session_id: str,
         approval_request_id: str,
         approval_decision: PermissionResolution,
+        run_id: str | None = None,
+        abort_signal: ProviderAbortSignal | None = None,
         finalize_background_task: bool = False,
     ) -> Iterator[RuntimeStreamChunk]:
         yield from self._resume_coordinator.resume_pending_approval_stream(
             session_id=session_id,
             approval_request_id=approval_request_id,
             approval_decision=approval_decision,
+            run_id=run_id,
+            abort_signal=abort_signal,
             finalize_background_task=finalize_background_task,
         )
 
@@ -4383,12 +4419,16 @@ class VoidCodeRuntime:
         session_id: str,
         question_request_id: str,
         responses: tuple[QuestionResponse, ...],
+        run_id: str | None = None,
+        abort_signal: ProviderAbortSignal | None = None,
         finalize_background_task: bool = False,
     ) -> Iterator[RuntimeStreamChunk]:
         yield from self._resume_coordinator.answer_pending_question_stream(
             session_id=session_id,
             question_request_id=question_request_id,
             responses=responses,
+            run_id=run_id,
+            abort_signal=abort_signal,
             finalize_background_task=finalize_background_task,
         )
 

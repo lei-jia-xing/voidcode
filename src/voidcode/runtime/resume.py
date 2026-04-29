@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 from ..graph.contracts import GraphRunRequest
+from ..provider.protocol import ProviderAbortSignal
 from ..tools.contracts import ToolResult, ToolResultStatus
 from ..tools.output import sanitize_tool_result_data
 from ..tools.question import QuestionTool
@@ -44,6 +45,21 @@ class PersistedResumeCheckpointEnvelope:
     payload: dict[str, object]
 
 
+def _metadata_with_resume_run_id(
+    metadata: dict[str, object], *, run_id: str | None
+) -> dict[str, object]:
+    if run_id is None:
+        return metadata
+    raw_runtime_state = metadata.get("runtime_state")
+    runtime_state = (
+        dict(cast(dict[str, object], raw_runtime_state))
+        if isinstance(raw_runtime_state, dict)
+        else {}
+    )
+    runtime_state["run_id"] = run_id
+    return {**metadata, "runtime_state": runtime_state}
+
+
 class RuntimeResumeCoordinator:
     def __init__(self, runtime: VoidCodeRuntime) -> None:
         self._runtime = runtime
@@ -54,6 +70,8 @@ class RuntimeResumeCoordinator:
         session_id: str,
         approval_request_id: str,
         approval_decision: PermissionResolution,
+        run_id: str | None = None,
+        abort_signal: ProviderAbortSignal | None = None,
         finalize_background_task: bool = False,
     ) -> Iterator[RuntimeStreamChunk]:
         stored_response, pending, checkpoint = self._load_pending_approval_context(
@@ -68,6 +86,8 @@ class RuntimeResumeCoordinator:
             pending=pending,
             approval_decision=approval_decision,
             checkpoint=checkpoint,
+            run_id=run_id,
+            abort_signal=abort_signal,
         ):
             final_session = chunk.session
             if chunk.event is not None:
@@ -123,6 +143,8 @@ class RuntimeResumeCoordinator:
         session_id: str,
         question_request_id: str,
         responses: tuple[QuestionResponse, ...],
+        run_id: str | None = None,
+        abort_signal: ProviderAbortSignal | None = None,
         finalize_background_task: bool = False,
     ) -> Iterator[RuntimeStreamChunk]:
         stored_response, pending, checkpoint, normalized_responses = (
@@ -140,6 +162,8 @@ class RuntimeResumeCoordinator:
             pending=pending,
             responses=normalized_responses,
             checkpoint=checkpoint,
+            run_id=run_id,
+            abort_signal=abort_signal,
         ):
             final_session = chunk.session
             if chunk.event is not None:
@@ -199,6 +223,8 @@ class RuntimeResumeCoordinator:
         pending: PendingQuestion,
         responses: tuple[QuestionResponse, ...],
         checkpoint: dict[str, object] | None,
+        run_id: str | None = None,
+        abort_signal: ProviderAbortSignal | None = None,
     ) -> Iterator[RuntimeStreamChunk]:
         runtime = self._runtime
         session = SessionState(
@@ -228,6 +254,12 @@ class RuntimeResumeCoordinator:
             prompt, tool_results = self._resume_prompt_and_tool_results_from_stored_events(
                 stored.events
             )
+        session = SessionState(
+            session=session.session,
+            status=session.status,
+            turn=session.turn,
+            metadata=_metadata_with_resume_run_id(session.metadata, run_id=run_id),
+        )
         runtime._validate_session_workspace(session, session_id=stored.session.session.id)
         tool_results.append(question_answer_result)
 
@@ -307,6 +339,7 @@ class RuntimeResumeCoordinator:
                     else {}
                 ),
             },
+            abort_signal=abort_signal,
         )
         graph = runtime._graph_for_session_metadata(session.metadata)
         output: str | None = None
@@ -463,6 +496,8 @@ class RuntimeResumeCoordinator:
         pending: PendingApproval,
         approval_decision: PermissionResolution,
         checkpoint: dict[str, object] | None,
+        run_id: str | None = None,
+        abort_signal: ProviderAbortSignal | None = None,
     ) -> Iterator[RuntimeStreamChunk]:
         runtime = self._runtime
         session = SessionState(
@@ -519,6 +554,12 @@ class RuntimeResumeCoordinator:
                 stored.events
             )
 
+        session = SessionState(
+            session=session.session,
+            status=session.status,
+            turn=session.turn,
+            metadata=_metadata_with_resume_run_id(session.metadata, run_id=run_id),
+        )
         runtime._validate_session_workspace(session, session_id=stored.session.session.id)
         session = runtime._session_with_current_acp_metadata(session)
         preserved_continuity_state = runtime._continuity_state_from_session_metadata(
@@ -574,6 +615,7 @@ class RuntimeResumeCoordinator:
                     else {}
                 ),
             },
+            abort_signal=abort_signal,
         )
         provider_attempt = runtime._provider_attempt_from_metadata(graph_request.metadata)
         graph = runtime._graph_for_session_metadata(session.metadata)
