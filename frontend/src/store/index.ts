@@ -5,12 +5,16 @@ import {
   AgentSummary,
   ApprovalDecision,
   AsyncStatus,
+  BackgroundTaskSummary,
   StoredSessionSummary,
   SessionState,
   EventEnvelope,
   ProviderModelsResult,
   ProviderSummary,
   ProviderValidationResult,
+  QuestionAnswer,
+  RuntimeNotification,
+  RuntimeSessionDebugSnapshot,
   RuntimeStatusSnapshot,
   RuntimeSettings,
   RuntimeSettingsUpdate,
@@ -67,6 +71,17 @@ interface AppState {
   runError: string | null;
   approvalStatus: "idle" | "submitting" | "success" | "error";
   approvalError: string | null;
+  questionStatus: "idle" | "submitting" | "success" | "error";
+  questionError: string | null;
+  notifications: RuntimeNotification[];
+  notificationsStatus: AsyncStatus;
+  notificationsError: string | null;
+  backgroundTasks: BackgroundTaskSummary[];
+  backgroundTasksStatus: AsyncStatus;
+  backgroundTasksError: string | null;
+  sessionDebug: RuntimeSessionDebugSnapshot | null;
+  sessionDebugStatus: AsyncStatus;
+  sessionDebugError: string | null;
   replayRequestId: number;
 
   settings: RuntimeSettings | null;
@@ -100,6 +115,12 @@ interface AppState {
     },
   ) => Promise<void>;
   resolveApproval: (decision: ApprovalDecision) => Promise<void>;
+  answerQuestion: (answers: QuestionAnswer[]) => Promise<void>;
+  loadNotifications: () => Promise<void>;
+  acknowledgeNotification: (notificationId: string) => Promise<void>;
+  loadBackgroundTasks: () => Promise<void>;
+  cancelBackgroundTask: (taskId: string) => Promise<void>;
+  loadSessionDebug: (sessionId?: string | null) => Promise<void>;
   loadSettings: () => Promise<void>;
   updateSettings: (settings: RuntimeSettingsUpdate) => Promise<void>;
 }
@@ -108,6 +129,22 @@ function getPendingApprovalRequestId(events: EventEnvelope[]): string | null {
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index];
     if (event.event_type !== "runtime.approval_requested") {
+      continue;
+    }
+
+    const requestId = event.payload.request_id;
+    if (typeof requestId === "string" && requestId.length > 0) {
+      return requestId;
+    }
+  }
+
+  return null;
+}
+
+function getPendingQuestionRequestId(events: EventEnvelope[]): string | null {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event.event_type !== "runtime.question_requested") {
       continue;
     }
 
@@ -230,6 +267,17 @@ export const useAppStore = create<AppState>()(
       runError: null,
       approvalStatus: "idle",
       approvalError: null,
+      questionStatus: "idle",
+      questionError: null,
+      notifications: [],
+      notificationsStatus: "idle",
+      notificationsError: null,
+      backgroundTasks: [],
+      backgroundTasksStatus: "idle",
+      backgroundTasksError: null,
+      sessionDebug: null,
+      sessionDebugStatus: "idle",
+      sessionDebugError: null,
       replayRequestId: 0,
 
       settings: null,
@@ -302,6 +350,8 @@ export const useAppStore = create<AppState>()(
             runError: null,
             approvalStatus: "idle",
             approvalError: null,
+            questionStatus: "idle",
+            questionError: null,
             reviewSnapshot: null,
             reviewStatus: "idle",
             reviewError: null,
@@ -317,6 +367,15 @@ export const useAppStore = create<AppState>()(
             sessions: [],
             sessionsStatus: "idle",
             sessionsError: null,
+            notifications: [],
+            notificationsStatus: "idle",
+            notificationsError: null,
+            backgroundTasks: [],
+            backgroundTasksStatus: "idle",
+            backgroundTasksError: null,
+            sessionDebug: null,
+            sessionDebugStatus: "idle",
+            sessionDebugError: null,
           });
           await Promise.all([
             get().loadSessions(),
@@ -607,6 +666,11 @@ export const useAppStore = create<AppState>()(
             runError: null,
             approvalStatus: "idle",
             approvalError: null,
+            questionStatus: "idle",
+            questionError: null,
+            sessionDebug: null,
+            sessionDebugStatus: "idle",
+            sessionDebugError: null,
           });
           return;
         }
@@ -624,6 +688,11 @@ export const useAppStore = create<AppState>()(
           runError: null,
           approvalStatus: "idle",
           approvalError: null,
+          questionStatus: "idle",
+          questionError: null,
+          sessionDebug: null,
+          sessionDebugStatus: "idle",
+          sessionDebugError: null,
         });
 
         try {
@@ -672,6 +741,11 @@ export const useAppStore = create<AppState>()(
           currentSessionOutput: null,
           approvalStatus: "idle",
           approvalError: null,
+          questionStatus: "idle",
+          questionError: null,
+          sessionDebug: null,
+          sessionDebugStatus: "idle",
+          sessionDebugError: null,
         });
         const effectiveSessionId =
           options?.sessionId !== undefined
@@ -744,10 +818,16 @@ export const useAppStore = create<AppState>()(
           }
 
           set({ runStatus: "success" });
+          const currentSessionId = get().currentSessionId;
           await Promise.all([
             get().loadSessions(),
             get().loadStatus(),
             get().loadReview(),
+            get().loadNotifications(),
+            get().loadBackgroundTasks(),
+            currentSessionId
+              ? get().loadSessionDebug(currentSessionId)
+              : Promise.resolve(),
           ]);
         } catch (err) {
           set({ runStatus: "error", runError: (err as Error).message });
@@ -812,6 +892,159 @@ export const useAppStore = create<AppState>()(
           set({
             approvalStatus: "error",
             approvalError: (err as Error).message,
+          });
+        }
+      },
+
+      answerQuestion: async (answers) => {
+        const {
+          currentSessionId,
+          currentSessionEvents,
+          replayStatus,
+          runStatus,
+          questionStatus,
+        } = get();
+
+        if (
+          !currentSessionId ||
+          replayStatus === "loading" ||
+          runStatus === "running" ||
+          questionStatus === "submitting"
+        ) {
+          return;
+        }
+
+        const requestId = getPendingQuestionRequestId(currentSessionEvents);
+        if (!requestId) {
+          set({
+            questionStatus: "error",
+            questionError: "No pending question request found.",
+          });
+          return;
+        }
+
+        set({ questionStatus: "submitting", questionError: null });
+
+        try {
+          const response = await RuntimeClient.answerQuestion(
+            currentSessionId,
+            requestId,
+            answers,
+          );
+          set({
+            currentSessionId: response.session.session.id,
+            currentSessionState: response.session,
+            currentSessionEvents: response.events,
+            currentSessionOutput: response.output,
+            replayStatus: "success",
+            replayError: null,
+            runStatus: "idle",
+            runError: null,
+            questionStatus: "success",
+            questionError: null,
+          });
+          await Promise.all([
+            get().loadSessions(),
+            get().loadStatus(),
+            get().loadReview(),
+            get().loadNotifications(),
+            get().loadBackgroundTasks(),
+            get().loadSessionDebug(response.session.session.id),
+          ]);
+          set({ questionStatus: "idle" });
+        } catch (err) {
+          set({
+            questionStatus: "error",
+            questionError: (err as Error).message,
+          });
+        }
+      },
+
+      loadNotifications: async () => {
+        set({ notificationsStatus: "loading", notificationsError: null });
+        try {
+          const notifications = await RuntimeClient.listNotifications();
+          set({
+            notifications,
+            notificationsStatus: "success",
+            notificationsError: null,
+          });
+        } catch (err) {
+          set({
+            notificationsStatus: "error",
+            notificationsError: (err as Error).message,
+          });
+        }
+      },
+
+      acknowledgeNotification: async (notificationId) => {
+        try {
+          const notification =
+            await RuntimeClient.acknowledgeNotification(notificationId);
+          set((state) => ({
+            notifications: state.notifications.map((item) =>
+              item.id === notification.id ? notification : item,
+            ),
+            notificationsError: null,
+          }));
+        } catch (err) {
+          set({ notificationsError: (err as Error).message });
+        }
+      },
+
+      loadBackgroundTasks: async () => {
+        set({ backgroundTasksStatus: "loading", backgroundTasksError: null });
+        try {
+          const currentSessionId = get().currentSessionId;
+          const backgroundTasks = currentSessionId
+            ? await RuntimeClient.listSessionBackgroundTasks(currentSessionId)
+            : await RuntimeClient.listBackgroundTasks();
+          set({
+            backgroundTasks,
+            backgroundTasksStatus: "success",
+            backgroundTasksError: null,
+          });
+        } catch (err) {
+          set({
+            backgroundTasksStatus: "error",
+            backgroundTasksError: (err as Error).message,
+          });
+        }
+      },
+
+      cancelBackgroundTask: async (taskId) => {
+        try {
+          await RuntimeClient.cancelBackgroundTask(taskId);
+          await get().loadBackgroundTasks();
+        } catch (err) {
+          set({ backgroundTasksError: (err as Error).message });
+        }
+      },
+
+      loadSessionDebug: async (sessionId) => {
+        const targetSessionId = sessionId ?? get().currentSessionId;
+        if (!targetSessionId) {
+          set({
+            sessionDebug: null,
+            sessionDebugStatus: "idle",
+            sessionDebugError: null,
+          });
+          return;
+        }
+        set({ sessionDebugStatus: "loading", sessionDebugError: null });
+        try {
+          const sessionDebug =
+            await RuntimeClient.getSessionDebug(targetSessionId);
+          set({
+            sessionDebug,
+            sessionDebugStatus: "success",
+            sessionDebugError: null,
+          });
+        } catch (err) {
+          set({
+            sessionDebug: null,
+            sessionDebugStatus: "error",
+            sessionDebugError: (err as Error).message,
           });
         }
       },

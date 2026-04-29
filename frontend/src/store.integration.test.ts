@@ -2,8 +2,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type {
   ApprovalDecision,
+  BackgroundTaskSummary,
   EventEnvelope,
+  QuestionAnswer,
+  RuntimeNotification,
   RuntimeResponse,
+  RuntimeSessionDebugSnapshot,
   RuntimeStatusSnapshot,
   RuntimeStreamChunk,
   RuntimeSettings,
@@ -157,6 +161,23 @@ const runtimeClientMocks = vi.hoisted(() => ({
         decision: ApprovalDecision,
       ) => Promise<RuntimeResponse>
     >(),
+  answerQuestionMock:
+    vi.fn<
+      (
+        sessionId: string,
+        requestId: string,
+        responses: QuestionAnswer[],
+      ) => Promise<RuntimeResponse>
+    >(),
+  listNotificationsMock: vi.fn<() => Promise<RuntimeNotification[]>>(),
+  acknowledgeNotificationMock:
+    vi.fn<(notificationId: string) => Promise<RuntimeNotification>>(),
+  listBackgroundTasksMock: vi.fn<() => Promise<BackgroundTaskSummary[]>>(),
+  listSessionBackgroundTasksMock:
+    vi.fn<(sessionId: string) => Promise<BackgroundTaskSummary[]>>(),
+  cancelBackgroundTaskMock: vi.fn<(taskId: string) => Promise<unknown>>(),
+  getSessionDebugMock:
+    vi.fn<(sessionId: string) => Promise<RuntimeSessionDebugSnapshot>>(),
   getSettingsMock: vi.fn<() => Promise<RuntimeSettings>>(),
   updateSettingsMock:
     vi.fn<(settings: Record<string, unknown>) => Promise<RuntimeSettings>>(),
@@ -187,6 +208,14 @@ vi.mock("./lib/runtime/client", () => ({
     retryMcpConnections: runtimeClientMocks.retryMcpConnectionsMock,
     getReview: runtimeClientMocks.getReviewMock,
     resolveApproval: runtimeClientMocks.resolveApprovalMock,
+    answerQuestion: runtimeClientMocks.answerQuestionMock,
+    listNotifications: runtimeClientMocks.listNotificationsMock,
+    acknowledgeNotification: runtimeClientMocks.acknowledgeNotificationMock,
+    listBackgroundTasks: runtimeClientMocks.listBackgroundTasksMock,
+    listSessionBackgroundTasks:
+      runtimeClientMocks.listSessionBackgroundTasksMock,
+    cancelBackgroundTask: runtimeClientMocks.cancelBackgroundTaskMock,
+    getSessionDebug: runtimeClientMocks.getSessionDebugMock,
     getSettings: runtimeClientMocks.getSettingsMock,
     updateSettings: runtimeClientMocks.updateSettingsMock,
     validateProviderCredentials:
@@ -233,6 +262,17 @@ describe("useAppStore integration flow", () => {
       runError: null,
       approvalStatus: "idle",
       approvalError: null,
+      questionStatus: "idle",
+      questionError: null,
+      notifications: [],
+      notificationsStatus: "idle",
+      notificationsError: null,
+      backgroundTasks: [],
+      backgroundTasksStatus: "idle",
+      backgroundTasksError: null,
+      sessionDebug: null,
+      sessionDebugStatus: "idle",
+      sessionDebugError: null,
       replayRequestId: 0,
       statusSnapshot: null,
       statusStatus: "idle",
@@ -264,6 +304,28 @@ describe("useAppStore integration flow", () => {
     });
     runtimeClientMocks.getSettingsMock.mockResolvedValue({});
     runtimeClientMocks.updateSettingsMock.mockResolvedValue({});
+    runtimeClientMocks.listNotificationsMock.mockResolvedValue([]);
+    runtimeClientMocks.listBackgroundTasksMock.mockResolvedValue([]);
+    runtimeClientMocks.listSessionBackgroundTasksMock.mockResolvedValue([]);
+    runtimeClientMocks.cancelBackgroundTaskMock.mockResolvedValue({});
+    runtimeClientMocks.getSessionDebugMock.mockResolvedValue({
+      session: makeSessionState("session-1", "completed"),
+      prompt: "read README.md",
+      persisted_status: "completed",
+      current_status: "completed",
+      active: false,
+      resumable: false,
+      replayable: true,
+      terminal: true,
+      pending_approval: null,
+      pending_question: null,
+      last_relevant_event: null,
+      last_failure_event: null,
+      failure: null,
+      last_tool: null,
+      suggested_operator_action: null,
+      operator_guidance: null,
+    });
     runtimeClientMocks.validateProviderCredentialsMock.mockResolvedValue({
       provider: "opencode-go",
       configured: true,
@@ -382,6 +444,85 @@ describe("useAppStore integration flow", () => {
     expect(state.currentSessionState?.status).toBe("completed");
     expect(state.currentSessionOutput).toBe("hello");
     expect(state.currentSessionEvents).toEqual(completedResponse.events);
+  });
+
+  it("handles run -> waiting question -> answer through the real store", async () => {
+    const sessionId = "session-question";
+    const requestId = "question-1";
+    const requestReceived = makeEvent(
+      1,
+      "runtime.request_received",
+      { prompt: "ask a direction" },
+      "runtime",
+      sessionId,
+    );
+    const questionRequested = makeEvent(
+      2,
+      "runtime.question_requested",
+      {
+        request_id: requestId,
+        tool: "question",
+        question_count: 1,
+        questions: [
+          {
+            header: "Direction",
+            question: "Which path?",
+            multiple: false,
+            options: [],
+          },
+        ],
+      },
+      "runtime",
+      sessionId,
+    );
+    const questionAnswered = makeEvent(
+      3,
+      "runtime.question_answered",
+      { request_id: requestId },
+      "runtime",
+      sessionId,
+    );
+    const responseReady = makeEvent(
+      4,
+      "graph.response_ready",
+      { output: "continued" },
+      "graph",
+      sessionId,
+    );
+    const completedResponse = makeRuntimeResponse(
+      sessionId,
+      "completed",
+      [requestReceived, questionRequested, questionAnswered, responseReady],
+      "continued",
+    );
+
+    async function* stream() {
+      yield makeStreamChunk(sessionId, "running", requestReceived);
+      yield makeStreamChunk(sessionId, "waiting", questionRequested);
+    }
+
+    runtimeClientMocks.runStreamMock.mockReturnValue(stream());
+    runtimeClientMocks.answerQuestionMock.mockResolvedValue(completedResponse);
+    runtimeClientMocks.listSessionsMock.mockResolvedValue([
+      makeStoredSessionSummary(sessionId, "completed", "ask a direction"),
+    ]);
+
+    const store = useAppStore.getState();
+    await store.runTask("ask a direction");
+
+    let state = useAppStore.getState();
+    expect(state.runError).toBeNull();
+    expect(state.currentSessionState?.status).toBe("waiting");
+    await state.answerQuestion([{ header: "Direction", answers: ["left"] }]);
+
+    state = useAppStore.getState();
+    expect(runtimeClientMocks.answerQuestionMock).toHaveBeenCalledWith(
+      sessionId,
+      requestId,
+      [{ header: "Direction", answers: ["left"] }],
+    );
+    expect(state.currentSessionState?.status).toBe("completed");
+    expect(state.currentSessionOutput).toBe("continued");
   });
 
   it("handles deny and preserves failed replay through the real store", async () => {
