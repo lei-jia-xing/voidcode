@@ -1456,3 +1456,197 @@ for raw_line in sys.stdin:
     ]
     assert cleanup_events[0].payload["owner_session_id"] == "abandoned"
     assert cleanup_events[0].payload["reason"] == "abandoned"
+
+
+def test_mcp_manager_marks_malformed_tool_schema_as_disabled(tmp_path: Path) -> None:
+    server_script = tmp_path / "invalid_schema_mcp_server.py"
+    server_script.write_text(
+        r"""
+from __future__ import annotations
+
+import json
+import sys
+
+
+def send(message: dict[str, object]) -> None:
+    sys.stdout.write(json.dumps(message) + "\n")
+    sys.stdout.flush()
+
+
+for raw_line in sys.stdin:
+    line = raw_line.strip()
+    if not line:
+        continue
+    message = json.loads(line)
+    method = message.get("method")
+    if method == "initialize":
+        send(
+            {
+                "jsonrpc": "2.0",
+                "id": message["id"],
+                "result": {
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {"tools": {}},
+                    "serverInfo": {"name": "invalid-schema-mcp", "version": "0.1.0"},
+                },
+            }
+        )
+        continue
+    if method == "notifications/initialized":
+        continue
+    if method == "tools/list":
+        send(
+            {
+                "jsonrpc": "2.0",
+                "id": message["id"],
+                "result": {
+                    "tools": [
+                        {
+                            "name": "bad_schema",
+                            "description": "Bad schema tool",
+                            "inputSchema": {"type": "string"},
+                        },
+                        {
+                            "name": "good_schema",
+                            "description": "Good schema tool",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {"text": {"type": "string"}},
+                            },
+                        },
+                    ]
+                },
+            }
+        )
+        continue
+""",
+        encoding="utf-8",
+    )
+
+    collector = InMemoryMcpDiagnosticsCollector()
+    manager = build_mcp_manager(
+        RuntimeMcpConfig(
+            enabled=True,
+            servers={
+                "invalid": RuntimeMcpServerConfig(
+                    transport="stdio",
+                    command=(sys.executable, str(server_script)),
+                )
+            },
+        ),
+        diagnostics_collector=collector,
+    )
+
+    tools = manager.list_tools(workspace=tmp_path)
+    assert len(tools) == 2
+    bad = next(tool for tool in tools if tool.tool_name == "bad_schema")
+    good = next(tool for tool in tools if tool.tool_name == "good_schema")
+    assert bad.enabled is False
+    assert bad.disabled_reason is not None
+    assert good.enabled is True
+
+    diagnostics = collector.get_diagnostics()
+    assert diagnostics
+    assert diagnostics[-1].category == "discovery"
+
+
+def test_mcp_manager_validates_call_arguments_against_required_schema(tmp_path: Path) -> None:
+    server_script = tmp_path / "required_schema_mcp_server.py"
+    server_script.write_text(
+        r"""
+from __future__ import annotations
+
+import json
+import sys
+
+
+def send(message: dict[str, object]) -> None:
+    sys.stdout.write(json.dumps(message) + "\n")
+    sys.stdout.flush()
+
+
+for raw_line in sys.stdin:
+    line = raw_line.strip()
+    if not line:
+        continue
+    message = json.loads(line)
+    method = message.get("method")
+    if method == "initialize":
+        send(
+            {
+                "jsonrpc": "2.0",
+                "id": message["id"],
+                "result": {
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {"tools": {}},
+                    "serverInfo": {"name": "required-schema-mcp", "version": "0.1.0"},
+                },
+            }
+        )
+        continue
+    if method == "notifications/initialized":
+        continue
+    if method == "tools/list":
+        send(
+            {
+                "jsonrpc": "2.0",
+                "id": message["id"],
+                "result": {
+                    "tools": [
+                        {
+                            "name": "echo",
+                            "description": "Echo",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {"text": {"type": "string"}},
+                                "required": ["text"],
+                            },
+                        }
+                    ]
+                },
+            }
+        )
+        continue
+    if method == "tools/call":
+        send(
+            {
+                "jsonrpc": "2.0",
+                "id": message["id"],
+                "result": {
+                    "content": [{"type": "text", "text": "ok"}],
+                    "isError": False,
+                },
+            }
+        )
+""",
+        encoding="utf-8",
+    )
+
+    collector = InMemoryMcpDiagnosticsCollector()
+    manager = build_mcp_manager(
+        RuntimeMcpConfig(
+            enabled=True,
+            servers={
+                "required": RuntimeMcpServerConfig(
+                    transport="stdio",
+                    command=(sys.executable, str(server_script)),
+                )
+            },
+        ),
+        diagnostics_collector=collector,
+    )
+
+    discovered = manager.list_tools(workspace=tmp_path)
+    assert [tool.tool_name for tool in discovered] == ["echo"]
+
+    with pytest.raises(ValueError, match="missing required arguments"):
+        manager.call_tool(
+            server_name="required",
+            tool_name="echo",
+            arguments={},
+            workspace=tmp_path,
+        )
+
+    diagnostics = collector.get_diagnostics()
+    assert diagnostics
+    assert diagnostics[-1].category == "call"
