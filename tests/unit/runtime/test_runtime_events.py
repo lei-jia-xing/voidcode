@@ -40,6 +40,7 @@ from voidcode.runtime.events import (
     EventEnvelope,
 )
 from voidcode.runtime.task import SubagentRoutingIdentity
+from voidcode.runtime.tool_display import build_tool_display
 
 
 def test_runtime_event_types_include_stable_emitted_events() -> None:
@@ -438,3 +439,16 @@ def test_tool_display_supports_all_kinds() -> None:
         display = {"kind": kind, "title": kind.title(), "summary": f"Execute {kind}"}
         assert display["kind"] in VALID_TOOL_DISPLAY_KINDS
         assert isinstance(display["title"], str)
+
+
+def test_skill_tool_display_uses_name_argument() -> None:
+    """Skill display metadata must use the canonical skill tool argument."""
+    display = build_tool_display(
+        "skill",
+        {"name": "frontend-ui-ux", "skill": "legacy-skill"},
+    )
+
+    assert display["kind"] == "skill"
+    assert display["title"] == "Skill"
+    assert display["summary"] == "frontend-ui-ux"
+    assert display["args"] == ["frontend-ui-ux", "legacy-skill"]

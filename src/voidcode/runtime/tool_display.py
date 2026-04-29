@@ -269,9 +269,9 @@ def build_tool_display(
         args = _extract_primitive_args(arguments, "task_id")
 
     elif tool_name == "skill":
-        skill_name = _first_primitive(arguments, "skill")
+        skill_name = _first_primitive(arguments, "name", "skill")
         summary = skill_name if skill_name else "Skill"
-        args = _extract_primitive_args(arguments, "skill")
+        args = _extract_primitive_args(arguments, "name", "skill")
 
     elif tool_name == "question":
         header = _first_primitive(arguments, "header")
