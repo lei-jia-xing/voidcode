@@ -5,7 +5,7 @@ from typing import Protocol
 
 from pydantic import BaseModel, ValidationError, model_validator
 
-from ..runtime.task import BackgroundTaskState
+from ..runtime.task import BackgroundTaskState, is_background_task_terminal
 from .contracts import ToolCall, ToolDefinition, ToolResult
 
 
@@ -74,7 +74,7 @@ class BackgroundCancelTool:
             content = f"Cancelled background task {task.task.id}: {cause or 'cancelled'}"
         elif task.status == "running" and task.cancel_requested_at is not None:
             content = f"Cancellation requested for background task {task.task.id}"
-        elif task.status in {"completed", "failed"}:
+        elif is_background_task_terminal(task.status):
             content = f"Background task {task.task.id} is already {task.status}"
         else:
             content = f"Background task {task.task.id}: {task.status}"
@@ -90,6 +90,6 @@ class BackgroundCancelTool:
                 "error": task.error,
                 "cancellation_cause": cause,
                 "cancel_requested": task.cancel_requested_at is not None,
-                "terminal": task.status in {"completed", "failed", "cancelled"},
+                "terminal": is_background_task_terminal(task.status),
             },
         )
