@@ -507,3 +507,10 @@ When `approval_resolution` is provided but the replayed tool call differs from t
 - `background_cancel` pre-result display metadata must read the tool input contract key `taskId`, because `runtime.tool_started` only has original arguments; `task_id` remains a defensive legacy/result-shaped fallback.
 - `background_output` should keep using snake_case `task_id`; avoid broad key normalization in `tool_display.py` so unrelated tool display arguments are not changed.
 - Regression coverage belongs in `tests/unit/runtime/test_runtime_events.py` beside the existing pure `build_tool_display()` metadata contracts.
+
+---
+
+## P1: Approval fallback replay runStatus recovery
+
+- `frontend/src/store/index.ts::resolveApproval` catch-path replay recovery must recompute `runStatus` with `runStatusForReplay(replay.session)`. Keeping the initial catch fallback `runStatus: "idle"` preserves composer recovery when replay reload fails, while successful replay replacement follows the backend session status.
+- Regression coverage in `frontend/src/store.integration.test.ts` keeps the existing waiting replay case idle and adds the rejected-approval/running-replay case, asserting both `currentSessionState.status` and `runStatus` stay `"running"`.
