@@ -3199,11 +3199,23 @@ def test_transport_allows_parent_session_while_parent_stream_request_is_active(
 
     original_register = active_registry.register
 
-    def _register_and_signal(*, workspace: Path, session_id: str) -> None:
-        original_register(workspace=workspace, session_id=session_id)
+    def _register_and_signal(
+        *,
+        workspace: Path,
+        session_id: str,
+        run_id: str,
+        metadata: dict[str, object],
+    ) -> object:
+        result = original_register(
+            workspace=workspace,
+            session_id=session_id,
+            run_id=run_id,
+            metadata=metadata,
+        )
         if session_id == "leader-session":
             parent_started.set()
             allow_parent_to_finish.wait(timeout=5)
+        return result
 
     parent_response_holder: dict[str, object] = {}
 
