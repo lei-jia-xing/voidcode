@@ -5,6 +5,7 @@ import type {
   BackgroundTaskSummary,
   EventEnvelope,
   QuestionAnswer,
+  ReviewFileDiff,
   RuntimeNotification,
   RuntimeResponse,
   RuntimeSessionDebugSnapshot,
@@ -177,6 +178,7 @@ const runtimeClientMocks = vi.hoisted(() => ({
       tree: [];
     }>
   >(),
+  getReviewDiffMock: vi.fn<(path: string) => Promise<ReviewFileDiff>>(),
   resolveApprovalMock:
     vi.fn<
       (
@@ -235,6 +237,7 @@ vi.mock("./lib/runtime/client", () => ({
     getStatus: runtimeClientMocks.getStatusMock,
     retryMcpConnections: runtimeClientMocks.retryMcpConnectionsMock,
     getReview: runtimeClientMocks.getReviewMock,
+    getReviewDiff: runtimeClientMocks.getReviewDiffMock,
     resolveApproval: runtimeClientMocks.resolveApprovalMock,
     answerQuestion: runtimeClientMocks.answerQuestionMock,
     listNotifications: runtimeClientMocks.listNotificationsMock,
@@ -342,6 +345,12 @@ describe("useAppStore integration flow", () => {
       git: { state: "git_ready" },
       changed_files: [],
       tree: [],
+    });
+    runtimeClientMocks.getReviewDiffMock.mockResolvedValue({
+      root: "/workspace",
+      path: "README.md",
+      state: "clean",
+      diff: null,
     });
     runtimeClientMocks.getSettingsMock.mockResolvedValue({});
     runtimeClientMocks.updateSettingsMock.mockResolvedValue({});
@@ -938,6 +947,27 @@ describe("useAppStore integration flow", () => {
 
     expect(useAppStore.getState().sessionSidebarWidth).toBe(380);
     expect(persisted.state.sessionSidebarWidth).toBe(380);
+  });
+
+  it("loads clean review diff state for selected nested file tree paths", async () => {
+    const reviewDiff: ReviewFileDiff = {
+      root: "/workspace",
+      path: "src/app file #1.ts",
+      state: "clean",
+      diff: null,
+    };
+    runtimeClientMocks.getReviewDiffMock.mockResolvedValue(reviewDiff);
+
+    await useAppStore.getState().selectReviewPath("src/app file #1.ts");
+
+    const state = useAppStore.getState();
+    expect(runtimeClientMocks.getReviewDiffMock).toHaveBeenCalledWith(
+      "src/app file #1.ts",
+    );
+    expect(state.reviewSelectedPath).toBe("src/app file #1.ts");
+    expect(state.reviewDiffStatus).toBe("success");
+    expect(state.reviewDiff).toEqual(reviewDiff);
+    expect(state.reviewDiffError).toBeNull();
   });
 
   it("falls back to no active session if persisted session is stale", async () => {

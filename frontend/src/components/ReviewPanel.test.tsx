@@ -75,4 +75,40 @@ describe("ReviewPanel", () => {
     document.body.style.cursor = "";
     document.body.style.userSelect = "";
   });
+
+  it("selects nested file tree paths without altering the path", () => {
+    const onSelectPath = vi.fn();
+    render(
+      <ReviewPanel
+        {...baseProps}
+        mode="files"
+        selectedPath={null}
+        onSelectPath={onSelectPath}
+        snapshot={{
+          ...baseProps.snapshot,
+          tree: [
+            {
+              kind: "directory" as const,
+              name: "src",
+              path: "src",
+              changed: false,
+              children: [
+                {
+                  kind: "file" as const,
+                  name: "app file #1.ts",
+                  path: "src/app file #1.ts",
+                  changed: false,
+                  children: [],
+                },
+              ],
+            },
+          ],
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "app file #1.ts" }));
+
+    expect(onSelectPath).toHaveBeenCalledWith("src/app file #1.ts");
+  });
 });
