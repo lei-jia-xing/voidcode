@@ -23,6 +23,8 @@ import {
   WorkspaceReviewSnapshot,
 } from "../lib/runtime/types";
 
+const DEFAULT_SESSION_SIDEBAR_WIDTH = 344;
+
 interface AppState {
   language: "en" | "zh-CN";
 
@@ -60,6 +62,7 @@ interface AppState {
 
   sessions: StoredSessionSummary[];
   currentSessionId: string | null;
+  sessionSidebarWidth: number;
   currentSessionState: SessionState | null;
   currentSessionEvents: EventEnvelope[];
   currentSessionOutput: string | null;
@@ -103,6 +106,7 @@ interface AppState {
   loadReview: () => Promise<void>;
   selectReviewPath: (path: string | null) => Promise<void>;
   setReviewMode: (mode: "changes" | "files") => void;
+  setSessionSidebarWidth: (width: number) => void;
   loadSessions: () => Promise<void>;
   selectSession: (sessionId: string) => Promise<void>;
   runTask: (
@@ -275,6 +279,7 @@ export const useAppStore = create<AppState>()(
 
       sessions: [],
       currentSessionId: null,
+      sessionSidebarWidth: DEFAULT_SESSION_SIDEBAR_WIDTH,
       currentSessionState: null,
       currentSessionEvents: [],
       currentSessionOutput: null,
@@ -641,6 +646,9 @@ export const useAppStore = create<AppState>()(
 
       setReviewMode: (reviewMode) => set({ reviewMode }),
 
+      setSessionSidebarWidth: (sessionSidebarWidth) =>
+        set({ sessionSidebarWidth }),
+
       loadSessions: async () => {
         set({ sessionsStatus: "loading", sessionsError: null });
         try {
@@ -735,7 +743,7 @@ export const useAppStore = create<AppState>()(
             replayStatus: "success",
           });
           await get().loadBackgroundTasks();
-        } catch (err) {
+        } catch {
           if (
             get().replayRequestId !== requestId ||
             get().currentSessionId !== sessionId
@@ -1148,6 +1156,7 @@ export const useAppStore = create<AppState>()(
         providerModel: state.providerModel,
         reasoningEffort: state.reasoningEffort,
         currentSessionId: state.currentSessionId,
+        sessionSidebarWidth: state.sessionSidebarWidth,
         reviewMode: state.reviewMode,
       }),
     },
