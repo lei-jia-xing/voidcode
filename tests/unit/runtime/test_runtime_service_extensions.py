@@ -5058,6 +5058,82 @@ def test_runtime_surfaces_mcp_lifecycle_events_in_run_responses(tmp_path: Path) 
     assert any(event.event_type == RUNTIME_MCP_SERVER_STARTED for event in response.events)
 
 
+def test_runtime_waiting_approval_preserves_mcp_session_until_resume_completion(
+    tmp_path: Path,
+) -> None:
+    class _RecordingMcpManager:
+        def __init__(self) -> None:
+            self.release_session_ids: list[str] = []
+
+        @property
+        def configuration(self) -> McpConfigState:
+            return McpConfigState(configured_enabled=True)
+
+        def current_state(self) -> McpManagerState:
+            return McpManagerState(mode="managed", configuration=self.configuration)
+
+        def list_tools(
+            self,
+            *,
+            workspace: Path,
+            owner_session_id: str | None = None,
+            parent_session_id: str | None = None,
+        ):
+            _ = workspace, owner_session_id, parent_session_id
+            return ()
+
+        def call_tool(
+            self,
+            *,
+            server_name: str,
+            tool_name: str,
+            arguments: dict[str, object],
+            workspace: Path,
+            owner_session_id: str | None = None,
+            parent_session_id: str | None = None,
+        ):
+            _ = server_name, tool_name, arguments, workspace, owner_session_id, parent_session_id
+            raise AssertionError("not used")
+
+        def release_session(self, *, session_id: str) -> tuple[McpRuntimeEvent, ...]:
+            self.release_session_ids.append(session_id)
+            return (
+                McpRuntimeEvent(
+                    event_type=RUNTIME_MCP_SERVER_STOPPED,
+                    payload={"server": "echo", "workspace_root": str(tmp_path)},
+                ),
+            )
+
+        def shutdown(self) -> tuple[McpRuntimeEvent, ...]:
+            return ()
+
+        def drain_events(self) -> tuple[McpRuntimeEvent, ...]:
+            return ()
+
+    mcp_manager = _RecordingMcpManager()
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        mcp_manager=mcp_manager,
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    waiting = runtime.run(RuntimeRequest(prompt="go", session_id="mcp-approval-waiting"))
+
+    assert waiting.session.status == "waiting"
+    assert mcp_manager.release_session_ids == []
+
+    resumed = runtime.resume(
+        "mcp-approval-waiting",
+        approval_request_id=cast(str, waiting.events[-1].payload["request_id"]),
+        approval_decision="allow",
+    )
+
+    assert resumed.session.status == "completed"
+    assert mcp_manager.release_session_ids == ["mcp-approval-waiting"]
+    assert any(event.event_type == RUNTIME_MCP_SERVER_STOPPED for event in resumed.events)
+
+
 def test_runtime_emits_mcp_failed_and_continues_run_on_startup_refresh(
     tmp_path: Path,
 ) -> None:

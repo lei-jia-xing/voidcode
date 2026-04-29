@@ -1102,12 +1102,20 @@ class VoidCodeRuntime:
         )
 
     def _release_mcp_session(self, session_id: str) -> tuple[EventEnvelope, ...]:
+        return self._release_mcp_session_events(session_id=session_id, start_sequence=1)
+
+    def _release_mcp_session_events(
+        self,
+        *,
+        session_id: str,
+        start_sequence: int,
+    ) -> tuple[EventEnvelope, ...]:
         release = getattr(self._mcp_manager, "release_session", None)
         if not callable(release):
             return ()
         return self._envelopes_for_mcp_events(
             session_id=session_id,
-            start_sequence=1,
+            start_sequence=start_sequence,
             mcp_events=cast(tuple[object, ...], release(session_id=session_id)),
         )
 
@@ -6011,7 +6019,6 @@ class VoidCodeRuntime:
 
     def _unregister_active_session_id(self, session_id: str) -> None:
         _ACTIVE_SESSION_REGISTRY.unregister(workspace=self._workspace, session_id=session_id)
-        _ = self._release_mcp_session(session_id)
 
     def _active_session_metadata(self, session_id: str) -> dict[str, object] | None:
         return _ACTIVE_SESSION_REGISTRY.metadata(
