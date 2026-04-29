@@ -1209,6 +1209,86 @@ def test_transport_serializes_hook_events_from_runtime_stream(tmp_path: Path) ->
     ]
 
 
+def test_transport_stream_preserves_tool_display_metadata(tmp_path: Path) -> None:
+    create_runtime_app = _load_transport_app_factory()
+    runtime_stream_chunk, session_ref, session_state, event_envelope = _load_stream_types()
+    session = session_state(
+        session=session_ref(id="tool-display-stream"),
+        status="running",
+        turn=1,
+        metadata={"workspace": str(tmp_path)},
+    )
+
+    display: dict[str, object] = {
+        "kind": "shell",
+        "title": "Shell",
+        "summary": "Run failing tests",
+        "args": ["npm test"],
+        "copyable": {"command": "npm test", "output": "stderr boom"},
+    }
+
+    class StubRuntime:
+        def run_stream(self, request: RuntimeRequestLike) -> Iterator[StreamChunkLike]:
+            assert request.prompt == "stream tool display metadata"
+            yield runtime_stream_chunk(
+                kind="event",
+                session=session,
+                event=event_envelope(
+                    session_id="tool-display-stream",
+                    sequence=1,
+                    event_type="runtime.tool_completed",
+                    source="runtime",
+                    payload={
+                        "tool": "shell_exec",
+                        "tool_call_id": "shell-1",
+                        "status": "error",
+                        "arguments": {"command": "npm test"},
+                        "error": "process failed",
+                        "display": display,
+                        "tool_status": {
+                            "invocation_id": "shell-1",
+                            "tool_name": "shell_exec",
+                            "phase": "completed",
+                            "status": "failed",
+                            "display": display,
+                        },
+                    },
+                ),
+            )
+
+        def list_sessions(self) -> tuple[StoredSessionSummaryLike, ...]:
+            raise AssertionError("list_sessions should not be called")
+
+        def web_settings(self) -> dict[str, object]:
+            raise AssertionError("web_settings should not be called")
+
+        def update_web_settings(self, **_: object) -> dict[str, object]:
+            raise AssertionError("update_web_settings should not be called")
+
+        def resume(self, session_id: str) -> RuntimeResponseLike:
+            raise AssertionError(f"resume should not be called: {session_id}")
+
+    app = create_runtime_app(workspace=tmp_path, runtime_factory=lambda: StubRuntime())
+    response = _run_app(
+        app,
+        method="POST",
+        path="/api/runtime/run/stream",
+        body=json.dumps({"prompt": "stream tool display metadata"}).encode("utf-8"),
+    )
+    payloads = _parse_sse_payloads(response)
+    event = cast(dict[str, object], payloads[0]["event"])
+    event_payload = cast(dict[str, object], event["payload"])
+    tool_status = cast(dict[str, object], event_payload["tool_status"])
+
+    assert response.status == 200
+    assert event_payload["display"] == display
+    assert tool_status["display"] == display
+    assert cast(dict[str, object], tool_status["display"])["copyable"] == {
+        "command": "npm test",
+        "output": "stderr boom",
+    }
+
+
 def test_transport_serializes_delegated_background_lifecycle_event_metadata(
     tmp_path: Path,
 ) -> None:

@@ -847,6 +847,25 @@ def test_provider_subagent_sync_e2e_parent_task_child_final_and_parent_continuat
         "requested_subagent_type": "explore",
         "load_skills": [],
         "output": "child final",
+        "display": {
+            "kind": "task",
+            "title": "Task",
+            "summary": "Sync subagent E2E child",
+            "args": ["explore", "Sync subagent E2E child", "return the child final"],
+        },
+        "tool_status": {
+            "invocation_id": ANY,
+            "tool_name": "task",
+            "phase": "completed",
+            "status": "completed",
+            "label": "Sync subagent E2E child",
+            "display": {
+                "kind": "task",
+                "title": "Task",
+                "summary": "Sync subagent E2E child",
+                "args": ["explore", "Sync subagent E2E child", "return the child final"],
+            },
+        },
     }
     assert child_replay.session.session.parent_id == "leader-session"
     assert child_replay.output == "child final"
@@ -2768,6 +2787,25 @@ def test_runtime_executes_grep_deterministic_graph_and_emits_events(tmp_path: Pa
                 "after": [],
             },
         ],
+        "display": {
+            "kind": "search",
+            "title": "Search",
+            "summary": "alpha",
+            "args": ["alpha", "sample.txt"],
+        },
+        "tool_status": {
+            "invocation_id": ANY,
+            "tool_name": "grep",
+            "phase": "completed",
+            "status": "completed",
+            "label": "alpha",
+            "display": {
+                "kind": "search",
+                "title": "Search",
+                "summary": "alpha",
+                "args": ["alpha", "sample.txt"],
+            },
+        },
     }
     assert result.session.status == "completed"
     assert result.output == (
@@ -3065,6 +3103,25 @@ def test_runtime_resumes_multi_step_loop_with_approval_and_stable_replay(tmp_pat
                 "after": [],
             }
         ],
+        "display": {
+            "kind": "search",
+            "title": "Search",
+            "summary": "copied",
+            "args": ["copied", "copied.txt"],
+        },
+        "tool_status": {
+            "invocation_id": ANY,
+            "tool_name": "grep",
+            "phase": "completed",
+            "status": "completed",
+            "label": "copied",
+            "display": {
+                "kind": "search",
+                "title": "Search",
+                "summary": "copied",
+                "args": ["copied", "copied.txt"],
+            },
+        },
     }
     assert [event.event_type for event in resumed.events].count("runtime.approval_requested") == 1
     assert [event.event_type for event in resumed.events].count("runtime.approval_resolved") == 1
