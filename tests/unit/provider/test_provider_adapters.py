@@ -1686,7 +1686,7 @@ def test_opencode_go_provider_routes_model_families_to_required_sdk_adapter(
     assert payload.get("tool_choice") == "auto"
 
 
-def test_opencode_go_glm_stream_turn_enables_tool_stream_for_tool_calls(
+def test_opencode_go_glm_stream_turn_does_not_send_rejected_tool_stream_param(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from voidcode.provider.config import SimplifiedProviderConfig
@@ -1742,7 +1742,7 @@ def test_opencode_go_glm_stream_turn_enables_tool_stream_for_tool_calls(
     payload = cast(dict[str, object], payload_obj)
     assert payload["stream"] is True
     assert payload["custom_llm_provider"] == "openai"
-    assert payload["extra_body"] == {"tool_stream": True}
+    assert "extra_body" not in payload
     assert payload["tool_choice"] == "auto"
 
     tool_events = [event for event in events if event.channel == "tool"]

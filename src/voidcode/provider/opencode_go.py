@@ -8,7 +8,6 @@ from .protocol import ProviderTurnRequest, TurnProvider
 
 _ANTHROPIC_COMPATIBLE_MODELS = frozenset({"minimax-m2.5", "minimax-m2.7"})
 _ALIBABA_COMPATIBLE_MODELS = frozenset({"qwen3.5-plus", "qwen3.6-plus"})
-_GLM_COMPATIBLE_MODELS = frozenset({"glm-5", "glm-5.1"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,15 +29,6 @@ class OpenCodeGoSingleAgentProvider(LiteLLMBackendSingleAgentProvider):
             kwargs["custom_llm_provider"] = "dashscope"
             return kwargs
         kwargs["custom_llm_provider"] = "openai"
-        return kwargs
-
-    def _stream_completion_kwargs_for_request(
-        self, request: ProviderTurnRequest
-    ) -> dict[str, object]:
-        kwargs = self._completion_kwargs_for_request(request)
-        model_name = request.model_name or ""
-        if model_name in _GLM_COMPATIBLE_MODELS and request.available_tools:
-            kwargs["extra_body"] = {"tool_stream": True}
         return kwargs
 
 
