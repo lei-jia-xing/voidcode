@@ -147,6 +147,19 @@ class TestCreateDoctorForConfig:
         assert readiness.error_message is not None
         assert "openai.api_key" in readiness.error_message
 
+    def test_adds_provider_readiness_check_for_missing_model(self, tmp_path: Path) -> None:
+        config = RuntimeConfig()
+
+        doctor = create_doctor_for_config(tmp_path, config)
+
+        readiness = next(result for result in doctor.results if result.name == "provider.readiness")
+        assert readiness.check_type == DoctorCheckType.PROVIDER_READINESS.value
+        assert readiness.status == CapabilityCheckStatus.ERROR
+        assert readiness.details["status"] == "missing_model"
+        assert readiness.details["auth_present"] is None
+        assert readiness.error_message is not None
+        assert "provider/model" in readiness.error_message
+
     def test_provider_readiness_runtime_error_is_structured_result(self, tmp_path: Path) -> None:
         config = RuntimeConfig(
             model="malformed-model",
@@ -160,6 +173,7 @@ class TestCreateDoctorForConfig:
         assert readiness.status == CapabilityCheckStatus.ERROR
         assert readiness.details == {
             "model": "malformed-model",
+            "execution_engine": "provider",
             "status": "invalid_config",
         }
         assert readiness.error_message is not None

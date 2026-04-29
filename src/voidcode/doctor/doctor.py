@@ -252,51 +252,52 @@ def create_doctor_for_config(
         for server_name, server_config in mcp_config.servers.items():
             doctor.add_mcp_server_check(server_name, server_config)
 
-    if config.execution_engine == "provider" or config.model is not None:
-        from ..runtime.service import VoidCodeRuntime
+    from ..runtime.service import VoidCodeRuntime
 
-        runtime: VoidCodeRuntime | None = None
-        try:
-            runtime = VoidCodeRuntime(workspace=workspace, config=config)
-            readiness = runtime.provider_readiness()
-        except ValueError as exc:
-            doctor.add_result(
-                CapabilityCheckResult(
-                    status=CapabilityCheckStatus.ERROR,
-                    name="provider.readiness",
-                    check_type=DoctorCheckType.PROVIDER_READINESS.value,
-                    details={
-                        "model": config.model,
-                        "status": "invalid_config",
-                    },
-                    error_message=str(exc),
-                )
-            )
-            return doctor
-        finally:
-            if runtime is not None:
-                exit_method = getattr(runtime, "__exit__", None)
-                if callable(exit_method):
-                    exit_method(None, None, None)
-        status = CapabilityCheckStatus.READY if readiness.ok else CapabilityCheckStatus.ERROR
+    runtime: VoidCodeRuntime | None = None
+    try:
+        runtime = VoidCodeRuntime(workspace=workspace, config=config)
+        readiness = runtime.provider_readiness()
+    except ValueError as exc:
         doctor.add_result(
             CapabilityCheckResult(
-                status=status,
+                status=CapabilityCheckStatus.ERROR,
                 name="provider.readiness",
                 check_type=DoctorCheckType.PROVIDER_READINESS.value,
                 details={
-                    "provider": readiness.provider,
-                    "model": readiness.model,
-                    "configured": readiness.configured,
-                    "auth_present": readiness.auth_present,
-                    "streaming_supported": readiness.streaming_supported,
-                    "context_window": readiness.context_window,
-                    "max_output_tokens": readiness.max_output_tokens,
-                    "fallback_chain": list(readiness.fallback_chain),
-                    "status": readiness.status,
+                    "model": config.model,
+                    "execution_engine": config.execution_engine,
+                    "status": "invalid_config",
                 },
-                error_message=None if readiness.ok else readiness.guidance,
+                error_message=str(exc),
             )
         )
+        return doctor
+    finally:
+        if runtime is not None:
+            exit_method = getattr(runtime, "__exit__", None)
+            if callable(exit_method):
+                exit_method(None, None, None)
+    status = CapabilityCheckStatus.READY if readiness.ok else CapabilityCheckStatus.ERROR
+    doctor.add_result(
+        CapabilityCheckResult(
+            status=status,
+            name="provider.readiness",
+            check_type=DoctorCheckType.PROVIDER_READINESS.value,
+            details={
+                "provider": readiness.provider,
+                "model": readiness.model,
+                "configured": readiness.configured,
+                "auth_present": readiness.auth_present,
+                "streaming_configured": readiness.streaming_configured,
+                "streaming_supported": readiness.streaming_supported,
+                "context_window": readiness.context_window,
+                "max_output_tokens": readiness.max_output_tokens,
+                "fallback_chain": list(readiness.fallback_chain),
+                "status": readiness.status,
+            },
+            error_message=None if readiness.ok else readiness.guidance,
+        )
+    )
 
     return doctor

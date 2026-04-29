@@ -92,6 +92,67 @@ class TestCreateReport:
         assert report.summary["errors"] == 1
         assert report.is_healthy is False
         assert report.has_errors is True
+        assert report.first_task_readiness is not None
+        assert report.first_task_readiness.status == "not_ready"
+        assert report.first_task_readiness.details["workspace_config_valid"] is False
+
+    def test_create_report_marks_missing_model_first_task_not_ready(self) -> None:
+        results = [
+            CapabilityCheckResult(
+                status=CapabilityCheckStatus.ERROR,
+                name="provider.readiness",
+                check_type="provider_readiness",
+                details={"status": "missing_model", "auth_present": None},
+                error_message="Configure a provider/model, for example model: 'openai/gpt-4o'.",
+            ),
+        ]
+
+        report = create_report(results)
+
+        assert report.first_task_readiness is not None
+        assert report.first_task_readiness.status == "not_ready"
+        assert report.first_task_readiness.details["workspace_config_valid"] is True
+        assert report.first_task_readiness.details["local_tools"] == []
+        assert report.first_task_readiness.blockers == [
+            "Configure a provider/model, for example model: 'openai/gpt-4o'."
+        ]
+        assert "config init --execution-engine provider" in report.first_task_readiness.next_step
+
+    def test_create_report_marks_ready_provider_with_missing_tool_degraded(self) -> None:
+        results = [
+            CapabilityCheckResult(
+                status=CapabilityCheckStatus.READY,
+                name="provider.readiness",
+                check_type="provider_readiness",
+                details={
+                    "provider": "openai",
+                    "model": "gpt-4o",
+                    "status": "ready",
+                    "auth_present": True,
+                    "context_window": 128_000,
+                    "fallback_chain": ["openai/gpt-4o"],
+                },
+            ),
+            CapabilityCheckResult(
+                status=CapabilityCheckStatus.NOT_FOUND,
+                name="ast-grep",
+                check_type="executable",
+                error_message="'ast-grep' not found. Tried: ast-grep",
+            ),
+        ]
+
+        report = create_report(results)
+
+        assert report.first_task_readiness is not None
+        assert report.first_task_readiness.status == "degraded"
+        assert report.first_task_readiness.details["workspace_config_valid"] is True
+        assert report.first_task_readiness.details["local_tools"] == [
+            {"name": "ast-grep", "status": "not_found"}
+        ]
+        assert report.first_task_readiness.blockers == []
+        assert report.first_task_readiness.warnings == [
+            "ast-grep: 'ast-grep' not found. Tried: ast-grep"
+        ]
 
 
 class TestFormatReport:
@@ -157,6 +218,59 @@ class TestFormatReport:
 
         assert "ready" in output.lower() or "capabilities are ready" in output.lower()
 
+    def test_format_report_includes_first_task_readiness_section(self) -> None:
+        results = [
+            CapabilityCheckResult(
+                status=CapabilityCheckStatus.ERROR,
+                name="provider.readiness",
+                check_type="provider_readiness",
+                details={"status": "missing_auth", "provider": "openai", "model": "gpt-4o"},
+                error_message="Add provider credentials.",
+            ),
+            CapabilityCheckResult(
+                status=CapabilityCheckStatus.NOT_FOUND,
+                name="ast-grep",
+                check_type="executable",
+                error_message="'ast-grep' not found. Tried: ast-grep",
+            ),
+        ]
+
+        report = create_report(results)
+        output = format_report(report)
+
+        assert "First task readiness:" in output
+        assert "status: not_ready" in output
+        assert "execution_engine: provider" in output
+        assert "workspace_config_valid: True" in output
+        assert "provider: openai" in output
+        assert "model: gpt-4o" in output
+        assert "local_tools:" in output
+        assert "ast-grep: not_found" in output
+        assert "Add provider credentials." in output
+
+    def test_format_report_includes_first_task_context_budget(self) -> None:
+        results = [
+            CapabilityCheckResult(
+                status=CapabilityCheckStatus.READY,
+                name="provider.readiness",
+                check_type="provider_readiness",
+                details={
+                    "status": "ready",
+                    "provider": "openai",
+                    "model": "gpt-4o",
+                    "auth_present": True,
+                    "context_window": 128_000,
+                    "max_output_tokens": 8_192,
+                },
+            ),
+        ]
+
+        report = create_report(results)
+        output = format_report(report)
+
+        assert "context_window: 128000" in output
+        assert "max_output_tokens: 8192" in output
+
 
 class TestFormatReportJson:
     """Tests for the format_report_json function."""
@@ -180,6 +294,7 @@ class TestFormatReportJson:
 
         assert "summary" in parsed
         assert "results" in parsed
+        assert "first_task_readiness" in parsed
         assert "is_healthy" in parsed
         assert parsed["summary"]["ready"] == 1
 
