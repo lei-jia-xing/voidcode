@@ -289,7 +289,9 @@ class ManagedMcpManager:
             return events
 
     def retry_connections(self, *, workspace: Path) -> None:
-        for server_name in self._configuration.servers:
+        for server_name, server_config in self._configuration.servers.items():
+            if getattr(server_config, "scope", "runtime") == "session":
+                continue
             self._ensure_running(server_name=server_name, workspace=workspace)
 
     def release_session(self, *, session_id: str) -> tuple[McpRuntimeEvent, ...]:

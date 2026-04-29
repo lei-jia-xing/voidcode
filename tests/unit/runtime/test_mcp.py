@@ -699,6 +699,98 @@ for raw_line in sys.stdin:
     assert [tool.tool_name for tool in discovered] == ["echo"]
 
 
+def test_mcp_manager_retry_connections_skips_ownerless_session_scoped_servers(
+    tmp_path: Path,
+) -> None:
+    runtime_started = tmp_path / "runtime-started.txt"
+    session_started = tmp_path / "session-started.txt"
+    runtime_server = tmp_path / "runtime_retry_mcp_server.py"
+    session_server = tmp_path / "session_retry_mcp_server.py"
+    server_template = r"""
+from __future__ import annotations
+
+import json
+import pathlib
+import sys
+
+started = pathlib.Path(r"{started_path}")
+started.write_text("started\n", encoding="utf-8")
+
+
+def send(message: dict[str, object]) -> None:
+    sys.stdout.write(json.dumps(message) + "\n")
+    sys.stdout.flush()
+
+
+for raw_line in sys.stdin:
+    message = json.loads(raw_line)
+    method = message.get("method")
+    if method == "initialize":
+        send(
+            {{
+                "jsonrpc": "2.0",
+                "id": message["id"],
+                "result": {{
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {{"tools": {{}}}},
+                    "serverInfo": {{"name": "retry-scope", "version": "0.1.0"}},
+                }},
+            }}
+        )
+        continue
+    if method == "notifications/initialized":
+        continue
+    if method == "tools/list":
+        send({{"jsonrpc": "2.0", "id": message["id"], "result": {{"tools": []}}}})
+        continue
+"""
+    runtime_server.write_text(
+        server_template.format(started_path=runtime_started),
+        encoding="utf-8",
+    )
+    session_server.write_text(
+        server_template.format(started_path=session_started),
+        encoding="utf-8",
+    )
+    manager = build_mcp_manager(
+        RuntimeMcpConfig(
+            enabled=True,
+            servers={
+                "runtime": RuntimeMcpServerConfig(
+                    transport="stdio",
+                    command=(sys.executable, str(runtime_server)),
+                ),
+                "session": RuntimeMcpServerConfig(
+                    transport="stdio",
+                    command=(sys.executable, str(session_server)),
+                    scope="session",
+                ),
+            },
+        )
+    )
+
+    manager.retry_connections(workspace=tmp_path)
+
+    assert runtime_started.read_text(encoding="utf-8") == "started\n"
+    assert not session_started.exists()
+    state = manager.current_state()
+    assert state.servers["runtime"].status == "running"
+    assert state.servers["session"].status == "stopped"
+    assert [event.event_type for event in manager.drain_events()] == [
+        "runtime.mcp_server_started",
+        "runtime.mcp_server_acquired",
+    ]
+
+    try:
+        manager.list_tools(workspace=tmp_path)
+    except ValueError as exc:
+        assert "session-scoped server requires an owning session id" in str(exc)
+    else:
+        raise AssertionError("expected ownerless session-scoped discovery to remain strict")
+
+    assert not session_started.exists()
+
+
 def test_mcp_manager_preserves_session_on_recoverable_call_failures(tmp_path: Path) -> None:
     server_script = tmp_path / "recoverable_call_mcp_server.py"
     server_script.write_text(
