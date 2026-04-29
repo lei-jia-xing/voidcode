@@ -40,7 +40,9 @@ const baseProps: SessionSidebarProps = {
   sessionsError: null,
   isRunning: false,
   isReplayLoading: false,
+  isExpanded: true,
   onSidebarWidthChange: vi.fn(),
+  onExpandedChange: vi.fn(),
   onSelectSession: vi.fn(),
   onOpenProjects: vi.fn(),
   onOpenSettings: vi.fn(),
@@ -48,14 +50,16 @@ const baseProps: SessionSidebarProps = {
 
 function renderSidebar(props: Partial<SessionSidebarProps> = {}) {
   const onSidebarWidthChange = vi.fn();
+  const onExpandedChange = vi.fn();
   const result = render(
     <SessionSidebar
       {...baseProps}
       {...props}
       onSidebarWidthChange={onSidebarWidthChange}
+      onExpandedChange={onExpandedChange}
     />,
   );
-  return { ...result, onSidebarWidthChange };
+  return { ...result, onSidebarWidthChange, onExpandedChange };
 }
 
 describe("SessionSidebar resizing", () => {
@@ -127,13 +131,48 @@ describe("SessionSidebar resizing", () => {
   });
 
   it("preserves collapsed rail behavior and hides the resize handle", () => {
-    const { container } = renderSidebar({
+    const { container, onExpandedChange, rerender } = renderSidebar({
       sidebarWidth: MAX_SESSION_SIDEBAR_WIDTH,
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Collapse sidebar" }));
 
+    expect(onExpandedChange).toHaveBeenCalledWith(false);
+
+    rerender(
+      <SessionSidebar
+        {...baseProps}
+        sidebarWidth={MAX_SESSION_SIDEBAR_WIDTH}
+        isExpanded={false}
+        onExpandedChange={onExpandedChange}
+      />,
+    );
+
     expect(screen.queryByRole("separator")).not.toBeInTheDocument();
     expect(container.querySelector("aside")).toHaveClass("w-16", "md:w-16");
+  });
+
+  it("shortens the live Vulkan Chinese prompt in the session list", () => {
+    const vulkanPrompt =
+      "请你作为 leader agent，在当前仓库中实现一个最小 Vulkan 三角形示例。要求：先检查项目结构和可用构建方式，再创建必要的源文件/构建配置/README说明；尽量保持最小可运行，不要做无关功能。";
+
+    renderSidebar({
+      currentSessionId: "session-vulkan-123",
+      sessions: [
+        {
+          session: { id: "session-vulkan-123" },
+          status: "completed",
+          turn: 2,
+          prompt: vulkanPrompt,
+          updated_at: Date.now(),
+        },
+      ],
+    });
+
+    expect(screen.getByText("最小 Vulkan 三角形示例")).toBeInTheDocument();
+    expect(screen.queryByText(vulkanPrompt)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/请你作为 leader agent，在当前仓库中/),
+    ).not.toBeInTheDocument();
   });
 });

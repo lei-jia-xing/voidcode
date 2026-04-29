@@ -19,6 +19,7 @@ import type {
   StoredSessionSummary,
   WorkspaceRegistrySnapshot,
 } from "../lib/runtime/types";
+import { buildSessionDisplayTitle } from "./sessionTitle";
 
 export interface SessionSidebarProps {
   workspaces: WorkspaceRegistrySnapshot | null;
@@ -29,7 +30,9 @@ export interface SessionSidebarProps {
   sessionsError: string | null;
   isRunning: boolean;
   isReplayLoading: boolean;
+  isExpanded: boolean;
   onSidebarWidthChange: (width: number) => void;
+  onExpandedChange: (isExpanded: boolean) => void;
   onSelectSession: (sessionId: string) => void;
   onOpenProjects: () => void;
   onOpenSettings: () => void;
@@ -93,13 +96,14 @@ export function SessionSidebar({
   sessionsError,
   isRunning,
   isReplayLoading,
+  isExpanded,
   onSidebarWidthChange,
+  onExpandedChange,
   onSelectSession,
   onOpenProjects,
   onOpenSettings,
 }: SessionSidebarProps) {
   const { t } = useTranslation();
-  const [isExpanded, setIsExpanded] = useState(true);
   const [isResizing, setIsResizing] = useState(false);
   const [viewportWidth, setViewportWidth] = useState(getViewportWidth);
 
@@ -269,7 +273,7 @@ export function SessionSidebar({
                 </div>
                 <button
                   type="button"
-                  onClick={() => setIsExpanded((value) => !value)}
+                  onClick={() => onExpandedChange(!isExpanded)}
                   className="rounded-md p-1 text-[var(--vc-text-subtle)] hover:bg-[var(--vc-surface-1)] hover:text-[var(--vc-text-primary)]"
                   aria-label={t(
                     isExpanded ? "sidebar.collapse" : "sidebar.expand",
@@ -328,56 +332,21 @@ export function SessionSidebar({
                   </span>
                 </button>
                 {sortedSessions.map((s) => (
-                  <button
+                  <SessionListItem
                     key={s.session.id}
-                    type="button"
-                    onClick={() => onSelectSession(s.session.id)}
-                    disabled={isRunning || isReplayLoading}
-                    className={`w-full flex flex-col items-start justify-center px-3 py-2.5 rounded-lg transition-colors overflow-hidden border ${
-                      currentSessionId === s.session.id
-                        ? "bg-[var(--vc-surface-2)] border-[color:var(--vc-border-strong)] text-[var(--vc-text-primary)]"
-                        : "border-transparent text-[var(--vc-text-muted)] hover:bg-[var(--vc-surface-1)] hover:text-[var(--vc-text-primary)]"
-                    }`}
-                    title={s.prompt || s.session.id}
-                  >
-                    <div className="w-full flex items-center justify-between gap-2 mb-1">
-                      <div className="flex items-center truncate max-w-[75%]">
-                        <div
-                          className={`w-1.5 h-1.5 rounded-full flex-shrink-0 mr-2 ${getSessionStatusDotClass(s.status)}`}
-                        />
-                        <span className="font-medium text-sm truncate">
-                          {s.prompt || (
-                            <span className="font-mono">
-                              {s.session.id.substring(0, 8)}
-                            </span>
-                          )}
-                        </span>
-                      </div>
-                      <span
-                        className={`flex-shrink-0 text-[10px] px-1.5 py-0.5 rounded-md font-medium border ${getStatusColorClass(s.status)}`}
-                      >
-                        {s.status === "running"
-                          ? t("session.agentBusy")
-                          : t(`task.status.${s.status}`)}
-                      </span>
-                    </div>
-                    <div className="w-full flex items-center justify-between gap-2 text-[11px] text-[var(--vc-text-subtle)]">
-                      <div className="min-w-0 flex flex-col items-start">
-                        <span
-                          className="font-mono truncate max-w-full"
-                          title={s.session.id}
-                        >
-                          {s.session.id.substring(0, 8)}
-                        </span>
-                        <span className="truncate max-w-full">
-                          {formatSessionUpdatedLabel(s.updated_at)}
-                        </span>
-                      </div>
-                      <span className="flex-shrink-0 font-medium">
-                        T{s.turn}
-                      </span>
-                    </div>
-                  </button>
+                    sessionSummary={s}
+                    isActive={currentSessionId === s.session.id}
+                    isDisabled={isRunning || isReplayLoading}
+                    statusDotClass={getSessionStatusDotClass(s.status)}
+                    statusColorClass={getStatusColorClass(s.status)}
+                    updatedLabel={formatSessionUpdatedLabel(s.updated_at)}
+                    statusLabel={
+                      s.status === "running"
+                        ? t("session.agentBusy")
+                        : t(`task.status.${s.status}`)
+                    }
+                    onSelectSession={onSelectSession}
+                  />
                 ))}
               </div>
               {sessionsStatus === "loading" && (
@@ -398,7 +367,7 @@ export function SessionSidebar({
           <div className="p-3 space-y-3 hidden md:flex md:flex-col md:items-center">
             <button
               type="button"
-              onClick={() => setIsExpanded((value) => !value)}
+              onClick={() => onExpandedChange(!isExpanded)}
               className="rounded-md p-2 text-[var(--vc-text-subtle)] hover:bg-[var(--vc-surface-1)] hover:text-[var(--vc-text-primary)]"
               aria-label={t("sidebar.expand")}
             >
@@ -443,5 +412,72 @@ export function SessionSidebar({
         </div>
       )}
     </aside>
+  );
+}
+
+function SessionListItem({
+  sessionSummary,
+  isActive,
+  isDisabled,
+  statusDotClass,
+  statusColorClass,
+  updatedLabel,
+  statusLabel,
+  onSelectSession,
+}: {
+  sessionSummary: StoredSessionSummary;
+  isActive: boolean;
+  isDisabled: boolean;
+  statusDotClass: string;
+  statusColorClass: string;
+  updatedLabel: string;
+  statusLabel: string;
+  onSelectSession: (sessionId: string) => void;
+}) {
+  const displayTitle = buildSessionDisplayTitle(
+    sessionSummary.prompt,
+    sessionSummary.session.id,
+  );
+
+  return (
+    <button
+      type="button"
+      onClick={() => onSelectSession(sessionSummary.session.id)}
+      disabled={isDisabled}
+      className={`w-full flex flex-col items-start justify-center px-3 py-2.5 rounded-lg transition-colors overflow-hidden border ${
+        isActive
+          ? "bg-[var(--vc-surface-2)] border-[color:var(--vc-border-strong)] text-[var(--vc-text-primary)]"
+          : "border-transparent text-[var(--vc-text-muted)] hover:bg-[var(--vc-surface-1)] hover:text-[var(--vc-text-primary)]"
+      }`}
+      title={displayTitle}
+    >
+      <div className="w-full flex items-center justify-between gap-2 mb-1">
+        <div className="flex items-center truncate max-w-[75%]">
+          <div
+            className={`w-1.5 h-1.5 rounded-full flex-shrink-0 mr-2 ${statusDotClass}`}
+          />
+          <span className="font-medium text-sm truncate">{displayTitle}</span>
+        </div>
+        <span
+          className={`flex-shrink-0 text-[10px] px-1.5 py-0.5 rounded-md font-medium border ${statusColorClass}`}
+        >
+          {statusLabel}
+        </span>
+      </div>
+      <div className="w-full flex items-center justify-between gap-2 text-[11px] text-[var(--vc-text-subtle)]">
+        <div className="min-w-0 flex flex-col items-start">
+          <span
+            className="font-mono truncate max-w-full"
+            title={sessionSummary.session.id}
+          >
+            {sessionSummary.session.id.substring(0, 8)}
+          </span>
+          <span className="truncate max-w-full">{updatedLabel}</span>
+        </div>
+        <span className="flex-shrink-0 font-medium">
+          T{sessionSummary.turn}
+        </span>
+      </div>
+    </button>
   );
 }
