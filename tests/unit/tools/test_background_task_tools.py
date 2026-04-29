@@ -71,7 +71,13 @@ class _StubBackgroundRuntime:
 
 
 class _RawPreviewBackgroundRuntime(_StubBackgroundRuntime):
-    def load_background_task_result(self, task_id: str) -> BackgroundTaskResult:
+    def load_background_task_result(
+        self,
+        task_id: str,
+        *,
+        emit_result_read_hook: bool = True,
+    ) -> BackgroundTaskResult:
+        _ = emit_result_read_hook
         assert task_id == "task-1"
         return BackgroundTaskResult(
             task_id="task-1",
@@ -167,7 +173,13 @@ class _UnavailableBackgroundRuntime(_StubBackgroundRuntime):
 
 
 class _ApprovalBlockedBackgroundRuntime(_StubBackgroundRuntime):
-    def load_background_task_result(self, task_id: str) -> BackgroundTaskResult:
+    def load_background_task_result(
+        self,
+        task_id: str,
+        *,
+        emit_result_read_hook: bool = True,
+    ) -> BackgroundTaskResult:
+        _ = emit_result_read_hook
         assert task_id == "task-1"
         return BackgroundTaskResult(
             task_id="task-1",
