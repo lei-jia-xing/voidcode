@@ -12397,6 +12397,126 @@ def test_runtime_provider_failure_resume_finalizes_background_task_and_releases_
     assert any(event.event_type == RUNTIME_MCP_SERVER_STOPPED for event in resumed.events)
 
 
+def test_runtime_provider_failure_resume_persists_failed_chunk_when_loop_raises(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / "sample.txt").write_text("sample contents", encoding="utf-8")
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(
+                    (
+                        ProviderStreamEvent(
+                            kind="content",
+                            channel="tool",
+                            text=(
+                                '{"tool_name":"read_file",'
+                                '"arguments":{"filePath":"sample.txt"},'
+                                '"tool_call_id":"read-sample"}'
+                            ),
+                        ),
+                        ProviderStreamEvent(kind="done", done_reason="completed"),
+                    ),
+                    (
+                        ProviderStreamEvent(
+                            kind="error",
+                            channel="error",
+                            error="stream disconnect",
+                            error_kind="transient_failure",
+                        ),
+                        ProviderStreamEvent(kind="done", done_reason="error"),
+                    ),
+                ),
+            ),
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+        model_provider_registry=registry,
+    )
+    task_id = "bg-provider-failure-raise"
+    child_session_id = "provider-retry-raise-child"
+
+    _ = list(
+        runtime._run_with_persistence(  # pyright: ignore[reportPrivateUsage]
+            RuntimeRequest(
+                prompt="read sample.txt",
+                session_id=child_session_id,
+                metadata={
+                    "provider_stream": True,
+                    "background_task_id": task_id,
+                    "background_run": True,
+                },
+            ),
+            allow_internal_metadata=True,
+        )
+    )
+    runtime._session_store.create_background_task(  # pyright: ignore[reportPrivateUsage]
+        workspace=tmp_path,
+        task=BackgroundTaskState(
+            task=BackgroundTaskRef(id=task_id),
+            request=BackgroundTaskRequestSnapshot(prompt="read sample.txt"),
+        ),
+    )
+    session_store = runtime._session_store  # pyright: ignore[reportPrivateUsage]
+    assert isinstance(session_store, SqliteSessionStore)
+    with session_store._write_connect(tmp_path) as connection:  # pyright: ignore[reportPrivateUsage]
+        _ = connection.execute(
+            """
+            UPDATE background_tasks
+            SET status = 'running', session_id = ?, result_available = 0,
+                error = NULL, finished_at = NULL
+            WHERE task_id = ?
+            """,
+            (child_session_id, task_id),
+        )
+        connection.commit()
+
+    def _raise_after_failed_chunk(**kwargs: object) -> Iterator[RuntimeStreamChunk]:
+        resumed_session = kwargs.get("session")
+        assert isinstance(resumed_session, SessionState)
+        sequence = kwargs.get("sequence")
+        assert isinstance(sequence, int)
+        failed_session = SessionState(
+            session=resumed_session.session,
+            status="failed",
+            turn=resumed_session.turn,
+            metadata=resumed_session.metadata,
+        )
+        yield RuntimeStreamChunk(
+            kind="event",
+            session=failed_session,
+            event=EventEnvelope(
+                session_id=failed_session.session.id,
+                sequence=sequence + 1,
+                event_type="runtime.failed",
+                source="runtime",
+                payload={"error": "resume loop crashed after failure"},
+            ),
+        )
+        raise RuntimeError("graph loop raised after failed chunk")
+
+    monkeypatch.setattr(  # pyright: ignore[reportPrivateUsage]
+        runtime,
+        "_execute_graph_loop",
+        _raise_after_failed_chunk,
+    )
+
+    resumed = runtime.resume(child_session_id)
+
+    assert resumed.session.status == "failed"
+    assert resumed.events[-1].payload == {"error": "resume loop crashed after failure"}
+    stored = session_store.load_session(workspace=tmp_path, session_id=child_session_id)
+    assert stored.session.status == "failed"
+    assert stored.events[-1].payload == {"error": "resume loop crashed after failure"}
+    terminal_task = runtime.load_background_task(task_id)
+    assert terminal_task.status == "failed"
+    assert terminal_task.error == "resume loop crashed after failure"
+
+
 def test_runtime_fallback_event_preserves_provider_error_details(tmp_path: Path) -> None:
     registry = ModelProviderRegistry(
         providers={

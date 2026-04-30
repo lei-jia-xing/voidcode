@@ -1211,25 +1211,45 @@ class RuntimeResumeCoordinator:
         output: str | None = None
         final_session = session
         last_sequence = max_stored_sequence
-        for chunk in runtime._execute_graph_loop(
-            graph=graph,
-            tool_registry=tool_registry,
-            session=session,
-            sequence=max_stored_sequence,
-            graph_request=graph_request,
-            tool_results=tool_results,
-            permission_policy=runtime._permission_policy_for_session(session.metadata),
-            preserved_continuity_state=runtime._continuity_state_from_session_metadata(
-                session.metadata
-            ),
-        ):
-            final_session = chunk.session
-            if chunk.event is not None:
-                last_sequence = chunk.event.sequence
-                loop_events.append(chunk.event)
-            if chunk.kind == "output":
-                output = chunk.output
-            yield chunk
+        try:
+            for chunk in runtime._execute_graph_loop(
+                graph=graph,
+                tool_registry=tool_registry,
+                session=session,
+                sequence=max_stored_sequence,
+                graph_request=graph_request,
+                tool_results=tool_results,
+                permission_policy=runtime._permission_policy_for_session(session.metadata),
+                preserved_continuity_state=runtime._continuity_state_from_session_metadata(
+                    session.metadata
+                ),
+            ):
+                final_session = chunk.session
+                if chunk.event is not None:
+                    last_sequence = chunk.event.sequence
+                    loop_events.append(chunk.event)
+                if chunk.kind == "output":
+                    output = chunk.output
+                yield chunk
+        except Exception:
+            if final_session.status == "failed":
+                response = RuntimeResponse(
+                    session=final_session,
+                    events=stored.events + tuple(loop_events),
+                    output=output,
+                )
+                request = RuntimeRequest(
+                    prompt=prompt,
+                    session_id=stored.session.session.id,
+                    parent_session_id=stored.session.session.parent_id,
+                )
+                runtime._persist_response(request=request, response=response)
+                if finalize_background_task:
+                    runtime._background_task_supervisor.finalize_background_task_from_session_response(
+                        session_response=response
+                    )
+                return
+            raise
 
         if final_session.status == "waiting":
             final_session = runtime._disconnect_acp_for_session_state(final_session)
