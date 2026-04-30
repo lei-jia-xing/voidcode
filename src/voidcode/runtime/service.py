@@ -2430,7 +2430,9 @@ class VoidCodeRuntime:
     @staticmethod
     def _extract_shell_path_candidates(command: str) -> tuple[str, ...]:
         try:
-            tokens = shlex.split(command)
+            lexer = shlex.shlex(command, posix=False)
+            lexer.whitespace_split = True
+            tokens = list(lexer)
         except ValueError:
             tokens = command.split()
         candidates: list[str] = []
@@ -2447,16 +2449,17 @@ class VoidCodeRuntime:
                 candidates.append(value)
                 continue
             if len(value) >= 3 and value[1] == ":" and value[2] in ("\\", "/"):
-                suffix = value.rsplit("\\", 1)[-1].rsplit("/", 1)[-1].lower()
-                if suffix.endswith((".txt", ".md", ".py", ".json", ".yaml", ".yml")):
-                    candidates.append(value)
+                candidates.append(value)
         return tuple(candidates)
 
     @staticmethod
     def _normalize_shell_path_token(token: str) -> str:
         value = token.strip().strip("\"'`")
-        while value and value[0].isdigit():
-            value = value[1:]
+        redirection_index = 0
+        while redirection_index < len(value) and value[redirection_index].isdigit():
+            redirection_index += 1
+        if redirection_index < len(value) and value[redirection_index] in ("<", ">"):
+            value = value[redirection_index:]
         return value.lstrip("<>")
 
     @staticmethod

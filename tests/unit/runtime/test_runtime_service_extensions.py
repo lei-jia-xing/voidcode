@@ -155,6 +155,12 @@ def _private_attr(instance: object, name: str) -> Any:
         ("du -sh /var", ("/var",)),
         ("echo hi > /tmp/out.txt", ("/tmp/out.txt",)),
         ("echo hi 2>/tmp/err.log", ("/tmp/err.log",)),
+        (r"type C:\temp\out.log", (r"C:\temp\out.log",)),
+        (
+            r"type C:\Windows\System32\drivers\etc\hosts",
+            (r"C:\Windows\System32\drivers\etc\hosts",),
+        ),
+        ("cat 2024/report.txt", ()),
     ],
 )
 def test_runtime_extracts_shell_external_path_candidates(
