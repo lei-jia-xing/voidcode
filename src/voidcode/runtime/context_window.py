@@ -618,7 +618,7 @@ def _tool_result_token_estimate(
     payload = {
         "tool_name": result.tool_name,
         "status": result.status,
-        "content": normalize_tool_result_content(result.content),
+        "content": result.content,
         "error": result.error,
         "data": result.data,
     }

@@ -62,6 +62,35 @@ def test_session_storage_persists_parent_lineage_across_read_surfaces(tmp_path: 
     assert notifications[0].session.parent_id == "leader-session"
 
 
+def test_tool_results_from_events_preserves_raw_read_file_content() -> None:
+    raw_content = "\n".join(
+        [
+            "<path>sample.txt</path>",
+            "<type>file</type>",
+            "<content>",
+            "1: alpha",
+            "(End of file - total 1 lines)",
+            "</content>",
+        ]
+    )
+    event = EventEnvelope(
+        session_id="session-1",
+        sequence=1,
+        event_type="runtime.tool_completed",
+        source="tool",
+        payload={
+            "tool": "read_file",
+            "status": "ok",
+            "content": raw_content,
+        },
+    )
+    tool_results_from_events = _private_attr(SqliteSessionStore, "_tool_results_from_events")
+
+    tool_results = tool_results_from_events((event,))
+
+    assert tool_results[0]["content"] == raw_content
+
+
 def test_session_storage_revert_marker_filters_active_view_only(tmp_path: Path) -> None:
     store = SqliteSessionStore()
     request = RuntimeRequest(prompt="mistaken request", session_id="undo-session")

@@ -865,3 +865,39 @@ def test_normalize_read_file_output_preserves_output_capped_footer() -> None:
     assert normalized == (
         "alpha\n(Output capped at 50 KB. Showing lines 1-1. Use offset=2 to continue.)"
     )
+
+
+def test_context_window_token_estimate_counts_raw_read_file_content() -> None:
+    raw_content = "\n".join(
+        [
+            "<path>sample.txt</path>",
+            "<type>file</type>",
+            "<content>",
+            "1: alpha",
+            "2: beta",
+            "(End of file - total 2 lines)",
+            "</content>",
+        ]
+    )
+    stripped_content = normalize_read_file_output(raw_content)
+    policy = ContextWindowPolicy(
+        auto_compaction=False,
+        max_tool_result_tokens=100_000,
+    )
+
+    raw_context = prepare_provider_context(
+        prompt="read sample.txt",
+        tool_results=(ToolResult(tool_name="read_file", status="ok", content=raw_content),),
+        session_metadata={},
+        policy=policy,
+    )
+    stripped_context = prepare_provider_context(
+        prompt="read sample.txt",
+        tool_results=(ToolResult(tool_name="read_file", status="ok", content=stripped_content),),
+        session_metadata={},
+        policy=policy,
+    )
+
+    assert raw_context.original_tool_result_tokens is not None
+    assert stripped_context.original_tool_result_tokens is not None
+    assert raw_context.original_tool_result_tokens > stripped_context.original_tool_result_tokens

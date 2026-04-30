@@ -17,16 +17,6 @@ from ._pydantic_args import ShellExecArgs
 from .contracts import RuntimeToolTimeoutError, ToolCall, ToolDefinition, ToolResult
 from .runtime_context import current_runtime_tool_context
 
-MAX_OUTPUT_CHARS = 200_000
-
-
-def _truncate(text: str | None) -> tuple[str, bool]:
-    if text is None:
-        return "", False
-    if len(text) <= MAX_OUTPUT_CHARS:
-        return text, False
-    return text[:MAX_OUTPUT_CHARS], True
-
 
 def _decode_process_output(payload: bytes | None) -> str:
     if payload is None:
@@ -178,10 +168,6 @@ class ShellExecTool:
         if stderr:
             output = f"{output}{stderr}" if output else stderr
 
-        content, content_truncated = _truncate(output)
-        stdout, stdout_truncated = _truncate(stdout)
-        stderr, stderr_truncated = _truncate(stderr)
-
         if aborted:
             reason = getattr(abort_signal, "reason", None)
             content = "User aborted the command."
@@ -196,20 +182,20 @@ class ShellExecTool:
                     "stdout": stdout,
                     "stderr": stderr,
                     "timeout": timeout_seconds,
-                    "truncated": stdout_truncated or stderr_truncated,
+                    "truncated": False,
                     "interrupted": True,
                     "cancelled": True,
                     "reason": reason if isinstance(reason, str) else None,
                 },
-                truncated=stdout_truncated or stderr_truncated,
-                partial=stdout_truncated or stderr_truncated,
+                truncated=False,
+                partial=False,
                 timeout_seconds=timeout_seconds,
             )
 
         return ToolResult(
             tool_name=self.definition.name,
             status="ok",
-            content=content,
+            content=output,
             data={
                 "command": command_text,
                 "cwd": str(policy.workspace_root),
@@ -217,12 +203,12 @@ class ShellExecTool:
                 "stdout": stdout,
                 "stderr": stderr,
                 "timeout": timeout_seconds,
-                "stdout_truncated": stdout_truncated,
-                "stderr_truncated": stderr_truncated,
-                "truncated": content_truncated or stdout_truncated or stderr_truncated,
-                "output_char_count": len(content),
+                "stdout_truncated": False,
+                "stderr_truncated": False,
+                "truncated": False,
+                "output_char_count": len(output),
             },
-            truncated=content_truncated or stdout_truncated or stderr_truncated,
-            partial=content_truncated or stdout_truncated or stderr_truncated,
+            truncated=False,
+            partial=False,
             timeout_seconds=timeout_seconds,
         )
