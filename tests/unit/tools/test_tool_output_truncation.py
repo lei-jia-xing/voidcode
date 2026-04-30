@@ -146,7 +146,8 @@ def test_strip_redaction_sentinels_replaces_redaction_metadata_with_empty_string
                     "newString": {"omitted": True, "byte_count": 3, "line_count": 1},
                 }
             ],
-        }
+        },
+        redacted_keys=frozenset({"content", "oldString", "newString"}),
     )
 
     assert stripped == {
@@ -166,7 +167,8 @@ def test_strip_redaction_sentinels_handles_nested_todo_arguments() -> None:
                     "priority": "high",
                 }
             ]
-        }
+        },
+        redacted_keys=frozenset({"content"}),
     )
 
     assert stripped == {"todos": [{"content": "", "status": "pending", "priority": "high"}]}
@@ -189,6 +191,6 @@ def test_strip_redaction_sentinels_preserves_truncation_previews() -> None:
 def test_strip_redaction_sentinels_preserves_matching_custom_metadata_objects() -> None:
     metadata = {"omitted": True, "byte_count": 42, "line_count": 2}
 
-    stripped = strip_redaction_sentinels({"metadata": metadata})
+    stripped = strip_redaction_sentinels({"content": metadata})
 
-    assert stripped == {"metadata": metadata}
+    assert stripped == {"content": metadata}

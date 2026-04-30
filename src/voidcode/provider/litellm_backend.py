@@ -23,6 +23,7 @@ else:
 
 from ..tools.contracts import ToolCall, ToolDefinition
 from ..tools.output import (
+    redacted_argument_keys_for_tool,
     sanitize_tool_arguments,
     sanitize_tool_result_data,
     strip_redaction_sentinels,
@@ -279,9 +280,15 @@ class LiteLLMBackendSingleAgentProvider:
         return "standard"
 
     @staticmethod
-    def _provider_visible_arguments(arguments: dict[str, object]) -> dict[str, object]:
+    def _provider_visible_arguments(
+        tool_name: str | None,
+        arguments: dict[str, object],
+    ) -> dict[str, object]:
         sanitized = sanitize_tool_arguments(arguments)
-        stripped = strip_redaction_sentinels(sanitized)
+        stripped = strip_redaction_sentinels(
+            sanitized,
+            redacted_keys=redacted_argument_keys_for_tool(tool_name),
+        )
         return cast(dict[str, object], stripped) if isinstance(stripped, dict) else {}
 
     def _build_messages(self, request: ProviderTurnRequest) -> list[dict[str, object]]:
@@ -300,7 +307,10 @@ class LiteLLMBackendSingleAgentProvider:
                     )
                     raw_arguments = sanitized_data.get("arguments")
                     sanitized_arguments = (
-                        self._provider_visible_arguments(cast(dict[str, object], raw_arguments))
+                        self._provider_visible_arguments(
+                            segment.tool_name,
+                            cast(dict[str, object], raw_arguments),
+                        )
                         if isinstance(raw_arguments, dict)
                         else {}
                     )
@@ -350,7 +360,10 @@ class LiteLLMBackendSingleAgentProvider:
                     segment.tool_call_id,
                     fallback=segment.tool_name,
                 )
-                sanitized_arguments = self._provider_visible_arguments(segment.tool_arguments or {})
+                sanitized_arguments = self._provider_visible_arguments(
+                    segment.tool_name,
+                    segment.tool_arguments or {},
+                )
                 arguments = json.dumps(
                     sanitized_arguments,
                     ensure_ascii=False,

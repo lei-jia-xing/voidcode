@@ -1265,12 +1265,12 @@ def test_provider_adapter_preserves_custom_metadata_shaped_arguments(
     metadata_argument = {"omitted": True, "byte_count": 42, "line_count": 2}
     tool_results = (
         ToolResult(
-            tool_name="mcp_custom",
+            tool_name="mcp/demo/custom",
             status="ok",
             content="Completed custom tool",
             data={
                 "tool_call_id": "call-custom",
-                "arguments": {"metadata": metadata_argument},
+                "arguments": {"content": metadata_argument},
             },
         ),
     )
@@ -1311,7 +1311,7 @@ def test_provider_adapter_preserves_custom_metadata_shaped_arguments(
     raw_arguments = function["arguments"]
     assert isinstance(raw_arguments, str)
     arguments_payload = cast(dict[str, object], json.loads(raw_arguments))
-    assert arguments_payload["metadata"] == metadata_argument
+    assert arguments_payload["content"] == metadata_argument
 
 
 def test_provider_adapter_includes_tool_result_errors(
