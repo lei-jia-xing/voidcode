@@ -788,7 +788,12 @@ class RuntimeResumeCoordinator:
                     yield chunk
 
             graph_loop_chunks: Iterator[RuntimeStreamChunk]
-            if session.status == "failed":
+            resumed_engine = runtime._effective_runtime_config_from_metadata(
+                session.metadata
+            ).execution_engine
+            if session.status == "failed" or (
+                approval_decision == "deny" and resumed_engine != "provider"
+            ):
                 graph_loop_chunks = iter(())
             else:
                 graph_loop_chunks = runtime._execute_graph_loop(
