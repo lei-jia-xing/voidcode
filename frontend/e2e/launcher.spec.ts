@@ -420,20 +420,26 @@ test.describe('VoidCode Web Launcher', () => {
     await expect(page.locator('aside').first()).toHaveCSS('--session-sidebar-width', '448px');
 
     await page.getByRole('button', { name: 'Toggle file tree' }).click();
-    await expect(page.getByRole('complementary').filter({ hasText: 'Review' })).toBeVisible();
+    await expect(page.getByRole('complementary', { name: 'File Tree' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Toggle file tree' })).toHaveAttribute('aria-expanded', 'true');
-    await page.getByRole('button', { name: 'Files' }).click();
-    await expect(page.getByRole('button', { name: 'Files' })).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.getByRole('button', { name: 'Changes' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Files' })).toHaveCount(0);
     await page.getByRole('button', { name: 'app.ts' }).click();
+    await expect(page.getByRole('button', { name: 'Toggle file tree' })).toHaveAttribute('aria-expanded', 'true');
+    await expect(page.getByRole('button', { name: 'Toggle code review' })).toHaveAttribute('aria-expanded', 'true');
+    await expect(page.getByRole('complementary', { name: 'Code Review' })).toBeVisible();
     await expect(page.getByText('--- a/src/app.ts')).toBeVisible();
-    await page.getByRole('button', { name: 'Close review panel' }).click();
+
+    await page.getByRole('button', { name: 'Toggle code review' }).click();
+    await expect(page.getByRole('button', { name: 'Toggle code review' })).toHaveAttribute('aria-expanded', 'false');
+    await expect(page.getByRole('button', { name: 'Toggle file tree' })).toHaveAttribute('aria-expanded', 'true');
     await page.getByRole('button', { name: 'Toggle code review' }).click();
     await expect(page.getByRole('button', { name: 'Toggle code review' })).toHaveAttribute('aria-expanded', 'true');
-    await expect(page.getByRole('button', { name: 'Changes' })).toHaveAttribute('aria-pressed', 'true');
     await page.getByRole('button', { name: 'Refresh' }).first().click();
     await expect(page.getByRole('button', { name: 'M src/app.ts' })).toBeVisible();
     await page.screenshot({ path: path.join(evidenceDir, 'task-11-layout-buttons.png'), fullPage: true });
-    await page.getByRole('button', { name: 'Close review panel' }).click();
+    await page.getByRole('button', { name: 'Close code review panel' }).click();
+    await page.getByRole('button', { name: 'Close file tree panel' }).click();
 
     const input = page.locator('textarea');
     await input.fill('browser QA tool surfaces');

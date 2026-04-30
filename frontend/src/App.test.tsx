@@ -195,7 +195,39 @@ describe("App", () => {
   it("renders independent sessions, file tree, and code review toggles in the workspace header", () => {
     const workspaceStore = {
       ...mockStore,
-      reviewMode: "changes" as "changes" | "files",
+      reviewSnapshot: {
+        root: "/workspace",
+        git: { state: "git_ready" as const, root: "/workspace" },
+        changed_files: [
+          { path: "src/app.ts", change_type: "modified" as const },
+        ],
+        tree: [
+          {
+            kind: "directory" as const,
+            name: "src",
+            path: "src",
+            changed: true,
+            children: [
+              {
+                kind: "file" as const,
+                name: "app.ts",
+                path: "src/app.ts",
+                changed: true,
+                children: [],
+              },
+            ],
+          },
+        ],
+      },
+      reviewSelectedPath: "src/app.ts",
+      reviewDiff: {
+        root: "/workspace",
+        path: "src/app.ts",
+        state: "changed" as const,
+        diff: "--- a/src/app.ts\n+++ b/src/app.ts\n@@ -1 +1 @@\n-old\n+new",
+      },
+      reviewStatus: "success" as const,
+      reviewDiffStatus: "success" as const,
       workspaces: {
         current: {
           path: "/workspace",
@@ -207,15 +239,12 @@ describe("App", () => {
         recent: [],
         candidates: [],
       },
-      setReviewMode: vi.fn((mode: "changes" | "files") => {
-        workspaceStore.reviewMode = mode;
-      }),
     };
     (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue(
       workspaceStore,
     );
 
-    const { rerender } = render(<App />);
+    render(<App />);
 
     const sessionsToggle = screen.getByRole("button", {
       name: "Toggle sessions",
@@ -241,33 +270,47 @@ describe("App", () => {
     expect(sessionsToggle).toHaveAttribute("aria-expanded", "false");
 
     fireEvent.click(fileTreeToggle);
-    expect(workspaceStore.setReviewMode).toHaveBeenLastCalledWith("files");
     expect(
       screen.getByRole("button", { name: "Toggle file tree" }),
     ).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getByRole("button", { name: "Files" })).toHaveAttribute(
-      "aria-pressed",
-      "true",
-    );
+    expect(
+      screen.getByRole("button", { name: "Toggle code review" }),
+    ).toHaveAttribute("aria-expanded", "false");
+    expect(
+      screen.getByRole("complementary", { name: "File Tree" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Files" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Changes" }),
+    ).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Toggle code review" }));
-    expect(workspaceStore.setReviewMode).toHaveBeenLastCalledWith("changes");
-    rerender(<App />);
     expect(
       screen.getByRole("button", { name: "Toggle file tree" }),
-    ).toHaveAttribute("aria-expanded", "false");
+    ).toHaveAttribute("aria-expanded", "true");
     expect(
       screen.getByRole("button", { name: "Toggle code review" }),
     ).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getByRole("button", { name: "Changes" })).toHaveAttribute(
-      "aria-pressed",
-      "true",
-    );
+    expect(
+      screen.getByRole("complementary", { name: "Code Review" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/--- a\/src\/app\.ts/)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Toggle code review" }));
     expect(
       screen.getByRole("button", { name: "Toggle code review" }),
     ).toHaveAttribute("aria-expanded", "false");
+    expect(
+      screen.getByRole("button", { name: "Toggle file tree" }),
+    ).toHaveAttribute("aria-expanded", "true");
+
+    fireEvent.click(screen.getByRole("button", { name: "app.ts" }));
+    expect(workspaceStore.selectReviewPath).toHaveBeenCalledWith("src/app.ts");
+    expect(
+      screen.getByRole("button", { name: "Toggle code review" }),
+    ).toHaveAttribute("aria-expanded", "true");
   });
 
   it("renders project-picker-first empty state when no current workspace exists", () => {

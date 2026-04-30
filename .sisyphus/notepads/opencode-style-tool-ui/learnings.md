@@ -541,6 +541,18 @@ When `approval_resolution` is provided but the replayed tool call differs from t
 - Reuses existing `build_tool_display()` and `build_tool_status()` from `tool_display.py` for schema consistency — terminal failed status is identical in structure to normal failed `runtime.tool_completed` events.
 - Computes `sanitized_arguments` inside the exception handler block using `sanitize_tool_arguments()` (already imported) since the normal path's sanitization at line 669 is after the exception handling branches.
 - Terminal status only emitted after `runtime.tool_started` — permission/lookup/pre-hook failures that occur before `runtime.tool_started` are intentionally not touched.
+
+---
+
+## T21: True sibling File Tree and Code Review surfaces
+
+**Date:** 2026-04-30T08:52:00+08:00
+
+- The opencode-like separation pattern is sibling right-side surfaces, not one panel with a `Changes`/`Files` mode switch: `App.tsx` now owns independent `showFileTree` and `showCodeReview` booleans.
+- `ReviewPanel` now receives a fixed `surface` (`file-tree` or `code-review`): file tree renders only navigation, while code review renders changed files plus the existing diff pane.
+- File-tree navigation calls `selectReviewPath(path)` and opens Code Review without closing File Tree, keeping diff review discoverable while preserving path-transparent diff loading.
+- When multiple right panels are open and the session sidebar is wide, the workspace header needs a local stacking context (`relative z-20`) so header toggles remain clickable instead of being intercepted by sibling panels.
+- Verification: zero LSP diagnostics on touched frontend files; focused App/ReviewPanel tests passed 33/33; frontend lint/typecheck passed; frontend build passed with known Vite warnings; launcher e2e passed 5/5.
 - Existing events (`runtime.tool_timeout`, `runtime.failed`) are preserved — the fix is purely additive.
 - Recovered exceptions (tool-native timeout-like exceptions that produce a `ToolResult(status="error")`) continue through the normal `runtime.tool_completed` path unchanged.
 

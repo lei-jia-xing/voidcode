@@ -65,10 +65,8 @@ function App() {
     reviewDiff,
     reviewDiffStatus,
     reviewDiffError,
-    reviewMode,
     loadReview,
     selectReviewPath,
-    setReviewMode,
     sessions,
     currentSessionId,
     sessionSidebarWidth,
@@ -115,7 +113,8 @@ function App() {
 
   const [showSettings, setShowSettings] = useState(false);
   const [showProjects, setShowProjects] = useState(false);
-  const [showReview, setShowReview] = useState(false);
+  const [showFileTree, setShowFileTree] = useState(false);
+  const [showCodeReview, setShowCodeReview] = useState(false);
   const [showRuntimeOps, setShowRuntimeOps] = useState(false);
   const [isSessionSidebarExpanded, setIsSessionSidebarExpanded] =
     useState(true);
@@ -249,14 +248,9 @@ function App() {
     void loadSessionDebug(currentSessionId);
   };
 
-  const handleReviewSurfaceToggle = (mode: "changes" | "files") => {
-    if (showReview && reviewMode === mode) {
-      setShowReview(false);
-      return;
-    }
-
-    setReviewMode(mode);
-    setShowReview(true);
+  const handleFileTreePathSelect = (path: string) => {
+    void selectReviewPath(path);
+    setShowCodeReview(true);
   };
 
   const composerDisabled =
@@ -289,7 +283,7 @@ function App() {
       <div className="flex-1 flex flex-col min-w-0">
         {hasCurrentWorkspace ? (
           <>
-            <header className="h-14 flex items-center justify-between px-4 border-b border-[color:var(--vc-border-subtle)] bg-[var(--vc-bg)] flex-shrink-0">
+            <header className="relative z-20 h-14 flex items-center justify-between px-4 border-b border-[color:var(--vc-border-subtle)] bg-[var(--vc-bg)] flex-shrink-0">
               <div className="flex items-center gap-2 min-w-0">
                 <ControlButton
                   compact
@@ -349,13 +343,11 @@ function App() {
 
                 <ControlButton
                   compact
-                  variant={
-                    showReview && reviewMode === "files" ? "secondary" : "ghost"
-                  }
-                  onClick={() => handleReviewSurfaceToggle("files")}
+                  variant={showFileTree ? "secondary" : "ghost"}
+                  onClick={() => setShowFileTree((value) => !value)}
                   aria-label={t("review.toggleFileTree")}
-                  aria-expanded={showReview && reviewMode === "files"}
-                  aria-pressed={showReview && reviewMode === "files"}
+                  aria-expanded={showFileTree}
+                  aria-pressed={showFileTree}
                 >
                   <FolderTree className="w-4 h-4" />
                   <span>{t("review.fileTree")}</span>
@@ -363,15 +355,11 @@ function App() {
 
                 <ControlButton
                   compact
-                  variant={
-                    showReview && reviewMode === "changes"
-                      ? "secondary"
-                      : "ghost"
-                  }
-                  onClick={() => handleReviewSurfaceToggle("changes")}
+                  variant={showCodeReview ? "secondary" : "ghost"}
+                  onClick={() => setShowCodeReview((value) => !value)}
                   aria-label={t("review.toggleCodeReview")}
-                  aria-expanded={showReview && reviewMode === "changes"}
-                  aria-pressed={showReview && reviewMode === "changes"}
+                  aria-expanded={showCodeReview}
+                  aria-pressed={showCodeReview}
                 >
                   <GitCompare className="w-4 h-4" />
                   <span>{t("review.codeReview")}</span>
@@ -497,8 +485,8 @@ function App() {
       </div>
 
       <ReviewPanel
-        isOpen={showReview}
-        mode={reviewMode}
+        isOpen={showFileTree}
+        surface="file-tree"
         snapshot={reviewSnapshot}
         status={reviewStatus}
         error={reviewError}
@@ -506,8 +494,22 @@ function App() {
         diff={reviewDiff}
         diffStatus={reviewDiffStatus}
         diffError={reviewDiffError}
-        onClose={() => setShowReview(false)}
-        onModeChange={setReviewMode}
+        onClose={() => setShowFileTree(false)}
+        onRefresh={loadReview}
+        onSelectPath={handleFileTreePathSelect}
+      />
+
+      <ReviewPanel
+        isOpen={showCodeReview}
+        surface="code-review"
+        snapshot={reviewSnapshot}
+        status={reviewStatus}
+        error={reviewError}
+        selectedPath={reviewSelectedPath}
+        diff={reviewDiff}
+        diffStatus={reviewDiffStatus}
+        diffError={reviewDiffError}
+        onClose={() => setShowCodeReview(false)}
         onRefresh={loadReview}
         onSelectPath={(path) => {
           void selectReviewPath(path);

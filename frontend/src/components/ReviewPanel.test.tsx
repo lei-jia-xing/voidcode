@@ -5,12 +5,20 @@ import "../i18n";
 
 const baseProps = {
   isOpen: true,
-  mode: "changes" as const,
+  surface: "code-review" as const,
   snapshot: {
     root: "/workspace",
     git: { state: "git_ready" as const, root: "/workspace" },
     changed_files: [{ path: "src/app.ts", change_type: "modified" as const }],
-    tree: [],
+    tree: [
+      {
+        kind: "file" as const,
+        name: "app.ts",
+        path: "src/app.ts",
+        changed: true,
+        children: [],
+      },
+    ],
   },
   status: "success" as const,
   error: null,
@@ -24,7 +32,6 @@ const baseProps = {
   diffStatus: "success" as const,
   diffError: null,
   onClose: vi.fn(),
-  onModeChange: vi.fn(),
   onRefresh: vi.fn(),
   onSelectPath: vi.fn(),
 };
@@ -48,7 +55,7 @@ describe("ReviewPanel", () => {
     const panel = container.querySelector("aside");
     expect(panel).toHaveStyle({ width: "384px" });
 
-    fireEvent.pointerDown(screen.getByLabelText("Resize review panel"), {
+    fireEvent.pointerDown(screen.getByLabelText("Resize code review panel"), {
       clientX: 500,
     });
     fireEvent.pointerMove(window, { clientX: 300 });
@@ -62,7 +69,7 @@ describe("ReviewPanel", () => {
     document.body.style.userSelect = "text";
     render(<ReviewPanel {...baseProps} />);
 
-    fireEvent.pointerDown(screen.getByLabelText("Resize review panel"), {
+    fireEvent.pointerDown(screen.getByLabelText("Resize code review panel"), {
       clientX: 700,
     });
     expect(document.body.style.cursor).toBe("col-resize");
@@ -81,7 +88,7 @@ describe("ReviewPanel", () => {
     render(
       <ReviewPanel
         {...baseProps}
-        mode="files"
+        surface="file-tree"
         selectedPath={null}
         onSelectPath={onSelectPath}
         snapshot={{
@@ -110,5 +117,42 @@ describe("ReviewPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "app file #1.ts" }));
 
     expect(onSelectPath).toHaveBeenCalledWith("src/app file #1.ts");
+  });
+
+  it("renders file tree as navigation without diff review or internal mode tabs", () => {
+    render(<ReviewPanel {...baseProps} surface="file-tree" />);
+
+    expect(
+      screen.getByRole("complementary", { name: "File Tree" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "app.ts" })).toBeInTheDocument();
+    expect(screen.queryByText(/const value = 'new'/)).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Changes" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Files" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("renders code review as changed files plus diff without full file tree mode", () => {
+    render(<ReviewPanel {...baseProps} />);
+
+    expect(
+      screen.getByRole("complementary", { name: "Code Review" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "M src/app.ts" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/const value = 'new'/)).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "app.ts" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Changes" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Files" }),
+    ).not.toBeInTheDocument();
   });
 });
