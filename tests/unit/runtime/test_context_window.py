@@ -203,6 +203,47 @@ def test_provider_context_inspector_redacts_secret_text_from_tool_output() -> No
     assert tool_message.tool_call_id == "call_secret"
 
 
+def test_provider_context_inspector_redacts_tool_error_and_data_fields() -> None:
+    assembled = assemble_provider_context(
+        prompt="inspect failure",
+        tool_results=(
+            ToolResult(
+                tool_name="web_fetch",
+                status="error",
+                error="request failed with access_token=tool-secret-token",
+                data={
+                    "tool_call_id": "call:error",
+                    "arguments": {"url": "https://example.com"},
+                    "headers": {"authorization": "Bearer nested-secret-token"},
+                    "access_token": "data-secret-token",
+                },
+            ),
+        ),
+        session_metadata={},
+        policy=ContextWindowPolicy(max_tool_results=4),
+    )
+
+    snapshot = inspect_provider_context(
+        assembled_context=assembled,
+        provider="openai",
+        model="gpt-4o",
+        execution_engine="provider",
+        available_tool_count=3,
+    )
+    tool_segment = snapshot.segments[-1]
+    tool_message_content = snapshot.provider_messages[-1].content or ""
+
+    assert "tool-secret-token" not in tool_message_content
+    assert "nested-secret-token" not in tool_message_content
+    assert "data-secret-token" not in tool_message_content
+    assert "authorization" not in tool_message_content.lower()
+    assert tool_segment.metadata["error"] == "request failed with access_token=[redacted]"
+    tool_data = tool_segment.metadata["data"]
+    assert isinstance(tool_data, dict)
+    assert "headers" in tool_data
+    assert tool_data["headers"] == {}
+
+
 def test_provider_context_inspector_reports_tool_pairing_problems() -> None:
     assembled = RuntimeAssembledContext(
         prompt="continue",

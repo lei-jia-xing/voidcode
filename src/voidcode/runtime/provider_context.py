@@ -16,7 +16,18 @@ from .contracts import (
 
 _MAX_DEBUG_CONTENT_CHARS = 2_000
 _OVERSIZED_TOOL_FEEDBACK_CHARS = 8_000
-_SECRET_KEYS = frozenset({"api_key", "apikey", "authorization", "token", "password", "secret"})
+_SECRET_KEYS = frozenset(
+    {
+        "access_token",
+        "api_key",
+        "apikey",
+        "authorization",
+        "client_secret",
+        "password",
+        "secret",
+        "token",
+    }
+)
 _SECRET_TEXT_PATTERNS = (
     re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]{8,}"),
     re.compile(r"(?i)(api[_-]?key\s*[=:]\s*)[^\s,;]+"),
@@ -118,7 +129,7 @@ def _segment_snapshot(
     raw_data = metadata.get("data")
     safe_metadata = {key: value for key, value in metadata.items() if key not in {"data"}}
     if isinstance(raw_data, dict):
-        safe_metadata["data"] = sanitize_tool_result_data(cast(dict[str, object], raw_data))
+        safe_metadata["data"] = _sanitize_debug_data(cast(dict[str, object], raw_data))
     return RuntimeProviderContextSegmentSnapshot(
         index=index,
         role=segment.role,
@@ -245,7 +256,7 @@ def _tool_payload_json(segment: RuntimeContextSegment) -> str:
     metadata = segment.metadata or {}
     raw_data = metadata.get("data")
     sanitized_data = (
-        sanitize_tool_result_data(cast(dict[str, object], raw_data))
+        _sanitize_debug_data(cast(dict[str, object], raw_data))
         if isinstance(raw_data, dict)
         else {}
     )
@@ -260,7 +271,7 @@ def _tool_payload_json(segment: RuntimeContextSegment) -> str:
         "arguments": sanitized_arguments,
         "status": metadata.get("status"),
         "content": _redact_debug_text(segment.content or ""),
-        "error": metadata.get("error"),
+        "error": _safe_payload(metadata.get("error")),
         "data": {
             key: value
             for key, value in sanitized_data.items()
@@ -275,6 +286,11 @@ def _tool_payload_json(segment: RuntimeContextSegment) -> str:
 
 def _sanitize_debug_arguments(arguments: dict[str, object]) -> dict[str, object]:
     sanitized = sanitize_tool_arguments(arguments)
+    return cast(dict[str, object], _safe_payload(sanitized))
+
+
+def _sanitize_debug_data(data: dict[str, object]) -> dict[str, object]:
+    sanitized = sanitize_tool_result_data(data)
     return cast(dict[str, object], _safe_payload(sanitized))
 
 
