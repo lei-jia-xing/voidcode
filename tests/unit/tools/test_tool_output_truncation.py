@@ -126,6 +126,55 @@ def test_tool_output_artifact_rejects_untrusted_paths(tmp_path: Path) -> None:
     assert resolved is None
 
 
+def test_tool_output_artifact_rejects_short_id_for_another_artifact_path(
+    tmp_path: Path,
+) -> None:
+    result = ToolResult(tool_name="sample", status="ok", content="one\ntwo\nthree\n")
+    capped = cap_tool_result_output(result, workspace=tmp_path, max_lines=1, max_bytes=10_000)
+    real_artifact = capped.data["artifact"]
+    assert isinstance(real_artifact, dict)
+    forged_artifact = {
+        **cast(dict[str, object], real_artifact),
+        "artifact_id": "artifact_",
+    }
+
+    read_result = read_tool_output_artifact(forged_artifact)
+    search_result = search_tool_output_artifact(forged_artifact, pattern="three")
+    resolved = resolve_tool_output_artifact(
+        [{"payload": {"artifact": forged_artifact}}], artifact_id="artifact_"
+    )
+
+    assert read_result["status"] == "invalid"
+    assert "content" not in read_result
+    assert search_result["status"] == "invalid"
+    assert resolved is None
+
+
+def test_tool_output_artifact_rejects_valid_shaped_id_for_another_artifact_path(
+    tmp_path: Path,
+) -> None:
+    result = ToolResult(tool_name="sample", status="ok", content="one\ntwo\nthree\n")
+    capped = cap_tool_result_output(result, workspace=tmp_path, max_lines=1, max_bytes=10_000)
+    real_artifact = capped.data["artifact"]
+    assert isinstance(real_artifact, dict)
+    forged_id = "artifact_000000000000000000000000"
+    forged_artifact = {
+        **cast(dict[str, object], real_artifact),
+        "artifact_id": forged_id,
+    }
+
+    read_result = read_tool_output_artifact(forged_artifact)
+    search_result = search_tool_output_artifact(forged_artifact, pattern="three")
+    resolved = resolve_tool_output_artifact(
+        [{"payload": {"artifact": forged_artifact}}], artifact_id=forged_id
+    )
+
+    assert read_result["status"] == "invalid"
+    assert "content" not in read_result
+    assert search_result["status"] == "invalid"
+    assert resolved is None
+
+
 def test_tool_output_artifact_retrieval_reports_missing(tmp_path: Path) -> None:
     result = ToolResult(tool_name="sample", status="ok", content="one\ntwo\nthree\n")
     capped = cap_tool_result_output(result, workspace=tmp_path, max_lines=1, max_bytes=10_000)

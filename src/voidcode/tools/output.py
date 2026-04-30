@@ -28,6 +28,7 @@ _SENSITIVE_TEXT_ARGUMENT_KEYS = frozenset(
 _INLINE_BLOB_KEYS = frozenset({"data_uri", "dataUri", "base64", "blob"})
 _ARTIFACT_REFERENCE_PREFIX = "artifact:"
 _ARTIFACT_PRODUCER = "voidcode.tool_output.v1"
+_ARTIFACT_ID_PATTERN = re.compile(r"^artifact_[0-9a-f]{24}$")
 _ARTIFACT_TEMP_ROOT_NAME = "voidcode-tool-output"
 _EMPTY_REDACTED_ARGUMENT_KEYS: frozenset[str] = frozenset()
 _PROVIDER_REDACTED_ARGUMENT_KEYS_BY_TOOL = {
@@ -291,7 +292,7 @@ def _artifact_path_from_metadata(artifact: Mapping[str, object]) -> Path | None:
     if producer != _ARTIFACT_PRODUCER:
         return None
     artifact_id = artifact.get("artifact_id")
-    if not isinstance(artifact_id, str) or not artifact_id.startswith("artifact_"):
+    if not isinstance(artifact_id, str) or _ARTIFACT_ID_PATTERN.fullmatch(artifact_id) is None:
         return None
     raw_path = artifact.get("path")
     if not isinstance(raw_path, str) or raw_path == "":
@@ -300,7 +301,7 @@ def _artifact_path_from_metadata(artifact: Mapping[str, object]) -> Path | None:
     root = tool_output_artifact_temp_root().resolve()
     if path == root or root not in path.parents:
         return None
-    if artifact_id not in path.name:
+    if not path.name.endswith(f"-{artifact_id}.txt"):
         return None
     return path
 

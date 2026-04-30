@@ -385,6 +385,59 @@ def test_session_bundle_skips_forged_artifact_paths(tmp_path: Path) -> None:
     assert "must not be bundled" not in encoded
 
 
+def test_session_bundle_skips_short_id_forged_temp_artifact_path(tmp_path: Path) -> None:
+    real_payload = _save_session_with_tool_artifact(tmp_path)
+    real_artifact = real_payload["artifact"]
+    assert isinstance(real_artifact, dict)
+    forged_artifact = {
+        **cast(dict[str, object], real_artifact),
+        "artifact_id": "artifact_",
+        "tool_call_id": "forged-call",
+    }
+    response = RuntimeResponse(
+        session=SessionState(
+            session=SessionRef(id="forged-temp-artifact-session"),
+            status="completed",
+            turn=1,
+            metadata={},
+        ),
+        events=(
+            EventEnvelope(
+                session_id="forged-temp-artifact-session",
+                sequence=1,
+                event_type="runtime.tool_completed",
+                source="tool",
+                payload={
+                    "tool": "shell_exec",
+                    "tool_call_id": "forged-call",
+                    "status": "ok",
+                    "content": "forged",
+                    "artifact": forged_artifact,
+                },
+            ),
+        ),
+        output="done",
+    )
+    store = SqliteSessionStore()
+    store.save_run(
+        workspace=tmp_path,
+        request=RuntimeRequest(prompt="forged", session_id="forged-temp-artifact-session"),
+        response=response,
+    )
+
+    bundle = build_session_bundle(
+        session_store=store,
+        workspace=tmp_path,
+        session_id="forged-temp-artifact-session",
+        options=SessionBundleOptions(include_tool_output=True),
+    )
+    encoded = json.dumps(bundle.to_payload(), sort_keys=True)
+
+    assert bundle.manifest.artifact_count == 0
+    assert bundle.artifacts == ()
+    assert "artifact-line-7" not in encoded
+
+
 def test_session_bundle_import_roundtrip_never_overwrites_existing_session(
     tmp_path: Path,
 ) -> None:
