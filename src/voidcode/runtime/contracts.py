@@ -731,6 +731,54 @@ class RuntimeSessionDebugFailure:
 
 
 @dataclass(frozen=True, slots=True)
+class RuntimeProviderContextDiagnostic:
+    severity: Literal["info", "warning", "error"]
+    code: str
+    message: str
+    source: str | None = None
+    segment_indices: tuple[int, ...] = ()
+    suggested_fix: str | None = None
+    details: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeProviderContextSegmentSnapshot:
+    index: int
+    role: str
+    source: str
+    content: str | None = None
+    content_truncated: bool = False
+    tool_call_id: str | None = None
+    tool_name: str | None = None
+    tool_arguments: dict[str, object] = field(default_factory=dict)
+    metadata: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeProviderMessageSnapshot:
+    index: int
+    role: str
+    source: str
+    content: str | None = None
+    content_truncated: bool = False
+    tool_call_id: str | None = None
+    tool_calls: tuple[dict[str, object], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeProviderContextSnapshot:
+    provider: str
+    model: str
+    execution_engine: str
+    segment_count: int
+    message_count: int
+    context_window: dict[str, object] = field(default_factory=dict)
+    segments: tuple[RuntimeProviderContextSegmentSnapshot, ...] = ()
+    provider_messages: tuple[RuntimeProviderMessageSnapshot, ...] = ()
+    diagnostics: tuple[RuntimeProviderContextDiagnostic, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class RuntimeSessionDebugSnapshot:
     session: SessionState
     prompt: str
@@ -749,6 +797,7 @@ class RuntimeSessionDebugSnapshot:
     last_failure_event: RuntimeSessionDebugEvent | None = None
     failure: RuntimeSessionDebugFailure | None = None
     last_tool: RuntimeSessionDebugToolSummary | None = None
+    provider_context: RuntimeProviderContextSnapshot | None = None
     suggested_operator_action: str = "inspect_session"
     operator_guidance: str = "Inspect the persisted session state."
 
