@@ -84,6 +84,54 @@ def test_provider_readiness_includes_fallback_and_context_metadata(tmp_path: Pat
     assert readiness.max_output_tokens == 16_384
     assert readiness.streaming_supported is True
     assert readiness.fallback_chain == ("openai/gpt-4o", "openai/gpt-4o-mini")
+    assert readiness.reasoning_controls["status"] == "not_requested"
+
+
+def test_provider_readiness_reports_translated_reasoning_effort_controls(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            model="glm/glm-5",
+            execution_engine="provider",
+            reasoning_effort="high",
+        ),
+    )
+    try:
+        readiness = runtime.provider_readiness()
+    finally:
+        runtime.__exit__(None, None, None)
+
+    controls = readiness.reasoning_controls
+    assert controls["reasoning_effort_requested"] is True
+    assert controls["status"] == "translated"
+    assert controls["translated"] is True
+    assert controls["provider_parameter"] == "extra_body.thinking.type"
+    assert controls["provider_value"] == "enabled"
+
+
+def test_provider_readiness_reports_ignored_opencode_go_reasoning_effort(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            model="opencode-go/glm-5",
+            execution_engine="provider",
+            reasoning_effort="high",
+        ),
+    )
+    try:
+        readiness = runtime.provider_readiness()
+    finally:
+        runtime.__exit__(None, None, None)
+
+    assert readiness.reasoning_controls["status"] == "ignored"
+    assert readiness.reasoning_controls["ignored"] is True
+    assert readiness.reasoning_controls["reason"] == (
+        "opencode_go_adapter_does_not_forward_reasoning_effort"
+    )
 
 
 def test_provider_readiness_marks_streaming_unsupported_as_not_ready(tmp_path: Path) -> None:

@@ -152,6 +152,8 @@ from .contracts import (
     validate_session_reference_id,
 )
 from .events import (
+    REASONING_SESSION_PART_LIMIT,
+    REASONING_SESSION_TEXT_LIMIT_CHARS,
     RUNTIME_ACP_CONNECTED,
     RUNTIME_ACP_DELEGATED_LIFECYCLE,
     RUNTIME_ACP_DISCONNECTED,
@@ -172,9 +174,12 @@ from .events import (
     RUNTIME_MCP_SERVER_STOPPED,
     RUNTIME_QUESTION_ANSWERED,
     RUNTIME_QUESTION_REQUESTED,
+    RUNTIME_REASONING_DIAGNOSTIC,
+    RUNTIME_REASONING_PART,
     RUNTIME_SKILLS_APPLIED,
     RUNTIME_SKILLS_LOADED,
     EventEnvelope,
+    runtime_reasoning_part_from_provider_stream,
 )
 from .execution_seams import (
     cache_key_for_effective_config,
@@ -350,6 +355,16 @@ class _ActiveRunHandle:
     run_id: str
     abort_signal: _ActiveRunAbortSignal
     metadata: dict[str, object]
+
+
+@dataclass(slots=True)
+class _ReasoningCaptureState:
+    part_count: int = 0
+    text_char_count: int = 0
+    limit_diagnostic_emitted: bool = False
+    stream_observed: bool = False
+    reasoning_observed: bool = False
+    output_diagnostic_emitted: bool = False
 
 
 def _provider_target_label(target: ResolvedProviderModel) -> str:
@@ -1065,6 +1080,8 @@ class VoidCodeRuntime:
         model_name = active_target.model
         if provider_name is None or model_name is None:
             return
+        if provider_name.strip().lower() == "opencode-go":
+            return
         metadata = self._metadata_for_provider_model(provider_name, model_name)
         if metadata is None:
             return
@@ -1713,6 +1730,7 @@ class VoidCodeRuntime:
         request_metadata = self._fresh_request_metadata(request.metadata)
         session_request_metadata = dict(request_metadata)
         session_request_metadata.pop("background_rate_limit_retry", None)
+        session_request_metadata.pop("show_thinking", None)
         session = SessionState(
             session=SessionRef(id=resolved_session_id, parent_id=request.parent_session_id),
             status="running",
@@ -1759,6 +1777,21 @@ class VoidCodeRuntime:
                     event_type=RUNTIME_CATEGORY_MODEL_DIAGNOSTIC,
                     source="runtime",
                     payload=diagnostic,
+                ),
+            )
+
+        reasoning_diagnostic = self._reasoning_controls_diagnostic_for_config(effective_config)
+        if reasoning_diagnostic is not None:
+            sequence += 1
+            yield RuntimeStreamChunk(
+                kind="event",
+                session=session,
+                event=EventEnvelope(
+                    session_id=session.session.id,
+                    sequence=sequence,
+                    event_type=RUNTIME_REASONING_DIAGNOSTIC,
+                    source="runtime",
+                    payload=reasoning_diagnostic,
                 ),
             )
 
@@ -2951,7 +2984,10 @@ class VoidCodeRuntime:
             cost_per_cache_write_token=inferred.cost_per_cache_write_token,
             supports_reasoning_effort=inferred.supports_reasoning_effort,
             default_reasoning_effort=inferred.default_reasoning_effort,
+            supports_reasoning_summary=inferred.supports_reasoning_summary,
+            supports_thinking_budget=inferred.supports_thinking_budget,
             supports_interleaved_reasoning=inferred.supports_interleaved_reasoning,
+            reasoning_visibility=inferred.reasoning_visibility,
             modalities_input=inferred.modalities_input,
             modalities_output=inferred.modalities_output,
             model_status=inferred.model_status,
@@ -3092,7 +3128,105 @@ class VoidCodeRuntime:
             context_window=context_window,
             max_output_tokens=max_output_tokens,
             fallback_chain=fallback_chain,
+            reasoning_controls=self._reasoning_controls_diagnostic(
+                effective_config=effective_config,
+                provider_name=provider_name,
+                model_name=model_name,
+            ),
         )
+
+    def _reasoning_controls_diagnostic(
+        self,
+        *,
+        effective_config: EffectiveRuntimeConfig,
+        provider_name: str | None,
+        model_name: str | None,
+    ) -> dict[str, object]:
+        effort = effective_config.reasoning_effort
+        payload: dict[str, object] = {
+            "reasoning_effort_requested": effort is not None,
+            "reasoning_effort": effort,
+            "status": "not_requested" if effort is None else "unknown",
+            "forwarded": False,
+            "translated": False,
+            "ignored": False,
+        }
+        if provider_name is None or model_name is None:
+            payload["status"] = "unavailable"
+            payload["reason"] = "provider_model_unresolved"
+            return payload
+        metadata = self._metadata_for_provider_model(provider_name, model_name)
+        if metadata is not None:
+            payload["supports_reasoning"] = metadata.supports_reasoning
+            payload["supports_reasoning_effort"] = metadata.supports_reasoning_effort
+            payload["supports_reasoning_summary"] = metadata.supports_reasoning_summary
+            payload["supports_thinking_budget"] = metadata.supports_thinking_budget
+            payload["supports_interleaved_reasoning"] = metadata.supports_interleaved_reasoning
+            payload["reasoning_visibility"] = metadata.reasoning_visibility
+        if effort is None:
+            return payload
+        normalized_provider = provider_name.strip().lower()
+        normalized_model = model_name.strip().lower()
+        if normalized_provider == "opencode-go":
+            payload["status"] = "ignored"
+            payload["ignored"] = True
+            payload["reason"] = "opencode_go_adapter_does_not_forward_reasoning_effort"
+            return payload
+        if metadata is not None and metadata.supports_reasoning_effort is False:
+            payload["status"] = "unsupported"
+            payload["reason"] = "model_metadata_disallows_reasoning_effort"
+            return payload
+        if normalized_provider == "glm" or normalized_model.startswith(("glm-5", "glm-z1")):
+            payload["status"] = "translated"
+            payload["translated"] = True
+            payload["provider_parameter"] = "extra_body.thinking.type"
+            disabled_efforts = {"none", "off", "disable", "disabled"}
+            payload["provider_value"] = (
+                "disabled" if effort.lower() in disabled_efforts else "enabled"
+            )
+            return payload
+        direct_reasoning_effort_providers = {
+            "openai",
+            "anthropic",
+            "google",
+            "gemini",
+            "vertex_ai",
+            "litellm",
+            "grok",
+        }
+        if normalized_provider in direct_reasoning_effort_providers:
+            payload["status"] = "forwarded"
+            payload["forwarded"] = True
+            payload["provider_parameter"] = "reasoning_effort"
+            return payload
+        payload["status"] = "best_effort"
+        payload["forwarded"] = metadata is None or metadata.supports_reasoning_effort is not False
+        payload["reason"] = "provider_metadata_unknown"
+        return payload
+
+    def _reasoning_controls_diagnostic_for_config(
+        self,
+        effective_config: EffectiveRuntimeConfig,
+    ) -> dict[str, object] | None:
+        if effective_config.execution_engine != "provider":
+            return None
+        active_target = effective_config.resolved_provider.active_target.selection
+        provider_name = active_target.provider
+        model_name = active_target.model
+        diagnostic = self._reasoning_controls_diagnostic(
+            effective_config=effective_config,
+            provider_name=provider_name,
+            model_name=model_name,
+        )
+        if diagnostic.get("reasoning_effort_requested") is not True:
+            return None
+        return {
+            "severity": "info",
+            "category": "reasoning_controls",
+            "provider": provider_name,
+            "model": model_name,
+            **diagnostic,
+        }
 
     def inspect_provider(self, provider_name: str) -> ProviderInspectResult:
         if not provider_name or "/" in provider_name:
@@ -3311,8 +3445,17 @@ class VoidCodeRuntime:
             default_reasoning_effort=VoidCodeRuntime._optional_string(
                 payload.get("default_reasoning_effort")
             ),
+            supports_reasoning_summary=VoidCodeRuntime._optional_bool(
+                payload.get("supports_reasoning_summary")
+            ),
+            supports_thinking_budget=VoidCodeRuntime._optional_bool(
+                payload.get("supports_thinking_budget")
+            ),
             supports_interleaved_reasoning=VoidCodeRuntime._optional_bool(
                 payload.get("supports_interleaved_reasoning")
+            ),
+            reasoning_visibility=VoidCodeRuntime._optional_string(
+                payload.get("reasoning_visibility")
             ),
             modalities_input=VoidCodeRuntime._optional_string_tuple(
                 payload.get("modalities_input")
@@ -3341,7 +3484,10 @@ class VoidCodeRuntime:
             cost_per_cache_write_token=catalog_metadata.cost_per_cache_write_token,
             supports_reasoning_effort=catalog_metadata.supports_reasoning_effort,
             default_reasoning_effort=catalog_metadata.default_reasoning_effort,
+            supports_reasoning_summary=catalog_metadata.supports_reasoning_summary,
+            supports_thinking_budget=catalog_metadata.supports_thinking_budget,
             supports_interleaved_reasoning=catalog_metadata.supports_interleaved_reasoning,
+            reasoning_visibility=catalog_metadata.reasoning_visibility,
             modalities_input=catalog_metadata.modalities_input,
             modalities_output=catalog_metadata.modalities_output,
             model_status=catalog_metadata.model_status,
@@ -5367,20 +5513,115 @@ class VoidCodeRuntime:
         )
 
     @staticmethod
+    def _reasoning_capture_state() -> _ReasoningCaptureState:
+        # Referenced via extracted run-loop collaborator.
+        return _ReasoningCaptureState()
+
+    def _reasoning_output_diagnostic(
+        self,
+        *,
+        session: SessionState,
+        capture_state: _ReasoningCaptureState,
+    ) -> dict[str, object] | None:
+        # Referenced via extracted run-loop collaborator.
+        if capture_state.output_diagnostic_emitted or not capture_state.stream_observed:
+            return None
+        capture_state.output_diagnostic_emitted = True
+        effective_config = self._effective_runtime_config_from_metadata(session.metadata)
+        if effective_config.execution_engine != "provider":
+            return None
+        active_target = effective_config.resolved_provider.active_target.selection
+        provider_name = active_target.provider
+        model_name = active_target.model
+        metadata = (
+            self._metadata_for_provider_model(provider_name, model_name)
+            if provider_name is not None and model_name is not None
+            else None
+        )
+        supports_reasoning = metadata.supports_reasoning if metadata is not None else None
+        if capture_state.reasoning_observed:
+            severity = "info"
+            reason = "reasoning_output_observed"
+        elif supports_reasoning is True:
+            severity = "warning"
+            reason = "reasoning_capable_model_returned_no_reasoning_output"
+        else:
+            severity = "info"
+            reason = "no_reasoning_output_observed"
+        return {
+            "severity": severity,
+            "category": "reasoning_output",
+            "reason": reason,
+            "provider": provider_name,
+            "model": model_name,
+            "reasoning_output_observed": capture_state.reasoning_observed,
+            "supports_reasoning": supports_reasoning,
+            "captured_part_count": capture_state.part_count,
+            "captured_text_char_count": capture_state.text_char_count,
+        }
+
+    @staticmethod
     def _renumber_events(
-        events: tuple[GraphEvent, ...], *, session_id: str, start_sequence: int
+        events: tuple[GraphEvent, ...],
+        *,
+        session_id: str,
+        start_sequence: int,
+        reasoning_capture_state: _ReasoningCaptureState | None = None,
     ) -> tuple[EventEnvelope, ...]:
         # Referenced via extracted run-loop collaborator.
-        return tuple(
-            EventEnvelope(
-                session_id=session_id,
-                sequence=start_sequence + index,
-                event_type=event.event_type,
-                source=event.source,
-                payload=event.payload,
+        envelopes: list[EventEnvelope] = []
+        capture_state = reasoning_capture_state or _ReasoningCaptureState()
+        for event in events:
+            event_type = event.event_type
+            source = event.source
+            payload = event.payload
+            reasoning_payload = None
+            if event.event_type == "graph.provider_stream":
+                capture_state.stream_observed = True
+                reasoning_payload = runtime_reasoning_part_from_provider_stream(event.payload)
+            if reasoning_payload is not None:
+                capture_state.reasoning_observed = True
+                text_char_count = reasoning_payload.get("text_char_count")
+                bounded_text = reasoning_payload.get("text")
+                next_text_count = capture_state.text_char_count + (
+                    len(bounded_text) if isinstance(bounded_text, str) else 0
+                )
+                if (
+                    capture_state.part_count >= REASONING_SESSION_PART_LIMIT
+                    or next_text_count > REASONING_SESSION_TEXT_LIMIT_CHARS
+                ):
+                    event_type = RUNTIME_REASONING_DIAGNOSTIC
+                    source = "runtime"
+                    diagnostic_payload: dict[str, object] = {
+                        "severity": "warning",
+                        "category": "reasoning_capture_limit",
+                        "reason": "session_reasoning_capture_limit_exceeded",
+                        "captured_part_count": capture_state.part_count,
+                        "captured_text_char_count": capture_state.text_char_count,
+                        "omitted_text_char_count": text_char_count
+                        if isinstance(text_char_count, int)
+                        else None,
+                    }
+                    payload = diagnostic_payload
+                    if capture_state.limit_diagnostic_emitted:
+                        continue
+                    capture_state.limit_diagnostic_emitted = True
+                else:
+                    event_type = RUNTIME_REASONING_PART
+                    source = "runtime"
+                    payload = reasoning_payload
+                    capture_state.part_count += 1
+                    capture_state.text_char_count = next_text_count
+            envelopes.append(
+                EventEnvelope(
+                    session_id=session_id,
+                    sequence=start_sequence + len(envelopes),
+                    event_type=event_type,
+                    source=source,
+                    payload=payload,
+                )
             )
-            for index, event in enumerate(events)
-        )
+        return tuple(envelopes)
 
     @staticmethod
     def _loaded_skill_names(skill_registry: SkillRegistry) -> list[str]:
