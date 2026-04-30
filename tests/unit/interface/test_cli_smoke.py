@@ -715,6 +715,67 @@ def test_run_command_accepts_agent_skills_max_steps_and_provider_stream_flags() 
     assert request.metadata["provider_stream"] is True
 
 
+def test_run_command_prints_provider_failure_footer(capsys: Any) -> None:
+    cli = importlib.import_module("voidcode.cli")
+    workspace = Path("/tmp/demo-workspace")
+    config = SimpleNamespace(approval_mode="allow")
+    chunks = (
+        _make_chunk(
+            session_id="provider-failed-session",
+            status="running",
+            event=_runtime_event("runtime.request_received", prompt="go"),
+        ),
+        _make_chunk(
+            session_id="provider-failed-session",
+            status="running",
+            event=_runtime_event(
+                "runtime.tool_completed",
+                sequence=2,
+                source="tool",
+                tool="read_file",
+                status="ok",
+                content="sample",
+                arguments={"filePath": "sample.txt"},
+            ),
+        ),
+        _make_chunk(
+            session_id="provider-failed-session",
+            status="failed",
+            event=_runtime_event(
+                "runtime.failed",
+                sequence=3,
+                error="stream disconnect",
+                provider_error_kind="transient_failure",
+                provider="opencode",
+                model="glm-5",
+            ),
+        ),
+    )
+    snapshot = SimpleNamespace(
+        resumable=True,
+        last_tool=SimpleNamespace(tool_name="read_file"),
+    )
+
+    with patch.object(cli, "load_runtime_config", autospec=True, return_value=config):
+        with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+            runtime_class.return_value.run_stream.return_value = iter(chunks)
+            runtime_class.return_value.session_debug_snapshot.return_value = snapshot
+            result = cli.main(["run", "go", "--workspace", str(workspace), "--provider-stream"])
+
+    captured = capsys.readouterr()
+    assert result == 0
+    assert "VoidCode runtime failure summary" in captured.err
+    assert "session: provider-failed-session" in captured.err
+    assert "status: failed" in captured.err
+    assert "provider: opencode" in captured.err
+    assert "model: glm-5" in captured.err
+    assert "provider_error_kind: transient_failure" in captured.err
+    assert "resumable: true" in captured.err
+    assert "last_successful_tool: read_file" in captured.err
+    assert "voidcode sessions debug provider-failed-session" in captured.err
+    assert "voidcode sessions resume provider-failed-session" in captured.err
+
+
 def test_run_command_forwards_reasoning_effort_flag_to_metadata_and_config() -> None:
     cli = importlib.import_module("voidcode.cli")
     workspace = Path("/tmp/demo-workspace")

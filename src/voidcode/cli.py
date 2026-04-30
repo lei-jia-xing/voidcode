@@ -139,6 +139,7 @@ def _handle_run_command(args: argparse.Namespace) -> int:
                 _print_noninteractive_blocked(result, blocked_event)
                 return _blocked_exit_code(blocked_event)
             _print_plain_runtime_output(result.output)
+            _print_runtime_failure_footer(runtime, result, workspace=workspace)
     finally:
         _close_runtime(runtime)
     return EXIT_SUCCESS
@@ -343,6 +344,56 @@ def _print_plain_runtime_output(output: str | None) -> None:
     print(output, end="", flush=True)
     if not output.endswith("\n"):
         print(flush=True)
+
+
+def _print_runtime_failure_footer(
+    runtime: VoidCodeRuntime,
+    result: RuntimeStreamResult,
+    *,
+    workspace: Path,
+) -> None:
+    if result.session.status != "failed":
+        return
+    failed_event = next(
+        (event for event in reversed(result.events) if event.event_type == "runtime.failed"),
+        None,
+    )
+    if failed_event is None:
+        return
+    try:
+        snapshot = runtime.session_debug_snapshot(session_id=result.session.session.id)
+    except ValueError:
+        snapshot = None
+    workspace_arg = f"--workspace {shlex.quote(str(workspace))}"
+    provider = failed_event.payload.get("provider")
+    model = failed_event.payload.get("model")
+    provider_error_kind = failed_event.payload.get("provider_error_kind")
+    last_tool = snapshot.last_tool if snapshot is not None else None
+    resumable = snapshot.resumable if snapshot is not None else False
+    print("", file=sys.stderr, flush=True)
+    print("VoidCode runtime failure summary", file=sys.stderr, flush=True)
+    print(f"  session: {result.session.session.id}", file=sys.stderr, flush=True)
+    print(f"  status: {result.session.status}", file=sys.stderr, flush=True)
+    if isinstance(provider, str) and provider:
+        print(f"  provider: {provider}", file=sys.stderr, flush=True)
+    if isinstance(model, str) and model:
+        print(f"  model: {model}", file=sys.stderr, flush=True)
+    if isinstance(provider_error_kind, str) and provider_error_kind:
+        print(f"  provider_error_kind: {provider_error_kind}", file=sys.stderr, flush=True)
+    print(f"  resumable: {str(resumable).lower()}", file=sys.stderr, flush=True)
+    if last_tool is not None:
+        print(f"  last_successful_tool: {last_tool.tool_name}", file=sys.stderr, flush=True)
+    print(
+        f"  debug: voidcode sessions debug {result.session.session.id} {workspace_arg}",
+        file=sys.stderr,
+        flush=True,
+    )
+    if resumable:
+        print(
+            f"  resume: voidcode sessions resume {result.session.session.id} {workspace_arg}",
+            file=sys.stderr,
+            flush=True,
+        )
 
 
 def _runtime_stream_payload(result: RuntimeStreamResult, *, workspace: Path) -> dict[str, object]:
