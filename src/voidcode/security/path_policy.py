@@ -24,7 +24,11 @@ def resolve_workspace_path(
     allow_outside_workspace: bool = False,
 ) -> WorkspacePathResolution:
     workspace_root = workspace.resolve()
-    path_candidate = Path(raw_path).expanduser()
+    path_candidate = Path(raw_path)
+    try:
+        path_candidate = path_candidate.expanduser()
+    except RuntimeError:
+        path_candidate = Path(raw_path)
     candidate = (
         path_candidate.resolve()
         if path_candidate.is_absolute()

@@ -47,7 +47,7 @@ def _assert_within_workspace(workspace: Path, rel_path: Path) -> None:
         workspace=workspace,
         raw_path=rel_path.as_posix(),
         containment_error="patch operation must affect paths inside the workspace",
-        allow_outside_workspace=True,
+        allow_outside_workspace=rel_path.is_absolute(),
     )
 
 

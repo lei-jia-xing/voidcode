@@ -56,7 +56,7 @@ def test_workspace_symlink_escape_resolves_to_external_path(
     assert isinstance(result.data.get("path"), str)
 
 
-def test_apply_patch_symlink_escape_is_processed_by_tool(tmp_path: Path) -> None:
+def test_apply_patch_symlink_escape_is_rejected_by_tool(tmp_path: Path) -> None:
     outside_dir = tmp_path.parent / "matrix-outside-dir"
     outside_dir.mkdir(exist_ok=True)
     link_dir = tmp_path / "linkdir"
@@ -73,12 +73,12 @@ def test_apply_patch_symlink_escape_is_processed_by_tool(tmp_path: Path) -> None
             "*** End Patch",
         ]
     )
-    result = ApplyPatchTool().invoke(
-        ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
-        workspace=tmp_path,
-    )
-    assert result.status == "ok"
-    assert (outside_dir / "escaped.txt").exists()
+    with pytest.raises(ValueError, match="inside the workspace"):
+        ApplyPatchTool().invoke(
+            ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
+            workspace=tmp_path,
+        )
+    assert (outside_dir / "escaped.txt").exists() is False
 
 
 @pytest.mark.parametrize(
