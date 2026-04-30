@@ -156,7 +156,23 @@ class RuntimeBackgroundTaskSupervisor:
         )
 
     def task_with_observability(self, task: BackgroundTaskState) -> BackgroundTaskState:
-        return replace(task, observability=self.task_observability(task))
+        runtime = self._runtime
+        queued_summaries = runtime._session_store.list_queued_background_tasks(
+            workspace=runtime._workspace
+        )
+        tasks_by_id = {task.task.id: task}
+        for summary in queued_summaries:
+            if summary.task.id in tasks_by_id:
+                continue
+            tasks_by_id[summary.task.id] = runtime._session_store.load_background_task(
+                workspace=runtime._workspace,
+                task_id=summary.task.id,
+            )
+        context = self._observability_context(
+            queued_summaries=queued_summaries,
+            tasks_by_id=tasks_by_id,
+        )
+        return replace(task, observability=self.task_observability(task, context=context))
 
     def summary_with_observability(
         self, summary: StoredBackgroundTaskSummary
@@ -174,13 +190,11 @@ class RuntimeBackgroundTaskSupervisor:
         if not summaries:
             return ()
         runtime = self._runtime
-        global_summaries = runtime._session_store.list_background_tasks(
+        queued_summaries = runtime._session_store.list_queued_background_tasks(
             workspace=runtime._workspace
         )
         task_ids_to_load = {summary.task.id for summary in summaries}
-        task_ids_to_load.update(
-            summary.task.id for summary in global_summaries if summary.status == "queued"
-        )
+        task_ids_to_load.update(summary.task.id for summary in queued_summaries)
         tasks_by_id = {
             task_id: runtime._session_store.load_background_task(
                 workspace=runtime._workspace,
@@ -189,7 +203,7 @@ class RuntimeBackgroundTaskSupervisor:
             for task_id in task_ids_to_load
         }
         context = self._observability_context(
-            global_summaries=global_summaries,
+            queued_summaries=queued_summaries,
             tasks_by_id=tasks_by_id,
         )
         return tuple(
@@ -242,11 +256,9 @@ class RuntimeBackgroundTaskSupervisor:
         with self._queue_lock:
             queued = [
                 summary.task.id
-                for summary in sorted(
-                    runtime._session_store.list_background_tasks(workspace=runtime._workspace),
-                    key=lambda summary: (summary.created_at, summary.task.id),
+                for summary in runtime._session_store.list_queued_background_tasks(
+                    workspace=runtime._workspace
                 )
-                if summary.status == "queued"
             ]
         try:
             return queued.index(task.task.id) + 1
@@ -279,15 +291,9 @@ class RuntimeBackgroundTaskSupervisor:
     def _observability_context(
         self,
         *,
-        global_summaries: tuple[StoredBackgroundTaskSummary, ...],
+        queued_summaries: tuple[StoredBackgroundTaskSummary, ...],
         tasks_by_id: dict[str, BackgroundTaskState],
     ) -> _BackgroundTaskObservabilityContext:
-        queued_summaries = tuple(
-            sorted(
-                (summary for summary in global_summaries if summary.status == "queued"),
-                key=lambda summary: (summary.created_at, summary.task.id),
-            )
-        )
         queued_positions = {
             summary.task.id: index for index, summary in enumerate(queued_summaries, start=1)
         }
@@ -554,9 +560,9 @@ class RuntimeBackgroundTaskSupervisor:
         queued_provider = 0
         queued_model = 0
         queued_total = 0
-        for summary in runtime._session_store.list_background_tasks(workspace=runtime._workspace):
-            if summary.status != "queued":
-                continue
+        for summary in runtime._session_store.list_queued_background_tasks(
+            workspace=runtime._workspace
+        ):
             queued_total += 1
             task = runtime._session_store.load_background_task(
                 workspace=runtime._workspace,

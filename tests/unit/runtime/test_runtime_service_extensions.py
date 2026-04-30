@@ -1446,8 +1446,9 @@ def test_runtime_background_task_list_observability_batches_store_reads(
     second = runtime.start_background_task(RuntimeRequest(prompt="second background task"))
     store = _private_attr(runtime, "_session_store")
     original_list_background_tasks = store.list_background_tasks
+    original_list_queued_background_tasks = store.list_queued_background_tasks
     original_load_background_task = store.load_background_task
-    calls = {"list": 0, "load": 0}
+    calls = {"list": 0, "list_queued": 0, "load": 0}
 
     def counted_list_background_tasks(
         *, workspace: Path
@@ -1455,17 +1456,77 @@ def test_runtime_background_task_list_observability_batches_store_reads(
         calls["list"] += 1
         return original_list_background_tasks(workspace=workspace)
 
+    def counted_list_queued_background_tasks(
+        *, workspace: Path
+    ) -> tuple[StoredBackgroundTaskSummary, ...]:
+        calls["list_queued"] += 1
+        return original_list_queued_background_tasks(workspace=workspace)
+
     def counted_load_background_task(*, workspace: Path, task_id: str) -> BackgroundTaskState:
         calls["load"] += 1
         return original_load_background_task(workspace=workspace, task_id=task_id)
 
     monkeypatch.setattr(store, "list_background_tasks", counted_list_background_tasks)
+    monkeypatch.setattr(store, "list_queued_background_tasks", counted_list_queued_background_tasks)
     monkeypatch.setattr(store, "load_background_task", counted_load_background_task)
 
     summaries = runtime.list_background_tasks()
 
     assert {summary.task.id for summary in summaries} == {first.task.id, second.task.id}
-    assert calls == {"list": 2, "load": 2}
+    assert calls == {"list": 1, "list_queued": 1, "load": 2}
+
+    graph.release_first.set()
+    assert _wait_for_background_task(runtime, first.task.id).status == "completed"
+    assert _wait_for_background_task(runtime, second.task.id).status == "completed"
+
+
+def test_runtime_background_task_load_observability_uses_queued_scope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = _BlockingBackgroundTaskGraph()
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=graph,
+        config=RuntimeConfig(background_task=RuntimeBackgroundTaskConfig(default_concurrency=1)),
+    )
+    first = runtime.start_background_task(RuntimeRequest(prompt="first background task"))
+    assert graph.first_started.wait(timeout=2.0)
+    second = runtime.start_background_task(RuntimeRequest(prompt="second background task"))
+    store = _private_attr(runtime, "_session_store")
+    original_list_background_tasks = store.list_background_tasks
+    original_list_queued_background_tasks = store.list_queued_background_tasks
+    original_load_background_task = store.load_background_task
+    calls = {"list_queued": 0, "load": 0}
+
+    def fail_full_background_task_scan(
+        *, workspace: Path
+    ) -> tuple[StoredBackgroundTaskSummary, ...]:
+        _ = workspace
+        raise AssertionError("single task load observability must not scan full task history")
+
+    def counted_list_queued_background_tasks(
+        *, workspace: Path
+    ) -> tuple[StoredBackgroundTaskSummary, ...]:
+        calls["list_queued"] += 1
+        return original_list_queued_background_tasks(workspace=workspace)
+
+    def counted_load_background_task(*, workspace: Path, task_id: str) -> BackgroundTaskState:
+        calls["load"] += 1
+        return original_load_background_task(workspace=workspace, task_id=task_id)
+
+    monkeypatch.setattr(store, "list_background_tasks", fail_full_background_task_scan)
+    monkeypatch.setattr(store, "list_queued_background_tasks", counted_list_queued_background_tasks)
+    monkeypatch.setattr(store, "load_background_task", counted_load_background_task)
+
+    queued = runtime.load_background_task(second.task.id)
+
+    assert queued.status == "queued"
+    assert queued.observability is not None
+    assert queued.observability.queue_position == 1
+    assert calls == {"list_queued": 1, "load": 1}
+
+    monkeypatch.setattr(store, "list_background_tasks", original_list_background_tasks)
 
     graph.release_first.set()
     assert _wait_for_background_task(runtime, first.task.id).status == "completed"

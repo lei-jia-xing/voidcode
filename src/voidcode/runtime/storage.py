@@ -131,6 +131,10 @@ class SessionStore(Protocol):
         self, *, workspace: Path
     ) -> tuple[StoredBackgroundTaskSummary, ...]: ...
 
+    def list_queued_background_tasks(
+        self, *, workspace: Path
+    ) -> tuple[StoredBackgroundTaskSummary, ...]: ...
+
     def list_background_tasks_by_parent_session(
         self, *, workspace: Path, parent_session_id: str
     ) -> tuple[StoredBackgroundTaskSummary, ...]: ...
@@ -2148,6 +2152,24 @@ class SqliteSessionStore:
                     FROM background_tasks
                     WHERE workspace = ?
                     ORDER BY updated_at DESC, task_id ASC
+                    """,
+                    (str(workspace),),
+                ).fetchall(),
+            )
+        return tuple(self._background_task_summary_from_row(row) for row in rows)
+
+    def list_queued_background_tasks(
+        self, *, workspace: Path
+    ) -> tuple[StoredBackgroundTaskSummary, ...]:
+        with self._connect(workspace) as connection:
+            rows = cast(
+                list[sqlite3.Row],
+                connection.execute(
+                    """
+                    SELECT task_id, status, prompt, session_id, error, created_at, updated_at
+                    FROM background_tasks
+                    WHERE workspace = ? AND status = 'queued'
+                    ORDER BY created_at ASC, task_id ASC
                     """,
                     (str(workspace),),
                 ).fetchall(),
