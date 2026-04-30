@@ -1117,8 +1117,77 @@ def test_provider_adapter_sanitizes_tool_arguments_and_inline_blobs(
     assert raw_content not in raw_arguments
     assert raw_content not in tool_content
     assert raw_data_uri not in tool_content
-    assert '"omitted": true' in raw_arguments
+    assert '"content": ""' in raw_arguments
+    assert '"omitted": true' not in raw_arguments
+    assert '"byte_count"' not in raw_arguments
     assert '"data_uri": {"byte_count"' in tool_content
+
+
+def test_provider_adapter_strips_redaction_sentinels_from_todo_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = OpenAIModelProvider().turn_provider()
+    request = _build_turn_request(model_name="openai")
+    raw_todo_content = "Secret todo text should not become a reusable schema example"
+    tool_results = (
+        ToolResult(
+            tool_name="todo_write",
+            status="ok",
+            content="Updated todos",
+            data={
+                "tool_call_id": "call-todo",
+                "arguments": {
+                    "todos": [
+                        {
+                            "content": raw_todo_content,
+                            "status": "pending",
+                            "priority": "high",
+                        }
+                    ]
+                },
+            },
+        ),
+    )
+    request = ProviderTurnRequest(
+        assembled_context=_assembled_from_legacy(
+            prompt=request.prompt,
+            tool_results=tool_results,
+            context_window=_StubContextWindow(
+                prompt=request.context_window.prompt,
+                tool_results=tool_results,
+            ),
+            applied_skills=request.applied_skills,
+        ),
+        available_tools=request.available_tools,
+        raw_model=request.raw_model,
+        provider_name=request.provider_name,
+        model_name=request.model_name,
+        attempt=request.attempt,
+        abort_signal=request.abort_signal,
+    )
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        completion_content="done",
+    )
+
+    _ = provider.propose_turn(request)
+
+    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+    assert isinstance(payload_obj, dict)
+    payload = cast(dict[str, object], payload_obj)
+    messages_obj = payload.get("messages")
+    assert isinstance(messages_obj, list)
+    messages = cast(list[dict[str, object]], messages_obj)
+    assistant_call = messages[1]
+    tool_calls = cast(list[dict[str, object]], assistant_call["tool_calls"])
+    function = cast(dict[str, object], tool_calls[0]["function"])
+    raw_arguments = function["arguments"]
+    assert isinstance(raw_arguments, str)
+    assert raw_todo_content not in raw_arguments
+    assert '"content": ""' in raw_arguments
+    assert '"omitted": true' not in raw_arguments
+    assert '"byte_count"' not in raw_arguments
 
 
 def test_provider_adapter_includes_tool_result_errors(
@@ -1470,6 +1539,74 @@ def test_provider_adapter_synthetic_tool_feedback_policy_is_provider_agnostic(
     assert "Completed tool calls for current request:" in feedback
     assert '"tool_name": "list"' in feedback
     assert "tool_calls" not in messages[1]
+
+
+def test_provider_adapter_synthetic_feedback_strips_argument_sentinels(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = LiteLLMBackendSingleAgentProvider(
+        name="custom",
+        config=None,
+    )
+    request = _build_turn_request(model_name="custom")
+    raw_todo_content = "Secret todo text should not appear in synthetic feedback arguments"
+    tool_results = (
+        ToolResult(
+            tool_name="todo_write",
+            status="ok",
+            content="Updated todos",
+            data={
+                "tool_call_id": "todo_0",
+                "arguments": {
+                    "todos": [
+                        {
+                            "content": raw_todo_content,
+                            "status": "pending",
+                            "priority": "high",
+                        }
+                    ]
+                },
+            },
+        ),
+    )
+    request = ProviderTurnRequest(
+        assembled_context=_assembled_from_legacy(
+            prompt=request.prompt,
+            tool_results=tool_results,
+            context_window=_StubContextWindow(
+                prompt=request.context_window.prompt,
+                tool_results=tool_results,
+            ),
+            applied_skills=request.applied_skills,
+        ),
+        available_tools=request.available_tools,
+        raw_model="custom/demo",
+        provider_name="custom",
+        model_name="demo",
+        model_metadata=ProviderModelMetadata(tool_feedback_mode="synthetic_user_message"),
+        attempt=request.attempt,
+        abort_signal=request.abort_signal,
+    )
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        completion_content="done",
+    )
+
+    _ = provider.propose_turn(request)
+
+    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+    assert isinstance(payload_obj, dict)
+    payload = cast(dict[str, object], payload_obj)
+    messages_obj = payload.get("messages")
+    assert isinstance(messages_obj, list)
+    messages = cast(list[dict[str, object]], messages_obj)
+    feedback = messages[1]["content"]
+    assert isinstance(feedback, str)
+    assert raw_todo_content not in feedback
+    assert '"content": ""' in feedback
+    assert '"omitted": true' not in feedback
+    assert '"byte_count"' not in feedback
 
 
 def test_provider_adapter_infers_tool_feedback_when_metadata_omits_mode(

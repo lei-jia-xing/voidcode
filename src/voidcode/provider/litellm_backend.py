@@ -22,7 +22,11 @@ else:
 
 
 from ..tools.contracts import ToolCall, ToolDefinition
-from ..tools.output import sanitize_tool_arguments, sanitize_tool_result_data
+from ..tools.output import (
+    sanitize_tool_arguments,
+    sanitize_tool_result_data,
+    strip_redaction_sentinels,
+)
 from .config import LiteLLMProviderConfig
 from .errors import provider_execution_error_from_api_payload
 from .model_catalog import ToolFeedbackMode, infer_model_metadata
@@ -274,6 +278,12 @@ class LiteLLMBackendSingleAgentProvider:
                 return inferred.tool_feedback_mode
         return "standard"
 
+    @staticmethod
+    def _provider_visible_arguments(arguments: dict[str, object]) -> dict[str, object]:
+        sanitized = sanitize_tool_arguments(arguments)
+        stripped = strip_redaction_sentinels(sanitized)
+        return cast(dict[str, object], stripped) if isinstance(stripped, dict) else {}
+
     def _build_messages(self, request: ProviderTurnRequest) -> list[dict[str, object]]:
         assembled_context = request.assembled_context
         messages: list[dict[str, object]] = []
@@ -290,7 +300,7 @@ class LiteLLMBackendSingleAgentProvider:
                     )
                     raw_arguments = sanitized_data.get("arguments")
                     sanitized_arguments = (
-                        sanitize_tool_arguments(cast(dict[str, object], raw_arguments))
+                        self._provider_visible_arguments(cast(dict[str, object], raw_arguments))
                         if isinstance(raw_arguments, dict)
                         else {}
                     )
@@ -340,7 +350,7 @@ class LiteLLMBackendSingleAgentProvider:
                     segment.tool_call_id,
                     fallback=segment.tool_name,
                 )
-                sanitized_arguments = sanitize_tool_arguments(segment.tool_arguments or {})
+                sanitized_arguments = self._provider_visible_arguments(segment.tool_arguments or {})
                 arguments = json.dumps(
                     sanitized_arguments,
                     ensure_ascii=False,
