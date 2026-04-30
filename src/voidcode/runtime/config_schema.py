@@ -271,10 +271,11 @@ def runtime_config_json_schema() -> dict[str, object]:
                 "additionalProperties": {"$ref": "#/$defs/categoryConfig"},
                 "propertyNames": {
                     "enum": [
+                        "brain",
                         "deep",
+                        "high",
+                        "low",
                         "quick",
-                        "ultrabrain",
-                        "unspecified-high",
                         "visual-engineering",
                         "writing",
                     ]

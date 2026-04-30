@@ -219,9 +219,10 @@ def test_task_tool_rejects_unsupported_category_before_dispatch(tmp_path: Path) 
 def test_task_category_mapping_contract_is_exact() -> None:
     assert set(supported_subagent_categories()) == {
         "quick",
+        "low",
         "deep",
-        "unspecified-high",
-        "ultrabrain",
+        "high",
+        "brain",
         "writing",
         "visual-engineering",
     }
@@ -232,9 +233,10 @@ def test_task_category_mapping_contract_is_exact() -> None:
         for category in supported_subagent_categories()
     } == {
         "quick": "worker",
+        "low": "worker",
         "deep": "worker",
-        "unspecified-high": "worker",
-        "ultrabrain": "advisor",
+        "high": "worker",
+        "brain": "advisor",
         "writing": "product",
         "visual-engineering": "product",
     }

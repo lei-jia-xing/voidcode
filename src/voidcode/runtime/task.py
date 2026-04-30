@@ -86,11 +86,12 @@ class ResolvedSubagentRoute:
 
 _CATEGORY_TO_SUBAGENT_PRESET: dict[str, SubagentExecutablePreset] = {
     "quick": "worker",
+    "low": "worker",
     "deep": "worker",
-    "ultrabrain": "advisor",
+    "brain": "advisor",
     "writing": "product",
     "visual-engineering": "product",
-    "unspecified-high": "worker",
+    "high": "worker",
 }
 SUPPORTED_SUBAGENT_CATEGORIES: tuple[str, ...] = tuple(sorted(_CATEGORY_TO_SUBAGENT_PRESET))
 
