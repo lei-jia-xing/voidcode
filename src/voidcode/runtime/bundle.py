@@ -565,6 +565,8 @@ class _SessionBundleBuilder:
         if not isinstance(artifact_id, str) or artifact_id == "":
             return None
         read_result = read_tool_output_artifact(artifact, offset=0, limit=1_000_000)
+        if read_result.get("status") == "invalid":
+            return None
         missing = bool(read_result.get("artifact_missing"))
         raw_content = read_result.get("content")
         content = raw_content if isinstance(raw_content, str) and not missing else None
