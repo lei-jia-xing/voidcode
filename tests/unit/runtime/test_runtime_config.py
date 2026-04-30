@@ -1522,8 +1522,9 @@ def test_runtime_config_parses_category_model_overrides(tmp_path: Path) -> None:
         json.dumps(
             {
                 "categories": {
+                    "brain": {"model": "openai/o3"},
+                    "low": {"model": "openai/gpt-4o-mini"},
                     "quick": {"model": "openai/gpt-4o-mini"},
-                    "ultrabrain": {"model": "openai/o3"},
                 }
             }
         ),
@@ -1533,12 +1534,14 @@ def test_runtime_config_parses_category_model_overrides(tmp_path: Path) -> None:
     config = load_runtime_config(tmp_path, env={})
 
     assert config.categories == {
+        "brain": RuntimeCategoryConfig(model="openai/o3"),
+        "low": RuntimeCategoryConfig(model="openai/gpt-4o-mini"),
         "quick": RuntimeCategoryConfig(model="openai/gpt-4o-mini"),
-        "ultrabrain": RuntimeCategoryConfig(model="openai/o3"),
     }
     assert serialize_runtime_categories_config(config.categories) == {
+        "brain": {"model": "openai/o3"},
+        "low": {"model": "openai/gpt-4o-mini"},
         "quick": {"model": "openai/gpt-4o-mini"},
-        "ultrabrain": {"model": "openai/o3"},
     }
 
 
