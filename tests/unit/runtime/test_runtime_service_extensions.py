@@ -9918,14 +9918,17 @@ def test_runtime_provider_turn_usage_is_persisted_in_session_metadata(tmp_path: 
 
     response = runtime.run(RuntimeRequest(prompt="summarize", session_id="usage-session"))
     replay = runtime.resume("usage-session")
+    provider_usage = cast(dict[str, object], response.session.metadata["provider_usage"])
+    latest_run_id = provider_usage["latest_run_id"]
 
-    expected_usage = {
+    expected_usage: dict[str, object] = {
         "latest": {
             "input_tokens": 10,
             "output_tokens": 3,
             "cache_creation_tokens": 0,
             "cache_read_tokens": 0,
         },
+        "latest_run_id": latest_run_id,
         "cumulative": {
             "input_tokens": 10,
             "output_tokens": 3,
@@ -9934,8 +9937,51 @@ def test_runtime_provider_turn_usage_is_persisted_in_session_metadata(tmp_path: 
         },
         "turn_count": 1,
     }
+    assert isinstance(latest_run_id, str)
     assert response.session.metadata["provider_usage"] == expected_usage
     assert replay.session.metadata["provider_usage"] == expected_usage
+
+
+def test_runtime_context_pressure_ignores_stale_provider_usage(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path)
+    coordinator = runtime._run_loop_coordinator  # pyright: ignore[reportPrivateUsage]
+    session = SessionState(
+        session=SessionRef("stale-provider-usage"),
+        status="running",
+        metadata={
+            "runtime_state": {"run_id": "current-run"},
+            "provider_usage": {
+                "latest": {
+                    "input_tokens": 90,
+                    "output_tokens": 10,
+                    "cache_creation_tokens": 0,
+                    "cache_read_tokens": 0,
+                },
+                "latest_run_id": "previous-run",
+                "cumulative": {
+                    "input_tokens": 90,
+                    "output_tokens": 10,
+                    "cache_creation_tokens": 0,
+                    "cache_read_tokens": 0,
+                },
+                "turn_count": 1,
+            },
+        },
+    )
+    context_window = RuntimeContextWindow(
+        prompt="new prompt",
+        model_context_window_tokens=100,
+        original_tool_result_count=0,
+        retained_tool_result_count=0,
+    )
+
+    payload = coordinator._build_context_pressure_payload(  # pyright: ignore[reportPrivateUsage]
+        session=session,
+        context_window=context_window,
+        threshold=0.7,
+    )
+
+    assert payload is None
 
 
 def test_runtime_context_pressure_uses_provider_usage_when_available(tmp_path: Path) -> None:

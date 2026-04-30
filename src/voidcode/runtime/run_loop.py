@@ -1455,7 +1455,9 @@ class RuntimeRunLoopCoordinator:
         threshold: float,
     ) -> dict[str, object] | None:
         budget = RuntimeRunLoopCoordinator._provider_usage_budget(context_window)
-        provider_total_tokens = RuntimeRunLoopCoordinator._latest_provider_total_tokens(session)
+        provider_total_tokens = RuntimeRunLoopCoordinator._latest_current_provider_total_tokens(
+            session
+        )
         if budget is None or provider_total_tokens is None:
             return None
         if budget <= 0 or provider_total_tokens <= 0:
@@ -1494,11 +1496,15 @@ class RuntimeRunLoopCoordinator:
         return max(1, model_window - reserved_output_tokens)
 
     @staticmethod
-    def _latest_provider_total_tokens(session: SessionState) -> int | None:
+    def _latest_current_provider_total_tokens(session: SessionState) -> int | None:
         raw_provider_usage = session.metadata.get("provider_usage")
         if not isinstance(raw_provider_usage, dict):
             return None
         provider_usage = cast(dict[str, object], raw_provider_usage)
+        current_run_id = RuntimeRunLoopCoordinator._current_run_id(session)
+        latest_run_id = provider_usage.get("latest_run_id")
+        if not isinstance(current_run_id, str) or latest_run_id != current_run_id:
+            return None
         raw_latest = provider_usage.get("latest")
         if not isinstance(raw_latest, dict):
             return None
@@ -1515,6 +1521,15 @@ class RuntimeRunLoopCoordinator:
                 return None
             total_tokens += raw_value
         return total_tokens
+
+    @staticmethod
+    def _current_run_id(session: SessionState) -> str | None:
+        raw_runtime_state = session.metadata.get("runtime_state")
+        if not isinstance(raw_runtime_state, dict):
+            return None
+        runtime_state = cast(dict[str, object], raw_runtime_state)
+        run_id = runtime_state.get("run_id")
+        return run_id if isinstance(run_id, str) and run_id else None
 
     @staticmethod
     def _build_memory_refreshed_payload(
