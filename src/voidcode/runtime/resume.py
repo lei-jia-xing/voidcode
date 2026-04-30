@@ -1077,7 +1077,11 @@ class RuntimeResumeCoordinator:
         )
 
     def resume_provider_failure_response(
-        self, *, session_id: str, checkpoint: dict[str, object]
+        self,
+        *,
+        session_id: str,
+        checkpoint: dict[str, object],
+        finalize_background_task: bool = False,
     ) -> RuntimeResponse:
         output: str | None = None
         final_session: SessionState | None = None
@@ -1092,11 +1096,16 @@ class RuntimeResumeCoordinator:
             workspace=self._runtime._workspace,
             session_id=session_id,
         )
-        return RuntimeResponse(
+        response = RuntimeResponse(
             session=final_session or stored.session,
             events=stored.events,
             output=output if output is not None else stored.output,
         )
+        if finalize_background_task:
+            self._runtime._background_task_supervisor.finalize_background_task_from_session_response(
+                session_response=response
+            )
+        return response
 
     def resume_provider_failure_stream(
         self,
@@ -1105,6 +1114,7 @@ class RuntimeResumeCoordinator:
         checkpoint: dict[str, object],
         run_id: str | None = None,
         abort_signal: ProviderAbortSignal | None = None,
+        finalize_background_task: bool = False,
     ) -> Iterator[RuntimeStreamChunk]:
         runtime = self._runtime
         checkpoint_envelope = self.validated_resume_checkpoint_envelope(
@@ -1276,6 +1286,13 @@ class RuntimeResumeCoordinator:
                     final_session.session.id,
                     end_hook_outcome.failed_error,
                 )
+            release_events = runtime._release_mcp_session_events(
+                session_id=final_session.session.id,
+                start_sequence=end_hook_outcome.last_sequence + 1,
+            )
+            loop_events.extend(release_events)
+            for event in release_events:
+                yield RuntimeStreamChunk(kind="event", session=final_session, event=event)
 
         response = RuntimeResponse(
             session=final_session,
@@ -1288,6 +1305,10 @@ class RuntimeResumeCoordinator:
             parent_session_id=stored.session.session.parent_id,
         )
         runtime._persist_response(request=request, response=response)
+        if finalize_background_task:
+            runtime._background_task_supervisor.finalize_background_task_from_session_response(
+                session_response=response
+            )
 
     @staticmethod
     def tool_results_from_checkpoint(raw_tool_results: list[object]) -> tuple[ToolResult, ...]:

@@ -3947,6 +3947,7 @@ class VoidCodeRuntime:
                 return self._resume_provider_failure_response(
                     session_id=session_id,
                     checkpoint=checkpoint,
+                    finalize_background_task=True,
                 )
             response = self._load_stored_response(session_id=session_id)
             self._background_task_supervisor.reconcile_parent_background_task_events_for_session(
@@ -3997,6 +3998,7 @@ class VoidCodeRuntime:
                         checkpoint=checkpoint,
                         run_id=run_id,
                         abort_signal=abort_signal,
+                        finalize_background_task=True,
                     )
                 finally:
                     self._unregister_active_session_id(session_id, run_id=run_id)
@@ -4604,11 +4606,16 @@ class VoidCodeRuntime:
         return self._resume_coordinator.load_resume_checkpoint(session_id=session_id)
 
     def _resume_provider_failure_response(
-        self, *, session_id: str, checkpoint: dict[str, object]
+        self,
+        *,
+        session_id: str,
+        checkpoint: dict[str, object],
+        finalize_background_task: bool = False,
     ) -> RuntimeResponse:
         return self._resume_coordinator.resume_provider_failure_response(
             session_id=session_id,
             checkpoint=checkpoint,
+            finalize_background_task=finalize_background_task,
         )
 
     def _resume_provider_failure_stream(
@@ -4618,12 +4625,14 @@ class VoidCodeRuntime:
         checkpoint: dict[str, object],
         run_id: str | None = None,
         abort_signal: ProviderAbortSignal | None = None,
+        finalize_background_task: bool = False,
     ) -> Iterator[RuntimeStreamChunk]:
         yield from self._resume_coordinator.resume_provider_failure_stream(
             session_id=session_id,
             checkpoint=checkpoint,
             run_id=run_id,
             abort_signal=abort_signal,
+            finalize_background_task=finalize_background_task,
         )
 
     @staticmethod

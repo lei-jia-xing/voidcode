@@ -107,6 +107,7 @@ from voidcode.runtime.service import (
     VoidCodeRuntime,
 )
 from voidcode.runtime.session import SessionRef
+from voidcode.runtime.storage import SqliteSessionStore
 from voidcode.runtime.task import (
     BackgroundTaskRef,
     BackgroundTaskRequestSnapshot,
@@ -12248,6 +12249,152 @@ def test_runtime_provider_transient_failure_after_tool_is_resumable(
         event for event in resumed.events if event.event_type == "runtime.tool_completed"
     ]
     assert len(tool_completed_events) == 1
+
+
+def test_runtime_provider_failure_resume_finalizes_background_task_and_releases_mcp(
+    tmp_path: Path,
+) -> None:
+    class _RecordingMcpManager:
+        def __init__(self) -> None:
+            self.release_session_ids: list[str] = []
+
+        @property
+        def configuration(self) -> McpConfigState:
+            return McpConfigState(configured_enabled=True)
+
+        def current_state(self) -> McpManagerState:
+            return McpManagerState(mode="managed", configuration=self.configuration)
+
+        def list_tools(
+            self,
+            *,
+            workspace: Path,
+            owner_session_id: str | None = None,
+            parent_session_id: str | None = None,
+        ):
+            _ = workspace, owner_session_id, parent_session_id
+            return ()
+
+        def call_tool(
+            self,
+            *,
+            server_name: str,
+            tool_name: str,
+            arguments: dict[str, object],
+            workspace: Path,
+            owner_session_id: str | None = None,
+            parent_session_id: str | None = None,
+        ):
+            _ = server_name, tool_name, arguments, workspace, owner_session_id, parent_session_id
+            raise AssertionError("not used")
+
+        def release_session(self, *, session_id: str) -> tuple[McpRuntimeEvent, ...]:
+            self.release_session_ids.append(session_id)
+            return (
+                McpRuntimeEvent(
+                    event_type=RUNTIME_MCP_SERVER_STOPPED,
+                    payload={"server": "echo", "workspace_root": str(tmp_path)},
+                ),
+            )
+
+        def shutdown(self) -> tuple[McpRuntimeEvent, ...]:
+            return ()
+
+        def drain_events(self) -> tuple[McpRuntimeEvent, ...]:
+            return ()
+
+    (tmp_path / "sample.txt").write_text("sample contents", encoding="utf-8")
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(
+                    (
+                        ProviderStreamEvent(
+                            kind="content",
+                            channel="tool",
+                            text=(
+                                '{"tool_name":"read_file",'
+                                '"arguments":{"filePath":"sample.txt"},'
+                                '"tool_call_id":"read-sample"}'
+                            ),
+                        ),
+                        ProviderStreamEvent(kind="done", done_reason="completed"),
+                    ),
+                    (
+                        ProviderStreamEvent(
+                            kind="error",
+                            channel="error",
+                            error="stream disconnect",
+                            error_kind="transient_failure",
+                        ),
+                        ProviderStreamEvent(kind="done", done_reason="error"),
+                    ),
+                    ProviderTurnResult(output="resumed complete"),
+                ),
+            ),
+        }
+    )
+    mcp_manager = _RecordingMcpManager()
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+        model_provider_registry=registry,
+        mcp_manager=mcp_manager,
+    )
+    task_id = "bg-provider-failure-resume"
+    child_session_id = "provider-retry-background-child"
+
+    _ = list(
+        runtime._run_with_persistence(  # pyright: ignore[reportPrivateUsage]
+            RuntimeRequest(
+                prompt="read sample.txt",
+                session_id=child_session_id,
+                metadata={
+                    "provider_stream": True,
+                    "background_task_id": task_id,
+                    "background_run": True,
+                },
+            ),
+            allow_internal_metadata=True,
+        )
+    )
+    runtime._session_store.create_background_task(  # pyright: ignore[reportPrivateUsage]
+        workspace=tmp_path,
+        task=BackgroundTaskState(
+            task=BackgroundTaskRef(id=task_id),
+            request=BackgroundTaskRequestSnapshot(
+                prompt="read sample.txt",
+            ),
+        ),
+    )
+    session_store = runtime._session_store  # pyright: ignore[reportPrivateUsage]
+    assert isinstance(session_store, SqliteSessionStore)
+    with session_store._write_connect(tmp_path) as connection:  # pyright: ignore[reportPrivateUsage]
+        _ = connection.execute(
+            """
+            UPDATE background_tasks
+            SET status = 'running', session_id = ?, result_available = 0,
+                error = NULL, finished_at = NULL
+            WHERE task_id = ?
+            """,
+            (child_session_id, task_id),
+        )
+        connection.commit()
+    running_task = runtime._session_store.load_background_task(  # pyright: ignore[reportPrivateUsage]
+        workspace=tmp_path,
+        task_id=task_id,
+    )
+    assert running_task.status == "running"
+    mcp_manager.release_session_ids.clear()
+
+    resumed = runtime.resume(child_session_id)
+
+    assert resumed.session.status == "completed"
+    assert resumed.output == "resumed complete"
+    assert runtime.load_background_task(task_id).status == "completed"
+    assert mcp_manager.release_session_ids == [child_session_id]
+    assert any(event.event_type == RUNTIME_MCP_SERVER_STOPPED for event in resumed.events)
 
 
 def test_runtime_fallback_event_preserves_provider_error_details(tmp_path: Path) -> None:
