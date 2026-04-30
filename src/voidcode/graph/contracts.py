@@ -4,7 +4,7 @@ import operator
 from dataclasses import dataclass, field
 from typing import Annotated, Protocol, TypedDict, runtime_checkable
 
-from ..provider.protocol import ProviderAssembledContext, ProviderContextWindow
+from ..provider.protocol import ProviderAbortSignal, ProviderAssembledContext, ProviderContextWindow
 from ..runtime.events import EventSource
 from ..runtime.session import SessionState
 from ..tools.contracts import ToolCall, ToolDefinition, ToolResult
@@ -43,6 +43,7 @@ class GraphRunRequest:
     available_tools: tuple[ToolDefinition, ...] = ()
     context_window: ProviderContextWindow | None = None
     metadata: dict[str, object] = field(default_factory=dict)
+    abort_signal: ProviderAbortSignal | None = None
 
 
 @runtime_checkable

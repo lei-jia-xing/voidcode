@@ -1,31 +1,19 @@
-import tsParser from "@typescript-eslint/parser";
-import tsPlugin from "@typescript-eslint/eslint-plugin";
+import js from "@eslint/js";
+import tseslint from "typescript-eslint";
 import reactHooksPlugin from "eslint-plugin-react-hooks";
 import reactRefreshPlugin from "eslint-plugin-react-refresh";
 
-export default [
-  {
-    ignores: ["dist/**", "eslint.config.js"],
-  },
+export default tseslint.config(
+  { ignores: ["dist/**", "coverage/**"] },
+  js.configs.recommended,
+  ...tseslint.configs.recommended,
   {
     files: ["src/**/*.{ts,tsx}"],
-    languageOptions: {
-      parser: tsParser,
-      parserOptions: {
-        ecmaVersion: "latest",
-        sourceType: "module",
-        ecmaFeatures: {
-          jsx: true,
-        },
-      },
-    },
     plugins: {
-      "@typescript-eslint": tsPlugin,
       "react-hooks": reactHooksPlugin,
       "react-refresh": reactRefreshPlugin,
     },
     rules: {
-      ...tsPlugin.configs.recommended.rules,
       ...reactHooksPlugin.configs.recommended.rules,
       "react-refresh/only-export-components": [
         "warn",
@@ -33,4 +21,4 @@ export default [
       ],
     },
   },
-];
+);

@@ -16,6 +16,7 @@ import {
   RuntimeSettings,
   RuntimeSettingsUpdate,
 } from "../lib/runtime/types";
+import { ControlButton } from "./ui";
 
 interface SettingsPanelProps {
   isOpen: boolean;
@@ -84,6 +85,7 @@ export function SettingsPanel({
 
   useEffect(() => {
     if (settings) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- initialising local form state from external settings
       setProvider(settings.provider || "");
       setModel(settings.model || "");
       setApiKey("");
@@ -135,61 +137,59 @@ export function SettingsPanel({
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <button
         type="button"
-        className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+        className="absolute inset-0 bg-[var(--vc-overlay-bg)] backdrop-blur-sm"
         onClick={onClose}
         aria-label={t("common.close")}
       />
       <form
-        className="relative w-full max-w-lg bg-[#0c0c0e] border border-slate-800 rounded-2xl flex flex-col shadow-2xl max-h-[90vh]"
+        className="relative w-full max-w-lg bg-[var(--vc-bg)] border border-[color:var(--vc-border-subtle)] rounded-2xl flex flex-col shadow-2xl max-h-[90vh]"
         onSubmit={handleSubmit}
       >
-        <div className="flex items-center justify-between px-6 h-14 border-b border-slate-800">
-          <h2 className="text-base font-semibold text-slate-100">
+        <div className="flex items-center justify-between px-6 h-14 border-b border-[color:var(--vc-border-subtle)]">
+          <h2 className="text-base font-semibold text-[var(--vc-text-primary)]">
             {t("settings.title")}
           </h2>
-          <button
-            type="button"
+          <ControlButton
+            compact
+            icon
+            variant="ghost"
             onClick={onClose}
-            className="w-8 h-8 flex items-center justify-center rounded-lg text-slate-400 hover:bg-slate-800 hover:text-slate-200 transition-colors"
+            aria-label={t("common.close")}
           >
             <X className="w-5 h-5" />
-          </button>
+          </ControlButton>
         </div>
 
         <div className="flex-1 overflow-y-auto p-6 space-y-6">
           {settingsError && (
-            <div className="flex items-start gap-2 rounded-lg bg-rose-500/10 border border-rose-500/20 p-3 text-sm text-rose-300">
+            <div className="flex items-start gap-2 rounded-lg bg-[var(--vc-danger-bg)] border border-[color:var(--vc-danger-border)] p-3 text-sm text-[var(--vc-danger-text)]">
               <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
               {settingsError}
             </div>
           )}
 
           {providersError && (
-            <div className="flex items-start gap-2 rounded-lg bg-rose-500/10 border border-rose-500/20 p-3 text-sm text-rose-300">
+            <div className="flex items-start gap-2 rounded-lg bg-[var(--vc-danger-bg)] border border-[color:var(--vc-danger-border)] p-3 text-sm text-[var(--vc-danger-text)]">
               <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
               {providersError}
             </div>
           )}
 
           <div className="space-y-2">
-            <div className="text-sm font-medium text-slate-300">
+            <div className="text-sm font-medium text-[var(--vc-text-muted)]">
               {t("language.switch")}
             </div>
-            <button
-              type="button"
-              onClick={onToggleLanguage}
-              className="inline-flex items-center justify-center rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-200 transition-colors hover:border-slate-600 hover:bg-slate-800"
-            >
+            <ControlButton variant="secondary" onClick={onToggleLanguage}>
               {language === "en" ? t("language.zh") : t("language.en")}
-            </button>
+            </ControlButton>
           </div>
 
           <div className="space-y-4">
-            <div className="text-sm font-medium text-slate-300">
+            <div className="text-sm font-medium text-[var(--vc-text-muted)]">
               {t("settings.provider")}
             </div>
             {providers.length === 0 && providersStatus !== "loading" ? (
-              <div className="rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-sm text-slate-400">
+              <div className="rounded-lg border border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] px-3 py-2 text-sm text-[var(--vc-text-muted)]">
                 {t("settings.noProviders")}
               </div>
             ) : (
@@ -197,7 +197,7 @@ export function SettingsPanel({
                 {providerGroups.map(({ label, providers: group }) =>
                   group.length > 0 ? (
                     <div key={label} className="space-y-2">
-                      <div className="text-xs uppercase tracking-wide text-slate-500">
+                      <div className="text-xs uppercase tracking-wide text-[var(--vc-text-subtle)]">
                         {label}
                       </div>
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -206,30 +206,34 @@ export function SettingsPanel({
                             type="button"
                             key={p.name}
                             onClick={() => setProvider(p.name)}
+                            aria-pressed={provider === p.name}
                             className={`flex flex-col items-start justify-center rounded-xl border p-3 text-left transition-colors ${
                               provider === p.name
-                                ? "border-indigo-500 bg-indigo-500/10 ring-1 ring-indigo-500/50"
-                                : "border-slate-800 bg-slate-900/40 hover:border-slate-700 hover:bg-slate-800/60"
+                                ? "border-[color:var(--vc-border-strong)] bg-[var(--vc-surface-2)] ring-1 ring-[color:var(--vc-border-strong)]"
+                                : "border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] hover:border-[color:var(--vc-border-strong)] hover:bg-[var(--vc-surface-2)]"
                             }`}
                           >
                             <div className="w-full flex items-center justify-between mb-1">
-                              <div className="text-sm font-medium text-slate-200">
+                              <div className="text-sm font-medium text-[var(--vc-text-primary)]">
                                 {p.label}
                               </div>
-                              <div
-                                className={`w-2 h-2 rounded-full ${
-                                  p.configured
-                                    ? "bg-emerald-500"
-                                    : "bg-slate-600"
-                                }`}
-                                title={
-                                  p.configured
+                              <span className="inline-flex items-center">
+                                <span
+                                  className={`w-2 h-2 rounded-full ${
+                                    p.configured
+                                      ? "bg-[var(--vc-confirm-text)]"
+                                      : "bg-[var(--vc-text-subtle)]"
+                                  }`}
+                                  aria-hidden="true"
+                                />
+                                <span className="sr-only">
+                                  {p.configured
                                     ? t("settings.configured")
-                                    : t("settings.notConfigured")
-                                }
-                              />
+                                    : t("settings.notConfigured")}
+                                </span>
+                              </span>
                             </div>
-                            <div className="text-[11px] font-mono text-slate-500">
+                            <div className="text-[11px] font-mono text-[var(--vc-text-subtle)]">
                               {p.name}
                             </div>
                           </button>
@@ -242,10 +246,10 @@ export function SettingsPanel({
             )}
           </div>
 
-          <div className="space-y-2 pt-2 border-t border-slate-800/50">
+          <div className="space-y-2 pt-2 border-t border-[color:var(--vc-border-subtle)]">
             <label
               htmlFor="settings-model"
-              className="text-sm font-medium text-slate-300"
+              className="text-sm font-medium text-[var(--vc-text-muted)]"
             >
               {t("settings.model")}
             </label>
@@ -254,7 +258,7 @@ export function SettingsPanel({
               value={model}
               onChange={(event) => setModel(event.target.value)}
               disabled={isLoading || configuredProviders.length === 0}
-              className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2.5 text-sm text-slate-200 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-colors disabled:opacity-50"
+              className="w-full bg-[var(--vc-surface-1)] border border-[color:var(--vc-border-subtle)] rounded-lg px-3 py-2.5 text-sm text-[var(--vc-text-primary)] focus:outline-none focus:border-[color:var(--vc-border-strong)] focus:ring-1 focus:ring-[color:var(--vc-border-strong)] transition-colors disabled:opacity-50"
             >
               <option value="">{t("settings.modelPlaceholder")}</option>
               {configuredProviders.map((item) => {
@@ -273,14 +277,16 @@ export function SettingsPanel({
                 ) : null;
               })}
             </select>
-            <p className="text-xs text-slate-500">{t("settings.modelHint")}</p>
+            <p className="text-xs text-[var(--vc-text-subtle)]">
+              {t("settings.modelHint")}
+            </p>
           </div>
 
           {provider && (
-            <div className="space-y-2 rounded-xl border border-slate-800 bg-slate-900/40 p-3 text-xs text-slate-400">
+            <div className="space-y-2 rounded-xl border border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] p-3 text-xs text-[var(--vc-text-muted)]">
               <div className="flex items-center justify-between gap-3">
                 <div>
-                  <div className="font-medium text-slate-300">
+                  <div className="font-medium text-[var(--vc-text-muted)]">
                     {t("settings.discoveryStatus")}
                   </div>
                   <div className="mt-1 font-mono">
@@ -291,31 +297,33 @@ export function SettingsPanel({
                       : ""}
                   </div>
                 </div>
-                <button
-                  type="button"
+                <ControlButton
+                  compact
+                  variant="secondary"
                   onClick={() => onValidateProvider?.(provider)}
                   disabled={isLoading || validationStatus === "loading"}
-                  className="inline-flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-slate-200 transition-colors hover:border-slate-600 hover:bg-slate-800 disabled:opacity-50"
                 >
                   {validationStatus === "loading" ? (
                     <Loader2 className="h-4 w-4 animate-spin" />
                   ) : validationStatus === "success" ? (
-                    <CheckCircle2 className="h-4 w-4 text-emerald-400" />
+                    <CheckCircle2 className="h-4 w-4 text-[var(--vc-confirm-text)]" />
                   ) : validationStatus === "error" ? (
-                    <XCircle className="h-4 w-4 text-rose-400" />
+                    <XCircle className="h-4 w-4 text-[var(--vc-danger-text)]" />
                   ) : null}
                   {t("settings.testCredentials")}
-                </button>
+                </ControlButton>
               </div>
               {selectedProviderModels?.last_error && (
-                <div className="text-rose-300">
+                <div className="text-[var(--vc-danger-text)]">
                   {selectedProviderModels.last_error}
                 </div>
               )}
               {(validationResult || validationError) && (
                 <div
                   className={
-                    validationResult?.ok ? "text-emerald-300" : "text-rose-300"
+                    validationResult?.ok
+                      ? "text-[var(--vc-confirm-text)]"
+                      : "text-[var(--vc-danger-text)]"
                   }
                 >
                   {validationResult?.message ?? validationError}
@@ -324,10 +332,10 @@ export function SettingsPanel({
             </div>
           )}
 
-          <div className="space-y-2 pt-2 border-t border-slate-800/50">
+          <div className="space-y-2 pt-2 border-t border-[color:var(--vc-border-subtle)]">
             <label
               htmlFor="settings-api-key"
-              className="text-sm font-medium text-slate-300"
+              className="text-sm font-medium text-[var(--vc-text-muted)]"
             >
               {t("settings.apiKey")}
             </label>
@@ -339,17 +347,20 @@ export function SettingsPanel({
               onChange={(e) => setApiKey(e.target.value)}
               placeholder={t("settings.apiKeyPlaceholder")}
               disabled={isLoading}
-              className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2.5 text-sm text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-colors disabled:opacity-50"
+              className="w-full bg-[var(--vc-surface-1)] border border-[color:var(--vc-border-subtle)] rounded-lg px-3 py-2.5 text-sm text-[var(--vc-text-primary)] placeholder:text-[var(--vc-text-subtle)] focus:outline-none focus:border-[color:var(--vc-border-strong)] focus:ring-1 focus:ring-[color:var(--vc-border-strong)] transition-colors disabled:opacity-50"
             />
-            <p className="text-xs text-slate-500">{t("settings.apiKeyHint")}</p>
+            <p className="text-xs text-[var(--vc-text-subtle)]">
+              {t("settings.apiKeyHint")}
+            </p>
           </div>
         </div>
 
-        <div className="p-6 border-t border-slate-800 bg-slate-900/30 rounded-b-2xl">
-          <button
+        <div className="p-6 border-t border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] rounded-b-2xl">
+          <ControlButton
             type="submit"
             disabled={isLoading}
-            className="w-full flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white px-4 py-2.5 rounded-lg text-sm font-medium transition-colors"
+            variant="primary"
+            className="w-full"
           >
             {isLoading ? (
               <Loader2 className="w-4 h-4 animate-spin" />
@@ -357,7 +368,7 @@ export function SettingsPanel({
               <Save className="w-4 h-4" />
             )}
             {t("settings.save")}
-          </button>
+          </ControlButton>
         </div>
       </form>
     </div>

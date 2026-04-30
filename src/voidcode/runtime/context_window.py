@@ -9,6 +9,7 @@ from functools import lru_cache
 from typing import Any, Literal, NamedTuple, cast
 
 from ..tools.contracts import ToolResult
+from .todos import render_provider_todo_state
 
 
 def _empty_tool_limits() -> dict[str, int]:
@@ -1137,6 +1138,9 @@ def assemble_provider_context(
     for segment_content in preserved_system_segments:
         _append_system_segment(segment_content)
     _append_system_segment(skill_prompt_context)
+    todo_prompt_context = render_provider_todo_state(session_metadata)
+    if todo_prompt_context is not None:
+        _append_system_segment(todo_prompt_context)
     continuity_state = preserved_continuity_state or context_window.continuity_state
     metadata_payload = context_window.metadata_payload()
     if continuity_state is not None and "continuity_state" not in metadata_payload:

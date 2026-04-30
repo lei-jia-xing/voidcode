@@ -23,6 +23,7 @@ from voidcode.runtime.config import (
     EXECUTION_ENGINE_ENV_VAR,
     MAX_STEPS_ENV_VAR,
     MODEL_ENV_VAR,
+    REASONING_EFFORT_ENV_VAR,
     RUNTIME_CONFIG_FILE_NAME,
     TOOL_TIMEOUT_ENV_VAR,
     RuntimeAgentConfig,
@@ -450,6 +451,68 @@ def test_runtime_config_uses_tool_timeout_environment_when_repo_file_missing(
     config = load_runtime_config(tmp_path, env={TOOL_TIMEOUT_ENV_VAR: "7"})
 
     assert config.tool_timeout_seconds == 7
+
+
+def test_runtime_config_default_reasoning_effort_is_none(tmp_path: Path) -> None:
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.reasoning_effort is None
+
+
+def test_runtime_config_uses_reasoning_effort_environment_when_repo_file_missing(
+    tmp_path: Path,
+) -> None:
+    config = load_runtime_config(tmp_path, env={REASONING_EFFORT_ENV_VAR: "medium"})
+
+    assert config.reasoning_effort == "medium"
+
+
+def test_runtime_config_treats_empty_reasoning_effort_environment_as_unset(
+    tmp_path: Path,
+) -> None:
+    config = load_runtime_config(tmp_path, env={REASONING_EFFORT_ENV_VAR: ""})
+
+    assert config.reasoning_effort is None
+
+
+def test_runtime_config_prefers_repo_file_reasoning_effort_over_environment(
+    tmp_path: Path,
+) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps({"reasoning_effort": "low"}),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(tmp_path, env={REASONING_EFFORT_ENV_VAR: "high"})
+
+    assert config.reasoning_effort == "low"
+
+
+def test_runtime_config_prefers_explicit_reasoning_effort_over_repo_file_and_environment(
+    tmp_path: Path,
+) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps({"reasoning_effort": "low"}),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(
+        tmp_path,
+        reasoning_effort="high",
+        env={REASONING_EFFORT_ENV_VAR: "medium"},
+    )
+
+    assert config.reasoning_effort == "high"
+
+
+def test_runtime_config_rejects_empty_reasoning_effort_in_repo_file(tmp_path: Path) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps({"reasoning_effort": ""}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="reasoning_effort"):
+        load_runtime_config(tmp_path, env={})
 
 
 def test_runtime_config_prefers_repo_file_over_environment(tmp_path: Path) -> None:

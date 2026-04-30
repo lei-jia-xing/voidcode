@@ -50,6 +50,22 @@ describe("Composer", () => {
     expect(modelTrigger).toHaveTextContent("OpenCode / glm-5.1");
   });
 
+  it("keeps composer selectors accessible while rendering them as flat footer controls", () => {
+    render(<Composer {...baseProps} />);
+
+    const agentTrigger = screen.getByRole("button", { name: "Agent" });
+    const modelTrigger = screen.getByRole("button", { name: "Model" });
+
+    expect(agentTrigger).toBeEnabled();
+    expect(modelTrigger).toBeEnabled();
+    expect(agentTrigger.className).not.toContain(
+      "border-[color:var(--vc-border-subtle)]",
+    );
+    expect(modelTrigger.className).not.toContain(
+      "border-[color:var(--vc-border-subtle)]",
+    );
+  });
+
   it("calls onProviderModelChange when model is changed", () => {
     const onProviderModelChange = vi.fn();
     render(

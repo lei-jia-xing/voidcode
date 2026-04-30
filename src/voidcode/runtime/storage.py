@@ -38,6 +38,7 @@ from .task import (
     is_background_task_transition_allowed,
     validate_background_task_id,
 )
+from .todos import runtime_todos_from_state_payload, todo_state_payload
 
 
 @runtime_checkable
@@ -223,6 +224,14 @@ class SqliteSessionStore:
             ("source", "TEXT", 1, None, 0),
             ("payload_json", "TEXT", 1, None, 0),
         ),
+        "session_todos": (
+            ("session_id", "TEXT", 1, None, 1),
+            ("position", "INTEGER", 1, None, 2),
+            ("content", "TEXT", 1, None, 0),
+            ("status", "TEXT", 1, None, 0),
+            ("priority", "TEXT", 1, None, 0),
+            ("updated_at", "INTEGER", 1, None, 0),
+        ),
         "background_tasks": (
             ("task_id", "TEXT", 0, None, 1),
             ("workspace", "TEXT", 1, None, 0),
@@ -277,6 +286,7 @@ class SqliteSessionStore:
     _CANONICAL_UNIQUE_INDEXES: dict[str, frozenset[tuple[str, ...]]] = {
         "sessions": frozenset(),
         "session_events": frozenset(),
+        "session_todos": frozenset(),
         "background_tasks": frozenset(),
         "session_notifications": frozenset({("workspace", "dedupe_key")}),
         "session_event_deliveries": frozenset(),
@@ -358,6 +368,19 @@ class SqliteSessionStore:
                 source TEXT NOT NULL,
                 payload_json TEXT NOT NULL,
                 PRIMARY KEY (session_id, sequence)
+            )
+            """
+        )
+        _ = connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS session_todos (
+                session_id TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                status TEXT NOT NULL,
+                priority TEXT NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (session_id, position)
             )
             """
         )
@@ -713,6 +736,118 @@ class SqliteSessionStore:
             self._session_events_payload(events),
         )
 
+    @staticmethod
+    def _todo_state_from_metadata(metadata: dict[str, object]) -> dict[str, object] | None:
+        raw_runtime_state = metadata.get("runtime_state")
+        if not isinstance(raw_runtime_state, dict):
+            return None
+        runtime_state = cast(dict[str, object], raw_runtime_state)
+        raw_todo_state = runtime_state.get("todos")
+        if not isinstance(raw_todo_state, dict):
+            return None
+        todo_state = cast(dict[str, object], raw_todo_state)
+        revision = todo_state.get("revision")
+        return todo_state_payload(
+            runtime_todos_from_state_payload(todo_state.get("todos")),
+            revision=revision if isinstance(revision, int) and revision >= 0 else 0,
+        )
+
+    def _replace_session_todos(
+        self,
+        *,
+        connection: sqlite3.Connection,
+        session_id: str,
+        metadata: dict[str, object],
+    ) -> None:
+        todo_state = self._todo_state_from_metadata(metadata)
+        _ = connection.execute("DELETE FROM session_todos WHERE session_id = ?", (session_id,))
+        if todo_state is None:
+            return
+        todos = runtime_todos_from_state_payload(todo_state.get("todos"))
+        _ = connection.executemany(
+            """
+            INSERT INTO session_todos (
+                session_id, position, content, status, priority, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    session_id,
+                    todo["position"],
+                    todo["content"],
+                    todo["status"],
+                    todo["priority"],
+                    todo["updated_at"],
+                )
+                for todo in todos
+            ],
+        )
+
+    def _todo_state_from_rows(
+        self,
+        *,
+        connection: sqlite3.Connection,
+        session_id: str,
+    ) -> dict[str, object] | None:
+        rows = cast(
+            list[sqlite3.Row],
+            connection.execute(
+                """
+                SELECT position, content, status, priority, updated_at
+                FROM session_todos
+                WHERE session_id = ?
+                ORDER BY position ASC
+                """,
+                (session_id,),
+            ).fetchall(),
+        )
+        if not rows:
+            return None
+        todos = runtime_todos_from_state_payload(
+            [
+                {
+                    "position": cast(int, row["position"]),
+                    "content": cast(str, row["content"]),
+                    "status": cast(str, row["status"]),
+                    "priority": cast(str, row["priority"]),
+                    "updated_at": cast(int, row["updated_at"]),
+                }
+                for row in rows
+            ]
+        )
+        revision = max((todo["updated_at"] for todo in todos), default=0)
+        return todo_state_payload(todos, revision=revision)
+
+    @classmethod
+    def _metadata_with_todo_state(
+        cls,
+        metadata: dict[str, object],
+        todo_state: dict[str, object] | None,
+    ) -> dict[str, object]:
+        if todo_state is None:
+            return metadata
+        raw_runtime_state = metadata.get("runtime_state")
+        runtime_state = (
+            dict(cast(dict[str, object], raw_runtime_state))
+            if isinstance(raw_runtime_state, dict)
+            else {}
+        )
+        runtime_state["todos"] = todo_state
+        return {**metadata, "runtime_state": runtime_state}
+
+    @staticmethod
+    def _todo_state_from_events(events: tuple[EventEnvelope, ...]) -> dict[str, object] | None:
+        for event in reversed(events):
+            if event.event_type != "runtime.todo_updated":
+                continue
+            todos = runtime_todos_from_state_payload(event.payload.get("todos"))
+            revision = event.payload.get("revision")
+            return todo_state_payload(
+                todos,
+                revision=revision if isinstance(revision, int) and revision >= 0 else 0,
+            )
+        return None
+
     def _write_session_snapshot(
         self,
         *,
@@ -757,6 +892,11 @@ class SqliteSessionStore:
             connection=connection,
             session_id=session_id,
             events=response.events,
+        )
+        self._replace_session_todos(
+            connection=connection,
+            session_id=session_id,
+            metadata=response.session.metadata,
         )
         return updated_at
 
@@ -1536,6 +1676,14 @@ class SqliteSessionStore:
                     (session_id,),
                 ).fetchall(),
             )
+            stored_todo_state = self._todo_state_from_rows(
+                connection=connection,
+                session_id=session_id,
+            )
+        metadata = self._metadata_with_todo_state(
+            cast(dict[str, object], json.loads(cast(str, session_row["metadata_json"]))),
+            stored_todo_state,
+        )
         session = SessionState(
             session=SessionRef(
                 id=cast(str, session_row["session_id"]),
@@ -1543,7 +1691,7 @@ class SqliteSessionStore:
             ),
             status=self._parse_session_status(cast(str, session_row["status"])),
             turn=cast(int, session_row["turn"]),
-            metadata=cast(dict[str, object], json.loads(cast(str, session_row["metadata_json"]))),
+            metadata=metadata,
         )
         events = tuple(
             EventEnvelope(
@@ -1563,7 +1711,7 @@ class SqliteSessionStore:
                 session=session.session,
                 status=session.status,
                 turn=session.turn,
-                metadata=self._active_revert_metadata(session.metadata),
+                metadata=self._active_revert_metadata(session.metadata, events=events),
             )
             output = None
         return RuntimeResponse(session=session, events=events, output=output)
@@ -1632,14 +1780,23 @@ class SqliteSessionStore:
         }
         return next_metadata
 
-    @staticmethod
-    def _active_revert_metadata(metadata: dict[str, object]) -> dict[str, object]:
+    def _active_revert_metadata(
+        self,
+        metadata: dict[str, object],
+        *,
+        events: tuple[EventEnvelope, ...],
+    ) -> dict[str, object]:
         next_metadata = dict(metadata)
         raw_runtime_state = next_metadata.get("runtime_state")
         if not isinstance(raw_runtime_state, dict):
             return next_metadata
         runtime_state = dict(cast(dict[str, object], raw_runtime_state))
         runtime_state.pop("continuity", None)
+        todo_state = self._todo_state_from_events(events)
+        if todo_state is None:
+            runtime_state.pop("todos", None)
+        else:
+            runtime_state["todos"] = todo_state
         next_metadata["runtime_state"] = runtime_state
         return next_metadata
 
@@ -2448,6 +2605,12 @@ class SqliteSessionStore:
                     column="session_id",
                     ids=session_ids,
                 ),
+                "session_todos": self._delete_for_ids(
+                    connection=connection,
+                    table="session_todos",
+                    column="session_id",
+                    ids=session_ids,
+                ),
                 "session_event_deliveries": self._delete_for_ids(
                     connection=connection,
                     table="session_event_deliveries",
@@ -2550,6 +2713,12 @@ class SqliteSessionStore:
         counts["session_events"] = SqliteSessionStore._count_for_ids(
             connection=connection,
             table="session_events",
+            column="session_id",
+            ids=session_ids,
+        )
+        counts["session_todos"] = SqliteSessionStore._count_for_ids(
+            connection=connection,
+            table="session_todos",
             column="session_id",
             ids=session_ids,
         )

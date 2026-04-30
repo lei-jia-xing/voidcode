@@ -191,11 +191,20 @@ def _runtime_event(
 
 
 def _make_chunk(
-    *, session_id: str, status: str, event: _StubEvent | None = None, output: str | None = None
+    *,
+    session_id: str,
+    status: str,
+    event: _StubEvent | None = None,
+    output: str | None = None,
+    metadata: dict[str, object] | None = None,
 ) -> _StubChunk:
     return _StubChunk(
         kind="output" if output is not None else "event",
-        session=_StubSession(session=_StubSessionRef(id=session_id), status=status),
+        session=_StubSession(
+            session=_StubSessionRef(id=session_id),
+            status=status,
+            metadata=metadata,
+        ),
         event=event,
         output=output,
     )
@@ -629,10 +638,38 @@ def test_run_command_loads_config_and_forwards_it_to_runtime() -> None:
             )
 
     assert result == 0
-    load_mock.assert_called_once_with(workspace, approval_mode="allow")
+    load_mock.assert_called_once_with(workspace, approval_mode="allow", reasoning_effort=None)
     runtime_class.assert_called_once_with(workspace=workspace, config=config)
     runtime_class.return_value.run_stream.assert_called_once()
     runtime_class.return_value.resume.assert_not_called()
+
+
+def test_run_command_ctrl_c_cancels_active_runtime_session(capsys: Any) -> None:
+    cli = importlib.import_module("voidcode.cli")
+    workspace = Path("/tmp/demo-workspace")
+    config = SimpleNamespace(approval_mode="allow")
+
+    def _interrupted_stream() -> Iterable[_StubChunk]:
+        yield _make_chunk(
+            session_id="interrupt-session",
+            status="running",
+            event=_runtime_event("runtime.request_received", prompt="slow"),
+            metadata={"runtime_state": {"run_id": "cli-run-1"}},
+        )
+        raise KeyboardInterrupt
+
+    with patch.object(cli, "load_runtime_config", autospec=True, return_value=config):
+        with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+            runtime_class.return_value.run_stream.return_value = _interrupted_stream()
+            result = cli.main(["run", "slow", "--workspace", str(workspace)])
+
+    assert result == 130
+    runtime_class.return_value.cancel_session.assert_called_once_with(
+        "interrupt-session",
+        run_id="cli-run-1",
+        reason="cli KeyboardInterrupt",
+    )
+    assert "Interrupted current run." in capsys.readouterr().err
 
 
 def test_run_command_accepts_agent_skills_max_steps_and_provider_stream_flags() -> None:
@@ -676,6 +713,70 @@ def test_run_command_accepts_agent_skills_max_steps_and_provider_stream_flags() 
     assert request.metadata["skills"] == ["demo", "review"]
     assert request.metadata["max_steps"] == 7
     assert request.metadata["provider_stream"] is True
+
+
+def test_run_command_forwards_reasoning_effort_flag_to_metadata_and_config() -> None:
+    cli = importlib.import_module("voidcode.cli")
+    workspace = Path("/tmp/demo-workspace")
+    config = SimpleNamespace(approval_mode="allow")
+    chunks = (
+        _make_chunk(
+            session_id="demo-session",
+            status="completed",
+            event=_runtime_event("runtime.request_received", prompt="read README.md"),
+        ),
+        _make_chunk(session_id="demo-session", status="completed", output="done\n"),
+    )
+
+    with patch.object(cli, "load_runtime_config", autospec=True, return_value=config) as load_mock:
+        with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+            runtime_class.return_value.run_stream.return_value = iter(chunks)
+            result = cli.main(
+                [
+                    "run",
+                    "read README.md",
+                    "--workspace",
+                    str(workspace),
+                    "--reasoning-effort",
+                    "high",
+                ]
+            )
+
+    assert result == 0
+    load_mock.assert_called_once_with(workspace, approval_mode=None, reasoning_effort="high")
+    runtime_class.return_value.run_stream.assert_called_once()
+    request = runtime_class.return_value.run_stream.call_args.args[0]
+    assert request.metadata["reasoning_effort"] == "high"
+
+
+def test_run_command_omits_reasoning_effort_metadata_when_flag_absent() -> None:
+    cli = importlib.import_module("voidcode.cli")
+    workspace = Path("/tmp/demo-workspace")
+    config = SimpleNamespace(approval_mode="allow")
+    chunks = (
+        _make_chunk(
+            session_id="demo-session",
+            status="completed",
+            event=_runtime_event("runtime.request_received", prompt="read README.md"),
+        ),
+        _make_chunk(session_id="demo-session", status="completed", output="done\n"),
+    )
+
+    with patch.object(cli, "load_runtime_config", autospec=True, return_value=config):
+        with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+            runtime_class.return_value.run_stream.return_value = iter(chunks)
+            result = cli.main(
+                [
+                    "run",
+                    "read README.md",
+                    "--workspace",
+                    str(workspace),
+                ]
+            )
+
+    assert result == 0
+    request = runtime_class.return_value.run_stream.call_args.args[0]
+    assert "reasoning_effort" not in request.metadata
 
 
 def test_run_command_prints_request_observability_event(capsys: Any) -> None:
@@ -1409,7 +1510,13 @@ def test_config_show_outputs_workspace_effective_config() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         workspace = Path(tmp)
         (workspace / ".voidcode.json").write_text(
-            json.dumps({"approval_mode": "deny", "model": "repo/model"}),
+            json.dumps(
+                {
+                    "approval_mode": "deny",
+                    "model": "repo/model",
+                    "reasoning_effort": "medium",
+                }
+            ),
             encoding="utf-8",
         )
         env = with_src_pythonpath(os.environ.copy())
@@ -1430,6 +1537,7 @@ def test_config_show_outputs_workspace_effective_config() -> None:
         "model": "repo/model",
         "execution_engine": "deterministic",
         "max_steps": None,
+        "reasoning_effort": "medium",
         "agent": None,
         "agents": _expected_agent_models("repo/model"),
         "categories": _expected_category_models("repo/model"),
@@ -1578,6 +1686,7 @@ def test_config_show_outputs_resumed_session_effective_config() -> None:
                 {
                     "approval_mode": "deny",
                     "model": "repo/model",
+                    "reasoning_effort": "high",
                     "provider_fallback": {
                         "preferred_model": "repo/model",
                         "fallback_models": ["repo/session-fallback"],
@@ -1605,6 +1714,7 @@ def test_config_show_outputs_resumed_session_effective_config() -> None:
                 {
                     "approval_mode": "deny",
                     "model": "changed/model",
+                    "reasoning_effort": "medium",
                     "provider_fallback": {
                         "preferred_model": "changed/model",
                         "fallback_models": ["changed/workspace-fallback"],
@@ -1634,6 +1744,7 @@ def test_config_show_outputs_resumed_session_effective_config() -> None:
         "model": "repo/model",
         "execution_engine": "deterministic",
         "max_steps": None,
+        "reasoning_effort": "high",
         "agent": None,
         "agents": {
             agent_id: {
@@ -1703,6 +1814,7 @@ def test_config_show_delegates_to_runtime_effective_config(capsys: Any) -> None:
         model="runtime/model",
         execution_engine="deterministic",
         max_steps=9,
+        reasoning_effort="high",
         provider_fallback=None,
         resolved_provider={
             "active_target": {
@@ -1772,6 +1884,7 @@ def test_config_show_delegates_to_runtime_effective_config(capsys: Any) -> None:
         "model": "runtime/model",
         "execution_engine": "deterministic",
         "max_steps": 9,
+        "reasoning_effort": "high",
         "agent": None,
         "agents": {},
         "categories": {},

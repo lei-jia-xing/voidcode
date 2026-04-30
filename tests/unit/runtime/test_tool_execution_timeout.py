@@ -11,6 +11,17 @@ from voidcode.runtime.contracts import RuntimeRequest
 from voidcode.runtime.service import ToolRegistry, VoidCodeRuntime
 from voidcode.tools import ShellExecTool
 from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolResult
+from voidcode.tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
+
+
+class _AbortSignal:
+    def __init__(self, *, cancelled: bool = False, reason: str | None = None) -> None:
+        self._cancelled = cancelled
+        self.reason = reason
+
+    @property
+    def cancelled(self) -> bool:
+        return self._cancelled
 
 
 class _InstantTool:
@@ -78,6 +89,16 @@ class _ToolNativeTimeoutErrorTool:
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
         raise TimeoutError("tool-native timeout")
+
+
+class _FatalExceptionTool:
+    definition = ToolDefinition(
+        name="fatal_exception_tool",
+        description="Raises a non-timeout fatal exception.",
+    )
+
+    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
+        raise ValueError("fatal tool error")
 
 
 @dataclass(frozen=True, slots=True)
@@ -198,6 +219,27 @@ def test_tool_completes_normally_within_timeout(tmp_path: Path) -> None:
     assert "runtime.tool_completed" in event_types
     assert "runtime.tool_timeout" not in event_types
     assert "runtime.failed" not in event_types
+
+
+def test_shell_exec_returns_interrupted_result_when_runtime_abort_is_set(tmp_path: Path) -> None:
+    tool = ShellExecTool()
+    command = f'"{sys.executable}" -c "import time; time.sleep(10)"'
+
+    with bind_runtime_tool_context(
+        RuntimeToolInvocationContext(
+            session_id="shell-abort",
+            abort_signal=_AbortSignal(cancelled=True, reason="test abort"),
+        )
+    ):
+        result = tool.invoke(
+            ToolCall(tool_name="shell_exec", arguments={"command": command, "timeout": 30}),
+            workspace=tmp_path,
+        )
+
+    assert result.status == "error"
+    assert result.data["interrupted"] is True
+    assert result.data["cancelled"] is True
+    assert result.data["reason"] == "test abort"
 
 
 def test_slow_tool_that_finishes_within_timeout_is_not_interrupted(tmp_path: Path) -> None:
@@ -591,3 +633,248 @@ def test_tool_native_timeout_error_before_runtime_cap_does_not_emit_runtime_tool
     assert len(completed_events) == 1
     assert completed_events[0].payload["status"] == "error"
     assert completed_events[0].payload["error"] == "tool-native timeout"
+
+
+def test_tool_started_event_includes_display_and_tool_status_metadata(
+    tmp_path: Path,
+) -> None:
+    runtime = _make_runtime(tmp_path, _InstantTool(), tool_timeout_seconds=None)
+
+    chunks = list(runtime.run_stream(RuntimeRequest(prompt="go")))
+    started_events = [
+        chunk.event
+        for chunk in chunks
+        if chunk.kind == "event"
+        and chunk.event is not None
+        and chunk.event.event_type == "runtime.tool_started"
+    ]
+
+    assert len(started_events) >= 1, "expected at least one runtime.tool_started event"
+    payload = started_events[0].payload
+
+    assert "display" in payload
+    assert "tool_status" in payload
+    assert "tool" in payload
+
+
+def test_tool_completed_event_includes_tool_status_metadata(
+    tmp_path: Path,
+) -> None:
+    runtime = _make_runtime(tmp_path, _InstantTool(), tool_timeout_seconds=None)
+
+    chunks = list(runtime.run_stream(RuntimeRequest(prompt="go")))
+    completed_events = [
+        chunk.event
+        for chunk in chunks
+        if chunk.kind == "event"
+        and chunk.event is not None
+        and chunk.event.event_type == "runtime.tool_completed"
+    ]
+
+    assert len(completed_events) >= 1, "expected at least one runtime.tool_completed event"
+    payload = completed_events[0].payload
+
+    assert "display" in payload
+    assert "tool_status" in payload
+    assert "tool" in payload
+
+    display_value = payload["display"]
+    assert isinstance(display_value, dict)
+    assert display_value["kind"] == "generic"
+    assert display_value["title"] == "instant_tool"
+    assert display_value["summary"] == "instant_tool"
+
+    tool_status_value = payload["tool_status"]
+    assert isinstance(tool_status_value, dict)
+    typed_ts = cast(dict[str, object], tool_status_value)
+    nested_display = typed_ts.get("display")
+    assert isinstance(nested_display, dict)
+
+
+def test_timeout_exit_emits_terminal_tool_status_with_error(
+    tmp_path: Path,
+) -> None:
+    """Runtime timeout path emits a terminal runtime.tool_completed with error status."""
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        tool_registry=ToolRegistry.from_tools([ShellExecTool()]),
+        graph=_ShellExecGraph(
+            {
+                "command": f'"{sys.executable}" -c "import time; time.sleep(2)"',
+                "timeout": 10,
+            }
+        ),
+        config=RuntimeConfig(
+            approval_mode="allow",
+            execution_engine="deterministic",
+            tool_timeout_seconds=1,
+        ),
+    )
+
+    chunks = list(runtime.run_stream(RuntimeRequest(prompt="go")))
+    completed_events = [
+        c.event
+        for c in chunks
+        if c.kind == "event"
+        and c.event is not None
+        and c.event.event_type == "runtime.tool_completed"
+    ]
+
+    assert len(completed_events) == 1, "expected one runtime.tool_completed on timeout exit"
+    payload = completed_events[0].payload
+
+    assert payload["status"] == "error", "terminal tool status must be error"
+    assert payload["tool"] == "shell_exec"
+
+    assert "tool_call_id" in payload
+    assert isinstance(payload["tool_call_id"], str)
+
+    assert "display" in payload, "terminal status must include display metadata"
+    assert "tool_status" in payload, "terminal status must include tool_status"
+
+    tool_status = cast(dict[str, object], payload["tool_status"])
+    assert tool_status["phase"] == "failed"
+    assert tool_status["status"] == "failed"
+    assert tool_status["tool_name"] == "shell_exec"
+
+    # Verify ordering: started before terminal completed
+    event_types = [c.event.event_type for c in chunks if c.kind == "event" and c.event is not None]
+    started_idx = event_types.index("runtime.tool_started")
+    completed_idx = event_types.index("runtime.tool_completed")
+    assert started_idx < completed_idx, "runtime.tool_completed must follow runtime.tool_started"
+
+    # Verify tool_call_id matches the started event (frontend row identity)
+    started_events = [
+        c.event
+        for c in chunks
+        if c.kind == "event"
+        and c.event is not None
+        and c.event.event_type == "runtime.tool_started"
+    ]
+    assert len(started_events) >= 1
+    started_call_id = started_events[0].payload["tool_call_id"]
+    assert isinstance(started_call_id, str)
+    assert payload["tool_call_id"] == started_call_id, (
+        "terminal tool_completed must use same tool_call_id as tool_started"
+    )
+
+
+def test_unrecovered_exception_emits_terminal_tool_status_before_failure(
+    tmp_path: Path,
+) -> None:
+    """Unrecovered tool exception emits terminal runtime.tool_completed before runtime.failed."""
+    tool = _FatalExceptionTool()
+    runtime = _make_runtime(tmp_path, tool, tool_timeout_seconds=None)
+
+    chunks: list[Any] = []
+    try:
+        for chunk in runtime.run_stream(RuntimeRequest(prompt="go")):
+            chunks.append(chunk)
+    except ValueError:
+        pass
+
+    completed_events = [
+        c.event
+        for c in chunks
+        if c.kind == "event"
+        and c.event is not None
+        and c.event.event_type == "runtime.tool_completed"
+    ]
+    failed_events = [
+        c.event
+        for c in chunks
+        if c.kind == "event" and c.event is not None and c.event.event_type == "runtime.failed"
+    ]
+
+    assert len(completed_events) == 1, (
+        "expected one runtime.tool_completed before runtime.failed on unrecovered exception"
+    )
+    payload = completed_events[0].payload
+
+    assert payload["status"] == "error", "terminal tool status must be error"
+    assert payload["tool"] == "fatal_exception_tool"
+    assert payload["error"] == "fatal tool error"
+
+    assert "tool_call_id" in payload
+    assert isinstance(payload["tool_call_id"], str)
+
+    assert "display" in payload, "terminal status must include display metadata"
+    assert "tool_status" in payload, "terminal status must include tool_status"
+
+    tool_status = cast(dict[str, object], payload["tool_status"])
+    assert tool_status["phase"] == "failed"
+    assert tool_status["status"] == "failed"
+    assert tool_status["tool_name"] == "fatal_exception_tool"
+
+    # runtime.failed must also be present (existing contract preserved)
+    assert len(failed_events) >= 1, "runtime.failed must still be emitted"
+
+    # Verify ordering: started → completed → failed
+    event_types = [c.event.event_type for c in chunks if c.kind == "event" and c.event is not None]
+    started_idx = event_types.index("runtime.tool_started")
+    completed_idx = event_types.index("runtime.tool_completed")
+    failed_idx = event_types.index("runtime.failed")
+    assert started_idx < completed_idx < failed_idx, (
+        "events must be ordered: started → completed → failed"
+    )
+
+    # Verify tool_call_id matches the started event (frontend row identity)
+    started_events = [
+        c.event
+        for c in chunks
+        if c.kind == "event"
+        and c.event is not None
+        and c.event.event_type == "runtime.tool_started"
+    ]
+    assert len(started_events) >= 1
+    started_call_id = started_events[0].payload["tool_call_id"]
+    assert isinstance(started_call_id, str)
+    assert payload["tool_call_id"] == started_call_id, (
+        "terminal tool_completed must use same tool_call_id as tool_started"
+    )
+
+
+def test_timeout_replay_preserves_terminal_tool_status_with_matching_call_id(
+    tmp_path: Path,
+) -> None:
+    """Replay after timeout includes terminal runtime.tool_completed with matched tool_call_id."""
+    session_id = "timeout-replay-terminal-call-id"
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        tool_registry=ToolRegistry.from_tools([ShellExecTool()]),
+        graph=_ShellExecGraph(
+            {
+                "command": f'"{sys.executable}" -c "import time; time.sleep(2)"',
+                "timeout": 10,
+            }
+        ),
+        config=RuntimeConfig(
+            approval_mode="allow",
+            execution_engine="deterministic",
+            tool_timeout_seconds=1,
+        ),
+    )
+
+    _ = list(runtime.run_stream(RuntimeRequest(prompt="go", session_id=session_id)))
+    replay = runtime.resume(session_id)
+    replay_events = replay.events
+
+    completed_events = [e for e in replay_events if e.event_type == "runtime.tool_completed"]
+    started_events = [e for e in replay_events if e.event_type == "runtime.tool_started"]
+
+    assert len(completed_events) == 1, "replay must contain one terminal runtime.tool_completed"
+    completed_payload = completed_events[0].payload
+    assert completed_payload["status"] == "error"
+    assert completed_payload["tool"] == "shell_exec"
+
+    started_call_id = started_events[0].payload["tool_call_id"]
+    assert isinstance(started_call_id, str)
+    completed_call_id = completed_payload["tool_call_id"]
+    assert isinstance(completed_call_id, str)
+    assert started_call_id == completed_call_id, (
+        "replay must preserve same tool_call_id between tool_started and terminal tool_completed"
+    )
+
+    replay_event_types = [e.event_type for e in replay_events]
+    assert "runtime.tool_timeout" in replay_event_types
+    assert "runtime.failed" in replay_event_types

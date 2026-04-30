@@ -10,6 +10,7 @@ import sqlite3
 import sys
 import threading
 import time
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, cast
@@ -86,7 +87,7 @@ from voidcode.runtime.mcp import (
     McpToolCallResult,
     McpToolDescriptor,
 )
-from voidcode.runtime.permission import PermissionPolicy
+from voidcode.runtime.permission import PendingApproval, PermissionPolicy
 from voidcode.runtime.provider_protocol import (
     ProviderExecutionError,
     ProviderStreamEvent,
@@ -100,6 +101,7 @@ from voidcode.runtime.service import (
     RuntimeRequest,
     RuntimeRequestMetadataPayload,
     RuntimeResponse,
+    RuntimeStreamChunk,
     SessionState,
     ToolRegistry,
     VoidCodeRuntime,
@@ -114,6 +116,7 @@ from voidcode.runtime.task import (
 from voidcode.skills import SkillRegistry
 from voidcode.tools import ToolCall
 from voidcode.tools.contracts import ToolDefinition, ToolResult
+from voidcode.tools.runtime_context import current_runtime_tool_context
 
 pytestmark = pytest.mark.usefixtures("force_deterministic_engine_default")
 
@@ -233,6 +236,119 @@ class _ApprovalThenCaptureSkillGraph:
                 )
             )
         return _StubStep(output="done", is_finished=True)
+
+
+class _BlockingApprovalResumeGraph:
+    def __init__(self) -> None:
+        self.resume_started = threading.Event()
+        self.release_resume = threading.Event()
+
+    def step(
+        self,
+        request: GraphRunRequest,
+        tool_results: tuple[object, ...],
+        *,
+        session: SessionState,
+    ) -> _StubStep:
+        _ = request, session
+        if not tool_results:
+            return _StubStep(
+                tool_call=ToolCall(
+                    tool_name="write_file", arguments={"path": "alpha.txt", "content": "1"}
+                )
+            )
+        self.resume_started.set()
+        if not self.release_resume.wait(timeout=2.0):
+            raise RuntimeError("resume was not released")
+        return _StubStep(output="done", is_finished=True)
+
+
+class _DivergentApprovalReplayGraph:
+    def step(
+        self,
+        request: GraphRunRequest,
+        tool_results: tuple[object, ...],
+        *,
+        session: SessionState,
+    ) -> _StubStep:
+        _ = request, tool_results, session
+        return _StubStep(
+            tool_call=ToolCall(
+                tool_name="write_file",
+                arguments={"path": "danger.txt", "content": "divergent"},
+            )
+        )
+
+
+class _AbortSignalApprovalGraph:
+    def step(
+        self,
+        request: GraphRunRequest,
+        tool_results: tuple[object, ...],
+        *,
+        session: SessionState,
+    ) -> _StubStep:
+        _ = request, session
+        if not tool_results:
+            return _StubStep(tool_call=ToolCall(tool_name="write_file", arguments={}))
+        return _StubStep(output="captured", is_finished=True)
+
+
+class _AbortCaptureTool:
+    definition = ToolDefinition(
+        name="write_file",
+        description="Capture runtime abort signal during approval resume",
+        input_schema={"type": "object"},
+        read_only=False,
+    )
+
+    def __init__(self) -> None:
+        self.signal_seen = threading.Event()
+        self.release = threading.Event()
+        self.abort_signal: object | None = None
+        self.initial_cancelled: bool | None = None
+        self.cancelled_after_release: bool | None = None
+        self.reason_after_release: str | None = None
+
+    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
+        _ = call, workspace
+        context = current_runtime_tool_context()
+        signal = context.abort_signal if context is not None else None
+        self.abort_signal = signal
+        self.initial_cancelled = signal.cancelled if signal is not None else None
+        self.signal_seen.set()
+        if not self.release.wait(timeout=2.0):
+            raise RuntimeError("abort capture tool was not released")
+        self.cancelled_after_release = signal.cancelled if signal is not None else None
+        reason = getattr(signal, "reason", None)
+        self.reason_after_release = reason if isinstance(reason, str) else None
+        return ToolResult(
+            tool_name=self.definition.name,
+            status="ok",
+            content="captured abort signal",
+            data={
+                "has_abort_signal": signal is not None,
+                "cancelled_after_release": self.cancelled_after_release,
+                "reason_after_release": self.reason_after_release,
+            },
+        )
+
+
+class _AbortBeforeInvokeTool:
+    definition = ToolDefinition(
+        name="write_file",
+        description="Probe that must not run after a started-tool abort",
+        input_schema={"type": "object"},
+        read_only=False,
+    )
+
+    def __init__(self) -> None:
+        self.invoke_count = 0
+
+    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
+        _ = call, workspace
+        self.invoke_count += 1
+        return ToolResult(tool_name=self.definition.name, status="ok", content="invoked")
 
 
 class _QuestionThenDoneGraph:
@@ -498,6 +614,41 @@ class _ScriptedModelProvider:
         if self.created_providers is not None:
             self.created_providers.append(provider)
         return provider
+
+
+class _WriteThenResultAwareTurnProvider:
+    def __init__(self, *, name: str) -> None:
+        self.name = name
+
+    def propose_turn(self, request: object) -> ProviderTurnResult:
+        turn_request = cast(ProviderTurnRequest, request)
+        if turn_request.tool_results:
+            return ProviderTurnResult(output="done")
+        return ProviderTurnResult(
+            tool_call=ToolCall(
+                tool_name="write_file",
+                arguments={"path": "allowed.txt", "content": "allowed"},
+            )
+        )
+
+    def stream_turn(self, request: object):
+        result = self.propose_turn(request)
+        if result.output is not None:
+            return iter(
+                (
+                    ProviderStreamEvent(kind="delta", channel="text", text=result.output),
+                    ProviderStreamEvent(kind="done", done_reason="completed"),
+                )
+            )
+        return iter((ProviderStreamEvent(kind="done", done_reason="completed"),))
+
+
+@dataclass(frozen=True, slots=True)
+class _WriteThenResultAwareModelProvider:
+    name: str
+
+    def turn_provider(self) -> _WriteThenResultAwareTurnProvider:
+        return _WriteThenResultAwareTurnProvider(name=self.name)
 
 
 class _AlwaysFailingModelProvider:
@@ -1563,6 +1714,95 @@ def test_runtime_session_debug_snapshot_reports_failure_classification_and_last_
     assert snapshot.operator_guidance == "Inspect approval_denied and rerun if needed."
 
 
+def test_runtime_denies_divergent_legacy_approval_replay_without_fresh_permission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+    runtime_config_metadata = cast(
+        Callable[[], dict[str, object]],
+        _private_attr(runtime, "_runtime_config_metadata"),
+    )
+    prepare_provider_context_window = cast(
+        Callable[..., RuntimeContextWindow],
+        _private_attr(runtime, "_prepare_provider_context_window"),
+    )
+    assemble_provider_context = cast(
+        Callable[..., object],
+        _private_attr(runtime, "_assemble_provider_context"),
+    )
+    execute_graph_loop = cast(
+        Callable[..., Iterator[Any]],
+        _private_attr(runtime, "_execute_graph_loop"),
+    )
+    session_metadata = {
+        "runtime_config": runtime_config_metadata(),
+    }
+    session = SessionState(
+        session=SessionRef(id="legacy-deny-divergent"),
+        status="running",
+        turn=1,
+        metadata=session_metadata,
+    )
+    tool_registry = ToolRegistry.with_defaults()
+    graph_request = GraphRunRequest(
+        session=session,
+        prompt="write danger.txt",
+        available_tools=tool_registry.definitions(),
+        context_window=prepare_provider_context_window(
+            prompt="write danger.txt",
+            tool_results=(),
+            session_metadata=session.metadata,
+        ),
+        assembled_context=assemble_provider_context(
+            prompt="write danger.txt",
+            tool_results=(),
+            session_metadata=session.metadata,
+        ),
+        metadata={"provider_attempt": 0},
+    )
+    pending = PendingApproval(
+        request_id="approval-original",
+        tool_name="write_file",
+        arguments={"path": "danger.txt", "content": "original"},
+        target_summary="write_file danger.txt",
+        reason="non-read-only tool invocation",
+        policy_mode="ask",
+    )
+
+    def _fail_fresh_permission(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("denied divergent approval replay must not ask fresh permission")
+
+    monkeypatch.setattr(runtime, "_resolve_permission", _fail_fresh_permission)
+
+    chunks: list[Any] = list(
+        execute_graph_loop(
+            graph=_DivergentApprovalReplayGraph(),
+            tool_registry=tool_registry,
+            session=session,
+            sequence=0,
+            graph_request=graph_request,
+            tool_results=[],
+            approval_resolution=(pending, "deny"),
+            permission_policy=PermissionPolicy(mode="ask"),
+        )
+    )
+    events = [chunk.event for chunk in chunks if chunk.event is not None]
+
+    assert [event.event_type for event in events] == [
+        "graph.tool_request_created",
+        "runtime.tool_lookup_succeeded",
+        "runtime.approval_resolved",
+        "runtime.failed",
+    ]
+    assert events[-2].payload == {"request_id": "approval-original", "decision": "deny"}
+    assert events[-1].payload == {"error": "permission denied for tool: write_file"}
+    assert chunks[-1].session.status == "failed"
+    assert (tmp_path / "danger.txt").exists() is False
+
+
 def test_runtime_session_debug_snapshot_classifies_provider_failure(tmp_path: Path) -> None:
     registry = ModelProviderRegistry(
         providers={
@@ -1645,6 +1885,317 @@ def test_runtime_session_debug_snapshot_marks_active_running_session(tmp_path: P
     _ = list(stream)
 
 
+def test_runtime_cancel_session_interrupts_active_run(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+
+    stream = runtime.run_stream(RuntimeRequest(prompt="cancel me", session_id="active-cancel"))
+    first_chunk = next(stream)
+    result = runtime.cancel_session("active-cancel", reason="test cancellation")
+    remaining_chunks = list(stream)
+
+    failed_events = [
+        chunk.event
+        for chunk in remaining_chunks
+        if chunk.event is not None and chunk.event.event_type == "runtime.failed"
+    ]
+    assert first_chunk.session.status == "running"
+    assert result.status == "interrupted"
+    assert result.interrupted is True
+    assert failed_events
+    assert failed_events[-1].payload["kind"] == "interrupted"
+    assert failed_events[-1].payload["cancelled"] is True
+    assert failed_events[-1].payload["reason"] == "test cancellation"
+
+
+def test_runtime_cancel_after_tool_started_emits_terminal_tool_completed(
+    tmp_path: Path,
+) -> None:
+    tool = _AbortBeforeInvokeTool()
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_AbortSignalApprovalGraph(),
+        tool_registry=ToolRegistry.from_tools([tool]),
+        permission_policy=PermissionPolicy(mode="allow"),
+    )
+    stream = runtime.run_stream(RuntimeRequest(prompt="abort after start", session_id="tool-abort"))
+    chunks: list[RuntimeStreamChunk] = []
+
+    for chunk in stream:
+        chunks.append(chunk)
+        if chunk.event is not None and chunk.event.event_type == "runtime.tool_started":
+            break
+
+    active_metadata = _private_attr(runtime, "_active_session_metadata")("tool-abort")
+    assert isinstance(active_metadata, dict)
+    run_id = cast(str, active_metadata["run_id"])
+
+    result = runtime.cancel_session("tool-abort", run_id=run_id, reason="stop before invoke")
+    chunks.extend(stream)
+
+    event_types = [chunk.event.event_type for chunk in chunks if chunk.event is not None]
+    completed_events = [
+        chunk.event
+        for chunk in chunks
+        if chunk.event is not None and chunk.event.event_type == "runtime.tool_completed"
+    ]
+    failed_events = [
+        chunk.event
+        for chunk in chunks
+        if chunk.event is not None and chunk.event.event_type == "runtime.failed"
+    ]
+    assert result.status == "interrupted"
+    assert tool.invoke_count == 0
+    assert (
+        event_types.index("runtime.tool_started")
+        < event_types.index("runtime.tool_completed")
+        < event_types.index("runtime.failed")
+    )
+    assert completed_events[-1].payload["tool"] == "write_file"
+    assert completed_events[-1].payload["status"] == "error"
+    assert completed_events[-1].payload["error"] == "run interrupted"
+    tool_status = cast(dict[str, object], completed_events[-1].payload["tool_status"])
+    assert tool_status["phase"] == "failed"
+    assert tool_status["status"] == "failed"
+    assert failed_events[-1].payload["kind"] == "interrupted"
+    assert failed_events[-1].payload["cancelled"] is True
+    assert failed_events[-1].payload["run_id"] == run_id
+    assert failed_events[-1].payload["reason"] == "stop before invoke"
+
+
+def test_runtime_cancel_session_preserves_older_overlapping_run_after_newer_run_finishes(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+
+    first_stream = runtime.run_stream(RuntimeRequest(prompt="first", session_id="overlap-cancel"))
+    first_chunk = next(first_stream)
+    second_stream = runtime.run_stream(RuntimeRequest(prompt="second", session_id="overlap-cancel"))
+    second_chunk = next(second_stream)
+    second_remaining = list(second_stream)
+
+    result = runtime.cancel_session("overlap-cancel", reason="cancel older run")
+    first_remaining = list(first_stream)
+
+    first_failed_events = [
+        chunk.event
+        for chunk in first_remaining
+        if chunk.event is not None and chunk.event.event_type == "runtime.failed"
+    ]
+    assert first_chunk.session.status == "running"
+    assert second_chunk.session.status == "running"
+    assert second_remaining[-1].session.status == "completed"
+    assert result.status == "interrupted"
+    assert result.interrupted is True
+    assert first_failed_events
+    assert first_failed_events[-1].payload["kind"] == "interrupted"
+    assert first_failed_events[-1].payload["reason"] == "cancel older run"
+
+
+def test_runtime_cancel_session_rejects_stale_run_id(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+
+    stream = runtime.run_stream(RuntimeRequest(prompt="stale cancel", session_id="stale-cancel"))
+    first_chunk = next(stream)
+    result = runtime.cancel_session("stale-cancel", run_id="older-run")
+    remaining_chunks = list(stream)
+
+    assert first_chunk.session.status == "running"
+    assert result.status == "stale"
+    assert result.interrupted is False
+    assert remaining_chunks[-1].session.status == "completed"
+
+
+def test_runtime_cancel_session_interrupts_active_approval_resume_run(tmp_path: Path) -> None:
+    graph = _BlockingApprovalResumeGraph()
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=graph,
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+    waiting = runtime.run(RuntimeRequest(prompt="resume cancel", session_id="resume-cancel"))
+    approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
+    chunks: list[object] = []
+    errors: list[BaseException] = []
+
+    def _consume_resume_stream() -> None:
+        try:
+            chunks.extend(
+                runtime.resume_stream(
+                    "resume-cancel",
+                    approval_request_id=approval_request_id,
+                    approval_decision="allow",
+                )
+            )
+        except BaseException as exc:  # pragma: no cover - asserted via errors list
+            errors.append(exc)
+
+    resume_thread = threading.Thread(target=_consume_resume_stream)
+    resume_thread.start()
+    assert graph.resume_started.wait(timeout=1.0) is True
+    active_metadata = _private_attr(runtime, "_active_session_metadata")("resume-cancel")
+    assert isinstance(active_metadata, dict)
+    run_id = cast(str, active_metadata["run_id"])
+
+    result = runtime.cancel_session("resume-cancel", run_id=run_id, reason="resume cancellation")
+    graph.release_resume.set()
+    resume_thread.join(timeout=2.0)
+
+    failed_events = [
+        chunk.event
+        for chunk in chunks
+        if isinstance(chunk, RuntimeStreamChunk)
+        and chunk.event is not None
+        and chunk.event.event_type == "runtime.failed"
+    ]
+    resumed_runtime_states = [
+        cast(dict[str, object], chunk.session.metadata.get("runtime_state", {}))
+        for chunk in chunks
+        if isinstance(chunk, RuntimeStreamChunk)
+    ]
+    assert errors == []
+    assert resume_thread.is_alive() is False
+    assert result.status == "interrupted"
+    assert result.interrupted is True
+    assert failed_events
+    assert failed_events[-1].payload["kind"] == "interrupted"
+    assert failed_events[-1].payload["cancelled"] is True
+    assert failed_events[-1].payload["run_id"] == run_id
+    assert failed_events[-1].payload["reason"] == "resume cancellation"
+    assert any(state.get("run_id") == run_id for state in resumed_runtime_states)
+
+
+def test_runtime_approval_resume_tool_context_receives_abort_signal(tmp_path: Path) -> None:
+    tool = _AbortCaptureTool()
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_AbortSignalApprovalGraph(),
+        tool_registry=ToolRegistry.from_tools([tool]),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+    waiting = runtime.run(RuntimeRequest(prompt="capture abort", session_id="resume-abort-signal"))
+    approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
+    chunks: list[object] = []
+    errors: list[BaseException] = []
+
+    def _consume_resume_stream() -> None:
+        try:
+            chunks.extend(
+                runtime.resume_stream(
+                    "resume-abort-signal",
+                    approval_request_id=approval_request_id,
+                    approval_decision="allow",
+                )
+            )
+        except BaseException as exc:  # pragma: no cover - asserted via errors list
+            errors.append(exc)
+
+    resume_thread = threading.Thread(target=_consume_resume_stream)
+    resume_thread.start()
+    assert tool.signal_seen.wait(timeout=1.0) is True
+    active_metadata = _private_attr(runtime, "_active_session_metadata")("resume-abort-signal")
+    assert isinstance(active_metadata, dict)
+    run_id = cast(str, active_metadata["run_id"])
+
+    result = runtime.cancel_session(
+        "resume-abort-signal", run_id=run_id, reason="approved tool cancellation"
+    )
+    tool.release.set()
+    resume_thread.join(timeout=2.0)
+
+    failed_events = [
+        chunk.event
+        for chunk in chunks
+        if isinstance(chunk, RuntimeStreamChunk)
+        and chunk.event is not None
+        and chunk.event.event_type == "runtime.failed"
+    ]
+    assert errors == []
+    assert resume_thread.is_alive() is False
+    assert tool.abort_signal is not None
+    assert tool.initial_cancelled is False
+    assert tool.cancelled_after_release is True
+    assert tool.reason_after_release == "approved tool cancellation"
+    assert result.status == "interrupted"
+    assert failed_events
+    assert failed_events[-1].payload["kind"] == "interrupted"
+    assert failed_events[-1].payload["run_id"] == run_id
+
+
+def test_runtime_cancel_after_approved_tool_started_skips_invoke_and_closes_tool(
+    tmp_path: Path,
+) -> None:
+    tool = _AbortBeforeInvokeTool()
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_AbortSignalApprovalGraph(),
+        tool_registry=ToolRegistry.from_tools([tool]),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+    waiting = runtime.run(RuntimeRequest(prompt="approved abort", session_id="approved-abort"))
+    approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
+    stream = runtime.resume_stream(
+        "approved-abort",
+        approval_request_id=approval_request_id,
+        approval_decision="allow",
+    )
+    chunks: list[RuntimeStreamChunk] = []
+
+    for chunk in stream:
+        chunks.append(chunk)
+        if chunk.event is not None and chunk.event.event_type == "runtime.tool_started":
+            break
+
+    active_metadata = _private_attr(runtime, "_active_session_metadata")("approved-abort")
+    assert isinstance(active_metadata, dict)
+    run_id = cast(str, active_metadata["run_id"])
+
+    result = runtime.cancel_session(
+        "approved-abort", run_id=run_id, reason="approved stop before invoke"
+    )
+    chunks.extend(stream)
+
+    event_types = [chunk.event.event_type for chunk in chunks if chunk.event is not None]
+    completed_events = [
+        chunk.event
+        for chunk in chunks
+        if chunk.event is not None and chunk.event.event_type == "runtime.tool_completed"
+    ]
+    failed_events = [
+        chunk.event
+        for chunk in chunks
+        if chunk.event is not None and chunk.event.event_type == "runtime.failed"
+    ]
+    assert result.status == "interrupted"
+    assert tool.invoke_count == 0
+    assert (
+        event_types.index("runtime.tool_started")
+        < event_types.index("runtime.tool_completed")
+        < event_types.index("runtime.failed")
+    )
+    assert completed_events[-1].payload["tool"] == "write_file"
+    assert completed_events[-1].payload["status"] == "error"
+    assert completed_events[-1].payload["error"] == "run interrupted"
+    tool_status = cast(dict[str, object], completed_events[-1].payload["tool_status"])
+    assert tool_status["phase"] == "failed"
+    assert tool_status["status"] == "failed"
+    assert failed_events[-1].payload["kind"] == "interrupted"
+    assert failed_events[-1].payload["cancelled"] is True
+    assert failed_events[-1].payload["run_id"] == run_id
+    assert failed_events[-1].payload["reason"] == "approved stop before invoke"
+
+
+def test_runtime_cancel_session_returns_not_active_for_idle_session(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+
+    result = runtime.cancel_session("idle-cancel")
+
+    assert result.status == "not_active"
+    assert result.interrupted is False
+
+
 def test_runtime_session_debug_snapshot_prefers_active_state_for_reused_session_id(
     tmp_path: Path,
 ) -> None:
@@ -1700,7 +2251,8 @@ def test_runtime_session_debug_snapshot_preserves_fresh_terminal_state_while_act
     deferred_unregister_session_id: str | None = None
     original_unregister = runtime._unregister_active_session_id  # pyright: ignore[reportPrivateUsage]
 
-    def _defer_unregister(session_id: str) -> None:
+    def _defer_unregister(session_id: str, *, run_id: str | None = None) -> None:
+        _ = run_id
         nonlocal deferred_unregister_session_id
         deferred_unregister_session_id = session_id
 
@@ -2187,6 +2739,117 @@ def test_runtime_request_agent_model_override_precedes_category_model(tmp_path: 
 
     runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
     assert cast(dict[str, object], runtime_config["agent"])["model"] == "openai/request-model"
+
+
+def test_runtime_fails_fast_when_reasoning_effort_set_on_unsupported_model(
+    tmp_path: Path,
+) -> None:
+    registry = ModelProviderRegistry.with_defaults()
+    registry.model_catalog = {
+        "openai": ProviderModelCatalog(
+            provider="openai",
+            models=("gpt-4o",),
+            refreshed=True,
+            model_metadata={"gpt-4o": ProviderModelMetadata(supports_reasoning_effort=False)},
+        )
+    }
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="openai/gpt-4o",
+            reasoning_effort="high",
+        ),
+        model_provider_registry=registry,
+    )
+
+    with pytest.raises(RuntimeRequestError, match="does not support reasoning effort"):
+        _ = runtime.run(RuntimeRequest(prompt="leader"))
+
+
+def test_runtime_fails_fast_when_request_metadata_reasoning_effort_unsupported(
+    tmp_path: Path,
+) -> None:
+    registry = ModelProviderRegistry.with_defaults()
+    registry.model_catalog = {
+        "openai": ProviderModelCatalog(
+            provider="openai",
+            models=("gpt-4o",),
+            refreshed=True,
+            model_metadata={"gpt-4o": ProviderModelMetadata(supports_reasoning_effort=False)},
+        )
+    }
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(execution_engine="provider", model="openai/gpt-4o"),
+        model_provider_registry=registry,
+    )
+
+    with pytest.raises(RuntimeRequestError, match="does not support reasoning effort"):
+        _ = runtime.run(
+            RuntimeRequest(
+                prompt="leader",
+                metadata={"reasoning_effort": "high"},
+            )
+        )
+
+
+def test_runtime_allows_reasoning_effort_on_unsupported_model_for_deterministic_engine(
+    tmp_path: Path,
+) -> None:
+    registry = ModelProviderRegistry.with_defaults()
+    registry.model_catalog = {
+        "openai": ProviderModelCatalog(
+            provider="openai",
+            models=("gpt-4o",),
+            refreshed=True,
+            model_metadata={"gpt-4o": ProviderModelMetadata(supports_reasoning_effort=False)},
+        )
+    }
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=DeterministicGraph(),
+        config=RuntimeConfig(
+            execution_engine="deterministic",
+            model="openai/gpt-4o",
+            reasoning_effort="high",
+        ),
+        model_provider_registry=registry,
+    )
+    _ = (tmp_path / "README.md").write_text("sample\n", encoding="utf-8")
+
+    response = runtime.run(RuntimeRequest(prompt="read README.md"))
+
+    runtime_config_metadata = cast(dict[str, object], response.session.metadata["runtime_config"])
+    assert runtime_config_metadata["reasoning_effort"] == "high"
+
+
+def test_runtime_allows_reasoning_effort_when_metadata_unknown(tmp_path: Path) -> None:
+    registry = ModelProviderRegistry.with_defaults()
+    registry.model_catalog = {
+        "custom": ProviderModelCatalog(
+            provider="custom",
+            models=("alpha",),
+            refreshed=True,
+            model_metadata={"alpha": ProviderModelMetadata(supports_reasoning_effort=None)},
+        )
+    }
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=DeterministicGraph(),
+        config=RuntimeConfig(
+            model="custom/alpha",
+            execution_engine="deterministic",
+            reasoning_effort="medium",
+        ),
+        model_provider_registry=registry,
+    )
+    _ = (tmp_path / "README.md").write_text("sample\n", encoding="utf-8")
+
+    response = runtime.run(RuntimeRequest(prompt="read README.md"))
+
+    runtime_config_metadata = cast(dict[str, object], response.session.metadata["runtime_config"])
+    assert runtime_config_metadata["reasoning_effort"] == "medium"
 
 
 def test_runtime_ultrabrain_warns_when_resolved_model_lacks_reasoning_support(
@@ -3467,6 +4130,57 @@ def test_runtime_waiting_approval_event_records_child_ownership(tmp_path: Path) 
     assert approval_event.payload["owner_session_id"] == "owned-approval-child"
     assert approval_event.payload["owner_parent_session_id"] is None
     assert approval_event.payload["delegated_task_id"] is None
+
+
+def test_runtime_resume_fails_fast_when_persisted_reasoning_effort_unsupported(
+    tmp_path: Path,
+) -> None:
+    initial_registry = ModelProviderRegistry.with_defaults()
+    initial_registry.model_catalog = {
+        "openai": ProviderModelCatalog(
+            provider="openai",
+            models=("gpt-4o",),
+            refreshed=True,
+            model_metadata={"gpt-4o": ProviderModelMetadata(supports_reasoning_effort=True)},
+        )
+    }
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(
+            approval_mode="ask",
+            model="openai/gpt-4o",
+            reasoning_effort="high",
+        ),
+        permission_policy=PermissionPolicy(mode="ask"),
+        model_provider_registry=initial_registry,
+    )
+    waiting = runtime.run(RuntimeRequest(prompt="go", session_id="reasoning-resume-block"))
+    approval_request_id = str(waiting.events[-1].payload["request_id"])
+
+    resumed_registry = ModelProviderRegistry.with_defaults()
+    resumed_registry.model_catalog = {
+        "openai": ProviderModelCatalog(
+            provider="openai",
+            models=("gpt-4o",),
+            refreshed=True,
+            model_metadata={"gpt-4o": ProviderModelMetadata(supports_reasoning_effort=False)},
+        )
+    }
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+        model_provider_registry=resumed_registry,
+    )
+
+    with pytest.raises(RuntimeRequestError, match="does not support reasoning effort"):
+        _ = resumed_runtime.resume(
+            "reasoning-resume-block",
+            approval_request_id=approval_request_id,
+            approval_decision="allow",
+        )
 
 
 def test_runtime_resume_rejects_malformed_persisted_pending_approval_policy_mode(
@@ -5521,8 +6235,6 @@ def test_runtime_resume_emits_mcp_failed_and_continues_on_startup_refresh(
     resumed_suffix_types = [event.event_type for event in resumed_suffix]
     assert resumed_suffix_types[0] == RUNTIME_MCP_SERVER_FAILED
     assert "runtime.failed" not in resumed_suffix_types
-    assert "graph.tool_request_created" in resumed_suffix_types
-    assert "runtime.tool_lookup_succeeded" in resumed_suffix_types
     assert "runtime.approval_resolved" in resumed_suffix_types
     assert "runtime.tool_started" in resumed_suffix_types
     assert "runtime.tool_completed" in resumed_suffix_types
@@ -5673,8 +6385,6 @@ def test_runtime_resume_still_starts_acp_when_mcp_refresh_fails(
     assert resumed.session.status == "completed"
     assert resumed_suffix[0] == RUNTIME_MCP_SERVER_FAILED
     assert "runtime.failed" not in resumed_suffix
-    assert "graph.tool_request_created" in resumed_suffix
-    assert "runtime.tool_lookup_succeeded" in resumed_suffix
     assert "runtime.approval_resolved" in resumed_suffix
     assert "runtime.tool_started" in resumed_suffix
     assert "runtime.tool_completed" in resumed_suffix
@@ -5982,8 +6692,8 @@ def test_runtime_waiting_run_disconnects_acp_and_resume_reconnects_on_same_runti
         event.event_type for event in resumed.events if event.sequence > waiting.events[-1].sequence
     ]
     assert resumed_acp_events[:2] == [
-        "graph.tool_request_created",
-        "runtime.tool_lookup_succeeded",
+        "runtime.acp_connected",
+        "runtime.approval_resolved",
     ]
     assert "runtime.acp_connected" in resumed_acp_events
     assert "runtime.approval_resolved" in resumed_acp_events
@@ -6062,12 +6772,8 @@ def test_runtime_resume_stream_replays_graph_suffix_before_acp_connect_when_enab
     )
     event_types = [chunk.event.event_type for chunk in chunks if chunk.event is not None]
 
-    assert event_types[:2] == [
-        "graph.tool_request_created",
-        "runtime.tool_lookup_succeeded",
-    ]
-    assert event_types[2] == "runtime.acp_connected"
-    assert event_types[3:6] == [
+    assert event_types[:4] == [
+        "runtime.acp_connected",
         "runtime.approval_resolved",
         "runtime.tool_started",
         "runtime.tool_completed",
@@ -7114,12 +7820,6 @@ def test_runtime_approval_resume_preserves_canonical_continuity_state(tmp_path: 
                 outcomes=(
                     ProviderTurnResult(tool_call=ToolCall("read_file", {"filePath": "sample.txt"})),
                     ProviderTurnResult(tool_call=ToolCall("read_file", {"filePath": "sample.txt"})),
-                    ProviderTurnResult(
-                        tool_call=ToolCall(
-                            "write_file",
-                            {"path": "beta.txt", "content": "2"},
-                        )
-                    ),
                     ProviderTurnResult(
                         tool_call=ToolCall(
                             "write_file",
@@ -9576,20 +10276,7 @@ def test_runtime_agent_tool_allowlist_blocks_invocation(tmp_path: Path) -> None:
 
 def test_runtime_agent_tool_allowlist_survives_approval_resume(tmp_path: Path) -> None:
     registry = ModelProviderRegistry(
-        providers={
-            "opencode": _ScriptedModelProvider(
-                name="opencode",
-                outcomes=(
-                    ProviderTurnResult(
-                        tool_call=ToolCall(
-                            tool_name="write_file",
-                            arguments={"path": "allowed.txt", "content": "allowed"},
-                        )
-                    ),
-                    ProviderTurnResult(output="done"),
-                ),
-            )
-        }
+        providers={"opencode": _WriteThenResultAwareModelProvider(name="opencode")}
     )
     initial_runtime = VoidCodeRuntime(
         workspace=tmp_path,
@@ -9928,7 +10615,7 @@ def test_runtime_resume_preserves_provider_attempt_and_target_across_pending_app
     assert resumed.session.status == "completed"
     assert resumed.output == "done"
     assert resumed.session.metadata["provider_attempt"] == 1
-    assert custom_attempts == [1, 1, 1]
+    assert custom_attempts == [1, 1]
     assert all(attempt == 1 for attempt in custom_attempts)
     resumed_fallback_events = [
         event for event in resumed.events if event.event_type == "runtime.provider_fallback"

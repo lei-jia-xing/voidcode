@@ -91,9 +91,11 @@ def _handle_run_command(args: argparse.Namespace) -> int:
     workspace = cast(Path, args.workspace)
     request_text = cast(str, args.request)
     json_output = cast(bool, getattr(args, "json", False))
+    cli_reasoning_effort = cast(str | None, getattr(args, "reasoning_effort", None))
     config = load_runtime_config(
         workspace,
         approval_mode=cast(PermissionDecision | None, getattr(args, "approval_mode", None)),
+        reasoning_effort=cli_reasoning_effort,
     )
     runtime = VoidCodeRuntime(workspace=workspace, config=config)
     try:
@@ -104,6 +106,8 @@ def _handle_run_command(args: argparse.Namespace) -> int:
             metadata["skills"] = cast(list[str], args.skills)
         if getattr(args, "max_steps", None) is not None:
             metadata["max_steps"] = cast(int, args.max_steps)
+        if cli_reasoning_effort is not None:
+            metadata["reasoning_effort"] = cli_reasoning_effort
         if getattr(args, "provider_stream", None) is not None:
             metadata["provider_stream"] = cast(bool, args.provider_stream)
         request = RuntimeRequest(
@@ -119,6 +123,9 @@ def _handle_run_command(args: argparse.Namespace) -> int:
                 interactive=interactive,
                 emit_events=interactive and not json_output,
             )
+        except KeyboardInterrupt:
+            print("Interrupted current run.", file=sys.stderr)
+            return 130
         except ValueError as exc:
             raise SystemExit(f"error: {exc}") from None
 
@@ -158,7 +165,15 @@ def _run_with_inline_approval(
     interactive: bool,
     emit_events: bool,
 ) -> RuntimeStreamResult:
-    result = _consume_runtime_stream(runtime.run_stream(request), emit_events=emit_events)
+    result = _consume_runtime_stream(
+        runtime.run_stream(request),
+        emit_events=emit_events,
+        on_interrupt=lambda session_id, run_id: runtime.cancel_session(
+            session_id,
+            run_id=run_id,
+            reason="cli KeyboardInterrupt",
+        ),
+    )
 
     while interactive:
         approval_event = _pending_approval_event(result.session, _last_event(result))
@@ -171,6 +186,11 @@ def _run_with_inline_approval(
                 approval_decision=_prompt_for_approval(approval_event),
             ),
             emit_events=emit_events,
+            on_interrupt=lambda session_id, run_id: runtime.cancel_session(
+                session_id,
+                run_id=run_id,
+                reason="cli KeyboardInterrupt",
+            ),
         )
         result = RuntimeStreamResult(
             output=resumed_result.output,
@@ -190,27 +210,49 @@ def _consume_runtime_stream(
     chunks: Iterator[RuntimeStreamChunk],
     *,
     emit_events: bool,
+    on_interrupt: Callable[[str, str | None], object] | None = None,
 ) -> RuntimeStreamResult:
     output: str | None = None
     final_session: SessionState | None = None
     events: list[EventEnvelope] = []
 
-    for chunk in chunks:
-        final_session = chunk.session
-        if chunk.event is not None:
-            if emit_events:
-                print(
-                    format_event(chunk.event.event_type, chunk.event.source, chunk.event.payload),
-                    flush=True,
-                )
-            events.append(chunk.event)
-        if chunk.kind == "output":
-            output = chunk.output
+    try:
+        for chunk in chunks:
+            final_session = chunk.session
+            if chunk.event is not None:
+                if emit_events:
+                    print(
+                        format_event(
+                            chunk.event.event_type,
+                            chunk.event.source,
+                            chunk.event.payload,
+                        ),
+                        flush=True,
+                    )
+                events.append(chunk.event)
+            if chunk.kind == "output":
+                output = chunk.output
+    except KeyboardInterrupt:
+        if final_session is not None and on_interrupt is not None:
+            on_interrupt(
+                final_session.session.id,
+                _run_id_from_session_metadata(final_session.metadata),
+            )
+        raise
 
     if final_session is None:
         raise ValueError("runtime stream emitted no chunks")
 
     return RuntimeStreamResult(output=output, session=final_session, events=tuple(events))
+
+
+def _run_id_from_session_metadata(metadata: dict[str, object]) -> str | None:
+    runtime_state = metadata.get("runtime_state")
+    if not isinstance(runtime_state, dict):
+        return None
+    typed_runtime_state = cast(dict[str, object], runtime_state)
+    raw_run_id = typed_runtime_state.get("run_id")
+    return raw_run_id if isinstance(raw_run_id, str) and raw_run_id else None
 
 
 def _last_event(result: RuntimeStreamResult) -> EventEnvelope | None:
@@ -1049,6 +1091,7 @@ def _handle_config_show_command(args: argparse.Namespace) -> int:
             "model": effective_config.model,
             "execution_engine": effective_config.execution_engine,
             "max_steps": effective_config.max_steps,
+            "reasoning_effort": getattr(effective_config, "reasoning_effort", None),
             "agent": serialize_runtime_agent_config(getattr(effective_config, "agent", None)),
             "agents": agents,
             "categories": categories,
@@ -1610,6 +1653,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-steps",
         type=int,
         help="Optional max graph steps override for this run.",
+    )
+    _ = run_parser.add_argument(
+        "--reasoning-effort",
+        dest="reasoning_effort",
+        help=(
+            "Optional runtime-owned reasoning-effort hint forwarded to the active "
+            "provider when supported (for example, 'low', 'medium', 'high'). Overrides "
+            "any reasoning_effort configured in .voidcode.json or VOIDCODE_REASONING_EFFORT."
+        ),
     )
     _ = run_parser.add_argument(
         "--json",

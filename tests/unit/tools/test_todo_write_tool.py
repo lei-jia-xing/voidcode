@@ -31,6 +31,7 @@ def test_todo_write_returns_session_metadata_without_workspace_artifact(tmp_path
     assert payload[0]["content"] == "task-a"
     assert payload[1]["status"] == "completed"
     assert result.status == "ok"
+    assert result.content == "Updated 2 todos\n1. [pending/high] task-a\n2. [completed/low] task-b"
     summary_raw = result.data["summary"]
     assert isinstance(summary_raw, dict)
     summary = cast(dict[str, object], summary_raw)

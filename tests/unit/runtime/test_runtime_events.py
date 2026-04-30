@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import cast
+
 from voidcode.runtime.contracts import BackgroundTaskResult
 from voidcode.runtime.events import (
     EMITTED_EVENT_TYPES,
@@ -31,6 +33,7 @@ from voidcode.runtime.events import (
     RUNTIME_SKILL_LOADED,
     RUNTIME_SKILLS_APPLIED,
     RUNTIME_SKILLS_BINDING_MISMATCH,
+    RUNTIME_TODO_UPDATED,
     RUNTIME_TOOL_STARTED,
     DelegatedExecutionPayload,
     DelegatedLifecycleEventPayload,
@@ -39,6 +42,7 @@ from voidcode.runtime.events import (
     EventEnvelope,
 )
 from voidcode.runtime.task import SubagentRoutingIdentity
+from voidcode.runtime.tool_display import build_tool_display
 
 
 def test_runtime_event_types_include_stable_emitted_events() -> None:
@@ -75,6 +79,7 @@ def test_future_additive_event_types_cover_async_lifecycle_surfaces() -> None:
         RUNTIME_BACKGROUND_TASK_RESULT_READ,
         RUNTIME_DELEGATED_RESULT_AVAILABLE,
         RUNTIME_SKILL_LOADED,
+        RUNTIME_TODO_UPDATED,
     )
 
 
@@ -265,3 +270,243 @@ def test_delegated_lifecycle_preserves_interrupted_status_on_failed_event() -> N
     assert delegated.delegation.lifecycle_status == "interrupted"
     assert delegated.message.status == "interrupted"
     assert delegated.message.error == "background task interrupted before completion"
+
+
+# ── Target contract: tool display metadata payload shapes ──────────────
+# These tests encode the additive schema before the runtime emits it.
+# They are expected to pass as pure schema assertions (no runtime needed).
+
+VALID_TOOL_DISPLAY_KINDS = frozenset(
+    {
+        "shell",
+        "context",
+        "read",
+        "write",
+        "edit",
+        "search",
+        "fetch",
+        "task",
+        "skill",
+        "question",
+        "approval",
+        "background",
+        "lsp",
+        "generic",
+    }
+)
+
+
+def test_tool_display_payload_shape_is_well_formed() -> None:
+    """Verify the ToolDisplay payload contract shape from the plan."""
+    display: dict[str, object] = {
+        "kind": "shell",
+        "title": "Shell",
+        "summary": "List directory contents",
+        "args": ["ls", "-la"],
+        "copyable": {"command": "ls -la", "output": "file1  file2"},
+        "hidden": False,
+    }
+
+    assert display["kind"] in VALID_TOOL_DISPLAY_KINDS
+    assert isinstance(display["title"], str) and len(display["title"]) > 0
+    assert isinstance(display["summary"], str) and len(display["summary"]) > 0
+
+    args_value = display.get("args")
+    assert args_value is None or isinstance(args_value, list)
+
+    copyable = display.get("copyable")
+    if copyable is not None:
+        assert isinstance(copyable, dict)
+        assert any(key in copyable for key in ("command", "output", "path")), (
+            "copyable must carry at least one payload key"
+        )
+
+
+def test_tool_status_payload_shape_includes_display() -> None:
+    """The ToolStatusPayload must carry an optional display field."""
+    tool_status = {
+        "invocation_id": "call_123",
+        "tool_name": "shell_exec",
+        "phase": "running",
+        "status": "running",
+        "label": "List files",
+        "display": {
+            "kind": "shell",
+            "title": "Shell",
+            "summary": "List files",
+        },
+    }
+
+    assert tool_status["tool_name"] == "shell_exec"
+    assert tool_status["status"] in {"pending", "running", "completed", "failed"}
+    assert "display" in tool_status
+    display_value = tool_status["display"]
+    assert isinstance(display_value, dict)
+    assert display_value["kind"] == "shell"
+
+
+def test_tool_status_allows_missing_display_for_backwards_compatibility() -> None:
+    """Legacy events without display must remain valid."""
+    tool_status = {
+        "invocation_id": "call_xyz",
+        "tool_name": "read_file",
+        "status": "completed",
+        "label": "Read 10 lines",
+    }
+    assert tool_status["tool_name"] == "read_file"
+    assert tool_status["status"] == "completed"
+    assert "display" not in tool_status
+
+
+def test_tool_started_payload_target_shape_preserves_existing_keys() -> None:
+    """tool_started payload must add display/tool_status without removing 'tool'."""
+    payload = {
+        "tool": "shell_exec",
+        "tool_call_id": "call_abc",
+        "display": {
+            "kind": "shell",
+            "title": "Shell",
+            "summary": "List directory contents",
+        },
+        "tool_status": {
+            "invocation_id": "call_abc",
+            "tool_name": "shell_exec",
+            "phase": "running",
+            "status": "running",
+            "label": "List directory contents",
+            "display": {
+                "kind": "shell",
+                "title": "Shell",
+                "summary": "List directory contents",
+            },
+        },
+    }
+
+    assert payload["tool"] == "shell_exec"
+    assert payload["tool_call_id"] == "call_abc"
+    assert "display" in payload
+    assert "tool_status" in payload
+    tool_status_value = payload["tool_status"]
+    assert isinstance(tool_status_value, dict)
+    display_value = tool_status_value["display"]
+    assert isinstance(display_value, dict)
+    assert display_value["kind"] == "shell"
+    assert tool_status_value["status"] == "running"
+
+
+def test_tool_completed_payload_target_shape_preserves_existing_keys() -> None:
+    """tool_completed payload must add tool_status without removing result fields."""
+    payload = {
+        "tool": "shell_exec",
+        "tool_call_id": "call_abc",
+        "status": "ok",
+        "arguments": {"command": "ls -la", "description": "List directory contents"},
+        "content": "file1\nfile2\n",
+        "error": None,
+        "tool_status": {
+            "invocation_id": "call_abc",
+            "tool_name": "shell_exec",
+            "phase": "completed",
+            "status": "completed",
+            "label": "List directory contents",
+            "display": {
+                "kind": "shell",
+                "title": "Shell",
+                "summary": "List directory contents",
+                "copyable": {"command": "ls -la", "output": "file1\nfile2\n"},
+            },
+        },
+    }
+
+    assert payload["tool"] == "shell_exec"
+    assert payload["tool_call_id"] == "call_abc"
+    assert payload["status"] == "ok"
+    assert "arguments" in payload
+    assert "content" in payload
+    assert "tool_status" in payload
+    tool_status_value = payload["tool_status"]
+    assert isinstance(tool_status_value, dict)
+    display_value = tool_status_value["display"]
+    assert isinstance(display_value, dict)
+    assert display_value["kind"] == "shell"
+    assert display_value["summary"] == "List directory contents"
+    copyable_value = display_value["copyable"]
+    assert isinstance(copyable_value, dict)
+    assert copyable_value["command"] == "ls -la"
+
+
+def test_tool_display_supports_all_kinds() -> None:
+    """Every ToolDisplayKind from the plan must be accepted."""
+    for kind in VALID_TOOL_DISPLAY_KINDS:
+        display = {"kind": kind, "title": kind.title(), "summary": f"Execute {kind}"}
+        assert display["kind"] in VALID_TOOL_DISPLAY_KINDS
+        assert isinstance(display["title"], str)
+
+
+def test_skill_tool_display_uses_name_argument() -> None:
+    """Skill display metadata must use the canonical skill tool argument."""
+    display = build_tool_display(
+        "skill",
+        {"name": "frontend-ui-ux", "skill": "legacy-skill"},
+    )
+
+    assert display["kind"] == "skill"
+    assert display["title"] == "Skill"
+    assert display["summary"] == "frontend-ui-ux"
+    assert display["args"] == ["frontend-ui-ux", "legacy-skill"]
+
+
+def test_shell_tool_display_bounds_copyable_command_metadata() -> None:
+    """Long shell commands must not be emitted raw in display copyable metadata."""
+    raw_command = "python -c '" + "x" * 500 + "'"
+
+    display = build_tool_display("shell_exec", {"command": raw_command})
+
+    assert isinstance(display["summary"], str)
+    assert len(display["summary"]) <= 120
+    assert display["summary"].endswith("...")
+
+    args = display["args"]
+    assert isinstance(args, list)
+    typed_args = cast(list[object], args)
+    assert len(typed_args) == 1
+    arg = typed_args[0]
+    assert isinstance(arg, str)
+    assert len(arg) <= 200
+    assert arg.endswith("...")
+
+    copyable = display["copyable"]
+    assert isinstance(copyable, dict)
+    typed_copyable = cast(dict[str, object], copyable)
+    copyable_command = typed_copyable["command"]
+    assert isinstance(copyable_command, str)
+    assert len(copyable_command) <= 200
+    assert copyable_command.endswith("...")
+    assert len(copyable_command) < len(raw_command)
+    assert copyable_command != raw_command
+
+
+def test_background_cancel_display_uses_camel_case_task_id_argument() -> None:
+    """Started-event display must use the canonical background_cancel argument."""
+    display = build_tool_display("background_cancel", {"taskId": "task-123"})
+
+    assert display["kind"] == "background"
+    assert display["title"] == "Background"
+    assert display["summary"] == "task-123"
+    assert display["args"] == ["task-123"]
+
+
+def test_background_cancel_display_accepts_legacy_task_id_argument() -> None:
+    """Legacy result-shaped cancellation data should remain displayable."""
+    display = build_tool_display("background_cancel", {"task_id": "legacy-task"})
+
+    assert display["summary"] == "legacy-task"
+    assert display["args"] == ["legacy-task"]
+
+
+def test_background_output_display_keeps_snake_case_task_id_argument() -> None:
+    """background_output uses snake_case task_id and should not depend on taskId."""
+    display = build_tool_display("background_output", {"task_id": "output-task"})
+
+    assert display["summary"] == "output-task"
+    assert display["args"] == ["output-task"]

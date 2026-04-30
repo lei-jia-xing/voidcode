@@ -1,16 +1,22 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { useTranslation } from "react-i18next";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
   ChevronDown,
   ChevronRight,
-  CheckCircle2,
-  XCircle,
   Loader2,
-  Wrench,
   PauseCircle,
   AlertCircle,
+  Copy,
+  Check,
 } from "lucide-react";
 import { ChatMessage } from "../lib/runtime/event-parser";
 import type { QuestionAnswer } from "../lib/runtime/types";
@@ -18,6 +24,7 @@ import {
   estimateStreamedTextHeight,
   STREAM_TEXT_ESTIMATE_WIDTH,
 } from "../lib/runtime/text-layout";
+import { ControlButton } from "./ui";
 
 type ChatTool = ChatMessage["tools"][number];
 
@@ -32,17 +39,6 @@ interface ChatThreadProps {
   isQuestionSubmitting?: boolean;
   questionError?: string | null;
   onAnswerQuestion?: (answers: QuestionAnswer[]) => void;
-}
-
-function formatThinkingDuration(startedAt?: number, updatedAt?: number) {
-  if (typeof startedAt !== "number" || typeof updatedAt !== "number") {
-    return null;
-  }
-
-  const elapsedMs = Math.max(0, updatedAt - startedAt);
-  if (elapsedMs < 1000) return "<1s";
-  if (elapsedMs < 10_000) return `${(elapsedMs / 1000).toFixed(1)}s`;
-  return `${Math.round(elapsedMs / 1000)}s`;
 }
 
 function StreamingMarkdown({
@@ -90,45 +86,6 @@ function StreamingMarkdown({
   );
 }
 
-function ThinkingBlock({
-  thinking,
-  startedAt,
-  updatedAt,
-}: {
-  thinking: string[];
-  startedAt?: number;
-  updatedAt?: number;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const content = useMemo(() => thinking.join(""), [thinking]);
-  const duration = formatThinkingDuration(startedAt, updatedAt);
-
-  if (thinking.length === 0) return null;
-
-  return (
-    <div className="mb-3">
-      <button
-        type="button"
-        onClick={() => setExpanded(!expanded)}
-        className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-400 transition-colors mb-1"
-      >
-        {expanded ? (
-          <ChevronDown className="w-3.5 h-3.5" />
-        ) : (
-          <ChevronRight className="w-3.5 h-3.5" />
-        )}
-        <span className="font-medium">Thinking</span>
-        {duration && <span className="text-slate-600">({duration})</span>}
-      </button>
-      {expanded && (
-        <div className="bg-slate-900/60 border border-slate-800 rounded-lg p-3 font-mono text-xs text-slate-400 leading-relaxed overflow-x-auto">
-          {content}
-        </div>
-      )}
-    </div>
-  );
-}
-
 function toolValue(value: unknown): string | null {
   if (typeof value === "string" && value.length > 0) return value;
   if (typeof value === "number" || typeof value === "boolean")
@@ -155,121 +112,370 @@ function primaryPath(tool: ChatTool): string | null {
   );
 }
 
-function bracketedArgs(
-  args: Record<string, unknown> | undefined,
-  omit: string[],
-) {
-  if (!args) return "";
-  const primitives = Object.entries(args)
-    .filter(([key, value]) => !omit.includes(key) && toolValue(value) !== null)
-    .map(([key, value]) => `${key}=${toolValue(value)}`);
-  return primitives.length > 0 ? ` [${primitives.join(", ")}]` : "";
-}
-
 function resultData(tool: ChatTool) {
   return nestedRecord(tool.result, "data") ?? tool.result;
 }
 
-function toolStatusIcon(status: ChatTool["status"]) {
-  if (status === "running") return <Loader2 className="w-3 h-3 animate-spin" />;
-  if (status === "completed") return <CheckCircle2 className="w-3 h-3" />;
-  if (status === "failed") return <XCircle className="w-3 h-3" />;
-  return <Wrench className="w-3 h-3" />;
+const CONTEXT_TOOL_NAMES = new Set([
+  "read",
+  "read_file",
+  "list",
+  "glob",
+  "grep",
+  "code_search",
+  "ast_grep_search",
+]);
+
+const SENSITIVE_ARG_KEYS = new Set([
+  "content",
+  "oldString",
+  "newString",
+  "edits",
+  "todos",
+  "data_uri",
+  "patch",
+  "internalState",
+  "internalData",
+]);
+
+function isContextTool(tool: ChatTool) {
+  return CONTEXT_TOOL_NAMES.has(tool.name);
 }
 
-function ToolOutputBlock({
+function toolDisplayTitle(tool: ChatTool, fallback: string) {
+  return (
+    tool.label ??
+    tool.summary ??
+    tool.display?.summary ??
+    tool.legacy?.summary ??
+    tool.display?.title ??
+    fallback
+  );
+}
+
+function toolDisplaySubtitle(tool: ChatTool, fallback?: string) {
+  const subtitle = tool.display?.title ?? tool.legacy?.summary ?? fallback;
+  const title = toolDisplayTitle(tool, tool.name);
+  return subtitle && subtitle !== title ? subtitle : undefined;
+}
+
+function primitiveArgs(
+  args: Record<string, unknown> | undefined,
+  omit: string[] = [],
+  limit = 3,
+) {
+  if (!args) return [];
+  return Object.entries(args)
+    .filter(
+      ([key, value]) =>
+        !omit.includes(key) &&
+        !SENSITIVE_ARG_KEYS.has(key) &&
+        toolValue(value) !== null,
+    )
+    .slice(0, limit)
+    .map(([key, value]) => `${key}=${toolValue(value)}`);
+}
+
+function curatedArgs(
+  tool: ChatTool,
+  options: { omit?: string[]; limit?: number } = {},
+) {
+  const limit = options.limit ?? 3;
+  if (tool.display?.args && tool.display.args.length > 0) {
+    return tool.display.args.slice(0, limit);
+  }
+  return primitiveArgs(tool.arguments, options.omit, limit);
+}
+
+function copyableValue(tool: ChatTool, key: string) {
+  const copyable = tool.copyable ?? tool.display?.copyable;
+  return toolValue(copyable?.[key]);
+}
+
+function CopyButton({ value, label }: { value: string; label: string }) {
+  const { t } = useTranslation();
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    if (!copied) return;
+    const timeoutId = window.setTimeout(() => setCopied(false), 1400);
+    return () => window.clearTimeout(timeoutId);
+  }, [copied]);
+
+  const handleCopy = async () => {
+    if (!navigator.clipboard?.writeText) return;
+    await navigator.clipboard.writeText(value);
+    setCopied(true);
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={handleCopy}
+      aria-label={t("tool.copyAria", { label })}
+      title={copied ? t("tool.copied") : t("tool.copy")}
+      className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[var(--vc-radius-control)] text-[var(--vc-text-subtle)] transition-colors hover:bg-[var(--vc-surface-2)] hover:text-[var(--vc-text-primary)] focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--vc-focus-ring)]"
+    >
+      {copied ? (
+        <Check className="h-3.5 w-3.5" />
+      ) : (
+        <Copy className="h-3.5 w-3.5" />
+      )}
+      <span className="sr-only" aria-live="polite">
+        {copied ? t("tool.copied") : t("tool.copy")}
+      </span>
+    </button>
+  );
+}
+
+function ToolDetailBlock({
   label,
   value,
+  copyValue,
 }: {
   label: string;
   value: string | null;
+  copyValue?: string | null;
 }) {
   if (!value) return null;
   const preview = value.length > 4000 ? `${value.slice(0, 4000)}\n…` : value;
   return (
-    <div className="mt-2">
-      <div className="mb-1 text-[11px] uppercase tracking-wide text-slate-500">
-        {label}
+    <div className="mt-2 text-xs text-[var(--vc-text-muted)]">
+      <div className="mb-1 flex items-center justify-between gap-2 text-[11px] text-[var(--vc-text-subtle)]">
+        <span>{label}</span>
+        {copyValue && <CopyButton value={copyValue} label={label} />}
       </div>
-      <pre className="max-h-72 overflow-auto rounded-md border border-slate-800 bg-slate-950/80 p-3 text-xs leading-relaxed text-slate-300 whitespace-pre-wrap">
+      <pre className="max-h-72 overflow-auto rounded-[var(--vc-radius-control)] border border-[color:var(--vc-border-subtle)] bg-[var(--vc-bg)] p-3 text-xs leading-relaxed text-[var(--vc-text-primary)] whitespace-pre-wrap">
         {preview}
       </pre>
     </div>
   );
 }
 
-function ReadToolActivity({ tool }: { tool: ChatTool }) {
-  const path = primaryPath(tool) ?? tool.label ?? tool.name;
-  return (
-    <div className="flex items-center gap-2 rounded-md border border-slate-800 bg-slate-950/50 px-3 py-2 text-xs text-slate-300">
-      <span className="text-sky-300">→</span>
-      <span className="font-medium">Read</span>
-      <code className="text-slate-200">{path}</code>
-      <span className="text-slate-500">
-        {bracketedArgs(tool.arguments, ["path", "filePath"])}
-      </span>
-      <span className="ml-auto text-slate-500">
-        {toolStatusIcon(tool.status)}
-      </span>
-    </div>
-  );
-}
+function ToolDisclosureRow({
+  tool,
+  title,
+  subtitle,
+  args = [],
+  defaultExpanded = false,
+  children,
+}: {
+  tool: ChatTool;
+  title: string;
+  subtitle?: string;
+  args?: string[];
+  defaultExpanded?: boolean;
+  children?: ReactNode;
+}) {
+  const { t } = useTranslation();
+  const panelId = useId();
+  const [expanded, setExpanded] = useState(defaultExpanded);
+  const canExpand = Boolean(children);
+  const statusLabel =
+    tool.status === "completed" ? null : t(`tool.status.${tool.status}`);
+  const trailing = [statusLabel, ...args].filter(Boolean).join(" · ");
 
-function WriteToolActivity({ tool }: { tool: ChatTool }) {
-  const data = resultData(tool);
-  const path = primaryPath(tool) ?? tool.label ?? tool.name;
-  const diff = toolValue(data?.diff);
-  const bytes = toolValue(data?.byte_count);
-  return (
-    <div className="rounded-lg border border-slate-800 bg-slate-950/50 p-3 text-xs text-slate-300">
-      <div className="flex items-center gap-2">
-        <span className="text-emerald-300">←</span>
-        <span className="font-medium">Wrote</span>
-        <code className="text-slate-200">{path}</code>
-        {bytes && <span className="text-slate-500">[{bytes} bytes]</span>}
-        <span className="ml-auto text-slate-500">
-          {toolStatusIcon(tool.status)}
+  const summary = (
+    <span className="flex min-w-0 flex-1 items-baseline gap-2 text-left">
+      <span className="shrink-0 text-xs font-medium text-[var(--vc-text-primary)]">
+        {title}
+      </span>
+      {subtitle && (
+        <span className="min-w-0 truncate text-xs text-[var(--vc-text-muted)]">
+          {subtitle}
         </span>
-      </div>
-      <ToolOutputBlock label="Diff" value={diff} />
-      {!diff && tool.content && (
-        <ToolOutputBlock label="Result" value={tool.content} />
+      )}
+      {trailing && (
+        <span className="hidden shrink-0 text-[11px] text-[var(--vc-text-subtle)] md:inline">
+          {trailing}
+        </span>
+      )}
+    </span>
+  );
+
+  return (
+    <div className="text-xs" data-tool-row={tool.name}>
+      {canExpand ? (
+        <button
+          type="button"
+          onClick={() => setExpanded((value) => !value)}
+          className="group flex w-full items-center gap-1.5 px-1 py-1 text-left transition-colors hover:text-[var(--vc-text-primary)] focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--vc-focus-ring)]"
+          aria-expanded={expanded}
+          aria-controls={panelId}
+          aria-label={t(
+            expanded ? "tool.hideDetailsFor" : "tool.showDetailsFor",
+            {
+              title,
+            },
+          )}
+        >
+          {expanded ? (
+            <ChevronDown className="h-3 w-3 shrink-0 text-[var(--vc-text-subtle)]" />
+          ) : (
+            <ChevronRight className="h-3 w-3 shrink-0 text-[var(--vc-text-subtle)]" />
+          )}
+          {summary}
+        </button>
+      ) : (
+        <div className="flex items-center gap-1.5 px-1 py-1">
+          <span className="h-3 w-3 shrink-0" />
+          {summary}
+        </div>
+      )}
+      {canExpand && expanded && (
+        <div
+          id={panelId}
+          className="ml-4 pb-2 pt-1 text-[var(--vc-text-muted)]"
+        >
+          {children}
+        </div>
       )}
     </div>
   );
 }
 
+function ReadToolActivity({ tool }: { tool: ChatTool }) {
+  const path = primaryPath(tool) ?? toolDisplayTitle(tool, tool.name);
+  return (
+    <ToolDisclosureRow
+      tool={tool}
+      title={toolDisplayTitle(tool, "Read")}
+      subtitle={path}
+      args={curatedArgs(tool, { omit: ["path", "filePath"] })}
+    />
+  );
+}
+
+function WriteToolActivity({ tool }: { tool: ChatTool }) {
+  const data = resultData(tool);
+  const path = primaryPath(tool) ?? toolDisplayTitle(tool, tool.name);
+  const diff = toolValue(data?.diff);
+  const bytes = toolValue(data?.byte_count);
+  return (
+    <ToolDisclosureRow
+      tool={tool}
+      title={toolDisplayTitle(tool, "Write")}
+      subtitle={bytes ? `${path} · ${bytes} bytes` : path}
+      args={curatedArgs(tool, { omit: ["path", "filePath"] })}
+      defaultExpanded
+    >
+      <ToolDetailBlock label="Diff" value={diff} copyValue={diff} />
+      {!diff && tool.content && (
+        <ToolDetailBlock
+          label="Result"
+          value={tool.content}
+          copyValue={tool.content}
+        />
+      )}
+      {tool.error && (
+        <ToolDetailBlock
+          label="Error"
+          value={tool.error}
+          copyValue={tool.error}
+        />
+      )}
+    </ToolDisclosureRow>
+  );
+}
+
 function ShellToolActivity({ tool }: { tool: ChatTool }) {
+  const { t } = useTranslation();
   const data = resultData(tool);
   const command =
     toolValue(tool.arguments?.command) ??
     toolValue(data?.command) ??
-    tool.label ??
+    copyableValue(tool, "command") ??
     "shell";
-  const stdout = toolValue(data?.stdout);
+  const stdout =
+    toolValue(data?.stdout) ?? toolValue(data?.output) ?? tool.content;
   const stderr = toolValue(data?.stderr);
-  const exitCode = toolValue(data?.exit_code);
+  const exitCode =
+    toolValue(data?.exit_code) ??
+    toolValue(data?.exitCode) ??
+    toolValue(data?.code);
+  const error = tool.error ?? toolValue(data?.error);
+  const title = t("tool.shell.title");
+  const summary = toolDisplayTitle(tool, command);
+  const subtitle =
+    exitCode && exitCode !== "0"
+      ? `${summary} · ${t("tool.shell.failedSubtitle", { code: exitCode })}`
+      : summary;
   return (
-    <div className="rounded-lg border border-slate-800 bg-slate-950/50 p-3 text-xs text-slate-300">
-      <div className="flex items-center gap-2">
-        <span className="text-violet-300">$</span>
-        <span className="font-medium">Command</span>
-        {exitCode && (
-          <span className="ml-auto text-slate-500">exit {exitCode}</span>
-        )}
-        <span className="text-slate-500">{toolStatusIcon(tool.status)}</span>
+    <ToolDisclosureRow
+      tool={tool}
+      title={title}
+      subtitle={subtitle}
+      args={[]}
+      defaultExpanded={tool.status === "running"}
+    >
+      <ShellTerminalBlock
+        command={command}
+        stdout={stdout ?? null}
+        stderr={stderr}
+        error={error}
+        exitCode={exitCode}
+        copyCommand={copyableValue(tool, "command") ?? command}
+        copyOutput={
+          copyableValue(tool, "output") ?? stdout ?? stderr ?? error ?? null
+        }
+      />
+    </ToolDisclosureRow>
+  );
+}
+
+function ShellTerminalBlock({
+  command,
+  stdout,
+  stderr,
+  error,
+  exitCode,
+  copyCommand,
+  copyOutput,
+}: {
+  command: string;
+  stdout: string | null;
+  stderr: string | null;
+  error: string | null;
+  exitCode: string | null;
+  copyCommand: string;
+  copyOutput: string | null;
+}) {
+  const { t } = useTranslation();
+  const transcript = [
+    `$ ${command}`,
+    stdout,
+    stderr,
+    error,
+    exitCode && exitCode !== "0" ? `exit ${exitCode}` : null,
+  ]
+    .filter((value): value is string => Boolean(value))
+    .join("\n");
+
+  return (
+    <div
+      className="rounded-[var(--vc-radius-control)] border border-[color:var(--vc-border-subtle)] bg-[var(--vc-bg)]"
+      data-terminal-block="shell"
+    >
+      <div className="flex items-center justify-between border-b border-[color:var(--vc-border-subtle)] px-2 py-1">
+        <span className="text-[10px] uppercase tracking-wide text-[var(--vc-text-subtle)]">
+          {t("tool.shell.terminal")}
+        </span>
+        <span className="flex items-center gap-1">
+          <CopyButton value={copyCommand} label={t("tool.shell.command")} />
+          {copyOutput && (
+            <CopyButton value={copyOutput} label={t("tool.shell.output")} />
+          )}
+        </span>
       </div>
-      <pre className="mt-2 overflow-auto rounded-md border border-slate-800 bg-slate-950/80 p-3 text-xs text-slate-200 whitespace-pre-wrap">
-        $ {command}
+      <pre className="max-h-72 overflow-auto p-3 font-mono text-xs leading-relaxed text-[var(--vc-text-primary)] whitespace-pre-wrap">
+        {transcript}
       </pre>
-      <ToolOutputBlock label="stdout" value={stdout ?? tool.content ?? null} />
-      <ToolOutputBlock label="stderr" value={stderr} />
-      {tool.error && <ToolOutputBlock label="error" value={tool.error} />}
     </div>
   );
 }
 
 function SkillToolActivity({ tool }: { tool: ChatTool }) {
+  const { t } = useTranslation();
   const data = resultData(tool);
   const skill = nestedRecord(data, "skill");
   const name =
@@ -283,24 +489,36 @@ function SkillToolActivity({ tool }: { tool: ChatTool }) {
     toolValue(data?.user_message) ?? toolValue(tool.arguments?.user_message);
 
   return (
-    <div className="rounded-lg border border-slate-800 bg-slate-950/50 p-3 text-xs text-slate-300">
-      <div className="flex items-center gap-2">
-        <span className="text-amber-300">◆</span>
-        <span className="font-medium">Loaded skill</span>
-        <code className="text-slate-200">{name}</code>
-        <span className="ml-auto text-slate-500">
-          {toolStatusIcon(tool.status)}
-        </span>
-      </div>
-      {description && <div className="mt-2 text-slate-400">{description}</div>}
+    <ToolDisclosureRow
+      tool={tool}
+      title={toolDisplayTitle(tool, "Loaded skill")}
+      subtitle={name}
+      args={curatedArgs(tool, { omit: ["name", "user_message"] })}
+      defaultExpanded
+    >
+      {description && (
+        <div className="mt-2 text-[var(--vc-text-muted)]">{description}</div>
+      )}
       {sourcePath && (
-        <div className="mt-2 text-[11px] text-slate-500">
+        <div className="mt-2 text-[11px] text-[var(--vc-text-subtle)]">
           Source: <code>{sourcePath}</code>
         </div>
       )}
-      {userMessage && <ToolOutputBlock label="Context" value={userMessage} />}
-      {tool.error && <ToolOutputBlock label="error" value={tool.error} />}
-    </div>
+      {userMessage && (
+        <ToolDetailBlock
+          label={t("tool.skill.userRequest")}
+          value={userMessage}
+          copyValue={userMessage}
+        />
+      )}
+      {tool.error && (
+        <ToolDetailBlock
+          label="Error"
+          value={tool.error}
+          copyValue={tool.error}
+        />
+      )}
+    </ToolDisclosureRow>
   );
 }
 
@@ -328,18 +546,19 @@ function TaskToolActivity({ tool }: { tool: ChatTool }) {
   const description = toolValue(tool.arguments?.description);
 
   return (
-    <div className="rounded-lg border border-slate-800 bg-slate-950/50 p-3 text-xs text-slate-300">
-      <div className="flex items-center gap-2">
-        <span className="text-cyan-300">↳</span>
-        <span className="font-medium">Started subagent</span>
-        <code className="text-slate-200">{route}</code>
-        <span className="text-slate-500">[{mode}]</span>
-        <span className="ml-auto text-slate-500">
-          {toolStatusIcon(tool.status)}
-        </span>
-      </div>
-      {description && <div className="mt-2 text-slate-400">{description}</div>}
-      <div className="mt-2 grid gap-1 text-[11px] text-slate-500">
+    <ToolDisclosureRow
+      tool={tool}
+      title={toolDisplayTitle(tool, "Started subagent")}
+      subtitle={`${route} · ${mode}`}
+      args={curatedArgs(tool, {
+        omit: ["category", "subagent_type", "description"],
+      })}
+      defaultExpanded
+    >
+      {description && (
+        <div className="mt-2 text-[var(--vc-text-muted)]">{description}</div>
+      )}
+      <div className="mt-2 grid gap-1 text-[11px] text-[var(--vc-text-subtle)]">
         {taskId && (
           <div>
             Task ID: <code>{taskId}</code>
@@ -356,9 +575,21 @@ function TaskToolActivity({ tool }: { tool: ChatTool }) {
           </div>
         )}
       </div>
-      {tool.content && <ToolOutputBlock label="Output" value={tool.content} />}
-      {tool.error && <ToolOutputBlock label="error" value={tool.error} />}
-    </div>
+      {tool.content && (
+        <ToolDetailBlock
+          label="Output"
+          value={tool.content}
+          copyValue={tool.content}
+        />
+      )}
+      {tool.error && (
+        <ToolDetailBlock
+          label="Error"
+          value={tool.error}
+          copyValue={tool.error}
+        />
+      )}
+    </ToolDisclosureRow>
   );
 }
 
@@ -391,6 +622,7 @@ function todoStatusSymbol(status: string) {
 }
 
 function TodoToolActivity({ tool }: { tool: ChatTool }) {
+  if (tool.display?.hidden) return null;
   const items = todoItems(tool);
   const data = resultData(tool);
   const summary = nestedRecord(data, "summary");
@@ -401,55 +633,119 @@ function TodoToolActivity({ tool }: { tool: ChatTool }) {
     : `${items.length} todos`;
 
   return (
-    <div className="rounded-lg border border-slate-800 bg-slate-950/50 p-3 text-xs text-slate-300">
-      <div className="flex items-center gap-2">
-        <span className="text-lime-300">☑</span>
-        <span className="font-medium">Updated todos</span>
-        <span className="text-slate-500">[{summaryText}]</span>
-        <span className="ml-auto text-slate-500">
-          {toolStatusIcon(tool.status)}
-        </span>
-      </div>
+    <ToolDisclosureRow
+      tool={tool}
+      title={toolDisplayTitle(tool, "Updated todos")}
+      subtitle={summaryText}
+      defaultExpanded={false}
+    >
       <div className="mt-2 space-y-1">
         {items.map((item, index) => (
           <div
             key={`${item.content}-${index}`}
-            className="flex items-start gap-2 text-slate-300"
+            className="flex items-start gap-2 text-[var(--vc-text-muted)]"
           >
-            <span className="mt-px text-slate-500">
+            <span className="mt-px text-[var(--vc-text-subtle)]">
               {todoStatusSymbol(item.status)}
             </span>
             <span className="flex-1">{item.content}</span>
-            <span className="rounded border border-slate-800 px-1.5 py-0.5 text-[10px] uppercase text-slate-500">
+            <span className="rounded-[var(--vc-radius-control)] border border-[color:var(--vc-border-subtle)] px-1.5 py-0.5 text-[10px] uppercase text-[var(--vc-text-subtle)]">
               {item.status} · {item.priority}
             </span>
           </div>
         ))}
       </div>
-      {tool.error && <ToolOutputBlock label="error" value={tool.error} />}
-    </div>
+      {tool.error && (
+        <ToolDetailBlock
+          label="Error"
+          value={tool.error}
+          copyValue={tool.error}
+        />
+      )}
+    </ToolDisclosureRow>
   );
 }
 
 function GenericToolActivity({ tool }: { tool: ChatTool }) {
-  const argumentsText = tool.arguments
-    ? JSON.stringify(tool.arguments, null, 2)
-    : null;
-  const resultText = tool.result
-    ? JSON.stringify(tool.result, null, 2)
-    : tool.content;
   return (
-    <div className="rounded-md border border-slate-800 bg-slate-950/50 px-3 py-2 text-xs text-slate-300">
-      <div className="flex items-center gap-2">
-        <Wrench className="w-3 h-3 text-slate-500" />
-        <span className="font-medium">{tool.label ?? tool.name}</span>
-        <span className="ml-auto text-slate-500">
-          {toolStatusIcon(tool.status)}
+    <ToolDisclosureRow
+      tool={tool}
+      title={toolDisplayTitle(tool, tool.display?.title ?? tool.name)}
+      subtitle={toolDisplaySubtitle(tool, tool.summary)}
+      args={curatedArgs(tool)}
+    />
+  );
+}
+
+function ContextToolGroup({ tools }: { tools: ChatTool[] }) {
+  const { t } = useTranslation();
+  const panelId = useId();
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div className="text-xs" data-tool-row="context-group">
+      <button
+        type="button"
+        onClick={() => setExpanded((value) => !value)}
+        className="flex w-full items-baseline gap-1.5 px-1 py-1 text-left transition-colors hover:text-[var(--vc-text-primary)] focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--vc-focus-ring)]"
+        aria-expanded={expanded}
+        aria-controls={panelId}
+        aria-label={t(
+          expanded ? "tool.hideDetailsFor" : "tool.showDetailsFor",
+          {
+            title: t("tool.context.title"),
+          },
+        )}
+      >
+        {expanded ? (
+          <ChevronDown className="h-3 w-3 shrink-0 self-center text-[var(--vc-text-subtle)]" />
+        ) : (
+          <ChevronRight className="h-3 w-3 shrink-0 self-center text-[var(--vc-text-subtle)]" />
+        )}
+        <span className="shrink-0 text-xs font-medium text-[var(--vc-text-primary)]">
+          {t("tool.context.title")}
         </span>
-      </div>
-      <ToolOutputBlock label="Arguments" value={argumentsText} />
-      <ToolOutputBlock label="Result" value={resultText ?? null} />
-      {tool.error && <ToolOutputBlock label="error" value={tool.error} />}
+        <span className="min-w-0 truncate text-xs text-[var(--vc-text-muted)]">
+          {t("tool.context.summary", { count: tools.length })}
+        </span>
+      </button>
+      {expanded && (
+        <div id={panelId} className="ml-4 space-y-1 py-1">
+          {tools.map((tool, index) => {
+            const path = primaryPath(tool);
+            const title = toolDisplayTitle(
+              tool,
+              tool.display?.title ?? tool.name,
+            );
+            const args = curatedArgs(tool, { omit: ["path", "filePath"] });
+            return (
+              <div
+                key={tool.id ?? `${tool.name}-${index}`}
+                className="flex items-baseline gap-2 px-1 py-0.5"
+              >
+                <span className="min-w-0 flex flex-1 items-baseline gap-2">
+                  <span className="shrink-0 text-[11px] font-medium text-[var(--vc-text-primary)]">
+                    {title}
+                  </span>
+                  {path && (
+                    <span className="truncate font-mono text-[10px] text-[var(--vc-text-subtle)]">
+                      {path}
+                    </span>
+                  )}
+                </span>
+                {args.slice(0, 2).map((arg) => (
+                  <span
+                    key={arg}
+                    className="hidden max-w-[9rem] truncate font-mono text-[10px] text-[var(--vc-text-muted)] md:inline"
+                  >
+                    {arg}
+                  </span>
+                ))}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -496,14 +792,14 @@ function QuestionCard({
   };
 
   return (
-    <div className="mt-3 rounded-lg border border-sky-500/20 bg-sky-500/10 p-4">
+    <div className="mt-3 rounded-[var(--vc-radius-control)] border border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] p-4">
       <div className="flex items-center gap-2 mb-3">
-        <PauseCircle className="w-5 h-5 text-sky-300 flex-shrink-0" />
+        <PauseCircle className="w-5 h-5 text-[var(--vc-text-subtle)] flex-shrink-0" />
         <div>
-          <p className="text-sm font-medium text-sky-200">
+          <p className="text-sm font-medium text-[var(--vc-text-primary)]">
             {t("question.heading")}
           </p>
-          <p className="mt-0.5 text-sm text-slate-300">
+          <p className="mt-0.5 text-sm text-[var(--vc-text-muted)]">
             {t("question.message", {
               tool: question.tool || t("question.unknownTool"),
             })}
@@ -512,12 +808,12 @@ function QuestionCard({
       </div>
       <div className="space-y-3">
         {prompts.map((prompt) => (
-          <label key={prompt.header} className="block">
-            <span className="text-xs font-medium text-slate-300">
+          <div key={prompt.header} className="block">
+            <span className="text-xs font-medium text-[var(--vc-text-primary)]">
               {prompt.header}
             </span>
             {prompt.question && (
-              <span className="mt-1 block text-xs text-slate-400">
+              <span className="mt-1 block text-xs text-[var(--vc-text-muted)]">
                 {prompt.question}
               </span>
             )}
@@ -528,7 +824,7 @@ function QuestionCard({
                 return (
                   <label
                     key={option.label}
-                    className="flex items-start gap-2 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200"
+                    className="flex items-start gap-2 rounded-[var(--vc-radius-control)] border border-[color:var(--vc-border-subtle)] bg-[var(--vc-bg)] px-3 py-2 text-sm text-[var(--vc-text-primary)]"
                   >
                     <input
                       type={prompt.multiple ? "checkbox" : "radio"}
@@ -548,7 +844,7 @@ function QuestionCard({
                     <span>
                       <span className="block font-medium">{option.label}</span>
                       {option.description && (
-                        <span className="mt-0.5 block text-xs text-slate-500">
+                        <span className="mt-0.5 block text-xs text-[var(--vc-text-subtle)]">
                           {option.description}
                         </span>
                       )}
@@ -557,12 +853,12 @@ function QuestionCard({
                 );
               })}
             </div>
-          </label>
+          </div>
         ))}
       </div>
       <div className="mt-4 flex justify-end">
-        <button
-          type="button"
+        <ControlButton
+          variant="primary"
           onClick={() =>
             onAnswer(
               prompts.map((prompt) => ({
@@ -574,10 +870,9 @@ function QuestionCard({
             )
           }
           disabled={isSubmitting || !canSubmit}
-          className="rounded-lg border border-sky-500/20 bg-sky-500/10 px-4 py-2 text-sm font-medium text-sky-200 transition-colors hover:bg-sky-500/20 disabled:cursor-not-allowed disabled:opacity-50"
         >
           {isSubmitting ? t("question.submitting") : t("question.submit")}
-        </button>
+        </ControlButton>
       </div>
     </div>
   );
@@ -586,13 +881,28 @@ function QuestionCard({
 function ToolActivities({ tools }: { tools: ChatTool[] }) {
   if (tools.length === 0) return null;
 
-  return (
-    <div className="mb-3 space-y-2">
-      {tools.map((tool, idx) => (
-        <ToolActivity key={tool.id ?? `${tool.name}-${idx}`} tool={tool} />
-      ))}
-    </div>
-  );
+  const contextTools = tools.filter(isContextTool);
+  const shouldGroupContext = contextTools.length > 1;
+  const renderedItems: ReactNode[] = [];
+  let didRenderContextGroup = false;
+
+  tools.forEach((tool, idx) => {
+    if (shouldGroupContext && isContextTool(tool)) {
+      if (!didRenderContextGroup) {
+        renderedItems.push(
+          <ContextToolGroup key="context-tool-group" tools={contextTools} />,
+        );
+        didRenderContextGroup = true;
+      }
+      return;
+    }
+
+    renderedItems.push(
+      <ToolActivity key={tool.id ?? `${tool.name}-${idx}`} tool={tool} />,
+    );
+  });
+
+  return <div className="mb-3 space-y-2">{renderedItems}</div>;
 }
 
 function ToolActivity({ tool }: { tool: ChatTool }) {
@@ -655,15 +965,15 @@ function ApprovalCard({
   const { t } = useTranslation();
 
   return (
-    <div className="mt-3 rounded-lg border border-amber-500/20 bg-amber-500/10 p-4">
+    <div className="mt-3 rounded-[var(--vc-radius-control)] border border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] p-4">
       <div className="flex items-center justify-between gap-4 flex-wrap">
         <div className="flex items-center gap-2">
-          <PauseCircle className="w-5 h-5 text-amber-400 flex-shrink-0" />
+          <PauseCircle className="w-5 h-5 text-[var(--vc-text-subtle)] flex-shrink-0" />
           <div>
-            <p className="text-sm font-medium text-amber-300">
+            <p className="text-sm font-medium text-[var(--vc-text-primary)]">
               {t("approval.heading")}
             </p>
-            <p className="mt-0.5 text-sm text-slate-300">
+            <p className="mt-0.5 text-sm text-[var(--vc-text-muted)]">
               {t("approval.message", {
                 target:
                   approval.targetSummary ||
@@ -674,22 +984,20 @@ function ApprovalCard({
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <button
-            type="button"
+          <ControlButton
+            variant="danger"
             onClick={() => onResolve("deny")}
             disabled={isSubmitting}
-            className="rounded-lg border border-rose-500/20 bg-rose-500/10 px-4 py-2 text-sm font-medium text-rose-300 transition-colors hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {isSubmitting ? t("approval.submitting") : t("approval.deny")}
-          </button>
-          <button
-            type="button"
+          </ControlButton>
+          <ControlButton
+            variant="confirm"
             onClick={() => onResolve("allow")}
             disabled={isSubmitting}
-            className="rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-4 py-2 text-sm font-medium text-emerald-300 transition-colors hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {isSubmitting ? t("approval.submitting") : t("approval.allow")}
-          </button>
+          </ControlButton>
         </div>
       </div>
     </div>
@@ -699,7 +1007,7 @@ function ApprovalCard({
 function StatusIndicator({ status }: { status: ChatMessage["status"] }) {
   if (status === "in_progress") {
     return (
-      <span className="inline-flex items-center gap-1 text-[11px] text-indigo-400">
+      <span className="inline-flex items-center gap-1 text-[11px] text-[var(--vc-text-muted)]">
         <Loader2 className="w-3 h-3 animate-spin" />
         Responding...
       </span>
@@ -707,7 +1015,7 @@ function StatusIndicator({ status }: { status: ChatMessage["status"] }) {
   }
   if (status === "waiting") {
     return (
-      <span className="inline-flex items-center gap-1 text-[11px] text-amber-400">
+      <span className="inline-flex items-center gap-1 text-[11px] text-[var(--vc-text-muted)]">
         <PauseCircle className="w-3 h-3" />
         Waiting for input
       </span>
@@ -715,7 +1023,7 @@ function StatusIndicator({ status }: { status: ChatMessage["status"] }) {
   }
   if (status === "failed") {
     return (
-      <span className="inline-flex items-center gap-1 text-[11px] text-rose-400">
+      <span className="inline-flex items-center gap-1 text-[11px] text-[var(--vc-danger-text)]">
         <AlertCircle className="w-3 h-3" />
         Failed
       </span>
@@ -744,8 +1052,8 @@ export function ChatThread({
     <div className="flex-1 overflow-y-auto px-4 py-6">
       <div className="max-w-3xl mx-auto space-y-6">
         {!hasMessages && (
-          <div className="flex flex-col items-center justify-center py-20 text-slate-500">
-            <p className="text-lg font-medium text-slate-400 mb-1">
+          <div className="flex flex-col items-center justify-center py-20 text-[var(--vc-text-subtle)]">
+            <p className="text-lg font-medium text-[var(--vc-text-muted)] mb-1">
               {t("chat.welcomeTitle")}
             </p>
             <p className="text-sm">{t("chat.welcomeSubtitle")}</p>
@@ -765,7 +1073,7 @@ export function ChatThread({
               >
                 <div className="flex-1 flex justify-end">
                   <div className="max-w-[85%]">
-                    <div className="bg-indigo-600 text-indigo-50 rounded-2xl rounded-tr-sm px-4 py-3">
+                    <div className="rounded-2xl rounded-tr-sm border border-[color:var(--vc-border-strong)] bg-[var(--vc-surface-2)] px-4 py-3 text-[var(--vc-text-primary)]">
                       <p className="text-sm leading-relaxed whitespace-pre-wrap">
                         {message.content}
                       </p>
@@ -782,12 +1090,7 @@ export function ChatThread({
                 <div className="flex items-center gap-2 mb-1 min-h-4">
                   <StatusIndicator status={message.status} />
                 </div>
-                <div className="bg-slate-800/40 border border-slate-800 rounded-2xl rounded-tl-sm px-4 py-3">
-                  <ThinkingBlock
-                    thinking={message.thinking}
-                    startedAt={message.thinkingStartedAt}
-                    updatedAt={message.thinkingUpdatedAt}
-                  />
+                <div className="space-y-3">
                   <ToolActivities tools={message.tools} />
                   {assistantContent && (
                     <StreamingMarkdown
@@ -823,11 +1126,9 @@ export function ChatThread({
                 <div className="flex items-center gap-2 mb-1">
                   <StatusIndicator status="in_progress" />
                 </div>
-                <div className="bg-slate-800/40 border border-slate-800 rounded-2xl rounded-tl-sm px-4 py-3">
-                  <div className="flex items-center gap-2 text-sm text-slate-400">
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    {t("chat.thinking")}
-                  </div>
+                <div className="flex items-center gap-2 text-sm text-[var(--vc-text-muted)]">
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  {t("chat.thinking")}
                 </div>
               </div>
             </div>
@@ -836,7 +1137,7 @@ export function ChatThread({
         {approvalError && (
           <div className="flex items-start gap-3">
             <div className="flex-1 min-w-0">
-              <div className="bg-rose-500/10 border border-rose-500/20 rounded-2xl rounded-tl-sm px-4 py-3 text-sm text-rose-300">
+              <div className="rounded-2xl rounded-tl-sm border border-[color:var(--vc-danger-border)] bg-[var(--vc-danger-bg)] px-4 py-3 text-sm text-[var(--vc-danger-text)]">
                 {t("approval.error", { message: approvalError })}
               </div>
             </div>
@@ -845,7 +1146,7 @@ export function ChatThread({
         {questionError && (
           <div className="flex items-start gap-3">
             <div className="flex-1 min-w-0">
-              <div className="bg-rose-500/10 border border-rose-500/20 rounded-2xl rounded-tl-sm px-4 py-3 text-sm text-rose-300">
+              <div className="rounded-2xl rounded-tl-sm border border-[color:var(--vc-danger-border)] bg-[var(--vc-danger-bg)] px-4 py-3 text-sm text-[var(--vc-danger-text)]">
                 {t("question.error", { message: questionError })}
               </div>
             </div>

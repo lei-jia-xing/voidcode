@@ -49,7 +49,7 @@ from ..provider.models import (
     ResolvedProviderConfig,
     ResolvedProviderModel,
 )
-from ..provider.protocol import ProviderTokenUsage
+from ..provider.protocol import ProviderAbortSignal, ProviderTokenUsage
 from ..provider.registry import ModelProviderRegistry
 from ..provider.resolution import resolve_provider_config
 from ..provider.snapshot import (
@@ -207,6 +207,11 @@ from .task import (
     supported_subagent_categories,
     validate_background_task_id,
 )
+from .todos import (
+    runtime_todos_from_tool_payload,
+    todo_event_payload,
+    todo_state_payload,
+)
 from .tool_provider import BuiltinToolProvider
 
 if TYPE_CHECKING:
@@ -223,6 +228,7 @@ _PERSISTED_RUNTIME_CONFIG_KEYS = frozenset(
         "execution_engine",
         "max_steps",
         "tool_timeout_seconds",
+        "reasoning_effort",
         "model",
         "provider_fallback",
         "resolved_provider",
@@ -273,6 +279,7 @@ _SKILL_BINDING_SCOPE_KEYS = (
     "execution_engine",
     "max_steps",
     "tool_timeout_seconds",
+    "reasoning_effort",
     "model",
     "provider_fallback",
     "resolved_provider",
@@ -286,6 +293,54 @@ _SKILL_BINDING_SCOPE_KEYS = (
 class _ActiveSessionKey:
     workspace: Path
     session_id: str
+
+
+@dataclass(slots=True)
+class _ActiveRunAbortSignal:
+    _cancelled: bool = False
+    _reason: str | None = None
+
+    @property
+    def cancelled(self) -> bool:
+        return self._cancelled
+
+    @property
+    def reason(self) -> str | None:
+        return self._reason
+
+    def set_cancelled(self, value: bool, *, reason: str | None = None) -> None:
+        self._cancelled = value
+        if value:
+            self._reason = reason
+
+
+@dataclass(frozen=True, slots=True)
+class ActiveRunInterruptResult:
+    session_id: str
+    status: Literal["interrupted", "not_active", "stale"]
+    run_id: str | None = None
+    reason: str | None = None
+
+    @property
+    def interrupted(self) -> bool:
+        return self.status == "interrupted"
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "session_id": self.session_id,
+            "status": self.status,
+            "interrupted": self.interrupted,
+            "cancelled": self.interrupted,
+            "run_id": self.run_id,
+            "reason": self.reason,
+        }
+
+
+@dataclass(slots=True)
+class _ActiveRunHandle:
+    run_id: str
+    abort_signal: _ActiveRunAbortSignal
+    metadata: dict[str, object]
 
 
 def _provider_target_label(target: ResolvedProviderModel) -> str:
@@ -302,14 +357,33 @@ def _provider_target_label(target: ResolvedProviderModel) -> str:
 
 class _ActiveSessionRegistry:
     def __init__(self) -> None:
-        self._counts: dict[_ActiveSessionKey, int] = {}
-        self._metadata: dict[_ActiveSessionKey, dict[str, object]] = {}
+        self._runs: dict[_ActiveSessionKey, dict[str, _ActiveRunHandle]] = {}
         self._lock = threading.Lock()
 
-    def register(self, *, workspace: Path, session_id: str) -> None:
+    @staticmethod
+    def _latest_handle(handles: dict[str, _ActiveRunHandle]) -> _ActiveRunHandle | None:
+        if not handles:
+            return None
+        return next(reversed(handles.values()))
+
+    def register(
+        self,
+        *,
+        workspace: Path,
+        session_id: str,
+        run_id: str,
+        metadata: dict[str, object],
+    ) -> ProviderAbortSignal:
         key = _ActiveSessionKey(workspace=workspace, session_id=session_id)
+        abort_signal = _ActiveRunAbortSignal()
         with self._lock:
-            self._counts[key] = self._counts.get(key, 0) + 1
+            handles = self._runs.setdefault(key, {})
+            handles[run_id] = _ActiveRunHandle(
+                run_id=run_id,
+                abort_signal=abort_signal,
+                metadata=dict(metadata),
+            )
+        return abort_signal
 
     def remember_metadata(
         self,
@@ -317,35 +391,103 @@ class _ActiveSessionRegistry:
         workspace: Path,
         session_id: str,
         metadata: dict[str, object],
+        run_id: str | None = None,
     ) -> None:
         key = _ActiveSessionKey(workspace=workspace, session_id=session_id)
         with self._lock:
-            if key not in self._counts:
+            handles = self._runs.get(key)
+            if handles is None:
                 return
-            self._metadata[key] = dict(metadata)
+            handle = handles.get(run_id) if run_id is not None else self._latest_handle(handles)
+            if handle is None:
+                return
+            handle.metadata = dict(metadata)
 
-    def unregister(self, *, workspace: Path, session_id: str) -> None:
+    def unregister(self, *, workspace: Path, session_id: str, run_id: str | None = None) -> None:
         key = _ActiveSessionKey(workspace=workspace, session_id=session_id)
         with self._lock:
-            count = self._counts.get(key)
-            if count is None:
+            handles = self._runs.get(key)
+            if handles is None:
                 return
-            if count <= 1:
-                self._counts.pop(key, None)
-                self._metadata.pop(key, None)
+            if run_id is None:
+                self._runs.pop(key, None)
                 return
-            self._counts[key] = count - 1
+            handles.pop(run_id, None)
+            if not handles:
+                self._runs.pop(key, None)
 
     def contains(self, *, workspace: Path, session_id: str) -> bool:
         key = _ActiveSessionKey(workspace=workspace, session_id=session_id)
         with self._lock:
-            return key in self._counts
+            return key in self._runs
 
     def metadata(self, *, workspace: Path, session_id: str) -> dict[str, object] | None:
         key = _ActiveSessionKey(workspace=workspace, session_id=session_id)
         with self._lock:
-            metadata = self._metadata.get(key)
-            return dict(metadata) if metadata is not None else None
+            handles = self._runs.get(key)
+            handle = self._latest_handle(handles) if handles is not None else None
+            return dict(handle.metadata) if handle is not None else None
+
+    def abort_signal(
+        self,
+        *,
+        workspace: Path,
+        session_id: str,
+        run_id: str,
+    ) -> ProviderAbortSignal | None:
+        key = _ActiveSessionKey(workspace=workspace, session_id=session_id)
+        with self._lock:
+            handles = self._runs.get(key)
+            if handles is None:
+                return None
+            handle = handles.get(run_id)
+            if handle is None:
+                return None
+            return handle.abort_signal
+
+    def interrupt(
+        self,
+        *,
+        workspace: Path,
+        session_id: str,
+        run_id: str | None = None,
+        reason: str | None = None,
+    ) -> ActiveRunInterruptResult:
+        key = _ActiveSessionKey(workspace=workspace, session_id=session_id)
+        with self._lock:
+            handles = self._runs.get(key)
+            handle = self._latest_handle(handles) if handles is not None else None
+            if handle is None:
+                return ActiveRunInterruptResult(
+                    session_id=session_id,
+                    status="not_active",
+                    run_id=run_id,
+                    reason=reason,
+                )
+            if run_id is not None:
+                requested_handle = handles.get(run_id) if handles is not None else None
+                if requested_handle is None:
+                    return ActiveRunInterruptResult(
+                        session_id=session_id,
+                        status="stale",
+                        run_id=handle.run_id,
+                        reason=reason,
+                    )
+                handle = requested_handle
+            if run_id is not None and handle.run_id != run_id:
+                return ActiveRunInterruptResult(
+                    session_id=session_id,
+                    status="stale",
+                    run_id=handle.run_id,
+                    reason=reason,
+                )
+            handle.abort_signal.set_cancelled(True, reason=reason)
+            return ActiveRunInterruptResult(
+                session_id=session_id,
+                status="interrupted",
+                run_id=handle.run_id,
+                reason=reason,
+            )
 
 
 _ACTIVE_SESSION_REGISTRY = _ActiveSessionRegistry()
@@ -871,21 +1013,60 @@ class VoidCodeRuntime:
             except ValueError as exc:
                 raise RuntimeRequestError(str(exc)) from exc
         request_max_steps = request.metadata.get("max_steps")
+        request_reasoning_effort = request.metadata.get("reasoning_effort")
         if request_max_steps is not None:
             assert isinstance(request_max_steps, int)
-            return EffectiveRuntimeConfig(
+            resolved = EffectiveRuntimeConfig(
                 approval_mode=resolved.approval_mode,
                 permission=resolved.permission,
                 model=resolved.model,
                 execution_engine=resolved.execution_engine,
                 max_steps=request_max_steps,
                 tool_timeout_seconds=resolved.tool_timeout_seconds,
+                reasoning_effort=resolved.reasoning_effort,
                 provider_fallback=resolved.provider_fallback,
                 resolved_provider=resolved.resolved_provider,
                 agent=resolved.agent,
                 context_window=resolved.context_window,
             )
+        if isinstance(request_reasoning_effort, str) and request_reasoning_effort:
+            resolved = EffectiveRuntimeConfig(
+                approval_mode=resolved.approval_mode,
+                model=resolved.model,
+                execution_engine=resolved.execution_engine,
+                max_steps=resolved.max_steps,
+                tool_timeout_seconds=resolved.tool_timeout_seconds,
+                reasoning_effort=request_reasoning_effort,
+                provider_fallback=resolved.provider_fallback,
+                resolved_provider=resolved.resolved_provider,
+                agent=resolved.agent,
+                context_window=resolved.context_window,
+            )
+        try:
+            self._validate_reasoning_effort_capability(resolved)
+        except ValueError as exc:
+            raise RuntimeRequestError(str(exc)) from exc
         return resolved
+
+    def _validate_reasoning_effort_capability(self, config: EffectiveRuntimeConfig) -> None:
+        if config.reasoning_effort is None:
+            return
+        if config.execution_engine != "provider":
+            return
+        active_target = config.resolved_provider.active_target.selection
+        provider_name = active_target.provider
+        model_name = active_target.model
+        if provider_name is None or model_name is None:
+            return
+        metadata = self._metadata_for_provider_model(provider_name, model_name)
+        if metadata is None:
+            return
+        if metadata.supports_reasoning_effort is False:
+            raise ValueError(
+                "reasoning_effort is configured but model "
+                f"'{provider_name}/{model_name}' does not support reasoning effort; "
+                "remove the reasoning_effort hint or pick a reasoning-effort capable model"
+            )
 
     def _build_skill_registry(self, skills_config: RuntimeSkillsConfig | None) -> SkillRegistry:
         if skills_config is None or skills_config.enabled is not True:
@@ -1372,8 +1553,9 @@ class VoidCodeRuntime:
         )
         session_id = self._resolve_session_id(request)
         run_id = os.urandom(8).hex()
-        self._register_active_session_id(
+        abort_signal = self._register_active_session_id(
             session_id,
+            run_id=run_id,
             metadata={
                 "prompt": request.prompt,
                 "run_id": run_id,
@@ -1387,7 +1569,12 @@ class VoidCodeRuntime:
             final_session: SessionState | None = None
 
             try:
-                for chunk in self._stream_chunks(request, session_id=session_id, run_id=run_id):
+                for chunk in self._stream_chunks(
+                    request,
+                    session_id=session_id,
+                    run_id=run_id,
+                    abort_signal=abort_signal,
+                ):
                     final_session = chunk.session
                     if chunk.event is not None:
                         events.append(chunk.event)
@@ -1419,7 +1606,7 @@ class VoidCodeRuntime:
             response = RuntimeResponse(session=final_session, events=tuple(events), output=output)
             self._persist_response(request=request, response=response)
         finally:
-            self._unregister_active_session_id(session_id)
+            self._unregister_active_session_id(session_id, run_id=run_id)
 
     def run(self, request: RuntimeRequest) -> RuntimeResponse:
         events: list[EventEnvelope] = []
@@ -1510,6 +1697,7 @@ class VoidCodeRuntime:
         *,
         session_id: str | None = None,
         run_id: str | None = None,
+        abort_signal: ProviderAbortSignal | None = None,
     ) -> Iterator[RuntimeStreamChunk]:
         resolved_session_id = session_id or self._resolve_session_id(request)
         effective_config = self._runtime_config_for_request(request)
@@ -1719,7 +1907,14 @@ class VoidCodeRuntime:
                     request_metadata.get("provider_stream", False),
                     False,
                 ),
+                **(
+                    {"reasoning_effort": effective_config.reasoning_effort}
+                    if effective_config.reasoning_effort is not None
+                    and "reasoning_effort" not in request_metadata
+                    else {}
+                ),
             },
+            abort_signal=abort_signal,
         )
         tool_results: list[ToolResult] = []
         graph = self._graph_for_session_metadata(session.metadata)
@@ -3865,6 +4060,7 @@ class VoidCodeRuntime:
             "delegation",
             "max_steps",
             "provider_stream",
+            "reasoning_effort",
             "skills",
             "background_run",
             "background_task_id",
@@ -3938,12 +4134,28 @@ class VoidCodeRuntime:
             session_id=session_id,
             approval_request_id=approval_request_id,
         )
-        yield from self._resume_pending_approval_stream(
-            session_id=session_id,
-            approval_request_id=approval_request_id,
-            approval_decision=approval_decision,
-            finalize_background_task=True,
+        run_id = os.urandom(8).hex()
+        abort_signal = self._register_active_session_id(
+            session_id,
+            run_id=run_id,
+            metadata={
+                "resume": True,
+                "resume_kind": "approval",
+                "approval_request_id": approval_request_id,
+                "run_id": run_id,
+            },
         )
+        try:
+            yield from self._resume_pending_approval_stream(
+                session_id=session_id,
+                approval_request_id=approval_request_id,
+                approval_decision=approval_decision,
+                run_id=run_id,
+                abort_signal=abort_signal,
+                finalize_background_task=True,
+            )
+        finally:
+            self._unregister_active_session_id(session_id, run_id=run_id)
 
     def _validate_resume_targets_owned_request(
         self,
@@ -4060,12 +4272,28 @@ class VoidCodeRuntime:
             session_id=session_id,
             question_request_id=question_request_id,
         )
-        yield from self._answer_pending_question_stream(
-            session_id=session_id,
-            question_request_id=question_request_id,
-            responses=responses,
-            finalize_background_task=True,
+        run_id = os.urandom(8).hex()
+        abort_signal = self._register_active_session_id(
+            session_id,
+            run_id=run_id,
+            metadata={
+                "resume": True,
+                "resume_kind": "question",
+                "question_request_id": question_request_id,
+                "run_id": run_id,
+            },
         )
+        try:
+            yield from self._answer_pending_question_stream(
+                session_id=session_id,
+                question_request_id=question_request_id,
+                responses=responses,
+                run_id=run_id,
+                abort_signal=abort_signal,
+                finalize_background_task=True,
+            )
+        finally:
+            self._unregister_active_session_id(session_id, run_id=run_id)
 
     def _pending_approval_from_response(self, response: RuntimeResponse) -> PendingApproval:
         approval_event = next(
@@ -4322,12 +4550,16 @@ class VoidCodeRuntime:
         session_id: str,
         approval_request_id: str,
         approval_decision: PermissionResolution,
+        run_id: str | None = None,
+        abort_signal: ProviderAbortSignal | None = None,
         finalize_background_task: bool = False,
     ) -> Iterator[RuntimeStreamChunk]:
         yield from self._resume_coordinator.resume_pending_approval_stream(
             session_id=session_id,
             approval_request_id=approval_request_id,
             approval_decision=approval_decision,
+            run_id=run_id,
+            abort_signal=abort_signal,
             finalize_background_task=finalize_background_task,
         )
 
@@ -4350,12 +4582,16 @@ class VoidCodeRuntime:
         session_id: str,
         question_request_id: str,
         responses: tuple[QuestionResponse, ...],
+        run_id: str | None = None,
+        abort_signal: ProviderAbortSignal | None = None,
         finalize_background_task: bool = False,
     ) -> Iterator[RuntimeStreamChunk]:
         yield from self._resume_coordinator.answer_pending_question_stream(
             session_id=session_id,
             question_request_id=question_request_id,
             responses=responses,
+            run_id=run_id,
+            abort_signal=abort_signal,
             finalize_background_task=finalize_background_task,
         )
 
@@ -4960,6 +5196,38 @@ class VoidCodeRuntime:
         )
 
     @staticmethod
+    def _session_with_todo_state(
+        session: SessionState,
+        *,
+        raw_todos: object,
+        revision: int,
+    ) -> tuple[SessionState, dict[str, object]]:
+        raw_runtime_state = session.metadata.get("runtime_state")
+        runtime_state = (
+            dict(cast(dict[str, object], raw_runtime_state))
+            if isinstance(raw_runtime_state, dict)
+            else {}
+        )
+        todos = runtime_todos_from_tool_payload(raw_todos, updated_at=revision)
+        state_payload = todo_state_payload(todos, revision=revision)
+        runtime_state["todos"] = state_payload
+        next_session = SessionState(
+            session=session.session,
+            status=session.status,
+            turn=session.turn,
+            metadata={
+                **session.metadata,
+                "runtime_state": runtime_state,
+            },
+        )
+        event_payload = todo_event_payload(
+            session_id=session.session.id,
+            todos=todos,
+            revision=revision,
+        )
+        return next_session, event_payload
+
+    @staticmethod
     def _session_with_provider_usage_metadata(
         session: SessionState, usage: ProviderTokenUsage | None
     ) -> SessionState:
@@ -5321,6 +5589,8 @@ class VoidCodeRuntime:
             runtime_config_metadata["context_window"] = serialized_context_window
         if effective_config.model is not None:
             runtime_config_metadata["model"] = effective_config.model
+        if effective_config.reasoning_effort is not None:
+            runtime_config_metadata["reasoning_effort"] = effective_config.reasoning_effort
         serialized_agent = serialize_runtime_agent_config(effective_config.agent)
         if serialized_agent is not None:
             runtime_config_metadata["agent"] = serialized_agent
@@ -5435,6 +5705,7 @@ class VoidCodeRuntime:
             execution_engine=execution_engine,
             max_steps=resolved.max_steps,
             tool_timeout_seconds=resolved.tool_timeout_seconds,
+            reasoning_effort=resolved.reasoning_effort,
             provider_fallback=provider_fallback,
             resolved_provider=resolved_provider,
             agent=merged_agent,
@@ -6006,6 +6277,7 @@ class VoidCodeRuntime:
         model = self._config.model
         execution_engine = self._config.execution_engine
         max_steps = self._config.max_steps
+        reasoning_effort = self._config.reasoning_effort
         provider_fallback = self._config.provider_fallback
         agent = self._config.agent
         if agent is None and execution_engine == "provider":
@@ -6068,6 +6340,7 @@ class VoidCodeRuntime:
                 execution_engine=execution_engine,
                 max_steps=max_steps,
                 tool_timeout_seconds=self._config.tool_timeout_seconds,
+                reasoning_effort=reasoning_effort,
                 provider_fallback=provider_fallback,
                 resolved_provider=resolved_provider,
                 agent=agent,
@@ -6115,6 +6388,16 @@ class VoidCodeRuntime:
                         "persisted runtime_config tool_timeout_seconds must be at least 1"
                     )
                 tool_timeout_seconds = persisted_tool_timeout
+        if "reasoning_effort" in runtime_config:
+            persisted_reasoning_effort = runtime_config.get("reasoning_effort")
+            if persisted_reasoning_effort is None:
+                reasoning_effort = None
+            elif isinstance(persisted_reasoning_effort, str) and persisted_reasoning_effort:
+                reasoning_effort = persisted_reasoning_effort
+            else:
+                raise ValueError(
+                    "persisted runtime_config reasoning_effort must be a non-empty string"
+                )
         provider_fallback = None
         if "provider_fallback" in runtime_config:
             try:
@@ -6181,6 +6464,7 @@ class VoidCodeRuntime:
             execution_engine=execution_engine,
             max_steps=max_steps,
             tool_timeout_seconds=tool_timeout_seconds,
+            reasoning_effort=reasoning_effort,
             provider_fallback=provider_fallback,
             resolved_provider=resolved_provider,
             agent=agent,
@@ -6204,6 +6488,7 @@ class VoidCodeRuntime:
             effective_config.execution_engine == self._initial_effective_config.execution_engine
             and effective_config.model == self._initial_effective_config.model
             and effective_config.max_steps == self._initial_effective_config.max_steps
+            and effective_config.reasoning_effort == self._initial_effective_config.reasoning_effort
             and effective_config.provider_fallback
             == self._initial_effective_config.provider_fallback
             and effective_config.agent == self._initial_effective_config.agent
@@ -6243,24 +6528,65 @@ class VoidCodeRuntime:
     def _register_active_session_id(
         self,
         session_id: str,
+        *,
+        run_id: str,
         metadata: dict[str, object] | None = None,
-    ) -> None:
-        _ACTIVE_SESSION_REGISTRY.register(workspace=self._workspace, session_id=session_id)
-        if metadata is not None:
-            _ACTIVE_SESSION_REGISTRY.remember_metadata(
-                workspace=self._workspace,
-                session_id=session_id,
-                metadata=metadata,
-            )
+    ) -> ProviderAbortSignal:
+        return _ACTIVE_SESSION_REGISTRY.register(
+            workspace=self._workspace,
+            session_id=session_id,
+            run_id=run_id,
+            metadata=metadata or {},
+        )
 
-    def _unregister_active_session_id(self, session_id: str) -> None:
-        _ACTIVE_SESSION_REGISTRY.unregister(workspace=self._workspace, session_id=session_id)
+    def _unregister_active_session_id(self, session_id: str, *, run_id: str | None = None) -> None:
+        _ACTIVE_SESSION_REGISTRY.unregister(
+            workspace=self._workspace,
+            session_id=session_id,
+            run_id=run_id,
+        )
 
     def _active_session_metadata(self, session_id: str) -> dict[str, object] | None:
         return _ACTIVE_SESSION_REGISTRY.metadata(
             workspace=self._workspace,
             session_id=session_id,
         )
+
+    def _active_run_abort_signal(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+    ) -> ProviderAbortSignal | None:
+        return _ACTIVE_SESSION_REGISTRY.abort_signal(
+            workspace=self._workspace,
+            session_id=session_id,
+            run_id=run_id,
+        )
+
+    def interrupt_active_run(
+        self,
+        session_id: str,
+        *,
+        run_id: str | None = None,
+        reason: str | None = None,
+    ) -> ActiveRunInterruptResult:
+        validate_session_id(session_id)
+        return _ACTIVE_SESSION_REGISTRY.interrupt(
+            workspace=self._workspace,
+            session_id=session_id,
+            run_id=run_id,
+            reason=reason,
+        )
+
+    def cancel_session(
+        self,
+        session_id: str,
+        *,
+        run_id: str | None = None,
+        reason: str | None = None,
+    ) -> ActiveRunInterruptResult:
+        return self.interrupt_active_run(session_id, run_id=run_id, reason=reason)
 
     def _session_belongs_to_workspace(self, session_id: str) -> bool:
         try:
@@ -6280,6 +6606,7 @@ class EffectiveRuntimeConfig:
     execution_engine: ExecutionEngineName
     max_steps: int | None
     tool_timeout_seconds: int | None = None
+    reasoning_effort: str | None = None
     provider_fallback: RuntimeProviderFallbackConfig | None = None
     resolved_provider: ResolvedProviderConfig = field(default_factory=ResolvedProviderConfig)
     agent: RuntimeAgentConfig | None = None

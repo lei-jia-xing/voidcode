@@ -62,6 +62,7 @@ type PrototypeAdditiveEventType = Literal[
     "runtime.background_task_result_read",
     "runtime.delegated_result_available",
     "runtime.skill_loaded",
+    "runtime.todo_updated",
 ]
 type DelegatedBackgroundTaskEventType = Literal[
     "runtime.background_task_waiting_approval",
@@ -157,6 +158,7 @@ RUNTIME_DELEGATED_RESULT_AVAILABLE: Final[PrototypeAdditiveEventType] = (
     "runtime.delegated_result_available"
 )
 RUNTIME_SKILL_LOADED: Final[PrototypeAdditiveEventType] = "runtime.skill_loaded"
+RUNTIME_TODO_UPDATED: Final[PrototypeAdditiveEventType] = "runtime.todo_updated"
 
 EMITTED_EVENT_TYPES: Final[tuple[ExistingEventType, ...]] = (
     RUNTIME_REQUEST_RECEIVED,
@@ -214,6 +216,7 @@ PROTOTYPE_ADDITIVE_EVENT_TYPES: Final[tuple[PrototypeAdditiveEventType, ...]] = 
     RUNTIME_BACKGROUND_TASK_RESULT_READ,
     RUNTIME_DELEGATED_RESULT_AVAILABLE,
     RUNTIME_SKILL_LOADED,
+    RUNTIME_TODO_UPDATED,
 )
 KNOWN_EVENT_TYPES: Final[tuple[KnownEventType, ...]] = (
     *EMITTED_EVENT_TYPES,

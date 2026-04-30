@@ -82,10 +82,23 @@ class _CapturingTurnProvider:
 
     def __init__(self) -> None:
         self.requests: list[ProviderTurnRequest] = []
+        self.abort_cancelled_values: list[bool | None] = []
 
     def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
         self.requests.append(request)
+        self.abort_cancelled_values.append(
+            request.abort_signal.cancelled if request.abort_signal is not None else None
+        )
         return ProviderTurnResult(output="done")
+
+
+class _AbortSignal:
+    def __init__(self, *, cancelled: bool = False) -> None:
+        self._cancelled = cancelled
+
+    @property
+    def cancelled(self) -> bool:
+        return self._cancelled
 
 
 class _MixedNonStreamingTurnProvider:
@@ -357,6 +370,68 @@ def test_provider_provider_graph_requests_tool_on_first_turn() -> None:
         "streaming": False,
         "prompt": "read sample.txt",
     }
+
+
+def test_provider_graph_passes_runtime_abort_signal_to_provider() -> None:
+    provider = _CapturingTurnProvider()
+    provider_model = resolve_provider_model(
+        "opencode/gpt-5.4",
+        registry=ModelProviderRegistry.with_defaults(),
+    )
+    graph = ProviderGraph(provider=provider, provider_model=provider_model)
+    request_context = RuntimeContextWindow(prompt="stop")
+    abort_signal = _AbortSignal(cancelled=True)
+
+    _ = graph.step(
+        request=GraphRunRequest(
+            session=_session(),
+            prompt="stop",
+            available_tools=_tool_definitions(),
+            context_window=request_context,
+            assembled_context=_assembled_from_context_window(request_context),
+            abort_signal=abort_signal,
+        ),
+        tool_results=(),
+        session=_session(),
+    )
+
+    assert provider.requests[0].abort_signal is abort_signal
+    assert provider.requests[0].abort_signal.cancelled is True
+
+
+def test_provider_graph_resets_internal_abort_signal_between_requests() -> None:
+    provider = _CapturingTurnProvider()
+    provider_model = resolve_provider_model(
+        "opencode/gpt-5.4",
+        registry=ModelProviderRegistry.with_defaults(),
+    )
+    graph = ProviderGraph(provider=provider, provider_model=provider_model)
+    cancelled_context = RuntimeContextWindow(prompt="cancel")
+    next_context = RuntimeContextWindow(prompt="continue")
+
+    _ = graph.step(
+        request=GraphRunRequest(
+            session=_session(),
+            prompt="cancel",
+            context_window=cancelled_context,
+            assembled_context=_assembled_from_context_window(cancelled_context),
+            metadata={"abort_requested": True},
+        ),
+        tool_results=(),
+        session=_session(),
+    )
+    _ = graph.step(
+        request=GraphRunRequest(
+            session=_session(),
+            prompt="continue",
+            context_window=next_context,
+            assembled_context=_assembled_from_context_window(next_context),
+        ),
+        tool_results=(),
+        session=_session(),
+    )
+
+    assert provider.abort_cancelled_values == [True, False]
 
 
 def test_provider_provider_graph_finalizes_after_tool_result() -> None:

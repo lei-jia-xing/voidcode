@@ -36,11 +36,20 @@ type JsonRpcId = str | int | None
 class AcpRuntime(Protocol):
     def run_stream(self, request: RuntimeRequest) -> Iterator[RuntimeStreamChunk]: ...
 
+    def cancel_session(
+        self,
+        session_id: str,
+        *,
+        run_id: str | None = None,
+        reason: str | None = None,
+    ) -> object: ...
+
 
 @dataclass(slots=True)
 class AcpSessionBinding:
     acp_session_id: str
     runtime_session_id: str | None = None
+    active_run_id: str | None = None
     active: bool = False
     cancel_requested: bool = False
     tool_call_ids_by_tool: dict[str, str] = field(default_factory=dict)
@@ -188,6 +197,7 @@ class StdioAcpServer:
                 raise ValueError("another ACP prompt is already running")
             self._runtime_prompt_active = True
         binding.active = True
+        binding.active_run_id = None
         binding.cancel_requested = False
         thread = threading.Thread(
             target=self._handle_session_prompt,
@@ -243,6 +253,8 @@ class StdioAcpServer:
                     break
                 if binding.runtime_session_id is None:
                     binding.runtime_session_id = chunk.session.session.id
+                if binding.active_run_id is None:
+                    binding.active_run_id = _session_run_id(chunk.session)
                 final_session_status = getattr(chunk.session, "status", None)
                 if chunk.event is not None:
                     if _optional_attr(chunk.event, "event_type") == "runtime.failed":
@@ -284,6 +296,7 @@ class StdioAcpServer:
             self._write_error(request_id, _ERROR_INTERNAL, "runtime execution failed")
         finally:
             binding.active = False
+            binding.active_run_id = None
             with self._runtime_lock:
                 self._runtime_prompt_active = False
 
@@ -293,16 +306,35 @@ class StdioAcpServer:
         if binding is None:
             raise ValueError(f"unknown ACP session id: {acp_session_id}")
         binding.cancel_requested = True
+        cancel_payload: dict[str, object] | None = None
+        can_cancel_runtime = (
+            binding.active
+            and binding.runtime_session_id is not None
+            and binding.active_run_id is not None
+        )
+        if can_cancel_runtime:
+            cancel_session = getattr(self.runtime, "cancel_session", None)
+            if callable(cancel_session):
+                result = cancel_session(
+                    binding.runtime_session_id,
+                    run_id=binding.active_run_id,
+                    reason="acp session/cancel",
+                )
+                as_payload = getattr(result, "as_payload", None)
+                if callable(as_payload):
+                    cancel_payload = cast(dict[str, object], as_payload())
+                elif isinstance(result, dict):
+                    cancel_payload = cast(dict[str, object], result)
+        interrupted = (
+            bool(cancel_payload.get("interrupted")) if cancel_payload is not None else False
+        )
         return {
             "sessionId": acp_session_id,
             "runtimeSessionId": binding.runtime_session_id,
-            "cancelled": False,
-            "stopReason": "cancelled" if binding.active else "not_active",
-            "supported": False,
-            "message": (
-                "No active interrupt is available for the minimal stdio ACP facade; "
-                "cancellation is best-effort and currently limited."
-            ),
+            "cancelled": interrupted,
+            "stopReason": "cancelled" if interrupted or binding.active else "not_active",
+            "supported": cancel_payload is not None,
+            "runtimeCancel": cancel_payload,
         }
 
     def _write_runtime_event_update(
@@ -475,6 +507,16 @@ def _mapping_attr(value: object, name: str) -> JsonObject:
     if isinstance(raw, dict):
         return cast(JsonObject, raw)
     return {}
+
+
+def _session_run_id(session: object) -> str | None:
+    metadata = _mapping_attr(session, "metadata")
+    runtime_state = metadata.get("runtime_state")
+    if not isinstance(runtime_state, dict):
+        return None
+    typed_runtime_state = cast(dict[str, object], runtime_state)
+    run_id = typed_runtime_state.get("run_id")
+    return run_id if isinstance(run_id, str) and run_id else None
 
 
 def _string_payload(payload: Mapping[str, object], key: str, *, default: str = "") -> str:
