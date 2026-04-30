@@ -300,6 +300,8 @@ def _apply_marker_patch(patch_text: str, *, workspace: Path) -> ToolResult:
     planned_add_paths: set[str] = set()
     staged_contents: dict[str, str] = {}
     for hunk in hunks:
+        if hunk.move_path is not None and hunk.move_path == hunk.path:
+            raise ValueError(f"Move destination must differ from source: {hunk.move_path}")
         _assert_within_workspace(workspace, Path(hunk.path))
         if hunk.move_path is not None:
             _assert_within_workspace(workspace, Path(hunk.move_path))
