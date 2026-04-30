@@ -23,6 +23,18 @@ _SENSITIVE_TEXT_ARGUMENT_KEYS = frozenset(
 _INLINE_BLOB_KEYS = frozenset({"data_uri", "dataUri", "base64", "blob"})
 
 
+def _is_metadata_count(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _is_redaction_summary(value: dict[object, object]) -> bool:
+    return (
+        value.get("omitted") is True
+        and _is_metadata_count(value.get("byte_count"))
+        and _is_metadata_count(value.get("line_count"))
+    )
+
+
 def _string_summary(value: str, *, include_preview: bool) -> dict[str, object]:
     payload: dict[str, object] = {
         "omitted": True,
@@ -80,6 +92,21 @@ def sanitize_tool_result_data(data: dict[str, object]) -> dict[str, object]:
     if isinstance(raw_arguments, dict):
         sanitized["arguments"] = sanitize_tool_arguments(cast(dict[str, object], raw_arguments))
     return sanitized
+
+
+def strip_redaction_sentinels(value: object) -> object:
+    """Return a schema-safe copy with redaction metadata placeholders removed."""
+
+    if isinstance(value, dict):
+        raw_value = cast(dict[object, object], value)
+        if _is_redaction_summary(raw_value):
+            return ""
+        return {str(key): strip_redaction_sentinels(item) for key, item in raw_value.items()}
+    if isinstance(value, list):
+        return [strip_redaction_sentinels(item) for item in cast(list[object], value)]
+    if isinstance(value, tuple):
+        return [strip_redaction_sentinels(item) for item in cast(tuple[object, ...], value)]
+    return value
 
 
 def _utf8_prefix(text: str, *, max_bytes: int) -> str:
@@ -188,4 +215,5 @@ __all__ = [
     "sanitize_tool_arguments",
     "sanitize_tool_data",
     "sanitize_tool_result_data",
+    "strip_redaction_sentinels",
 ]

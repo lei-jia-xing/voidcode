@@ -19,6 +19,7 @@ from .output import (
     sanitize_tool_arguments,
     sanitize_tool_data,
     sanitize_tool_result_data,
+    strip_redaction_sentinels,
 )
 from .question import QuestionTool
 from .read_file import ReadFileTool
@@ -66,4 +67,5 @@ __all__ = [
     "sanitize_tool_arguments",
     "sanitize_tool_data",
     "sanitize_tool_result_data",
+    "strip_redaction_sentinels",
 ]

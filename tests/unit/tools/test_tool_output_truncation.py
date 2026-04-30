@@ -7,6 +7,7 @@ from voidcode.tools import (
     cap_tool_result_output,
     sanitize_tool_arguments,
     sanitize_tool_result_data,
+    strip_redaction_sentinels,
 )
 
 
@@ -118,3 +119,40 @@ def test_sanitize_tool_result_data_strips_inline_blobs_and_nested_arguments() ->
         "content": {"omitted": True, "byte_count": 13, "line_count": 1},
         "status": "pending",
     }
+
+
+def test_strip_redaction_sentinels_replaces_redaction_metadata_with_empty_strings() -> None:
+    stripped = strip_redaction_sentinels(
+        {
+            "path": "out.txt",
+            "content": {"omitted": True, "byte_count": 11, "line_count": 1},
+            "edits": [
+                {
+                    "oldString": {"omitted": True, "byte_count": 3, "line_count": 1},
+                    "newString": {"omitted": True, "byte_count": 3, "line_count": 1},
+                }
+            ],
+        }
+    )
+
+    assert stripped == {
+        "path": "out.txt",
+        "content": "",
+        "edits": [{"oldString": "", "newString": ""}],
+    }
+
+
+def test_strip_redaction_sentinels_handles_nested_todo_arguments() -> None:
+    stripped = strip_redaction_sentinels(
+        {
+            "todos": [
+                {
+                    "content": {"omitted": True, "byte_count": 9, "line_count": 1},
+                    "status": "pending",
+                    "priority": "high",
+                }
+            ]
+        }
+    )
+
+    assert stripped == {"todos": [{"content": "", "status": "pending", "priority": "high"}]}
