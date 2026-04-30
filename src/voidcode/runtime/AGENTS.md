@@ -56,6 +56,7 @@ runtime/
 - Do not add eager imports to `runtime/__init__.py` for service/http symbols.
 - Do not change `_EXECUTABLE_AGENT_PRESETS`, tool allowlist scoping, or provider fallback metadata casually; they affect active execution semantics.
 - Do not duplicate pure capability logic from `skills/`, `lsp/`, `mcp/`, or provider modules when runtime only needs an integration layer.
+- Do not treat permission denials as terminal session failures; denied tool calls should surface as tool-level feedback so the model can adapt. See `docs/contracts/approval-flow.md` for deny semantics.
 
 ## KEY FLOWS
 - **Run path:** `VoidCodeRuntime.run_stream()` → `_stream_chunks()` → `_execute_graph_loop()`.
