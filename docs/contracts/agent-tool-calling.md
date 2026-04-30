@@ -153,7 +153,8 @@ Agent 发起工具调用时只提交工具名与参数对象：
 CLI / server 可以通过 `--approval-mode allow|deny|ask` 或等价 runtime config 改变非只读工具的策略：
 
 - `allow`：非只读工具仍记录 permission / approval resolution，但可以继续执行；
-- `deny`：非只读工具会被拒绝，agent 应选择只读替代方案或停止该分支；
+- `deny`：非只读工具会被拒绝，但拒绝会作为 `ToolResult(status="error")` 返回给
+  agent；agent 应选择只读替代方案、调整计划、请求其他路径或解释无法继续的约束；
 - `ask`：非只读工具暂停等待客户端 / 操作员决策。
 
 只读工具不应触发 approval。非只读工具包括写文件、编辑、patch、shell、格式化、todo 写入、AST rewrite，以及动态 MCP 工具。
@@ -178,7 +179,11 @@ CLI / server 可以通过 `--approval-mode allow|deny|ask` 或等价 runtime con
 }
 ```
 
-Agent 不处理 approval UI；CLI / Web 客户端把 `allow` 或 `deny` 决策交回 runtime，runtime 再恢复或终止 session。
+Agent 不处理 approval UI；CLI / Web 客户端把 `allow` 或 `deny` 决策交回 runtime。
+`allow` 会恢复并执行原工具调用；`deny` 不执行原工具调用，而是通过
+`runtime.tool_completed` 发出工具级错误反馈（例如 `permission denied for tool: write_file`），
+使 provider-backed agent 可以观察该约束并重新规划。拒绝本身不应自动产生
+`runtime.failed`。
 
 当请求涉及 workspace 外路径时，approval payload 会额外包含：
 
