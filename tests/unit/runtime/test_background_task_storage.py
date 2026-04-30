@@ -817,7 +817,7 @@ def test_background_task_storage_preserves_supervisor_completed_event_payload_fi
                 metadata={
                     "delegation": {
                         "mode": "background",
-                        "category": "ultrabrain",
+                        "category": "brain",
                     }
                 },
             ),
@@ -849,7 +849,7 @@ def test_background_task_storage_preserves_supervisor_completed_event_payload_fi
                 "delegated_task_id": "task-completed-event",
                 "approval_request_id": None,
                 "question_request_id": None,
-                "routing": {"mode": "background", "category": "ultrabrain"},
+                "routing": {"mode": "background", "category": "brain"},
                 "selected_preset": "advisor",
                 "selected_execution_engine": "provider",
                 "lifecycle_status": "completed",
@@ -867,7 +867,7 @@ def test_background_task_storage_preserves_supervisor_completed_event_payload_fi
     assert appended.payload["child_session_id"] == "child-session"
     assert appended.payload["status"] == "completed"
     assert appended.payload["result_available"] is True
-    assert appended.payload["routing_category"] == "ultrabrain"
+    assert appended.payload["routing_category"] == "brain"
     assert appended.payload["delegation"] == {
         "parent_session_id": "leader-session",
         "requested_child_session_id": "child-requested",
@@ -875,7 +875,7 @@ def test_background_task_storage_preserves_supervisor_completed_event_payload_fi
         "delegated_task_id": "task-completed-event",
         "approval_request_id": None,
         "question_request_id": None,
-        "routing": {"mode": "background", "category": "ultrabrain"},
+        "routing": {"mode": "background", "category": "brain"},
         "selected_preset": "advisor",
         "selected_execution_engine": "provider",
         "lifecycle_status": "completed",
