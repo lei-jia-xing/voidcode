@@ -1603,6 +1603,59 @@ def test_runtime_session_debug_snapshot_reports_completed_state(tmp_path: Path) 
     )
 
 
+def test_runtime_session_debug_snapshot_includes_provider_context(tmp_path: Path) -> None:
+    _ = (tmp_path / "sample.txt").write_text("provider debug\n", encoding="utf-8")
+    runtime = VoidCodeRuntime(workspace=tmp_path)
+
+    _ = runtime.run(RuntimeRequest(prompt="read sample.txt", session_id="provider-debug"))
+    snapshot = runtime.session_debug_snapshot(session_id="provider-debug")
+
+    provider_context = snapshot.provider_context
+    assert provider_context is not None
+    assert provider_context.execution_engine == "deterministic"
+    assert provider_context.segment_count == len(provider_context.segments)
+    assert provider_context.message_count == len(provider_context.provider_messages)
+    assert [segment.role for segment in provider_context.segments][-2:] == ["assistant", "tool"]
+    assert provider_context.segments[-1].source == "retained_tool_result"
+    assert provider_context.segments[-1].tool_name == "read_file"
+    assert provider_context.segments[-1].metadata["status"] == "ok"
+    assert all(
+        diagnostic.code not in {"missing_tool_result", "orphan_tool_result"}
+        for diagnostic in provider_context.diagnostics
+    )
+
+
+def test_runtime_session_debug_snapshot_reconstructs_skill_prompt_context(
+    tmp_path: Path,
+) -> None:
+    skill_dir = tmp_path / ".voidcode" / "skills" / "demo"
+    _write_demo_skill(skill_dir, content="# Demo\nAlways explain your reasoning.")
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SkillCapturingStubGraph(),
+        config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=True)),
+    )
+
+    _ = runtime.run(
+        RuntimeRequest(
+            prompt="hello",
+            session_id="skill-debug",
+            metadata={"force_load_skills": ["demo"]},
+        )
+    )
+    snapshot = runtime.session_debug_snapshot(session_id="skill-debug")
+
+    provider_context = snapshot.provider_context
+    assert provider_context is not None
+    skill_segments = [
+        segment
+        for segment in provider_context.segments
+        if segment.role == "system" and segment.source == "skill_prompt"
+    ]
+    assert len(skill_segments) == 1
+    assert "Always explain your reasoning." in (skill_segments[0].content or "")
+
+
 def test_runtime_session_debug_snapshot_reports_pending_approval_state(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,

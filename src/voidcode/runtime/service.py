@@ -66,6 +66,7 @@ from ..tools.contracts import (
     ToolResult,
 )
 from ..tools.guidance import definition_with_guidance
+from ..tools.output import sanitize_tool_result_data
 from ..tools.question import QuestionTool
 from ..tools.runtime_context import current_runtime_tool_context
 from ..tools.skill import SkillTool
@@ -118,6 +119,7 @@ from .contracts import (
     ProviderValidationResult,
     ReviewFileDiff,
     RuntimeNotification,
+    RuntimeProviderContextSnapshot,
     RuntimeRequest,
     RuntimeRequestError,
     RuntimeRequestMetadataPayload,
@@ -181,6 +183,7 @@ from .permission import (
     PermissionResolution,
     resolve_permission,
 )
+from .provider_context import inspect_provider_context
 from .provider_protocol import ProviderExecutionError
 from .question import PendingQuestion, QuestionResponse
 from .resume import RuntimeResumeCoordinator
@@ -2461,6 +2464,7 @@ class VoidCodeRuntime:
             )
         )
         last_tool = self._last_tool_summary(result)
+        provider_context = self._provider_context_debug_snapshot(result)
         failure = self._debug_failure(
             result=result,
             last_failure_event=last_failure_event,
@@ -2524,6 +2528,7 @@ class VoidCodeRuntime:
             last_failure_event=last_failure_event,
             failure=failure,
             last_tool=last_tool,
+            provider_context=provider_context,
             suggested_operator_action=suggested_operator_action,
             operator_guidance=operator_guidance,
         )
@@ -3784,6 +3789,68 @@ class VoidCodeRuntime:
                 sequence=event.sequence,
             )
         return None
+
+    def _provider_context_debug_snapshot(
+        self,
+        result: RuntimeSessionResult,
+    ) -> RuntimeProviderContextSnapshot:
+        prompt, tool_results = self._prompt_and_tool_results_from_debug_events(result.transcript)
+        if not prompt:
+            prompt = result.prompt
+        assembled_context = self._assemble_provider_context(
+            prompt=prompt,
+            tool_results=tuple(tool_results),
+            session_metadata=result.session.metadata,
+            skill_prompt_context=self._debug_skill_prompt_context(result.session.metadata),
+        )
+        effective_config = self._effective_runtime_config_from_metadata(result.session.metadata)
+        active_target = effective_config.resolved_provider.active_target
+        provider = active_target.selection.provider or "unknown"
+        model = active_target.selection.model or active_target.selection.raw_model or "unknown"
+        tool_registry = self._tool_registry_for_effective_config(effective_config)
+        return inspect_provider_context(
+            assembled_context=assembled_context,
+            provider=provider,
+            model=model,
+            execution_engine=effective_config.execution_engine,
+            available_tool_count=len(tool_registry.definitions()),
+        )
+
+    @staticmethod
+    def _prompt_and_tool_results_from_debug_events(
+        events: tuple[EventEnvelope, ...],
+    ) -> tuple[str, list[ToolResult]]:
+        prompt = VoidCodeRuntime._prompt_from_events(events)
+        tool_results: list[ToolResult] = []
+        for event in events:
+            if event.event_type != "runtime.tool_completed":
+                continue
+            error_value = event.payload.get("error")
+            raw_content = event.payload.get("content")
+            is_error = error_value is not None
+            tool_results.append(
+                ToolResult(
+                    tool_name=str(event.payload.get("tool", "unknown")),
+                    status="error" if is_error else "ok",
+                    content=str(raw_content) if raw_content is not None and not is_error else None,
+                    data=sanitize_tool_result_data(event.payload),
+                    error=str(error_value) if is_error else None,
+                    truncated=event.payload.get("truncated") is True,
+                    partial=event.payload.get("partial") is True,
+                    reference=(
+                        cast(str, event.payload.get("reference"))
+                        if isinstance(event.payload.get("reference"), str)
+                        else None
+                    ),
+                )
+            )
+        return prompt, tool_results
+
+    def _debug_skill_prompt_context(self, metadata: dict[str, object]) -> str:
+        snapshot = self._skill_snapshot_from_metadata(metadata)
+        if snapshot is None:
+            return ""
+        return snapshot.skill_prompt_context
 
     @staticmethod
     def _operator_guidance(
