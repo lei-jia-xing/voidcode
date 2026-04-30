@@ -1076,6 +1076,260 @@ class RuntimeResumeCoordinator:
             load_checkpoint(workspace=self._runtime._workspace, session_id=session_id),
         )
 
+    def resume_provider_failure_response(
+        self,
+        *,
+        session_id: str,
+        checkpoint: dict[str, object],
+        finalize_background_task: bool = False,
+    ) -> RuntimeResponse:
+        output: str | None = None
+        final_session: SessionState | None = None
+        for chunk in self.resume_provider_failure_stream(
+            session_id=session_id,
+            checkpoint=checkpoint,
+        ):
+            final_session = chunk.session
+            if chunk.kind == "output":
+                output = chunk.output
+        stored = self._runtime._session_store.load_session(
+            workspace=self._runtime._workspace,
+            session_id=session_id,
+        )
+        response = RuntimeResponse(
+            session=final_session or stored.session,
+            events=stored.events,
+            output=output if output is not None else stored.output,
+        )
+        if finalize_background_task:
+            self._runtime._background_task_supervisor.finalize_background_task_from_session_response(
+                session_response=response
+            )
+        return response
+
+    def resume_provider_failure_stream(
+        self,
+        *,
+        session_id: str,
+        checkpoint: dict[str, object],
+        run_id: str | None = None,
+        abort_signal: ProviderAbortSignal | None = None,
+        finalize_background_task: bool = False,
+    ) -> Iterator[RuntimeStreamChunk]:
+        runtime = self._runtime
+        checkpoint_envelope = self.validated_resume_checkpoint_envelope(
+            checkpoint=checkpoint,
+            expected_kind="provider_failure_retryable",
+        )
+        if checkpoint_envelope is None:
+            raise ValueError("provider failure resume checkpoint is missing")
+        stored = runtime._session_store.load_session(
+            workspace=runtime._workspace,
+            session_id=session_id,
+        )
+        runtime._validate_session_workspace(stored.session, session_id=session_id)
+        payload = checkpoint_envelope.payload
+        prompt = payload.get("prompt")
+        session_metadata = payload.get("session_metadata")
+        raw_tool_results = payload.get("tool_results")
+        if not isinstance(prompt, str):
+            raise ValueError("persisted provider failure checkpoint prompt must be a string")
+        if not isinstance(session_metadata, dict):
+            raise ValueError(
+                "persisted provider failure checkpoint session_metadata must be an object"
+            )
+        if not isinstance(raw_tool_results, list):
+            raise ValueError("persisted provider failure checkpoint tool_results must be a list")
+        tool_results = list(self.tool_results_from_checkpoint(cast(list[object], raw_tool_results)))
+        session = SessionState(
+            session=stored.session.session,
+            status="running",
+            turn=stored.session.turn,
+            metadata=_metadata_with_resume_run_id(
+                cast(dict[str, object], session_metadata),
+                run_id=run_id,
+            ),
+        )
+        runtime._validate_session_workspace(session, session_id=session_id)
+        session = runtime._session_with_current_acp_metadata(session)
+        effective_config = runtime._effective_runtime_config_from_metadata(session.metadata)
+        try:
+            runtime._validate_reasoning_effort_capability(effective_config)
+        except ValueError as exc:
+            raise RuntimeRequestError(str(exc)) from exc
+        tool_registry = runtime._tool_registry_for_effective_config(effective_config)
+        skill_registry = runtime._skill_registry_for_effective_config(effective_config)
+        resumed_skill_snapshot = runtime._build_skill_snapshot(
+            skill_registry,
+            metadata=session.metadata,
+            agent=effective_config.agent,
+            source="resume",
+        )
+        graph_request = GraphRunRequest(
+            session=session,
+            prompt=prompt,
+            available_tools=tool_registry.definitions(),
+            context_window=runtime._prepare_provider_context_window(
+                prompt=prompt,
+                tool_results=tuple(tool_results),
+                session_metadata=session.metadata,
+            ),
+            assembled_context=runtime._assemble_provider_context(
+                prompt=prompt,
+                tool_results=tuple(tool_results),
+                session_metadata=session.metadata,
+                skill_prompt_context=resumed_skill_snapshot.skill_prompt_context,
+            ),
+            metadata={
+                **session.metadata,
+                "agent_preset": serialize_runtime_agent_config(effective_config.agent),
+                "provider_attempt": (
+                    session.metadata.get("provider_attempt", 0)
+                    if isinstance(session.metadata.get("provider_attempt", 0), int)
+                    else 0
+                ),
+                "provider_stream": True,
+                "provider_failure_resume": True,
+                **(
+                    {"reasoning_effort": effective_config.reasoning_effort}
+                    if effective_config.reasoning_effort is not None
+                    and "reasoning_effort" not in session.metadata
+                    else {}
+                ),
+            },
+            abort_signal=abort_signal,
+        )
+        graph = runtime._graph_for_session_metadata(session.metadata)
+        provider_attempt = runtime._provider_attempt_from_metadata(graph_request.metadata)
+        if provider_attempt > 0:
+            graph = runtime._graph_selection_for_effective_config(
+                effective_config,
+                provider_attempt=provider_attempt,
+            ).graph
+        max_stored_sequence = stored.events[-1].sequence if stored.events else 0
+        loop_events: list[EventEnvelope] = []
+        output: str | None = None
+        final_session = session
+        last_sequence = max_stored_sequence
+        try:
+            for chunk in runtime._execute_graph_loop(
+                graph=graph,
+                tool_registry=tool_registry,
+                session=session,
+                sequence=max_stored_sequence,
+                graph_request=graph_request,
+                tool_results=tool_results,
+                permission_policy=runtime._permission_policy_for_session(session.metadata),
+                preserved_continuity_state=runtime._continuity_state_from_session_metadata(
+                    session.metadata
+                ),
+            ):
+                final_session = chunk.session
+                if chunk.event is not None:
+                    last_sequence = chunk.event.sequence
+                    loop_events.append(chunk.event)
+                if chunk.kind == "output":
+                    output = chunk.output
+                yield chunk
+        except Exception:
+            if final_session.status == "failed":
+                response = RuntimeResponse(
+                    session=final_session,
+                    events=stored.events + tuple(loop_events),
+                    output=output,
+                )
+                request = RuntimeRequest(
+                    prompt=prompt,
+                    session_id=stored.session.session.id,
+                    parent_session_id=stored.session.session.parent_id,
+                )
+                runtime._persist_response(request=request, response=response)
+                if finalize_background_task:
+                    runtime._background_task_supervisor.finalize_background_task_from_session_response(
+                        session_response=response
+                    )
+                return
+            raise
+
+        if final_session.status == "waiting":
+            final_session = runtime._disconnect_acp_for_session_state(final_session)
+            idle_hook_outcome = runtime._run_lifecycle_hooks(
+                session=final_session,
+                sequence=last_sequence,
+                surface="session_idle",
+                payload={"reason": "provider_failure_resume_waiting", "resume": True},
+            )
+            for hook_chunk in idle_hook_outcome.chunks:
+                hook_event = cast(EventEnvelope, hook_chunk.event)
+                last_sequence = hook_event.sequence
+                loop_events.append(hook_event)
+                yield hook_chunk
+            if idle_hook_outcome.failed_error is not None:
+                failed_chunk = runtime._failed_chunk(
+                    session=final_session,
+                    sequence=idle_hook_outcome.last_sequence + 1,
+                    error=idle_hook_outcome.failed_error,
+                )
+                failed_event = cast(EventEnvelope, failed_chunk.event)
+                loop_events.append(failed_event)
+                final_session = failed_chunk.session
+                yield failed_chunk
+        else:
+            final_chunks, final_session, final_sequence = runtime._finalize_run_acp(
+                session=final_session,
+                sequence=last_sequence,
+            )
+            for chunk in final_chunks:
+                if chunk.event is not None:
+                    last_sequence += 1
+                    resequenced_event = runtime._resequence_event(
+                        chunk.event,
+                        sequence=last_sequence,
+                    )
+                    loop_events.append(resequenced_event)
+                    yield RuntimeStreamChunk(
+                        kind="event", session=chunk.session, event=resequenced_event
+                    )
+            end_hook_outcome = runtime._run_lifecycle_hooks(
+                session=final_session,
+                sequence=max(last_sequence, final_sequence),
+                surface="session_end",
+                payload={"session_status": final_session.status, "resume": True},
+            )
+            for hook_chunk in end_hook_outcome.chunks:
+                hook_event = cast(EventEnvelope, hook_chunk.event)
+                loop_events.append(hook_event)
+                yield hook_chunk
+            if end_hook_outcome.failed_error is not None:
+                logger.warning(
+                    "session_end hook failed for %s during provider failure resume: %s",
+                    final_session.session.id,
+                    end_hook_outcome.failed_error,
+                )
+            release_events = runtime._release_mcp_session_events(
+                session_id=final_session.session.id,
+                start_sequence=end_hook_outcome.last_sequence + 1,
+            )
+            loop_events.extend(release_events)
+            for event in release_events:
+                yield RuntimeStreamChunk(kind="event", session=final_session, event=event)
+
+        response = RuntimeResponse(
+            session=final_session,
+            events=stored.events + tuple(loop_events),
+            output=output,
+        )
+        request = RuntimeRequest(
+            prompt=prompt,
+            session_id=stored.session.session.id,
+            parent_session_id=stored.session.session.parent_id,
+        )
+        runtime._persist_response(request=request, response=response)
+        if finalize_background_task:
+            runtime._background_task_supervisor.finalize_background_task_from_session_response(
+                session_response=response
+            )
+
     @staticmethod
     def tool_results_from_checkpoint(raw_tool_results: list[object]) -> tuple[ToolResult, ...]:
         parsed: list[ToolResult] = []
