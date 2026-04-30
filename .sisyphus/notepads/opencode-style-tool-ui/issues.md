@@ -425,3 +425,10 @@ Added terminal `runtime.tool_completed` with `payload.status="error"` and `paylo
 ### Fix pattern
 - Divergent replay now preserves denial by emitting the original `runtime.approval_resolved` and `runtime.failed` outcome immediately.
 - Only divergent `allow` decisions may fall back to the older fresh permission check behavior for compatibility with older paths.
+
+### Rebase conflict notes
+- Rebasing `feat/web-opencode-ui-redesign` onto `origin/master` replayed 38 PR commits and required four conflict resolutions.
+- `tests/unit/runtime/test_runtime_events.py` first kept both upstream delegated interrupted lifecycle assertions and PR tool-display metadata shape contracts; later it kept background cancel `taskId` metadata tests without duplicating the delegated lifecycle test.
+- `tests/unit/tools/test_shell_exec_tool.py` kept upstream truncation metadata assertions plus PR `ShellExecArgs.description` coverage.
+- `src/voidcode/runtime/resume.py` kept upstream `ProviderAbortSignal` support and PR `ToolCall`/direct approved-tool execution imports.
+- `tests/unit/runtime/test_runtime_service_extensions.py` kept upstream blocking approval resume helper plus the deny-divergence regression helper.
