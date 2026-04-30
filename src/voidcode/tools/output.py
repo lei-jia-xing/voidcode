@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import tempfile
 import time
@@ -26,6 +27,8 @@ _SENSITIVE_TEXT_ARGUMENT_KEYS = frozenset(
 )
 _INLINE_BLOB_KEYS = frozenset({"data_uri", "dataUri", "base64", "blob"})
 _ARTIFACT_REFERENCE_PREFIX = "artifact:"
+_ARTIFACT_PRODUCER = "voidcode.tool_output.v1"
+_ARTIFACT_TEMP_ROOT_NAME = "voidcode-tool-output"
 
 
 def _string_summary(value: str, *, include_preview: bool) -> dict[str, object]:
@@ -106,6 +109,18 @@ def _safe_artifact_segment(value: str | None, *, fallback: str) -> str:
     return safe[:96] or fallback
 
 
+def tool_output_artifact_temp_root() -> Path:
+    """Return the private runtime temp root for tool output artifacts."""
+
+    root = Path(tempfile.gettempdir()) / _ARTIFACT_TEMP_ROOT_NAME
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        root.chmod(0o700)
+    except OSError:
+        pass
+    return root
+
+
 def _artifact_id(
     *,
     session_id: str | None,
@@ -126,7 +141,7 @@ def _tool_output_artifact_path(
     tool_name: str,
     artifact_id: str,
 ) -> Path:
-    temp_root = Path(tempfile.gettempdir()) / "voidcode-tool-output"
+    temp_root = tool_output_artifact_temp_root()
     session_segment = _safe_artifact_segment(session_id, fallback="unknown-session")
     call_segment = _safe_artifact_segment(tool_call_id, fallback="unknown-tool-call")
     tool_segment = _safe_artifact_segment(tool_name, fallback="tool")
@@ -155,15 +170,31 @@ def _artifact_metadata(
         tool_name=tool_name,
         artifact_id=artifact_id,
     )
-    artifact_path.parent.mkdir(parents=True, exist_ok=True)
-    artifact_path.write_text(content, encoding="utf-8", newline="\n")
+    artifact_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        artifact_path.parent.chmod(0o700)
+    except OSError:
+        pass
+    encoded_with_newlines = content.encode("utf-8")
+    file_descriptor = os.open(
+        artifact_path,
+        os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+        0o600,
+    )
+    with os.fdopen(file_descriptor, "w", encoding="utf-8", newline="\n") as artifact_file:
+        _ = artifact_file.write(content)
+    try:
+        artifact_path.chmod(0o600)
+    except OSError:
+        pass
     return {
         "artifact_id": artifact_id,
+        "producer": _ARTIFACT_PRODUCER,
         "session_id": session_id,
         "tool_call_id": tool_call_id,
         "tool_name": tool_name,
         "kind": kind,
-        "byte_count": len(encoded),
+        "byte_count": len(encoded_with_newlines),
         "line_count": len(content.splitlines()),
         "sha256": content_hash,
         "content_type": "text/plain; charset=utf-8",
@@ -183,11 +214,81 @@ def _artifact_missing_payload(artifact: Mapping[str, object]) -> dict[str, objec
     }
 
 
+def _artifact_invalid_payload(artifact: Mapping[str, object]) -> dict[str, object]:
+    return {
+        "artifact_id": artifact.get("artifact_id"),
+        "status": "invalid",
+        "artifact_missing": True,
+    }
+
+
 def _artifact_path_from_metadata(artifact: Mapping[str, object]) -> Path | None:
+    producer = artifact.get("producer")
+    if producer != _ARTIFACT_PRODUCER:
+        return None
+    artifact_id = artifact.get("artifact_id")
+    if not isinstance(artifact_id, str) or not artifact_id.startswith("artifact_"):
+        return None
     raw_path = artifact.get("path")
     if not isinstance(raw_path, str) or raw_path == "":
         return None
-    return Path(raw_path)
+    path = Path(raw_path).resolve()
+    root = tool_output_artifact_temp_root().resolve()
+    if path == root or root not in path.parents:
+        return None
+    if artifact_id not in path.name:
+        return None
+    return path
+
+
+def _line_count(path: Path) -> int:
+    count = 0
+    with path.open(encoding="utf-8") as artifact_file:
+        for _line in artifact_file:
+            count += 1
+    return count
+
+
+def _event_payload(event: object) -> Mapping[str, object] | None:
+    if isinstance(event, Mapping):
+        event_mapping = cast(Mapping[str, object], event)
+        payload = event_mapping.get("payload")
+    else:
+        payload = getattr(event, "payload", None)
+    if not isinstance(payload, Mapping):
+        return None
+    return cast(Mapping[str, object], payload)
+
+
+def resolve_tool_output_artifact(
+    events: object,
+    *,
+    artifact_id: str | None = None,
+    tool_call_id: str | None = None,
+) -> dict[str, object] | None:
+    """Resolve runtime-generated artifact metadata from event payloads by id or tool call."""
+
+    if artifact_id is None and tool_call_id is None:
+        raise ValueError("artifact_id or tool_call_id is required")
+    if not isinstance(events, list | tuple):
+        return None
+    for event in cast(list[object] | tuple[object, ...], events):
+        payload = _event_payload(event)
+        if payload is None:
+            continue
+        artifact = payload.get("artifact")
+        if not isinstance(artifact, Mapping):
+            continue
+        artifact_mapping = cast(Mapping[str, object], artifact)
+        if artifact_id is not None and artifact_mapping.get("artifact_id") != artifact_id:
+            continue
+        if tool_call_id is not None and artifact_mapping.get("tool_call_id") != tool_call_id:
+            continue
+        artifact_dict = dict(artifact_mapping)
+        if _artifact_path_from_metadata(artifact_dict) is None:
+            return None
+        return artifact_dict
+    return None
 
 
 def read_tool_output_artifact(
@@ -199,21 +300,31 @@ def read_tool_output_artifact(
     """Read a bounded line slice from a temp-backed tool output artifact."""
 
     path = _artifact_path_from_metadata(artifact)
-    if path is None or not path.is_file():
+    if path is None:
+        return _artifact_invalid_payload(artifact)
+    if not path.is_file():
         return _artifact_missing_payload(artifact)
 
-    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
     start = max(0, offset)
     bounded_limit = max(0, limit)
-    selected = lines[start : start + bounded_limit]
+    selected: list[str] = []
+    next_offset: int | None = None
+    with path.open(encoding="utf-8") as artifact_file:
+        for line_index, line in enumerate(artifact_file):
+            if line_index < start:
+                continue
+            if len(selected) >= bounded_limit:
+                next_offset = line_index
+                break
+            selected.append(line)
     return {
         "artifact_id": artifact.get("artifact_id"),
         "status": "available",
         "artifact_missing": False,
         "offset": start,
         "limit": bounded_limit,
-        "line_count": len(lines),
-        "next_offset": start + len(selected) if start + len(selected) < len(lines) else None,
+        "line_count": _line_count(path),
+        "next_offset": next_offset,
         "content": "".join(selected),
     }
 
@@ -228,17 +339,21 @@ def search_tool_output_artifact(
     """Search a temp-backed tool output artifact and return bounded matching lines."""
 
     path = _artifact_path_from_metadata(artifact)
-    if path is None or not path.is_file():
+    if path is None:
+        return _artifact_invalid_payload(artifact)
+    if not path.is_file():
         return _artifact_missing_payload(artifact)
 
     flags = 0 if case_sensitive else re.IGNORECASE
     regex = re.compile(pattern, flags)
     matches: list[dict[str, object]] = []
-    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-        if regex.search(line):
-            matches.append({"line_number": line_number, "line": line})
-            if len(matches) >= max(0, limit):
-                break
+    with path.open(encoding="utf-8") as artifact_file:
+        for line_number, line in enumerate(artifact_file, start=1):
+            line_text = line.rstrip("\n")
+            if regex.search(line_text):
+                matches.append({"line_number": line_number, "line": line_text})
+                if len(matches) >= max(0, limit):
+                    break
     return {
         "artifact_id": artifact.get("artifact_id"),
         "status": "available",
@@ -357,8 +472,10 @@ __all__ = [
     "MAX_TOOL_OUTPUT_LINES",
     "cap_tool_result_output",
     "read_tool_output_artifact",
+    "resolve_tool_output_artifact",
     "sanitize_tool_arguments",
     "sanitize_tool_data",
     "sanitize_tool_result_data",
     "search_tool_output_artifact",
+    "tool_output_artifact_temp_root",
 ]

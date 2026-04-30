@@ -7,9 +7,11 @@ from voidcode.tools import (
     ToolResult,
     cap_tool_result_output,
     read_tool_output_artifact,
+    resolve_tool_output_artifact,
     sanitize_tool_arguments,
     sanitize_tool_result_data,
     search_tool_output_artifact,
+    tool_output_artifact_temp_root,
 )
 
 
@@ -41,8 +43,12 @@ def test_cap_tool_result_output_caps_by_line_count_and_saves_full_output(tmp_pat
     assert isinstance(raw_artifact, dict)
     artifact = cast(dict[str, object], raw_artifact)
     assert artifact["status"] == "available"
+    assert artifact["producer"] == "voidcode.tool_output.v1"
     assert capped.data["artifact_id"] == artifact["artifact_id"]
-    assert Path(cast(str, artifact["path"])).read_text(encoding="utf-8") == content
+    artifact_path = Path(cast(str, artifact["path"]))
+    assert artifact_path.read_text(encoding="utf-8") == content
+    assert artifact_path.stat().st_mode & 0o777 == 0o600
+    assert tool_output_artifact_temp_root().stat().st_mode & 0o777 == 0o700
     assert capped.data["original_line_count"] == 6
 
 
@@ -73,6 +79,50 @@ def test_tool_output_artifact_retrieval_supports_offsets_and_search(tmp_path: Pa
     matches = search_result["matches"]
     assert isinstance(matches, list)
     assert matches[0] == {"line_number": 2, "line": "beta"}
+
+
+def test_tool_output_artifact_resolves_from_events_by_id_or_tool_call(tmp_path: Path) -> None:
+    result = ToolResult(tool_name="sample", status="ok", content="one\ntwo\nthree\n")
+    capped = cap_tool_result_output(
+        result,
+        workspace=tmp_path,
+        session_id="session-1",
+        tool_call_id="call-1",
+        max_lines=1,
+        max_bytes=10_000,
+    )
+    artifact_id = capped.data["artifact_id"]
+    assert isinstance(artifact_id, str)
+    events = [{"payload": {"artifact": capped.data["artifact"]}}]
+
+    by_artifact_id = resolve_tool_output_artifact(events, artifact_id=artifact_id)
+    by_tool_call_id = resolve_tool_output_artifact(events, tool_call_id="call-1")
+
+    assert by_artifact_id is not None
+    assert by_artifact_id["artifact_id"] == artifact_id
+    assert by_tool_call_id is not None
+    assert by_tool_call_id["tool_call_id"] == "call-1"
+
+
+def test_tool_output_artifact_rejects_untrusted_paths(tmp_path: Path) -> None:
+    outside_file = tmp_path / "secret.txt"
+    outside_file.write_text("must not read", encoding="utf-8")
+    forged_artifact: dict[str, object] = {
+        "producer": "voidcode.tool_output.v1",
+        "artifact_id": "artifact_forged",
+        "path": str(outside_file),
+    }
+
+    read_result = read_tool_output_artifact(forged_artifact)
+    search_result = search_tool_output_artifact(forged_artifact, pattern="must")
+    resolved = resolve_tool_output_artifact(
+        [{"payload": {"artifact": forged_artifact}}], artifact_id="artifact_forged"
+    )
+
+    assert read_result["status"] == "invalid"
+    assert "content" not in read_result
+    assert search_result["status"] == "invalid"
+    assert resolved is None
 
 
 def test_tool_output_artifact_retrieval_reports_missing(tmp_path: Path) -> None:
