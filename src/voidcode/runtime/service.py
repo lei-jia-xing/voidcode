@@ -2563,9 +2563,8 @@ class VoidCodeRuntime:
 
     def list_background_tasks(self) -> tuple[StoredBackgroundTaskSummary, ...]:
         self._background_task_supervisor.reconcile_background_tasks_if_needed()
-        return tuple(
-            self._background_task_supervisor.summary_with_observability(summary)
-            for summary in self._session_store.list_background_tasks(workspace=self._workspace)
+        return self._background_task_supervisor.summaries_with_observability(
+            self._session_store.list_background_tasks(workspace=self._workspace)
         )
 
     def list_background_tasks_by_parent_session(
@@ -2576,9 +2575,8 @@ class VoidCodeRuntime:
             parent_session_id,
             field_name="parent_session_id",
         )
-        return tuple(
-            self._background_task_supervisor.summary_with_observability(summary)
-            for summary in self._session_store.list_background_tasks_by_parent_session(
+        return self._background_task_supervisor.summaries_with_observability(
+            self._session_store.list_background_tasks_by_parent_session(
                 workspace=self._workspace,
                 parent_session_id=validated_parent_session_id,
             )
