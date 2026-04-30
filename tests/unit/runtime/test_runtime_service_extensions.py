@@ -702,6 +702,51 @@ class _WriteThenResultAwareModelProvider:
         return _WriteThenResultAwareTurnProvider(name=self.name)
 
 
+class _DeniedWriteThenReadTurnProvider:
+    def __init__(self, *, name: str) -> None:
+        self.name = name
+        self.requests: list[ProviderTurnRequest] = []
+
+    def propose_turn(self, request: object) -> ProviderTurnResult:
+        turn_request = cast(ProviderTurnRequest, request)
+        self.requests.append(turn_request)
+        if not turn_request.tool_results:
+            return ProviderTurnResult(
+                tool_call=ToolCall(
+                    tool_name="write_file",
+                    arguments={"path": "denied.txt", "content": "blocked"},
+                )
+            )
+        last_result = turn_request.tool_results[-1]
+        if last_result.data.get("permission_denied") is True:
+            return ProviderTurnResult(
+                tool_call=ToolCall(tool_name="read_file", arguments={"filePath": "safe.txt"})
+            )
+        return ProviderTurnResult(output="recovered from denial")
+
+    def stream_turn(self, request: object):
+        result = self.propose_turn(request)
+        if result.output is not None:
+            return iter(
+                (
+                    ProviderStreamEvent(kind="delta", channel="text", text=result.output),
+                    ProviderStreamEvent(kind="done", done_reason="completed"),
+                )
+            )
+        return iter((ProviderStreamEvent(kind="done", done_reason="completed"),))
+
+
+@dataclass(frozen=True, slots=True)
+class _DeniedWriteThenReadModelProvider:
+    name: str
+    created_providers: list[_DeniedWriteThenReadTurnProvider]
+
+    def turn_provider(self) -> _DeniedWriteThenReadTurnProvider:
+        provider = _DeniedWriteThenReadTurnProvider(name=self.name)
+        self.created_providers.append(provider)
+        return provider
+
+
 class _AlwaysFailingModelProvider:
     _error_kind: ProviderErrorKind
 
@@ -2047,19 +2092,20 @@ def test_runtime_session_debug_snapshot_reports_failure_classification_and_last_
     )
     snapshot = runtime.session_debug_snapshot(session_id="failed-debug")
 
-    assert response.session.status == "failed"
-    assert snapshot.current_status == "failed"
-    assert snapshot.terminal is True
+    assert response.session.status == "running"
+    assert snapshot.current_status == "running"
+    assert snapshot.terminal is False
     assert snapshot.failure is not None
-    assert snapshot.failure.classification == "approval_denied"
+    assert snapshot.failure.classification == "tool_execution_failure"
     assert snapshot.failure.message == "permission denied for tool: write_file"
-    assert snapshot.last_failure_event is not None
-    assert snapshot.last_failure_event.event_type == "runtime.failed"
+    assert snapshot.last_failure_event is None
     assert snapshot.last_relevant_event is not None
-    assert snapshot.last_relevant_event.event_type == "runtime.failed"
-    assert snapshot.last_tool is None
-    assert snapshot.suggested_operator_action == "inspect_failure"
-    assert snapshot.operator_guidance == "Inspect approval_denied and rerun if needed."
+    assert snapshot.last_relevant_event.event_type == "runtime.tool_completed"
+    assert snapshot.last_tool is not None
+    assert snapshot.last_tool.tool_name == "write_file"
+    assert snapshot.last_tool.status == "error"
+    assert snapshot.suggested_operator_action == "inspect_session"
+    assert snapshot.operator_guidance == "Inspect the persisted session state."
 
 
 def test_runtime_denies_divergent_legacy_approval_replay_without_fresh_permission(
@@ -2143,12 +2189,63 @@ def test_runtime_denies_divergent_legacy_approval_replay_without_fresh_permissio
         "graph.tool_request_created",
         "runtime.tool_lookup_succeeded",
         "runtime.approval_resolved",
-        "runtime.failed",
+        "runtime.tool_completed",
     ]
     assert events[-2].payload == {"request_id": "approval-original", "decision": "deny"}
-    assert events[-1].payload == {"error": "permission denied for tool: write_file"}
-    assert chunks[-1].session.status == "failed"
+    assert events[-1].payload["status"] == "error"
+    assert events[-1].payload["permission_denied"] is True
+    assert events[-1].payload["error"] == "permission denied for tool: write_file"
+    assert chunks[-1].session.status == "running"
     assert (tmp_path / "danger.txt").exists() is False
+
+
+def test_runtime_provider_recovers_after_permission_denial_feedback(tmp_path: Path) -> None:
+    (tmp_path / "safe.txt").write_text("safe context\n", encoding="utf-8")
+    created_providers: list[_DeniedWriteThenReadTurnProvider] = []
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _DeniedWriteThenReadModelProvider(
+                name="opencode",
+                created_providers=created_providers,
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            approval_mode="deny",
+        ),
+        permission_policy=PermissionPolicy(mode="deny"),
+        model_provider_registry=registry,
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="write then recover", session_id="deny-recover"))
+
+    assert response.session.status == "completed"
+    assert response.output == "recovered from denial"
+    assert (tmp_path / "denied.txt").exists() is False
+    event_types = [event.event_type for event in response.events]
+    assert "runtime.failed" not in event_types
+    denial_feedback = next(
+        event
+        for event in response.events
+        if event.event_type == "runtime.tool_completed"
+        and event.payload.get("permission_denied") is True
+    )
+    assert denial_feedback.payload["status"] == "error"
+    assert denial_feedback.payload["error"] == "permission denied for tool: write_file"
+    read_feedback = next(
+        event
+        for event in response.events
+        if event.event_type == "runtime.tool_completed" and event.payload.get("tool") == "read_file"
+    )
+    assert read_feedback.payload["status"] == "ok"
+    assert len(created_providers[-1].requests) == 3
+    denied_tool_result = created_providers[-1].requests[1].tool_results[-1]
+    assert denied_tool_result.status == "error"
+    assert denied_tool_result.data["permission_denied"] is True
 
 
 def test_runtime_session_debug_snapshot_classifies_provider_failure(tmp_path: Path) -> None:
