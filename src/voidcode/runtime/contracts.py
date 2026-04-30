@@ -757,6 +757,10 @@ class RuntimeSessionDebugFailure:
     message: str
 
 
+type RuntimeProviderContextDiagnosticPolicyMode = Literal["off", "warn", "block"]
+type RuntimeProviderContextDiagnosticPolicyAction = Literal["none", "ignored", "warn", "block"]
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeProviderContextDiagnostic:
     severity: Literal["info", "warning", "error"]
@@ -766,6 +770,19 @@ class RuntimeProviderContextDiagnostic:
     segment_indices: tuple[int, ...] = ()
     suggested_fix: str | None = None
     details: dict[str, object] = field(default_factory=dict)
+    policy_action: RuntimeProviderContextDiagnosticPolicyAction = "none"
+    policy_blocking: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeProviderContextPolicyDecision:
+    mode: RuntimeProviderContextDiagnosticPolicyMode
+    action: RuntimeProviderContextDiagnosticPolicyAction
+    blocked: bool
+    diagnostic_count: int = 0
+    diagnostic_codes: tuple[str, ...] = ()
+    blocking_diagnostic_codes: tuple[str, ...] = ()
+    message: str = "Provider-context diagnostic policy did not find actionable diagnostics."
 
 
 @dataclass(frozen=True, slots=True)
@@ -803,6 +820,7 @@ class RuntimeProviderContextSnapshot:
     segments: tuple[RuntimeProviderContextSegmentSnapshot, ...] = ()
     provider_messages: tuple[RuntimeProviderMessageSnapshot, ...] = ()
     diagnostics: tuple[RuntimeProviderContextDiagnostic, ...] = ()
+    policy_decision: RuntimeProviderContextPolicyDecision | None = None
 
 
 @dataclass(frozen=True, slots=True)
