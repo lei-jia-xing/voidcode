@@ -535,6 +535,20 @@ def _background_task_fields(task: BackgroundTaskState) -> list[tuple[str, object
         fields.append(("cancellation_cause", task.cancellation_cause))
     if task.error is not None:
         fields.append(("error", task.error))
+    observability = getattr(task, "observability", None)
+    if observability is not None:
+        fields.append(("waiting_reason", observability.waiting_reason))
+        if observability.queue_position is not None:
+            fields.append(("queue_position", observability.queue_position))
+        if observability.terminal_reason is not None:
+            fields.append(("terminal_reason", observability.terminal_reason))
+        if observability.concurrency is not None:
+            fields.append(("active_worker_slots", observability.concurrency.active_worker_slots))
+            fields.append(("concurrency_limit", observability.concurrency.limit))
+            fields.append(("queued_total", observability.concurrency.queued_total))
+        if observability.retry is not None:
+            fields.append(("retry_count", observability.retry.retry_count))
+            fields.append(("retry_backoff_seconds", observability.retry.backoff_seconds))
     routing = task.routing_identity
     if routing is not None:
         fields.append(("delegation_mode", routing.mode))
@@ -563,6 +577,13 @@ def _background_task_routing_payload(routing: object | None) -> dict[str, object
         }.items()
         if value is not None
     }
+
+
+def _background_task_observability_payload(task_or_result: object) -> dict[str, object] | None:
+    observability = getattr(task_or_result, "observability", None)
+    if observability is None:
+        return None
+    return cast(dict[str, object], observability.as_payload())
 
 
 def _background_task_error_type(error: str | None) -> str | None:
@@ -669,6 +690,7 @@ def _background_task_state_payload(
         "error": error,
         "error_type": error_type,
         "routing": _background_task_routing_payload(task.routing_identity),
+        "observability": _background_task_observability_payload(task),
         "next_steps": next_steps,
     }
     return payload
@@ -704,6 +726,7 @@ def _background_task_result_payload(
         "error_type": error_type,
         "cancellation_cause": cancellation_cause,
         "routing": _background_task_routing_payload(result.routing),
+        "observability": _background_task_observability_payload(result),
         "next_steps": next_steps,
     }
 
@@ -719,6 +742,7 @@ def _background_task_summary_payload(task: StoredBackgroundTaskSummary) -> dict[
         "prompt": task.prompt,
         "error": error,
         "error_type": _background_task_error_type(error),
+        "observability": _background_task_observability_payload(task),
     }
 
 
@@ -756,6 +780,22 @@ def _background_task_result_fields(result: BackgroundTaskResult) -> list[tuple[s
     cancellation_cause = getattr(result, "cancellation_cause", None)
     if cancellation_cause is not None:
         fields.append(("cancellation_cause", cancellation_cause))
+    observability = getattr(result, "observability", None)
+    if observability is not None:
+        fields.append(("waiting_reason", observability.waiting_reason))
+        if observability.queue_position is not None:
+            fields.append(("queue_position", observability.queue_position))
+        if observability.terminal_reason is not None:
+            fields.append(("terminal_reason", observability.terminal_reason))
+        if observability.concurrency is not None:
+            concurrency = observability.concurrency
+            fields.append(("active_worker_slots", concurrency.active_worker_slots))
+            fields.append(("concurrency_limit", concurrency.limit))
+            fields.append(("queued_total", concurrency.queued_total))
+        if observability.retry is not None:
+            retry = observability.retry
+            fields.append(("retry_count", retry.retry_count))
+            fields.append(("retry_backoff_seconds", retry.backoff_seconds))
     routing = result.routing
     if routing is not None:
         fields.append(("delegation_mode", routing.mode))
@@ -786,6 +826,14 @@ def _format_background_task_summary(task: StoredBackgroundTaskSummary) -> str:
     error = getattr(task, "error", None)
     if error is not None:
         fields.append(("error", error))
+    observability = getattr(task, "observability", None)
+    if observability is not None:
+        fields.append(("waiting_reason", observability.waiting_reason))
+        if observability.queue_position is not None:
+            fields.append(("queue_position", observability.queue_position))
+        if observability.concurrency is not None:
+            fields.append(("active_worker_slots", observability.concurrency.active_worker_slots))
+            fields.append(("queued_total", observability.concurrency.queued_total))
     return _format_named_record("TASK", fields)
 
 
