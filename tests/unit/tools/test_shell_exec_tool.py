@@ -213,11 +213,16 @@ def test_shell_exec_large_output_spills_full_payload_via_central_cap(tmp_path: P
     assert capped.reference is not None
     assert isinstance(capped.content, str)
     assert "[Tool output truncated:" in capped.content
-    assert "Full output saved to:" in capped.content
+    assert "artifact_id=" in capped.content
+    assert "read/search the full output" in capped.content
+    assert capped.reference.startswith("artifact:")
 
-    reference_path = tmp_path / capped.reference
+    artifact = capped.data["artifact"]
+    assert isinstance(artifact, dict)
+    reference_path = Path(str(artifact["path"]))
     assert reference_path.exists()
     assert len(reference_path.read_text(encoding="utf-8")) == payload_size
+    assert not (tmp_path / ".voidcode" / "tool-output").exists()
 
 
 # ── Target contract: ShellExecArgs.description ──────────────────────────
