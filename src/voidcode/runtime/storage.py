@@ -25,7 +25,7 @@ from .events import (
     EventEnvelope,
     EventSource,
 )
-from .permission import PendingApproval
+from .permission import OperationClass, PathScope, PendingApproval
 from .question import PendingQuestion, PendingQuestionOption, PendingQuestionPrompt
 from .session import SessionRef, SessionState, SessionStatus, StoredSessionSummary
 from .task import (
@@ -39,6 +39,14 @@ from .task import (
     validate_background_task_id,
 )
 from .todos import runtime_todos_from_state_payload, todo_state_payload
+
+
+def _pending_path_scope(value: object) -> PathScope | None:
+    return value if value in ("workspace", "external") else None
+
+
+def _pending_operation_class(value: object) -> OperationClass | None:
+    return value if value in ("read", "write", "execute") else None
 
 
 @runtime_checkable
@@ -1219,6 +1227,23 @@ class SqliteSessionStore:
             delegated_task_id=(
                 cast(str, data["delegated_task_id"])
                 if isinstance(data.get("delegated_task_id"), str)
+                else None
+            ),
+            path_scope=_pending_path_scope(data.get("path_scope")),
+            operation_class=_pending_operation_class(data.get("operation_class")),
+            canonical_path=(
+                cast(str, data["canonical_path"])
+                if isinstance(data.get("canonical_path"), str)
+                else None
+            ),
+            matched_rule=(
+                cast(str, data["matched_rule"])
+                if isinstance(data.get("matched_rule"), str)
+                else None
+            ),
+            policy_surface=(
+                cast(str, data["policy_surface"])
+                if isinstance(data.get("policy_surface"), str)
                 else None
             ),
         )

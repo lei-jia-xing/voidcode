@@ -694,6 +694,11 @@ def test_background_task_storage_round_trips_pending_approval_owner_fields(tmp_p
         owner_session_id="child-session",
         owner_parent_session_id="leader-session",
         delegated_task_id="task-owner",
+        path_scope="external",
+        operation_class="write",
+        canonical_path="/tmp/external.txt",
+        matched_rule="*",
+        policy_surface="external_directory_write",
     )
 
     store.save_pending_approval(

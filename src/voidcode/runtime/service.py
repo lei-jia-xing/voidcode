@@ -2455,13 +2455,7 @@ class VoidCodeRuntime:
                 continue
             if index == 0 and VoidCodeRuntime._looks_like_shell_executable(value):
                 continue
-            if value.startswith(("~/", "../", "..\\", "./../", ".\\..\\")):
-                candidates.append(value)
-                continue
-            if value.startswith("/"):
-                candidates.append(value)
-                continue
-            if len(value) >= 3 and value[1] == ":" and value[2] in ("\\", "/"):
+            if VoidCodeRuntime._looks_like_shell_path_candidate(value):
                 candidates.append(value)
         return tuple(candidates)
 
@@ -2473,7 +2467,22 @@ class VoidCodeRuntime:
             redirection_index += 1
         if redirection_index < len(value) and value[redirection_index] in ("<", ">"):
             value = value[redirection_index:]
-        return value.lstrip("<>")
+        value = value.lstrip("<>")
+        if "=" in value:
+            _, assignment_value = value.split("=", 1)
+            assignment_value = assignment_value.strip().strip("\"'`")
+            if VoidCodeRuntime._looks_like_shell_path_candidate(assignment_value):
+                return assignment_value
+        return value
+
+    @staticmethod
+    def _looks_like_shell_path_candidate(value: str) -> bool:
+        normalized = value
+        while normalized.startswith("./") or normalized.startswith(".\\"):
+            normalized = normalized[2:]
+        if normalized.startswith(("~/", "../", "..\\", "/")):
+            return True
+        return len(normalized) >= 3 and normalized[1] == ":" and normalized[2] in ("\\", "/")
 
     @staticmethod
     def _looks_like_shell_executable(value: str) -> bool:
@@ -4346,6 +4355,8 @@ class VoidCodeRuntime:
         raw_policy_mode = raw_policy.get("mode", "ask")
         if raw_policy_mode not in ("allow", "deny", "ask"):
             raise ValueError(f"invalid approval policy mode: {raw_policy_mode}")
+        path_scope = payload.get("path_scope")
+        operation_class = payload.get("operation_class")
         return PendingApproval(
             request_id=str(payload["request_id"]),
             tool_name=str(payload["tool"]),
@@ -4367,6 +4378,23 @@ class VoidCodeRuntime:
             delegated_task_id=(
                 str(payload["delegated_task_id"])
                 if payload.get("delegated_task_id") is not None
+                else None
+            ),
+            path_scope=path_scope if path_scope in ("workspace", "external") else None,
+            operation_class=(
+                operation_class if operation_class in ("read", "write", "execute") else None
+            ),
+            canonical_path=(
+                str(payload["canonical_path"])
+                if payload.get("canonical_path") is not None
+                else None
+            ),
+            matched_rule=(
+                str(payload["matched_rule"]) if payload.get("matched_rule") is not None else None
+            ),
+            policy_surface=(
+                str(payload["policy_surface"])
+                if payload.get("policy_surface") is not None
                 else None
             ),
         )

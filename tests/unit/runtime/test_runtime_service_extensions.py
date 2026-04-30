@@ -161,6 +161,11 @@ def _private_attr(instance: object, name: str) -> Any:
         ("echo hi > /tmp/out.txt", ("/tmp/out.txt",)),
         ("echo hi 2>/tmp/err.log", ("/tmp/err.log",)),
         ("echo hi > ./../out.txt", ("./../out.txt",)),
+        ("echo hi > ././../out.txt", ("././../out.txt",)),
+        ("curl --output=/tmp/out.txt https://example.com", ("/tmp/out.txt",)),
+        ("tool --output=././../out.txt", ("././../out.txt",)),
+        ("tool --config=/etc/app.conf", ("/etc/app.conf",)),
+        ("tool --file=2024/report.txt", ()),
         (r"type C:\temp\out.log", (r"C:\temp\out.log",)),
         (
             r"type C:\Windows\System32\drivers\etc\hosts",

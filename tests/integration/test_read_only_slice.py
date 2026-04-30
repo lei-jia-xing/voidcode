@@ -2829,6 +2829,58 @@ def test_runtime_denies_shell_exec_dot_parent_external_write_when_rule_denies(
     assert outside_file.exists() is False
 
 
+def test_runtime_denies_shell_exec_flag_absolute_path_when_rule_denies(
+    tmp_path: Path,
+) -> None:
+    runtime_request, runtime_class = _load_runtime_types()
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    config_module = importlib.import_module("voidcode.runtime.config")
+
+    policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="allow")
+    runtime_config = cast(Callable[..., object], config_module.RuntimeConfig)
+    permission_config = cast(
+        Callable[..., object],
+        config_module.ExternalDirectoryPermissionConfig,
+    )
+    policy_config = cast(Callable[..., object], config_module.ExternalDirectoryPolicy)
+    outside_file = tmp_path.parent / "flag-shell-write.txt"
+
+    runtime = cast(
+        RuntimeRunner,
+        cast(
+            object,
+            runtime_class(
+                workspace=tmp_path,
+                config=runtime_config(
+                    approval_mode="allow",
+                    permission=permission_config(
+                        read=policy_config(rules=(("*", "allow"),)),
+                        write=policy_config(rules=(("*", "deny"),)),
+                    ),
+                ),
+                graph=_SingleToolGraph(
+                    "shell_exec",
+                    {"command": f"curl --output={shlex.quote(str(outside_file))} example.test"},
+                ),
+                permission_policy=policy,
+            ),
+        ),
+    )
+
+    denied = runtime.run(
+        runtime_request(prompt="flag shell write", session_id="flag-shell-write-deny")
+    )
+
+    assert denied.session.status == "failed"
+    assert denied.events[-2].event_type == "runtime.approval_resolved"
+    assert denied.events[-2].payload["decision"] == "deny"
+    assert denied.events[-2].payload["path_scope"] == "external"
+    assert denied.events[-2].payload["operation_class"] == "execute"
+    assert denied.events[-2].payload["policy_surface"] == "external_directory_write"
+    assert denied.events[-2].payload["canonical_path"] == str(outside_file.resolve())
+    assert outside_file.exists() is False
+
+
 def test_runtime_uses_persisted_external_permission_rules_after_resume(
     tmp_path: Path,
 ) -> None:
@@ -2881,6 +2933,7 @@ def test_runtime_uses_persisted_external_permission_rules_after_resume(
 
     assert waiting.session.status == "waiting"
     assert waiting.events[-1].payload["matched_rule"] == f"{allowed_root.as_posix()}/**"
+    assert waiting.events[-1].payload["canonical_path"] == str(first_file.resolve())
 
     resumed_runtime = cast(
         RuntimeRunner,
@@ -2911,6 +2964,18 @@ def test_runtime_uses_persisted_external_permission_rules_after_resume(
     assert denied.session.status == "failed"
     assert first_file.read_text(encoding="utf-8") == "first"
     assert second_file.exists() is False
+    first_resolution = next(
+        event
+        for event in denied.events
+        if event.event_type == "runtime.approval_resolved"
+        and event.payload.get("request_id") == approval_request_id
+    )
+    assert first_resolution.payload["decision"] == "allow"
+    assert first_resolution.payload["path_scope"] == "external"
+    assert first_resolution.payload["operation_class"] == "write"
+    assert first_resolution.payload["matched_rule"] == f"{allowed_root.as_posix()}/**"
+    assert first_resolution.payload["policy_surface"] == "external_directory_write"
+    assert first_resolution.payload["canonical_path"] == str(first_file.resolve())
     assert denied.events[-2].event_type == "runtime.approval_resolved"
     assert denied.events[-2].payload["decision"] == "deny"
     assert denied.events[-2].payload["matched_rule"] == "*"
