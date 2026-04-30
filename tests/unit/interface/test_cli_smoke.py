@@ -77,10 +77,11 @@ def _expected_category_models(
 ) -> dict[str, dict[str, object]]:
     configured_overrides = overrides or {}
     presets = {
+        "brain": "advisor",
         "deep": "worker",
+        "high": "worker",
+        "low": "worker",
         "quick": "worker",
-        "ultrabrain": "advisor",
-        "unspecified-high": "worker",
         "visual-engineering": "product",
         "writing": "product",
     }
