@@ -60,7 +60,10 @@ run = "uv run basedpyright --warnings src"
 run = "uv run python -X utf8 -m pytest -n auto"
 
 [tasks."test:fast"]
-run = "uv run python -X utf8 -m pytest -n auto tests/unit --ignore=tests/unit/tools/fuzz --ignore=tests/unit/runtime/test_http_question_payload_fuzz.py --ignore=tests/unit/runtime/test_runtime_service_extensions.py"
+run = "uv run python -X utf8 -m pytest -n auto tests/unit -m 'not slow and not fuzz'"
+
+[tasks."test:slow"]
+run = "uv run python -X utf8 -m pytest -n auto -m 'slow or fuzz'"
 
 [tasks."test:coverage"]
 run = "uv run python -X utf8 -m pytest -n auto --cov=voidcode --cov-report=term-missing"
