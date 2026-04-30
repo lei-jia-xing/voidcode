@@ -355,6 +355,23 @@ def runtime_config_json_schema() -> dict[str, object]:
                         "maximum": 1,
                     },
                     "context_pressure_cooldown_steps": {"type": "integer", "minimum": 1},
+                    "provider_context_diagnostics": {
+                        "type": "string",
+                        "enum": ["off", "warn", "block"],
+                        "description": (
+                            "Runtime policy for provider-context diagnostics before provider "
+                            "execution. 'warn' emits bounded metadata, 'block' fails selected "
+                            "high-severity diagnostics before the provider call, and 'off' keeps "
+                            "diagnostics debug-only."
+                        ),
+                    },
+                    "provider_context_oversized_feedback_chars": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": (
+                            "Character threshold for oversized retained tool feedback diagnostics."
+                        ),
+                    },
                 },
             },
             "lspServerConfig": {

@@ -2042,6 +2042,21 @@ class RuntimeTransportApp:
                 }
                 for message in snapshot.provider_messages
             ],
+            "policy_decision": (
+                {
+                    "mode": snapshot.policy_decision.mode,
+                    "action": snapshot.policy_decision.action,
+                    "blocked": snapshot.policy_decision.blocked,
+                    "diagnostic_count": snapshot.policy_decision.diagnostic_count,
+                    "diagnostic_codes": list(snapshot.policy_decision.diagnostic_codes),
+                    "blocking_diagnostic_codes": list(
+                        snapshot.policy_decision.blocking_diagnostic_codes
+                    ),
+                    "message": snapshot.policy_decision.message,
+                }
+                if snapshot.policy_decision is not None
+                else None
+            ),
             "diagnostics": [
                 {
                     "severity": diagnostic.severity,
@@ -2051,6 +2066,8 @@ class RuntimeTransportApp:
                     "segment_indices": list(diagnostic.segment_indices),
                     "suggested_fix": diagnostic.suggested_fix,
                     "details": diagnostic.details,
+                    "policy_action": diagnostic.policy_action,
+                    "policy_blocking": diagnostic.policy_blocking,
                 }
                 for diagnostic in snapshot.diagnostics
             ],

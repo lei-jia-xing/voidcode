@@ -1234,6 +1234,13 @@ def test_transport_reads_session_debug_snapshot(tmp_path: Path) -> None:
     assert cast(int, provider_context["segment_count"]) >= 3
     provider_segments = cast(list[dict[str, object]], provider_context["segments"])
     assert provider_segments[-1]["tool_name"] == "read_file"
+    policy_decision = cast(dict[str, object], provider_context["policy_decision"])
+    assert policy_decision["mode"] == "warn"
+    assert policy_decision["action"] in {"none", "warn"}
+    assert isinstance(policy_decision["diagnostic_codes"], list)
+    for diagnostic in cast(list[dict[str, object]], provider_context["diagnostics"]):
+        assert diagnostic["policy_action"] in {"none", "warn", "block", "ignored"}
+        assert isinstance(diagnostic["policy_blocking"], bool)
     assert payload["suggested_operator_action"] == "replay"
 
 

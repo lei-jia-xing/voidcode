@@ -40,6 +40,7 @@ from ..provider.auth import (
 from ..provider.errors import format_invalid_provider_config_error, guidance_for_provider_error_kind
 from ..provider.model_catalog import (
     ProviderModelCatalog,
+    ToolFeedbackMode,
     infer_model_metadata,
     merge_model_metadata,
 )
@@ -140,6 +141,7 @@ from .contracts import (
     ReviewFileDiff,
     RuntimeBackgroundTaskStatusSnapshot,
     RuntimeNotification,
+    RuntimeProviderContextPolicyDecision,
     RuntimeProviderContextSnapshot,
     RuntimeRequest,
     RuntimeRequestError,
@@ -4440,11 +4442,44 @@ class VoidCodeRuntime:
             skill_prompt_context=self._debug_skill_prompt_context(result.session.metadata),
         )
         effective_config = self._effective_runtime_config_from_metadata(result.session.metadata)
+        return self._provider_context_snapshot_for_assembled_context(
+            assembled_context=assembled_context,
+            effective_config=effective_config,
+        )
+
+    def _provider_context_snapshot_for_assembled_context(
+        self,
+        *,
+        assembled_context: RuntimeAssembledContext,
+        effective_config: EffectiveRuntimeConfig,
+    ) -> RuntimeProviderContextSnapshot:
+        active_target = effective_config.resolved_provider.active_target
+        provider = active_target.selection.provider or "unknown"
+        model = active_target.selection.model or active_target.selection.raw_model or "unknown"
+        tool_registry = self._tool_registry_for_effective_config(effective_config)
+        context_window_config = effective_config.context_window or RuntimeContextWindowConfig()
+        return inspect_provider_context(
+            assembled_context=assembled_context,
+            provider=provider,
+            model=model,
+            execution_engine=effective_config.execution_engine,
+            available_tool_count=len(tool_registry.definitions()),
+            tool_feedback_mode=self._tool_feedback_mode_for_effective_config(effective_config),
+            oversized_tool_feedback_chars=(
+                context_window_config.provider_context_oversized_feedback_chars
+            ),
+            diagnostic_policy_mode=context_window_config.provider_context_diagnostics,
+        )
+
+    @staticmethod
+    def _tool_feedback_mode_for_effective_config(
+        effective_config: EffectiveRuntimeConfig,
+    ) -> ToolFeedbackMode:
         active_target = effective_config.resolved_provider.active_target
         provider = active_target.selection.provider or "unknown"
         model = active_target.selection.model or active_target.selection.raw_model or "unknown"
         inferred_metadata = infer_model_metadata(provider, model) if provider != "unknown" else None
-        tool_feedback_mode = (
+        return (
             active_target.metadata.tool_feedback_mode
             if active_target.metadata is not None
             and active_target.metadata.tool_feedback_mode is not None
@@ -4452,15 +4487,23 @@ class VoidCodeRuntime:
             if inferred_metadata is not None and inferred_metadata.tool_feedback_mode is not None
             else "standard"
         )
-        tool_registry = self._tool_registry_for_effective_config(effective_config)
-        return inspect_provider_context(
-            assembled_context=assembled_context,
-            provider=provider,
-            model=model,
-            execution_engine=effective_config.execution_engine,
-            available_tool_count=len(tool_registry.definitions()),
-            tool_feedback_mode=tool_feedback_mode,
+
+    def _provider_context_policy_decision_for_graph_request(
+        self,
+        *,
+        graph_request: GraphRunRequest,
+        effective_config: EffectiveRuntimeConfig,
+    ) -> RuntimeProviderContextPolicyDecision | None:
+        if effective_config.execution_engine != "provider":
+            return None
+        context_window_config = effective_config.context_window or RuntimeContextWindowConfig()
+        if context_window_config.provider_context_diagnostics == "off":
+            return None
+        snapshot = self._provider_context_snapshot_for_assembled_context(
+            assembled_context=cast(RuntimeAssembledContext, graph_request.assembled_context),
+            effective_config=effective_config,
         )
+        return snapshot.policy_decision
 
     @staticmethod
     def _prompt_and_tool_results_from_debug_events(

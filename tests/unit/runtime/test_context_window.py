@@ -186,6 +186,51 @@ def test_provider_context_inspector_reports_synthetic_feedback_mode() -> None:
     )
 
 
+def test_provider_context_inspector_strips_sentinels_from_provider_messages() -> None:
+    raw_todo_content = "Secret todo content should not appear in provider messages"
+    assembled = assemble_provider_context(
+        prompt="continue",
+        tool_results=(
+            ToolResult(
+                tool_name="todo_write",
+                content="Updated todos",
+                status="ok",
+                data={
+                    "tool_call_id": "call:todo",
+                    "arguments": {
+                        "todos": [
+                            {
+                                "content": raw_todo_content,
+                                "status": "pending",
+                                "priority": "high",
+                            }
+                        ]
+                    },
+                },
+            ),
+        ),
+        session_metadata={},
+        policy=ContextWindowPolicy(max_tool_results=4),
+    )
+
+    snapshot = inspect_provider_context(
+        assembled_context=assembled,
+        provider="openai",
+        model="gpt-4o",
+        execution_engine="provider",
+        available_tool_count=3,
+    )
+
+    tool_call = snapshot.provider_messages[-2].tool_calls[0]
+    function = cast(dict[str, object], tool_call["function"])
+    provider_arguments = function["arguments"]
+    assert isinstance(provider_arguments, str)
+    assert raw_todo_content not in provider_arguments
+    assert '"content": ""' in provider_arguments
+    assert '"omitted": true' not in provider_arguments
+    assert '"byte_count"' not in provider_arguments
+
+
 def test_provider_context_inspector_redacts_secret_text_from_tool_output() -> None:
     assembled = assemble_provider_context(
         prompt="inspect env",
@@ -486,6 +531,92 @@ def test_provider_context_parity_matrix_preserves_tool_shapes_across_debug_messa
         diagnostic.code == "provider_path_uses_synthetic_tool_feedback"
         for diagnostic in synthetic_snapshot.diagnostics
     )
+
+
+def test_provider_context_policy_marks_blocking_diagnostics() -> None:
+    assembled = RuntimeAssembledContext(
+        prompt="continue",
+        tool_results=(),
+        continuity_state=None,
+        metadata={},
+        segments=(
+            RuntimeContextSegment(role="user", content="continue"),
+            RuntimeContextSegment(
+                role="assistant",
+                content=None,
+                tool_call_id="missing-result",
+                tool_name="read_file",
+                tool_arguments={"path": "sample.txt"},
+            ),
+            RuntimeContextSegment(
+                role="tool",
+                content="x" * 12,
+                tool_call_id="orphan-result",
+                tool_name="grep",
+                metadata={"status": "ok", "data": {}},
+            ),
+        ),
+    )
+
+    snapshot = inspect_provider_context(
+        assembled_context=assembled,
+        provider="openai",
+        model="gpt-4o",
+        execution_engine="provider",
+        available_tool_count=0,
+        oversized_tool_feedback_chars=5,
+        diagnostic_policy_mode="block",
+    )
+
+    assert snapshot.policy_decision is not None
+    assert snapshot.policy_decision.blocked is True
+    assert snapshot.policy_decision.action == "block"
+    assert set(snapshot.policy_decision.blocking_diagnostic_codes) >= {
+        "missing_tool_result",
+        "orphan_tool_result",
+        "oversized_tool_feedback",
+    }
+    blocking_codes = {
+        diagnostic.code for diagnostic in snapshot.diagnostics if diagnostic.policy_blocking
+    }
+    assert {
+        "missing_tool_result",
+        "orphan_tool_result",
+        "oversized_tool_feedback",
+    } <= blocking_codes
+
+
+def test_provider_context_policy_off_keeps_diagnostics_debug_only() -> None:
+    assembled = RuntimeAssembledContext(
+        prompt="continue",
+        tool_results=(),
+        continuity_state=None,
+        metadata={},
+        segments=(
+            RuntimeContextSegment(role="user", content="continue"),
+            RuntimeContextSegment(
+                role="tool",
+                content="orphan",
+                tool_call_id="orphan-result",
+                tool_name="grep",
+                metadata={"status": "ok", "data": {}},
+            ),
+        ),
+    )
+
+    snapshot = inspect_provider_context(
+        assembled_context=assembled,
+        provider="openai",
+        model="gpt-4o",
+        execution_engine="provider",
+        available_tool_count=3,
+        diagnostic_policy_mode="off",
+    )
+
+    assert snapshot.policy_decision is not None
+    assert snapshot.policy_decision.action == "ignored"
+    assert snapshot.policy_decision.blocked is False
+    assert any(diagnostic.code == "orphan_tool_result" for diagnostic in snapshot.diagnostics)
 
 
 def test_prepare_provider_context_compacts_old_results_and_reports_metadata() -> None:
