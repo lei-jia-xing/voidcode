@@ -61,6 +61,7 @@ from .runtime.contracts import (
     ProviderInspectResult,
     ProviderModelMetadata,
     ProviderReadinessResult,
+    RuntimeProviderContextSnapshot,
     RuntimeRequest,
     RuntimeSessionDebugSnapshot,
     RuntimeSessionRevertMarker,
@@ -788,8 +789,62 @@ def _serialize_session_debug_snapshot(snapshot: RuntimeSessionDebugSnapshot) -> 
             if snapshot.last_tool is not None
             else None
         ),
+        "provider_context": _serialize_provider_context_snapshot(snapshot.provider_context),
         "suggested_operator_action": snapshot.suggested_operator_action,
         "operator_guidance": snapshot.operator_guidance,
+    }
+
+
+def _serialize_provider_context_snapshot(
+    snapshot: RuntimeProviderContextSnapshot | None,
+) -> dict[str, object] | None:
+    if snapshot is None:
+        return None
+    return {
+        "provider": snapshot.provider,
+        "model": snapshot.model,
+        "execution_engine": snapshot.execution_engine,
+        "segment_count": snapshot.segment_count,
+        "message_count": snapshot.message_count,
+        "context_window": snapshot.context_window,
+        "segments": [
+            {
+                "index": segment.index,
+                "role": segment.role,
+                "source": segment.source,
+                "content": segment.content,
+                "content_truncated": segment.content_truncated,
+                "tool_call_id": segment.tool_call_id,
+                "tool_name": segment.tool_name,
+                "tool_arguments": segment.tool_arguments,
+                "metadata": segment.metadata,
+            }
+            for segment in snapshot.segments
+        ],
+        "provider_messages": [
+            {
+                "index": message.index,
+                "role": message.role,
+                "source": message.source,
+                "content": message.content,
+                "content_truncated": message.content_truncated,
+                "tool_call_id": message.tool_call_id,
+                "tool_calls": list(message.tool_calls),
+            }
+            for message in snapshot.provider_messages
+        ],
+        "diagnostics": [
+            {
+                "severity": diagnostic.severity,
+                "code": diagnostic.code,
+                "message": diagnostic.message,
+                "source": diagnostic.source,
+                "segment_indices": list(diagnostic.segment_indices),
+                "suggested_fix": diagnostic.suggested_fix,
+                "details": diagnostic.details,
+            }
+            for diagnostic in snapshot.diagnostics
+        ],
     }
 
 
