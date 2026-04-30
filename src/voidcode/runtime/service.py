@@ -6571,7 +6571,7 @@ class VoidCodeRuntime:
         if not isinstance(raw_delegation, dict):
             return ()
         delegation = cast(dict[str, object], raw_delegation)
-        if delegation.get("category") != "ultrabrain":
+        if delegation.get("category") != "brain":
             return ()
         active_target = effective_config.resolved_provider.active_target.selection
         provider_name = active_target.provider
@@ -6586,11 +6586,11 @@ class VoidCodeRuntime:
                 "severity": "warning",
                 "category": "model_capability_mismatch",
                 "capability": "reasoning",
-                "requested_category": "ultrabrain",
+                "requested_category": "brain",
                 "provider": provider_name,
                 "model": model_name,
                 "message": (
-                    "task category 'ultrabrain' resolved to a model whose provider metadata "
+                    "task category 'brain' resolved to a model whose provider metadata "
                     "does not support reasoning"
                 ),
             },

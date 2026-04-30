@@ -2996,7 +2996,7 @@ def test_runtime_allows_reasoning_effort_when_metadata_unknown(tmp_path: Path) -
     assert runtime_config_metadata["reasoning_effort"] == "medium"
 
 
-def test_runtime_ultrabrain_warns_when_resolved_model_lacks_reasoning_support(
+def test_runtime_brain_warns_when_resolved_model_lacks_reasoning_support(
     tmp_path: Path,
 ) -> None:
     registry = ModelProviderRegistry.with_defaults()
@@ -3013,7 +3013,7 @@ def test_runtime_ultrabrain_warns_when_resolved_model_lacks_reasoning_support(
         graph=_BackgroundTaskSuccessGraph(),
         config=RuntimeConfig(
             model="openai/gpt-4o",
-            categories={"ultrabrain": RuntimeCategoryConfig(model="openai/gpt-4o")},
+            categories={"brain": RuntimeCategoryConfig(model="openai/gpt-4o")},
         ),
         model_provider_registry=registry,
     )
@@ -3023,7 +3023,7 @@ def test_runtime_ultrabrain_warns_when_resolved_model_lacks_reasoning_support(
         RuntimeRequest(
             prompt="delegated child",
             parent_session_id="leader-session",
-            metadata={"delegation": {"mode": "sync", "category": "ultrabrain"}},
+            metadata={"delegation": {"mode": "sync", "category": "brain"}},
         )
     )
 
@@ -3036,11 +3036,11 @@ def test_runtime_ultrabrain_warns_when_resolved_model_lacks_reasoning_support(
         "severity": "warning",
         "category": "model_capability_mismatch",
         "capability": "reasoning",
-        "requested_category": "ultrabrain",
+        "requested_category": "brain",
         "provider": "openai",
         "model": "gpt-4o",
         "message": (
-            "task category 'ultrabrain' resolved to a model whose provider metadata "
+            "task category 'brain' resolved to a model whose provider metadata "
             "does not support reasoning"
         ),
     }
