@@ -7464,6 +7464,27 @@ def test_runtime_rejects_non_boolean_provider_stream_request_metadata(tmp_path: 
         )
 
 
+def test_runtime_accepts_show_thinking_request_metadata(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_SkillCapturingStubGraph())
+
+    _ = runtime.run(RuntimeRequest(prompt="hello", metadata={"show_thinking": True}))
+
+    assert _SkillCapturingStubGraph.last_request is not None
+    assert _SkillCapturingStubGraph.last_request.metadata["show_thinking"] is True
+
+
+def test_runtime_rejects_non_boolean_show_thinking_request_metadata(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_SkillCapturingStubGraph())
+
+    with pytest.raises(ValueError, match="request metadata 'show_thinking' must be a boolean"):
+        _ = runtime.run(
+            RuntimeRequest(
+                prompt="hello",
+                metadata=cast(RuntimeRequestMetadataPayload, {"show_thinking": "yes"}),
+            )
+        )
+
+
 def test_runtime_accepts_reasoning_effort_request_metadata(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(workspace=tmp_path, graph=_SkillCapturingStubGraph())
 
@@ -12032,6 +12053,271 @@ def test_runtime_provider_streaming_emits_ordered_provider_stream_events(
     assert [event.payload["kind"] for event in stream_events] == ["delta", "delta", "done"]
     output_chunks = [chunk.output for chunk in chunks if chunk.kind == "output"]
     assert output_chunks == ["hello world"]
+
+
+def test_runtime_provider_streaming_persists_reasoning_as_runtime_part(
+    tmp_path: Path,
+) -> None:
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(
+                    (
+                        ProviderStreamEvent(
+                            kind="delta",
+                            channel="reasoning",
+                            text="private chain",
+                            metadata={
+                                "source": "fixture.reasoning",
+                                "raw_secret": "must not persist",
+                            },
+                        ),
+                        ProviderStreamEvent(kind="delta", channel="text", text="answer"),
+                        ProviderStreamEvent(kind="done", done_reason="completed"),
+                    ),
+                ),
+            ),
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+        model_provider_registry=registry,
+    )
+
+    chunks = list(
+        runtime.run_stream(RuntimeRequest(prompt="think", metadata={"provider_stream": True}))
+    )
+
+    events = [chunk.event for chunk in chunks if chunk.event is not None]
+    reasoning_events = [event for event in events if event.event_type == "runtime.reasoning_part"]
+    assert len(reasoning_events) == 1
+    reasoning_payload = reasoning_events[0].payload
+    assert reasoning_payload["type"] == "reasoning"
+    assert reasoning_payload["text"] == "private chain"
+    assert reasoning_payload["visibility"] == "showable"
+    assert isinstance(reasoning_payload["time"], dict)
+    assert reasoning_payload["source"] == "provider_stream"
+    assert reasoning_payload["provider_metadata"] == {
+        "stream_kind": "delta",
+        "stream_channel": "reasoning",
+        "source": "fixture.reasoning",
+    }
+    assert [chunk.output for chunk in chunks if chunk.kind == "output"] == ["answer"]
+
+    result = runtime.session_result(session_id=chunks[-1].session.session.id)
+    persisted_reasoning = [
+        event for event in result.transcript if event.event_type == "runtime.reasoning_part"
+    ]
+    assert persisted_reasoning[0].payload["text"] == "private chain"
+
+
+def test_runtime_does_not_persist_show_thinking_request_metadata(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_SkillCapturingStubGraph())
+
+    response = runtime.run(RuntimeRequest(prompt="hello", metadata={"show_thinking": True}))
+
+    assert "show_thinking" not in response.session.metadata
+
+
+def test_runtime_reasoning_capture_has_aggregate_limit(tmp_path: Path) -> None:
+    reasoning_events = tuple(
+        ProviderStreamEvent(kind="delta", channel="reasoning", text="x" * 4000) for _ in range(40)
+    )
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(
+                    (
+                        *reasoning_events,
+                        ProviderStreamEvent(kind="delta", channel="text", text="answer"),
+                        ProviderStreamEvent(kind="done", done_reason="completed"),
+                    ),
+                ),
+            ),
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+        model_provider_registry=registry,
+    )
+
+    chunks = list(
+        runtime.run_stream(RuntimeRequest(prompt="think", metadata={"provider_stream": True}))
+    )
+
+    events = [chunk.event for chunk in chunks if chunk.event is not None]
+    reasoning_parts = [event for event in events if event.event_type == "runtime.reasoning_part"]
+    limit_events = [
+        event
+        for event in events
+        if event.event_type == "runtime.reasoning_diagnostic"
+        and event.payload.get("category") == "reasoning_capture_limit"
+    ]
+    assert len(reasoning_parts) == 4
+    assert len(limit_events) == 1
+    assert limit_events[0].payload["captured_text_char_count"] == 16_000
+
+
+def test_runtime_reasoning_capture_limit_spans_provider_turns(tmp_path: Path) -> None:
+    (tmp_path / "sample.txt").write_text("sample contents", encoding="utf-8")
+    first_turn_reasoning = tuple(
+        ProviderStreamEvent(kind="delta", channel="reasoning", text="x" * 4000) for _ in range(3)
+    )
+    second_turn_reasoning = tuple(
+        ProviderStreamEvent(kind="delta", channel="reasoning", text="y" * 4000) for _ in range(3)
+    )
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(
+                    (
+                        *first_turn_reasoning,
+                        ProviderStreamEvent(
+                            kind="content",
+                            channel="tool",
+                            text=(
+                                '{"tool_name":"read_file","arguments":{"filePath":"sample.txt"}}'
+                            ),
+                        ),
+                        ProviderStreamEvent(kind="done", done_reason="tool_calls"),
+                    ),
+                    (
+                        *second_turn_reasoning,
+                        ProviderStreamEvent(kind="delta", channel="text", text="answer"),
+                        ProviderStreamEvent(kind="done", done_reason="completed"),
+                    ),
+                ),
+            ),
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+        model_provider_registry=registry,
+    )
+
+    chunks = list(
+        runtime.run_stream(
+            RuntimeRequest(prompt="read sample.txt", metadata={"provider_stream": True})
+        )
+    )
+
+    events = [chunk.event for chunk in chunks if chunk.event is not None]
+    reasoning_parts = [event for event in events if event.event_type == "runtime.reasoning_part"]
+    limit_events = [
+        event
+        for event in events
+        if event.event_type == "runtime.reasoning_diagnostic"
+        and event.payload.get("category") == "reasoning_capture_limit"
+    ]
+    assert len(reasoning_parts) == 4
+    assert len(limit_events) == 1
+    assert limit_events[0].payload["captured_part_count"] == 4
+    assert limit_events[0].payload["captured_text_char_count"] == 16_000
+
+
+def test_runtime_reports_reasoning_output_diagnostic_for_reasoning_capable_model(
+    tmp_path: Path,
+) -> None:
+    registry = ModelProviderRegistry(
+        providers={
+            "openai": _ScriptedModelProvider(
+                name="openai",
+                outcomes=(
+                    (
+                        ProviderStreamEvent(kind="delta", channel="text", text="answer"),
+                        ProviderStreamEvent(kind="done", done_reason="completed"),
+                    ),
+                ),
+            ),
+        }
+    )
+    registry.model_catalog = {
+        "openai": ProviderModelCatalog(
+            provider="openai",
+            models=("gpt-5",),
+            refreshed=True,
+            model_metadata={"gpt-5": ProviderModelMetadata(supports_reasoning=True)},
+        )
+    }
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(execution_engine="provider", model="openai/gpt-5"),
+        model_provider_registry=registry,
+    )
+
+    chunks = list(
+        runtime.run_stream(RuntimeRequest(prompt="think", metadata={"provider_stream": True}))
+    )
+
+    diagnostics = [
+        chunk.event
+        for chunk in chunks
+        if chunk.event is not None
+        and chunk.event.event_type == "runtime.reasoning_diagnostic"
+        and chunk.event.payload.get("category") == "reasoning_output"
+    ]
+    assert len(diagnostics) == 1
+    assert diagnostics[0].payload["severity"] == "warning"
+    assert diagnostics[0].payload["reason"] == (
+        "reasoning_capable_model_returned_no_reasoning_output"
+    )
+    assert diagnostics[0].payload["reasoning_output_observed"] is False
+
+
+def test_runtime_reports_reasoning_output_observed_diagnostic(tmp_path: Path) -> None:
+    registry = ModelProviderRegistry(
+        providers={
+            "openai": _ScriptedModelProvider(
+                name="openai",
+                outcomes=(
+                    (
+                        ProviderStreamEvent(
+                            kind="delta",
+                            channel="reasoning",
+                            text="private chain",
+                        ),
+                        ProviderStreamEvent(kind="delta", channel="text", text="answer"),
+                        ProviderStreamEvent(kind="done", done_reason="completed"),
+                    ),
+                ),
+            ),
+        }
+    )
+    registry.model_catalog = {
+        "openai": ProviderModelCatalog(
+            provider="openai",
+            models=("gpt-5",),
+            refreshed=True,
+            model_metadata={"gpt-5": ProviderModelMetadata(supports_reasoning=True)},
+        )
+    }
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(execution_engine="provider", model="openai/gpt-5"),
+        model_provider_registry=registry,
+    )
+
+    chunks = list(
+        runtime.run_stream(RuntimeRequest(prompt="think", metadata={"provider_stream": True}))
+    )
+
+    diagnostics = [
+        chunk.event
+        for chunk in chunks
+        if chunk.event is not None
+        and chunk.event.event_type == "runtime.reasoning_diagnostic"
+        and chunk.event.payload.get("category") == "reasoning_output"
+    ]
+    assert len(diagnostics) == 1
+    assert diagnostics[0].payload["severity"] == "info"
+    assert diagnostics[0].payload["reason"] == "reasoning_output_observed"
+    assert diagnostics[0].payload["reasoning_output_observed"] is True
 
 
 def test_runtime_run_stream_preserves_streamed_tool_requests(tmp_path: Path) -> None:

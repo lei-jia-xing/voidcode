@@ -168,6 +168,29 @@ class _StreamOutputTurnProvider:
         )
 
 
+class _StreamReasoningMetadataTurnProvider:
+    name = "opencode"
+
+    def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
+        _ = request
+        return ProviderTurnResult(output="should-not-be-used")
+
+    def stream_turn(self, request: ProviderTurnRequest):
+        _ = request
+        return iter(
+            (
+                ProviderStreamEvent(
+                    kind="delta",
+                    channel="reasoning",
+                    text="private chain",
+                    metadata={"source": "fixture"},
+                ),
+                ProviderStreamEvent(kind="delta", channel="text", text="answer"),
+                ProviderStreamEvent(kind="done", done_reason="completed"),
+            )
+        )
+
+
 class _StreamErrorTurnProvider:
     name = "opencode"
 
@@ -1033,6 +1056,38 @@ def test_provider_provider_graph_streams_ordered_events_and_deterministic_output
     model_turn_events = [event for event in step.events if event.event_type == "graph.model_turn"]
     assert model_turn_events
     assert model_turn_events[0].payload["streaming"] is True
+
+
+def test_provider_graph_preserves_reasoning_stream_metadata() -> None:
+    provider_model = resolve_provider_model(
+        "opencode/gpt-5.4",
+        registry=ModelProviderRegistry.with_defaults(),
+    )
+    graph = ProviderGraph(
+        provider=_StreamReasoningMetadataTurnProvider(),
+        provider_model=provider_model,
+    )
+
+    step = graph.step(
+        request=GraphRunRequest(
+            session=_session(),
+            prompt="think",
+            available_tools=_tool_definitions(),
+            context_window=RuntimeContextWindow(prompt="think"),
+            assembled_context=_assembled_from_context_window(RuntimeContextWindow(prompt="think")),
+            metadata={"provider_stream": True},
+        ),
+        tool_results=(),
+        session=_session(),
+    )
+
+    stream_events = [event for event in step.events if event.event_type == "graph.provider_stream"]
+    reasoning_event = next(
+        event for event in stream_events if event.payload.get("channel") == "reasoning"
+    )
+    assert reasoning_event.payload["text"] == "private chain"
+    assert reasoning_event.payload["metadata"] == {"source": "fixture"}
+    assert step.output == "answer"
 
 
 def test_provider_provider_graph_stream_done_without_text_does_not_fallback_propose_turn() -> None:

@@ -52,6 +52,7 @@ class RuntimeRequestMetadata(TypedDict, total=False):
     max_steps: int
     provider_stream: bool
     reasoning_effort: str
+    show_thinking: bool
     skills: list[str]
     force_load_skills: list[str]
 
@@ -88,6 +89,7 @@ _STABLE_RUNTIME_REQUEST_METADATA_KEYS = frozenset(
         "max_steps",
         "provider_stream",
         "reasoning_effort",
+        "show_thinking",
         "skills",
         "force_load_skills",
     }
@@ -394,6 +396,12 @@ def validate_runtime_request_metadata(
             field_name="reasoning_effort",
         )
 
+    if "show_thinking" in metadata:
+        show_thinking = metadata["show_thinking"]
+        if not isinstance(show_thinking, bool):
+            raise RuntimeRequestError("request metadata 'show_thinking' must be a boolean")
+        normalized["show_thinking"] = show_thinking
+
     if "skills" in metadata:
         raw_skills = metadata["skills"]
         if not isinstance(raw_skills, list):
@@ -542,7 +550,10 @@ class ProviderModelMetadata:
     cost_per_cache_write_token: float | None = None
     supports_reasoning_effort: bool | None = None
     default_reasoning_effort: str | None = None
+    supports_reasoning_summary: bool | None = None
+    supports_thinking_budget: bool | None = None
     supports_interleaved_reasoning: bool | None = None
+    reasoning_visibility: str | None = None
     modalities_input: tuple[str, ...] | None = None
     modalities_output: tuple[str, ...] | None = None
     model_status: str | None = None
@@ -574,6 +585,7 @@ class ProviderReadinessResult:
     context_window: int | None = None
     max_output_tokens: int | None = None
     fallback_chain: tuple[str, ...] = ()
+    reasoning_controls: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)

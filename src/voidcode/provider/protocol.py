@@ -215,6 +215,7 @@ class ProviderStreamEvent:
     kind: ProviderStreamEventKind
     channel: ProviderStreamChannel = "text"
     text: str | None = None
+    metadata: dict[str, object] | None = None
     error: str | None = None
     error_kind: ProviderErrorKind | None = None
     done_reason: ProviderDoneReason | None = None

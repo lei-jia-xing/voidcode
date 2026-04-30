@@ -440,6 +440,7 @@ class RuntimeRunLoopCoordinator:
         active_permission_policy = permission_policy or runtime._permission_policy
         continuity_to_reinject: RuntimeContinuityState | None = preserved_continuity_state
         provider_attempt = runtime._provider_attempt_from_metadata(graph_request.metadata)
+        reasoning_capture_state = runtime._reasoning_capture_state()
         while True:
             current_session = session
             base_context = runtime._prepare_provider_context_window(
@@ -817,11 +818,29 @@ class RuntimeRunLoopCoordinator:
                 getattr(graph_step, "events", ()),
                 session_id=session.session.id,
                 start_sequence=sequence + 1,
+                reasoning_capture_state=reasoning_capture_state,
             ):
                 sequence = event.sequence
                 yield RuntimeStreamChunk(kind="event", session=current_chunk_session, event=event)
 
             if is_final_step:
+                reasoning_diagnostic = runtime._reasoning_output_diagnostic(
+                    session=current_chunk_session,
+                    capture_state=reasoning_capture_state,
+                )
+                if reasoning_diagnostic is not None:
+                    sequence += 1
+                    yield RuntimeStreamChunk(
+                        kind="event",
+                        session=current_chunk_session,
+                        event=EventEnvelope(
+                            session_id=session.session.id,
+                            sequence=sequence,
+                            event_type="runtime.reasoning_diagnostic",
+                            source="runtime",
+                            payload=reasoning_diagnostic,
+                        ),
+                    )
                 if getattr(graph_step, "output", None) is not None:
                     yield RuntimeStreamChunk(
                         kind="output",

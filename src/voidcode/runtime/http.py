@@ -9,6 +9,7 @@ from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Protocol, cast, final
+from urllib.parse import parse_qs
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
@@ -22,6 +23,7 @@ from .contracts import (
     ProviderInspectResult,
     ProviderModelMetadata,
     ProviderModelsResult,
+    ProviderReadinessResult,
     ProviderSummary,
     ProviderValidationResult,
     ReviewChangedFile,
@@ -44,7 +46,7 @@ from .contracts import (
     validate_session_id,
     validate_session_reference_id,
 )
-from .events import DelegatedLifecycleEventPayload, EventEnvelope
+from .events import DelegatedLifecycleEventPayload, EventEnvelope, redact_reasoning_payload
 from .permission import PermissionResolution
 from .question import QuestionResponse
 from .service import ActiveRunInterruptResult, VoidCodeRuntime
@@ -383,6 +385,20 @@ class RuntimeTransportApp:
         if callable(exit_method):
             exit_method(None, None, None)
 
+    @staticmethod
+    def _show_thinking_from_scope(scope: dict[str, object]) -> bool:
+        raw_query = scope.get("query_string", b"")
+        if isinstance(raw_query, bytes):
+            query = raw_query.decode("utf-8", errors="ignore")
+        elif isinstance(raw_query, str):
+            query = raw_query
+        else:
+            return False
+        values = parse_qs(query, keep_blank_values=True).get("show_thinking", ())
+        if not values:
+            values = parse_qs(query, keep_blank_values=True).get("showThinking", ())
+        return any(value.strip().lower() in {"1", "true", "yes", "on"} for value in values)
+
     @contextmanager
     def _active_request_scope(self) -> Iterator[None]:
         request_scope = (
@@ -408,6 +424,7 @@ class RuntimeTransportApp:
 
         method = cast(str, scope.get("method", "GET"))
         path = cast(str, scope.get("path", "/"))
+        show_thinking = self._show_thinking_from_scope(scope)
 
         if path == "/api/runtime/run/stream":
             if method != "POST":
@@ -417,7 +434,7 @@ class RuntimeTransportApp:
                     payload={"error": "method not allowed"},
                 )
                 return
-            await self._handle_run_stream(receive, send)
+            await self._handle_run_stream(receive, send, show_thinking=show_thinking)
             return
 
         if path == "/api/sessions":
@@ -609,7 +626,11 @@ class RuntimeTransportApp:
                         payload={"error": "method not allowed"},
                     )
                     return
-                await self._handle_background_task_output(task_id=task_id, send=send)
+                await self._handle_background_task_output(
+                    task_id=task_id,
+                    send=send,
+                    show_thinking=show_thinking,
+                )
                 return
             if method != "GET":
                 await self._json_response(
@@ -723,6 +744,7 @@ class RuntimeTransportApp:
                     session_id=session_id,
                     receive=receive,
                     send=send,
+                    show_thinking=show_thinking,
                 )
                 return
             if is_question_route:
@@ -737,6 +759,7 @@ class RuntimeTransportApp:
                     session_id=session_id,
                     receive=receive,
                     send=send,
+                    show_thinking=show_thinking,
                 )
                 return
             if is_result_route:
@@ -747,7 +770,11 @@ class RuntimeTransportApp:
                         payload={"error": "method not allowed"},
                     )
                     return
-                await self._handle_session_result(session_id=session_id, send=send)
+                await self._handle_session_result(
+                    session_id=session_id,
+                    send=send,
+                    show_thinking=show_thinking,
+                )
                 return
             if is_debug_route:
                 if method != "GET":
@@ -757,7 +784,11 @@ class RuntimeTransportApp:
                         payload={"error": "method not allowed"},
                     )
                     return
-                await self._handle_session_debug(session_id=session_id, send=send)
+                await self._handle_session_debug(
+                    session_id=session_id,
+                    send=send,
+                    show_thinking=show_thinking,
+                )
                 return
             if is_undo_route:
                 if method != "POST":
@@ -800,7 +831,11 @@ class RuntimeTransportApp:
                     payload={"error": "method not allowed"},
                 )
                 return
-            await self._handle_resume(session_id=session_id, send=send)
+            await self._handle_resume(
+                session_id=session_id,
+                send=send,
+                show_thinking=show_thinking,
+            )
             return
 
         provider_prefix = "/api/providers/"
@@ -950,7 +985,13 @@ class RuntimeTransportApp:
                 return
             raise RuntimeError(f"unsupported lifespan message type: {message_type!r}")
 
-    async def _handle_run_stream(self, receive: Receive, send: Send) -> None:
+    async def _handle_run_stream(
+        self,
+        receive: Receive,
+        send: Send,
+        *,
+        show_thinking: bool = False,
+    ) -> None:
         runtime: RuntimeTransport | None = None
         try:
             body = await self._read_body(receive)
@@ -983,10 +1024,18 @@ class RuntimeTransportApp:
 
                 await self._send_stream_start(send)
 
-                emitted_failed_chunk = await self._send_runtime_stream_chunk(send, first_chunk)
+                emitted_failed_chunk = await self._send_runtime_stream_chunk(
+                    send,
+                    first_chunk,
+                    show_thinking=show_thinking,
+                )
                 try:
                     async for chunk in stream:
-                        chunk_failed = await self._send_runtime_stream_chunk(send, chunk)
+                        chunk_failed = await self._send_runtime_stream_chunk(
+                            send,
+                            chunk,
+                            show_thinking=show_thinking,
+                        )
                         emitted_failed_chunk = emitted_failed_chunk or chunk_failed
                 except Exception:
                     if not emitted_failed_chunk:
@@ -1015,8 +1064,10 @@ class RuntimeTransportApp:
         self,
         send: Send,
         chunk: RuntimeStreamChunk,
+        *,
+        show_thinking: bool = False,
     ) -> bool:
-        payload = self._serialize_runtime_stream_chunk(chunk)
+        payload = self._serialize_runtime_stream_chunk(chunk, show_thinking=show_thinking)
         data = json.dumps(payload, sort_keys=True).encode("utf-8")
         await send(
             {
@@ -1108,7 +1159,13 @@ class RuntimeTransportApp:
             payload=self._serialize_background_task_state(task),
         )
 
-    async def _handle_background_task_output(self, *, task_id: str, send: Send) -> None:
+    async def _handle_background_task_output(
+        self,
+        *,
+        task_id: str,
+        send: Send,
+        show_thinking: bool = False,
+    ) -> None:
         with self._active_request_scope():
             runtime = self._runtime_factory()
             try:
@@ -1138,7 +1195,10 @@ class RuntimeTransportApp:
             status=200,
             payload={
                 "task": self._serialize_background_task_result(task_result),
-                "session_result": self._serialize_session_result(child_session_result)
+                "session_result": self._serialize_session_result(
+                    child_session_result,
+                    show_thinking=show_thinking,
+                )
                 if child_session_result is not None
                 else None,
                 "output": resolved_output,
@@ -1371,7 +1431,13 @@ class RuntimeTransportApp:
                 self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
         await self._json_response(send, status=200, payload=result)
 
-    async def _handle_resume(self, *, session_id: str, send: Send) -> None:
+    async def _handle_resume(
+        self,
+        *,
+        session_id: str,
+        send: Send,
+        show_thinking: bool = False,
+    ) -> None:
         with self._active_request_scope():
             runtime = self._runtime_factory()
             try:
@@ -1384,10 +1450,16 @@ class RuntimeTransportApp:
         await self._json_response(
             send,
             status=200,
-            payload=self._serialize_runtime_response(response),
+            payload=self._serialize_runtime_response(response, show_thinking=show_thinking),
         )
 
-    async def _handle_session_result(self, *, session_id: str, send: Send) -> None:
+    async def _handle_session_result(
+        self,
+        *,
+        session_id: str,
+        send: Send,
+        show_thinking: bool = False,
+    ) -> None:
         with self._active_request_scope():
             runtime = self._runtime_factory()
             try:
@@ -1400,10 +1472,16 @@ class RuntimeTransportApp:
         await self._json_response(
             send,
             status=200,
-            payload=self._serialize_session_result(result),
+            payload=self._serialize_session_result(result, show_thinking=show_thinking),
         )
 
-    async def _handle_session_debug(self, *, session_id: str, send: Send) -> None:
+    async def _handle_session_debug(
+        self,
+        *,
+        session_id: str,
+        send: Send,
+        show_thinking: bool = False,
+    ) -> None:
         runtime = self._runtime_factory()
         try:
             snapshot = runtime.session_debug_snapshot(session_id=session_id)
@@ -1415,7 +1493,10 @@ class RuntimeTransportApp:
         await self._json_response(
             send,
             status=200,
-            payload=self._serialize_session_debug_snapshot(snapshot),
+            payload=self._serialize_session_debug_snapshot(
+                snapshot,
+                show_thinking=show_thinking,
+            ),
         )
 
     async def _handle_session_undo(self, *, session_id: str, send: Send) -> None:
@@ -1488,6 +1569,7 @@ class RuntimeTransportApp:
         session_id: str,
         receive: Receive,
         send: Send,
+        show_thinking: bool = False,
     ) -> None:
         try:
             body = await self._read_body(receive)
@@ -1512,7 +1594,7 @@ class RuntimeTransportApp:
         await self._json_response(
             send,
             status=200,
-            payload=self._serialize_runtime_response(response),
+            payload=self._serialize_runtime_response(response, show_thinking=show_thinking),
         )
 
     async def _handle_question_answer(
@@ -1521,6 +1603,7 @@ class RuntimeTransportApp:
         session_id: str,
         receive: Receive,
         send: Send,
+        show_thinking: bool = False,
     ) -> None:
         try:
             body = await self._read_body(receive)
@@ -1545,7 +1628,7 @@ class RuntimeTransportApp:
         await self._json_response(
             send,
             status=200,
-            payload=self._serialize_runtime_response(response),
+            payload=self._serialize_runtime_response(response, show_thinking=show_thinking),
         )
 
     async def _handle_acknowledge_notification(
@@ -1691,19 +1774,33 @@ class RuntimeTransportApp:
         return cast(str, payload.request_id), parsed
 
     @staticmethod
-    def _serialize_runtime_stream_chunk(chunk: RuntimeStreamChunk) -> dict[str, object]:
+    def _serialize_runtime_stream_chunk(
+        chunk: RuntimeStreamChunk,
+        *,
+        show_thinking: bool = False,
+    ) -> dict[str, object]:
         return {
             "kind": chunk.kind,
             "session": RuntimeTransportApp._serialize_session_state(chunk.session),
-            "event": RuntimeTransportApp._serialize_event(chunk.event),
+            "event": RuntimeTransportApp._serialize_event(
+                chunk.event,
+                show_thinking=show_thinking,
+            ),
             "output": chunk.output,
         }
 
     @staticmethod
-    def _serialize_runtime_response(response: RuntimeResponse) -> dict[str, object]:
+    def _serialize_runtime_response(
+        response: RuntimeResponse,
+        *,
+        show_thinking: bool = False,
+    ) -> dict[str, object]:
         return {
             "session": RuntimeTransportApp._serialize_session_state(response.session),
-            "events": [RuntimeTransportApp._serialize_event(event) for event in response.events],
+            "events": [
+                RuntimeTransportApp._serialize_event(event, show_thinking=show_thinking)
+                for event in response.events
+            ],
             "output": response.output,
         }
 
@@ -1783,7 +1880,11 @@ class RuntimeTransportApp:
         }
 
     @staticmethod
-    def _serialize_session_result(result: RuntimeSessionResult) -> dict[str, object]:
+    def _serialize_session_result(
+        result: RuntimeSessionResult,
+        *,
+        show_thinking: bool = False,
+    ) -> dict[str, object]:
         return {
             "session": RuntimeTransportApp._serialize_session_state(result.session),
             "prompt": result.prompt,
@@ -1795,7 +1896,13 @@ class RuntimeTransportApp:
             "revert_marker": RuntimeTransportApp._serialize_revert_marker(result.revert_marker),
             "transcript": [
                 {
-                    **cast(dict[str, object], RuntimeTransportApp._serialize_event(event)),
+                    **cast(
+                        dict[str, object],
+                        RuntimeTransportApp._serialize_event(
+                            event,
+                            show_thinking=show_thinking,
+                        ),
+                    ),
                     "reverted": result.revert_marker is not None
                     and result.revert_marker.active
                     and event.sequence >= result.revert_marker.sequence,
@@ -1815,6 +1922,8 @@ class RuntimeTransportApp:
     @staticmethod
     def _serialize_session_debug_snapshot(
         snapshot: RuntimeSessionDebugSnapshot,
+        *,
+        show_thinking: bool = False,
     ) -> dict[str, object]:
         return {
             "session": RuntimeTransportApp._serialize_session_state(snapshot.session),
@@ -1854,10 +1963,12 @@ class RuntimeTransportApp:
             "revert_marker": RuntimeTransportApp._serialize_revert_marker(snapshot.revert_marker),
             "last_event_sequence": snapshot.last_event_sequence,
             "last_relevant_event": RuntimeTransportApp._serialize_session_debug_event(
-                snapshot.last_relevant_event
+                snapshot.last_relevant_event,
+                show_thinking=show_thinking,
             ),
             "last_failure_event": RuntimeTransportApp._serialize_session_debug_event(
-                snapshot.last_failure_event
+                snapshot.last_failure_event,
+                show_thinking=show_thinking,
             ),
             "failure": (
                 {
@@ -1939,7 +2050,11 @@ class RuntimeTransportApp:
         }
 
     @staticmethod
-    def _serialize_session_debug_event(event: object | None) -> dict[str, object] | None:
+    def _serialize_session_debug_event(
+        event: object | None,
+        *,
+        show_thinking: bool = False,
+    ) -> dict[str, object] | None:
         if event is None:
             return None
         typed_event = cast("RuntimeSessionDebugEventLike", event)
@@ -1947,7 +2062,11 @@ class RuntimeTransportApp:
             "sequence": typed_event.sequence,
             "event_type": typed_event.event_type,
             "source": typed_event.source,
-            "payload": typed_event.payload,
+            "payload": redact_reasoning_payload(
+                typed_event.event_type,
+                typed_event.payload,
+                show_thinking=show_thinking,
+            ),
         }
 
     @staticmethod
@@ -2027,7 +2146,10 @@ class RuntimeTransportApp:
                 "cost_per_cache_write_token": metadata.cost_per_cache_write_token,
                 "supports_reasoning_effort": metadata.supports_reasoning_effort,
                 "default_reasoning_effort": metadata.default_reasoning_effort,
+                "supports_reasoning_summary": metadata.supports_reasoning_summary,
+                "supports_thinking_budget": metadata.supports_thinking_budget,
                 "supports_interleaved_reasoning": metadata.supports_interleaved_reasoning,
+                "reasoning_visibility": metadata.reasoning_visibility,
                 "modalities_input": list(metadata.modalities_input)
                 if metadata.modalities_input is not None
                 else None,
@@ -2071,6 +2193,29 @@ class RuntimeTransportApp:
                     result.current_model_metadata
                 )
             ),
+            "readiness": (
+                None
+                if result.readiness is None
+                else RuntimeTransportApp._serialize_provider_readiness_result(result.readiness)
+            ),
+        }
+
+    @staticmethod
+    def _serialize_provider_readiness_result(result: ProviderReadinessResult) -> dict[str, object]:
+        return {
+            "provider": result.provider,
+            "model": result.model,
+            "configured": result.configured,
+            "ok": result.ok,
+            "status": result.status,
+            "guidance": result.guidance,
+            "auth_present": result.auth_present,
+            "streaming_configured": result.streaming_configured,
+            "streaming_supported": result.streaming_supported,
+            "context_window": result.context_window,
+            "max_output_tokens": result.max_output_tokens,
+            "fallback_chain": list(result.fallback_chain),
+            "reasoning_controls": result.reasoning_controls,
         }
 
     @staticmethod
@@ -2210,7 +2355,11 @@ class RuntimeTransportApp:
         }
 
     @staticmethod
-    def _serialize_event(event: EventEnvelope | None) -> dict[str, object] | None:
+    def _serialize_event(
+        event: EventEnvelope | None,
+        *,
+        show_thinking: bool = False,
+    ) -> dict[str, object] | None:
         if event is None:
             return None
         delegated = event.delegated_lifecycle
@@ -2219,7 +2368,11 @@ class RuntimeTransportApp:
             "sequence": event.sequence,
             "event_type": event.event_type,
             "source": event.source,
-            "payload": event.payload,
+            "payload": redact_reasoning_payload(
+                event.event_type,
+                event.payload,
+                show_thinking=show_thinking,
+            ),
         }
         if delegated is not None:
             payload["delegated_lifecycle"] = (

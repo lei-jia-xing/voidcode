@@ -549,7 +549,10 @@ class LiteLLMBackendSingleAgentProvider:
                     reasoning_obj = delta.get("reasoning_content") or delta.get("reasoning")
                     if isinstance(reasoning_obj, str) and reasoning_obj:
                         yield ProviderStreamEvent(
-                            kind="delta", channel="reasoning", text=reasoning_obj
+                            kind="delta",
+                            channel="reasoning",
+                            text=reasoning_obj,
+                            metadata={"source": "delta.reasoning"},
                         )
                     raw_thinking_blocks = delta.get("thinking_blocks")
                     if isinstance(raw_thinking_blocks, list):
@@ -563,7 +566,10 @@ class LiteLLMBackendSingleAgentProvider:
                             thinking_text = block.get("thinking")
                             if isinstance(thinking_text, str) and thinking_text:
                                 yield ProviderStreamEvent(
-                                    kind="delta", channel="reasoning", text=thinking_text
+                                    kind="delta",
+                                    channel="reasoning",
+                                    text=thinking_text,
+                                    metadata={"source": "delta.thinking_blocks"},
                                 )
                     text_obj = delta.get("content")
                     if isinstance(text_obj, str) and text_obj:
