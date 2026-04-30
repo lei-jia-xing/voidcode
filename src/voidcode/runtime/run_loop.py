@@ -27,7 +27,6 @@ from .context_window import (
     RuntimeContextWindow,
     RuntimeContinuityState,
     continuity_summary_metadata,
-    normalize_tool_result_content,
 )
 from .contracts import RuntimeStreamChunk
 from .events import (
@@ -358,11 +357,7 @@ class RuntimeRunLoopCoordinator:
             "tool_call_id": tool_call_id,
             "arguments": sanitized_arguments,
             "status": tool_result.status,
-            "content": (
-                normalize_tool_result_content(tool_result.content)
-                if tool_result.tool_name == "read_file"
-                else tool_result.content
-            ),
+            "content": tool_result.content,
             "error": tool_result.error,
         }
         completed_payload.setdefault("tool", tool_result.tool_name)
@@ -1241,11 +1236,7 @@ class RuntimeRunLoopCoordinator:
                 "tool_call_id": tool_call_id,
                 "arguments": sanitized_arguments,
                 "status": tool_result.status,
-                "content": (
-                    normalize_tool_result_content(tool_result.content)
-                    if tool_result.tool_name == "read_file"
-                    else tool_result.content
-                ),
+                "content": tool_result.content,
                 "error": tool_result.error,
             }
             completed_payload.setdefault("tool", tool_result.tool_name)

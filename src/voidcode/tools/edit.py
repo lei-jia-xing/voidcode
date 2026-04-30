@@ -425,7 +425,9 @@ class EditTool:
         name="edit",
         description=(
             "Edit a file by replacing text. Supports multiple replacement strategies "
-            "for flexible matching."
+            "for flexible matching. When constructing oldString from read_file output, "
+            "omit any leading line-number prefix such as '42: ' and pass only the "
+            "file's actual text."
         ),
         input_schema={
             "path": {

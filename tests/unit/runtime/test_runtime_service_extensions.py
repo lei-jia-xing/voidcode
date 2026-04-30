@@ -1668,6 +1668,9 @@ def test_runtime_session_debug_snapshot_includes_provider_context(tmp_path: Path
     assert [segment.role for segment in provider_context.segments][-2:] == ["assistant", "tool"]
     assert provider_context.segments[-1].source == "retained_tool_result"
     assert provider_context.segments[-1].tool_name == "read_file"
+    assert provider_context.segments[-1].content is not None
+    assert "<path>sample.txt</path>" in provider_context.segments[-1].content
+    assert "1: provider debug" in provider_context.segments[-1].content
     assert provider_context.segments[-1].metadata["status"] == "ok"
     reconstructed_data = provider_context.segments[-1].metadata["data"]
     assert isinstance(reconstructed_data, dict)
