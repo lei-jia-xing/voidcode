@@ -25,7 +25,7 @@ from ..tools.contracts import ToolCall, ToolDefinition
 from ..tools.output import sanitize_tool_arguments, sanitize_tool_result_data
 from .config import LiteLLMProviderConfig
 from .errors import provider_execution_error_from_api_payload
-from .model_catalog import ToolFeedbackMode
+from .model_catalog import ToolFeedbackMode, infer_model_metadata
 from .protocol import (
     ProviderExecutionError,
     ProviderStreamEvent,
@@ -263,7 +263,14 @@ class LiteLLMBackendSingleAgentProvider:
         metadata_mode = (
             None if request.model_metadata is None else request.model_metadata.tool_feedback_mode
         )
-        return metadata_mode if metadata_mode is not None else "standard"
+        if metadata_mode is not None:
+            return metadata_mode
+        provider_name = request.provider_name or self.name
+        if model_name is not None:
+            inferred = infer_model_metadata(provider_name, model_name)
+            if inferred is not None and inferred.tool_feedback_mode is not None:
+                return inferred.tool_feedback_mode
+        return "standard"
 
     def _build_messages(self, request: ProviderTurnRequest) -> list[dict[str, object]]:
         assembled_context = request.assembled_context

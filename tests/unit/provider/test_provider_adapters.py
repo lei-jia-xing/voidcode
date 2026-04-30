@@ -1472,6 +1472,57 @@ def test_provider_adapter_synthetic_tool_feedback_policy_is_provider_agnostic(
     assert "tool_calls" not in messages[1]
 
 
+def test_provider_adapter_infers_tool_feedback_when_metadata_omits_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = OpenCodeGoModelProvider().turn_provider()
+    request = _build_turn_request(model_name="opencode-go")
+    tool_results = (
+        ToolResult(
+            tool_name="list",
+            status="ok",
+            content="./\n  .voidcode.json",
+            data={"tool_call_id": "list_0", "arguments": {"path": "."}},
+        ),
+    )
+    request = ProviderTurnRequest(
+        assembled_context=_assembled_from_legacy(
+            prompt=request.prompt,
+            tool_results=tool_results,
+            context_window=_StubContextWindow(
+                prompt=request.context_window.prompt,
+                tool_results=tool_results,
+            ),
+            applied_skills=request.applied_skills,
+        ),
+        available_tools=request.available_tools,
+        raw_model="opencode-go/minimax-m2.7",
+        provider_name="opencode-go",
+        model_name="minimax-m2.7",
+        model_metadata=ProviderModelMetadata(context_window=204_800),
+        attempt=request.attempt,
+        abort_signal=request.abort_signal,
+    )
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        completion_content="done",
+    )
+
+    _ = provider.propose_turn(request)
+
+    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+    assert isinstance(payload_obj, dict)
+    payload = cast(dict[str, object], payload_obj)
+    messages_obj = payload.get("messages")
+    assert isinstance(messages_obj, list)
+    messages = cast(list[dict[str, object]], messages_obj)
+    assert messages[1]["role"] == "user"
+    feedback = messages[1]["content"]
+    assert isinstance(feedback, str)
+    assert "Completed tool calls for current request:" in feedback
+
+
 def test_opencode_go_non_openai_families_declare_synthetic_tool_feedback_policy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

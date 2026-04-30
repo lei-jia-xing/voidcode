@@ -1171,7 +1171,7 @@ def prepare_provider_context(
 
     retained_count = len(retained_results)
     compacted = retained_count < original_count
-    dropped_results = tool_results[: original_count - retained_count]
+    dropped_results = prepared_results[: original_count - retained_count]
     original_tokens = None
     retained_tokens = None
     dropped_tokens = None

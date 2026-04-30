@@ -774,6 +774,28 @@ def test_prepare_provider_context_dropped_tool_diagnostics_omit_raw_content() ->
     assert "RAW SECRET CONTENT" not in str(dropped)
 
 
+def test_prepare_provider_context_dropped_diagnostics_use_prepared_results() -> None:
+    context = prepare_provider_context(
+        prompt="search",
+        tool_results=(
+            ToolResult(tool_name="grep", status="ok", content="x" * 200, data={"index": 1}),
+            ToolResult(tool_name="grep", status="ok", content="latest", data={"index": 2}),
+        ),
+        session_metadata={},
+        policy=ContextWindowPolicy(
+            max_tool_results=1,
+            recent_tool_result_count=1,
+            per_tool_result_tokens={"grep": 30},
+        ),
+    )
+
+    assert context.continuity_state is not None
+    (diagnostic,) = context.continuity_state.dropped_tool_results
+    assert diagnostic.truncated is True
+    assert diagnostic.partial is True
+    assert diagnostic.metadata_payload()["truncated"] is True
+
+
 def test_continuity_state_metadata_payload_round_trips_v2_fields() -> None:
     state = RuntimeContinuityState(
         summary_text="summary",

@@ -24,6 +24,7 @@ from .model_catalog import (
     ProviderModelMetadata,
     discover_available_models,
     infer_model_metadata,
+    merge_model_metadata,
 )
 from .models import ProviderResolutionSource
 from .openai import OpenAIModelProvider
@@ -341,7 +342,10 @@ class ModelProviderRegistry:
             if catalog is not None:
                 metadata = catalog.model_metadata.get(model_name)
                 if metadata is not None:
-                    return metadata
+                    return merge_model_metadata(
+                        inferred=infer_model_metadata(provider_name, model_name),
+                        override=metadata,
+                    )
         return infer_model_metadata(provider_name, model_name)
 
     def provider_catalog(self, provider_name: str) -> ProviderModelCatalog | None:

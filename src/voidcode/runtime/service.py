@@ -40,6 +40,7 @@ from ..provider.errors import format_invalid_provider_config_error, guidance_for
 from ..provider.model_catalog import (
     ProviderModelCatalog,
     infer_model_metadata,
+    merge_model_metadata,
 )
 from ..provider.model_catalog import (
     ProviderModelMetadata as CatalogProviderModelMetadata,
@@ -2965,7 +2966,11 @@ class VoidCodeRuntime:
             raw_payload = metadata_payloads.get(model_name)
             if isinstance(raw_payload, dict):
                 payload = cast(dict[str, object], raw_payload)
-                return VoidCodeRuntime._contract_metadata_from_payload(payload)
+                return VoidCodeRuntime._contract_metadata_for_model_payload(
+                    provider_name=provider_name,
+                    model_name=model_name,
+                    payload=payload,
+                )
         inferred = infer_model_metadata(provider_name, model_name)
         if inferred is None:
             return None
@@ -2993,6 +2998,50 @@ class VoidCodeRuntime:
             model_status=inferred.model_status,
             tool_feedback_mode=inferred.tool_feedback_mode,
         )
+
+    @staticmethod
+    def _contract_metadata_from_catalog(
+        catalog_metadata: CatalogProviderModelMetadata,
+    ) -> ProviderModelMetadata:
+        return ProviderModelMetadata(
+            context_window=catalog_metadata.context_window,
+            max_input_tokens=catalog_metadata.max_input_tokens,
+            max_output_tokens=catalog_metadata.max_output_tokens,
+            supports_tools=catalog_metadata.supports_tools,
+            supports_vision=catalog_metadata.supports_vision,
+            supports_streaming=catalog_metadata.supports_streaming,
+            supports_reasoning=catalog_metadata.supports_reasoning,
+            supports_json_mode=catalog_metadata.supports_json_mode,
+            cost_per_input_token=catalog_metadata.cost_per_input_token,
+            cost_per_output_token=catalog_metadata.cost_per_output_token,
+            cost_per_cache_read_token=catalog_metadata.cost_per_cache_read_token,
+            cost_per_cache_write_token=catalog_metadata.cost_per_cache_write_token,
+            supports_reasoning_effort=catalog_metadata.supports_reasoning_effort,
+            default_reasoning_effort=catalog_metadata.default_reasoning_effort,
+            supports_reasoning_summary=catalog_metadata.supports_reasoning_summary,
+            supports_thinking_budget=catalog_metadata.supports_thinking_budget,
+            supports_interleaved_reasoning=catalog_metadata.supports_interleaved_reasoning,
+            reasoning_visibility=catalog_metadata.reasoning_visibility,
+            modalities_input=catalog_metadata.modalities_input,
+            modalities_output=catalog_metadata.modalities_output,
+            model_status=catalog_metadata.model_status,
+            tool_feedback_mode=catalog_metadata.tool_feedback_mode,
+        )
+
+    @staticmethod
+    def _contract_metadata_for_model_payload(
+        *,
+        provider_name: str,
+        model_name: str,
+        payload: dict[str, object],
+    ) -> ProviderModelMetadata | None:
+        catalog_metadata = merge_model_metadata(
+            inferred=infer_model_metadata(provider_name, model_name),
+            override=VoidCodeRuntime._catalog_metadata_from_payload(payload),
+        )
+        if catalog_metadata is None:
+            return None
+        return VoidCodeRuntime._contract_metadata_from_catalog(catalog_metadata)
 
     def _context_window_policy_for_provider_attempt(
         self,
@@ -3049,12 +3098,20 @@ class VoidCodeRuntime:
             configured=configured,
             models=tuple(cast(list[str], catalog["models"])),
             model_metadata={
-                model: VoidCodeRuntime._contract_metadata_from_payload(payload)
+                model: metadata
                 for model, raw_payload in cast(
                     dict[str, object], catalog.get("model_metadata", {})
                 ).items()
                 if isinstance(raw_payload, dict)
                 for payload in (cast(dict[str, object], raw_payload),)
+                for metadata in (
+                    VoidCodeRuntime._contract_metadata_for_model_payload(
+                        provider_name=provider_name,
+                        model_name=model,
+                        payload=payload,
+                    ),
+                )
+                if metadata is not None
             },
             source=cast(str | None, catalog["source"]),
             last_refresh_status=cast(str | None, catalog["last_refresh_status"]),
@@ -3481,30 +3538,7 @@ class VoidCodeRuntime:
     @staticmethod
     def _contract_metadata_from_payload(payload: dict[str, object]) -> ProviderModelMetadata:
         catalog_metadata = VoidCodeRuntime._catalog_metadata_from_payload(payload)
-        return ProviderModelMetadata(
-            context_window=catalog_metadata.context_window,
-            max_input_tokens=catalog_metadata.max_input_tokens,
-            max_output_tokens=catalog_metadata.max_output_tokens,
-            supports_tools=catalog_metadata.supports_tools,
-            supports_vision=catalog_metadata.supports_vision,
-            supports_streaming=catalog_metadata.supports_streaming,
-            supports_reasoning=catalog_metadata.supports_reasoning,
-            supports_json_mode=catalog_metadata.supports_json_mode,
-            cost_per_input_token=catalog_metadata.cost_per_input_token,
-            cost_per_output_token=catalog_metadata.cost_per_output_token,
-            cost_per_cache_read_token=catalog_metadata.cost_per_cache_read_token,
-            cost_per_cache_write_token=catalog_metadata.cost_per_cache_write_token,
-            supports_reasoning_effort=catalog_metadata.supports_reasoning_effort,
-            default_reasoning_effort=catalog_metadata.default_reasoning_effort,
-            supports_reasoning_summary=catalog_metadata.supports_reasoning_summary,
-            supports_thinking_budget=catalog_metadata.supports_thinking_budget,
-            supports_interleaved_reasoning=catalog_metadata.supports_interleaved_reasoning,
-            reasoning_visibility=catalog_metadata.reasoning_visibility,
-            modalities_input=catalog_metadata.modalities_input,
-            modalities_output=catalog_metadata.modalities_output,
-            model_status=catalog_metadata.model_status,
-            tool_feedback_mode=catalog_metadata.tool_feedback_mode,
-        )
+        return VoidCodeRuntime._contract_metadata_from_catalog(catalog_metadata)
 
     def list_agent_summaries(self) -> tuple[AgentSummary, ...]:
         summaries: list[AgentSummary] = []
@@ -4065,6 +4099,15 @@ class VoidCodeRuntime:
         active_target = effective_config.resolved_provider.active_target
         provider = active_target.selection.provider or "unknown"
         model = active_target.selection.model or active_target.selection.raw_model or "unknown"
+        inferred_metadata = infer_model_metadata(provider, model) if provider != "unknown" else None
+        tool_feedback_mode = (
+            active_target.metadata.tool_feedback_mode
+            if active_target.metadata is not None
+            and active_target.metadata.tool_feedback_mode is not None
+            else inferred_metadata.tool_feedback_mode
+            if inferred_metadata is not None and inferred_metadata.tool_feedback_mode is not None
+            else "standard"
+        )
         tool_registry = self._tool_registry_for_effective_config(effective_config)
         return inspect_provider_context(
             assembled_context=assembled_context,
@@ -4072,12 +4115,7 @@ class VoidCodeRuntime:
             model=model,
             execution_engine=effective_config.execution_engine,
             available_tool_count=len(tool_registry.definitions()),
-            tool_feedback_mode=(
-                active_target.metadata.tool_feedback_mode
-                if active_target.metadata is not None
-                and active_target.metadata.tool_feedback_mode is not None
-                else "standard"
-            ),
+            tool_feedback_mode=tool_feedback_mode,
         )
 
     @staticmethod

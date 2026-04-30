@@ -372,7 +372,7 @@ def _override_max_input_tokens(
     return override.max_input_tokens
 
 
-def _merge_model_metadata(
+def merge_model_metadata(
     *,
     inferred: ProviderModelMetadata | None,
     override: ProviderModelMetadata | None,
@@ -435,6 +435,9 @@ def _merge_model_metadata(
             inferred.tool_feedback_mode, override.tool_feedback_mode
         ),
     )
+
+
+_merge_model_metadata = merge_model_metadata
 
 
 def infer_model_metadata(provider_name: str, model_name: str) -> ProviderModelMetadata | None:

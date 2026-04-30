@@ -13289,7 +13289,6 @@ def test_runtime_hydrates_provider_tool_feedback_mode_from_catalog_cache(
                         "model_metadata": {
                             "minimax-m2.7": {
                                 "context_window": 204_800,
-                                "tool_feedback_mode": "synthetic_user_message",
                             }
                         },
                         "refreshed": True,
