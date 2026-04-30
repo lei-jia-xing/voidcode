@@ -109,6 +109,54 @@ def _save_background_task_with_secrets(tmp_path: Path) -> None:
     )
 
 
+def _minimal_bundle_payload(sessions: list[dict[str, object]]) -> dict[str, object]:
+    return {
+        "schema": "voidcode.session.bundle.v1",
+        "manifest": {
+            "schema_version": 1,
+            "voidcode_version": "0.1.0",
+            "created_at": 1,
+            "workspace_hash": "sha256:test",
+            "platform": {},
+            "redaction": {"redacted": True},
+            "support_mode": False,
+            "session_count": len(sessions),
+            "event_count": sum(
+                len(cast(list[object], session.get("events", []))) for session in sessions
+            ),
+            "background_task_count": 0,
+        },
+        "sessions": sessions,
+        "background_tasks": [],
+        "diagnostics": {},
+    }
+
+
+def _minimal_session_payload(
+    session_id: str,
+    *,
+    parent_id: str | None = None,
+) -> dict[str, object]:
+    return {
+        "id": session_id,
+        "parent_id": parent_id,
+        "status": "completed",
+        "turn": 1,
+        "prompt": f"prompt {session_id}",
+        "output": f"output {session_id}",
+        "metadata": {},
+        "last_event_sequence": 1,
+        "events": [
+            {
+                "sequence": 1,
+                "event_type": "graph.response_ready",
+                "source": "graph",
+                "payload": {"summary": session_id},
+            }
+        ],
+    }
+
+
 def test_session_bundle_export_redacts_and_bounds_default_payload(tmp_path: Path) -> None:
     _save_sample_session(tmp_path)
     store = SqliteSessionStore()
@@ -215,6 +263,45 @@ def test_session_bundle_import_roundtrip_never_overwrites_existing_session(
 def test_session_bundle_unknown_schema_fails_fast() -> None:
     with pytest.raises(SessionBundleError, match="unsupported session bundle schema"):
         parse_session_bundle({"schema": "voidcode.session.bundle.v999", "manifest": {}})
+
+
+def test_session_bundle_parse_rejects_invalid_session_ids() -> None:
+    invalid_id_payload = _minimal_bundle_payload([_minimal_session_payload("")])
+    invalid_parent_payload = _minimal_bundle_payload(
+        [_minimal_session_payload("child", parent_id="bad/parent")]
+    )
+
+    with pytest.raises(SessionBundleError, match=r"sessions\[0\]\.id is invalid"):
+        parse_session_bundle(invalid_id_payload)
+    with pytest.raises(SessionBundleError, match=r"sessions\[0\]\.parent_id is invalid"):
+        parse_session_bundle(invalid_parent_payload)
+
+
+def test_session_bundle_import_remaps_child_parent_after_full_id_resolution(
+    tmp_path: Path,
+) -> None:
+    target_store = SqliteSessionStore()
+    _save_sample_session(tmp_path, session_id="parent")
+    bundle = parse_session_bundle(
+        _minimal_bundle_payload(
+            [
+                _minimal_session_payload("child", parent_id="parent"),
+                _minimal_session_payload("parent"),
+            ]
+        )
+    )
+
+    result = apply_session_bundle(
+        bundle,
+        session_store=target_store,
+        workspace=tmp_path,
+    )
+    imported_child = target_store.load_session(workspace=tmp_path, session_id="child")
+    imported_parent = target_store.load_session(workspace=tmp_path, session_id="parent-imported")
+
+    assert result.imported_session_ids == ("child", "parent-imported")
+    assert imported_child.session.session.parent_id == "parent-imported"
+    assert imported_parent.session.session.id == "parent-imported"
 
 
 def test_session_bundle_dry_run_import_does_not_persist(tmp_path: Path) -> None:

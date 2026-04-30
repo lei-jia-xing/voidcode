@@ -36,6 +36,7 @@ from .contracts import (
     RuntimeResponse,
     UnknownSessionError,
     validate_session_id,
+    validate_session_reference_id,
 )
 from .events import EventEnvelope, EventSource
 from .session import SessionRef, SessionState, SessionStatus
@@ -763,10 +764,16 @@ def _optional_dict(value: object) -> dict[str, object] | None:
 def _parse_session_payload(
     payload: dict[str, object], *, index: int
 ) -> SessionBundleSessionPayload:
-    session_id = _ensure_str(payload.get("id"), where=f"sessions[{index}].id")
+    session_id = _validate_bundle_session_id(
+        _ensure_str(payload.get("id"), where=f"sessions[{index}].id"),
+        where=f"sessions[{index}].id",
+    )
     parent_raw = payload.get("parent_id")
     parent_id = (
-        _ensure_str(parent_raw, where=f"sessions[{index}].parent_id")
+        _validate_bundle_parent_id(
+            _ensure_str(parent_raw, where=f"sessions[{index}].parent_id"),
+            where=f"sessions[{index}].parent_id",
+        )
         if isinstance(parent_raw, str)
         else None
     )
@@ -815,6 +822,20 @@ def _normalize_event_payload(event: dict[str, object], *, label: str) -> dict[st
         "source": source,
         "payload": payload,
     }
+
+
+def _validate_bundle_session_id(value: str, *, where: str) -> str:
+    try:
+        return validate_session_id(value)
+    except ValueError as exc:
+        raise SessionBundleError(f"session bundle {where} is invalid: {exc}") from exc
+
+
+def _validate_bundle_parent_id(value: str, *, where: str) -> str:
+    try:
+        return validate_session_reference_id(value, field_name="parent_id")
+    except ValueError as exc:
+        raise SessionBundleError(f"session bundle {where} is invalid: {exc}") from exc
 
 
 def _parse_task_payload(
@@ -1034,24 +1055,16 @@ def apply_session_bundle(
     """Persist ``bundle`` into ``session_store``; never overwrites existing ids by default."""
 
     resolver = session_id_resolver or _default_id_collision_resolver(session_store, workspace)
-    imported_ids: list[str] = []
-    skipped_ids: list[str] = []
-    rebound_id_for: dict[str, str] = {}
+    rebound_id_for = _resolve_import_session_ids(
+        bundle.sessions,
+        session_store=session_store,
+        workspace=workspace,
+        resolver=resolver,
+    )
+    imported_ids = tuple(rebound_id_for[session.id] for session in bundle.sessions)
+    skipped_ids: tuple[str, ...] = ()
     for session in bundle.sessions:
-        try:
-            target_id = _resolve_target_id(
-                session_store=session_store,
-                workspace=workspace,
-                bundle_session_id=session.id,
-                resolver=resolver,
-            )
-        except SessionBundleError:
-            if dry_run:
-                skipped_ids.append(session.id)
-                continue
-            raise
-        rebound_id_for[session.id] = target_id
-        imported_ids.append(target_id)
+        target_id = rebound_id_for[session.id]
         if dry_run:
             continue
         rebound_session = SessionBundleSessionPayload(
@@ -1092,8 +1105,8 @@ def apply_session_bundle(
         session_count=bundle.manifest.session_count,
         event_count=bundle.manifest.event_count,
         background_task_count=bundle.manifest.background_task_count,
-        imported_session_ids=tuple(imported_ids),
-        skipped_session_ids=tuple(skipped_ids),
+        imported_session_ids=imported_ids,
+        skipped_session_ids=skipped_ids,
         skipped_background_task_count=skipped_tasks,
         dry_run=dry_run,
     )
@@ -1122,20 +1135,52 @@ def _default_id_collision_resolver(
     return resolve
 
 
+def _resolve_import_session_ids(
+    sessions: tuple[SessionBundleSessionPayload, ...],
+    *,
+    session_store: SessionStore,
+    workspace: Path,
+    resolver: Callable[[str], str],
+) -> dict[str, str]:
+    rebound: dict[str, str] = {}
+    reserved: set[str] = set()
+    for session in sessions:
+        if session.id in rebound:
+            raise SessionBundleError(f"duplicate session id in bundle: {session.id!r}")
+        target_id = _resolve_target_id(
+            session_store=session_store,
+            workspace=workspace,
+            bundle_session_id=session.id,
+            resolver=resolver,
+            reserved=reserved,
+        )
+        rebound[session.id] = target_id
+        reserved.add(target_id)
+    return rebound
+
+
 def _resolve_target_id(
     *,
     session_store: SessionStore,
     workspace: Path,
     bundle_session_id: str,
     resolver: Callable[[str], str],
+    reserved: set[str],
 ) -> str:
-    if not session_store.has_session(workspace=workspace, session_id=bundle_session_id):
+    validate_session_id(bundle_session_id)
+    if bundle_session_id not in reserved and not session_store.has_session(
+        workspace=workspace, session_id=bundle_session_id
+    ):
         return bundle_session_id
     candidate = resolver(bundle_session_id)
-    if session_store.has_session(workspace=workspace, session_id=candidate):
-        raise SessionBundleError(
-            f"session id resolver returned an id that still collides: {candidate!r}"
-        )
+    attempt = 1
+    while candidate in reserved or session_store.has_session(
+        workspace=workspace,
+        session_id=candidate,
+    ):
+        attempt += 1
+        candidate = f"{bundle_session_id}-imported-{attempt}"
+    validate_session_id(candidate)
     return candidate
 
 
