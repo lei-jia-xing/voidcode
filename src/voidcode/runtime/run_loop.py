@@ -340,7 +340,12 @@ class RuntimeRunLoopCoordinator:
             )
 
         sanitized_arguments = sanitize_tool_arguments(dict(tool_call.arguments))
-        tool_result = cap_tool_result_output(tool_result, workspace=runtime._workspace)
+        tool_result = cap_tool_result_output(
+            tool_result,
+            workspace=runtime._workspace,
+            session_id=session.session.id,
+            tool_call_id=tool_call_id,
+        )
         tool_result = replace(
             tool_result,
             data=sanitize_tool_result_data(tool_result.data),
@@ -1227,7 +1232,12 @@ class RuntimeRunLoopCoordinator:
                 return
 
             sanitized_arguments = sanitize_tool_arguments(dict(plan_tool_call.arguments))
-            tool_result = cap_tool_result_output(tool_result, workspace=runtime._workspace)
+            tool_result = cap_tool_result_output(
+                tool_result,
+                workspace=runtime._workspace,
+                session_id=session.session.id,
+                tool_call_id=tool_call_id,
+            )
             tool_result = replace(
                 tool_result,
                 data=sanitize_tool_result_data(tool_result.data),

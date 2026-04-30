@@ -748,6 +748,7 @@ class RuntimeSessionDebugToolSummary:
     status: str
     summary: str
     arguments: dict[str, object] = field(default_factory=dict)
+    artifact: dict[str, object] = field(default_factory=dict)
     sequence: int | None = None
 
 

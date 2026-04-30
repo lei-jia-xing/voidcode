@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Final, Literal, cast, final
 
 from .. import __version__ as VOIDCODE_VERSION
+from ..tools.output import read_tool_output_artifact
 from .contracts import (
     RuntimeRequest,
     RuntimeResponse,
@@ -108,6 +109,7 @@ _TOOL_OUTPUT_KEYS: Final[frozenset[str]] = frozenset(
 
 
 _DEFAULT_TOOL_OUTPUT_PREVIEW_CHARS: Final[int] = 2_000
+_BUNDLE_ARTIFACT_READ_LIMIT_LINES: Final[int] = 1_000_000
 
 
 class SessionBundleError(ValueError):
@@ -171,6 +173,19 @@ class SessionBundleDiagnostics:
 
 
 @dataclass(frozen=True, slots=True)
+class SessionBundleArtifactPayload:
+    artifact_id: str
+    session_id: str | None
+    tool_call_id: str | None
+    tool_name: str | None
+    metadata: dict[str, object]
+    content: str | None
+    missing: bool
+    content_truncated: bool = False
+    content_next_offset: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class SessionBundleManifest:
     schema_version: int
     voidcode_version: str
@@ -182,6 +197,7 @@ class SessionBundleManifest:
     session_count: int
     event_count: int
     background_task_count: int
+    artifact_count: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,6 +206,7 @@ class SessionBundle:
     sessions: tuple[SessionBundleSessionPayload, ...]
     background_tasks: tuple[SessionBundleBackgroundTaskPayload, ...]
     diagnostics: SessionBundleDiagnostics
+    artifacts: tuple[SessionBundleArtifactPayload, ...] = ()
 
     def to_payload(self) -> dict[str, object]:
         """Return the canonical JSON-serializable bundle payload."""
@@ -200,6 +217,7 @@ class SessionBundle:
             "sessions": [_session_payload(session) for session in self.sessions],
             "background_tasks": [_task_payload(task) for task in self.background_tasks],
             "diagnostics": _diagnostics_payload(self.diagnostics),
+            "artifacts": [_artifact_payload(artifact) for artifact in self.artifacts],
         }
 
 
@@ -251,6 +269,7 @@ def _manifest_payload(manifest: SessionBundleManifest) -> dict[str, object]:
         "session_count": manifest.session_count,
         "event_count": manifest.event_count,
         "background_task_count": manifest.background_task_count,
+        "artifact_count": manifest.artifact_count,
     }
 
 
@@ -278,6 +297,20 @@ def _task_payload(task: SessionBundleBackgroundTaskPayload) -> dict[str, object]
         "error": task.error,
         "created_at": task.created_at,
         "updated_at": task.updated_at,
+    }
+
+
+def _artifact_payload(artifact: SessionBundleArtifactPayload) -> dict[str, object]:
+    return {
+        "artifact_id": artifact.artifact_id,
+        "session_id": artifact.session_id,
+        "tool_call_id": artifact.tool_call_id,
+        "tool_name": artifact.tool_name,
+        "metadata": artifact.metadata,
+        "content": artifact.content,
+        "missing": artifact.missing,
+        "content_truncated": artifact.content_truncated,
+        "content_next_offset": artifact.content_next_offset,
     }
 
 
@@ -443,6 +476,8 @@ def _redaction_summary(options: SessionBundleOptions) -> dict[str, object]:
         notes.append(
             f"Tool output text is truncated to {options.tool_output_preview_chars} characters."
         )
+    else:
+        notes.append("Available temp tool output artifacts are embedded in the bundle.")
     return {
         "redacted": options.redact,
         "include_tool_output": options.include_tool_output,
@@ -478,6 +513,7 @@ class _SessionBundleBuilder:
         validate_session_id(session_id)
         sessions, event_count = self._collect_sessions(session_id=session_id)
         background_tasks = self._collect_background_tasks(session_id=session_id)
+        artifacts = self._collect_artifacts(sessions=sessions)
         manifest = SessionBundleManifest(
             schema_version=SESSION_BUNDLE_SCHEMA_VERSION,
             voidcode_version=VOIDCODE_VERSION,
@@ -489,6 +525,7 @@ class _SessionBundleBuilder:
             session_count=len(sessions),
             event_count=event_count,
             background_task_count=len(background_tasks),
+            artifact_count=len(artifacts),
         )
         diagnostics = SessionBundleDiagnostics(
             storage=self._sanitize_diagnostics_block(self._storage_diagnostics),
@@ -500,6 +537,70 @@ class _SessionBundleBuilder:
             sessions=sessions,
             background_tasks=background_tasks,
             diagnostics=diagnostics,
+            artifacts=artifacts,
+        )
+
+    def _collect_artifacts(
+        self, *, sessions: tuple[SessionBundleSessionPayload, ...]
+    ) -> tuple[SessionBundleArtifactPayload, ...]:
+        if not self._options.include_tool_output:
+            return ()
+        artifacts: list[SessionBundleArtifactPayload] = []
+        seen: set[str] = set()
+        for session in sessions:
+            for event in session.events:
+                payload = event.get("payload")
+                if not isinstance(payload, dict):
+                    continue
+                payload_dict = cast(dict[str, object], payload)
+                artifact = payload_dict.get("artifact")
+                if not isinstance(artifact, dict):
+                    continue
+                artifact_payload = self._build_artifact_payload(cast(dict[str, object], artifact))
+                if artifact_payload is None or artifact_payload.artifact_id in seen:
+                    continue
+                seen.add(artifact_payload.artifact_id)
+                artifacts.append(artifact_payload)
+        return tuple(artifacts)
+
+    def _build_artifact_payload(
+        self, artifact: dict[str, object]
+    ) -> SessionBundleArtifactPayload | None:
+        artifact_id = artifact.get("artifact_id")
+        if not isinstance(artifact_id, str) or artifact_id == "":
+            return None
+        read_result = read_tool_output_artifact(
+            artifact, offset=0, limit=_BUNDLE_ARTIFACT_READ_LIMIT_LINES
+        )
+        if read_result.get("status") == "invalid":
+            return None
+        missing = bool(read_result.get("artifact_missing"))
+        raw_content = read_result.get("content")
+        content = raw_content if isinstance(raw_content, str) and not missing else None
+        sanitized_content = _sanitize_export_text(content, options=self._options)
+        raw_next_offset = read_result.get("next_offset")
+        content_next_offset = raw_next_offset if isinstance(raw_next_offset, int) else None
+        content_truncated = content_next_offset is not None
+        metadata = _apply_payload_options(dict(artifact), options=self._options)
+        session_id = artifact.get("session_id")
+        tool_call_id = artifact.get("tool_call_id")
+        tool_name = artifact.get("tool_name")
+        return SessionBundleArtifactPayload(
+            artifact_id=artifact_id,
+            session_id=session_id if isinstance(session_id, str) else None,
+            tool_call_id=tool_call_id if isinstance(tool_call_id, str) else None,
+            tool_name=tool_name if isinstance(tool_name, str) else None,
+            metadata={
+                **metadata,
+                "status": "missing" if missing else "available",
+                "content_truncated": content_truncated,
+                "content_next_offset": content_next_offset,
+                "bundle_read_limit_lines": _BUNDLE_ARTIFACT_READ_LIMIT_LINES,
+            },
+            content=sanitized_content,
+            missing=missing,
+            content_truncated=content_truncated,
+            content_next_offset=content_next_offset,
         )
 
     def _sanitize_diagnostics_block(
@@ -728,6 +829,9 @@ def parse_session_bundle(payload: object) -> SessionBundle:
             manifest_payload.get("background_task_count", 0),
             where="manifest.background_task_count",
         ),
+        artifact_count=_ensure_int(
+            manifest_payload.get("artifact_count", 0), where="manifest.artifact_count"
+        ),
     )
     sessions_raw = _ensure_list(root.get("sessions", []), where="sessions")
     sessions: list[SessionBundleSessionPayload] = []
@@ -745,11 +849,17 @@ def parse_session_bundle(payload: object) -> SessionBundle:
         config_summary=_optional_dict(diagnostics_payload.get("config_summary")),
         provider_summary=_optional_dict(diagnostics_payload.get("provider_summary")),
     )
+    artifacts_raw = _ensure_list(root.get("artifacts", []), where="artifacts")
+    artifacts: list[SessionBundleArtifactPayload] = []
+    for index, raw in enumerate(artifacts_raw):
+        artifact_dict = _ensure_dict(raw, where=f"artifacts[{index}]")
+        artifacts.append(_parse_artifact_payload(artifact_dict, index=index))
     return SessionBundle(
         manifest=manifest,
         sessions=tuple(sessions),
         background_tasks=tuple(tasks),
         diagnostics=diagnostics,
+        artifacts=tuple(artifacts),
     )
 
 
@@ -877,6 +987,50 @@ def _parse_task_payload(
         error=error,
         created_at=created_at,
         updated_at=updated_at,
+    )
+
+
+def _parse_artifact_payload(
+    payload: dict[str, object], *, index: int
+) -> SessionBundleArtifactPayload:
+    artifact_id = _ensure_str(payload.get("artifact_id"), where=f"artifacts[{index}].artifact_id")
+    raw_session_id = payload.get("session_id")
+    raw_tool_call_id = payload.get("tool_call_id")
+    raw_tool_name = payload.get("tool_name")
+    raw_content = payload.get("content")
+    raw_content_next_offset = payload.get("content_next_offset")
+    return SessionBundleArtifactPayload(
+        artifact_id=artifact_id,
+        session_id=(
+            _ensure_str(raw_session_id, where=f"artifacts[{index}].session_id")
+            if isinstance(raw_session_id, str)
+            else None
+        ),
+        tool_call_id=(
+            _ensure_str(raw_tool_call_id, where=f"artifacts[{index}].tool_call_id")
+            if isinstance(raw_tool_call_id, str)
+            else None
+        ),
+        tool_name=(
+            _ensure_str(raw_tool_name, where=f"artifacts[{index}].tool_name")
+            if isinstance(raw_tool_name, str)
+            else None
+        ),
+        metadata=dict(
+            _ensure_dict(payload.get("metadata", {}), where=f"artifacts[{index}].metadata")
+        ),
+        content=(
+            _ensure_str(raw_content, where=f"artifacts[{index}].content")
+            if isinstance(raw_content, str)
+            else None
+        ),
+        missing=bool(payload.get("missing", False)),
+        content_truncated=bool(payload.get("content_truncated", False)),
+        content_next_offset=(
+            _ensure_int(raw_content_next_offset, where=f"artifacts[{index}].content_next_offset")
+            if raw_content_next_offset is not None
+            else None
+        ),
     )
 
 
@@ -1191,6 +1345,7 @@ __all__ = [
     "SESSION_BUNDLE_SCHEMA_NAME",
     "SESSION_BUNDLE_SCHEMA_VERSION",
     "SessionBundle",
+    "SessionBundleArtifactPayload",
     "SessionBundleBackgroundTaskPayload",
     "SessionBundleDiagnostics",
     "SessionBundleError",

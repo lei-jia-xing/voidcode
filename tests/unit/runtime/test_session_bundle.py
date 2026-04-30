@@ -6,6 +6,7 @@ from typing import cast
 
 import pytest
 
+import voidcode.runtime.bundle as bundle_module
 from voidcode.runtime.bundle import (
     SESSION_BUNDLE_REDACTED_PLACEHOLDER,
     SESSION_BUNDLE_SCHEMA_NAME,
@@ -26,6 +27,7 @@ from voidcode.runtime.task import (
     BackgroundTaskRequestSnapshot,
     BackgroundTaskState,
 )
+from voidcode.tools import ToolResult, cap_tool_result_output
 
 
 def _save_sample_session(tmp_path: Path, *, session_id: str = "bundle-session") -> None:
@@ -107,6 +109,51 @@ def _save_background_task_with_secrets(tmp_path: Path) -> None:
             error="failed with Bearer taskerrorsecret",
         ),
     )
+
+
+def _save_session_with_tool_artifact(tmp_path: Path) -> dict[str, object]:
+    store = SqliteSessionStore()
+    content = "".join(f"artifact-line-{index}\n" for index in range(8))
+    capped = cap_tool_result_output(
+        ToolResult(tool_name="shell_exec", status="ok", content=content),
+        workspace=tmp_path,
+        session_id="artifact-session",
+        tool_call_id="artifact-call",
+        max_lines=2,
+        max_bytes=10_000,
+    )
+    payload = {
+        **capped.data,
+        "tool": "shell_exec",
+        "tool_call_id": "artifact-call",
+        "status": capped.status,
+        "content": capped.content,
+        "error": capped.error,
+    }
+    response = RuntimeResponse(
+        session=SessionState(
+            session=SessionRef(id="artifact-session"),
+            status="completed",
+            turn=1,
+            metadata={},
+        ),
+        events=(
+            EventEnvelope(
+                session_id="artifact-session",
+                sequence=1,
+                event_type="runtime.tool_completed",
+                source="tool",
+                payload=payload,
+            ),
+        ),
+        output="done",
+    )
+    store.save_run(
+        workspace=tmp_path,
+        request=RuntimeRequest(prompt="artifact", session_id="artifact-session"),
+        response=response,
+    )
+    return payload
 
 
 def _minimal_bundle_payload(sessions: list[dict[str, object]]) -> dict[str, object]:
@@ -222,6 +269,203 @@ def test_session_bundle_json_and_zip_roundtrip(tmp_path: Path) -> None:
 
     assert json_bundle.to_payload() == bundle.to_payload()
     assert zip_bundle.to_payload() == bundle.to_payload()
+
+
+def test_session_bundle_includes_available_artifacts_only_when_tool_output_requested(
+    tmp_path: Path,
+) -> None:
+    tool_payload = _save_session_with_tool_artifact(tmp_path)
+    store = SqliteSessionStore()
+
+    default_bundle = build_session_bundle(
+        session_store=store,
+        workspace=tmp_path,
+        session_id="artifact-session",
+    )
+    full_bundle = build_session_bundle(
+        session_store=store,
+        workspace=tmp_path,
+        session_id="artifact-session",
+        options=SessionBundleOptions(include_tool_output=True),
+    )
+
+    assert default_bundle.manifest.artifact_count == 0
+    assert default_bundle.artifacts == ()
+    assert full_bundle.manifest.artifact_count == 1
+    artifact = full_bundle.artifacts[0]
+    assert artifact.artifact_id == tool_payload["artifact_id"]
+    assert artifact.tool_call_id == "artifact-call"
+    assert artifact.missing is False
+    assert artifact.content is not None
+    assert artifact.content.endswith("artifact-line-7\n")
+    assert full_bundle.to_payload()["artifacts"] == [
+        {
+            "artifact_id": artifact.artifact_id,
+            "session_id": "artifact-session",
+            "tool_call_id": "artifact-call",
+            "tool_name": "shell_exec",
+            "metadata": artifact.metadata,
+            "content": artifact.content,
+            "missing": False,
+            "content_truncated": False,
+            "content_next_offset": None,
+        }
+    ]
+
+
+def test_session_bundle_marks_artifact_content_truncated_when_read_limit_hit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tool_payload = _save_session_with_tool_artifact(tmp_path)
+    store = SqliteSessionStore()
+    monkeypatch.setattr(bundle_module, "_BUNDLE_ARTIFACT_READ_LIMIT_LINES", 2)
+
+    bundle = build_session_bundle(
+        session_store=store,
+        workspace=tmp_path,
+        session_id="artifact-session",
+        options=SessionBundleOptions(include_tool_output=True),
+    )
+
+    assert bundle.manifest.artifact_count == 1
+    artifact = bundle.artifacts[0]
+    assert artifact.artifact_id == tool_payload["artifact_id"]
+    assert artifact.missing is False
+    assert artifact.content == "artifact-line-0\nartifact-line-1\n"
+    assert artifact.content_truncated is True
+    assert artifact.content_next_offset == 2
+    assert artifact.metadata["content_truncated"] is True
+    assert artifact.metadata["content_next_offset"] == 2
+    assert artifact.metadata["bundle_read_limit_lines"] == 2
+
+
+def test_session_bundle_reports_missing_artifact_without_content(tmp_path: Path) -> None:
+    tool_payload = _save_session_with_tool_artifact(tmp_path)
+    artifact = tool_payload["artifact"]
+    assert isinstance(artifact, dict)
+    Path(cast(str, artifact["path"])).unlink()
+    store = SqliteSessionStore()
+
+    bundle = build_session_bundle(
+        session_store=store,
+        workspace=tmp_path,
+        session_id="artifact-session",
+        options=SessionBundleOptions(include_tool_output=True),
+    )
+
+    assert bundle.manifest.artifact_count == 1
+    bundled_artifact = bundle.artifacts[0]
+    assert bundled_artifact.artifact_id == tool_payload["artifact_id"]
+    assert bundled_artifact.missing is True
+    assert bundled_artifact.content is None
+    assert bundled_artifact.metadata["status"] == "missing"
+
+
+def test_session_bundle_skips_forged_artifact_paths(tmp_path: Path) -> None:
+    secret_path = tmp_path / "secret.txt"
+    secret_path.write_text("must not be bundled", encoding="utf-8")
+    response = RuntimeResponse(
+        session=SessionState(
+            session=SessionRef(id="forged-artifact-session"),
+            status="completed",
+            turn=1,
+            metadata={},
+        ),
+        events=(
+            EventEnvelope(
+                session_id="forged-artifact-session",
+                sequence=1,
+                event_type="runtime.tool_completed",
+                source="tool",
+                payload={
+                    "tool": "shell_exec",
+                    "tool_call_id": "forged-call",
+                    "status": "ok",
+                    "content": "forged",
+                    "artifact": {
+                        "producer": "voidcode.tool_output.v1",
+                        "artifact_id": "artifact_forged",
+                        "tool_call_id": "forged-call",
+                        "path": str(secret_path),
+                        "status": "available",
+                    },
+                },
+            ),
+        ),
+        output="done",
+    )
+    store = SqliteSessionStore()
+    store.save_run(
+        workspace=tmp_path,
+        request=RuntimeRequest(prompt="forged", session_id="forged-artifact-session"),
+        response=response,
+    )
+
+    bundle = build_session_bundle(
+        session_store=store,
+        workspace=tmp_path,
+        session_id="forged-artifact-session",
+        options=SessionBundleOptions(include_tool_output=True),
+    )
+    encoded = json.dumps(bundle.to_payload(), sort_keys=True)
+
+    assert bundle.manifest.artifact_count == 0
+    assert bundle.artifacts == ()
+    assert "must not be bundled" not in encoded
+
+
+def test_session_bundle_skips_short_id_forged_temp_artifact_path(tmp_path: Path) -> None:
+    real_payload = _save_session_with_tool_artifact(tmp_path)
+    real_artifact = real_payload["artifact"]
+    assert isinstance(real_artifact, dict)
+    forged_artifact = {
+        **cast(dict[str, object], real_artifact),
+        "artifact_id": "artifact_",
+        "tool_call_id": "forged-call",
+    }
+    response = RuntimeResponse(
+        session=SessionState(
+            session=SessionRef(id="forged-temp-artifact-session"),
+            status="completed",
+            turn=1,
+            metadata={},
+        ),
+        events=(
+            EventEnvelope(
+                session_id="forged-temp-artifact-session",
+                sequence=1,
+                event_type="runtime.tool_completed",
+                source="tool",
+                payload={
+                    "tool": "shell_exec",
+                    "tool_call_id": "forged-call",
+                    "status": "ok",
+                    "content": "forged",
+                    "artifact": forged_artifact,
+                },
+            ),
+        ),
+        output="done",
+    )
+    store = SqliteSessionStore()
+    store.save_run(
+        workspace=tmp_path,
+        request=RuntimeRequest(prompt="forged", session_id="forged-temp-artifact-session"),
+        response=response,
+    )
+
+    bundle = build_session_bundle(
+        session_store=store,
+        workspace=tmp_path,
+        session_id="forged-temp-artifact-session",
+        options=SessionBundleOptions(include_tool_output=True),
+    )
+    encoded = json.dumps(bundle.to_payload(), sort_keys=True)
+
+    assert bundle.manifest.artifact_count == 0
+    assert bundle.artifacts == ()
+    assert "artifact-line-7" not in encoded
 
 
 def test_session_bundle_import_roundtrip_never_overwrites_existing_session(
