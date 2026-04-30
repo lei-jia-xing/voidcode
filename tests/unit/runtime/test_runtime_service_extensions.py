@@ -180,13 +180,15 @@ def test_runtime_extracts_shell_external_path_candidates(
     command: str,
     expected: tuple[str, ...],
 ) -> None:
-    assert VoidCodeRuntime._extract_shell_path_candidates(command) == expected
+    runtime_type = cast(Any, VoidCodeRuntime)
+    assert runtime_type._extract_shell_path_candidates(command) == expected
 
 
 def test_runtime_ignores_shell_executable_path_candidate() -> None:
     command = f'"{sys.executable}" -c "print(1)"'
 
-    assert VoidCodeRuntime._extract_shell_path_candidates(command) == ()
+    runtime_type = cast(Any, VoidCodeRuntime)
+    assert runtime_type._extract_shell_path_candidates(command) == ()
 
 
 def test_runtime_canonicalize_candidate_path_handles_unknown_user_tilde(
@@ -194,7 +196,8 @@ def test_runtime_canonicalize_candidate_path_handles_unknown_user_tilde(
 ) -> None:
     runtime = VoidCodeRuntime(workspace=tmp_path)
 
-    canonical = runtime._canonicalize_candidate_path("~unknownuser/file.txt")
+    runtime_private = cast(Any, runtime)
+    canonical = runtime_private._canonicalize_candidate_path("~unknownuser/file.txt")
 
     assert canonical == (tmp_path / "~unknownuser/file.txt").resolve(strict=False)
 
@@ -9535,7 +9538,8 @@ def test_runtime_provider_context_policy_warn_does_not_block_provider_call(
     assert policy_events[0].payload["mode"] == "warn"
     assert policy_events[0].payload["action"] == "warn"
     assert policy_events[0].payload["blocked"] is False
-    assert "oversized_tool_feedback" in policy_events[0].payload["diagnostic_codes"]
+    diagnostic_codes = cast(tuple[str, ...], policy_events[0].payload["diagnostic_codes"])
+    assert "oversized_tool_feedback" in diagnostic_codes
 
 
 def test_runtime_provider_context_policy_block_fails_before_provider_call(
@@ -9580,7 +9584,8 @@ def test_runtime_provider_context_policy_block_fails_before_provider_call(
     assert policy["mode"] == "block"
     assert policy["action"] == "block"
     assert policy["blocked"] is True
-    assert "oversized_tool_feedback" in policy["blocking_diagnostic_codes"]
+    blocking_diagnostic_codes = cast(tuple[str, ...], policy["blocking_diagnostic_codes"])
+    assert "oversized_tool_feedback" in blocking_diagnostic_codes
 
 
 def test_runtime_provider_context_policy_off_preserves_provider_execution(
@@ -9931,6 +9936,98 @@ def test_runtime_provider_turn_usage_is_persisted_in_session_metadata(tmp_path: 
     }
     assert response.session.metadata["provider_usage"] == expected_usage
     assert replay.session.metadata["provider_usage"] == expected_usage
+
+
+def test_runtime_context_pressure_uses_provider_usage_when_available(tmp_path: Path) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("tiny\n", encoding="utf-8")
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(
+                    ProviderTurnResult(
+                        tool_call=ToolCall("read_file", {"filePath": "sample.txt"}),
+                        usage=ProviderTokenUsage(input_tokens=75, output_tokens=5),
+                    ),
+                    ProviderTurnResult(output="done"),
+                ),
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            context_window=RuntimeContextWindowConfig(
+                model_context_window_tokens=100,
+                context_pressure_threshold=0.7,
+            ),
+        ),
+        model_provider_registry=registry,
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="read sample.txt"))
+
+    pressure_events = [
+        event for event in response.events if event.event_type == RUNTIME_CONTEXT_PRESSURE
+    ]
+    assert response.session.status == "completed"
+    assert len(pressure_events) == 1
+    payload = pressure_events[0].payload
+    assert payload["reason"] == "provider_usage_ratio_exceeded"
+    assert payload["token_estimate_source"] == "provider_usage"
+    assert payload["provider_total_tokens"] == 80
+    assert payload["estimated_tokens"] == 80
+    assert payload["budget_max_tokens"] == 100
+    assert cast(float, payload["pressure_ratio"]) == 0.8
+
+
+def test_runtime_context_pressure_keeps_local_fallback_when_provider_usage_is_low(
+    tmp_path: Path,
+) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("x" * 300, encoding="utf-8")
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(
+                    ProviderTurnResult(
+                        tool_call=ToolCall("read_file", {"filePath": "sample.txt"}),
+                        usage=ProviderTokenUsage(input_tokens=1, output_tokens=1),
+                    ),
+                    ProviderTurnResult(output="done"),
+                ),
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            context_window=RuntimeContextWindowConfig(
+                max_tool_result_tokens=1,
+                model_context_window_tokens=100,
+                context_pressure_threshold=0.7,
+            ),
+        ),
+        model_provider_registry=registry,
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="read sample.txt"))
+
+    pressure_events = [
+        event for event in response.events if event.event_type == RUNTIME_CONTEXT_PRESSURE
+    ]
+    assert response.session.status == "completed"
+    assert len(pressure_events) == 1
+    payload = pressure_events[0].payload
+    assert payload["reason"] == "token_budget_ratio_exceeded"
+    assert payload["token_estimate_source"] != "provider_usage"
+    assert "provider_total_tokens" not in payload
 
 
 def test_runtime_rejects_provider_engine_without_model(tmp_path: Path) -> None:

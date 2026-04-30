@@ -990,6 +990,7 @@ def test_context_window_policy_metadata_round_trips() -> None:
         auto_compaction=False,
         max_tool_results=6,
         max_tool_result_tokens=200,
+        model_context_window_tokens=1_000,
         reserved_output_tokens=20,
         recent_tool_result_count=2,
         default_tool_result_tokens=30,

@@ -218,6 +218,7 @@ class RuntimeContextWindow:
     dropped_tool_result_tokens: int | None = None
     token_budget: int | None = None
     token_estimate_source: str | None = None
+    model_context_window_tokens: int | None = None
     reserved_output_tokens: int | None = None
     truncated_tool_result_count: int = 0
     continuity_state: RuntimeContinuityState | None = None
@@ -1125,6 +1126,7 @@ def prepare_provider_context(
             token_estimate_source=(
                 _token_estimate_source(effective_policy) if token_budget is not None else None
             ),
+            model_context_window_tokens=effective_policy.model_context_window_tokens,
             reserved_output_tokens=effective_policy.reserved_output_tokens,
         )
 
@@ -1231,6 +1233,7 @@ def prepare_provider_context(
         dropped_tool_result_tokens=dropped_tokens,
         token_budget=token_budget,
         token_estimate_source=token_estimate_source,
+        model_context_window_tokens=effective_policy.model_context_window_tokens,
         reserved_output_tokens=effective_policy.reserved_output_tokens,
         truncated_tool_result_count=truncated_count,
         continuity_state=continuity_state,
