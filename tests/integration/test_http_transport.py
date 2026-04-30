@@ -260,6 +260,7 @@ def _run_app(
     method: str,
     path: str,
     body: bytes = b"",
+    query_string: bytes = b"",
 ) -> _TransportResponse:
     messages: list[dict[str, object]] = [{"type": "http.request", "body": body, "more_body": False}]
     sent: list[dict[str, object]] = []
@@ -276,6 +277,7 @@ def _run_app(
         "type": "http",
         "method": method,
         "path": path,
+        "query_string": query_string,
     }
     asyncio.run(app(scope, _receive, _send))
 
@@ -925,6 +927,276 @@ def test_transport_reads_session_result_with_transcript(tmp_path: Path) -> None:
     assert [
         event["event_type"] for event in cast(list[dict[str, object]], payload["transcript"])
     ] == [event.event_type for event in stored.events]
+
+
+def test_transport_session_result_redacts_reasoning_until_query_opt_in() -> None:
+    runtime_http = importlib.import_module("voidcode.runtime.http")
+    runtime_contracts = importlib.import_module("voidcode.runtime.contracts")
+    runtime_events = importlib.import_module("voidcode.runtime.events")
+    runtime_session = importlib.import_module("voidcode.runtime.session")
+
+    session = runtime_session.SessionState(
+        session=runtime_session.SessionRef(id="reasoning-session"),
+        status="completed",
+        metadata={"show_thinking": True},
+    )
+    reasoning_event = runtime_events.EventEnvelope(
+        session_id="reasoning-session",
+        sequence=1,
+        event_type="runtime.reasoning_part",
+        source="runtime",
+        payload=runtime_events.runtime_reasoning_part_payload(text="private chain"),
+    )
+    result = runtime_contracts.RuntimeSessionResult(
+        session=session,
+        prompt="think",
+        status="completed",
+        summary="Completed",
+        output="answer",
+        transcript=(reasoning_event,),
+        last_event_sequence=1,
+    )
+
+    class ReasoningResultRuntime:
+        def session_result(self, *, session_id: str) -> object:
+            assert session_id == "reasoning-session"
+            return result
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    app = runtime_http.RuntimeTransportApp(runtime_factory=ReasoningResultRuntime)
+
+    redacted_response = _run_app(
+        app,
+        method="GET",
+        path="/api/sessions/reasoning-session/result",
+    )
+    redacted_payload = cast(dict[str, object], redacted_response.json())
+    redacted_event = cast(list[dict[str, object]], redacted_payload["transcript"])[0]
+    redacted_reasoning = cast(dict[str, object], redacted_event["payload"])
+    assert redacted_reasoning["text_omitted"] is True
+    assert redacted_reasoning["preview_omitted"] is True
+    assert "private chain" not in json.dumps(redacted_payload)
+
+    shown_response = _run_app(
+        app,
+        method="GET",
+        path="/api/sessions/reasoning-session/result",
+        query_string=b"show_thinking=true",
+    )
+    shown_payload = cast(dict[str, object], shown_response.json())
+    shown_event = cast(list[dict[str, object]], shown_payload["transcript"])[0]
+    shown_reasoning = cast(dict[str, object], shown_event["payload"])
+    assert shown_reasoning["text"] == "private chain"
+    assert shown_reasoning["preview"] == "private chain"
+
+
+def test_transport_resume_response_redacts_reasoning_until_query_opt_in() -> None:
+    runtime_http = importlib.import_module("voidcode.runtime.http")
+    runtime_contracts = importlib.import_module("voidcode.runtime.contracts")
+    runtime_events = importlib.import_module("voidcode.runtime.events")
+    runtime_session = importlib.import_module("voidcode.runtime.session")
+
+    session = runtime_session.SessionState(
+        session=runtime_session.SessionRef(id="reasoning-session"),
+        status="completed",
+        metadata={"show_thinking": True},
+    )
+    reasoning_event = runtime_events.EventEnvelope(
+        session_id="reasoning-session",
+        sequence=1,
+        event_type="runtime.reasoning_part",
+        source="runtime",
+        payload=runtime_events.runtime_reasoning_part_payload(text="private chain"),
+    )
+    response = runtime_contracts.RuntimeResponse(
+        session=session,
+        events=(reasoning_event,),
+        output="answer",
+    )
+
+    class ReasoningResumeRuntime:
+        def resume(self, session_id: str) -> object:
+            assert session_id == "reasoning-session"
+            return response
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    app = runtime_http.RuntimeTransportApp(runtime_factory=ReasoningResumeRuntime)
+
+    redacted_response = _run_app(
+        app,
+        method="GET",
+        path="/api/sessions/reasoning-session",
+    )
+    redacted_payload = cast(dict[str, object], redacted_response.json())
+    redacted_event = cast(list[dict[str, object]], redacted_payload["events"])[0]
+    redacted_reasoning = cast(dict[str, object], redacted_event["payload"])
+    assert redacted_reasoning["text_omitted"] is True
+    assert redacted_reasoning["preview_omitted"] is True
+    assert "private chain" not in json.dumps(redacted_payload)
+
+    shown_response = _run_app(
+        app,
+        method="GET",
+        path="/api/sessions/reasoning-session",
+        query_string=b"show_thinking=true",
+    )
+    shown_payload = cast(dict[str, object], shown_response.json())
+    shown_event = cast(list[dict[str, object]], shown_payload["events"])[0]
+    shown_reasoning = cast(dict[str, object], shown_event["payload"])
+    assert shown_reasoning["text"] == "private chain"
+    assert shown_reasoning["preview"] == "private chain"
+
+
+def test_transport_run_stream_ignores_show_thinking_request_metadata() -> None:
+    runtime_http = importlib.import_module("voidcode.runtime.http")
+    runtime_contracts = importlib.import_module("voidcode.runtime.contracts")
+    runtime_events = importlib.import_module("voidcode.runtime.events")
+    runtime_session = importlib.import_module("voidcode.runtime.session")
+
+    session = runtime_session.SessionState(
+        session=runtime_session.SessionRef(id="reasoning-session"),
+        status="completed",
+    )
+    reasoning_event = runtime_events.EventEnvelope(
+        session_id="reasoning-session",
+        sequence=1,
+        event_type="runtime.reasoning_part",
+        source="runtime",
+        payload=runtime_events.runtime_reasoning_part_payload(text="private chain"),
+    )
+
+    class ReasoningRunRuntime:
+        def run_stream(self, request: object) -> Iterator[object]:
+            typed_request = cast(RuntimeRequestLike, request)
+            assert typed_request.metadata["show_thinking"] is True
+            yield runtime_contracts.RuntimeStreamChunk(
+                kind="event",
+                session=session,
+                event=reasoning_event,
+            )
+            yield runtime_contracts.RuntimeStreamChunk(
+                kind="output",
+                session=session,
+                output="answer",
+            )
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    app = runtime_http.RuntimeTransportApp(runtime_factory=ReasoningRunRuntime)
+    body = json.dumps(
+        {
+            "prompt": "think",
+            "metadata": {"show_thinking": True},
+        }
+    ).encode("utf-8")
+
+    redacted_response = _run_app(
+        app,
+        method="POST",
+        path="/api/runtime/run/stream",
+        body=body,
+    )
+    redacted_payloads = _parse_sse_payloads(redacted_response)
+    redacted_event = cast(dict[str, object], redacted_payloads[0]["event"])
+    redacted_reasoning = cast(dict[str, object], redacted_event["payload"])
+    assert redacted_reasoning["text_omitted"] is True
+    assert redacted_reasoning["preview_omitted"] is True
+    assert "private chain" not in redacted_response.body.decode("utf-8")
+
+    shown_response = _run_app(
+        app,
+        method="POST",
+        path="/api/runtime/run/stream",
+        body=body,
+        query_string=b"show_thinking=true",
+    )
+    shown_payloads = _parse_sse_payloads(shown_response)
+    shown_event = cast(dict[str, object], shown_payloads[0]["event"])
+    shown_reasoning = cast(dict[str, object], shown_event["payload"])
+    assert shown_reasoning["text"] == "private chain"
+    assert shown_reasoning["preview"] == "private chain"
+
+
+def test_transport_background_task_output_redacts_reasoning_until_query_opt_in() -> None:
+    runtime_http = importlib.import_module("voidcode.runtime.http")
+    runtime_contracts = importlib.import_module("voidcode.runtime.contracts")
+    runtime_events = importlib.import_module("voidcode.runtime.events")
+    runtime_session = importlib.import_module("voidcode.runtime.session")
+
+    task_result = runtime_contracts.BackgroundTaskResult(
+        task_id="task-reasoning",
+        parent_session_id="parent-session",
+        child_session_id="child-session",
+        status="completed",
+        summary_output="answer",
+        result_available=True,
+    )
+    session = runtime_session.SessionState(
+        session=runtime_session.SessionRef(id="child-session"),
+        status="completed",
+        metadata={"show_thinking": True},
+    )
+    reasoning_event = runtime_events.EventEnvelope(
+        session_id="child-session",
+        sequence=1,
+        event_type="runtime.reasoning_part",
+        source="runtime",
+        payload=runtime_events.runtime_reasoning_part_payload(text="private chain"),
+    )
+    session_result = runtime_contracts.RuntimeSessionResult(
+        session=session,
+        prompt="think",
+        status="completed",
+        summary="Completed",
+        output="answer",
+        transcript=(reasoning_event,),
+        last_event_sequence=1,
+    )
+
+    class ReasoningTaskRuntime:
+        def load_background_task_result(self, task_id: str) -> object:
+            assert task_id == "task-reasoning"
+            return task_result
+
+        def session_result(self, *, session_id: str) -> object:
+            assert session_id == "child-session"
+            return session_result
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    app = runtime_http.RuntimeTransportApp(runtime_factory=ReasoningTaskRuntime)
+
+    redacted_response = _run_app(
+        app,
+        method="GET",
+        path="/api/tasks/task-reasoning/output",
+    )
+    redacted_payload = cast(dict[str, object], redacted_response.json())
+    redacted_session = cast(dict[str, object], redacted_payload["session_result"])
+    redacted_event = cast(list[dict[str, object]], redacted_session["transcript"])[0]
+    redacted_reasoning = cast(dict[str, object], redacted_event["payload"])
+    assert redacted_reasoning["text_omitted"] is True
+    assert redacted_reasoning["preview_omitted"] is True
+    assert "private chain" not in json.dumps(redacted_payload)
+
+    shown_response = _run_app(
+        app,
+        method="GET",
+        path="/api/tasks/task-reasoning/output",
+        query_string=b"show_thinking=true",
+    )
+    shown_payload = cast(dict[str, object], shown_response.json())
+    shown_session = cast(dict[str, object], shown_payload["session_result"])
+    shown_event = cast(list[dict[str, object]], shown_session["transcript"])[0]
+    shown_reasoning = cast(dict[str, object], shown_event["payload"])
+    assert shown_reasoning["text"] == "private chain"
+    assert shown_reasoning["preview"] == "private chain"
 
 
 def test_transport_reads_session_debug_snapshot(tmp_path: Path) -> None:
