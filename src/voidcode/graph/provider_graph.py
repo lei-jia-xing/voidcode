@@ -421,6 +421,8 @@ class ProviderGraph:
         }
         if stream_event.text is not None:
             payload["text"] = stream_event.text
+        if stream_event.metadata is not None:
+            payload["metadata"] = stream_event.metadata
         if stream_event.error is not None:
             payload["error"] = stream_event.error
         if stream_event.error_kind is not None:

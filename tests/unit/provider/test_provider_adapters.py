@@ -2013,7 +2013,12 @@ def test_provider_adapter_stream_turn_emits_reasoning_events_from_reasoning_cont
     events = list(provider.stream_turn(_build_turn_request(model_name="openai")))
 
     assert events == [
-        ProviderStreamEvent(kind="delta", channel="reasoning", text="Thinking step."),
+        ProviderStreamEvent(
+            kind="delta",
+            channel="reasoning",
+            text="Thinking step.",
+            metadata={"source": "delta.reasoning"},
+        ),
         ProviderStreamEvent(kind="delta", channel="text", text="Done."),
         ProviderStreamEvent(kind="done", done_reason="completed"),
     ]
@@ -2055,7 +2060,12 @@ def test_provider_adapter_stream_turn_emits_reasoning_events_from_reasoning(
     events = list(provider.stream_turn(_build_turn_request(model_name="openai")))
 
     assert events == [
-        ProviderStreamEvent(kind="delta", channel="reasoning", text="Reasoning step."),
+        ProviderStreamEvent(
+            kind="delta",
+            channel="reasoning",
+            text="Reasoning step.",
+            metadata={"source": "delta.reasoning"},
+        ),
         ProviderStreamEvent(kind="delta", channel="text", text="Done."),
         ProviderStreamEvent(kind="done", done_reason="completed"),
     ]
@@ -2097,7 +2107,12 @@ def test_provider_adapter_stream_turn_emits_reasoning_events_from_thinking_block
     events = list(provider.stream_turn(_build_turn_request(model_name="anthropic")))
 
     assert events == [
-        ProviderStreamEvent(kind="delta", channel="reasoning", text="Private chain."),
+        ProviderStreamEvent(
+            kind="delta",
+            channel="reasoning",
+            text="Private chain.",
+            metadata={"source": "delta.thinking_blocks"},
+        ),
         ProviderStreamEvent(kind="delta", channel="text", text="Visible answer"),
         ProviderStreamEvent(kind="done", done_reason="completed"),
     ]
