@@ -8956,8 +8956,53 @@ def test_runtime_provider_compaction_emits_continuity_state_and_persists_metadat
         "anchor": summary_anchor,
         "source": summary_source,
     }
+    assert runtime_state["memory_refreshed"] == {
+        "last_summary_anchor": summary_anchor,
+        "last_original_tool_result_count": 2,
+        "last_retained_tool_result_count": 1,
+        "last_emitted_run_id": runtime_state["run_id"],
+    }
     replay_runtime_state = cast(dict[str, object], replay.session.metadata["runtime_state"])
     assert replay_runtime_state["continuity"] == expected_continuity
+
+
+def test_runtime_memory_refreshed_guard_suppresses_duplicate_anchor(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path)
+    coordinator = runtime._run_loop_coordinator  # pyright: ignore[reportPrivateUsage]
+    session = SessionState(
+        session=SessionRef("memory-refresh-guard"),
+        status="running",
+        metadata={"runtime_state": {"run_id": "run-1"}},
+    )
+
+    first = coordinator._should_emit_memory_refreshed(  # pyright: ignore[reportPrivateUsage]
+        session=session,
+        summary_anchor="continuity:abc",
+        original_tool_result_count=9,
+        retained_tool_result_count=8,
+    )
+    updated = coordinator._session_with_memory_refreshed_state(  # pyright: ignore[reportPrivateUsage]
+        session=session,
+        summary_anchor="continuity:abc",
+        original_tool_result_count=9,
+        retained_tool_result_count=8,
+    )
+    duplicate = coordinator._should_emit_memory_refreshed(  # pyright: ignore[reportPrivateUsage]
+        session=updated,
+        summary_anchor="continuity:abc",
+        original_tool_result_count=9,
+        retained_tool_result_count=8,
+    )
+    changed = coordinator._should_emit_memory_refreshed(  # pyright: ignore[reportPrivateUsage]
+        session=updated,
+        summary_anchor="continuity:def",
+        original_tool_result_count=10,
+        retained_tool_result_count=8,
+    )
+
+    assert first is True
+    assert duplicate is False
+    assert changed is True
 
 
 def test_runtime_emits_context_pressure_with_cooldown_edge_control(tmp_path: Path) -> None:
