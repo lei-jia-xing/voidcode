@@ -178,6 +178,17 @@ function findTool(
   );
 }
 
+function findApprovalBlockedTool(
+  tools: ChatMessage["tools"],
+  name: string,
+): ChatTool | undefined {
+  return tools.find(
+    (tool) =>
+      tool.name === name &&
+      (tool.status === "running" || tool.status === "pending"),
+  );
+}
+
 function upsertTool(
   currentAssistant: ChatMessage | null,
   tool: ChatTool,
@@ -610,10 +621,18 @@ export function deriveChatMessages(
       }
     } else if (event.event_type === "runtime.approval_requested") {
       if (currentAssistant) {
+        const blockedTool = String(event.payload?.tool || "");
+        const pendingTool = findApprovalBlockedTool(
+          currentAssistant.tools,
+          blockedTool,
+        );
+        if (pendingTool) {
+          pendingTool.status = "pending";
+        }
         currentAssistant.status = "waiting";
         currentAssistant.approval = {
           requestId: String(event.payload?.request_id || ""),
-          tool: String(event.payload?.tool || ""),
+          tool: blockedTool,
           targetSummary: String(event.payload?.target_summary || ""),
         };
       }
@@ -635,6 +654,13 @@ export function deriveChatMessages(
       if (currentAssistant) {
         const decision = event.payload?.decision;
         if (decision === "deny") {
+          const blockedTool = currentAssistant.approval?.tool;
+          const pendingTool = blockedTool
+            ? findApprovalBlockedTool(currentAssistant.tools, blockedTool)
+            : undefined;
+          if (pendingTool) {
+            pendingTool.status = "failed";
+          }
           currentAssistant.status = "failed";
         } else if (currentAssistant.status === "waiting") {
           currentAssistant.status = "in_progress";

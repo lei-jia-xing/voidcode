@@ -1020,10 +1020,6 @@ def test_transport_resolves_pending_approval_allow_over_http(tmp_path: Path) -> 
         "graph.tool_request_created",
         "runtime.tool_lookup_succeeded",
         "runtime.approval_requested",
-        "graph.loop_step",
-        "graph.model_turn",
-        "graph.tool_request_created",
-        "runtime.tool_lookup_succeeded",
         "runtime.approval_resolved",
         "runtime.tool_started",
         "runtime.tool_completed",
@@ -1441,10 +1437,6 @@ def test_transport_resolves_pending_approval_deny_over_http(tmp_path: Path) -> N
         "graph.tool_request_created",
         "runtime.tool_lookup_succeeded",
         "runtime.approval_requested",
-        "graph.loop_step",
-        "graph.model_turn",
-        "graph.tool_request_created",
-        "runtime.tool_lookup_succeeded",
         "runtime.approval_resolved",
         "runtime.failed",
     ]
@@ -1549,10 +1541,6 @@ def test_transport_resumes_multi_step_loop_and_persists_replay_over_http(tmp_pat
         "graph.tool_request_created",
         "runtime.tool_lookup_succeeded",
         "runtime.approval_requested",
-        "graph.loop_step",
-        "graph.model_turn",
-        "graph.tool_request_created",
-        "runtime.tool_lookup_succeeded",
         "runtime.approval_resolved",
         "runtime.tool_started",
         "runtime.tool_completed",
@@ -1568,7 +1556,7 @@ def test_transport_resumes_multi_step_loop_and_persists_replay_over_http(tmp_pat
     ]
     assert [
         event["sequence"] for event in cast(list[dict[str, object]], approve_payload["events"])
-    ] == list(range(1, 31))
+    ] == list(range(1, 27))
     assert list_response.status == 200
     assert list_response.json() == [
         {
@@ -1665,16 +1653,12 @@ def test_transport_denied_multi_step_loop_preserves_failed_replay_over_http(tmp_
         "graph.tool_request_created",
         "runtime.tool_lookup_succeeded",
         "runtime.approval_requested",
-        "graph.loop_step",
-        "graph.model_turn",
-        "graph.tool_request_created",
-        "runtime.tool_lookup_succeeded",
         "runtime.approval_resolved",
         "runtime.failed",
     ]
     assert [
         event["sequence"] for event in cast(list[dict[str, object]], deny_payload["events"])
-    ] == list(range(1, 21))
+    ] == list(range(1, 17))
     assert list_response.status == 200
     assert list_response.json() == [
         {

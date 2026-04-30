@@ -396,3 +396,18 @@ Added terminal `runtime.tool_completed` with `payload.status="error"` and `paylo
 ### P2 follow-up: Integration replay assertions
 - HTTP SSE and read-only stream integration tests that previously expected `runtime.failed` immediately after `runtime.tool_started` must now assert the additive terminal `runtime.tool_completed` first, with `payload.status="error"` and `payload.tool_status.status="failed"`, then preserve the subsequent `runtime.failed` assertion.
 - Replay/persistence tests need both live stream sequence checks and persisted event-type list updates, otherwise the session can be correctly persisted but the test still encodes the old terminal ordering.
+
+---
+
+## P1: Approval resume re-planned before executing approved shell
+
+**Date:** 2026-04-30
+
+### Root cause
+- `resume_pending_approval_impl()` passed `approval_resolution` into `_execute_graph_loop()`, which calls the graph/provider before resolving the approval. Non-deterministic providers could therefore propose a different shell/write call and create repeated approval loops instead of executing the approved pending call.
+- Frontend parsing also kept the `graph.tool_request_created` row as `running` after `runtime.approval_requested`, so approval-blocked shell rows visually looked like active commands.
+
+### Fix pattern
+- Approval resume now reconstructs the exact persisted `PendingApproval` tool call, emits `runtime.approval_resolved`, executes that tool once through normal hooks/display/status metadata, appends the result, and only then resumes the graph with the tool result.
+- After the direct approved tool result is appended, resume should recompute context/continuity for the next provider turn instead of reinjecting stale pre-approval continuity.
+- Frontend parser marks the matching tool row `pending` on `runtime.approval_requested` so approval-blocked tools do not look indefinitely running.

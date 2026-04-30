@@ -574,3 +574,52 @@ When `approval_resolution` is provided but the replayed tool call differs from t
 
 - `display.copyable.command` for `shell_exec` should be truncated with the same display-argument cap as `display.args`; otherwise long shell commands bloat SSE and persisted replay metadata.
 - This is display-only: keep actual tool arguments and completed `payload.arguments.command` raw/unchanged, and keep `display.copyable.output` behavior unchanged.
+
+---
+
+## F4: Scope Fidelity Check — after latest commit `da771f8`
+
+**Date:** 2026-04-30
+
+**VERDICT: APPROVE** ✓
+
+### Two new commits since prior F4 audit
+
+| Commit | Scope alignment | Files |
+|--------|----------------|-------|
+| `9524873` `fix(runtime): bound shell copyable command metadata` | Plan T2 (Backend Display Contract §copyable.command) — display metadata truncation fix, no new behavior | `tool_display.py` (+1/-1), `test_runtime_events.py` (+32), notepad (+9) |
+| `da771f8` `feat(frontend): split file tree and code review surfaces` | Plan T6 (review/audit controls redesign) + user-requested "true separation" of File Tree / Code Review into distinct panels | `ReviewPanel.tsx` (+298/-192), `App.tsx` (+62/-?), `App.test.tsx` (+77/-?), `ReviewPanel.test.tsx` (+56/-?), `launcher.spec.ts` (+18/-?), locales (+8), notepad (+12) |
+
+---
+
+## P1 approval resume finalization
+
+**Date:** 2026-04-30
+
+- Full-check stale expectations were all old replay-before-resolution assumptions. Direct approval resume now removes the extra `graph.loop_step`/`graph.model_turn`/`graph.tool_request_created`/`runtime.tool_lookup_succeeded` suffix before `runtime.approval_resolved`; tests should expect `approval_resolved -> tool_started/tool_completed` or `approval_resolved -> failed`.
+- Resume stream incrementality should consume only the immediately available direct `approval_resolved` and `tool_started` chunks before blocking on the actual tool invocation.
+- ACP startup now appears before the direct approval resolution chunk on approval resume, while MCP refresh failures remain first if emitted before ACP startup.
+- Final verification: `mise run check` passed with backend `1703 passed` and frontend `162 passed`.
+
+### Scope boundary re-verification (cumulative, all 57+ commits)
+
+| Check | Result |
+|-------|--------|
+| File Tree / Code Review separation | ✅ Explicit user scope (task context, T18 learnings) |
+| Shell copyable command metadata fix | ✅ T2 display metadata contract |
+| No generated artifacts or secrets | ✅ Clean |
+| No cloud/multi-agent features | ✅ None introduced |
+| No frontend direct tool execution | ✅ Runtime boundary intact |
+| No blue/purple/indigo primary styling | ✅ Confirmed zero matches |
+| AI session naming deferred | ✅ Explicitly excluded |
+| TODO frequency changes deferred | ✅ Explicitly excluded |
+| Branch clean, synced with origin | ✅ `git status --short --branch` clean |
+
+### Final review gates
+
+- F1 (Plan Compliance): APPROVE ✓
+- F2 (Code Quality): APPROVE ✓
+- F3 (Real Manual QA): APPROVE ✓
+- F4 (Scope Fidelity): **APPROVE** ✓ (this verdict, rerun after `da771f8`)
+
+F4 checkbox remains unchecked in plan until user explicitly says okay.

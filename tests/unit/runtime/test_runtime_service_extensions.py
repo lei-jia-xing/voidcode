@@ -526,6 +526,41 @@ class _ScriptedModelProvider:
         return provider
 
 
+class _WriteThenResultAwareTurnProvider:
+    def __init__(self, *, name: str) -> None:
+        self.name = name
+
+    def propose_turn(self, request: object) -> ProviderTurnResult:
+        turn_request = cast(ProviderTurnRequest, request)
+        if turn_request.tool_results:
+            return ProviderTurnResult(output="done")
+        return ProviderTurnResult(
+            tool_call=ToolCall(
+                tool_name="write_file",
+                arguments={"path": "allowed.txt", "content": "allowed"},
+            )
+        )
+
+    def stream_turn(self, request: object):
+        result = self.propose_turn(request)
+        if result.output is not None:
+            return iter(
+                (
+                    ProviderStreamEvent(kind="delta", channel="text", text=result.output),
+                    ProviderStreamEvent(kind="done", done_reason="completed"),
+                )
+            )
+        return iter((ProviderStreamEvent(kind="done", done_reason="completed"),))
+
+
+@dataclass(frozen=True, slots=True)
+class _WriteThenResultAwareModelProvider:
+    name: str
+
+    def turn_provider(self) -> _WriteThenResultAwareTurnProvider:
+        return _WriteThenResultAwareTurnProvider(name=self.name)
+
+
 class _AlwaysFailingModelProvider:
     _error_kind: ProviderErrorKind
 
@@ -5844,8 +5879,6 @@ def test_runtime_resume_emits_mcp_failed_and_continues_on_startup_refresh(
     resumed_suffix_types = [event.event_type for event in resumed_suffix]
     assert resumed_suffix_types[0] == RUNTIME_MCP_SERVER_FAILED
     assert "runtime.failed" not in resumed_suffix_types
-    assert "graph.tool_request_created" in resumed_suffix_types
-    assert "runtime.tool_lookup_succeeded" in resumed_suffix_types
     assert "runtime.approval_resolved" in resumed_suffix_types
     assert "runtime.tool_started" in resumed_suffix_types
     assert "runtime.tool_completed" in resumed_suffix_types
@@ -5996,8 +6029,6 @@ def test_runtime_resume_still_starts_acp_when_mcp_refresh_fails(
     assert resumed.session.status == "completed"
     assert resumed_suffix[0] == RUNTIME_MCP_SERVER_FAILED
     assert "runtime.failed" not in resumed_suffix
-    assert "graph.tool_request_created" in resumed_suffix
-    assert "runtime.tool_lookup_succeeded" in resumed_suffix
     assert "runtime.approval_resolved" in resumed_suffix
     assert "runtime.tool_started" in resumed_suffix
     assert "runtime.tool_completed" in resumed_suffix
@@ -6305,8 +6336,8 @@ def test_runtime_waiting_run_disconnects_acp_and_resume_reconnects_on_same_runti
         event.event_type for event in resumed.events if event.sequence > waiting.events[-1].sequence
     ]
     assert resumed_acp_events[:2] == [
-        "graph.tool_request_created",
-        "runtime.tool_lookup_succeeded",
+        "runtime.acp_connected",
+        "runtime.approval_resolved",
     ]
     assert "runtime.acp_connected" in resumed_acp_events
     assert "runtime.approval_resolved" in resumed_acp_events
@@ -6385,12 +6416,8 @@ def test_runtime_resume_stream_replays_graph_suffix_before_acp_connect_when_enab
     )
     event_types = [chunk.event.event_type for chunk in chunks if chunk.event is not None]
 
-    assert event_types[:2] == [
-        "graph.tool_request_created",
-        "runtime.tool_lookup_succeeded",
-    ]
-    assert event_types[2] == "runtime.acp_connected"
-    assert event_types[3:6] == [
+    assert event_types[:4] == [
+        "runtime.acp_connected",
         "runtime.approval_resolved",
         "runtime.tool_started",
         "runtime.tool_completed",
@@ -7437,12 +7464,6 @@ def test_runtime_approval_resume_preserves_canonical_continuity_state(tmp_path: 
                 outcomes=(
                     ProviderTurnResult(tool_call=ToolCall("read_file", {"filePath": "sample.txt"})),
                     ProviderTurnResult(tool_call=ToolCall("read_file", {"filePath": "sample.txt"})),
-                    ProviderTurnResult(
-                        tool_call=ToolCall(
-                            "write_file",
-                            {"path": "beta.txt", "content": "2"},
-                        )
-                    ),
                     ProviderTurnResult(
                         tool_call=ToolCall(
                             "write_file",
@@ -9899,20 +9920,7 @@ def test_runtime_agent_tool_allowlist_blocks_invocation(tmp_path: Path) -> None:
 
 def test_runtime_agent_tool_allowlist_survives_approval_resume(tmp_path: Path) -> None:
     registry = ModelProviderRegistry(
-        providers={
-            "opencode": _ScriptedModelProvider(
-                name="opencode",
-                outcomes=(
-                    ProviderTurnResult(
-                        tool_call=ToolCall(
-                            tool_name="write_file",
-                            arguments={"path": "allowed.txt", "content": "allowed"},
-                        )
-                    ),
-                    ProviderTurnResult(output="done"),
-                ),
-            )
-        }
+        providers={"opencode": _WriteThenResultAwareModelProvider(name="opencode")}
     )
     initial_runtime = VoidCodeRuntime(
         workspace=tmp_path,
@@ -10251,7 +10259,7 @@ def test_runtime_resume_preserves_provider_attempt_and_target_across_pending_app
     assert resumed.session.status == "completed"
     assert resumed.output == "done"
     assert resumed.session.metadata["provider_attempt"] == 1
-    assert custom_attempts == [1, 1, 1]
+    assert custom_attempts == [1, 1]
     assert all(attempt == 1 for attempt in custom_attempts)
     resumed_fallback_events = [
         event for event in resumed.events if event.event_type == "runtime.provider_fallback"

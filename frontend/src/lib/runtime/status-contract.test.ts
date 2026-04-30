@@ -203,6 +203,106 @@ describe("Tool Status Contract", () => {
     });
   });
 
+  it("marks tool request rows as pending while blocked on approval", () => {
+    const events: EventEnvelope[] = [
+      {
+        session_id: "test",
+        sequence: 1,
+        event_type: "runtime.request_received",
+        source: "runtime",
+        payload: { prompt: "Run shell" },
+      },
+      {
+        session_id: "test",
+        sequence: 2,
+        event_type: "graph.tool_request_created",
+        source: "graph",
+        payload: {
+          tool: "shell_exec",
+          tool_call_id: "shell-approval-1",
+          arguments: { command: "npm test" },
+        },
+      },
+      {
+        session_id: "test",
+        sequence: 3,
+        event_type: "runtime.approval_requested",
+        source: "runtime",
+        payload: {
+          request_id: "approval-1",
+          tool: "shell_exec",
+          decision: "ask",
+          arguments: { command: "npm test" },
+          target_summary: "shell_exec",
+        },
+      },
+    ];
+
+    const messages = deriveChatMessages(events, null);
+    const assistantMessage = messages.find((m) => m.role === "assistant");
+
+    expect(assistantMessage?.status).toBe("waiting");
+    expect(assistantMessage?.tools[0]).toMatchObject({
+      id: "shell-approval-1",
+      name: "shell_exec",
+      status: "pending",
+    });
+  });
+
+  it("marks approval-blocked tool rows as failed when approval is denied", () => {
+    const events: EventEnvelope[] = [
+      {
+        session_id: "test",
+        sequence: 1,
+        event_type: "runtime.request_received",
+        source: "runtime",
+        payload: { prompt: "Run shell" },
+      },
+      {
+        session_id: "test",
+        sequence: 2,
+        event_type: "graph.tool_request_created",
+        source: "graph",
+        payload: {
+          tool: "shell_exec",
+          tool_call_id: "shell-deny-1",
+          arguments: { command: "rm -rf build" },
+        },
+      },
+      {
+        session_id: "test",
+        sequence: 3,
+        event_type: "runtime.approval_requested",
+        source: "runtime",
+        payload: {
+          request_id: "approval-deny-1",
+          tool: "shell_exec",
+          decision: "ask",
+          arguments: { command: "rm -rf build" },
+          target_summary: "shell_exec",
+        },
+      },
+      {
+        session_id: "test",
+        sequence: 4,
+        event_type: "runtime.approval_resolved",
+        source: "runtime",
+        payload: { request_id: "approval-deny-1", decision: "deny" },
+      },
+    ];
+
+    const messages = deriveChatMessages(events, null);
+    const assistantMessage = messages.find((m) => m.role === "assistant");
+
+    expect(assistantMessage?.status).toBe("failed");
+    expect(assistantMessage?.approval).toBeNull();
+    expect(assistantMessage?.tools[0]).toMatchObject({
+      id: "shell-deny-1",
+      name: "shell_exec",
+      status: "failed",
+    });
+  });
+
   it("treats runtime.tool_completed without explicit status as completed", () => {
     const events: EventEnvelope[] = [
       {
