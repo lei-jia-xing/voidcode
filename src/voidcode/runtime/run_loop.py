@@ -28,7 +28,7 @@ from .context_window import (
     RuntimeContinuityState,
     continuity_summary_metadata,
 )
-from .contracts import RuntimeStreamChunk
+from .contracts import RuntimeProviderContextPolicyDecision, RuntimeStreamChunk
 from .events import (
     RUNTIME_CONTEXT_PRESSURE,
     RUNTIME_MEMORY_REFRESHED,
@@ -437,6 +437,7 @@ class RuntimeRunLoopCoordinator:
         provider_attempt = runtime._provider_attempt_from_metadata(graph_request.metadata)
         reasoning_capture_state = runtime._reasoning_capture_state()
         while True:
+            sequence = int(sequence)
             current_graph_request: GraphRunRequest = graph_request
             current_session = session
             base_context = runtime._prepare_provider_context_window(
@@ -498,6 +499,66 @@ class RuntimeRunLoopCoordinator:
             effective_runtime_config = runtime._effective_runtime_config_from_metadata(
                 session.metadata
             )
+            provider_context_policy_decision: RuntimeProviderContextPolicyDecision | None = (
+                runtime._provider_context_policy_decision_for_graph_request(
+                    graph_request=graph_request,
+                    effective_config=effective_runtime_config,
+                )
+            )
+            if provider_context_policy_decision is not None:
+                if provider_context_policy_decision.action == "warn":
+                    policy_event_sequence: int = sequence + 1
+                    yield RuntimeStreamChunk(
+                        kind="event",
+                        session=session,
+                        event=EventEnvelope(
+                            session_id=session.session.id,
+                            sequence=policy_event_sequence,
+                            event_type="runtime.provider_context_policy",
+                            source="runtime",
+                            payload={
+                                "mode": provider_context_policy_decision.mode,
+                                "action": provider_context_policy_decision.action,
+                                "blocked": provider_context_policy_decision.blocked,
+                                "diagnostic_count": (
+                                    provider_context_policy_decision.diagnostic_count
+                                ),
+                                "diagnostic_codes": list(
+                                    provider_context_policy_decision.diagnostic_codes
+                                ),
+                                "blocking_diagnostic_codes": list(
+                                    provider_context_policy_decision.blocking_diagnostic_codes
+                                ),
+                                "message": provider_context_policy_decision.message,
+                            },
+                        ),
+                    )
+                    sequence = policy_event_sequence
+                if provider_context_policy_decision.blocked:
+                    policy_failure_sequence: int = sequence + 1
+                    yield runtime._failed_chunk(
+                        session=session,
+                        sequence=policy_failure_sequence,
+                        error=provider_context_policy_decision.message,
+                        payload={
+                            "kind": "provider_context_policy_blocked",
+                            "provider_context_policy": {
+                                "mode": provider_context_policy_decision.mode,
+                                "action": provider_context_policy_decision.action,
+                                "blocked": provider_context_policy_decision.blocked,
+                                "diagnostic_count": (
+                                    provider_context_policy_decision.diagnostic_count
+                                ),
+                                "diagnostic_codes": list(
+                                    provider_context_policy_decision.diagnostic_codes
+                                ),
+                                "blocking_diagnostic_codes": list(
+                                    provider_context_policy_decision.blocking_diagnostic_codes
+                                ),
+                            },
+                        },
+                    )
+                    return
             context_window_config = effective_runtime_config.context_window
             pressure_threshold = (
                 context_window_config.context_pressure_threshold
