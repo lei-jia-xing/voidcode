@@ -22,6 +22,8 @@ from voidcode.provider.errors import (
 from voidcode.provider.glm import GLMModelProvider
 from voidcode.provider.google import GoogleModelProvider
 from voidcode.provider.litellm import LiteLLMModelProvider
+from voidcode.provider.litellm_backend import LiteLLMBackendSingleAgentProvider
+from voidcode.provider.model_catalog import ProviderModelMetadata, infer_model_metadata
 from voidcode.provider.openai import OpenAIModelProvider
 from voidcode.provider.opencode_go import OpenCodeGoModelProvider
 from voidcode.provider.protocol import (
@@ -1264,6 +1266,7 @@ def test_opencode_go_openai_compatible_provider_uses_tool_call_pairing(
         raw_model="opencode-go/kimi-k2.6",
         provider_name="opencode-go",
         model_name="kimi-k2.6",
+        model_metadata=infer_model_metadata("opencode-go", "kimi-k2.6"),
         attempt=request.attempt,
         abort_signal=request.abort_signal,
     )
@@ -1332,6 +1335,7 @@ def test_opencode_go_openai_compatible_provider_sanitizes_tool_messages(
         raw_model="opencode-go/glm-5.1",
         provider_name="opencode-go",
         model_name="glm-5.1",
+        model_metadata=infer_model_metadata("opencode-go", "glm-5.1"),
         attempt=request.attempt,
         abort_signal=request.abort_signal,
     )
@@ -1360,7 +1364,115 @@ def test_opencode_go_openai_compatible_provider_sanitizes_tool_messages(
     assert '"data_uri": {"byte_count"' in tool_content
 
 
-def test_opencode_go_non_openai_families_keep_synthetic_tool_feedback(
+def test_opencode_go_mimo_preserves_standard_tool_pairing_with_model_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = OpenCodeGoModelProvider().turn_provider()
+    request = _build_turn_request(model_name="opencode-go")
+    tool_results = (
+        ToolResult(
+            tool_name="list",
+            status="ok",
+            content="./\n  README.md",
+            data={"tool_call_id": "list_0", "arguments": {"path": "."}},
+        ),
+    )
+    request = ProviderTurnRequest(
+        assembled_context=_assembled_from_legacy(
+            prompt=request.prompt,
+            tool_results=tool_results,
+            context_window=_StubContextWindow(
+                prompt=request.context_window.prompt,
+                tool_results=tool_results,
+            ),
+            applied_skills=request.applied_skills,
+        ),
+        available_tools=request.available_tools,
+        raw_model="opencode-go/mimo-v2.5-pro",
+        provider_name="opencode-go",
+        model_name="mimo-v2.5-pro",
+        model_metadata=infer_model_metadata("opencode-go", "mimo-v2.5-pro"),
+        attempt=request.attempt,
+        abort_signal=request.abort_signal,
+    )
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        completion_content="done",
+    )
+
+    _ = provider.propose_turn(request)
+
+    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+    assert isinstance(payload_obj, dict)
+    payload = cast(dict[str, object], payload_obj)
+    messages_obj = payload.get("messages")
+    assert isinstance(messages_obj, list)
+    messages = cast(list[dict[str, object]], messages_obj)
+    assert messages[1]["role"] == "assistant"
+    assert "tool_calls" in messages[1]
+    assert messages[2]["role"] == "tool"
+    assert messages[2]["tool_call_id"] == "list_0"
+    assert "Completed tool calls for current request:" not in str(messages)
+
+
+def test_provider_adapter_synthetic_tool_feedback_policy_is_provider_agnostic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = LiteLLMBackendSingleAgentProvider(
+        name="custom",
+        config=None,
+    )
+    request = _build_turn_request(model_name="custom")
+    tool_results = (
+        ToolResult(
+            tool_name="list",
+            status="ok",
+            content="./\n  .voidcode.json",
+            data={"tool_call_id": "list_0", "arguments": {"path": "."}},
+        ),
+    )
+    request = ProviderTurnRequest(
+        assembled_context=_assembled_from_legacy(
+            prompt=request.prompt,
+            tool_results=tool_results,
+            context_window=_StubContextWindow(
+                prompt=request.context_window.prompt,
+                tool_results=tool_results,
+            ),
+            applied_skills=request.applied_skills,
+        ),
+        available_tools=request.available_tools,
+        raw_model="custom/demo",
+        provider_name="custom",
+        model_name="demo",
+        model_metadata=ProviderModelMetadata(tool_feedback_mode="synthetic_user_message"),
+        attempt=request.attempt,
+        abort_signal=request.abort_signal,
+    )
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        completion_content="done",
+    )
+
+    _ = provider.propose_turn(request)
+
+    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+    assert isinstance(payload_obj, dict)
+    payload = cast(dict[str, object], payload_obj)
+    messages_obj = payload.get("messages")
+    assert isinstance(messages_obj, list)
+    messages = cast(list[dict[str, object]], messages_obj)
+    assert messages[1]["role"] == "user"
+    feedback = messages[1]["content"]
+    assert isinstance(feedback, str)
+    assert "Completed tool calls for current request:" in feedback
+    assert '"tool_name": "list"' in feedback
+    assert "tool_calls" not in messages[1]
+
+
+def test_opencode_go_non_openai_families_declare_synthetic_tool_feedback_policy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     provider = OpenCodeGoModelProvider().turn_provider()
@@ -1387,6 +1499,7 @@ def test_opencode_go_non_openai_families_keep_synthetic_tool_feedback(
         raw_model="opencode-go/minimax-m2.7",
         provider_name="opencode-go",
         model_name="minimax-m2.7",
+        model_metadata=infer_model_metadata("opencode-go", "minimax-m2.7"),
         attempt=request.attempt,
         abort_signal=request.abort_signal,
     )
@@ -1444,6 +1557,7 @@ def test_provider_adapter_logs_bounded_request_diagnostics(
         raw_model="opencode-go/minimax-m2.7",
         provider_name="opencode-go",
         model_name="minimax-m2.7",
+        model_metadata=infer_model_metadata("opencode-go", "minimax-m2.7"),
         attempt=request.attempt,
         abort_signal=request.abort_signal,
     )
@@ -1730,6 +1844,49 @@ def test_glm_provider_maps_disabled_reasoning_effort_to_disabled_thinking(
     assert isinstance(payload_obj, dict)
     payload = cast(dict[str, object], payload_obj)
     assert payload["extra_body"] == {"thinking": {"type": "disabled"}}
+
+
+def test_litellm_backend_reasoning_effort_can_be_disabled_by_adapter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = LiteLLMBackendSingleAgentProvider(
+        name="custom",
+        config=LiteLLMProviderConfig(base_url="http://localhost:4000"),
+        reasoning_effort_mode="disabled",
+    )
+
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        completion_content="ok",
+    )
+
+    _ = provider.propose_turn(
+        ProviderTurnRequest(
+            assembled_context=_assembled_from_legacy(
+                prompt="read sample.txt",
+                tool_results=(),
+                context_window=_StubContextWindow(prompt="read sample.txt", tool_results=()),
+                applied_skills=(),
+            ),
+            available_tools=(
+                ToolDefinition(name="read_file", description="read file", read_only=True),
+            ),
+            raw_model="custom/glm-5.1",
+            provider_name="custom",
+            model_name="glm-5.1",
+            reasoning_effort="high",
+            attempt=0,
+            abort_signal=None,
+        )
+    )
+
+    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+    assert isinstance(payload_obj, dict)
+    payload = cast(dict[str, object], payload_obj)
+    assert "reasoning_effort" not in payload
+    assert "extra_body" not in payload
+    assert "allowed_openai_params" not in payload
 
 
 @pytest.mark.parametrize(

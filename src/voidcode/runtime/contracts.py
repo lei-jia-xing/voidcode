@@ -557,6 +557,7 @@ class ProviderModelMetadata:
     modalities_input: tuple[str, ...] | None = None
     modalities_output: tuple[str, ...] | None = None
     model_status: str | None = None
+    tool_feedback_mode: Literal["standard", "synthetic_user_message"] | None = None
 
 
 @dataclass(frozen=True, slots=True)

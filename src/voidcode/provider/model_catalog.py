@@ -13,6 +13,8 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 from .config import LiteLLMProviderConfig
 
+type ToolFeedbackMode = Literal["standard", "synthetic_user_message"]
+
 
 @dataclass(frozen=True, slots=True)
 class ProviderModelMetadata:
@@ -37,6 +39,7 @@ class ProviderModelMetadata:
     modalities_input: tuple[str, ...] | None = None
     modalities_output: tuple[str, ...] | None = None
     model_status: str | None = None
+    tool_feedback_mode: ToolFeedbackMode | None = None
     derived_max_input_tokens: bool = field(default=False, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -97,6 +100,8 @@ class ProviderModelMetadata:
             payload["modalities_output"] = list(self.modalities_output)
         if self.model_status is not None:
             payload["model_status"] = self.model_status
+        if self.tool_feedback_mode is not None:
+            payload["tool_feedback_mode"] = self.tool_feedback_mode
         return payload
 
 
@@ -192,6 +197,7 @@ class _OpenAICompatibleModelItem(_DiscoveryPayloadModel):
     input_modalities: list[str] | None = None
     output_modalities: list[str] | None = None
     status: str | None = None
+    tool_feedback_mode: str | None = None
 
 
 class _OpenAICompatibleDiscoveryPayload(_DiscoveryPayloadModel):
@@ -323,6 +329,7 @@ def _metadata(
         modalities_input=_modalities_tuple(values.get("modalities_input")),
         modalities_output=_modalities_tuple(values.get("modalities_output")),
         model_status=_optional_str(values.get("model_status")),
+        tool_feedback_mode=_tool_feedback_mode(values.get("tool_feedback_mode")),
     )
 
 
@@ -332,6 +339,12 @@ def _modalities_tuple(value: object) -> tuple[str, ...] | None:
     raw_items = cast(Iterable[object], value)
     modalities = tuple(item for item in raw_items if isinstance(item, str) and item)
     return modalities or None
+
+
+def _tool_feedback_mode(value: object) -> ToolFeedbackMode | None:
+    if value in {"standard", "synthetic_user_message"}:
+        return cast(ToolFeedbackMode, value)
+    return None
 
 
 def _override_value[T](inferred: T | None, override: T | None) -> T | None:
@@ -418,6 +431,9 @@ def _merge_model_metadata(
         modalities_input=_override_value(inferred.modalities_input, override.modalities_input),
         modalities_output=_override_value(inferred.modalities_output, override.modalities_output),
         model_status=_override_value(inferred.model_status, override.model_status),
+        tool_feedback_mode=_override_value(
+            inferred.tool_feedback_mode, override.tool_feedback_mode
+        ),
     )
 
 
@@ -609,6 +625,9 @@ def infer_model_metadata(provider_name: str, model_name: str) -> ProviderModelMe
             else ("text",),
             "modalities_output": ("text",),
             "model_status": "preview" if "preview" in model else "active",
+            "tool_feedback_mode": "synthetic_user_message"
+            if provider == "opencode-go" and model.startswith(("qwen3.5-plus", "qwen3.6-plus"))
+            else "standard",
             **_cost(input_per_million=0.40, output_per_million=1.20),
         }
         if model.startswith(("qwen3.6-plus", "qwen3.6-flash", "qwen3.5-plus", "qwen3.5-flash")):
@@ -696,6 +715,9 @@ def infer_model_metadata(provider_name: str, model_name: str) -> ProviderModelMe
             else ("text",),
             "modalities_output": ("text",),
             "model_status": "active",
+            "tool_feedback_mode": "synthetic_user_message"
+            if provider == "opencode-go" and model.startswith("minimax-m2")
+            else "standard",
             **_cost(input_per_million=0.50, output_per_million=2.00),
         }
         if model.startswith("minimax-m2.5"):
@@ -704,6 +726,8 @@ def infer_model_metadata(provider_name: str, model_name: str) -> ProviderModelMe
             )
         if model.startswith("minimax-m2"):
             return _metadata(context_window=204_800, values=common_minimax)
+        if model.startswith("mimo-v2.5"):
+            return _metadata(context_window=256_000, values=common_minimax)
     if provider == "grok" or model.startswith("grok-"):
         common_grok = {
             "supports_tools": True,
@@ -885,6 +909,7 @@ def _metadata_from_discovery_item(
         modalities_input=input_modalities,
         modalities_output=output_modalities,
         model_status=_optional_str(raw.get("status")),
+        tool_feedback_mode=_tool_feedback_mode(raw.get("tool_feedback_mode")),
     )
     return metadata if metadata.payload() else None
 

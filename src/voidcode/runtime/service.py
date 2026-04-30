@@ -2991,6 +2991,7 @@ class VoidCodeRuntime:
             modalities_input=inferred.modalities_input,
             modalities_output=inferred.modalities_output,
             model_status=inferred.model_status,
+            tool_feedback_mode=inferred.tool_feedback_mode,
         )
 
     def _context_window_policy_for_provider_attempt(
@@ -3411,6 +3412,14 @@ class VoidCodeRuntime:
         return items or None
 
     @staticmethod
+    def _tool_feedback_mode(
+        value: object,
+    ) -> Literal["standard", "synthetic_user_message"] | None:
+        if value in {"standard", "synthetic_user_message"}:
+            return cast(Literal["standard", "synthetic_user_message"], value)
+        return None
+
+    @staticmethod
     def _catalog_metadata_from_payload(
         payload: dict[str, object],
     ) -> CatalogProviderModelMetadata:
@@ -3464,6 +3473,9 @@ class VoidCodeRuntime:
                 payload.get("modalities_output")
             ),
             model_status=VoidCodeRuntime._optional_string(payload.get("model_status")),
+            tool_feedback_mode=VoidCodeRuntime._tool_feedback_mode(
+                payload.get("tool_feedback_mode")
+            ),
         )
 
     @staticmethod
@@ -3491,6 +3503,7 @@ class VoidCodeRuntime:
             modalities_input=catalog_metadata.modalities_input,
             modalities_output=catalog_metadata.modalities_output,
             model_status=catalog_metadata.model_status,
+            tool_feedback_mode=catalog_metadata.tool_feedback_mode,
         )
 
     def list_agent_summaries(self) -> tuple[AgentSummary, ...]:
@@ -4059,6 +4072,12 @@ class VoidCodeRuntime:
             model=model,
             execution_engine=effective_config.execution_engine,
             available_tool_count=len(tool_registry.definitions()),
+            tool_feedback_mode=(
+                active_target.metadata.tool_feedback_mode
+                if active_target.metadata is not None
+                and active_target.metadata.tool_feedback_mode is not None
+                else "standard"
+            ),
         )
 
     @staticmethod

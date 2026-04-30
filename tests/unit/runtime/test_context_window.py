@@ -144,7 +144,7 @@ def test_assemble_provider_context_injects_active_runtime_todos() -> None:
     ]
 
 
-def test_provider_context_inspector_reports_opencode_go_synthetic_feedback() -> None:
+def test_provider_context_inspector_reports_synthetic_feedback_mode() -> None:
     assembled = assemble_provider_context(
         prompt="continue",
         tool_results=(
@@ -169,10 +169,11 @@ def test_provider_context_inspector_reports_opencode_go_synthetic_feedback() -> 
         model="glm-5",
         execution_engine="provider",
         available_tool_count=3,
+        tool_feedback_mode="synthetic_user_message",
     )
 
     assert snapshot.provider == "opencode-go"
-    assert snapshot.provider_messages[-1].source == "opencode_go_synthetic_tool_feedback"
+    assert snapshot.provider_messages[-1].source == "provider_synthetic_tool_feedback"
     assert snapshot.provider_messages[-1].role == "user"
     synthetic_content = snapshot.provider_messages[-1].content or ""
     assert "Completed tool calls for current request" in synthetic_content

@@ -8,6 +8,7 @@ from typing import Literal, Protocol, cast, runtime_checkable
 from ..command.resolver import resolve_tool_instruction
 from ..runtime.context_window import normalize_read_file_output
 from ..tools.contracts import ToolCall, ToolDefinition, ToolResult
+from .model_catalog import ProviderModelMetadata
 
 type ProviderMessageRole = Literal["system", "user", "assistant", "tool"]
 type ProviderStreamEventKind = Literal["delta", "content", "error", "done"]
@@ -52,6 +53,7 @@ class ProviderTurnRequest:
     provider_name: str | None = None
     model_name: str | None = None
     agent_preset: dict[str, object] | None = None
+    model_metadata: ProviderModelMetadata | None = None
     reasoning_effort: str | None = None
     attempt: int = 0
     abort_signal: ProviderAbortSignal | None = None

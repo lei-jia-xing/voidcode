@@ -1638,6 +1638,32 @@ def test_runtime_session_debug_snapshot_includes_provider_context(tmp_path: Path
     )
 
 
+def test_runtime_session_debug_snapshot_uses_model_tool_feedback_mode(
+    tmp_path: Path,
+) -> None:
+    _ = (tmp_path / "sample.txt").write_text("provider debug\n", encoding="utf-8")
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            model="opencode-go/minimax-m2.7",
+            execution_engine="deterministic",
+        ),
+    )
+
+    _ = runtime.run(RuntimeRequest(prompt="read sample.txt", session_id="synthetic-debug"))
+    snapshot = runtime.session_debug_snapshot(session_id="synthetic-debug")
+
+    provider_context = snapshot.provider_context
+    assert provider_context is not None
+    assert provider_context.provider == "opencode-go"
+    assert provider_context.provider_messages[-1].source == "provider_synthetic_tool_feedback"
+    assert provider_context.provider_messages[-1].role == "user"
+    assert any(
+        diagnostic.code == "provider_path_uses_synthetic_tool_feedback"
+        for diagnostic in provider_context.diagnostics
+    )
+
+
 def test_runtime_session_debug_snapshot_reconstructs_skill_prompt_context(
     tmp_path: Path,
 ) -> None:
@@ -13245,6 +13271,43 @@ def test_runtime_persists_provider_model_catalog_cache(tmp_path: Path) -> None:
     assert result.model_metadata["gpt-4o"].max_input_tokens == 111_616
     assert result.model_metadata["gpt-4o"].cost_per_input_token is not None
     assert result.model_metadata["gpt-4o"].modalities_input == ("text", "image")
+
+
+def test_runtime_hydrates_provider_tool_feedback_mode_from_catalog_cache(
+    tmp_path: Path,
+) -> None:
+    cache_dir = tmp_path / ".voidcode"
+    cache_dir.mkdir()
+    (cache_dir / "provider-model-catalog.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "providers": {
+                    "opencode-go": {
+                        "provider": "opencode-go",
+                        "models": ["minimax-m2.7"],
+                        "model_metadata": {
+                            "minimax-m2.7": {
+                                "context_window": 204_800,
+                                "tool_feedback_mode": "synthetic_user_message",
+                            }
+                        },
+                        "refreshed": True,
+                        "source": "fallback",
+                        "last_refresh_status": "skipped",
+                        "last_error": None,
+                        "discovery_mode": "unavailable",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    runtime = VoidCodeRuntime(workspace=tmp_path)
+
+    result = runtime.provider_models_result("opencode-go")
+
+    assert result.model_metadata["minimax-m2.7"].tool_feedback_mode == ("synthetic_user_message")
 
 
 def test_runtime_provider_validation_refreshes_past_persisted_catalog_cache(

@@ -3,9 +3,9 @@ from __future__ import annotations
 import json
 import logging
 import re
-from collections.abc import Iterator
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, cast
+from collections.abc import Iterator, Mapping
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 if TYPE_CHECKING:
     import litellm as litellm_module
@@ -25,6 +25,7 @@ from ..tools.contracts import ToolCall, ToolDefinition
 from ..tools.output import sanitize_tool_arguments, sanitize_tool_result_data
 from .config import LiteLLMProviderConfig
 from .errors import provider_execution_error_from_api_payload
+from .model_catalog import ToolFeedbackMode
 from .protocol import (
     ProviderExecutionError,
     ProviderStreamEvent,
@@ -34,13 +35,11 @@ from .protocol import (
 )
 
 _DEFAULT_COMPLETION_TIMEOUT_SECONDS = 300.0
+type ReasoningEffortMode = Literal["auto", "direct", "glm_thinking", "disabled"]
 _DIRECT_REASONING_EFFORT_PROVIDERS = frozenset(
     {"openai", "anthropic", "google", "gemini", "vertex_ai", "litellm", "grok"}
 )
 _THINKING_DISABLED_EFFORTS = frozenset({"none", "off", "disable", "disabled"})
-_OPENCODE_GO_SYNTHETIC_TOOL_FEEDBACK_MODELS = frozenset(
-    {"minimax-m2.5", "minimax-m2.7", "qwen3.5-plus", "qwen3.6-plus"}
-)
 _SYNTHETIC_TOOL_FEEDBACK_PREFIX = "Completed tool calls for current request:"
 _CONTINUITY_SUMMARY_PREFIX = "Runtime continuity summary:"
 
@@ -100,6 +99,10 @@ def _message_size_chars(message: dict[str, object]) -> int:
     return len(json.dumps(message, ensure_ascii=False, sort_keys=True, default=str))
 
 
+def _empty_tool_feedback_model_overrides() -> dict[str, ToolFeedbackMode]:
+    return {}
+
+
 def _is_object_json_schema(schema: dict[str, object]) -> bool:
     schema_type = schema.get("type")
     if schema_type == "object":
@@ -149,6 +152,10 @@ class LiteLLMBackendSingleAgentProvider:
     config: LiteLLMProviderConfig | None
     completion_kwargs: dict[str, object] | None = None
     use_raw_model_name: bool = False
+    reasoning_effort_mode: ReasoningEffortMode = "auto"
+    tool_feedback_model_overrides: Mapping[str, ToolFeedbackMode] = field(
+        default_factory=_empty_tool_feedback_model_overrides
+    )
 
     @staticmethod
     def _to_tool_schema(tool: ToolDefinition) -> dict[str, object]:
@@ -220,18 +227,24 @@ class LiteLLMBackendSingleAgentProvider:
         if not effort:
             return kwargs
 
+        mode = self.reasoning_effort_mode
         provider_name = (request.provider_name or self.name).lower()
         model_name = (request.model_name or "").lower()
-        if provider_name == "opencode-go":
+        if mode == "disabled":
             return kwargs
-        if provider_name == "glm" or model_name.startswith(("glm-5", "glm-z1")):
+        if mode == "glm_thinking" or (
+            mode == "auto"
+            and (provider_name == "glm" or model_name.startswith(("glm-5", "glm-z1")))
+        ):
             thinking_type = (
                 "disabled" if effort.lower() in _THINKING_DISABLED_EFFORTS else "enabled"
             )
             _merge_extra_body(kwargs, {"thinking": {"type": thinking_type}})
             _allow_openai_param(kwargs, "extra_body")
             return kwargs
-        if provider_name in _DIRECT_REASONING_EFFORT_PROVIDERS:
+        if mode == "direct" or (
+            mode == "auto" and provider_name in _DIRECT_REASONING_EFFORT_PROVIDERS
+        ):
             kwargs["reasoning_effort"] = request.reasoning_effort
         return kwargs
 
@@ -240,13 +253,22 @@ class LiteLLMBackendSingleAgentProvider:
     ) -> dict[str, object]:
         return self._completion_kwargs_for_request(request)
 
+    def _tool_feedback_mode_for_request(self, request: ProviderTurnRequest) -> ToolFeedbackMode:
+        model_name = request.model_name
+        mode = (
+            self.tool_feedback_model_overrides.get(model_name) if model_name is not None else None
+        )
+        if mode is not None:
+            return mode
+        metadata_mode = (
+            None if request.model_metadata is None else request.model_metadata.tool_feedback_mode
+        )
+        return metadata_mode if metadata_mode is not None else "standard"
+
     def _build_messages(self, request: ProviderTurnRequest) -> list[dict[str, object]]:
         assembled_context = request.assembled_context
         messages: list[dict[str, object]] = []
-        if (
-            request.provider_name == "opencode-go"
-            and request.model_name in _OPENCODE_GO_SYNTHETIC_TOOL_FEEDBACK_MODELS
-        ):
+        if self._tool_feedback_mode_for_request(request) == "synthetic_user_message":
             tool_feedback_lines: list[str] = []
             for segment in assembled_context.segments:
                 if segment.role == "tool":

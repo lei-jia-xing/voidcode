@@ -5,6 +5,7 @@ import re
 from collections import defaultdict
 from typing import cast
 
+from ..provider.model_catalog import ToolFeedbackMode
 from ..tools.output import sanitize_tool_arguments, sanitize_tool_result_data
 from .context_window import RuntimeAssembledContext, RuntimeContextSegment
 from .contracts import (
@@ -43,6 +44,7 @@ def inspect_provider_context(
     model: str,
     execution_engine: str,
     available_tool_count: int,
+    tool_feedback_mode: ToolFeedbackMode = "standard",
 ) -> RuntimeProviderContextSnapshot:
     segments = tuple(
         _segment_snapshot(index, segment)
@@ -51,14 +53,14 @@ def inspect_provider_context(
     provider_messages = tuple(
         _provider_message_snapshots(
             segments=assembled_context.segments,
-            provider=provider,
+            tool_feedback_mode=tool_feedback_mode,
         )
     )
     diagnostics = tuple(
         _diagnostics(
             segments=assembled_context.segments,
             context_metadata=assembled_context.metadata,
-            provider=provider,
+            tool_feedback_mode=tool_feedback_mode,
             available_tool_count=available_tool_count,
         )
     )
@@ -146,10 +148,10 @@ def _segment_snapshot(
 def _provider_message_snapshots(
     *,
     segments: tuple[RuntimeContextSegment, ...],
-    provider: str,
+    tool_feedback_mode: ToolFeedbackMode,
 ) -> list[RuntimeProviderMessageSnapshot]:
-    if provider == "opencode-go":
-        return _opencode_go_message_snapshots(segments)
+    if tool_feedback_mode == "synthetic_user_message":
+        return _synthetic_tool_feedback_message_snapshots(segments)
     return _standard_tool_message_snapshots(segments)
 
 
@@ -210,7 +212,7 @@ def _standard_tool_message_snapshots(
     return messages
 
 
-def _opencode_go_message_snapshots(
+def _synthetic_tool_feedback_message_snapshots(
     segments: tuple[RuntimeContextSegment, ...],
 ) -> list[RuntimeProviderMessageSnapshot]:
     messages: list[RuntimeProviderMessageSnapshot] = []
@@ -244,7 +246,7 @@ def _opencode_go_message_snapshots(
             RuntimeProviderMessageSnapshot(
                 index=len(messages),
                 role="user",
-                source="opencode_go_synthetic_tool_feedback",
+                source="provider_synthetic_tool_feedback",
                 content=content,
                 content_truncated=content_truncated,
             )
@@ -302,7 +304,7 @@ def _diagnostics(
     *,
     segments: tuple[RuntimeContextSegment, ...],
     context_metadata: dict[str, object],
-    provider: str,
+    tool_feedback_mode: ToolFeedbackMode,
     available_tool_count: int,
 ) -> list[RuntimeProviderContextDiagnostic]:
     diagnostics: list[RuntimeProviderContextDiagnostic] = []
@@ -310,16 +312,18 @@ def _diagnostics(
     diagnostics.extend(_tool_pair_diagnostics(segments, available_tool_count=available_tool_count))
     diagnostics.extend(_context_window_diagnostics(context_metadata))
     diagnostics.extend(_todo_projection_diagnostics(segments))
-    if provider == "opencode-go" and any(segment.role == "tool" for segment in segments):
+    if tool_feedback_mode == "synthetic_user_message" and any(
+        segment.role == "tool" for segment in segments
+    ):
         diagnostics.append(
             RuntimeProviderContextDiagnostic(
                 severity="info",
                 code="provider_path_uses_synthetic_tool_feedback",
                 message=(
-                    "opencode-go receives completed tool results as one synthetic user "
+                    "Provider path receives completed tool results as one synthetic user "
                     "feedback block instead of provider-native tool-role messages."
                 ),
-                source="opencode_go_synthetic_tool_feedback",
+                source="provider_synthetic_tool_feedback",
                 suggested_fix=(
                     "Inspect provider_messages to verify each tool result appears exactly once."
                 ),

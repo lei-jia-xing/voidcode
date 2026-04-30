@@ -181,6 +181,25 @@ def test_discover_available_models_merges_partial_remote_metadata() -> None:
     assert metadata.model_status == "active"
 
 
+def test_infer_model_metadata_marks_tool_feedback_mode_by_model_route() -> None:
+    opencode_minimax = infer_model_metadata("opencode-go", "minimax-m2.7")
+    opencode_qwen = infer_model_metadata("opencode-go", "qwen3.6-plus")
+    opencode_mimo = infer_model_metadata("opencode-go", "mimo-v2.5-pro")
+    direct_minimax = infer_model_metadata("minimax", "minimax-m2.7")
+    direct_qwen = infer_model_metadata("qwen", "qwen3.6-plus")
+
+    assert opencode_minimax is not None
+    assert opencode_qwen is not None
+    assert opencode_mimo is not None
+    assert direct_minimax is not None
+    assert direct_qwen is not None
+    assert opencode_minimax.tool_feedback_mode == "synthetic_user_message"
+    assert opencode_qwen.tool_feedback_mode == "synthetic_user_message"
+    assert opencode_mimo.tool_feedback_mode == "standard"
+    assert direct_minimax.tool_feedback_mode == "standard"
+    assert direct_qwen.tool_feedback_mode == "standard"
+
+
 def test_discover_available_models_recomputes_input_limit_for_remote_context_override() -> None:
     result = discover_available_models(
         "openai",
@@ -351,6 +370,7 @@ def test_provider_model_metadata_payload_includes_limits_and_capabilities() -> N
         modalities_input=("text",),
         modalities_output=("text",),
         model_status="active",
+        tool_feedback_mode="synthetic_user_message",
     ).payload()
 
     assert payload == {
@@ -371,6 +391,7 @@ def test_provider_model_metadata_payload_includes_limits_and_capabilities() -> N
         "modalities_input": ["text"],
         "modalities_output": ["text"],
         "model_status": "active",
+        "tool_feedback_mode": "synthetic_user_message",
     }
 
 

@@ -68,4 +68,5 @@ class OpenCodeGoModelProvider:
             name=self.name,
             config=adapted_config,
             use_raw_model_name=True,
+            reasoning_effort_mode="disabled",
         )

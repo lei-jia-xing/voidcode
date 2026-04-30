@@ -142,6 +142,7 @@ class ProviderGraph:
             provider_name=self._provider_model.selection.provider,
             model_name=self._provider_model.selection.model,
             agent_preset=cast(dict[str, object] | None, request.metadata.get("agent_preset")),
+            model_metadata=self._provider_model.metadata,
             reasoning_effort=cast(str | None, request.metadata.get("reasoning_effort")),
             attempt=cast(int, request.metadata.get("provider_attempt", 0)),
             abort_signal=abort_signal,
