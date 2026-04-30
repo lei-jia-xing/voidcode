@@ -1865,6 +1865,9 @@ class RuntimeTransportApp:
             "finished_at": task.finished_at,
             "cancel_requested_at": task.cancel_requested_at,
             "routing": RuntimeTransportApp._serialize_subagent_routing(task.routing_identity),
+            "observability": (
+                None if task.observability is None else task.observability.as_payload()
+            ),
         }
 
     @staticmethod
@@ -1877,6 +1880,9 @@ class RuntimeTransportApp:
             "error": task.error,
             "created_at": task.created_at,
             "updated_at": task.updated_at,
+            "observability": (
+                None if task.observability is None else task.observability.as_payload()
+            ),
         }
 
     @staticmethod
@@ -2085,6 +2091,9 @@ class RuntimeTransportApp:
             "result_available": result.result_available,
             "cancellation_cause": result.cancellation_cause,
             "routing": RuntimeTransportApp._serialize_subagent_routing(result.routing),
+            "observability": (
+                None if result.observability is None else result.observability.as_payload()
+            ),
             "delegation": result.delegated_execution.as_payload(),
             "message": result.delegated_message.as_payload(),
         }
@@ -2278,6 +2287,16 @@ class RuntimeTransportApp:
             "lsp": RuntimeTransportApp._serialize_capability_status_snapshot(snapshot.lsp),
             "mcp": RuntimeTransportApp._serialize_capability_status_snapshot(snapshot.mcp),
             "acp": RuntimeTransportApp._serialize_capability_status_snapshot(snapshot.acp),
+            "background_tasks": {
+                "active_worker_slots": snapshot.background_tasks.active_worker_slots,
+                "queued_count": snapshot.background_tasks.queued_count,
+                "running_count": snapshot.background_tasks.running_count,
+                "terminal_count": snapshot.background_tasks.terminal_count,
+                "default_concurrency": snapshot.background_tasks.default_concurrency,
+                "provider_concurrency": snapshot.background_tasks.provider_concurrency,
+                "model_concurrency": snapshot.background_tasks.model_concurrency,
+                "status_counts": snapshot.background_tasks.status_counts,
+            },
         }
 
     @staticmethod

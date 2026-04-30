@@ -32,7 +32,7 @@ from typing import Any, Protocol, cast
 
 import pytest
 
-from voidcode.runtime.task import is_background_task_terminal
+from voidcode.runtime.task import BackgroundTaskStatus, is_background_task_terminal
 
 pytestmark = pytest.mark.usefixtures("_force_deterministic_engine_default")
 
@@ -275,7 +275,7 @@ def _wait_for_background_task_terminal(
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         task = runtime.load_background_task(task_id)
-        if is_background_task_terminal(task.status):
+        if is_background_task_terminal(cast(BackgroundTaskStatus, task.status)):
             return
         time.sleep(0.01)
     raise AssertionError(f"background task did not reach terminal state: {task_id}")
@@ -729,6 +729,7 @@ def test_http_background_task_list_endpoints_expose_global_and_parent_scoped_vie
             "error": None,
             "created_at": 2,
             "updated_at": 3,
+            "observability": None,
         }
     ]
 
@@ -809,7 +810,7 @@ def test_http_background_task_output_endpoint_exposes_typed_delegated_payload_fo
     deadline = time.monotonic() + 2.0
     while time.monotonic() < deadline:
         task = runtime.load_background_task(started.task.id)
-        if is_background_task_terminal(task.status):
+        if is_background_task_terminal(cast(BackgroundTaskStatus, task.status)):
             break
         time.sleep(0.01)
     else:
@@ -902,7 +903,7 @@ def test_http_background_task_output_endpoint_preserves_empty_child_output(tmp_p
             *,
             session: object,
         ) -> object:
-            _ = tool_results, session
+            _ = request, tool_results, session
             return type("_Step", (), {"output": "", "is_finished": True, "tool_call": None})()
 
     runtime = runtime_class(workspace=tmp_path, graph=_EmptyOutputGraph())
