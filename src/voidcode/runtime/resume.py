@@ -739,6 +739,7 @@ class RuntimeResumeCoordinator:
                 pending=pending,
                 decision=approval_decision,
                 tool_results=tool_results,
+                abort_signal=graph_request.abort_signal,
             ):
                 if deferred_startup_acp_events and (
                     (

@@ -116,6 +116,7 @@ from voidcode.runtime.task import (
 from voidcode.skills import SkillRegistry
 from voidcode.tools import ToolCall
 from voidcode.tools.contracts import ToolDefinition, ToolResult
+from voidcode.tools.runtime_context import current_runtime_tool_context
 
 pytestmark = pytest.mark.usefixtures("force_deterministic_engine_default")
 
@@ -276,6 +277,60 @@ class _DivergentApprovalReplayGraph:
                 tool_name="write_file",
                 arguments={"path": "danger.txt", "content": "divergent"},
             )
+        )
+
+
+class _AbortSignalApprovalGraph:
+    def step(
+        self,
+        request: GraphRunRequest,
+        tool_results: tuple[object, ...],
+        *,
+        session: SessionState,
+    ) -> _StubStep:
+        _ = request, session
+        if not tool_results:
+            return _StubStep(tool_call=ToolCall(tool_name="write_file", arguments={}))
+        return _StubStep(output="captured", is_finished=True)
+
+
+class _AbortCaptureTool:
+    definition = ToolDefinition(
+        name="write_file",
+        description="Capture runtime abort signal during approval resume",
+        input_schema={"type": "object"},
+        read_only=False,
+    )
+
+    def __init__(self) -> None:
+        self.signal_seen = threading.Event()
+        self.release = threading.Event()
+        self.abort_signal: object | None = None
+        self.initial_cancelled: bool | None = None
+        self.cancelled_after_release: bool | None = None
+        self.reason_after_release: str | None = None
+
+    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
+        _ = call, workspace
+        context = current_runtime_tool_context()
+        signal = context.abort_signal if context is not None else None
+        self.abort_signal = signal
+        self.initial_cancelled = signal.cancelled if signal is not None else None
+        self.signal_seen.set()
+        if not self.release.wait(timeout=2.0):
+            raise RuntimeError("abort capture tool was not released")
+        self.cancelled_after_release = signal.cancelled if signal is not None else None
+        reason = getattr(signal, "reason", None)
+        self.reason_after_release = reason if isinstance(reason, str) else None
+        return ToolResult(
+            tool_name=self.definition.name,
+            status="ok",
+            content="captured abort signal",
+            data={
+                "has_abort_signal": signal is not None,
+                "cancelled_after_release": self.cancelled_after_release,
+                "reason_after_release": self.reason_after_release,
+            },
         )
 
 
@@ -1936,6 +1991,64 @@ def test_runtime_cancel_session_interrupts_active_approval_resume_run(tmp_path: 
     assert failed_events[-1].payload["run_id"] == run_id
     assert failed_events[-1].payload["reason"] == "resume cancellation"
     assert any(state.get("run_id") == run_id for state in resumed_runtime_states)
+
+
+def test_runtime_approval_resume_tool_context_receives_abort_signal(tmp_path: Path) -> None:
+    tool = _AbortCaptureTool()
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_AbortSignalApprovalGraph(),
+        tool_registry=ToolRegistry.from_tools([tool]),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+    waiting = runtime.run(RuntimeRequest(prompt="capture abort", session_id="resume-abort-signal"))
+    approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
+    chunks: list[object] = []
+    errors: list[BaseException] = []
+
+    def _consume_resume_stream() -> None:
+        try:
+            chunks.extend(
+                runtime.resume_stream(
+                    "resume-abort-signal",
+                    approval_request_id=approval_request_id,
+                    approval_decision="allow",
+                )
+            )
+        except BaseException as exc:  # pragma: no cover - asserted via errors list
+            errors.append(exc)
+
+    resume_thread = threading.Thread(target=_consume_resume_stream)
+    resume_thread.start()
+    assert tool.signal_seen.wait(timeout=1.0) is True
+    active_metadata = _private_attr(runtime, "_active_session_metadata")("resume-abort-signal")
+    assert isinstance(active_metadata, dict)
+    run_id = cast(str, active_metadata["run_id"])
+
+    result = runtime.cancel_session(
+        "resume-abort-signal", run_id=run_id, reason="approved tool cancellation"
+    )
+    tool.release.set()
+    resume_thread.join(timeout=2.0)
+
+    failed_events = [
+        chunk.event
+        for chunk in chunks
+        if isinstance(chunk, RuntimeStreamChunk)
+        and chunk.event is not None
+        and chunk.event.event_type == "runtime.failed"
+    ]
+    assert errors == []
+    assert resume_thread.is_alive() is False
+    assert tool.abort_signal is not None
+    assert tool.initial_cancelled is False
+    assert tool.cancelled_after_release is True
+    assert tool.reason_after_release == "approved tool cancellation"
+    assert result.status == "interrupted"
+    assert failed_events
+    assert failed_events[-1].payload["kind"] == "interrupted"
+    assert failed_events[-1].payload["run_id"] == run_id
 
 
 def test_runtime_cancel_session_returns_not_active_for_idle_session(tmp_path: Path) -> None:

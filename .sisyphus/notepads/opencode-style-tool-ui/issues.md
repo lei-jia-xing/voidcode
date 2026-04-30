@@ -432,3 +432,17 @@ Added terminal `runtime.tool_completed` with `payload.status="error"` and `paylo
 - `tests/unit/tools/test_shell_exec_tool.py` kept upstream truncation metadata assertions plus PR `ShellExecArgs.description` coverage.
 - `src/voidcode/runtime/resume.py` kept upstream `ProviderAbortSignal` support and PR `ToolCall`/direct approved-tool execution imports.
 - `tests/unit/runtime/test_runtime_service_extensions.py` kept upstream blocking approval resume helper plus the deny-divergence regression helper.
+
+---
+
+## P1: Approved-tool resume omitted abort signal context
+
+**Date:** 2026-04-30
+
+### Problem
+- Normal graph tool execution binds `RuntimeToolInvocationContext(abort_signal=graph_request.abort_signal)`, but direct approved-tool resume execution did not pass the abort signal into the tool context.
+- A tool invoked immediately after approval could not observe active run cancellation through `current_runtime_tool_context().abort_signal`.
+
+### Fix pattern
+- `execute_approved_tool_call()` accepts the existing `ProviderAbortSignal | None`, and `resume.py` passes `graph_request.abort_signal` into it.
+- Regression coverage uses a custom non-read-only tool invoked through the real approval resume path; it observes the context abort signal, then cancellation mutates that same signal with the expected reason.

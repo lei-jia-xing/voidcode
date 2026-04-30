@@ -14,6 +14,7 @@ from ..provider.errors import (
     classify_provider_error,
     format_fallback_exhausted_error,
 )
+from ..provider.protocol import ProviderAbortSignal
 from ..tools.contracts import RuntimeTimeoutAwareTool, RuntimeToolTimeoutError, ToolCall, ToolResult
 from ..tools.output import (
     cap_tool_result_output,
@@ -79,6 +80,7 @@ class RuntimeRunLoopCoordinator:
         pending: PendingApproval,
         decision: PermissionResolution,
         tool_results: list[ToolResult],
+        abort_signal: ProviderAbortSignal | None = None,
     ) -> Iterator[RuntimeStreamChunk]:
         runtime = self._runtime
         permission_chunks = runtime._approval_resolution_outcome(
@@ -157,6 +159,7 @@ class RuntimeRunLoopCoordinator:
                     remaining_spawn_budget=runtime._remaining_spawn_budget_from_metadata(
                         session.metadata
                     ),
+                    abort_signal=abort_signal,
                 )
             ):
                 if tool_timeout is None:

@@ -195,7 +195,6 @@ def test_shell_exec_tool_truncates_large_output(tmp_path: Path) -> None:
     assert result.data.get("output_char_count") == 200000
 
 
-
 # ── Target contract: ShellExecArgs.description ──────────────────────────
 # These tests encode the expected behaviour BEFORE the field exists.
 # They are expected to fail (RED) until T2 adds `description` support.
