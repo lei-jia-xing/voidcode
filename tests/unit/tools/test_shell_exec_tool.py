@@ -9,6 +9,7 @@ import pytest
 
 from voidcode.runtime.service import ToolRegistry
 from voidcode.tools import ShellExecTool, ToolCall
+from voidcode.tools.output import MAX_TOOL_OUTPUT_BYTES, cap_tool_result_output
 from voidcode.tools.shell_exec import kill_timed_out_process
 
 
@@ -178,7 +179,7 @@ def test_shell_exec_windows_timeout_cleanup_falls_back_after_taskkill_nonzero(
     assert killed is True
 
 
-def test_shell_exec_tool_truncates_large_output(tmp_path: Path) -> None:
+def test_shell_exec_tool_returns_full_output_for_large_subprocess(tmp_path: Path) -> None:
     tool = ShellExecTool()
     command = f'"{sys.executable}" -c "import sys; sys.stdout.write(chr(120)*250000)"'
 
@@ -189,10 +190,34 @@ def test_shell_exec_tool_truncates_large_output(tmp_path: Path) -> None:
 
     assert result.status == "ok"
     assert isinstance(result.content, str)
-    assert len(result.content) == 200000
-    assert result.data.get("truncated") is True
-    assert result.data.get("stdout_truncated") is True
-    assert result.data.get("output_char_count") == 200000
+    assert len(result.content) == 250000
+    assert result.data.get("truncated") is False
+    assert result.data.get("stdout_truncated") is False
+    assert result.data.get("stderr_truncated") is False
+    assert result.data.get("output_char_count") == 250000
+
+
+def test_shell_exec_large_output_spills_full_payload_via_central_cap(tmp_path: Path) -> None:
+    payload_size = MAX_TOOL_OUTPUT_BYTES + 10_000
+    tool = ShellExecTool()
+    command = f'"{sys.executable}" -c "import sys; sys.stdout.write(chr(120)*{payload_size})"'
+
+    result = tool.invoke(
+        ToolCall(tool_name="shell_exec", arguments={"command": command}),
+        workspace=tmp_path,
+    )
+    capped = cap_tool_result_output(result, workspace=tmp_path)
+
+    assert capped.truncated is True
+    assert capped.partial is True
+    assert capped.reference is not None
+    assert isinstance(capped.content, str)
+    assert "[Tool output truncated:" in capped.content
+    assert "Full output saved to:" in capped.content
+
+    reference_path = tmp_path / capped.reference
+    assert reference_path.exists()
+    assert len(reference_path.read_text(encoding="utf-8")) == payload_size
 
 
 # ── Target contract: ShellExecArgs.description ──────────────────────────
