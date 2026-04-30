@@ -26,6 +26,7 @@ from voidcode.runtime.task import (
     BackgroundTaskRequestSnapshot,
     BackgroundTaskState,
 )
+from voidcode.tools import ToolResult, cap_tool_result_output
 
 
 def _save_sample_session(tmp_path: Path, *, session_id: str = "bundle-session") -> None:
@@ -107,6 +108,51 @@ def _save_background_task_with_secrets(tmp_path: Path) -> None:
             error="failed with Bearer taskerrorsecret",
         ),
     )
+
+
+def _save_session_with_tool_artifact(tmp_path: Path) -> dict[str, object]:
+    store = SqliteSessionStore()
+    content = "".join(f"artifact-line-{index}\n" for index in range(8))
+    capped = cap_tool_result_output(
+        ToolResult(tool_name="shell_exec", status="ok", content=content),
+        workspace=tmp_path,
+        session_id="artifact-session",
+        tool_call_id="artifact-call",
+        max_lines=2,
+        max_bytes=10_000,
+    )
+    payload = {
+        **capped.data,
+        "tool": "shell_exec",
+        "tool_call_id": "artifact-call",
+        "status": capped.status,
+        "content": capped.content,
+        "error": capped.error,
+    }
+    response = RuntimeResponse(
+        session=SessionState(
+            session=SessionRef(id="artifact-session"),
+            status="completed",
+            turn=1,
+            metadata={},
+        ),
+        events=(
+            EventEnvelope(
+                session_id="artifact-session",
+                sequence=1,
+                event_type="runtime.tool_completed",
+                source="tool",
+                payload=payload,
+            ),
+        ),
+        output="done",
+    )
+    store.save_run(
+        workspace=tmp_path,
+        request=RuntimeRequest(prompt="artifact", session_id="artifact-session"),
+        response=response,
+    )
+    return payload
 
 
 def _minimal_bundle_payload(sessions: list[dict[str, object]]) -> dict[str, object]:
@@ -222,6 +268,68 @@ def test_session_bundle_json_and_zip_roundtrip(tmp_path: Path) -> None:
 
     assert json_bundle.to_payload() == bundle.to_payload()
     assert zip_bundle.to_payload() == bundle.to_payload()
+
+
+def test_session_bundle_includes_available_artifacts_only_when_tool_output_requested(
+    tmp_path: Path,
+) -> None:
+    tool_payload = _save_session_with_tool_artifact(tmp_path)
+    store = SqliteSessionStore()
+
+    default_bundle = build_session_bundle(
+        session_store=store,
+        workspace=tmp_path,
+        session_id="artifact-session",
+    )
+    full_bundle = build_session_bundle(
+        session_store=store,
+        workspace=tmp_path,
+        session_id="artifact-session",
+        options=SessionBundleOptions(include_tool_output=True),
+    )
+
+    assert default_bundle.manifest.artifact_count == 0
+    assert default_bundle.artifacts == ()
+    assert full_bundle.manifest.artifact_count == 1
+    artifact = full_bundle.artifacts[0]
+    assert artifact.artifact_id == tool_payload["artifact_id"]
+    assert artifact.tool_call_id == "artifact-call"
+    assert artifact.missing is False
+    assert artifact.content is not None
+    assert artifact.content.endswith("artifact-line-7\n")
+    assert full_bundle.to_payload()["artifacts"] == [
+        {
+            "artifact_id": artifact.artifact_id,
+            "session_id": "artifact-session",
+            "tool_call_id": "artifact-call",
+            "tool_name": "shell_exec",
+            "metadata": artifact.metadata,
+            "content": artifact.content,
+            "missing": False,
+        }
+    ]
+
+
+def test_session_bundle_reports_missing_artifact_without_content(tmp_path: Path) -> None:
+    tool_payload = _save_session_with_tool_artifact(tmp_path)
+    artifact = tool_payload["artifact"]
+    assert isinstance(artifact, dict)
+    Path(cast(str, artifact["path"])).unlink()
+    store = SqliteSessionStore()
+
+    bundle = build_session_bundle(
+        session_store=store,
+        workspace=tmp_path,
+        session_id="artifact-session",
+        options=SessionBundleOptions(include_tool_output=True),
+    )
+
+    assert bundle.manifest.artifact_count == 1
+    bundled_artifact = bundle.artifacts[0]
+    assert bundled_artifact.artifact_id == tool_payload["artifact_id"]
+    assert bundled_artifact.missing is True
+    assert bundled_artifact.content is None
+    assert bundled_artifact.metadata["status"] == "missing"
 
 
 def test_session_bundle_import_roundtrip_never_overwrites_existing_session(
