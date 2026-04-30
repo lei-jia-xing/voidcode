@@ -286,6 +286,7 @@ def test_runtime_config_defaults_to_provider_for_product_runs(
     assert config.execution_engine == "provider"
     assert config.model is None
     assert RuntimeConfig().execution_engine == "provider"
+    assert RuntimeContextWindowConfig().max_tool_results == 8
 
 
 def test_runtime_config_supports_provider_first_opt_in_with_stub_model(
@@ -351,6 +352,22 @@ def test_runtime_config_loads_context_window_policy_from_repo_file(tmp_path: Pat
         context_pressure_threshold=0.75,
         context_pressure_cooldown_steps=5,
     )
+
+
+def test_runtime_config_uses_current_context_window_defaults_for_partial_repo_file(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / RUNTIME_CONFIG_FILE_NAME
+    config_path.write_text(
+        json.dumps({"context_window": {"auto_compaction": True}}),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.context_window is not None
+    assert config.context_window == RuntimeContextWindowConfig(auto_compaction=True)
+    assert config.context_window.max_tool_results == 8
 
 
 def test_runtime_context_window_config_serializes_for_session_resume() -> None:

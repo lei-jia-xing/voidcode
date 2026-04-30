@@ -17,6 +17,45 @@ def _empty_tool_limits() -> dict[str, int]:
 
 
 @dataclass(frozen=True, slots=True)
+class DroppedToolResultDiagnostic:
+    tool_name: str
+    status: str
+    index: int
+    tool_call_id: str | None = None
+    path: str | None = None
+    command: str | None = None
+    pattern: str | None = None
+    error_kind: str | None = None
+    estimated_tokens: int | None = None
+    truncated: bool = False
+    partial: bool = False
+
+    def metadata_payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "tool_name": self.tool_name,
+            "status": self.status,
+            "index": self.index,
+        }
+        if self.tool_call_id is not None:
+            payload["tool_call_id"] = self.tool_call_id
+        if self.path is not None:
+            payload["path"] = self.path
+        if self.command is not None:
+            payload["command"] = self.command
+        if self.pattern is not None:
+            payload["pattern"] = self.pattern
+        if self.error_kind is not None:
+            payload["error_kind"] = self.error_kind
+        if self.estimated_tokens is not None:
+            payload["estimated_tokens"] = self.estimated_tokens
+        if self.truncated:
+            payload["truncated"] = True
+        if self.partial:
+            payload["partial"] = True
+        return payload
+
+
+@dataclass(frozen=True, slots=True)
 class RuntimeContinuityState:
     summary_text: str | None = None
     objective: str | None = None
@@ -37,6 +76,7 @@ class RuntimeContinuityState:
     dropped_tool_result_tokens: int | None = None
     token_budget: int | None = None
     token_estimate_source: str | None = None
+    dropped_tool_results: tuple[DroppedToolResultDiagnostic, ...] = ()
     # Lightweight versioning for continuity state to aid reinjection/refresh
     # semantics. This is incremented when the shape evolves and is included
     # in the serialized payload so consumers can decide how to handle newer
@@ -71,13 +111,17 @@ class RuntimeContinuityState:
             payload["token_budget"] = self.token_budget
         if self.token_estimate_source is not None:
             payload["token_estimate_source"] = self.token_estimate_source
+        if self.dropped_tool_results:
+            payload["dropped_tool_results"] = [
+                item.metadata_payload() for item in self.dropped_tool_results
+            ]
         return payload
 
 
 @dataclass(frozen=True, slots=True)
 class ContextWindowPolicy:
     auto_compaction: bool = True
-    max_tool_results: int = 4
+    max_tool_results: int = 8
     max_tool_result_tokens: int | None = None
     max_context_ratio: float | None = None
     model_context_window_tokens: int | None = None
@@ -267,6 +311,55 @@ def _metadata_string_tuple(payload: Mapping[str, object], key: str) -> tuple[str
     return tuple(values)
 
 
+def _optional_entry_string(entry: Mapping[str, object], key: str) -> str | None:
+    value = entry.get(key)
+    return value if isinstance(value, str) and value else None
+
+
+def _dropped_tool_diagnostics_from_metadata_payload(
+    payload: Mapping[str, object],
+) -> tuple[DroppedToolResultDiagnostic, ...]:
+    raw = payload.get("dropped_tool_results")
+    if not isinstance(raw, list | tuple):
+        return ()
+    diagnostics: list[DroppedToolResultDiagnostic] = []
+    for item in cast(list[object] | tuple[object, ...], raw):
+        if not isinstance(item, dict):
+            continue
+        entry = cast(dict[str, object], item)
+        tool_name = entry.get("tool_name")
+        status = entry.get("status")
+        index = entry.get("index")
+        if not isinstance(tool_name, str) or not tool_name:
+            continue
+        if not isinstance(status, str) or not status:
+            continue
+        if not isinstance(index, int) or isinstance(index, bool):
+            continue
+
+        estimated_tokens = entry.get("estimated_tokens")
+        diagnostics.append(
+            DroppedToolResultDiagnostic(
+                tool_name=tool_name,
+                status=status,
+                index=index,
+                tool_call_id=_optional_entry_string(entry, "tool_call_id"),
+                path=_optional_entry_string(entry, "path"),
+                command=_optional_entry_string(entry, "command"),
+                pattern=_optional_entry_string(entry, "pattern"),
+                error_kind=_optional_entry_string(entry, "error_kind"),
+                estimated_tokens=(
+                    estimated_tokens
+                    if isinstance(estimated_tokens, int) and not isinstance(estimated_tokens, bool)
+                    else None
+                ),
+                truncated=entry.get("truncated") is True,
+                partial=entry.get("partial") is True,
+            )
+        )
+    return tuple(diagnostics)
+
+
 def continuity_state_from_metadata_payload(
     payload: Mapping[str, object],
 ) -> RuntimeContinuityState | None:
@@ -332,6 +425,7 @@ def continuity_state_from_metadata_payload(
         dropped_tool_result_tokens=dropped_token_count,
         token_budget=resolved_token_budget,
         token_estimate_source=token_estimate_source,
+        dropped_tool_results=_dropped_tool_diagnostics_from_metadata_payload(payload),
         version=version if version is not None else 1,
     )
 
@@ -536,6 +630,37 @@ def _tool_result_token_estimate(
         ensure_ascii=False,
     )
     return _estimated_token_count(serialized, tokenizer_model=tokenizer_model)
+
+
+def _optional_tool_string(result: ToolResult, key: str) -> str | None:
+    value = result.data.get(key)
+    return value if isinstance(value, str) and value else None
+
+
+def _dropped_tool_diagnostics(
+    results: tuple[ToolResult, ...], *, tokenizer_model: str | None = None
+) -> tuple[DroppedToolResultDiagnostic, ...]:
+    diagnostics: list[DroppedToolResultDiagnostic] = []
+    for index, result in enumerate(results, start=1):
+        diagnostics.append(
+            DroppedToolResultDiagnostic(
+                tool_name=result.tool_name,
+                status=result.status,
+                index=index,
+                tool_call_id=_optional_tool_string(result, "tool_call_id"),
+                path=_optional_tool_string(result, "path"),
+                command=_optional_tool_string(result, "command"),
+                pattern=_optional_tool_string(result, "pattern"),
+                error_kind=result.error_kind,
+                estimated_tokens=_tool_result_token_estimate(
+                    result,
+                    tokenizer_model=tokenizer_model,
+                ).tokens,
+                truncated=result.truncated,
+                partial=result.partial,
+            )
+        )
+    return tuple(diagnostics)
 
 
 def _policy_token_budget(policy: ContextWindowPolicy) -> int | None:
@@ -822,6 +947,7 @@ def _build_continuity_state(
     dropped_tokens: int | None = None,
     token_budget: int | None = None,
     token_estimate_source: str | None = None,
+    tokenizer_model: str | None = None,
 ) -> RuntimeContinuityState:
     dropped_count = len(dropped_results)
     previous = _previous_continuity_state(session_metadata)
@@ -865,6 +991,7 @@ def _build_continuity_state(
             dropped_tool_result_tokens=dropped_tokens,
             token_budget=token_budget,
             token_estimate_source=token_estimate_source,
+            dropped_tool_results=previous.dropped_tool_results if previous is not None else (),
         )
 
     preview_count = min(preview_item_limit, dropped_count)
@@ -896,6 +1023,10 @@ def _build_continuity_state(
         dropped_tool_result_tokens=dropped_tokens,
         token_budget=token_budget,
         token_estimate_source=token_estimate_source,
+        dropped_tool_results=_dropped_tool_diagnostics(
+            dropped_results,
+            tokenizer_model=tokenizer_model,
+        ),
     )
     canonical_summary = _continuity_summary_text(state_without_summary)
     return RuntimeContinuityState(
@@ -918,6 +1049,7 @@ def _build_continuity_state(
         dropped_tool_result_tokens=state_without_summary.dropped_tool_result_tokens,
         token_budget=state_without_summary.token_budget,
         token_estimate_source=state_without_summary.token_estimate_source,
+        dropped_tool_results=state_without_summary.dropped_tool_results,
         version=2,
     )
 
@@ -1076,6 +1208,7 @@ def prepare_provider_context(
             dropped_tokens=dropped_tokens,
             token_budget=token_budget,
             token_estimate_source=token_estimate_source,
+            tokenizer_model=effective_policy.tokenizer_model,
         )
         if compacted
         else None

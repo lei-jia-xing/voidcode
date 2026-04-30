@@ -256,7 +256,7 @@ def _empty_context_window_tool_limits() -> dict[str, int]:
 @dataclass(frozen=True, slots=True)
 class RuntimeContextWindowConfig:
     auto_compaction: bool = True
-    max_tool_results: int = 4
+    max_tool_results: int = 8
     max_tool_result_tokens: int | None = None
     max_context_ratio: float | None = None
     model_context_window_tokens: int | None = None
@@ -1093,7 +1093,7 @@ class _RuntimeContextWindowValidationModel(BaseModel):
 
     version: int = 1
     auto_compaction: bool = True
-    max_tool_results: int = 4
+    max_tool_results: int = 8
     max_tool_result_tokens: int | None = None
     max_context_ratio: float | None = None
     model_context_window_tokens: int | None = None
