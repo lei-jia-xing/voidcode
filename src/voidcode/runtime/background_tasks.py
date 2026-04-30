@@ -34,10 +34,14 @@ from .events import (
 from .session import SessionState
 from .storage import SessionEventAppender
 from .task import (
+    BackgroundTaskConcurrencyObservability,
+    BackgroundTaskObservability,
     BackgroundTaskRef,
     BackgroundTaskRequestSnapshot,
+    BackgroundTaskRetryObservability,
     BackgroundTaskState,
     BackgroundTaskStatus,
+    StoredBackgroundTaskSummary,
     is_background_task_terminal,
     validate_background_task_id,
 )
@@ -77,18 +81,50 @@ class _BackgroundTaskConcurrencySnapshot:
     queued_total: int
 
     def as_payload(self) -> dict[str, object]:
-        return {
-            "provider": self.provider,
-            "model": self.model,
-            "limit": self.limit,
-            "limit_source": self.limit_source,
-            "running_provider": self.running_provider,
-            "running_model": self.running_model,
-            "running_total": self.running_total,
-            "queued_provider": self.queued_provider,
-            "queued_model": self.queued_model,
-            "queued_total": self.queued_total,
-        }
+        return self.as_observability().as_payload()
+
+    def as_observability(self) -> BackgroundTaskConcurrencyObservability:
+        return BackgroundTaskConcurrencyObservability(
+            provider=self.provider,
+            model=self.model,
+            limit=self.limit,
+            limit_source=self.limit_source,
+            running_provider=self.running_provider,
+            running_model=self.running_model,
+            running_total=self.running_total,
+            active_worker_slots=self.running_total,
+            queued_provider=self.queued_provider,
+            queued_model=self.queued_model,
+            queued_total=self.queued_total,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _BackgroundTaskRetrySnapshot:
+    retry_count: int
+    max_retries: int
+    backoff_seconds: float
+    next_retry_at: int | None
+
+    def as_observability(self) -> BackgroundTaskRetryObservability:
+        return BackgroundTaskRetryObservability(
+            retry_count=self.retry_count,
+            max_retries=self.max_retries,
+            backoff_seconds=self.backoff_seconds,
+            next_retry_at=self.next_retry_at,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _BackgroundTaskObservabilityContext:
+    queued_positions: dict[str, int]
+    queued_provider_counts: dict[str, int]
+    queued_model_counts: dict[str, int]
+    queued_total: int
+    running_provider_counts: dict[str, int]
+    running_model_counts: dict[str, int]
+    running_total: int
+    retries: dict[str, _BackgroundTaskRetrySnapshot]
 
 
 class RuntimeBackgroundTaskSupervisor:
@@ -98,6 +134,226 @@ class RuntimeBackgroundTaskSupervisor:
         self._slot_available = threading.Condition(self._queue_lock)
         self._provider_running_counts: dict[str, int] = {}
         self._model_running_counts: dict[str, int] = {}
+        self._rate_limit_retries: dict[str, _BackgroundTaskRetrySnapshot] = {}
+
+    def task_observability(
+        self,
+        task: BackgroundTaskState,
+        *,
+        context: _BackgroundTaskObservabilityContext | None = None,
+    ) -> BackgroundTaskObservability:
+        try:
+            concurrency = self._concurrency_observability(task, context=context)
+        except (RuntimeRequestError, ValueError):
+            concurrency = None
+        retry = self._retry_observability(task.task.id, context=context)
+        return BackgroundTaskObservability(
+            waiting_reason=self._waiting_reason(task=task, retry=retry),
+            terminal_reason=self._terminal_reason(task),
+            queue_position=self._queue_position(task, context=context),
+            concurrency=concurrency,
+            retry=retry,
+        )
+
+    def task_with_observability(self, task: BackgroundTaskState) -> BackgroundTaskState:
+        runtime = self._runtime
+        queued_summaries = runtime._session_store.list_queued_background_tasks(
+            workspace=runtime._workspace
+        )
+        tasks_by_id = {task.task.id: task}
+        for summary in queued_summaries:
+            if summary.task.id in tasks_by_id:
+                continue
+            tasks_by_id[summary.task.id] = runtime._session_store.load_background_task(
+                workspace=runtime._workspace,
+                task_id=summary.task.id,
+            )
+        context = self._observability_context(
+            queued_summaries=queued_summaries,
+            tasks_by_id=tasks_by_id,
+        )
+        return replace(task, observability=self.task_observability(task, context=context))
+
+    def summary_with_observability(
+        self, summary: StoredBackgroundTaskSummary
+    ) -> StoredBackgroundTaskSummary:
+        task = self._runtime._session_store.load_background_task(
+            workspace=self._runtime._workspace,
+            task_id=summary.task.id,
+        )
+        return replace(summary, observability=self.task_observability(task))
+
+    def summaries_with_observability(
+        self,
+        summaries: tuple[StoredBackgroundTaskSummary, ...],
+    ) -> tuple[StoredBackgroundTaskSummary, ...]:
+        if not summaries:
+            return ()
+        runtime = self._runtime
+        queued_summaries = runtime._session_store.list_queued_background_tasks(
+            workspace=runtime._workspace
+        )
+        task_ids_to_load = {summary.task.id for summary in summaries}
+        task_ids_to_load.update(summary.task.id for summary in queued_summaries)
+        tasks_by_id = {
+            task_id: runtime._session_store.load_background_task(
+                workspace=runtime._workspace,
+                task_id=task_id,
+            )
+            for task_id in task_ids_to_load
+        }
+        context = self._observability_context(
+            queued_summaries=queued_summaries,
+            tasks_by_id=tasks_by_id,
+        )
+        return tuple(
+            replace(
+                summary,
+                observability=self.task_observability(
+                    tasks_by_id[summary.task.id],
+                    context=context,
+                ),
+            )
+            for summary in summaries
+        )
+
+    def status_counts(self) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for summary in self._runtime._session_store.list_background_tasks(
+            workspace=self._runtime._workspace
+        ):
+            counts[summary.status] = counts.get(summary.status, 0) + 1
+        return counts
+
+    def active_worker_slots(self) -> int:
+        with self._queue_lock:
+            return sum(self._provider_running_counts.values())
+
+    def _retry_observability(
+        self,
+        task_id: str,
+        *,
+        context: _BackgroundTaskObservabilityContext | None = None,
+    ) -> BackgroundTaskRetryObservability | None:
+        if context is not None:
+            retry = context.retries.get(task_id)
+        else:
+            with self._queue_lock:
+                retry = self._rate_limit_retries.get(task_id)
+        return None if retry is None else retry.as_observability()
+
+    def _queue_position(
+        self,
+        task: BackgroundTaskState,
+        *,
+        context: _BackgroundTaskObservabilityContext | None = None,
+    ) -> int | None:
+        if task.status != "queued":
+            return None
+        if context is not None:
+            return context.queued_positions.get(task.task.id)
+        runtime = self._runtime
+        with self._queue_lock:
+            queued = [
+                summary.task.id
+                for summary in runtime._session_store.list_queued_background_tasks(
+                    workspace=runtime._workspace
+                )
+            ]
+        try:
+            return queued.index(task.task.id) + 1
+        except ValueError:
+            return None
+
+    def _concurrency_observability(
+        self,
+        task: BackgroundTaskState,
+        *,
+        context: _BackgroundTaskObservabilityContext | None = None,
+    ) -> BackgroundTaskConcurrencyObservability:
+        if context is None:
+            return self._concurrency_snapshot(task).as_observability()
+        identity = self._concurrency_identity_for_task(task)
+        return BackgroundTaskConcurrencyObservability(
+            provider=identity.provider,
+            model=identity.model,
+            limit=identity.limit,
+            limit_source=identity.limit_source,
+            running_provider=context.running_provider_counts.get(identity.provider, 0),
+            running_model=context.running_model_counts.get(identity.model_key, 0),
+            running_total=context.running_total,
+            active_worker_slots=context.running_total,
+            queued_provider=context.queued_provider_counts.get(identity.provider, 0),
+            queued_model=context.queued_model_counts.get(identity.model_key, 0),
+            queued_total=context.queued_total,
+        )
+
+    def _observability_context(
+        self,
+        *,
+        queued_summaries: tuple[StoredBackgroundTaskSummary, ...],
+        tasks_by_id: dict[str, BackgroundTaskState],
+    ) -> _BackgroundTaskObservabilityContext:
+        queued_positions = {
+            summary.task.id: index for index, summary in enumerate(queued_summaries, start=1)
+        }
+        queued_provider_counts: dict[str, int] = {}
+        queued_model_counts: dict[str, int] = {}
+        for summary in queued_summaries:
+            task = tasks_by_id.get(summary.task.id)
+            if task is None:
+                continue
+            try:
+                identity = self._concurrency_identity_for_task(task)
+            except (RuntimeRequestError, ValueError):
+                continue
+            queued_provider_counts[identity.provider] = (
+                queued_provider_counts.get(identity.provider, 0) + 1
+            )
+            queued_model_counts[identity.model_key] = (
+                queued_model_counts.get(identity.model_key, 0) + 1
+            )
+        with self._queue_lock:
+            return _BackgroundTaskObservabilityContext(
+                queued_positions=queued_positions,
+                queued_provider_counts=queued_provider_counts,
+                queued_model_counts=queued_model_counts,
+                queued_total=len(queued_summaries),
+                running_provider_counts=dict(self._provider_running_counts),
+                running_model_counts=dict(self._model_running_counts),
+                running_total=sum(self._provider_running_counts.values()),
+                retries=dict(self._rate_limit_retries),
+            )
+
+    @staticmethod
+    def _terminal_reason(task: BackgroundTaskState) -> str | None:
+        if task.status == "completed":
+            return "completed"
+        if task.status == "failed":
+            return task.error or "failed"
+        if task.status == "cancelled":
+            return task.cancellation_cause or task.error or "cancelled"
+        if task.status == "interrupted":
+            return task.error or "interrupted"
+        return None
+
+    @staticmethod
+    def _waiting_reason(
+        *,
+        task: BackgroundTaskState,
+        retry: BackgroundTaskRetryObservability | None,
+    ) -> str:
+        if task.status == "queued":
+            return "queued"
+        if task.status == "running" and retry is not None:
+            return "rate_limited"
+        if task.status == "running" and task.cancel_requested_at is not None:
+            return "cancel_requested"
+        if task.status == "running" and task.approval_request_id is not None:
+            return "approval_blocked"
+        if task.status == "running" and task.question_request_id is not None:
+            return "question_blocked"
+        return task.status
 
     def start_background_task(self, request: RuntimeRequest) -> BackgroundTaskState:
         runtime = self._runtime
@@ -261,14 +517,27 @@ class RuntimeBackgroundTaskSupervisor:
         task_id: str,
         retry_count: int,
     ) -> bool:
-        deadline = time.monotonic() + self._rate_limit_backoff_seconds(retry_count)
-        while True:
-            if self._task_cancel_requested(task_id):
-                return True
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return False
-            time.sleep(min(remaining, 0.05))
+        backoff_seconds = self._rate_limit_backoff_seconds(retry_count)
+        deadline = time.monotonic() + backoff_seconds
+        next_retry_at = int((time.time() + backoff_seconds) * 1000)
+        with self._queue_lock:
+            self._rate_limit_retries[task_id] = _BackgroundTaskRetrySnapshot(
+                retry_count=retry_count,
+                max_retries=_BACKGROUND_TASK_RATE_LIMIT_RETRIES,
+                backoff_seconds=backoff_seconds,
+                next_retry_at=next_retry_at,
+            )
+        try:
+            while True:
+                if self._task_cancel_requested(task_id):
+                    return True
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                time.sleep(min(remaining, 0.05))
+        finally:
+            with self._queue_lock:
+                self._rate_limit_retries.pop(task_id, None)
 
     def _wait_for_slot_or_cancel(
         self,
@@ -291,9 +560,9 @@ class RuntimeBackgroundTaskSupervisor:
         queued_provider = 0
         queued_model = 0
         queued_total = 0
-        for summary in runtime._session_store.list_background_tasks(workspace=runtime._workspace):
-            if summary.status != "queued":
-                continue
+        for summary in runtime._session_store.list_queued_background_tasks(
+            workspace=runtime._workspace
+        ):
             queued_total += 1
             task = runtime._session_store.load_background_task(
                 workspace=runtime._workspace,
@@ -524,7 +793,7 @@ class RuntimeBackgroundTaskSupervisor:
                 )
         if previous_task.status != "cancelled" and task.status == "cancelled":
             self.run_background_task_lifecycle_hook(task)
-        return task
+        return self.task_with_observability(task)
 
     def load_background_task_child_response(
         self,
@@ -568,7 +837,6 @@ class RuntimeBackgroundTaskSupervisor:
         child_result = self.load_background_task_child_result(task=task)
         approval_blocked = child_result is not None and child_result.status == "waiting"
         summary_output = self._leader_safe_child_summary(
-            task=task,
             child_result=child_result,
         )
         error = (
@@ -597,12 +865,12 @@ class RuntimeBackgroundTaskSupervisor:
             error=error or routing_error,
             result_available=result_available,
             cancellation_cause=task.cancellation_cause,
+            observability=self.task_observability(task),
         )
 
     @staticmethod
     def _leader_safe_child_summary(
         *,
-        task: BackgroundTaskState,
         child_result: RuntimeSessionResult | None,
     ) -> str | None:
         if child_result is None:

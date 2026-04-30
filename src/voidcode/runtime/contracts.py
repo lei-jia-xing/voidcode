@@ -14,6 +14,7 @@ from .events import (
 from .question import QuestionResponse
 from .session import SessionRef, SessionState
 from .task import (
+    BackgroundTaskObservability,
     BackgroundTaskState,
     BackgroundTaskStatus,
     ResolvedSubagentRoute,
@@ -644,11 +645,24 @@ class CapabilityStatusSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class RuntimeBackgroundTaskStatusSnapshot:
+    active_worker_slots: int
+    queued_count: int
+    running_count: int
+    terminal_count: int
+    default_concurrency: int
+    provider_concurrency: dict[str, int] = field(default_factory=dict)
+    model_concurrency: dict[str, int] = field(default_factory=dict)
+    status_counts: dict[str, int] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
 class RuntimeStatusSnapshot:
     git: GitStatusSnapshot
     lsp: CapabilityStatusSnapshot
     mcp: CapabilityStatusSnapshot
     acp: CapabilityStatusSnapshot
+    background_tasks: RuntimeBackgroundTaskStatusSnapshot
 
 
 @dataclass(frozen=True, slots=True)
@@ -851,6 +865,7 @@ class BackgroundTaskResult:
     error: str | None = None
     result_available: bool = False
     cancellation_cause: str | None = None
+    observability: BackgroundTaskObservability | None = None
 
     @property
     def subagent_execution(self) -> SubagentExecutionContract:

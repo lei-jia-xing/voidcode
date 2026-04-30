@@ -131,6 +131,7 @@ from .contracts import (
     ProviderSummary,
     ProviderValidationResult,
     ReviewFileDiff,
+    RuntimeBackgroundTaskStatusSnapshot,
     RuntimeNotification,
     RuntimeProviderContextSnapshot,
     RuntimeRequest,
@@ -2546,7 +2547,8 @@ class VoidCodeRuntime:
     def load_background_task(self, task_id: str) -> BackgroundTaskState:
         self._reconcile_background_tasks_if_needed()
         validate_background_task_id(task_id)
-        return self._session_store.load_background_task(workspace=self._workspace, task_id=task_id)
+        task = self._session_store.load_background_task(workspace=self._workspace, task_id=task_id)
+        return self._background_task_supervisor.task_with_observability(task)
 
     def load_background_task_result(
         self,
@@ -2561,7 +2563,9 @@ class VoidCodeRuntime:
 
     def list_background_tasks(self) -> tuple[StoredBackgroundTaskSummary, ...]:
         self._background_task_supervisor.reconcile_background_tasks_if_needed()
-        return self._session_store.list_background_tasks(workspace=self._workspace)
+        return self._background_task_supervisor.summaries_with_observability(
+            self._session_store.list_background_tasks(workspace=self._workspace)
+        )
 
     def list_background_tasks_by_parent_session(
         self, *, parent_session_id: str
@@ -2571,9 +2575,11 @@ class VoidCodeRuntime:
             parent_session_id,
             field_name="parent_session_id",
         )
-        return self._session_store.list_background_tasks_by_parent_session(
-            workspace=self._workspace,
-            parent_session_id=validated_parent_session_id,
+        return self._background_task_supervisor.summaries_with_observability(
+            self._session_store.list_background_tasks_by_parent_session(
+                workspace=self._workspace,
+                parent_session_id=validated_parent_session_id,
+            )
         )
 
     def cancel_background_task(self, task_id: str) -> BackgroundTaskState:
@@ -3825,6 +3831,7 @@ class VoidCodeRuntime:
         return tuple(summaries)
 
     def current_status(self) -> RuntimeStatusSnapshot:
+        self._background_task_supervisor.reconcile_background_tasks_if_needed()
         git = self._git_status_snapshot()
         lsp_state = self.current_lsp_state()
         mcp_state = self.current_mcp_state()
@@ -3891,6 +3898,7 @@ class VoidCodeRuntime:
                     ),
                 }
             )
+        background_status_counts = self._background_task_supervisor.status_counts()
         return RuntimeStatusSnapshot(
             git=git,
             lsp=CapabilityStatusSnapshot(state=lsp_status, error=lsp_error),
@@ -3914,6 +3922,19 @@ class VoidCodeRuntime:
                 },
             ),
             acp=self._acp_status_snapshot(acp_state),
+            background_tasks=RuntimeBackgroundTaskStatusSnapshot(
+                active_worker_slots=self._background_task_supervisor.active_worker_slots(),
+                queued_count=background_status_counts.get("queued", 0),
+                running_count=background_status_counts.get("running", 0),
+                terminal_count=sum(
+                    background_status_counts.get(status, 0)
+                    for status in ("completed", "failed", "cancelled", "interrupted")
+                ),
+                default_concurrency=self._config.background_task.default_concurrency,
+                provider_concurrency=dict(self._config.background_task.provider_concurrency),
+                model_concurrency=dict(self._config.background_task.model_concurrency),
+                status_counts=background_status_counts,
+            ),
         )
 
     @staticmethod

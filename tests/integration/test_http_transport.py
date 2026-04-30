@@ -2933,6 +2933,9 @@ def test_transport_retries_mcp_and_returns_status_snapshot(tmp_path: Path) -> No
             runtime_contracts = importlib.import_module("voidcode.runtime.contracts")
             GitStatusSnapshot = runtime_contracts.GitStatusSnapshot
             CapabilityStatusSnapshot = runtime_contracts.CapabilityStatusSnapshot
+            RuntimeBackgroundTaskStatusSnapshot = (
+                runtime_contracts.RuntimeBackgroundTaskStatusSnapshot
+            )
             RuntimeStatusSnapshot = runtime_contracts.RuntimeStatusSnapshot
             return RuntimeStatusSnapshot(
                 git=GitStatusSnapshot(state="git_ready", root=str(tmp_path)),
@@ -2954,6 +2957,13 @@ def test_transport_retries_mcp_and_returns_status_snapshot(tmp_path: Path) -> No
                     },
                 ),
                 acp=CapabilityStatusSnapshot(state="unconfigured", error=None, details={}),
+                background_tasks=RuntimeBackgroundTaskStatusSnapshot(
+                    active_worker_slots=0,
+                    queued_count=0,
+                    running_count=0,
+                    terminal_count=0,
+                    default_concurrency=5,
+                ),
             )
 
         def review_snapshot(self) -> object:
@@ -3020,6 +3030,16 @@ def test_transport_retries_mcp_and_returns_status_snapshot(tmp_path: Path) -> No
             },
         },
         "acp": {"state": "unconfigured", "error": None, "details": {}},
+        "background_tasks": {
+            "active_worker_slots": 0,
+            "queued_count": 0,
+            "running_count": 0,
+            "terminal_count": 0,
+            "default_concurrency": 5,
+            "provider_concurrency": {},
+            "model_concurrency": {},
+            "status_counts": {},
+        },
     }
 
 

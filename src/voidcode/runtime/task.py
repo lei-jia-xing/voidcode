@@ -308,6 +308,70 @@ class BackgroundTaskRequestSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class BackgroundTaskConcurrencyObservability:
+    provider: str
+    model: str
+    limit: int
+    limit_source: str
+    running_provider: int
+    running_model: int
+    running_total: int
+    active_worker_slots: int
+    queued_provider: int
+    queued_model: int
+    queued_total: int
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "provider": self.provider,
+            "model": self.model,
+            "limit": self.limit,
+            "limit_source": self.limit_source,
+            "running_provider": self.running_provider,
+            "running_model": self.running_model,
+            "running_total": self.running_total,
+            "active_worker_slots": self.active_worker_slots,
+            "queued_provider": self.queued_provider,
+            "queued_model": self.queued_model,
+            "queued_total": self.queued_total,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class BackgroundTaskRetryObservability:
+    retry_count: int
+    max_retries: int
+    backoff_seconds: float
+    next_retry_at: int | None = None
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "retry_count": self.retry_count,
+            "max_retries": self.max_retries,
+            "backoff_seconds": self.backoff_seconds,
+            "next_retry_at": self.next_retry_at,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class BackgroundTaskObservability:
+    waiting_reason: str
+    terminal_reason: str | None = None
+    queue_position: int | None = None
+    concurrency: BackgroundTaskConcurrencyObservability | None = None
+    retry: BackgroundTaskRetryObservability | None = None
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "waiting_reason": self.waiting_reason,
+            "terminal_reason": self.terminal_reason,
+            "queue_position": self.queue_position,
+            "concurrency": (None if self.concurrency is None else self.concurrency.as_payload()),
+            "retry": None if self.retry is None else self.retry.as_payload(),
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class BackgroundTaskState:
     task: BackgroundTaskRef
     status: BackgroundTaskStatus = "queued"
@@ -325,6 +389,7 @@ class BackgroundTaskState:
     started_at: int | None = None
     finished_at: int | None = None
     cancel_requested_at: int | None = None
+    observability: BackgroundTaskObservability | None = None
 
     @property
     def parent_session_id(self) -> str | None:
@@ -360,6 +425,7 @@ class StoredBackgroundTaskSummary:
     error: str | None
     created_at: int
     updated_at: int
+    observability: BackgroundTaskObservability | None = None
 
 
 def validate_background_task_id(task_id: str) -> str:

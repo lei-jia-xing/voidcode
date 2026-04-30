@@ -112,6 +112,7 @@ from voidcode.runtime.task import (
     BackgroundTaskRef,
     BackgroundTaskRequestSnapshot,
     BackgroundTaskState,
+    StoredBackgroundTaskSummary,
     is_background_task_terminal,
 )
 from voidcode.skills import SkillRegistry
@@ -1379,6 +1380,159 @@ def test_runtime_background_task_concurrency_limit_queues_and_drains(tmp_path: P
     assert graph.prompts_seen == ["first background task", "second background task"]
 
 
+def test_runtime_background_task_status_includes_queue_concurrency_observability(
+    tmp_path: Path,
+) -> None:
+    graph = _BlockingBackgroundTaskGraph()
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=graph,
+        config=RuntimeConfig(background_task=RuntimeBackgroundTaskConfig(default_concurrency=1)),
+    )
+
+    first = runtime.start_background_task(RuntimeRequest(prompt="first background task"))
+    assert graph.first_started.wait(timeout=2.0)
+    second = runtime.start_background_task(RuntimeRequest(prompt="second background task"))
+
+    first_running = runtime.load_background_task(first.task.id)
+    second_queued = runtime.load_background_task(second.task.id)
+    runtime_status = runtime.current_status()
+
+    assert first_running.status == "running"
+    assert first_running.observability is not None
+    assert first_running.observability.waiting_reason == "running"
+    assert first_running.observability.queue_position is None
+    assert first_running.observability.concurrency is not None
+    assert first_running.observability.concurrency.active_worker_slots == 1
+    assert first_running.observability.concurrency.limit == 1
+    assert first_running.observability.concurrency.queued_total == 1
+
+    assert second_queued.status == "queued"
+    assert second_queued.observability is not None
+    assert second_queued.observability.waiting_reason == "queued"
+    assert second_queued.observability.queue_position == 1
+    assert second_queued.observability.concurrency is not None
+    assert second_queued.observability.concurrency.active_worker_slots == 1
+    assert second_queued.observability.concurrency.queued_total == 1
+
+    assert runtime_status.background_tasks.active_worker_slots == 1
+    assert runtime_status.background_tasks.queued_count == 1
+    assert runtime_status.background_tasks.running_count == 1
+    assert runtime_status.background_tasks.default_concurrency == 1
+    assert runtime_status.background_tasks.status_counts == {"queued": 1, "running": 1}
+
+    summaries = runtime.list_background_tasks()
+    queued_summary = next(summary for summary in summaries if summary.task.id == second.task.id)
+    assert queued_summary.observability is not None
+    assert queued_summary.observability.queue_position == 1
+
+    graph.release_first.set()
+    assert _wait_for_background_task(runtime, first.task.id).status == "completed"
+    assert _wait_for_background_task(runtime, second.task.id).status == "completed"
+
+
+def test_runtime_background_task_list_observability_batches_store_reads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = _BlockingBackgroundTaskGraph()
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=graph,
+        config=RuntimeConfig(background_task=RuntimeBackgroundTaskConfig(default_concurrency=1)),
+    )
+    first = runtime.start_background_task(RuntimeRequest(prompt="first background task"))
+    assert graph.first_started.wait(timeout=2.0)
+    second = runtime.start_background_task(RuntimeRequest(prompt="second background task"))
+    store = _private_attr(runtime, "_session_store")
+    original_list_background_tasks = store.list_background_tasks
+    original_list_queued_background_tasks = store.list_queued_background_tasks
+    original_load_background_task = store.load_background_task
+    calls = {"list": 0, "list_queued": 0, "load": 0}
+
+    def counted_list_background_tasks(
+        *, workspace: Path
+    ) -> tuple[StoredBackgroundTaskSummary, ...]:
+        calls["list"] += 1
+        return original_list_background_tasks(workspace=workspace)
+
+    def counted_list_queued_background_tasks(
+        *, workspace: Path
+    ) -> tuple[StoredBackgroundTaskSummary, ...]:
+        calls["list_queued"] += 1
+        return original_list_queued_background_tasks(workspace=workspace)
+
+    def counted_load_background_task(*, workspace: Path, task_id: str) -> BackgroundTaskState:
+        calls["load"] += 1
+        return original_load_background_task(workspace=workspace, task_id=task_id)
+
+    monkeypatch.setattr(store, "list_background_tasks", counted_list_background_tasks)
+    monkeypatch.setattr(store, "list_queued_background_tasks", counted_list_queued_background_tasks)
+    monkeypatch.setattr(store, "load_background_task", counted_load_background_task)
+
+    summaries = runtime.list_background_tasks()
+
+    assert {summary.task.id for summary in summaries} == {first.task.id, second.task.id}
+    assert calls == {"list": 1, "list_queued": 1, "load": 2}
+
+    graph.release_first.set()
+    assert _wait_for_background_task(runtime, first.task.id).status == "completed"
+    assert _wait_for_background_task(runtime, second.task.id).status == "completed"
+
+
+def test_runtime_background_task_load_observability_uses_queued_scope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = _BlockingBackgroundTaskGraph()
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=graph,
+        config=RuntimeConfig(background_task=RuntimeBackgroundTaskConfig(default_concurrency=1)),
+    )
+    first = runtime.start_background_task(RuntimeRequest(prompt="first background task"))
+    assert graph.first_started.wait(timeout=2.0)
+    second = runtime.start_background_task(RuntimeRequest(prompt="second background task"))
+    store = _private_attr(runtime, "_session_store")
+    original_list_background_tasks = store.list_background_tasks
+    original_list_queued_background_tasks = store.list_queued_background_tasks
+    original_load_background_task = store.load_background_task
+    calls = {"list_queued": 0, "load": 0}
+
+    def fail_full_background_task_scan(
+        *, workspace: Path
+    ) -> tuple[StoredBackgroundTaskSummary, ...]:
+        _ = workspace
+        raise AssertionError("single task load observability must not scan full task history")
+
+    def counted_list_queued_background_tasks(
+        *, workspace: Path
+    ) -> tuple[StoredBackgroundTaskSummary, ...]:
+        calls["list_queued"] += 1
+        return original_list_queued_background_tasks(workspace=workspace)
+
+    def counted_load_background_task(*, workspace: Path, task_id: str) -> BackgroundTaskState:
+        calls["load"] += 1
+        return original_load_background_task(workspace=workspace, task_id=task_id)
+
+    monkeypatch.setattr(store, "list_background_tasks", fail_full_background_task_scan)
+    monkeypatch.setattr(store, "list_queued_background_tasks", counted_list_queued_background_tasks)
+    monkeypatch.setattr(store, "load_background_task", counted_load_background_task)
+
+    queued = runtime.load_background_task(second.task.id)
+
+    assert queued.status == "queued"
+    assert queued.observability is not None
+    assert queued.observability.queue_position == 1
+    assert calls == {"list_queued": 1, "load": 1}
+
+    monkeypatch.setattr(store, "list_background_tasks", original_list_background_tasks)
+
+    graph.release_first.set()
+    assert _wait_for_background_task(runtime, first.task.id).status == "completed"
+    assert _wait_for_background_task(runtime, second.task.id).status == "completed"
+
+
 def test_runtime_background_task_concurrency_identity_uses_model_provider_default_precedence(
     tmp_path: Path,
 ) -> None:
@@ -1462,6 +1616,7 @@ def test_runtime_background_task_configured_events_include_concurrency_metadata(
         "running_provider": 1,
         "running_model": 1,
         "running_total": 1,
+        "active_worker_slots": 1,
         "queued_provider": 0,
         "queued_model": 0,
         "queued_total": 0,
@@ -1490,6 +1645,55 @@ def test_runtime_background_task_rate_limit_retries_after_backoff(
 
     assert completed.status == "completed"
     assert graph.attempts == 2
+
+
+def test_runtime_background_task_observability_reports_rate_limit_backoff(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = _RateLimitThenSuccessGraph()
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=graph)
+
+    def _observable_backoff(retry_count: int) -> float:
+        _ = retry_count
+        return 0.5
+
+    monkeypatch.setattr(
+        runtime._background_task_supervisor,  # pyright: ignore[reportPrivateUsage]
+        "_rate_limit_backoff_seconds",
+        _observable_backoff,
+    )
+
+    started = runtime.start_background_task(RuntimeRequest(prompt="retry observability"))
+    deadline = time.monotonic() + 2.0
+    observed = None
+    while time.monotonic() < deadline:
+        task = runtime.load_background_task(started.task.id)
+        if task.observability is not None and task.observability.retry is not None:
+            observed = task.observability
+            break
+        time.sleep(0.01)
+
+    assert observed is not None
+    assert observed.waiting_reason == "rate_limited"
+    assert observed.retry is not None
+    assert observed.retry.retry_count == 1
+    assert observed.retry.max_retries == 2
+    assert observed.retry.backoff_seconds == 0.5
+    assert observed.retry.next_retry_at is not None
+    assert observed.concurrency is not None
+    assert observed.concurrency.active_worker_slots == 0
+
+    completed = _wait_for_background_task(runtime, started.task.id)
+    result = runtime.load_background_task_result(started.task.id)
+
+    assert completed.status == "completed"
+    assert completed.observability is not None
+    assert completed.observability.waiting_reason == "completed"
+    assert completed.observability.terminal_reason == "completed"
+    assert completed.observability.retry is None
+    assert result.observability is not None
+    assert result.observability.terminal_reason == "completed"
 
 
 def test_runtime_background_rate_limit_retry_precedes_provider_fallback(
@@ -5474,6 +5678,9 @@ def test_runtime_background_task_persists_failure_state(tmp_path: Path) -> None:
     assert failed.status == "failed"
     assert failed.error is not None
     assert "background boom" in failed.error
+    assert failed.observability is not None
+    assert failed.observability.waiting_reason == "failed"
+    assert failed.observability.terminal_reason == failed.error
 
 
 def test_runtime_cancel_background_task_reconciles_orphaned_queued_task(tmp_path: Path) -> None:
@@ -5495,6 +5702,9 @@ def test_runtime_cancel_background_task_reconciles_orphaned_queued_task(tmp_path
     assert cancelled.status == "cancelled"
     assert cancelled.error == "cancelled before start"
     assert cancelled.cancel_requested_at is None
+    assert cancelled.observability is not None
+    assert cancelled.observability.waiting_reason == "cancelled"
+    assert cancelled.observability.terminal_reason == "cancelled before start"
 
 
 def test_runtime_reconciles_queued_background_tasks_on_init(tmp_path: Path) -> None:
@@ -5516,6 +5726,41 @@ def test_runtime_reconciles_queued_background_tasks_on_init(tmp_path: Path) -> N
 
     assert reconciled.status == "completed"
     assert reconciled.error is None
+
+
+def test_runtime_status_reconciles_stale_running_background_tasks(
+    tmp_path: Path,
+) -> None:
+    first_runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    store = _private_attr(first_runtime, "_session_store")
+    task_module = importlib.import_module("voidcode.runtime.task")
+    store.create_background_task(
+        workspace=tmp_path,
+        task=task_module.BackgroundTaskState(
+            task=task_module.BackgroundTaskRef(id="task-stale-running"),
+            request=task_module.BackgroundTaskRequestSnapshot(prompt="stale running"),
+            created_at=1,
+            updated_at=1,
+        ),
+    )
+    _ = store.mark_background_task_running(
+        workspace=tmp_path,
+        task_id="task-stale-running",
+        session_id="missing-child-session",
+    )
+
+    second_runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    status = second_runtime.current_status().background_tasks
+    task = second_runtime.load_background_task("task-stale-running")
+
+    assert status.active_worker_slots == 0
+    assert status.queued_count == 0
+    assert status.running_count == 0
+    assert status.terminal_count == 1
+    assert status.status_counts == {"interrupted": 1}
+    assert task.status == "interrupted"
+    assert task.observability is not None
+    assert task.observability.terminal_reason == "background task interrupted before completion"
 
 
 def test_runtime_drain_marks_invalid_queued_task_failed_and_continues(
