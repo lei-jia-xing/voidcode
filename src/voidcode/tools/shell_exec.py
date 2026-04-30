@@ -4,7 +4,7 @@ import os
 import signal
 import subprocess
 from pathlib import Path
-from typing import Any, ClassVar, final
+from typing import Any, ClassVar, cast, final
 
 from pydantic import ValidationError
 
@@ -41,7 +41,6 @@ def kill_timed_out_process(process: subprocess.Popen[Any]) -> None:
                 ["taskkill", "/PID", str(process.pid), "/T", "/F"],
                 capture_output=True,
                 check=False,
-                text=True,
             )
             taskkill_succeeded = completed.returncode == 0
         except OSError:
@@ -121,6 +120,7 @@ class ShellExecTool:
             creationflags = 0
             if os.name == "nt":
                 creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
+            command_text = command_text.encode("utf-8", errors="replace").decode("utf-8")
             process = subprocess.Popen(
                 command_text,
                 cwd=policy.workspace_root,
@@ -144,8 +144,8 @@ class ShellExecTool:
                 ) from exc
             raise ValueError(f"shell_exec command timed out after {timeout_seconds}s") from exc
 
-        stdout = _decode_process_output(stdout_bytes)
-        stderr = _decode_process_output(stderr_bytes)
+        stdout = _decode_process_output(cast(bytes | None, stdout_bytes))
+        stderr = _decode_process_output(cast(bytes | None, stderr_bytes))
 
         output = stdout
         if stderr:

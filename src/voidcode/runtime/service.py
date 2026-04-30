@@ -1962,26 +1962,39 @@ class VoidCodeRuntime:
         sequence: int,
         permission_policy: PermissionPolicy,
     ) -> _PermissionOutcome:
-        path_scope, canonical_path, operation_class = self._permission_context_for_tool_call(
-            tool=tool,
-            tool_call=tool_call,
+        path_scope, canonical_path, operation_class, external_paths = (
+            self._permission_context_for_tool_call(
+                tool=tool,
+                tool_call=tool_call,
+            )
         )
         external_decision: PermissionDecision | None = None
         matched_rule: str | None = None
         policy_surface: str | None = None
         if path_scope == "external" and canonical_path is not None:
-            if operation_class == "write":
-                external_decision, matched_rule = evaluate_external_directory_policy(
-                    policy=self._config.permission.write,
-                    canonical_path=Path(canonical_path),
+            policy_surface = (
+                "external_directory_write"
+                if operation_class == "write"
+                else "external_directory_read"
+            )
+            decisions: list[tuple[PermissionDecision, str, str]] = []
+            for external_path in external_paths:
+                decision, rule = evaluate_external_directory_policy(
+                    policy=(
+                        self._config.permission.write
+                        if operation_class == "write"
+                        else self._config.permission.read
+                    ),
+                    canonical_path=Path(external_path),
                 )
-                policy_surface = "external_directory_write"
-            else:
-                external_decision, matched_rule = evaluate_external_directory_policy(
-                    policy=self._config.permission.read,
-                    canonical_path=Path(canonical_path),
-                )
-                policy_surface = "external_directory_read"
+                decisions.append((decision, rule, external_path))
+
+            deny_match = next((item for item in decisions if item[0] == "deny"), None)
+            ask_match = next((item for item in decisions if item[0] == "ask"), None)
+            allow_match = decisions[0] if decisions else None
+            selected = deny_match or ask_match or allow_match
+            if selected is not None:
+                external_decision, matched_rule, canonical_path = selected
 
         # Referenced via extracted run-loop collaborator.
         permission = resolve_permission(
@@ -2152,18 +2165,21 @@ class VoidCodeRuntime:
         *,
         tool: ToolDefinition,
         tool_call: ToolCall,
-    ) -> tuple[PathScope, str | None, OperationClass]:
+    ) -> tuple[PathScope, str | None, OperationClass, tuple[str, ...]]:
         operation_class = self._operation_class_for_tool(tool_call.tool_name, tool.read_only)
         candidate_paths = self._candidate_paths_for_tool_call(tool_call)
         workspace_root = self._workspace.resolve()
+        external_paths: list[str] = []
         for raw_path in candidate_paths:
             canonical = self._canonicalize_candidate_path(raw_path)
             if canonical is None:
                 continue
             if canonical.is_relative_to(workspace_root):
                 continue
-            return "external", str(canonical), operation_class
-        return "workspace", None, operation_class
+            external_paths.append(str(canonical))
+        if external_paths:
+            return "external", external_paths[0], operation_class, tuple(external_paths)
+        return "workspace", None, operation_class, ()
 
     @staticmethod
     def _operation_class_for_tool(tool_name: str, read_only: bool) -> OperationClass:

@@ -1389,7 +1389,10 @@ def test_provider_background_output_full_session_is_tool_result_not_hidden_conte
     assert isinstance(background_tool_segments[0].content, str)
     assert "Background task result digest:" in background_tool_segments[0].content
     assert "child transcript sentinel" not in background_tool_segments[0].content
-    assert background_output_result.reference == background_output_session["full_session_reference"]
+    assert (
+        getattr(background_output_result, "reference", None)
+        == background_output_session["full_session_reference"]
+    )
     assert all(
         "child transcript sentinel" not in segment.content
         for segment in after_background_context.segments
@@ -2433,6 +2436,111 @@ def test_runtime_denies_external_write_when_permission_rule_denies(tmp_path: Pat
     assert denied.events[-2].payload["policy_surface"] == "external_directory_write"
     assert denied.events[-2].payload["canonical_path"] == str(outside_file.resolve())
     assert outside_file.exists() is False
+
+
+def test_runtime_denies_when_any_external_path_in_patch_is_denied(tmp_path: Path) -> None:
+    runtime_request, runtime_class = _load_runtime_types()
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    config_module = importlib.import_module("voidcode.runtime.config")
+
+    policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="allow")
+    runtime_config = cast(Callable[..., object], config_module.RuntimeConfig)
+    permission_config = cast(
+        Callable[..., object],
+        config_module.ExternalDirectoryPermissionConfig,
+    )
+    policy_config = cast(Callable[..., object], config_module.ExternalDirectoryPolicy)
+
+    allowed_root = tmp_path.parent / "external-allowed"
+    denied_root = tmp_path.parent / "external-denied"
+    allowed_root.mkdir(parents=True, exist_ok=True)
+    denied_root.mkdir(parents=True, exist_ok=True)
+    allowed_file = allowed_root / "ok.txt"
+    denied_file = denied_root / "no.txt"
+
+    patch_text = "\n".join(
+        [
+            "*** Begin Patch",
+            f"*** Add File: {allowed_file}",
+            "+allowed",
+            f"*** Add File: {denied_file}",
+            "+denied",
+            "*** End Patch",
+        ]
+    )
+
+    runtime = cast(
+        RuntimeRunner,
+        cast(
+            object,
+            runtime_class(
+                workspace=tmp_path,
+                config=runtime_config(
+                    approval_mode="allow",
+                    permission=permission_config(
+                        read=policy_config(rules=(("*", "ask"),)),
+                        write=policy_config(
+                            rules=((f"{allowed_root.as_posix()}/**", "allow"), ("*", "deny"))
+                        ),
+                    ),
+                ),
+                graph=_SingleToolGraph("apply_patch", {"patch": patch_text}),
+                permission_policy=policy,
+            ),
+        ),
+    )
+
+    denied = runtime.run(runtime_request(prompt="mixed patch", session_id="external-patch-mixed"))
+    assert denied.session.status == "failed"
+    assert denied.events[-2].event_type == "runtime.approval_resolved"
+    assert denied.events[-2].payload["decision"] == "deny"
+    assert denied.events[-2].payload["policy_surface"] == "external_directory_write"
+    assert denied.events[-2].payload["matched_rule"] == "*"
+    assert denied_file.exists() is False
+
+
+def test_external_permission_rule_supports_tilde_home_pattern(tmp_path: Path) -> None:
+    runtime_request, runtime_class = _load_runtime_types()
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    config_module = importlib.import_module("voidcode.runtime.config")
+
+    policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="allow")
+    runtime_config = cast(Callable[..., object], config_module.RuntimeConfig)
+    permission_config = cast(
+        Callable[..., object],
+        config_module.ExternalDirectoryPermissionConfig,
+    )
+    policy_config = cast(Callable[..., object], config_module.ExternalDirectoryPolicy)
+
+    home_file = Path.home() / "voidcode-ext-home-test.txt"
+    home_file.write_text("home", encoding="utf-8")
+
+    runtime = cast(
+        RuntimeRunner,
+        cast(
+            object,
+            runtime_class(
+                workspace=tmp_path,
+                config=runtime_config(
+                    approval_mode="allow",
+                    permission=permission_config(
+                        read=policy_config(rules=(("~/**", "allow"), ("*", "deny"))),
+                        write=policy_config(rules=(("*", "deny"),)),
+                    ),
+                ),
+                graph=_SingleToolGraph("read_file", {"filePath": str(home_file)}),
+                permission_policy=policy,
+            ),
+        ),
+    )
+
+    try:
+        result = runtime.run(runtime_request(prompt="home read", session_id="external-home-read"))
+        assert result.session.status == "completed"
+        assert result.output == "done"
+    finally:
+        if home_file.exists():
+            home_file.unlink()
 
 
 def test_runtime_executes_deterministic_graph_and_emits_events(tmp_path: Path) -> None:

@@ -175,6 +175,12 @@ def evaluate_external_directory_policy(
 def _path_matches_rule(*, normalized_path: str, pattern: str) -> bool:
     from fnmatch import fnmatch
 
+    expanded_pattern = pattern
+    if pattern.startswith("~"):
+        expanded_pattern = Path(pattern).expanduser().as_posix()
+    else:
+        expanded_pattern = pattern.replace("\\", "/")
+
     if pattern == "*":
         return True
-    return fnmatch(normalized_path, pattern)
+    return fnmatch(normalized_path, expanded_pattern)

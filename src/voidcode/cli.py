@@ -463,7 +463,8 @@ def _background_task_next_steps(
     result_available: bool,
     error: str | None,
 ) -> list[str]:
-    workspace_arg = f"--workspace {shlex.quote(str(workspace))}"
+    workspace_text = workspace.as_posix()
+    workspace_arg = f"--workspace {shlex.quote(workspace_text)}"
     steps: list[str] = []
     if approval_request_id is not None and child_session_id is not None:
         steps.append(
