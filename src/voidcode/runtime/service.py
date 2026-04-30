@@ -385,6 +385,31 @@ class _ReasoningCaptureState:
     output_diagnostic_emitted: bool = False
 
 
+_SHELL_READ_COMMANDS = frozenset({
+    "cat",
+    "diff",
+    "du",
+    "echo",
+    "env",
+    "file",
+    "find",
+    "grep",
+    "head",
+    "id",
+    "ls",
+    "printenv",
+    "pwd",
+    "readlink",
+    "stat",
+    "tail",
+    "test",
+    "uname",
+    "wc",
+    "which",
+    "whoami",
+})
+
+
 def _provider_target_label(target: ResolvedProviderModel) -> str:
     provider = target.selection.provider
     model = target.selection.model
@@ -2420,7 +2445,12 @@ class VoidCodeRuntime:
         tool: ToolDefinition,
         tool_call: ToolCall,
     ) -> tuple[PathScope, str | None, OperationClass, tuple[str, ...]]:
-        operation_class = self._operation_class_for_tool(tool_call.tool_name, tool.read_only)
+        shell_command: str | None = None
+        if tool_call.tool_name == "shell_exec":
+            command = tool_call.arguments.get("command")
+            if isinstance(command, str):
+                shell_command = command
+        operation_class = self._operation_class_for_tool(tool_call.tool_name, tool.read_only, shell_command)
         candidate_paths = self._candidate_paths_for_tool_call(tool_call)
         workspace_root = self._workspace.resolve()
         external_paths: list[str] = []
@@ -2436,10 +2466,30 @@ class VoidCodeRuntime:
         return "workspace", None, operation_class, ()
 
     @staticmethod
-    def _operation_class_for_tool(tool_name: str, read_only: bool) -> OperationClass:
+    def _operation_class_for_tool(
+        tool_name: str, read_only: bool, shell_command: str | None = None
+    ) -> OperationClass:
         if tool_name == "shell_exec":
+            if shell_command is not None and VoidCodeRuntime._is_shell_read_only_command(shell_command):
+                return "read"
             return "execute"
         return "read" if read_only else "write"
+
+    @staticmethod
+    def _is_shell_read_only_command(command: str) -> bool:
+        try:
+            lexer = shlex.shlex(command, posix=False)
+            lexer.whitespace_split = True
+            tokens = list(lexer)
+        except ValueError:
+            tokens = command.split()
+        if not tokens:
+            return False
+        base_command = VoidCodeRuntime._normalize_shell_path_token(tokens[0])
+        base_name = Path(base_command).name
+        if VoidCodeRuntime._looks_like_shell_write_redirect(command):
+            return False
+        return base_name in _SHELL_READ_COMMANDS
 
     @staticmethod
     def _candidate_paths_for_tool_call(tool_call: ToolCall) -> tuple[str, ...]:
@@ -2537,6 +2587,10 @@ class VoidCodeRuntime:
         if value.startswith(("/", "~/")):
             return True
         return len(value) >= 3 and value[1] == ":" and value[2] in ("\\", "/")
+
+    @staticmethod
+    def _looks_like_shell_write_redirect(command: str) -> bool:
+        return ">" in command
 
     def list_sessions(self) -> tuple[StoredSessionSummary, ...]:
         return self._session_store.list_sessions(workspace=self._workspace)
