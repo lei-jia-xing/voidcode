@@ -47,6 +47,7 @@ _VALID_APPROVAL_MODES = ("allow", "deny", "ask")
 _VALID_TUI_COMMANDS = ("command_palette", "session_new", "session_resume")
 type ExecutionEngineName = Literal["deterministic", "provider"]
 DEFAULT_EXECUTION_ENGINE: ExecutionEngineName = "provider"
+type RuntimeProviderContextDiagnosticMode = Literal["off", "warn", "block"]
 type RuntimeAgentPresetId = AgentManifestId
 type RuntimeAgentPromptSource = Literal["builtin"]
 
@@ -127,6 +128,8 @@ _CONTEXT_WINDOW_CONFIG_KEYS = frozenset(
         "continuity_preview_chars",
         "context_pressure_threshold",
         "context_pressure_cooldown_steps",
+        "provider_context_diagnostics",
+        "provider_context_oversized_feedback_chars",
     }
 )
 _FORMATTER_PRESET_CONFIG_KEYS = frozenset(
@@ -279,6 +282,8 @@ class RuntimeContextWindowConfig:
     continuity_preview_chars: int = 80
     context_pressure_threshold: float = 0.7
     context_pressure_cooldown_steps: int = 3
+    provider_context_diagnostics: RuntimeProviderContextDiagnosticMode = "warn"
+    provider_context_oversized_feedback_chars: int = 8_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -1177,6 +1182,8 @@ class _RuntimeContextWindowValidationModel(BaseModel):
     continuity_preview_chars: int = 80
     context_pressure_threshold: float = 0.7
     context_pressure_cooldown_steps: int = 3
+    provider_context_diagnostics: RuntimeProviderContextDiagnosticMode = "warn"
+    provider_context_oversized_feedback_chars: int = 8_000
 
     @field_validator("auto_compaction", mode="before")
     @classmethod
@@ -1303,6 +1310,37 @@ class _RuntimeContextWindowValidationModel(BaseModel):
             )
         return value
 
+    @field_validator("provider_context_diagnostics", mode="before")
+    @classmethod
+    def _validate_provider_context_diagnostics(
+        cls, value: object
+    ) -> RuntimeProviderContextDiagnosticMode:
+        if value is None:
+            return "warn"
+        if value not in ("off", "warn", "block"):
+            raise ValueError(
+                "runtime config field 'context_window.provider_context_diagnostics' must be one "
+                "of: off, warn, block"
+            )
+        return value
+
+    @field_validator("provider_context_oversized_feedback_chars", mode="before")
+    @classmethod
+    def _validate_provider_context_oversized_feedback_chars(cls, value: object) -> int:
+        if value is None:
+            return 8_000
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise ValueError(
+                "runtime config field 'context_window.provider_context_oversized_feedback_chars' "
+                "must be an integer"
+            )
+        if value < 1:
+            raise ValueError(
+                "runtime config field 'context_window.provider_context_oversized_feedback_chars' "
+                "must be greater than or equal to 1"
+            )
+        return value
+
     @field_validator("per_tool_result_tokens", mode="before")
     @classmethod
     def _validate_per_tool_result_tokens(cls, value: object) -> dict[str, int]:
@@ -1356,6 +1394,8 @@ class _RuntimeContextWindowValidationModel(BaseModel):
             continuity_preview_chars=self.continuity_preview_chars,
             context_pressure_threshold=self.context_pressure_threshold,
             context_pressure_cooldown_steps=self.context_pressure_cooldown_steps,
+            provider_context_diagnostics=self.provider_context_diagnostics,
+            provider_context_oversized_feedback_chars=self.provider_context_oversized_feedback_chars,
         )
 
 
@@ -2208,6 +2248,10 @@ def serialize_runtime_context_window_config(
         "continuity_preview_chars": context_window.continuity_preview_chars,
         "context_pressure_threshold": context_window.context_pressure_threshold,
         "context_pressure_cooldown_steps": context_window.context_pressure_cooldown_steps,
+        "provider_context_diagnostics": context_window.provider_context_diagnostics,
+        "provider_context_oversized_feedback_chars": (
+            context_window.provider_context_oversized_feedback_chars
+        ),
     }
     if context_window.max_tool_result_tokens is not None:
         payload["max_tool_result_tokens"] = context_window.max_tool_result_tokens
