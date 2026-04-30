@@ -4022,6 +4022,120 @@ def test_runtime_reconciles_persisted_child_terminal_truth_and_backfills_parent_
     )
 
 
+@pytest.mark.parametrize(
+    ("task_id", "child_status", "expected_task_status", "expected_event_type"),
+    [
+        (
+            "task-restart-completed",
+            "completed",
+            "completed",
+            RUNTIME_BACKGROUND_TASK_COMPLETED,
+        ),
+        ("task-restart-failed", "failed", "failed", RUNTIME_BACKGROUND_TASK_FAILED),
+        ("task-restart-cancelled", None, "cancelled", RUNTIME_BACKGROUND_TASK_CANCELLED),
+    ],
+)
+def test_runtime_reconciliation_parent_events_are_idempotent_across_restart_reads(
+    tmp_path: Path,
+    task_id: str,
+    child_status: str | None,
+    expected_task_status: str,
+    expected_event_type: str,
+) -> None:
+    initial_runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    _ = initial_runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+    store = _private_attr(initial_runtime, "_session_store")
+    task_module = importlib.import_module("voidcode.runtime.task")
+    child_session_id = f"child-{task_id}"
+    store.create_background_task(
+        workspace=tmp_path,
+        task=task_module.BackgroundTaskState(
+            task=task_module.BackgroundTaskRef(id=task_id),
+            status=("running" if child_status is not None else "cancelled"),
+            request=task_module.BackgroundTaskRequestSnapshot(
+                prompt="background child",
+                parent_session_id="leader-session",
+            ),
+            session_id=(child_session_id if child_status is not None else None),
+            created_at=1,
+            updated_at=2,
+            started_at=1,
+            finished_at=(2 if child_status is None else None),
+            error=("cancelled before start" if child_status is None else None),
+        ),
+    )
+    if child_status is not None:
+        store.save_run(
+            workspace=tmp_path,
+            request=RuntimeRequest(
+                prompt="background child",
+                session_id=child_session_id,
+                parent_session_id="leader-session",
+                metadata={
+                    "background_run": True,
+                    "background_task_id": task_id,
+                },
+            ),
+            response=RuntimeResponse(
+                session=SessionState(
+                    session=runtime_service_module.SessionRef(
+                        id=child_session_id,
+                        parent_id="leader-session",
+                    ),
+                    status=child_status,
+                    turn=1,
+                    metadata={
+                        "background_run": True,
+                        "background_task_id": task_id,
+                    },
+                ),
+                events=(
+                    EventEnvelope(
+                        session_id=child_session_id,
+                        sequence=1,
+                        event_type="runtime.request_received",
+                        source="runtime",
+                        payload={"prompt": "background child"},
+                    ),
+                    EventEnvelope(
+                        session_id=child_session_id,
+                        sequence=2,
+                        event_type=(
+                            "graph.response_ready"
+                            if child_status == "completed"
+                            else "runtime.failed"
+                        ),
+                        source=("graph" if child_status == "completed" else "runtime"),
+                        payload=(
+                            {} if child_status == "completed" else {"error": "child failed durably"}
+                        ),
+                    ),
+                ),
+                output=("background child" if child_status == "completed" else None),
+            ),
+        )
+
+    resumed_runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+
+    reconciled = resumed_runtime.load_background_task(task_id)
+    _ = resumed_runtime.load_background_task_result(task_id)
+    _ = resumed_runtime.load_background_task(task_id)
+    _ = resumed_runtime.session_debug_snapshot(session_id="leader-session")
+    leader_response = resumed_runtime.resume("leader-session")
+    replayed_response = resumed_runtime.resume("leader-session")
+
+    parent_events = [
+        event for event in replayed_response.events if event.event_type == expected_event_type
+    ]
+    assert reconciled.status == expected_task_status
+    assert len(parent_events) == 1, f"Expected 1 parent event, got {len(parent_events)}"
+    assert parent_events[0].payload["task_id"] == task_id
+    assert parent_events[0].payload["status"] == expected_task_status
+    assert [event.sequence for event in leader_response.events] == sorted(
+        event.sequence for event in leader_response.events
+    )
+
+
 def test_runtime_session_debug_snapshot_does_not_reconcile_parent_background_events(
     tmp_path: Path,
 ) -> None:
@@ -4256,6 +4370,93 @@ def test_runtime_background_task_waiting_approval_emits_parent_session_event_onc
             for event in deduped_response.events
         )
         == 1
+    )
+
+
+def test_runtime_background_task_waiting_question_then_terminal_events_are_idempotent(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_QuestionThenDoneGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+
+    started = runtime.start_background_task(
+        RuntimeRequest(prompt="background child", parent_session_id="leader-session")
+    )
+    running = _wait_for_background_task_session(runtime, started.task.id)
+    child_session_id = cast(str, running.session_id)
+    child_response = _wait_for_session_event(
+        runtime,
+        child_session_id,
+        "runtime.question_requested",
+    )
+    question_request_id = cast(str, child_response.events[-1].payload["request_id"])
+    leader_response = _wait_for_session_event(
+        runtime,
+        "leader-session",
+        RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL,
+    )
+
+    waiting_events = [
+        event
+        for event in leader_response.events
+        if event.event_type == RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL
+    ]
+    assert len(waiting_events) == 1, f"Expected 1 waiting event, got {len(waiting_events)}"
+    waiting_delegated = waiting_events[0].delegated_lifecycle
+    assert waiting_delegated is not None
+    assert waiting_delegated.delegation.question_request_id == question_request_id
+    assert waiting_delegated.delegation.lifecycle_status == "waiting_approval"
+
+    _ = runtime.load_background_task(started.task.id)
+    _ = runtime.load_background_task_result(started.task.id)
+    _ = runtime.session_debug_snapshot(session_id="leader-session")
+    deduped_waiting = runtime.resume("leader-session")
+
+    assert (
+        sum(
+            event.event_type == RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL
+            for event in deduped_waiting.events
+        )
+        == 1
+    )
+
+    completed_child = runtime.answer_question(
+        session_id=child_session_id,
+        question_request_id=question_request_id,
+        responses=(QuestionResponse(header="Runtime path", answers=("Reuse existing",)),),
+    )
+    terminal_task = _wait_for_background_task(runtime, started.task.id)
+    terminal_parent = _wait_for_session_event(
+        runtime,
+        "leader-session",
+        RUNTIME_BACKGROUND_TASK_COMPLETED,
+    )
+    _ = runtime.load_background_task_result(started.task.id)
+    replayed_parent = runtime.resume("leader-session")
+
+    assert completed_child.session.status == "completed"
+    assert terminal_task.status == "completed"
+    assert (
+        sum(
+            event.event_type == RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL
+            for event in replayed_parent.events
+        )
+        == 1
+    )
+    assert (
+        sum(
+            event.event_type == RUNTIME_BACKGROUND_TASK_COMPLETED
+            for event in replayed_parent.events
+        )
+        == 1
+    )
+    assert [event.sequence for event in terminal_parent.events] == sorted(
+        event.sequence for event in terminal_parent.events
     )
 
 
