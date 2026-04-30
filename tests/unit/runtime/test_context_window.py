@@ -7,6 +7,8 @@ from unittest.mock import patch
 
 from voidcode.runtime.context_window import (
     ContextWindowPolicy,
+    RuntimeAssembledContext,
+    RuntimeContextSegment,
     RuntimeContinuityState,
     assemble_provider_context,
     context_window_policy_from_payload,
@@ -16,6 +18,7 @@ from voidcode.runtime.context_window import (
     normalize_read_file_output,
     prepare_provider_context,
 )
+from voidcode.runtime.provider_context import inspect_provider_context
 from voidcode.tools.contracts import ToolResult
 
 
@@ -121,6 +124,163 @@ def test_assemble_provider_context_injects_active_runtime_todos() -> None:
         and "old finished task" not in content
         for content in system_segments
     )
+    assert [segment.metadata for segment in assembled.segments if segment.role == "system"] == [
+        {"source": "runtime_todo_state"}
+    ]
+
+
+def test_provider_context_inspector_reports_opencode_go_synthetic_feedback() -> None:
+    assembled = assemble_provider_context(
+        prompt="continue",
+        tool_results=(
+            ToolResult(
+                tool_name="read_file",
+                content="hello",
+                status="ok",
+                data={
+                    "tool_call_id": "call:1",
+                    "arguments": {"path": "sample.txt", "api_key": "secret"},
+                    "path": "sample.txt",
+                },
+            ),
+        ),
+        session_metadata={},
+        policy=ContextWindowPolicy(max_tool_results=4),
+    )
+
+    snapshot = inspect_provider_context(
+        assembled_context=assembled,
+        provider="opencode-go",
+        model="glm-5",
+        execution_engine="provider",
+        available_tool_count=3,
+    )
+
+    assert snapshot.provider == "opencode-go"
+    assert snapshot.provider_messages[-1].source == "opencode_go_synthetic_tool_feedback"
+    assert snapshot.provider_messages[-1].role == "user"
+    synthetic_content = snapshot.provider_messages[-1].content or ""
+    assert "Completed tool calls for current request" in synthetic_content
+    assert "api_key" not in synthetic_content
+    assert "secret" not in synthetic_content
+    assert any(
+        diagnostic.code == "provider_path_uses_synthetic_tool_feedback"
+        for diagnostic in snapshot.diagnostics
+    )
+
+
+def test_provider_context_inspector_redacts_secret_text_from_tool_output() -> None:
+    assembled = assemble_provider_context(
+        prompt="inspect env",
+        tool_results=(
+            ToolResult(
+                tool_name="read_file",
+                content=(
+                    "OPENAI_API_KEY=sk-test-secret\n"
+                    "Authorization: Bearer abcdefghijklmnopqrstuvwxyz"
+                ),
+                status="ok",
+                data={"tool_call_id": "call:secret", "arguments": {"path": ".env"}},
+            ),
+        ),
+        session_metadata={},
+        policy=ContextWindowPolicy(max_tool_results=4),
+    )
+
+    snapshot = inspect_provider_context(
+        assembled_context=assembled,
+        provider="openai",
+        model="gpt-4o",
+        execution_engine="provider",
+        available_tool_count=3,
+    )
+    tool_segment = snapshot.segments[-1]
+    tool_message = snapshot.provider_messages[-1]
+
+    assert tool_segment.content == "OPENAI_API_KEY=[redacted]\nAuthorization: Bearer [redacted]"
+    assert "sk-test-secret" not in (tool_message.content or "")
+    assert "abcdefghijklmnopqrstuvwxyz" not in (tool_message.content or "")
+    assert tool_message.tool_call_id == "call_secret"
+
+
+def test_provider_context_inspector_redacts_tool_error_and_data_fields() -> None:
+    assembled = assemble_provider_context(
+        prompt="inspect failure",
+        tool_results=(
+            ToolResult(
+                tool_name="web_fetch",
+                status="error",
+                error="request failed with access_token=tool-secret-token",
+                data={
+                    "tool_call_id": "call:error",
+                    "arguments": {"url": "https://example.com"},
+                    "headers": {"authorization": "Bearer nested-secret-token"},
+                    "access_token": "data-secret-token",
+                },
+            ),
+        ),
+        session_metadata={},
+        policy=ContextWindowPolicy(max_tool_results=4),
+    )
+
+    snapshot = inspect_provider_context(
+        assembled_context=assembled,
+        provider="openai",
+        model="gpt-4o",
+        execution_engine="provider",
+        available_tool_count=3,
+    )
+    tool_segment = snapshot.segments[-1]
+    tool_message_content = snapshot.provider_messages[-1].content or ""
+
+    assert "tool-secret-token" not in tool_message_content
+    assert "nested-secret-token" not in tool_message_content
+    assert "data-secret-token" not in tool_message_content
+    assert "authorization" not in tool_message_content.lower()
+    assert tool_segment.metadata["error"] == "request failed with access_token=[redacted]"
+    tool_data = tool_segment.metadata["data"]
+    assert isinstance(tool_data, dict)
+    assert "headers" in tool_data
+    assert tool_data["headers"] == {}
+
+
+def test_provider_context_inspector_reports_tool_pairing_problems() -> None:
+    assembled = RuntimeAssembledContext(
+        prompt="continue",
+        tool_results=(),
+        continuity_state=None,
+        metadata={},
+        segments=(
+            RuntimeContextSegment(role="user", content="continue"),
+            RuntimeContextSegment(
+                role="assistant",
+                content=None,
+                tool_call_id="missing-result",
+                tool_name="read_file",
+                tool_arguments={"path": "sample.txt"},
+            ),
+            RuntimeContextSegment(
+                role="tool",
+                content="orphan",
+                tool_call_id="orphan-result",
+                tool_name="grep",
+                metadata={"status": "ok", "data": {}},
+            ),
+        ),
+    )
+
+    snapshot = inspect_provider_context(
+        assembled_context=assembled,
+        provider="openai",
+        model="gpt-4o",
+        execution_engine="provider",
+        available_tool_count=0,
+    )
+    diagnostic_codes = {diagnostic.code for diagnostic in snapshot.diagnostics}
+
+    assert "missing_tool_result" in diagnostic_codes
+    assert "orphan_tool_result" in diagnostic_codes
+    assert "provider_requires_tools_schema" in diagnostic_codes
 
 
 def test_prepare_provider_context_compacts_old_results_and_reports_metadata() -> None:
@@ -174,10 +334,12 @@ def test_prepare_provider_context_uses_explicit_continuity_preview_policy() -> N
     )
 
     assert context.continuity_state is not None
-    assert "## Objective\nread sample.txt" in context.continuity_state.summary_text
-    assert "Compacted 3 earlier tool results:" in context.continuity_state.summary_text
-    assert '1. read_file ok content_preview="conte..."' in context.continuity_state.summary_text
-    assert "... and 2 more" in context.continuity_state.summary_text
+    summary_text = context.continuity_state.summary_text
+    assert summary_text is not None
+    assert "## Objective\nread sample.txt" in summary_text
+    assert "Compacted 3 earlier tool results:" in summary_text
+    assert '1. read_file ok content_preview="conte..."' in summary_text
+    assert "... and 2 more" in summary_text
 
 
 def test_prepare_provider_context_compacts_by_absolute_token_budget() -> None:

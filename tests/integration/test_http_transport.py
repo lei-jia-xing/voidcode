@@ -958,6 +958,10 @@ def test_transport_reads_session_debug_snapshot(tmp_path: Path) -> None:
     )
     assert payload["last_failure_event"] is None
     assert payload["failure"] is None
+    provider_context = cast(dict[str, object], payload["provider_context"])
+    assert cast(int, provider_context["segment_count"]) >= 3
+    provider_segments = cast(list[dict[str, object]], provider_context["segments"])
+    assert provider_segments[-1]["tool_name"] == "read_file"
     assert payload["suggested_operator_action"] == "replay"
 
 

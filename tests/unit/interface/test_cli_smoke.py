@@ -502,6 +502,8 @@ def test_sessions_debug_outputs_json_snapshot() -> None:
     assert payload["pending_approval"] is None
     assert payload["pending_question"] is None
     assert payload["last_relevant_event"]["event_type"] == "graph.response_ready"
+    assert payload["provider_context"]["segment_count"] >= 3
+    assert payload["provider_context"]["segments"][-1]["tool_name"] == "read_file"
     assert payload["suggested_operator_action"] == "replay"
     assert "Traceback" not in debug_result.stderr
 
