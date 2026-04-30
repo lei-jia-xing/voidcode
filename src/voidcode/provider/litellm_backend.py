@@ -188,10 +188,7 @@ class LiteLLMBackendSingleAgentProvider:
                     model_name="unknown",
                     message="litellm provider requires model name",
                 )
-            model_name = request.model_name
-            if self.config is not None and model_name in self.config.model_map:
-                return self.config.model_map[model_name]
-            return model_name
+            return self._mapped_model_name_for_request(request)
         if request.model_name is None:
             raise ProviderExecutionError(
                 kind="invalid_model",
@@ -199,15 +196,19 @@ class LiteLLMBackendSingleAgentProvider:
                 model_name="unknown",
                 message="provider requires model name",
             )
-        if self.config is not None and request.model_name in self.config.model_map:
-            model_name = self.config.model_map[request.model_name]
-        else:
-            model_name = request.model_name
+        model_name = self._mapped_model_name_for_request(request)
         if self.use_raw_model_name:
             return model_name
         if "/" in model_name:
             return model_name
         return f"{self.name}/{model_name}"
+
+    def _mapped_model_name_for_request(self, request: ProviderTurnRequest) -> str:
+        if request.model_name is None:
+            return ""
+        if self.config is not None and request.model_name in self.config.model_map:
+            return self.config.model_map[request.model_name]
+        return request.model_name
 
     def _api_base(self) -> str:
         base_url = None if self.config is None else self.config.base_url
@@ -254,10 +255,11 @@ class LiteLLMBackendSingleAgentProvider:
         return self._completion_kwargs_for_request(request)
 
     def _tool_feedback_mode_for_request(self, request: ProviderTurnRequest) -> ToolFeedbackMode:
-        model_name = request.model_name
-        mode = (
-            self.tool_feedback_model_overrides.get(model_name) if model_name is not None else None
-        )
+        request_model_name = request.model_name
+        mapped_model_name = self._mapped_model_name_for_request(request)
+        mode = self.tool_feedback_model_overrides.get(mapped_model_name)
+        if mode is None and request_model_name is not None:
+            mode = self.tool_feedback_model_overrides.get(request_model_name)
         if mode is not None:
             return mode
         metadata_mode = (
@@ -266,8 +268,8 @@ class LiteLLMBackendSingleAgentProvider:
         if metadata_mode is not None:
             return metadata_mode
         provider_name = request.provider_name or self.name
-        if model_name is not None:
-            inferred = infer_model_metadata(provider_name, model_name)
+        if mapped_model_name:
+            inferred = infer_model_metadata(provider_name, mapped_model_name)
             if inferred is not None and inferred.tool_feedback_mode is not None:
                 return inferred.tool_feedback_mode
         return "standard"
