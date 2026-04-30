@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Final, Literal, cast
 
 type EventSource = Literal["runtime", "graph", "tool"]
@@ -63,6 +64,8 @@ type PrototypeAdditiveEventType = Literal[
     "runtime.delegated_result_available",
     "runtime.skill_loaded",
     "runtime.todo_updated",
+    "runtime.reasoning_part",
+    "runtime.reasoning_diagnostic",
 ]
 type DelegatedBackgroundTaskEventType = Literal[
     "runtime.background_task_waiting_approval",
@@ -159,6 +162,14 @@ RUNTIME_DELEGATED_RESULT_AVAILABLE: Final[PrototypeAdditiveEventType] = (
 )
 RUNTIME_SKILL_LOADED: Final[PrototypeAdditiveEventType] = "runtime.skill_loaded"
 RUNTIME_TODO_UPDATED: Final[PrototypeAdditiveEventType] = "runtime.todo_updated"
+RUNTIME_REASONING_PART: Final[PrototypeAdditiveEventType] = "runtime.reasoning_part"
+RUNTIME_REASONING_DIAGNOSTIC: Final[PrototypeAdditiveEventType] = "runtime.reasoning_diagnostic"
+
+REASONING_TEXT_LIMIT_CHARS: Final[int] = 4000
+REASONING_PREVIEW_LIMIT_CHARS: Final[int] = 240
+REASONING_SESSION_TEXT_LIMIT_CHARS: Final[int] = 16_000
+REASONING_SESSION_PART_LIMIT: Final[int] = 32
+_SAFE_PROVIDER_REASONING_METADATA_KEYS: Final[frozenset[str]] = frozenset({"source"})
 
 EMITTED_EVENT_TYPES: Final[tuple[ExistingEventType, ...]] = (
     RUNTIME_REQUEST_RECEIVED,
@@ -217,7 +228,99 @@ PROTOTYPE_ADDITIVE_EVENT_TYPES: Final[tuple[PrototypeAdditiveEventType, ...]] = 
     RUNTIME_DELEGATED_RESULT_AVAILABLE,
     RUNTIME_SKILL_LOADED,
     RUNTIME_TODO_UPDATED,
+    RUNTIME_REASONING_PART,
+    RUNTIME_REASONING_DIAGNOSTIC,
 )
+
+
+def runtime_reasoning_part_payload(
+    *,
+    text: str,
+    source: str = "provider_stream",
+    provider_metadata: Mapping[str, object] | None = None,
+    started_at: str | None = None,
+    ended_at: str | None = None,
+) -> dict[str, object]:
+    """Build a bounded, runtime-owned reasoning part payload."""
+
+    captured_at = datetime.now(UTC).isoformat()
+    text_char_count = len(text)
+    truncated = text_char_count > REASONING_TEXT_LIMIT_CHARS
+    bounded_text = text[:REASONING_TEXT_LIMIT_CHARS]
+    preview = bounded_text[:REASONING_PREVIEW_LIMIT_CHARS]
+    payload: dict[str, object] = {
+        "type": "reasoning",
+        "text": bounded_text,
+        "text_char_count": text_char_count,
+        "truncated": truncated,
+        "source": source,
+        "visibility": "showable",
+        "time": {
+            "start": started_at or captured_at,
+            "end": ended_at or captured_at,
+        },
+        "preview": preview,
+    }
+    if provider_metadata:
+        payload["provider_metadata"] = dict(provider_metadata)
+    return payload
+
+
+def runtime_reasoning_part_from_provider_stream(
+    payload: Mapping[str, object],
+) -> dict[str, object] | None:
+    if payload.get("channel") != "reasoning":
+        return None
+    kind = payload.get("kind")
+    if kind not in {"delta", "content"}:
+        return None
+    text = payload.get("text")
+    if not isinstance(text, str) or not text:
+        return None
+    provider_metadata: dict[str, object] = {
+        "stream_kind": kind,
+        "stream_channel": "reasoning",
+    }
+    raw_metadata = payload.get("metadata")
+    if isinstance(raw_metadata, Mapping):
+        for key, value in cast(Mapping[str, object], raw_metadata).items():
+            if key not in _SAFE_PROVIDER_REASONING_METADATA_KEYS:
+                continue
+            if isinstance(value, str) and value:
+                provider_metadata[key] = value[:REASONING_PREVIEW_LIMIT_CHARS]
+    return runtime_reasoning_part_payload(
+        text=text,
+        source="provider_stream",
+        provider_metadata=provider_metadata,
+    )
+
+
+def is_reasoning_payload(event_type: str, payload: Mapping[str, object]) -> bool:
+    if event_type == RUNTIME_REASONING_PART:
+        return True
+    return event_type == "graph.provider_stream" and payload.get("channel") == "reasoning"
+
+
+def redact_reasoning_payload(
+    event_type: str,
+    payload: Mapping[str, object],
+    *,
+    show_thinking: bool = False,
+) -> dict[str, object]:
+    redacted = dict(payload)
+    if show_thinking or not is_reasoning_payload(event_type, payload):
+        return redacted
+    if "text" in redacted:
+        redacted.pop("text", None)
+        redacted["text_omitted"] = True
+    if "preview" in redacted:
+        redacted.pop("preview", None)
+        redacted["preview_omitted"] = True
+    if event_type == RUNTIME_REASONING_PART:
+        redacted["visibility"] = "hidden"
+    return redacted
+
+
 KNOWN_EVENT_TYPES: Final[tuple[KnownEventType, ...]] = (
     *EMITTED_EVENT_TYPES,
     *PROTOTYPE_ADDITIVE_EVENT_TYPES,

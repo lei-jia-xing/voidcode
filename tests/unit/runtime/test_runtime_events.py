@@ -27,6 +27,8 @@ from voidcode.runtime.events import (
     RUNTIME_LSP_SERVER_STOPPED,
     RUNTIME_MCP_SERVER_FAILED,
     RUNTIME_MEMORY_REFRESHED,
+    RUNTIME_REASONING_DIAGNOSTIC,
+    RUNTIME_REASONING_PART,
     RUNTIME_SESSION_ENDED,
     RUNTIME_SESSION_IDLE,
     RUNTIME_SESSION_STARTED,
@@ -40,6 +42,8 @@ from voidcode.runtime.events import (
     DelegatedLifecycleMessage,
     DelegatedRoutingPayload,
     EventEnvelope,
+    redact_reasoning_payload,
+    runtime_reasoning_part_payload,
 )
 from voidcode.runtime.task import SubagentRoutingIdentity
 from voidcode.runtime.tool_display import build_tool_display
@@ -80,7 +84,34 @@ def test_future_additive_event_types_cover_async_lifecycle_surfaces() -> None:
         RUNTIME_DELEGATED_RESULT_AVAILABLE,
         RUNTIME_SKILL_LOADED,
         RUNTIME_TODO_UPDATED,
+        RUNTIME_REASONING_PART,
+        RUNTIME_REASONING_DIAGNOSTIC,
     )
+
+
+def test_reasoning_redaction_omits_text_and_preview_by_default() -> None:
+    payload = runtime_reasoning_part_payload(text="private chain")
+
+    redacted = redact_reasoning_payload(RUNTIME_REASONING_PART, payload)
+
+    assert redacted["text_omitted"] is True
+    assert redacted["preview_omitted"] is True
+    assert "text" not in redacted
+    assert "preview" not in redacted
+    assert "private chain" not in repr(redacted)
+
+
+def test_reasoning_redaction_can_show_thinking_explicitly() -> None:
+    payload = runtime_reasoning_part_payload(text="private chain")
+
+    shown = redact_reasoning_payload(
+        RUNTIME_REASONING_PART,
+        payload,
+        show_thinking=True,
+    )
+
+    assert shown["text"] == "private chain"
+    assert shown["preview"] == "private chain"
 
 
 def test_delegated_lifecycle_payload_preserves_typed_transport_shape() -> None:
