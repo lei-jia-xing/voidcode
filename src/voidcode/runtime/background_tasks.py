@@ -13,6 +13,7 @@ from ..hook.config import RuntimeHookSurface
 from ..hook.executor import LifecycleHookExecutionRequest, run_lifecycle_hooks
 from ..provider.models import ResolvedProviderConfig
 from .contracts import (
+    BackgroundTaskConcurrencySnapshot,
     BackgroundTaskResult,
     InternalRuntimeRequestMetadata,
     RuntimeRequest,
@@ -63,32 +64,7 @@ class _BackgroundTaskConcurrencyIdentity:
         return f"{self.provider}/{self.model}"
 
 
-@dataclass(frozen=True, slots=True)
-class _BackgroundTaskConcurrencySnapshot:
-    provider: str
-    model: str
-    limit: int
-    limit_source: str
-    running_provider: int
-    running_model: int
-    running_total: int
-    queued_provider: int
-    queued_model: int
-    queued_total: int
 
-    def as_payload(self) -> dict[str, object]:
-        return {
-            "provider": self.provider,
-            "model": self.model,
-            "limit": self.limit,
-            "limit_source": self.limit_source,
-            "running_provider": self.running_provider,
-            "running_model": self.running_model,
-            "running_total": self.running_total,
-            "queued_provider": self.queued_provider,
-            "queued_model": self.queued_model,
-            "queued_total": self.queued_total,
-        }
 
 
 class RuntimeBackgroundTaskSupervisor:
@@ -308,11 +284,11 @@ class RuntimeBackgroundTaskSupervisor:
 
     def _concurrency_snapshot(
         self, task: BackgroundTaskState
-    ) -> _BackgroundTaskConcurrencySnapshot:
+    ) -> BackgroundTaskConcurrencySnapshot:
         identity = self._concurrency_identity_for_task(task)
         with self._queue_lock:
             queued_provider, queued_model, queued_total = self._queued_counts_for_identity(identity)
-            return _BackgroundTaskConcurrencySnapshot(
+            return BackgroundTaskConcurrencySnapshot(
                 provider=identity.provider,
                 model=identity.model,
                 limit=identity.limit,
@@ -324,6 +300,64 @@ class RuntimeBackgroundTaskSupervisor:
                 queued_model=queued_model,
                 queued_total=queued_total,
             )
+
+    def get_concurrency_snapshot(self) -> BackgroundTaskConcurrencySnapshot:
+        runtime = self._runtime
+        summaries = runtime._session_store.list_background_tasks(workspace=runtime._workspace)
+        queued_tasks = [
+            runtime._session_store.load_background_task(
+                workspace=runtime._workspace,
+                task_id=summary.task.id,
+            )
+            for summary in summaries
+            if summary.status == "queued"
+        ]
+        if queued_tasks:
+            return self._concurrency_snapshot(queued_tasks[0])
+        running_tasks = [
+            runtime._session_store.load_background_task(
+                workspace=runtime._workspace,
+                task_id=summary.task.id,
+            )
+            for summary in summaries
+            if summary.status == "running"
+        ]
+        if running_tasks:
+            return self._concurrency_snapshot(running_tasks[0])
+        return BackgroundTaskConcurrencySnapshot(
+            provider="none",
+            model="none",
+            limit=runtime._config.background_task.default_concurrency,
+            limit_source="default",
+            running_provider=0,
+            running_model=0,
+            running_total=0,
+            queued_provider=0,
+            queued_model=0,
+            queued_total=0,
+        )
+
+    def compute_queue_position(self, task_id: str) -> int | None:
+        runtime = self._runtime
+        task = runtime._session_store.load_background_task(
+            workspace=runtime._workspace,
+            task_id=task_id,
+        )
+        if task.status != "queued":
+            return None
+        with self._queue_lock:
+            summaries = sorted(
+                runtime._session_store.list_background_tasks(workspace=runtime._workspace),
+                key=lambda summary: (summary.created_at, summary.task.id),
+            )
+            position = 0
+            for summary in summaries:
+                if summary.status != "queued":
+                    continue
+                if summary.task.id == task_id:
+                    return position
+                position += 1
+        return None
 
     def _concurrency_payload_for_event(self, task: BackgroundTaskState) -> dict[str, object]:
         if self._runtime._config.background_task.default_concurrency == 5 and not (

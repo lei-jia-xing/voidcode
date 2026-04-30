@@ -121,6 +121,7 @@ from .context_window import (
 )
 from .contracts import (
     AgentSummary,
+    BackgroundTaskConcurrencySnapshot,
     BackgroundTaskResult,
     CapabilityStatusSnapshot,
     GitStatusSnapshot,
@@ -2578,6 +2579,9 @@ class VoidCodeRuntime:
 
     def cancel_background_task(self, task_id: str) -> BackgroundTaskState:
         return self._background_task_supervisor.cancel_background_task(task_id)
+
+    def background_task_concurrency_snapshot(self) -> BackgroundTaskConcurrencySnapshot:
+        return self._background_task_supervisor.get_concurrency_snapshot()
 
     def session_result(self, *, session_id: str) -> RuntimeSessionResult:
         _ = self._load_session_result(session_id=session_id)

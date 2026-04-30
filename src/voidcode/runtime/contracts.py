@@ -1045,6 +1045,43 @@ class QuestionRuntimeEntrypoint(Protocol):
     ) -> Iterator[RuntimeStreamChunk]: ...
 
 
+type BackgroundTaskWaitReason = Literal[
+    "queued",
+    "rate_limited",
+    "approval_blocked",
+    "question_blocked",
+    "cancel_requested",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class BackgroundTaskConcurrencySnapshot:
+    provider: str
+    model: str
+    limit: int
+    limit_source: str
+    running_provider: int
+    running_model: int
+    running_total: int
+    queued_provider: int
+    queued_model: int
+    queued_total: int
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "provider": self.provider,
+            "model": self.model,
+            "limit": self.limit,
+            "limit_source": self.limit_source,
+            "running_provider": self.running_provider,
+            "running_model": self.running_model,
+            "running_total": self.running_total,
+            "queued_provider": self.queued_provider,
+            "queued_model": self.queued_model,
+            "queued_total": self.queued_total,
+        }
+
+
 @runtime_checkable
 class BackgroundTaskRuntimeEntrypoint(Protocol):
     def start_background_task(self, request: RuntimeRequest) -> BackgroundTaskState: ...
@@ -1065,3 +1102,5 @@ class BackgroundTaskRuntimeEntrypoint(Protocol):
     ) -> tuple[StoredBackgroundTaskSummary, ...]: ...
 
     def cancel_background_task(self, task_id: str) -> BackgroundTaskState: ...
+
+    def background_task_concurrency_snapshot(self) -> BackgroundTaskConcurrencySnapshot: ...

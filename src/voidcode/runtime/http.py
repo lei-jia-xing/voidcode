@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from .config import RuntimeConfig
 from .contracts import (
     AgentSummary,
+    BackgroundTaskConcurrencySnapshot,
     BackgroundTaskResult,
     CapabilityStatusSnapshot,
     GitStatusSnapshot,
@@ -460,6 +461,17 @@ class RuntimeTransportApp:
                 status=405,
                 payload={"error": "method not allowed"},
             )
+            return
+
+        if path == "/api/tasks/concurrency":
+            if method != "GET":
+                await self._json_response(
+                    send,
+                    status=405,
+                    payload={"error": "method not allowed"},
+                )
+                return
+            await self._handle_background_task_concurrency(send)
             return
 
         if path == "/api/notifications":
@@ -1101,6 +1113,9 @@ class RuntimeTransportApp:
             runtime = self._runtime_factory()
             try:
                 task = runtime.start_background_task(request)
+                queue_position = runtime._background_task_supervisor.compute_queue_position(
+                    task.task.id
+                )
             except RuntimeRequestError as exc:
                 await self._json_response(send, status=400, payload={"error": str(exc)})
                 return
@@ -1109,7 +1124,7 @@ class RuntimeTransportApp:
         await self._json_response(
             send,
             status=201,
-            payload=self._serialize_background_task_state(task),
+            payload=self._serialize_background_task_state(task, queue_position=queue_position),
         )
 
     async def _handle_list_background_tasks(self, send: Send) -> None:
@@ -1148,6 +1163,7 @@ class RuntimeTransportApp:
             runtime = self._runtime_factory()
             try:
                 task = runtime.load_background_task(task_id)
+                queue_position = runtime._background_task_supervisor.compute_queue_position(task_id)
             except ValueError as exc:
                 await self._json_response(send, status=404, payload={"error": str(exc)})
                 return
@@ -1156,7 +1172,7 @@ class RuntimeTransportApp:
         await self._json_response(
             send,
             status=200,
-            payload=self._serialize_background_task_state(task),
+            payload=self._serialize_background_task_state(task, queue_position=queue_position),
         )
 
     async def _handle_background_task_output(
@@ -1219,6 +1235,19 @@ class RuntimeTransportApp:
             send,
             status=200,
             payload=self._serialize_background_task_state(task),
+        )
+
+    async def _handle_background_task_concurrency(self, send: Send) -> None:
+        with self._active_request_scope():
+            runtime = self._runtime_factory()
+            try:
+                snapshot = runtime.background_task_concurrency_snapshot()
+            finally:
+                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
+        await self._json_response(
+            send,
+            status=200,
+            payload=self._serialize_background_task_concurrency_snapshot(snapshot),
         )
 
     async def _handle_cancel_session(
@@ -1844,8 +1873,12 @@ class RuntimeTransportApp:
         return payload
 
     @staticmethod
-    def _serialize_background_task_state(task: BackgroundTaskState) -> dict[str, object]:
-        return {
+    def _serialize_background_task_state(
+        task: BackgroundTaskState,
+        *,
+        queue_position: int | None = None,
+    ) -> dict[str, object]:
+        payload: dict[str, object] = {
             "task": {"id": task.task.id},
             "status": task.status,
             "request": RuntimeTransportApp._serialize_background_task_request_snapshot(
@@ -1866,6 +1899,9 @@ class RuntimeTransportApp:
             "cancel_requested_at": task.cancel_requested_at,
             "routing": RuntimeTransportApp._serialize_subagent_routing(task.routing_identity),
         }
+        if queue_position is not None:
+            payload["queue_position"] = queue_position
+        return payload
 
     @staticmethod
     def _serialize_background_task_summary(task: StoredBackgroundTaskSummary) -> dict[str, object]:
@@ -2088,6 +2124,12 @@ class RuntimeTransportApp:
             "delegation": result.delegated_execution.as_payload(),
             "message": result.delegated_message.as_payload(),
         }
+
+    @staticmethod
+    def _serialize_background_task_concurrency_snapshot(
+        snapshot: "BackgroundTaskConcurrencySnapshot",
+    ) -> dict[str, object]:
+        return snapshot.as_payload()
 
     @staticmethod
     def _serialize_workspace_summary(summary: WorkspaceSummary) -> dict[str, object]:
