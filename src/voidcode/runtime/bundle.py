@@ -109,6 +109,7 @@ _TOOL_OUTPUT_KEYS: Final[frozenset[str]] = frozenset(
 
 
 _DEFAULT_TOOL_OUTPUT_PREVIEW_CHARS: Final[int] = 2_000
+_BUNDLE_ARTIFACT_READ_LIMIT_LINES: Final[int] = 1_000_000
 
 
 class SessionBundleError(ValueError):
@@ -180,6 +181,8 @@ class SessionBundleArtifactPayload:
     metadata: dict[str, object]
     content: str | None
     missing: bool
+    content_truncated: bool = False
+    content_next_offset: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -306,6 +309,8 @@ def _artifact_payload(artifact: SessionBundleArtifactPayload) -> dict[str, objec
         "metadata": artifact.metadata,
         "content": artifact.content,
         "missing": artifact.missing,
+        "content_truncated": artifact.content_truncated,
+        "content_next_offset": artifact.content_next_offset,
     }
 
 
@@ -564,13 +569,18 @@ class _SessionBundleBuilder:
         artifact_id = artifact.get("artifact_id")
         if not isinstance(artifact_id, str) or artifact_id == "":
             return None
-        read_result = read_tool_output_artifact(artifact, offset=0, limit=1_000_000)
+        read_result = read_tool_output_artifact(
+            artifact, offset=0, limit=_BUNDLE_ARTIFACT_READ_LIMIT_LINES
+        )
         if read_result.get("status") == "invalid":
             return None
         missing = bool(read_result.get("artifact_missing"))
         raw_content = read_result.get("content")
         content = raw_content if isinstance(raw_content, str) and not missing else None
         sanitized_content = _sanitize_export_text(content, options=self._options)
+        raw_next_offset = read_result.get("next_offset")
+        content_next_offset = raw_next_offset if isinstance(raw_next_offset, int) else None
+        content_truncated = content_next_offset is not None
         metadata = _apply_payload_options(dict(artifact), options=self._options)
         session_id = artifact.get("session_id")
         tool_call_id = artifact.get("tool_call_id")
@@ -580,9 +590,17 @@ class _SessionBundleBuilder:
             session_id=session_id if isinstance(session_id, str) else None,
             tool_call_id=tool_call_id if isinstance(tool_call_id, str) else None,
             tool_name=tool_name if isinstance(tool_name, str) else None,
-            metadata={**metadata, "status": "missing" if missing else "available"},
+            metadata={
+                **metadata,
+                "status": "missing" if missing else "available",
+                "content_truncated": content_truncated,
+                "content_next_offset": content_next_offset,
+                "bundle_read_limit_lines": _BUNDLE_ARTIFACT_READ_LIMIT_LINES,
+            },
             content=sanitized_content,
             missing=missing,
+            content_truncated=content_truncated,
+            content_next_offset=content_next_offset,
         )
 
     def _sanitize_diagnostics_block(
@@ -980,6 +998,7 @@ def _parse_artifact_payload(
     raw_tool_call_id = payload.get("tool_call_id")
     raw_tool_name = payload.get("tool_name")
     raw_content = payload.get("content")
+    raw_content_next_offset = payload.get("content_next_offset")
     return SessionBundleArtifactPayload(
         artifact_id=artifact_id,
         session_id=(
@@ -1006,6 +1025,12 @@ def _parse_artifact_payload(
             else None
         ),
         missing=bool(payload.get("missing", False)),
+        content_truncated=bool(payload.get("content_truncated", False)),
+        content_next_offset=(
+            _ensure_int(raw_content_next_offset, where=f"artifacts[{index}].content_next_offset")
+            if raw_content_next_offset is not None
+            else None
+        ),
     )
 
 

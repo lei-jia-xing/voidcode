@@ -6,6 +6,7 @@ from typing import cast
 
 import pytest
 
+import voidcode.runtime.bundle as bundle_module
 from voidcode.runtime.bundle import (
     SESSION_BUNDLE_REDACTED_PLACEHOLDER,
     SESSION_BUNDLE_SCHEMA_NAME,
@@ -306,8 +307,37 @@ def test_session_bundle_includes_available_artifacts_only_when_tool_output_reque
             "metadata": artifact.metadata,
             "content": artifact.content,
             "missing": False,
+            "content_truncated": False,
+            "content_next_offset": None,
         }
     ]
+
+
+def test_session_bundle_marks_artifact_content_truncated_when_read_limit_hit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tool_payload = _save_session_with_tool_artifact(tmp_path)
+    store = SqliteSessionStore()
+    monkeypatch.setattr(bundle_module, "_BUNDLE_ARTIFACT_READ_LIMIT_LINES", 2)
+
+    bundle = build_session_bundle(
+        session_store=store,
+        workspace=tmp_path,
+        session_id="artifact-session",
+        options=SessionBundleOptions(include_tool_output=True),
+    )
+
+    assert bundle.manifest.artifact_count == 1
+    artifact = bundle.artifacts[0]
+    assert artifact.artifact_id == tool_payload["artifact_id"]
+    assert artifact.missing is False
+    assert artifact.content == "artifact-line-0\nartifact-line-1\n"
+    assert artifact.content_truncated is True
+    assert artifact.content_next_offset == 2
+    assert artifact.metadata["content_truncated"] is True
+    assert artifact.metadata["content_next_offset"] == 2
+    assert artifact.metadata["bundle_read_limit_lines"] == 2
 
 
 def test_session_bundle_reports_missing_artifact_without_content(tmp_path: Path) -> None:
