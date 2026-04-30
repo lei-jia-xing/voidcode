@@ -1421,10 +1421,14 @@ def test_run_command_interactively_denies_on_empty_input(capsys: Any) -> None:
                     ),
                     _make_chunk(
                         session_id="demo-session",
-                        status="failed",
+                        status="running",
                         event=_runtime_event(
-                            "runtime.failed",
+                            "runtime.tool_completed",
                             sequence=4,
+                            source="tool",
+                            tool="write_file",
+                            status="error",
+                            permission_denied=True,
                             error="permission denied for tool: write_file",
                         ),
                     ),
@@ -1449,7 +1453,7 @@ def test_run_command_interactively_denies_on_empty_input(capsys: Any) -> None:
         in captured.out
     )
     assert (
-        "EVENT runtime.failed source=runtime error=permission denied for tool: write_file"
+        "EVENT runtime.tool_completed source=tool error=permission denied for tool: write_file"
         in captured.out
     )
     assert captured.out.rstrip().endswith("RESULT")
