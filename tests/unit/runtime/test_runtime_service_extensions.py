@@ -12251,6 +12251,134 @@ def test_runtime_provider_transient_failure_after_tool_is_resumable(
     assert len(tool_completed_events) == 1
 
 
+def test_runtime_provider_failure_resume_reconciles_parent_background_tasks(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "sample.txt").write_text("sample contents", encoding="utf-8")
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(
+                    (
+                        ProviderStreamEvent(
+                            kind="content",
+                            channel="tool",
+                            text=(
+                                '{"tool_name":"read_file",'
+                                '"arguments":{"filePath":"sample.txt"},'
+                                '"tool_call_id":"read-sample"}'
+                            ),
+                        ),
+                        ProviderStreamEvent(kind="done", done_reason="completed"),
+                    ),
+                    (
+                        ProviderStreamEvent(
+                            kind="error",
+                            channel="error",
+                            error="stream disconnect",
+                            error_kind="transient_failure",
+                        ),
+                        ProviderStreamEvent(kind="done", done_reason="error"),
+                    ),
+                    ProviderTurnResult(output="parent resumed complete"),
+                ),
+            ),
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+        model_provider_registry=registry,
+    )
+    parent_session_id = "provider-parent-retry-session"
+    task_id = "provider-parent-task-recover"
+    child_session_id = "provider-parent-child-complete"
+
+    failed = runtime.run(
+        RuntimeRequest(
+            prompt="read sample.txt",
+            session_id=parent_session_id,
+            metadata={"provider_stream": True},
+        )
+    )
+    assert failed.session.status == "failed"
+    assert runtime.session_debug_snapshot(session_id=parent_session_id).resumable is True
+
+    session_store = runtime._session_store  # pyright: ignore[reportPrivateUsage]
+    session_store.create_background_task(
+        workspace=tmp_path,
+        task=BackgroundTaskState(
+            task=BackgroundTaskRef(id=task_id),
+            status="running",
+            request=BackgroundTaskRequestSnapshot(
+                prompt="background child",
+                parent_session_id=parent_session_id,
+            ),
+            session_id=child_session_id,
+            created_at=1,
+            updated_at=1,
+            started_at=1,
+        ),
+    )
+    session_store.save_run(
+        workspace=tmp_path,
+        request=RuntimeRequest(
+            prompt="background child",
+            session_id=child_session_id,
+            parent_session_id=parent_session_id,
+            metadata={
+                "background_run": True,
+                "background_task_id": task_id,
+            },
+        ),
+        response=RuntimeResponse(
+            session=SessionState(
+                session=SessionRef(
+                    id=child_session_id,
+                    parent_id=parent_session_id,
+                ),
+                status="completed",
+                turn=1,
+                metadata={
+                    "background_run": True,
+                    "background_task_id": task_id,
+                },
+            ),
+            events=(
+                EventEnvelope(
+                    session_id=child_session_id,
+                    sequence=1,
+                    event_type="runtime.request_received",
+                    source="runtime",
+                    payload={"prompt": "background child"},
+                ),
+                EventEnvelope(
+                    session_id=child_session_id,
+                    sequence=2,
+                    event_type="graph.response_ready",
+                    source="graph",
+                    payload={},
+                ),
+            ),
+            output="background child",
+        ),
+    )
+
+    resumed = runtime.resume(parent_session_id)
+
+    assert resumed.session.status == "completed"
+    assert resumed.output == "parent resumed complete"
+    assert runtime.load_background_task(task_id).status == "completed"
+    recovered_events = [
+        event for event in resumed.events if event.event_type == RUNTIME_BACKGROUND_TASK_COMPLETED
+    ]
+    assert len(recovered_events) == 1
+    assert recovered_events[0].payload["task_id"] == task_id
+    assert recovered_events[0].payload["parent_session_id"] == parent_session_id
+    assert recovered_events[0].payload["child_session_id"] == child_session_id
+
+
 def test_runtime_provider_failure_resume_finalizes_background_task_and_releases_mcp(
     tmp_path: Path,
 ) -> None:

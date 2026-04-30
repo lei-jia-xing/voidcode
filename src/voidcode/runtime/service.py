@@ -3944,6 +3944,9 @@ class VoidCodeRuntime:
         if approval_request_id is None and approval_decision is None:
             checkpoint = self._load_resume_checkpoint(session_id=session_id)
             if checkpoint is not None and checkpoint.get("kind") == "provider_failure_retryable":
+                self._background_task_supervisor.reconcile_parent_background_task_events_for_session(
+                    parent_session_id=session_id
+                )
                 return self._resume_provider_failure_response(
                     session_id=session_id,
                     checkpoint=checkpoint,
@@ -3982,6 +3985,9 @@ class VoidCodeRuntime:
         if approval_request_id is None and approval_decision is None:
             checkpoint = self._load_resume_checkpoint(session_id=session_id)
             if checkpoint is not None and checkpoint.get("kind") == "provider_failure_retryable":
+                self._background_task_supervisor.reconcile_parent_background_task_events_for_session(
+                    parent_session_id=session_id
+                )
                 run_id = os.urandom(8).hex()
                 abort_signal = self._register_active_session_id(
                     session_id,
