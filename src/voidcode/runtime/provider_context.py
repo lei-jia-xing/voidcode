@@ -6,7 +6,11 @@ from collections import defaultdict
 from typing import cast
 
 from ..provider.model_catalog import ToolFeedbackMode
-from ..tools.output import sanitize_tool_arguments, sanitize_tool_result_data
+from ..tools.output import (
+    sanitize_tool_arguments,
+    sanitize_tool_result_data,
+    strip_redaction_sentinels,
+)
 from .context_window import RuntimeAssembledContext, RuntimeContextSegment
 from .contracts import (
     RuntimeProviderContextDiagnostic,
@@ -173,7 +177,7 @@ def _standard_tool_message_snapshots(
                             "function": {
                                 "name": segment.tool_name,
                                 "arguments": json.dumps(
-                                    _sanitize_debug_arguments(segment.tool_arguments or {}),
+                                    _provider_visible_debug_arguments(segment.tool_arguments or {}),
                                     ensure_ascii=False,
                                     sort_keys=True,
                                 ),
@@ -264,7 +268,7 @@ def _tool_payload_json(segment: RuntimeContextSegment) -> str:
     )
     raw_arguments = sanitized_data.get("arguments")
     sanitized_arguments = (
-        _sanitize_debug_arguments(cast(dict[str, object], raw_arguments))
+        _provider_visible_debug_arguments(cast(dict[str, object], raw_arguments))
         if isinstance(raw_arguments, dict)
         else {}
     )
@@ -289,6 +293,13 @@ def _tool_payload_json(segment: RuntimeContextSegment) -> str:
 def _sanitize_debug_arguments(arguments: dict[str, object]) -> dict[str, object]:
     sanitized = sanitize_tool_arguments(arguments)
     return cast(dict[str, object], _safe_payload(sanitized))
+
+
+def _provider_visible_debug_arguments(arguments: dict[str, object]) -> dict[str, object]:
+    sanitized = sanitize_tool_arguments(arguments)
+    stripped = strip_redaction_sentinels(sanitized)
+    safe = _safe_payload(stripped)
+    return cast(dict[str, object], safe) if isinstance(safe, dict) else {}
 
 
 def _sanitize_debug_data(data: dict[str, object]) -> dict[str, object]:
