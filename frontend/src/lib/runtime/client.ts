@@ -53,6 +53,10 @@ async function expectOk(res: Response, fallback: string): Promise<void> {
   }
 }
 
+function encodePathSegments(path: string): string {
+  return path.split("/").map(encodeURIComponent).join("/");
+}
+
 export class RuntimeClient {
   static async listWorkspaces(): Promise<WorkspaceRegistrySnapshot> {
     const res = await fetch(`/api/workspaces`);
@@ -138,7 +142,7 @@ export class RuntimeClient {
   }
 
   static async getReviewDiff(path: string): Promise<ReviewFileDiff> {
-    const res = await fetch(`/api/review/diff/${encodeURIComponent(path)}`);
+    const res = await fetch(`/api/review/diff/${encodePathSegments(path)}`);
     await expectOk(res, "Failed to load review diff");
     return res.json();
   }

@@ -1,7 +1,12 @@
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi } from "vitest";
 import { ChatThread } from "./ChatThread";
 import { estimateStreamedTextHeight } from "../lib/runtime/text-layout";
+import {
+  deriveChatMessages,
+  type ChatMessage,
+} from "../lib/runtime/event-parser";
+import type { EventEnvelope } from "../lib/runtime/types";
 import "../i18n";
 
 vi.mock("@chenglou/pretext", () => ({
@@ -17,20 +22,20 @@ vi.mock("remark-gfm", () => ({
   default: () => ({}),
 }));
 
-describe("ChatThread", () => {
-  const baseProps = {
-    messages: [],
-    isRunning: false,
-    isWaitingApproval: false,
-    isApprovalSubmitting: false,
-    approvalError: null,
-    onResolveApproval: vi.fn(),
-    isWaitingQuestion: false,
-    isQuestionSubmitting: false,
-    questionError: null,
-    onAnswerQuestion: vi.fn(),
-  };
+const baseProps = {
+  messages: [] as ChatMessage[],
+  isRunning: false,
+  isWaitingApproval: false,
+  isApprovalSubmitting: false,
+  approvalError: null as string | null,
+  onResolveApproval: vi.fn(),
+  isWaitingQuestion: false,
+  isQuestionSubmitting: false,
+  questionError: null as string | null,
+  onAnswerQuestion: vi.fn(),
+};
 
+describe("ChatThread", () => {
   it("renders welcome state without avatar graphics", () => {
     render(<ChatThread {...baseProps} />);
 
@@ -85,6 +90,9 @@ describe("ChatThread", () => {
     );
 
     expect(screen.getByText("hi there")).toBeInTheDocument();
+    expect(
+      screen.getByText("hi there").closest('[class*="border"]'),
+    ).toBeNull();
     expect(screen.queryByText("Assistant")).not.toBeInTheDocument();
     expect(screen.queryByLabelText(/avatar/i)).not.toBeInTheDocument();
   });
@@ -251,7 +259,7 @@ describe("ChatThread", () => {
     ]);
   });
 
-  it("renders thinking block when reasoning exists", () => {
+  it("does not render message-level thinking block when reasoning exists", () => {
     render(
       <ChatThread
         {...baseProps}
@@ -272,9 +280,50 @@ describe("ChatThread", () => {
       />,
     );
 
-    expect(screen.getByText("Thinking")).toBeInTheDocument();
-    expect(screen.getByText("(1.6s)")).toBeInTheDocument();
-    expect(screen.queryByText(/steps/)).not.toBeInTheDocument();
+    expect(screen.queryByText("Thinking")).not.toBeInTheDocument();
+    expect(screen.queryByText("(1.6s)")).not.toBeInTheDocument();
+    expect(screen.queryByText(/step 1/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/step 2/)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/internal chain-of-thought is hidden for safety/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it("suppresses raw code-like provider reasoning without a Thinking disclosure", () => {
+    const events: EventEnvelope[] = [
+      {
+        session_id: "session-1",
+        sequence: 1,
+        event_type: "runtime.request_received",
+        source: "runtime",
+        payload: { prompt: "debug auth" },
+      },
+      {
+        session_id: "session-1",
+        sequence: 2,
+        event_type: "graph.provider_stream",
+        source: "graph",
+        payload: {
+          channel: "reasoning",
+          text: "const token = process.env.SECRET;\n```ts\nreturn token;\n```",
+        },
+        received_at: 1000,
+      },
+    ];
+
+    render(
+      <ChatThread {...baseProps} messages={deriveChatMessages(events, null)} />,
+    );
+
+    expect(screen.queryByText("Thinking")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /thinking/i }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/process\.env\.SECRET/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/return token/)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/internal chain-of-thought is hidden for safety/i),
+    ).not.toBeInTheDocument();
   });
 
   it("renders structured tool activities", () => {
@@ -322,13 +371,21 @@ describe("ChatThread", () => {
     );
 
     expect(screen.getByText("Read")).toBeInTheDocument();
-    expect(screen.getAllByText("src/app.ts")).toHaveLength(2);
-    expect(screen.getByText("[offset=10, limit=20]")).toBeInTheDocument();
-    expect(screen.getByText("Wrote")).toBeInTheDocument();
+    expect(screen.getByText("src/app.ts")).toBeInTheDocument();
+    expect(screen.getByText(/offset=10/)).toBeInTheDocument();
+    expect(screen.getByText(/limit=20/)).toBeInTheDocument();
+    expect(screen.getByText("Write")).toBeInTheDocument();
+    expect(screen.getByText("src/app.ts · 3 bytes")).toBeInTheDocument();
     expect(screen.getByText(/\+new/)).toBeInTheDocument();
-    expect(screen.getByText("Command")).toBeInTheDocument();
-    expect(screen.getByText("$ pytest tests/unit")).toBeInTheDocument();
-    expect(screen.getByText("1 passed")).toBeInTheDocument();
+    expect(screen.getByText("Shell")).toBeInTheDocument();
+    expect(screen.getByText("pytest tests/unit")).toBeInTheDocument();
+    expect(screen.queryByText("$ pytest tests/unit")).not.toBeInTheDocument();
+    expect(screen.queryByText("1 passed")).not.toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: /show details for shell/i }),
+    );
+    expect(screen.getByText(/\$ pytest tests\/unit/)).toBeInTheDocument();
+    expect(screen.getByText(/1 passed/)).toBeInTheDocument();
     expect(screen.getByText("Done")).toBeInTheDocument();
     expect(screen.queryByText(/do not show this/)).not.toBeInTheDocument();
   });
@@ -404,10 +461,11 @@ describe("ChatThread", () => {
       screen.getByText("Review completed implementation work"),
     ).toBeInTheDocument();
     expect(screen.getByText(/SKILL\.md/)).toBeInTheDocument();
+    expect(screen.getByText("User request")).toBeInTheDocument();
     expect(screen.getByText("check changes")).toBeInTheDocument();
   });
 
-  it("renders unknown tools with arguments and results", () => {
+  it("renders unknown tools as curated summaries without raw results", () => {
     render(
       <ChatThread
         {...baseProps}
@@ -435,10 +493,11 @@ describe("ChatThread", () => {
     );
 
     expect(screen.getByText("mcp_custom_tool")).toBeInTheDocument();
-    expect(screen.getByText("Arguments")).toBeInTheDocument();
-    expect(screen.getByText(/"server": "local"/)).toBeInTheDocument();
-    expect(screen.getByText("Result")).toBeInTheDocument();
-    expect(screen.getByText(/"rows": 2/)).toBeInTheDocument();
+    expect(screen.getByText(/server=local/)).toBeInTheDocument();
+    expect(screen.getByText(/action=inspect/)).toBeInTheDocument();
+    expect(screen.queryByText("Arguments")).not.toBeInTheDocument();
+    expect(screen.queryByText("Result")).not.toBeInTheDocument();
+    expect(screen.queryByText(/"rows": 2/)).not.toBeInTheDocument();
   });
 
   it("renders delegated subagent task activity", () => {
@@ -480,8 +539,9 @@ describe("ChatThread", () => {
     );
 
     expect(screen.getByText("Started subagent")).toBeInTheDocument();
-    expect(screen.getByText("visual-engineering")).toBeInTheDocument();
-    expect(screen.getByText("[background]")).toBeInTheDocument();
+    expect(
+      screen.getByText("visual-engineering · background"),
+    ).toBeInTheDocument();
     expect(screen.getByText("Inspect UI")).toBeInTheDocument();
     expect(screen.getByText("bg_123")).toBeInTheDocument();
     expect(screen.getByText("ses_child")).toBeInTheDocument();
@@ -549,10 +609,553 @@ describe("ChatThread", () => {
     );
 
     expect(screen.getByText("Updated todos")).toBeInTheDocument();
+    expect(screen.queryByText("Audit tool UI")).not.toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: /show details for updated todos/i }),
+    );
     expect(screen.getByText("Audit tool UI")).toBeInTheDocument();
     expect(screen.getByText("Ship observability")).toBeInTheDocument();
     expect(screen.getByText("completed · high")).toBeInTheDocument();
     expect(screen.getByText("in_progress · medium")).toBeInTheDocument();
     expect(screen.getByText(/in_progress=1/)).toBeInTheDocument();
+  });
+});
+
+describe("Tool Card Display Contract", () => {
+  function installClipboardMock() {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    return writeText;
+  }
+
+  it("does not render raw JSON arguments or results for generic tools", () => {
+    render(
+      <ChatThread
+        {...baseProps}
+        messages={[
+          {
+            id: "msg-1",
+            role: "assistant",
+            content: "",
+            thinking: [],
+            tools: [
+              {
+                id: "mcp-1",
+                name: "mcp_unknown_tool",
+                status: "completed",
+                arguments: {
+                  server: "local",
+                  action: "inspect",
+                  internalState: { nested: { deep: "secret" } },
+                },
+                result: {
+                  status: "ok",
+                  internalData: "should not leak",
+                },
+              },
+            ],
+            approval: null,
+            status: "completed",
+            sequence: 1,
+          },
+        ]}
+      />,
+    );
+
+    // RED: generic tools must not dump raw JSON in normal chat view.
+    expect(screen.queryByText(/"internalState"/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/"internalData"/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/"deep"/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/"secret"/)).not.toBeInTheDocument();
+
+    // Tool name must still be visible.
+    expect(screen.getByText("mcp_unknown_tool")).toBeInTheDocument();
+    expect(screen.getByText(/server=local/)).toBeInTheDocument();
+    expect(screen.getByText(/action=inspect/)).toBeInTheDocument();
+  });
+
+  it("renders tool with display metadata label as primary summary", () => {
+    render(
+      <ChatThread
+        {...baseProps}
+        messages={[
+          {
+            id: "msg-1",
+            role: "assistant",
+            content: "",
+            thinking: [],
+            tools: [
+              {
+                id: "shell-1",
+                name: "shell_exec",
+                status: "completed",
+                label: "Run unit tests",
+                arguments: { command: "pytest tests/unit" },
+                result: { exit_code: 0, stdout: "ALL PASSED", stderr: "" },
+              },
+            ],
+            approval: null,
+            status: "completed",
+            sequence: 1,
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText("Run unit tests")).toBeInTheDocument();
+    expect(screen.queryByText("pytest tests/unit")).not.toBeInTheDocument();
+    expect(screen.queryByText("$ pytest tests/unit")).not.toBeInTheDocument();
+    expect(screen.queryByText("ALL PASSED")).not.toBeInTheDocument();
+  });
+
+  it("supports lightweight shell row with a single expandable terminal block", () => {
+    const { container } = render(
+      <ChatThread
+        {...baseProps}
+        messages={[
+          {
+            id: "msg-1",
+            role: "assistant",
+            content: "",
+            thinking: [],
+            tools: [
+              {
+                id: "shell-1",
+                name: "shell_exec",
+                status: "completed",
+                label: "Run lint",
+                arguments: { command: "ruff check ." },
+                result: {
+                  exit_code: 0,
+                  stdout: "All checks passed!",
+                  stderr: "",
+                },
+              },
+            ],
+            approval: null,
+            status: "completed",
+            sequence: 1,
+          },
+        ]}
+      />,
+    );
+
+    const toggle = screen.getByRole("button", {
+      name: /show details for shell/i,
+    });
+    expect(toggle).toBeVisible();
+    expect(screen.getByText("Shell")).toBeInTheDocument();
+    expect(screen.getByText("Run lint")).toBeInTheDocument();
+    expect(toggle.closest('[class*="border"]')).toBeNull();
+    expect(screen.queryByText("All checks passed!")).not.toBeInTheDocument();
+    expect(
+      container.querySelectorAll('[data-terminal-block="shell"]'),
+    ).toHaveLength(0);
+    fireEvent.click(toggle);
+    expect(
+      container.querySelectorAll('[data-terminal-block="shell"]'),
+    ).toHaveLength(1);
+    expect(screen.getByText(/\$ ruff check \./)).toBeInTheDocument();
+    expect(screen.getByText(/All checks passed!/)).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: /hide details for shell/i }),
+    );
+    expect(screen.queryByText("All checks passed!")).not.toBeInTheDocument();
+  });
+
+  it("copies shell command and output with accessible copied state", async () => {
+    const writeText = installClipboardMock();
+    render(
+      <ChatThread
+        {...baseProps}
+        messages={[
+          {
+            id: "msg-1",
+            role: "assistant",
+            content: "",
+            thinking: [],
+            tools: [
+              {
+                id: "shell-1",
+                name: "shell_exec",
+                status: "completed",
+                label: "Run tests",
+                arguments: { command: "pytest tests/unit" },
+                copyable: { command: "pytest tests/unit", output: "2 passed" },
+                result: { exit_code: 0, stdout: "2 passed", stderr: "" },
+              },
+            ],
+            approval: null,
+            status: "completed",
+            sequence: 1,
+          },
+        ]}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /show details for shell/i }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /copy command/i }));
+    await waitFor(() =>
+      expect(writeText).toHaveBeenCalledWith("pytest tests/unit"),
+    );
+    expect(await screen.findByText("Copied")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /copy output/i }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("2 passed"));
+  });
+
+  it("shows failed shell status with expandable stderr, error, and exit code", () => {
+    render(
+      <ChatThread
+        {...baseProps}
+        messages={[
+          {
+            id: "msg-1",
+            role: "assistant",
+            content: "",
+            thinking: [],
+            tools: [
+              {
+                id: "shell-1",
+                name: "shell_exec",
+                status: "failed",
+                label: "Run failing command",
+                arguments: { command: "npm test" },
+                result: { exit_code: 2, stdout: "", stderr: "stderr boom" },
+                error: "process failed",
+              },
+            ],
+            approval: null,
+            status: "completed",
+            sequence: 1,
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText(/failed with exit 2/)).toBeInTheDocument();
+    expect(screen.queryByText("stderr boom")).not.toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /show details for shell/i,
+      }),
+    );
+    expect(screen.getAllByText(/exit 2/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/stderr boom/)).toBeInTheDocument();
+    expect(screen.getByText(/process failed/)).toBeInTheDocument();
+  });
+
+  it("uses legacy fallback labels without exposing raw payloads", () => {
+    render(
+      <ChatThread
+        {...baseProps}
+        messages={[
+          {
+            id: "msg-1",
+            role: "assistant",
+            content: "",
+            thinking: [],
+            tools: [
+              {
+                id: "legacy-1",
+                name: "mcp_legacy_tool",
+                status: "completed",
+                legacy: {
+                  label: "Legacy inspect",
+                  summary: "Legacy inspect",
+                },
+                arguments: {
+                  path: "README.md",
+                  internalState: { secret: true },
+                },
+                result: { internalData: "hidden" },
+              },
+            ],
+            approval: null,
+            status: "completed",
+            sequence: 1,
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText("Legacy inspect")).toBeInTheDocument();
+    expect(screen.getByText(/path=README.md/)).toBeInTheDocument();
+    expect(screen.queryByText(/internalState/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/hidden/)).not.toBeInTheDocument();
+  });
+
+  it("groups multiple project lookup tools into one compact disclosure", () => {
+    const { container } = render(
+      <ChatThread
+        {...baseProps}
+        messages={[
+          {
+            id: "msg-1",
+            role: "assistant",
+            content: "",
+            thinking: [],
+            tools: [
+              {
+                id: "read-1",
+                name: "read_file",
+                status: "completed",
+                display: {
+                  kind: "context",
+                  title: "Read",
+                  summary: "Read src/app.ts",
+                  args: ["src/app.ts"],
+                },
+                arguments: {
+                  path: "src/app.ts",
+                  internalState: { secret: true },
+                },
+              },
+              {
+                id: "grep-1",
+                name: "grep",
+                status: "completed",
+                display: {
+                  kind: "context",
+                  title: "Search",
+                  summary: "Search TODO",
+                  args: ["TODO"],
+                },
+                arguments: { pattern: "TODO", path: "src" },
+              },
+            ],
+            approval: null,
+            status: "completed",
+            sequence: 1,
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText("Project lookups")).toBeInTheDocument();
+    expect(screen.getByText("2 lookups")).toBeInTheDocument();
+    expect(
+      container.querySelector('[data-tool-row="context-group"] button')
+        ?.className,
+    ).not.toContain("border");
+    expect(screen.queryByText("Read src/app.ts")).not.toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: /show details for project lookups/i }),
+    );
+    expect(screen.getByText("Read src/app.ts")).toBeInTheDocument();
+    expect(screen.getByText("Search TODO")).toBeInTheDocument();
+    expect(screen.queryByText(/secret/)).not.toBeInTheDocument();
+  });
+
+  it("hides todo_write when display metadata marks it hidden", () => {
+    render(
+      <ChatThread
+        {...baseProps}
+        messages={[
+          {
+            id: "msg-1",
+            role: "assistant",
+            content: "",
+            thinking: [],
+            tools: [
+              {
+                id: "todo-1",
+                name: "todo_write",
+                status: "completed",
+                display: {
+                  kind: "todo",
+                  title: "Todo",
+                  summary: "Updated todos",
+                  hidden: true,
+                },
+                arguments: {
+                  todos: [{ content: "Hidden todo", status: "completed" }],
+                },
+              },
+            ],
+            approval: null,
+            status: "completed",
+            sequence: 1,
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.queryByText("Updated todos")).not.toBeInTheDocument();
+    expect(screen.queryByText("Hidden todo")).not.toBeInTheDocument();
+  });
+
+  it("renders derived backend display metadata for failed shell, context, generic, and legacy tools", () => {
+    const events: EventEnvelope[] = [
+      {
+        session_id: "session-1",
+        sequence: 1,
+        event_type: "runtime.request_received",
+        source: "runtime",
+        payload: { prompt: "inspect project" },
+      },
+      {
+        session_id: "session-1",
+        sequence: 2,
+        event_type: "runtime.tool_completed",
+        source: "runtime",
+        payload: {
+          tool: "read_file",
+          tool_call_id: "read-1",
+          status: "ok",
+          arguments: { path: "README.md", internalState: { secret: true } },
+          content: "# README",
+          tool_status: {
+            invocation_id: "read-1",
+            tool_name: "read_file",
+            status: "completed",
+            display: {
+              kind: "context",
+              title: "Read",
+              summary: "Read README.md",
+              args: ["README.md"],
+              copyable: { path: "README.md" },
+            },
+          },
+        },
+      },
+      {
+        session_id: "session-1",
+        sequence: 3,
+        event_type: "runtime.tool_completed",
+        source: "runtime",
+        payload: {
+          tool: "grep",
+          tool_call_id: "grep-1",
+          status: "ok",
+          arguments: { pattern: "TODO", path: "." },
+          content: "src/app.ts:1: TODO",
+          tool_status: {
+            invocation_id: "grep-1",
+            tool_name: "grep",
+            status: "completed",
+            display: {
+              kind: "context",
+              title: "Search",
+              summary: "Search TODO",
+              args: ["TODO", "."],
+            },
+          },
+        },
+      },
+      {
+        session_id: "session-1",
+        sequence: 4,
+        event_type: "runtime.tool_completed",
+        source: "runtime",
+        payload: {
+          tool: "shell_exec",
+          tool_call_id: "shell-1",
+          status: "error",
+          arguments: { command: "npm test" },
+          data: { command: "npm test", exit_code: 2, stderr: "stderr boom" },
+          error: "process failed",
+          tool_status: {
+            invocation_id: "shell-1",
+            tool_name: "shell_exec",
+            status: "failed",
+            display: {
+              kind: "shell",
+              title: "Shell",
+              summary: "Run failing tests",
+              args: ["npm test"],
+              copyable: { command: "npm test", output: "stderr boom" },
+            },
+          },
+        },
+      },
+      {
+        session_id: "session-1",
+        sequence: 5,
+        event_type: "runtime.tool_completed",
+        source: "runtime",
+        payload: {
+          tool: "mcp_custom_tool",
+          tool_call_id: "mcp-1",
+          status: "ok",
+          arguments: { action: "inspect", internalData: { token: "hidden" } },
+          result: { rows: 2, internalState: "hidden" },
+          tool_status: {
+            invocation_id: "mcp-1",
+            tool_name: "mcp_custom_tool",
+            status: "completed",
+            display: {
+              kind: "generic",
+              title: "mcp_custom_tool",
+              summary: "Inspect custom MCP tool",
+              args: ["action=inspect"],
+            },
+          },
+        },
+      },
+      {
+        session_id: "session-1",
+        sequence: 6,
+        event_type: "runtime.tool_completed",
+        source: "tool",
+        payload: {
+          tool: "mcp_legacy_tool",
+          tool_call_id: "legacy-1",
+          target_summary: "Legacy inspect",
+          arguments: { path: "legacy.txt", internalState: { secret: true } },
+          result: { internalData: "hidden" },
+        },
+      },
+      {
+        session_id: "session-1",
+        sequence: 7,
+        event_type: "graph.response_ready",
+        source: "graph",
+        payload: { output: "Done" },
+      },
+    ];
+
+    const messages = deriveChatMessages(events, null);
+    const { container } = render(
+      <ChatThread {...baseProps} messages={messages} />,
+    );
+
+    expect(screen.getByText("Project lookups")).toBeInTheDocument();
+    expect(screen.getByText("2 lookups")).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: /show details for project lookups/i }),
+    );
+    expect(screen.getByText("Read README.md")).toBeInTheDocument();
+    expect(screen.getByText("Search TODO")).toBeInTheDocument();
+
+    expect(screen.getByText("Shell")).toBeInTheDocument();
+    expect(
+      screen.getByText(/Run failing tests · failed with exit 2/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("stderr boom")).not.toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: /show details for shell/i }),
+    );
+    expect(
+      container.querySelectorAll('[data-terminal-block="shell"]'),
+    ).toHaveLength(1);
+    expect(screen.getByText(/\$ npm test/)).toBeInTheDocument();
+    expect(screen.getByText(/stderr boom/)).toBeInTheDocument();
+    expect(screen.getByText(/process failed/)).toBeInTheDocument();
+
+    expect(screen.getByText("Inspect custom MCP tool")).toBeInTheDocument();
+    expect(screen.getByText(/action=inspect/)).toBeInTheDocument();
+    expect(
+      screen.getByText("mcp_legacy_tool: Legacy inspect"),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/path=legacy.txt/)).toBeInTheDocument();
+    expect(screen.getByText("Done").closest('[class*="border"]')).toBeNull();
+    expect(screen.queryByText(/internalData/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/internalState/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/token/)).not.toBeInTheDocument();
   });
 });

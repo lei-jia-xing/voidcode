@@ -23,6 +23,9 @@ import {
   WorkspaceReviewSnapshot,
 } from "../lib/runtime/types";
 
+const DEFAULT_SESSION_SIDEBAR_WIDTH = 344;
+const APPROVAL_REPLAY_POLL_DELAY_MS = 700;
+
 interface AppState {
   language: "en" | "zh-CN";
 
@@ -60,6 +63,7 @@ interface AppState {
 
   sessions: StoredSessionSummary[];
   currentSessionId: string | null;
+  sessionSidebarWidth: number;
   currentSessionState: SessionState | null;
   currentSessionEvents: EventEnvelope[];
   currentSessionOutput: string | null;
@@ -103,6 +107,7 @@ interface AppState {
   loadReview: () => Promise<void>;
   selectReviewPath: (path: string | null) => Promise<void>;
   setReviewMode: (mode: "changes" | "files") => void;
+  setSessionSidebarWidth: (width: number) => void;
   loadSessions: () => Promise<void>;
   selectSession: (sessionId: string) => Promise<void>;
   runTask: (
@@ -128,19 +133,82 @@ interface AppState {
 }
 
 function getPendingApprovalRequestId(events: EventEnvelope[]): string | null {
+  const resolvedRequestIds = new Set<string>();
+
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index];
+    const requestId = event.payload.request_id;
+
+    if (event.event_type === "runtime.approval_resolved") {
+      if (typeof requestId === "string" && requestId.length > 0) {
+        resolvedRequestIds.add(requestId);
+      }
+      continue;
+    }
+
     if (event.event_type !== "runtime.approval_requested") {
       continue;
     }
 
-    const requestId = event.payload.request_id;
-    if (typeof requestId === "string" && requestId.length > 0) {
+    if (
+      typeof requestId === "string" &&
+      requestId.length > 0 &&
+      !resolvedRequestIds.has(requestId)
+    ) {
       return requestId;
     }
   }
 
   return null;
+}
+
+function appendLocalApprovalResolution(
+  events: EventEnvelope[],
+  sessionId: string,
+  requestId: string,
+  decision: ApprovalDecision,
+): EventEnvelope[] {
+  if (
+    events.some(
+      (event) =>
+        event.event_type === "runtime.approval_resolved" &&
+        event.payload.request_id === requestId,
+    )
+  ) {
+    return events;
+  }
+
+  const maxSequence = events.reduce(
+    (max, event) => Math.max(max, event.sequence),
+    0,
+  );
+
+  return [
+    ...events,
+    {
+      session_id: sessionId,
+      sequence: maxSequence + 1,
+      event_type: "runtime.approval_resolved",
+      source: "runtime",
+      payload: { request_id: requestId, decision },
+      received_at: Date.now(),
+    },
+  ];
+}
+
+function replayStillShowsSamePendingApproval(
+  replayEvents: EventEnvelope[],
+  requestId: string,
+): boolean {
+  return getPendingApprovalRequestId(replayEvents) === requestId;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function runStatusForReplay(session: SessionState): AppState["runStatus"] {
+  return session.status === "running" ? "running" : "idle";
 }
 
 function getPendingQuestionRequestId(events: EventEnvelope[]): string | null {
@@ -275,6 +343,7 @@ export const useAppStore = create<AppState>()(
 
       sessions: [],
       currentSessionId: null,
+      sessionSidebarWidth: DEFAULT_SESSION_SIDEBAR_WIDTH,
       currentSessionState: null,
       currentSessionEvents: [],
       currentSessionOutput: null,
@@ -641,6 +710,9 @@ export const useAppStore = create<AppState>()(
 
       setReviewMode: (reviewMode) => set({ reviewMode }),
 
+      setSessionSidebarWidth: (sessionSidebarWidth) =>
+        set({ sessionSidebarWidth }),
+
       loadSessions: async () => {
         set({ sessionsStatus: "loading", sessionsError: null });
         try {
@@ -735,7 +807,7 @@ export const useAppStore = create<AppState>()(
             replayStatus: "success",
           });
           await get().loadBackgroundTasks();
-        } catch (err) {
+        } catch {
           if (
             get().replayRequestId !== requestId ||
             get().currentSessionId !== sessionId
@@ -886,7 +958,10 @@ export const useAppStore = create<AppState>()(
         const {
           currentSessionId,
           currentSessionEvents,
+          currentSessionState,
+          currentSessionOutput,
           replayStatus,
+          replayError,
           runStatus,
           approvalStatus,
           loadSessions,
@@ -910,7 +985,73 @@ export const useAppStore = create<AppState>()(
           return;
         }
 
-        set({ approvalStatus: "submitting", approvalError: null });
+        let shouldPollReplay = true;
+        const preOptimisticState = {
+          currentSessionEvents,
+          currentSessionState,
+          currentSessionOutput,
+          replayStatus,
+          replayError,
+          runStatus,
+        };
+        const locallyResolvedEvents = appendLocalApprovalResolution(
+          currentSessionEvents,
+          currentSessionId,
+          requestId,
+          decision,
+        );
+        const localResolutionEvent =
+          locallyResolvedEvents[locallyResolvedEvents.length - 1];
+        set((state) => ({
+          currentSessionEvents: locallyResolvedEvents,
+          currentSessionState: state.currentSessionState
+            ? {
+                ...state.currentSessionState,
+                status: decision === "allow" ? "running" : "failed",
+              }
+            : state.currentSessionState,
+          runStatus: decision === "allow" ? "running" : "idle",
+          runError: null,
+          approvalStatus: "submitting",
+          approvalError: null,
+          replayStatus: "success",
+          replayError: null,
+        }));
+
+        const pollReplayWhileResolving = async () => {
+          while (shouldPollReplay) {
+            await delay(APPROVAL_REPLAY_POLL_DELAY_MS);
+            if (
+              !shouldPollReplay ||
+              get().currentSessionId !== currentSessionId
+            ) {
+              return;
+            }
+
+            try {
+              const replay =
+                await RuntimeClient.getSessionReplay(currentSessionId);
+              if (
+                get().currentSessionId !== currentSessionId ||
+                replayStillShowsSamePendingApproval(replay.events, requestId)
+              ) {
+                continue;
+              }
+              set({
+                currentSessionId: replay.session.session.id,
+                currentSessionState: replay.session,
+                currentSessionEvents: replay.events,
+                currentSessionOutput: replay.output,
+                replayStatus: "success",
+                replayError: null,
+                runStatus: runStatusForReplay(replay.session),
+              });
+            } catch {
+              // Best-effort refresh while the approval POST is still running.
+            }
+          }
+        };
+        void pollReplayWhileResolving();
 
         try {
           const response = await RuntimeClient.resolveApproval(
@@ -918,6 +1059,7 @@ export const useAppStore = create<AppState>()(
             requestId,
             decision,
           );
+          shouldPollReplay = false;
           set({
             currentSessionId: response.session.session.id,
             currentSessionState: response.session,
@@ -925,7 +1067,7 @@ export const useAppStore = create<AppState>()(
             currentSessionOutput: response.output,
             replayStatus: "success",
             replayError: null,
-            runStatus: "idle",
+            runStatus: runStatusForReplay(response.session),
             runError: null,
             approvalStatus: "success",
             approvalError: null,
@@ -937,10 +1079,44 @@ export const useAppStore = create<AppState>()(
           ]);
           set({ approvalStatus: "idle" });
         } catch (err) {
+          shouldPollReplay = false;
           set({
             approvalStatus: "error",
             approvalError: (err as Error).message,
+            runStatus: "idle",
           });
+          // Reload session from backend so the UI can pick up any
+          // re-emitted approval state and the composer is usable again.
+          try {
+            const replay =
+              await RuntimeClient.getSessionReplay(currentSessionId);
+            if (get().currentSessionId === currentSessionId) {
+              set({
+                currentSessionState: replay.session,
+                currentSessionEvents: replay.events,
+                currentSessionOutput: replay.output,
+                replayStatus: "success",
+                replayError: null,
+                runStatus: runStatusForReplay(replay.session),
+              });
+            }
+          } catch {
+            if (
+              get().currentSessionId === currentSessionId &&
+              localResolutionEvent &&
+              get().currentSessionEvents.includes(localResolutionEvent)
+            ) {
+              set({
+                currentSessionState: preOptimisticState.currentSessionState,
+                currentSessionEvents: preOptimisticState.currentSessionEvents,
+                currentSessionOutput: preOptimisticState.currentSessionOutput,
+                replayStatus: preOptimisticState.replayStatus,
+                replayError: preOptimisticState.replayError,
+                runStatus: preOptimisticState.runStatus,
+              });
+            }
+          }
+          await loadSessions();
         }
       },
 
@@ -1148,6 +1324,7 @@ export const useAppStore = create<AppState>()(
         providerModel: state.providerModel,
         reasoningEffort: state.reasoningEffort,
         currentSessionId: state.currentSessionId,
+        sessionSidebarWidth: state.sessionSidebarWidth,
         reviewMode: state.reviewMode,
       }),
     },

@@ -171,6 +171,24 @@ export interface EventEnvelope {
   received_at?: number;
 }
 
+export interface ToolDisplay {
+  kind: string;
+  title: string;
+  summary: string;
+  args?: string[];
+  copyable?: Record<string, unknown>;
+  hidden?: boolean;
+}
+
+export interface ToolStatusPayload {
+  invocation_id?: unknown;
+  tool_name?: unknown;
+  phase?: unknown;
+  status?: unknown;
+  label?: unknown;
+  display?: unknown;
+}
+
 export interface RuntimeRequest {
   prompt: string;
   session_id?: string | null;

@@ -91,12 +91,20 @@ class WebSearchArgs(BaseModel):
 
 class ShellExecArgs(BaseModel):
     command: str
+    description: str | None = None
 
     @field_validator("command", mode="after")
     @classmethod
     def _validate_command(cls, value: str) -> str:
         if not value.strip():
             raise ValueError("command must not be empty")
+        return value
+
+    @field_validator("description", mode="after")
+    @classmethod
+    def _validate_description(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("description must not be empty when provided")
         return value
 
 

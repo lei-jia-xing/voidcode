@@ -58,6 +58,8 @@ describe("App", () => {
     setReviewMode: vi.fn(),
     sessions: [],
     currentSessionId: null,
+    sessionSidebarWidth: 344,
+    setSessionSidebarWidth: vi.fn(),
     currentSessionState: null,
     currentSessionEvents: [],
     currentSessionOutput: null,
@@ -153,7 +155,7 @@ describe("App", () => {
     expect(mockStore.loadSettings).toHaveBeenCalled();
   });
 
-  it("renders ACP status details in the runtime status popover", () => {
+  it("renders Server LSP and MCP status details without Git in the runtime status popover", () => {
     (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
       ...mockStore,
       workspaces: {
@@ -183,8 +185,132 @@ describe("App", () => {
     render(<App />);
     fireEvent.click(screen.getByLabelText("Toggle runtime status"));
 
-    expect(screen.getByText("ACP")).toBeInTheDocument();
+    expect(screen.getAllByText("Server").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText("LSP").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText("MCP").length).toBeGreaterThanOrEqual(1);
+    expect(screen.queryByText("Git")).not.toBeInTheDocument();
     expect(screen.getByText(/last request: handshake/)).toBeInTheDocument();
+  });
+
+  it("renders independent sessions, file tree, and code review toggles in the workspace header", () => {
+    const workspaceStore = {
+      ...mockStore,
+      reviewSnapshot: {
+        root: "/workspace",
+        git: { state: "git_ready" as const, root: "/workspace" },
+        changed_files: [
+          { path: "src/app.ts", change_type: "modified" as const },
+        ],
+        tree: [
+          {
+            kind: "directory" as const,
+            name: "src",
+            path: "src",
+            changed: true,
+            children: [
+              {
+                kind: "file" as const,
+                name: "app.ts",
+                path: "src/app.ts",
+                changed: true,
+                children: [],
+              },
+            ],
+          },
+        ],
+      },
+      reviewSelectedPath: "src/app.ts",
+      reviewDiff: {
+        root: "/workspace",
+        path: "src/app.ts",
+        state: "changed" as const,
+        diff: "--- a/src/app.ts\n+++ b/src/app.ts\n@@ -1 +1 @@\n-old\n+new",
+      },
+      reviewStatus: "success" as const,
+      reviewDiffStatus: "success" as const,
+      workspaces: {
+        current: {
+          path: "/workspace",
+          label: "workspace",
+          available: true,
+          current: true,
+          last_opened_at: 1,
+        },
+        recent: [],
+        candidates: [],
+      },
+    };
+    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue(
+      workspaceStore,
+    );
+
+    render(<App />);
+
+    const sessionsToggle = screen.getByRole("button", {
+      name: "Toggle sessions",
+    });
+    const fileTreeToggle = screen.getByRole("button", {
+      name: "Toggle file tree",
+    });
+    const codeReviewToggle = screen.getByRole("button", {
+      name: "Toggle code review",
+    });
+
+    expect(sessionsToggle).toHaveTextContent("Sessions");
+    expect(fileTreeToggle).toHaveTextContent("File Tree");
+    expect(codeReviewToggle).toHaveTextContent("Code Review");
+    expect(
+      screen.queryByRole("button", { name: "Toggle review" }),
+    ).not.toBeInTheDocument();
+    expect(sessionsToggle).toHaveAttribute("aria-expanded", "true");
+    expect(fileTreeToggle).toHaveAttribute("aria-expanded", "false");
+    expect(codeReviewToggle).toHaveAttribute("aria-expanded", "false");
+
+    fireEvent.click(sessionsToggle);
+    expect(sessionsToggle).toHaveAttribute("aria-expanded", "false");
+
+    fireEvent.click(fileTreeToggle);
+    expect(
+      screen.getByRole("button", { name: "Toggle file tree" }),
+    ).toHaveAttribute("aria-expanded", "true");
+    expect(
+      screen.getByRole("button", { name: "Toggle code review" }),
+    ).toHaveAttribute("aria-expanded", "false");
+    expect(
+      screen.getByRole("complementary", { name: "File Tree" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Files" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Changes" }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Toggle code review" }));
+    expect(
+      screen.getByRole("button", { name: "Toggle file tree" }),
+    ).toHaveAttribute("aria-expanded", "true");
+    expect(
+      screen.getByRole("button", { name: "Toggle code review" }),
+    ).toHaveAttribute("aria-expanded", "true");
+    expect(
+      screen.getByRole("complementary", { name: "Code Review" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/--- a\/src\/app\.ts/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Toggle code review" }));
+    expect(
+      screen.getByRole("button", { name: "Toggle code review" }),
+    ).toHaveAttribute("aria-expanded", "false");
+    expect(
+      screen.getByRole("button", { name: "Toggle file tree" }),
+    ).toHaveAttribute("aria-expanded", "true");
+
+    fireEvent.click(screen.getByRole("button", { name: "app.ts" }));
+    expect(workspaceStore.selectReviewPath).toHaveBeenCalledWith("src/app.ts");
+    expect(
+      screen.getByRole("button", { name: "Toggle code review" }),
+    ).toHaveAttribute("aria-expanded", "true");
   });
 
   it("renders project-picker-first empty state when no current workspace exists", () => {
@@ -259,7 +385,7 @@ describe("App", () => {
     expect(screen.getByText("Here is the README content.")).toBeInTheDocument();
   });
 
-  it("renders thinking block only when reasoning events exist", () => {
+  it("does not render thinking block for reasoning events", () => {
     (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
       ...mockStore,
       workspaces: {
@@ -294,7 +420,7 @@ describe("App", () => {
 
     render(<App />);
 
-    expect(screen.getByText("Thinking")).toBeInTheDocument();
+    expect(screen.queryByText("Thinking")).not.toBeInTheDocument();
   });
 
   it("renders streamed assistant text before the final response event", () => {
@@ -762,6 +888,81 @@ describe("App", () => {
     const promptElements = screen.getAllByText("test prompt subtitle");
     expect(promptElements.length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText("session-123456789")).toBeInTheDocument();
+  });
+
+  it("renders concise deterministic titles for long session prompts in header and sidebar", () => {
+    const longPrompt =
+      "Implement the remaining opencode-style frontend chrome fixes from user feedback by editing the top chrome controls and composer footer selectors.";
+    const conciseTitle =
+      "Implement the remaining opencode-style frontend chrome…";
+    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      ...mockStore,
+      workspaces: {
+        current: {
+          path: "/workspace",
+          label: "workspace",
+          available: true,
+          current: true,
+          last_opened_at: 1,
+        },
+        recent: [],
+        candidates: [],
+      },
+      currentSessionId: "session-123456789",
+      sessions: [
+        {
+          session: { id: "session-123456789" },
+          status: "completed",
+          turn: 5,
+          prompt: longPrompt,
+          updated_at: 1000,
+        },
+      ],
+    });
+
+    render(<App />);
+
+    expect(screen.getAllByText(conciseTitle).length).toBeGreaterThanOrEqual(2);
+    expect(screen.queryByText(longPrompt)).not.toBeInTheDocument();
+  });
+
+  it("shortens the live Vulkan Chinese prompt without keeping request boilerplate", () => {
+    const vulkanPrompt =
+      "请你作为 leader agent，在当前仓库中实现一个最小 Vulkan 三角形示例。要求：先检查项目结构和可用构建方式，再创建必要的源文件/构建配置/README说明；尽量保持最小可运行，不要做无关功能。";
+    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      ...mockStore,
+      workspaces: {
+        current: {
+          path: "/workspace",
+          label: "workspace",
+          available: true,
+          current: true,
+          last_opened_at: 1,
+        },
+        recent: [],
+        candidates: [],
+      },
+      currentSessionId: "session-vulkan-123",
+      sessions: [
+        {
+          session: { id: "session-vulkan-123" },
+          status: "completed",
+          turn: 2,
+          prompt: vulkanPrompt,
+          updated_at: 1000,
+        },
+      ],
+    });
+
+    render(<App />);
+
+    const titleElements = screen.getAllByText("最小 Vulkan 三角形示例");
+    expect(titleElements.length).toBeGreaterThanOrEqual(2);
+    expect(screen.queryByText(vulkanPrompt)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/请你作为 leader agent，在当前仓库中/),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/要求：先检查项目结构/)).not.toBeInTheDocument();
   });
 
   it("falls back to the replayed request prompt in the header when summary prompt is unavailable", () => {

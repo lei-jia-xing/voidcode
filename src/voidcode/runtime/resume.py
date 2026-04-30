@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from ..graph.contracts import GraphRunRequest
 from ..provider.protocol import ProviderAbortSignal
-from ..tools.contracts import ToolResult, ToolResultStatus
+from ..tools.contracts import ToolCall, ToolResult, ToolResultStatus
 from ..tools.output import sanitize_tool_result_data
 from ..tools.question import QuestionTool
 from .config import serialize_runtime_agent_config
@@ -562,9 +562,6 @@ class RuntimeResumeCoordinator:
         )
         runtime._validate_session_workspace(session, session_id=stored.session.session.id)
         session = runtime._session_with_current_acp_metadata(session)
-        preserved_continuity_state = runtime._continuity_state_from_session_metadata(
-            session.metadata
-        )
         mcp_startup_chunks, session, _, mcp_failed_chunk = runtime._refresh_mcp_tools_for_session(
             session=session,
             sequence=max_stored_sequence,
@@ -724,19 +721,27 @@ class RuntimeResumeCoordinator:
             )
             return
 
-        sequence = max_stored_sequence
+        approved_tool_call = ToolCall(
+            tool_name=pending.tool_name,
+            arguments=dict(pending.arguments),
+            tool_call_id=self._recorded_pending_tool_call_id(
+                stored_events=stored.events,
+                pending=pending,
+            ),
+        )
+        sequence = emitted_sequence
         try:
-            for chunk in runtime._execute_graph_loop(
-                graph=graph,
+            for chunk in runtime._run_loop_coordinator.execute_approved_tool_call(
                 tool_registry=tool_registry,
                 session=session,
                 sequence=sequence,
-                graph_request=graph_request,
+                tool_call=approved_tool_call,
+                pending=pending,
+                decision=approval_decision,
                 tool_results=tool_results,
-                approval_resolution=(pending, approval_decision),
-                permission_policy=runtime._permission_policy_for_session(session.metadata),
-                preserved_continuity_state=preserved_continuity_state,
+                abort_signal=graph_request.abort_signal,
             ):
+                session = chunk.session
                 if deferred_startup_acp_events and (
                     (
                         chunk.event is not None
@@ -768,6 +773,7 @@ class RuntimeResumeCoordinator:
                             session=updated_session,
                             output=chunk.output,
                         )
+                    session = chunk.session
                 if chunk.event is not None:
                     emitted_sequence += 1
                     resequenced_event = runtime._resequence_event(
@@ -780,7 +786,68 @@ class RuntimeResumeCoordinator:
                 if chunk.kind == "output":
                     output = chunk.output
                     yield chunk
+
+            graph_loop_chunks: Iterator[RuntimeStreamChunk]
+            if session.status == "failed":
+                graph_loop_chunks = iter(())
+            else:
+                graph_loop_chunks = runtime._execute_graph_loop(
+                    graph=graph,
+                    tool_registry=tool_registry,
+                    session=session,
+                    sequence=emitted_sequence,
+                    graph_request=graph_request,
+                    tool_results=tool_results,
+                    permission_policy=runtime._permission_policy_for_session(session.metadata),
+                    preserved_continuity_state=None,
+                )
+
+            for chunk in graph_loop_chunks:
                 session = chunk.session
+                if deferred_startup_acp_events and (
+                    (
+                        chunk.event is not None
+                        and chunk.event.event_type
+                        in {"runtime.approval_resolved", "runtime.failed"}
+                    )
+                    or chunk.kind == "output"
+                ):
+                    startup_chunks, updated_session, _ = runtime._emit_acp_events(
+                        session=chunk.session,
+                        start_sequence=emitted_sequence + 1,
+                        acp_events=deferred_startup_acp_events,
+                    )
+                    deferred_startup_acp_events = ()
+                    for startup_chunk in startup_chunks:
+                        startup_event = cast(EventEnvelope, startup_chunk.event)
+                        emitted_sequence = startup_event.sequence
+                        loop_events.append(startup_event)
+                        yield startup_chunk
+                    if chunk.event is not None:
+                        chunk = RuntimeStreamChunk(
+                            kind="event",
+                            session=updated_session,
+                            event=chunk.event,
+                        )
+                    elif chunk.kind == "output":
+                        chunk = RuntimeStreamChunk(
+                            kind="output",
+                            session=updated_session,
+                            output=chunk.output,
+                        )
+                    session = chunk.session
+                if chunk.event is not None:
+                    emitted_sequence += 1
+                    resequenced_event = runtime._resequence_event(
+                        chunk.event, sequence=emitted_sequence
+                    )
+                    loop_events.append(resequenced_event)
+                    yield RuntimeStreamChunk(
+                        kind="event", session=chunk.session, event=resequenced_event
+                    )
+                if chunk.kind == "output":
+                    output = chunk.output
+                    yield chunk
         except Exception:
             if session.status == "failed":
                 response = RuntimeResponse(
@@ -1127,3 +1194,31 @@ class RuntimeResumeCoordinator:
                 )
             )
         return prompt, tool_results
+
+    @staticmethod
+    def _recorded_pending_tool_call_id(
+        *,
+        stored_events: tuple[EventEnvelope, ...],
+        pending: PendingApproval,
+    ) -> str | None:
+        approval_index: int | None = None
+        for index, event in enumerate(stored_events):
+            if (
+                event.event_type == "runtime.approval_requested"
+                and event.payload.get("request_id") == pending.request_id
+            ):
+                approval_index = index
+                break
+        if approval_index is None:
+            return None
+
+        for event in reversed(stored_events[:approval_index]):
+            if event.event_type != "graph.tool_request_created":
+                continue
+            if event.payload.get("tool") != pending.tool_name:
+                continue
+            if event.payload.get("arguments") != pending.arguments:
+                continue
+            tool_call_id = event.payload.get("tool_call_id")
+            return tool_call_id if isinstance(tool_call_id, str) else None
+        return None

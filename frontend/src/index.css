@@ -1,110 +1,260 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
 
-@layer base {
-  :root {
-    --background: 222.2 84% 4.9%;
-    --foreground: 210 40% 98%;
-    --card: 222.2 84% 4.9%;
-    --card-foreground: 210 40% 98%;
-    --popover: 222.2 84% 4.9%;
-    --popover-foreground: 210 40% 98%;
-    --primary: 210 40% 98%;
-    --primary-foreground: 222.2 47.4% 11.2%;
-    --secondary: 217.2 32.6% 17.5%;
-    --secondary-foreground: 210 40% 98%;
-    --muted: 217.2 32.6% 17.5%;
-    --muted-foreground: 215 20.2% 65.1%;
-    --accent: 217.2 32.6% 17.5%;
-    --accent-foreground: 210 40% 98%;
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 217.2 32.6% 17.5%;
-    --input: 217.2 32.6% 17.5%;
-    --ring: 212.7 26.8% 83.9%;
-  }
+:root {
+  --vc-bg: #0a0a0a;
+  --vc-surface-1: #141414;
+  --vc-surface-2: #1c1c1c;
+  --vc-surface-3: #232323;
+  --vc-text-primary: #eeeeee;
+  --vc-text-muted: #a0a0a0;
+  --vc-text-subtle: #808080;
+  --vc-border-subtle: rgba(255, 255, 255, 0.08);
+  --vc-border-strong: rgba(255, 255, 255, 0.16);
+  --vc-radius-control: 6px;
+  --vc-transition-control: 150ms ease;
+  --vc-space-1: 4px;
+  --vc-space-2: 8px;
+  --vc-space-3: 12px;
+  --vc-space-4: 16px;
+  --vc-control-height: 36px;
+  --vc-control-height-compact: 30px;
+  --vc-control-padding-x: var(--vc-space-3);
+  --vc-control-padding-x-compact: 10px;
+  --vc-focus-ring: var(--vc-text-primary);
+  --vc-focus-shadow: 0 0 0 var(--vc-space-1) var(--vc-bg);
+  --vc-danger-text: #ffb4b4;
+  --vc-danger-bg: rgba(255, 180, 180, 0.1);
+  --vc-danger-border: rgba(255, 180, 180, 0.24);
+  --vc-confirm-text: #b9f6ca;
+  --vc-confirm-bg: rgba(185, 246, 202, 0.1);
+  --vc-confirm-border: rgba(185, 246, 202, 0.24);
+  --vc-overlay-bg: rgba(0, 0, 0, 0.6);
+
+  --background: 0 0% 4%;
+  --foreground: 0 0% 93.3%;
+  --card: 0 0% 7.8%;
+  --card-foreground: 0 0% 93.3%;
+  --popover: 0 0% 7.8%;
+  --popover-foreground: 0 0% 93.3%;
+  --primary: 0 0% 93.3%;
+  --primary-foreground: 0 0% 4%;
+  --secondary: 0 0% 10.9%;
+  --secondary-foreground: 0 0% 93.3%;
+  --muted: 0 0% 10.9%;
+  --muted-foreground: 0 0% 62.7%;
+  --accent: 0 0% 13.7%;
+  --accent-foreground: 0 0% 93.3%;
+  --destructive: 0 100% 85.3%;
+  --destructive-foreground: 0 0% 4%;
+  --border: 0 0% 100% / 0.08;
+  --input: 0 0% 100% / 0.16;
+  --ring: 0 0% 93.3%;
 }
 
-@layer components {
-  .markdown-body {
-    max-width: none;
-    color: rgb(241 245 249);
-    font-size: 0.875rem;
-    line-height: 1.625;
-  }
+body {
+  background: var(--vc-bg);
+  color: var(--vc-text-primary);
+}
 
-  .markdown-body > :first-child {
-    margin-top: 0;
-  }
+* {
+  scrollbar-color: var(--vc-border-strong) var(--vc-bg);
+}
 
-  .markdown-body > :last-child {
-    margin-bottom: 0;
-  }
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
 
-  .markdown-body p {
-    margin-top: 0.75rem;
-    margin-bottom: 0.75rem;
-  }
+*::-webkit-scrollbar-track {
+  background: var(--vc-bg);
+}
 
-  .markdown-body ul {
-    margin-top: 0.75rem;
-    margin-bottom: 0.75rem;
-    list-style-type: disc;
-    padding-left: 1.25rem;
-  }
+*::-webkit-scrollbar-thumb {
+  border: 2px solid var(--vc-bg);
+  border-radius: 999px;
+  background: var(--vc-border-strong);
+}
 
-  .markdown-body ol {
-    margin-top: 0.75rem;
-    margin-bottom: 0.75rem;
-    list-style-type: decimal;
-    padding-left: 1.25rem;
-  }
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--vc-text-subtle);
+}
 
-  .markdown-body li {
-    padding-left: 0.25rem;
-  }
+.vc-control {
+  display: inline-flex;
+  min-height: var(--vc-control-height);
+  align-items: center;
+  justify-content: center;
+  gap: var(--vc-space-2);
+  border: 1px solid var(--vc-border-subtle);
+  border-radius: var(--vc-radius-control);
+  background: var(--vc-surface-2);
+  color: var(--vc-text-primary);
+  padding: 0 var(--vc-control-padding-x);
+  font-size: 0.875rem;
+  font-weight: 500;
+  line-height: 1;
+  text-decoration: none;
+  transition:
+    background-color var(--vc-transition-control),
+    border-color var(--vc-transition-control),
+    color var(--vc-transition-control),
+    opacity var(--vc-transition-control),
+    box-shadow var(--vc-transition-control);
+}
 
-  .markdown-body li + li {
-    margin-top: 0.25rem;
-  }
+.vc-control:hover:not(:disabled) {
+  border-color: var(--vc-border-strong);
+  background: var(--vc-surface-3);
+}
 
-  .markdown-body li > p {
-    margin-top: 0.25rem;
-    margin-bottom: 0.25rem;
-  }
+.vc-control:disabled,
+.vc-control[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
 
-  .markdown-body code {
-    border-radius: 0.25rem;
-    background-color: rgb(15 23 42);
-    padding: 0.125rem 0.375rem;
-    color: rgb(241 245 249);
-    font-family:
-      ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
-      "Courier New", monospace;
-    font-size: 0.9em;
-  }
+.vc-control:focus {
+  outline: none;
+}
 
-  .markdown-body pre {
-    margin-top: 0.75rem;
-    margin-bottom: 0.75rem;
-    overflow-x: auto;
-    border: 1px solid rgb(30 41 59);
-    border-radius: 0.5rem;
-    background-color: rgb(15 23 42);
-    padding: 0.75rem;
-  }
+.vc-control:focus-visible {
+  outline: 2px solid var(--vc-focus-ring);
+  outline-offset: 2px;
+  box-shadow: var(--vc-focus-shadow);
+}
 
-  .markdown-body pre code {
-    background-color: transparent;
-    padding: 0;
-    font-size: 0.875rem;
-  }
+.vc-control--primary {
+  border-color: var(--vc-text-primary);
+  background: var(--vc-text-primary);
+  color: var(--vc-bg);
+}
 
-  .markdown-body a {
-    color: rgb(125 211 252);
-    text-decoration-line: underline;
-    text-decoration-color: rgb(14 165 233 / 0.5);
-    text-underline-offset: 2px;
-  }
+.vc-control--primary:hover:not(:disabled) {
+  border-color: var(--vc-text-primary);
+  background: var(--vc-text-primary);
+}
+
+.vc-control--secondary {
+  border-color: var(--vc-border-strong);
+  background: var(--vc-surface-2);
+  color: var(--vc-text-primary);
+}
+
+.vc-control--ghost {
+  border-color: transparent;
+  background: transparent;
+  color: var(--vc-text-muted);
+}
+
+.vc-control--ghost:hover:not(:disabled) {
+  border-color: var(--vc-border-subtle);
+  color: var(--vc-text-primary);
+}
+
+.vc-control--danger {
+  border-color: var(--vc-danger-border);
+  background: var(--vc-danger-bg);
+  color: var(--vc-danger-text);
+}
+
+.vc-control--confirm {
+  border-color: var(--vc-confirm-border);
+  background: var(--vc-confirm-bg);
+  color: var(--vc-confirm-text);
+}
+
+.vc-control--compact {
+  min-height: var(--vc-control-height-compact);
+  padding: 0 var(--vc-control-padding-x-compact);
+  font-size: 0.75rem;
+}
+
+.vc-control--icon {
+  width: var(--vc-control-height);
+  padding: 0;
+}
+
+.vc-control--icon.vc-control--compact {
+  width: var(--vc-control-height-compact);
+}
+
+.markdown-body {
+  max-width: none;
+  color: var(--vc-text-primary);
+  font-size: 0.875rem;
+  line-height: 1.625;
+}
+
+.markdown-body > :first-child {
+  margin-top: 0;
+}
+
+.markdown-body > :last-child {
+  margin-bottom: 0;
+}
+
+.markdown-body p {
+  margin-top: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.markdown-body ul {
+  margin-top: 0.75rem;
+  margin-bottom: 0.75rem;
+  list-style-type: disc;
+  padding-left: 1.25rem;
+}
+
+.markdown-body ol {
+  margin-top: 0.75rem;
+  margin-bottom: 0.75rem;
+  list-style-type: decimal;
+  padding-left: 1.25rem;
+}
+
+.markdown-body li {
+  padding-left: 0.25rem;
+}
+
+.markdown-body li + li {
+  margin-top: 0.25rem;
+}
+
+.markdown-body li > p {
+  margin-top: 0.25rem;
+  margin-bottom: 0.25rem;
+}
+
+.markdown-body code {
+  border-radius: var(--vc-radius-control);
+  background-color: var(--vc-surface-2);
+  padding: 0.125rem 0.375rem;
+  color: var(--vc-text-primary);
+  font-family:
+    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+    "Courier New", monospace;
+  font-size: 0.9em;
+}
+
+.markdown-body pre {
+  margin-top: 0.75rem;
+  margin-bottom: 0.75rem;
+  overflow-x: auto;
+  border: 1px solid var(--vc-border-subtle);
+  border-radius: var(--vc-radius-control);
+  background-color: var(--vc-surface-1);
+  padding: 0.75rem;
+}
+
+.markdown-body pre code {
+  background-color: transparent;
+  padding: 0;
+  font-size: 0.875rem;
+}
+
+.markdown-body a {
+  color: var(--vc-text-primary);
+  text-decoration-line: underline;
+  text-decoration-color: var(--vc-border-strong);
+  text-underline-offset: 2px;
 }

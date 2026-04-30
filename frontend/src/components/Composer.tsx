@@ -168,9 +168,9 @@ export function Composer({
   };
 
   return (
-    <div className="border-t border-slate-800 bg-[#0c0c0e] px-4 py-3">
+    <div className="border-t border-[color:var(--vc-border-subtle)] bg-[var(--vc-bg)] px-4 py-3">
       <div className="max-w-3xl mx-auto">
-        <div className="relative flex flex-col bg-slate-900 border border-slate-700 rounded-xl focus-within:border-indigo-500 focus-within:ring-1 focus-within:ring-indigo-500 transition-colors overflow-hidden">
+        <div className="relative flex flex-col bg-[var(--vc-surface-1)] border border-[color:var(--vc-border-strong)] rounded-xl focus-within:border-[color:var(--vc-focus-ring)] focus-within:ring-1 focus-within:ring-[color:var(--vc-focus-ring)] transition-colors overflow-hidden">
           <div className="flex items-end gap-2 px-3 py-2 bg-transparent">
             <textarea
               ref={textareaRef}
@@ -180,13 +180,13 @@ export function Composer({
               placeholder={placeholder || t("chat.placeholder")}
               disabled={disabled}
               rows={1}
-              className="flex-1 bg-transparent text-sm text-slate-200 placeholder:text-slate-500 resize-none outline-none py-1.5 max-h-[200px] disabled:opacity-50"
+              className="flex-1 bg-transparent text-sm text-[var(--vc-text-primary)] placeholder:text-[var(--vc-text-subtle)] resize-none outline-none py-1.5 max-h-[200px] disabled:opacity-50"
             />
             <button
               type="button"
               onClick={handleSubmit}
               disabled={disabled || !input.trim()}
-              className="flex-shrink-0 w-8 h-8 flex items-center justify-center rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed text-white transition-colors mb-0.5"
+              className="flex-shrink-0 w-8 h-8 flex items-center justify-center rounded-lg border border-[color:var(--vc-text-primary)] bg-[var(--vc-text-primary)] text-[var(--vc-bg)] hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed transition-opacity mb-0.5 focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--vc-focus-ring)]"
             >
               {isRunning ? (
                 <Loader2 className="w-4 h-4 animate-spin" />
@@ -197,7 +197,7 @@ export function Composer({
           </div>
 
           {selectableAgentPresets.length > 0 && (
-            <div className="flex flex-wrap items-center gap-2 border-t border-slate-800/60 bg-slate-900/30 px-3 py-1.5 text-xs">
+            <div className="flex flex-wrap items-center gap-1.5 border-t border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] px-3 py-1.5 text-xs">
               <div className="relative" ref={agentMenuRef}>
                 <button
                   id="composer-agent"
@@ -209,13 +209,13 @@ export function Composer({
                     setShowAgentMenu((open) => !open);
                   }}
                   disabled={disabled}
-                  className="max-w-[180px] truncate rounded border border-slate-700 px-2 py-1 text-left text-slate-300 disabled:opacity-50"
+                  className="max-w-[180px] truncate rounded-md px-1.5 py-1 text-left text-[var(--vc-text-muted)] transition-colors disabled:opacity-50 hover:bg-[var(--vc-surface-2)] hover:text-[var(--vc-text-primary)] focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--vc-focus-ring)]"
                 >
                   {selectedAgentLabel}
                 </button>
 
                 {showAgentMenu && (
-                  <div className="absolute bottom-full left-0 z-20 mb-2 min-w-[180px] rounded border border-slate-700 bg-[#0c0c0e] py-1 shadow-xl">
+                  <div className="absolute bottom-full left-0 z-20 mb-2 min-w-[180px] rounded border border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] py-1 shadow-xl">
                     {selectableAgentPresets.map((agent) => {
                       const active = agent.id === (agentPreset ?? "leader");
                       return (
@@ -225,8 +225,8 @@ export function Composer({
                           onClick={() => handleAgentSelect(agent.id)}
                           className={`block w-full px-3 py-1.5 text-left text-sm ${
                             active
-                              ? "bg-slate-800 text-slate-100"
-                              : "text-slate-300 hover:bg-slate-800/60"
+                              ? "bg-[var(--vc-surface-2)] text-[var(--vc-text-primary)]"
+                              : "text-[var(--vc-text-muted)] hover:bg-[var(--vc-surface-2)] hover:text-[var(--vc-text-primary)]"
                           }`}
                         >
                           {agent.label}
@@ -236,6 +236,10 @@ export function Composer({
                   </div>
                 )}
               </div>
+
+              {availableModelGroups.length > 0 && (
+                <span className="h-3 w-px bg-[var(--vc-border-subtle)]" />
+              )}
 
               {availableModelGroups.length > 0 && (
                 <div className="relative min-w-0 flex-1" ref={modelMenuRef}>
@@ -249,7 +253,7 @@ export function Composer({
                       setShowModelMenu((open) => !open);
                     }}
                     disabled={disabled}
-                    className="w-full truncate rounded border border-slate-700 px-2 py-1 text-left text-slate-400 disabled:opacity-50"
+                    className="w-full truncate rounded-md px-1.5 py-1 text-left text-[var(--vc-text-muted)] transition-colors disabled:opacity-50 hover:bg-[var(--vc-surface-2)] hover:text-[var(--vc-text-primary)] focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--vc-focus-ring)]"
                   >
                     {selectedModelAvailable
                       ? selectedModelLabel
@@ -257,10 +261,10 @@ export function Composer({
                   </button>
 
                   {showModelMenu && (
-                    <div className="absolute bottom-full left-0 z-20 mb-2 max-h-72 min-w-[260px] max-w-[360px] overflow-y-auto rounded border border-slate-700 bg-[#0c0c0e] py-1 shadow-xl">
+                    <div className="absolute bottom-full left-0 z-20 mb-2 max-h-72 min-w-[260px] max-w-[360px] overflow-y-auto rounded border border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] py-1 shadow-xl">
                       {availableModelGroups.map(({ provider, models }) => (
                         <div key={provider.name} className="py-1">
-                          <div className="px-3 py-1 text-[11px] text-slate-500">
+                          <div className="px-3 py-1 text-[11px] text-[var(--vc-text-subtle)]">
                             {provider.label}
                           </div>
                           {models.map((model) => {
@@ -276,14 +280,14 @@ export function Composer({
                                 onClick={() => handleModelSelect(value)}
                                 className={`block w-full px-3 py-1.5 text-left text-sm ${
                                   active
-                                    ? "bg-slate-800 text-slate-100"
-                                    : "text-slate-300 hover:bg-slate-800/60"
+                                    ? "bg-[var(--vc-surface-2)] text-[var(--vc-text-primary)]"
+                                    : "text-[var(--vc-text-muted)] hover:bg-[var(--vc-surface-2)] hover:text-[var(--vc-text-primary)]"
                                 }`}
                               >
                                 <span className="block">
                                   {displayModelName(model, provider.name)}
                                 </span>
-                                <span className="mt-0.5 block text-[10px] text-slate-500">
+                                <span className="mt-0.5 block text-[10px] text-[var(--vc-text-subtle)]">
                                   {formatModelContext(
                                     providerModels?.[provider.name]
                                       ?.model_metadata?.[model] ??
@@ -301,19 +305,19 @@ export function Composer({
                 </div>
               )}
               {selectedModelAvailable && contextLabel && (
-                <span className="rounded border border-slate-800 px-2 py-1 text-slate-500">
+                <span className="px-1.5 py-1 text-[var(--vc-text-subtle)]">
                   {contextLabel}
                 </span>
               )}
               {selectedModelAvailable && supportsReasoningEffort && (
-                <label className="inline-flex items-center gap-1 text-slate-500">
+                <label className="inline-flex items-center gap-1 text-[var(--vc-text-subtle)]">
                   <span>Effort</span>
                   <select
                     aria-label="Reasoning effort"
                     value={effectiveReasoningEffort}
                     onChange={handleEffortSelect}
                     disabled={disabled}
-                    className="rounded border border-slate-700 bg-slate-950 px-1.5 py-1 text-slate-300 disabled:opacity-50"
+                    className="rounded-md bg-transparent px-1 py-1 text-[var(--vc-text-muted)] disabled:opacity-50 hover:bg-[var(--vc-surface-2)] hover:text-[var(--vc-text-primary)] focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--vc-focus-ring)]"
                   >
                     <option value="minimal">minimal</option>
                     <option value="low">low</option>
@@ -326,7 +330,7 @@ export function Composer({
             </div>
           )}
         </div>
-        <p className="text-[11px] text-slate-600 mt-1.5 text-center">
+        <p className="text-[11px] text-[var(--vc-text-subtle)] mt-1.5 text-center">
           {t("chat.hint")}
         </p>
       </div>

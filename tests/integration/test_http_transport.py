@@ -1020,10 +1020,6 @@ def test_transport_resolves_pending_approval_allow_over_http(tmp_path: Path) -> 
         "graph.tool_request_created",
         "runtime.tool_lookup_succeeded",
         "runtime.approval_requested",
-        "graph.loop_step",
-        "graph.model_turn",
-        "graph.tool_request_created",
-        "runtime.tool_lookup_succeeded",
         "runtime.approval_resolved",
         "runtime.tool_started",
         "runtime.tool_completed",
@@ -1209,6 +1205,86 @@ def test_transport_serializes_hook_events_from_runtime_stream(tmp_path: Path) ->
     ]
 
 
+def test_transport_stream_preserves_tool_display_metadata(tmp_path: Path) -> None:
+    create_runtime_app = _load_transport_app_factory()
+    runtime_stream_chunk, session_ref, session_state, event_envelope = _load_stream_types()
+    session = session_state(
+        session=session_ref(id="tool-display-stream"),
+        status="running",
+        turn=1,
+        metadata={"workspace": str(tmp_path)},
+    )
+
+    display: dict[str, object] = {
+        "kind": "shell",
+        "title": "Shell",
+        "summary": "Run failing tests",
+        "args": ["npm test"],
+        "copyable": {"command": "npm test", "output": "stderr boom"},
+    }
+
+    class StubRuntime:
+        def run_stream(self, request: RuntimeRequestLike) -> Iterator[StreamChunkLike]:
+            assert request.prompt == "stream tool display metadata"
+            yield runtime_stream_chunk(
+                kind="event",
+                session=session,
+                event=event_envelope(
+                    session_id="tool-display-stream",
+                    sequence=1,
+                    event_type="runtime.tool_completed",
+                    source="runtime",
+                    payload={
+                        "tool": "shell_exec",
+                        "tool_call_id": "shell-1",
+                        "status": "error",
+                        "arguments": {"command": "npm test"},
+                        "error": "process failed",
+                        "display": display,
+                        "tool_status": {
+                            "invocation_id": "shell-1",
+                            "tool_name": "shell_exec",
+                            "phase": "completed",
+                            "status": "failed",
+                            "display": display,
+                        },
+                    },
+                ),
+            )
+
+        def list_sessions(self) -> tuple[StoredSessionSummaryLike, ...]:
+            raise AssertionError("list_sessions should not be called")
+
+        def web_settings(self) -> dict[str, object]:
+            raise AssertionError("web_settings should not be called")
+
+        def update_web_settings(self, **_: object) -> dict[str, object]:
+            raise AssertionError("update_web_settings should not be called")
+
+        def resume(self, session_id: str) -> RuntimeResponseLike:
+            raise AssertionError(f"resume should not be called: {session_id}")
+
+    app = create_runtime_app(workspace=tmp_path, runtime_factory=lambda: StubRuntime())
+    response = _run_app(
+        app,
+        method="POST",
+        path="/api/runtime/run/stream",
+        body=json.dumps({"prompt": "stream tool display metadata"}).encode("utf-8"),
+    )
+    payloads = _parse_sse_payloads(response)
+    event = cast(dict[str, object], payloads[0]["event"])
+    event_payload = cast(dict[str, object], event["payload"])
+    tool_status = cast(dict[str, object], event_payload["tool_status"])
+
+    assert response.status == 200
+    assert event_payload["display"] == display
+    assert tool_status["display"] == display
+    assert cast(dict[str, object], tool_status["display"])["copyable"] == {
+        "command": "npm test",
+        "output": "stderr boom",
+    }
+
+
 def test_transport_serializes_delegated_background_lifecycle_event_metadata(
     tmp_path: Path,
 ) -> None:
@@ -1361,10 +1437,6 @@ def test_transport_resolves_pending_approval_deny_over_http(tmp_path: Path) -> N
         "graph.tool_request_created",
         "runtime.tool_lookup_succeeded",
         "runtime.approval_requested",
-        "graph.loop_step",
-        "graph.model_turn",
-        "graph.tool_request_created",
-        "runtime.tool_lookup_succeeded",
         "runtime.approval_resolved",
         "runtime.failed",
     ]
@@ -1469,10 +1541,6 @@ def test_transport_resumes_multi_step_loop_and_persists_replay_over_http(tmp_pat
         "graph.tool_request_created",
         "runtime.tool_lookup_succeeded",
         "runtime.approval_requested",
-        "graph.loop_step",
-        "graph.model_turn",
-        "graph.tool_request_created",
-        "runtime.tool_lookup_succeeded",
         "runtime.approval_resolved",
         "runtime.tool_started",
         "runtime.tool_completed",
@@ -1488,7 +1556,7 @@ def test_transport_resumes_multi_step_loop_and_persists_replay_over_http(tmp_pat
     ]
     assert [
         event["sequence"] for event in cast(list[dict[str, object]], approve_payload["events"])
-    ] == list(range(1, 31))
+    ] == list(range(1, 27))
     assert list_response.status == 200
     assert list_response.json() == [
         {
@@ -1585,16 +1653,12 @@ def test_transport_denied_multi_step_loop_preserves_failed_replay_over_http(tmp_
         "graph.tool_request_created",
         "runtime.tool_lookup_succeeded",
         "runtime.approval_requested",
-        "graph.loop_step",
-        "graph.model_turn",
-        "graph.tool_request_created",
-        "runtime.tool_lookup_succeeded",
         "runtime.approval_resolved",
         "runtime.failed",
     ]
     assert [
         event["sequence"] for event in cast(list[dict[str, object]], deny_payload["events"])
-    ] == list(range(1, 21))
+    ] == list(range(1, 17))
     assert list_response.status == 200
     assert list_response.json() == [
         {
@@ -1644,7 +1708,7 @@ def test_transport_rejects_invalid_approval_resolution_payload(
     assert response.json() == {"error": expected_error}
 
 
-def test_transport_returns_not_found_when_approval_resolution_has_no_pending_request(
+def test_transport_returns_conflict_when_approval_resolution_has_no_pending_request(
     tmp_path: Path,
 ) -> None:
     sample_file = tmp_path / "sample.txt"
@@ -1668,7 +1732,7 @@ def test_transport_returns_not_found_when_approval_resolution_has_no_pending_req
         ).encode("utf-8"),
     )
 
-    assert response.status == 404
+    assert response.status == 409
     assert response.json() == {"error": "no pending approval for session: completed-session"}
 
 
@@ -2343,9 +2407,23 @@ def test_transport_persists_failed_stream_for_replay(tmp_path: Path) -> None:
     replay_payload = cast(dict[str, object], replay_response.json())
 
     assert stream_response.status == 200
-    assert payloads[8]["event"] == {
+    tool_completed_event = cast(dict[str, object], payloads[8]["event"])
+    assert tool_completed_event["session_id"] == "failed-stream-session"
+    assert tool_completed_event["sequence"] == 9
+    assert tool_completed_event["event_type"] == "runtime.tool_completed"
+    assert tool_completed_event["source"] == "tool"
+    tool_completed_payload = cast(dict[str, object], tool_completed_event["payload"])
+    assert tool_completed_payload["tool"] == "read_file"
+    assert tool_completed_payload["status"] == "error"
+    assert tool_completed_payload["error"] == "boom from transport stream"
+    tool_status = tool_completed_payload["tool_status"]
+    assert isinstance(tool_status, dict)
+    typed_tool_status = cast(dict[str, object], tool_status)
+    assert typed_tool_status["tool_name"] == "read_file"
+    assert typed_tool_status["status"] == "failed"
+    assert payloads[9]["event"] == {
         "session_id": "failed-stream-session",
-        "sequence": 9,
+        "sequence": 10,
         "event_type": "runtime.failed",
         "source": "runtime",
         "payload": {"error": "boom from transport stream"},
@@ -2381,6 +2459,7 @@ def test_transport_persists_failed_stream_for_replay(tmp_path: Path) -> None:
         "runtime.tool_lookup_succeeded",
         "runtime.permission_resolved",
         "runtime.tool_started",
+        "runtime.tool_completed",
         "runtime.failed",
     ]
 

@@ -14,7 +14,8 @@ from ..provider.errors import (
     classify_provider_error,
     format_fallback_exhausted_error,
 )
-from ..tools.contracts import RuntimeTimeoutAwareTool, RuntimeToolTimeoutError, ToolResult
+from ..provider.protocol import ProviderAbortSignal
+from ..tools.contracts import RuntimeTimeoutAwareTool, RuntimeToolTimeoutError, ToolCall, ToolResult
 from ..tools.output import (
     cap_tool_result_output,
     sanitize_tool_arguments,
@@ -41,6 +42,7 @@ from .events import (
 from .permission import PendingApproval, PermissionPolicy, PermissionResolution
 from .question import PendingQuestion
 from .session import SessionState
+from .tool_display import build_tool_display, build_tool_status
 
 if TYPE_CHECKING:
     from .service import ToolRegistry, VoidCodeRuntime
@@ -59,14 +61,367 @@ def _is_abort_requested(request: GraphRunRequest) -> bool:
     return bool(request.abort_signal is not None and request.abort_signal.cancelled)
 
 
-def _abort_reason(request: GraphRunRequest) -> str | None:
-    reason = getattr(request.abort_signal, "reason", None)
+def _is_abort_signal_requested(abort_signal: ProviderAbortSignal | None) -> bool:
+    return bool(abort_signal is not None and abort_signal.cancelled)
+
+
+def _abort_signal_reason(abort_signal: ProviderAbortSignal | None) -> str | None:
+    reason = getattr(abort_signal, "reason", None)
     return reason if isinstance(reason, str) and reason else None
+
+
+def _abort_reason(request: GraphRunRequest) -> str | None:
+    return _abort_signal_reason(request.abort_signal)
 
 
 class RuntimeRunLoopCoordinator:
     def __init__(self, runtime: VoidCodeRuntime) -> None:
         self._runtime = runtime
+
+    def _started_tool_abort_chunks(
+        self,
+        *,
+        session: SessionState,
+        sequence: int,
+        tool_call: ToolCall,
+        tool_call_id: str,
+        abort_signal: ProviderAbortSignal | None,
+    ) -> tuple[RuntimeStreamChunk, RuntimeStreamChunk]:
+        runtime = self._runtime
+        sanitized_args = sanitize_tool_arguments(dict(tool_call.arguments))
+        failed_display = build_tool_display(tool_call.tool_name, sanitized_args)
+        failed_status = build_tool_status(
+            tool_call.tool_name,
+            tool_call_id,
+            phase="failed",
+            status="failed",
+            display=failed_display,
+        )
+        completed_chunk = RuntimeStreamChunk(
+            kind="event",
+            session=session,
+            event=EventEnvelope(
+                session_id=session.session.id,
+                sequence=sequence + 1,
+                event_type="runtime.tool_completed",
+                source="tool",
+                payload={
+                    "tool": tool_call.tool_name,
+                    "tool_call_id": tool_call_id,
+                    "arguments": sanitized_args,
+                    "status": "error",
+                    "error": "run interrupted",
+                    "display": failed_display,
+                    "tool_status": failed_status,
+                },
+            ),
+        )
+        failed_chunk = runtime._failed_chunk(
+            session=session,
+            sequence=sequence + 2,
+            error="run interrupted",
+            payload={
+                "kind": "interrupted",
+                "cancelled": True,
+                "run_id": runtime._run_id_from_session_metadata(session.metadata),
+                "reason": _abort_signal_reason(abort_signal),
+            },
+        )
+        return completed_chunk, failed_chunk
+
+    def execute_approved_tool_call(
+        self,
+        *,
+        tool_registry: ToolRegistry,
+        session: SessionState,
+        sequence: int,
+        tool_call: ToolCall,
+        pending: PendingApproval,
+        decision: PermissionResolution,
+        tool_results: list[ToolResult],
+        abort_signal: ProviderAbortSignal | None = None,
+    ) -> Iterator[RuntimeStreamChunk]:
+        runtime = self._runtime
+        permission_chunks = runtime._approval_resolution_outcome(
+            session=session,
+            pending=pending,
+            decision=decision,
+            sequence=sequence + 1,
+        )
+        yield from permission_chunks.chunks
+        if permission_chunks.chunks:
+            session = permission_chunks.chunks[-1].session
+        if permission_chunks.denied:
+            return
+
+        sequence = permission_chunks.last_sequence
+        try:
+            tool = tool_registry.resolve(tool_call.tool_name)
+        except Exception as exc:
+            yield runtime._failed_chunk(session=session, sequence=sequence + 1, error=str(exc))
+            raise
+
+        pre_hook_outcome = runtime._run_tool_hooks(
+            session=session,
+            sequence=sequence,
+            tool_name=tool_call.tool_name,
+            phase="pre",
+        )
+        yield from pre_hook_outcome.chunks
+        sequence = pre_hook_outcome.last_sequence
+        if pre_hook_outcome.failed_error is not None:
+            yield runtime._failed_chunk(
+                session=session,
+                sequence=sequence + 1,
+                error=pre_hook_outcome.failed_error,
+            )
+            raise RuntimeError(pre_hook_outcome.failed_error)
+
+        tool_timeout = runtime._effective_runtime_config_from_metadata(
+            session.metadata
+        ).tool_timeout_seconds
+        explicit_tool_call_id = tool_call.tool_call_id
+        tool_call_id = explicit_tool_call_id or f"runtime-tool-{uuid4().hex}"
+        sequence += 1
+        start_args = dict(tool_call.arguments)
+        started_display = build_tool_display(tool_call.tool_name, start_args)
+        started_status = build_tool_status(
+            tool_call.tool_name,
+            tool_call_id,
+            phase="running",
+            status="running",
+            display=started_display,
+        )
+        yield RuntimeStreamChunk(
+            kind="event",
+            session=session,
+            event=EventEnvelope(
+                session_id=session.session.id,
+                sequence=sequence,
+                event_type=RUNTIME_TOOL_STARTED,
+                source="runtime",
+                payload={
+                    "tool": tool_call.tool_name,
+                    "tool_call_id": tool_call_id,
+                    "display": started_display,
+                    "tool_status": started_status,
+                },
+            ),
+        )
+
+        if _is_abort_signal_requested(abort_signal):
+            yield from self._started_tool_abort_chunks(
+                session=session,
+                sequence=sequence,
+                tool_call=tool_call,
+                tool_call_id=tool_call_id,
+                abort_signal=abort_signal,
+            )
+            return
+
+        tool_exception_recovery_enabled = (
+            runtime._effective_runtime_config_from_metadata(session.metadata).execution_engine
+            == "provider"
+        )
+        try:
+            with bind_runtime_tool_context(
+                RuntimeToolInvocationContext(
+                    session_id=session.session.id,
+                    parent_session_id=session.session.parent_id,
+                    delegation_depth=runtime._delegation_depth_from_metadata(session.metadata),
+                    remaining_spawn_budget=runtime._remaining_spawn_budget_from_metadata(
+                        session.metadata
+                    ),
+                    abort_signal=abort_signal,
+                )
+            ):
+                if tool_timeout is None:
+                    tool_result = tool.invoke(tool_call, workspace=runtime._workspace)
+                elif isinstance(tool, RuntimeTimeoutAwareTool):
+                    tool_result = tool.invoke_with_runtime_timeout(
+                        tool_call,
+                        workspace=runtime._workspace,
+                        timeout_seconds=tool_timeout,
+                    )
+                else:
+                    tool_result = tool.invoke(tool_call, workspace=runtime._workspace)
+        except Exception as exc:
+            drained_chunks, session, sequence = self._drain_runtime_events(
+                session=session,
+                start_sequence=sequence + 1,
+            )
+            yield from drained_chunks
+            if isinstance(exc, RuntimeToolTimeoutError):
+                sequence += 1
+                yield RuntimeStreamChunk(
+                    kind="event",
+                    session=session,
+                    event=EventEnvelope(
+                        session_id=session.session.id,
+                        sequence=sequence,
+                        event_type="runtime.tool_timeout",
+                        source="runtime",
+                        payload={
+                            "tool": tool_call.tool_name,
+                            "timeout_seconds": tool_timeout,
+                        },
+                    ),
+                )
+                timeout_sanitized_args = sanitize_tool_arguments(dict(tool_call.arguments))
+                failed_display = build_tool_display(tool_call.tool_name, timeout_sanitized_args)
+                failed_status = build_tool_status(
+                    tool_call.tool_name,
+                    tool_call_id,
+                    phase="failed",
+                    status="failed",
+                    display=failed_display,
+                )
+                sequence += 1
+                yield RuntimeStreamChunk(
+                    kind="event",
+                    session=session,
+                    event=EventEnvelope(
+                        session_id=session.session.id,
+                        sequence=sequence,
+                        event_type="runtime.tool_completed",
+                        source="tool",
+                        payload={
+                            "tool": tool_call.tool_name,
+                            "tool_call_id": tool_call_id,
+                            "arguments": timeout_sanitized_args,
+                            "status": "error",
+                            "error": str(exc),
+                            "display": failed_display,
+                            "tool_status": failed_status,
+                        },
+                    ),
+                )
+                yield runtime._failed_chunk(session=session, sequence=sequence + 1, error=str(exc))
+                return
+            if not tool_exception_recovery_enabled and not _is_tool_timeout_like_exception(exc):
+                error_sanitized_args = sanitize_tool_arguments(dict(tool_call.arguments))
+                failed_display = build_tool_display(tool_call.tool_name, error_sanitized_args)
+                failed_status = build_tool_status(
+                    tool_call.tool_name,
+                    tool_call_id,
+                    phase="failed",
+                    status="failed",
+                    display=failed_display,
+                )
+                sequence += 1
+                yield RuntimeStreamChunk(
+                    kind="event",
+                    session=session,
+                    event=EventEnvelope(
+                        session_id=session.session.id,
+                        sequence=sequence,
+                        event_type="runtime.tool_completed",
+                        source="tool",
+                        payload={
+                            "tool": tool_call.tool_name,
+                            "tool_call_id": tool_call_id,
+                            "arguments": error_sanitized_args,
+                            "status": "error",
+                            "error": str(exc),
+                            "display": failed_display,
+                            "tool_status": failed_status,
+                        },
+                    ),
+                )
+                yield runtime._failed_chunk(session=session, sequence=sequence + 1, error=str(exc))
+                raise
+            tool_result = ToolResult(
+                tool_name=tool_call.tool_name,
+                status="error",
+                error=str(exc),
+                data={
+                    "tool_call_id": tool_call_id,
+                    "arguments": dict(tool_call.arguments),
+                },
+            )
+
+        sanitized_arguments = sanitize_tool_arguments(dict(tool_call.arguments))
+        tool_result = cap_tool_result_output(tool_result, workspace=runtime._workspace)
+        tool_result = replace(
+            tool_result,
+            data=sanitize_tool_result_data(tool_result.data),
+        )
+
+        drained_chunks, session, sequence = self._drain_runtime_events(
+            session=session,
+            start_sequence=sequence + 1,
+        )
+        yield from drained_chunks
+
+        completed_payload = {
+            **tool_result.data,
+            "tool_call_id": tool_call_id,
+            "arguments": sanitized_arguments,
+            "status": tool_result.status,
+            "content": (
+                normalize_tool_result_content(tool_result.content)
+                if tool_result.tool_name == "read_file"
+                else tool_result.content
+            ),
+            "error": tool_result.error,
+        }
+        completed_payload.setdefault("tool", tool_result.tool_name)
+
+        completed_display = build_tool_display(
+            tool_call.tool_name,
+            sanitized_arguments,
+            result_data=tool_result.data,
+        )
+        completed_status = build_tool_status(
+            tool_call.tool_name,
+            tool_call_id,
+            phase="completed" if tool_result.status == "ok" else "failed",
+            status="completed" if tool_result.status == "ok" else "failed",
+            display=completed_display,
+        )
+        completed_payload["display"] = completed_display
+        completed_payload["tool_status"] = completed_status
+
+        sequence += 1
+        yield RuntimeStreamChunk(
+            kind="event",
+            session=session,
+            event=EventEnvelope(
+                session_id=session.session.id,
+                sequence=sequence,
+                event_type="runtime.tool_completed",
+                source="tool",
+                payload=completed_payload,
+            ),
+        )
+
+        if tool_result.status == "ok":
+            post_hook_outcome = runtime._run_tool_hooks(
+                session=session,
+                sequence=sequence,
+                tool_name=tool_call.tool_name,
+                phase="post",
+            )
+            yield from post_hook_outcome.chunks
+            sequence = post_hook_outcome.last_sequence
+            if post_hook_outcome.failed_error is not None:
+                yield runtime._failed_chunk(
+                    session=session,
+                    sequence=sequence + 1,
+                    error=post_hook_outcome.failed_error,
+                )
+                raise RuntimeError(post_hook_outcome.failed_error)
+
+        tool_results.append(
+            replace(
+                tool_result,
+                data={
+                    **tool_result.data,
+                    "tool_call_id": tool_call_id,
+                    "arguments": sanitized_arguments,
+                },
+            )
+        )
 
     def execute_graph_loop(
         self,
@@ -567,12 +922,27 @@ class RuntimeRunLoopCoordinator:
                     )
                     approval_resolution = None
                 else:
-                    msg = (
-                        f"graph step produced a different tool call "
-                        f"({plan_tool_call.tool_name}) than the pending "
-                        f"approval ({pending.tool_name})"
-                    )
-                    raise ValueError(msg)
+                    # Tool call changed on replay (non-deterministic model output) —
+                    # deny decisions remain terminal for the original pending
+                    # approval.  Allow decisions may still fall back to a fresh
+                    # permission check for older resume paths that re-enter via
+                    # the graph before executing the approved tool directly.
+                    approval_resolution = None
+                    if decision == "deny":
+                        permission_chunks = runtime._approval_resolution_outcome(
+                            session=session,
+                            pending=pending,
+                            decision=decision,
+                            sequence=sequence,
+                        )
+                    else:
+                        permission_chunks = runtime._resolve_permission(
+                            session=session,
+                            tool=tool.definition,
+                            tool_call=plan_tool_call,
+                            sequence=sequence,
+                            permission_policy=active_permission_policy,
+                        )
             else:
                 permission_chunks = runtime._resolve_permission(
                     session=session,
@@ -611,6 +981,15 @@ class RuntimeRunLoopCoordinator:
                 session.metadata
             ).tool_timeout_seconds
             sequence += 1
+            start_args = dict(plan_tool_call.arguments)
+            started_display = build_tool_display(plan_tool_call.tool_name, start_args)
+            started_status = build_tool_status(
+                plan_tool_call.tool_name,
+                tool_call_id,
+                phase="running",
+                status="running",
+                display=started_display,
+            )
             yield RuntimeStreamChunk(
                 kind="event",
                 session=session,
@@ -619,20 +998,21 @@ class RuntimeRunLoopCoordinator:
                     sequence=sequence,
                     event_type=RUNTIME_TOOL_STARTED,
                     source="runtime",
-                    payload={"tool": plan_tool_call.tool_name},
+                    payload={
+                        "tool": plan_tool_call.tool_name,
+                        "tool_call_id": tool_call_id,
+                        "display": started_display,
+                        "tool_status": started_status,
+                    },
                 ),
             )
             if _is_abort_requested(graph_request):
-                yield runtime._failed_chunk(
+                yield from self._started_tool_abort_chunks(
                     session=session,
-                    sequence=sequence + 1,
-                    error="run interrupted",
-                    payload={
-                        "kind": "interrupted",
-                        "cancelled": True,
-                        "run_id": runtime._run_id_from_session_metadata(session.metadata),
-                        "reason": _abort_reason(graph_request),
-                    },
+                    sequence=sequence,
+                    tool_call=plan_tool_call,
+                    tool_call_id=tool_call_id,
+                    abort_signal=graph_request.abort_signal,
                 )
                 return
             try:
@@ -679,11 +1059,73 @@ class RuntimeRunLoopCoordinator:
                             },
                         ),
                     )
+                    timeout_sanitized_args = sanitize_tool_arguments(dict(plan_tool_call.arguments))
+                    failed_display = build_tool_display(
+                        plan_tool_call.tool_name, timeout_sanitized_args
+                    )
+                    failed_status = build_tool_status(
+                        plan_tool_call.tool_name,
+                        tool_call_id,
+                        phase="failed",
+                        status="failed",
+                        display=failed_display,
+                    )
+                    sequence += 1
+                    yield RuntimeStreamChunk(
+                        kind="event",
+                        session=session,
+                        event=EventEnvelope(
+                            session_id=session.session.id,
+                            sequence=sequence,
+                            event_type="runtime.tool_completed",
+                            source="tool",
+                            payload={
+                                "tool": plan_tool_call.tool_name,
+                                "tool_call_id": tool_call_id,
+                                "arguments": timeout_sanitized_args,
+                                "status": "error",
+                                "error": str(exc),
+                                "display": failed_display,
+                                "tool_status": failed_status,
+                            },
+                        ),
+                    )
                     yield runtime._failed_chunk(
                         session=session, sequence=sequence + 1, error=str(exc)
                     )
                     return
                 if not tool_exception_recovery_enabled and not _is_tool_timeout_like_exception(exc):
+                    error_sanitized_args = sanitize_tool_arguments(dict(plan_tool_call.arguments))
+                    failed_display = build_tool_display(
+                        plan_tool_call.tool_name, error_sanitized_args
+                    )
+                    failed_status = build_tool_status(
+                        plan_tool_call.tool_name,
+                        tool_call_id,
+                        phase="failed",
+                        status="failed",
+                        display=failed_display,
+                    )
+                    sequence += 1
+                    yield RuntimeStreamChunk(
+                        kind="event",
+                        session=session,
+                        event=EventEnvelope(
+                            session_id=session.session.id,
+                            sequence=sequence,
+                            event_type="runtime.tool_completed",
+                            source="tool",
+                            payload={
+                                "tool": plan_tool_call.tool_name,
+                                "tool_call_id": tool_call_id,
+                                "arguments": error_sanitized_args,
+                                "status": "error",
+                                "error": str(exc),
+                                "display": failed_display,
+                                "tool_status": failed_status,
+                            },
+                        ),
+                    )
                     yield runtime._failed_chunk(
                         session=session, sequence=sequence + 1, error=str(exc)
                     )
@@ -792,6 +1234,21 @@ class RuntimeRunLoopCoordinator:
                 "error": tool_result.error,
             }
             completed_payload.setdefault("tool", tool_result.tool_name)
+
+            completed_display = build_tool_display(
+                plan_tool_call.tool_name,
+                sanitized_arguments,
+                result_data=tool_result.data,
+            )
+            completed_status = build_tool_status(
+                plan_tool_call.tool_name,
+                tool_call_id,
+                phase="completed" if tool_result.status == "ok" else "failed",
+                status="completed" if tool_result.status == "ok" else "failed",
+                display=completed_display,
+            )
+            completed_payload["display"] = completed_display
+            completed_payload["tool_status"] = completed_status
 
             sequence += 1
             yield RuntimeStreamChunk(

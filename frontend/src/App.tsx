@@ -8,6 +8,7 @@ import { SettingsPanel } from "./components/SettingsPanel";
 import { OpenProjectModal } from "./components/OpenProjectModal";
 import { ReviewPanel } from "./components/ReviewPanel";
 import { RuntimeOpsPanel } from "./components/RuntimeOpsPanel";
+import { ControlButton } from "./components/ui";
 import { deriveChatMessages } from "./lib/runtime/event-parser";
 import { RuntimeClient } from "./lib/runtime/client";
 import {
@@ -16,8 +17,11 @@ import {
   CheckCircle2,
   XCircle,
   GitCompare,
+  FolderTree,
+  PanelLeft,
 } from "lucide-react";
 import { StatusBar } from "./components/StatusBar";
+import { buildSessionDisplayTitle } from "./components/sessionTitle";
 
 function App() {
   const {
@@ -61,12 +65,12 @@ function App() {
     reviewDiff,
     reviewDiffStatus,
     reviewDiffError,
-    reviewMode,
     loadReview,
     selectReviewPath,
-    setReviewMode,
     sessions,
     currentSessionId,
+    sessionSidebarWidth,
+    setSessionSidebarWidth,
     currentSessionEvents,
     currentSessionOutput,
     currentSessionState,
@@ -109,8 +113,11 @@ function App() {
 
   const [showSettings, setShowSettings] = useState(false);
   const [showProjects, setShowProjects] = useState(false);
-  const [showReview, setShowReview] = useState(false);
+  const [showFileTree, setShowFileTree] = useState(false);
+  const [showCodeReview, setShowCodeReview] = useState(false);
   const [showRuntimeOps, setShowRuntimeOps] = useState(false);
+  const [isSessionSidebarExpanded, setIsSessionSidebarExpanded] =
+    useState(true);
   const [runtimeTestStatus, setRuntimeTestStatus] = useState<
     "idle" | "testing" | "success" | "error"
   >("idle");
@@ -218,11 +225,19 @@ function App() {
 
   const currentSessionTitle = useMemo(() => {
     if (!currentSessionId) return null;
-    if (currentSessionSummary?.prompt) return currentSessionSummary.prompt;
+    if (currentSessionSummary?.prompt) {
+      return buildSessionDisplayTitle(
+        currentSessionSummary.prompt,
+        currentSessionId,
+      );
+    }
     const latestReq = [...currentSessionEvents]
       .reverse()
       .find((e) => e.event_type === "runtime.request_received");
-    return (latestReq?.payload?.prompt as string) || currentSessionId;
+    return buildSessionDisplayTitle(
+      latestReq?.payload?.prompt as string | undefined,
+      currentSessionId,
+    );
   }, [currentSessionId, currentSessionSummary, currentSessionEvents]);
 
   const handleResolveApproval = (decision: "allow" | "deny") => {
@@ -231,6 +246,11 @@ function App() {
 
   const handleLoadSessionDebug = () => {
     void loadSessionDebug(currentSessionId);
+  };
+
+  const handleFileTreePathSelect = (path: string) => {
+    void selectReviewPath(path);
+    setShowCodeReview(true);
   };
 
   const composerDisabled =
@@ -242,15 +262,19 @@ function App() {
   const hasCurrentWorkspace = Boolean(workspaces?.current);
 
   return (
-    <div className="flex h-screen bg-[#09090b] text-slate-300 font-sans overflow-hidden selection:bg-indigo-500/30">
+    <div className="flex h-screen bg-[var(--vc-bg)] text-[var(--vc-text-muted)] font-sans overflow-hidden selection:bg-[var(--vc-border-strong)] selection:text-[var(--vc-text-primary)]">
       <SessionSidebar
         workspaces={workspaces}
         sessions={sessions}
         currentSessionId={currentSessionId}
+        sidebarWidth={sessionSidebarWidth}
         sessionsStatus={sessionsStatus}
         sessionsError={sessionsError}
         isRunning={isRunning}
         isReplayLoading={isReplayLoading}
+        isExpanded={isSessionSidebarExpanded}
+        onSidebarWidthChange={setSessionSidebarWidth}
+        onExpandedChange={setIsSessionSidebarExpanded}
         onSelectSession={selectSession}
         onOpenProjects={() => setShowProjects(true)}
         onOpenSettings={() => setShowSettings(true)}
@@ -259,22 +283,32 @@ function App() {
       <div className="flex-1 flex flex-col min-w-0">
         {hasCurrentWorkspace ? (
           <>
-            <header className="h-14 flex items-center justify-between px-4 border-b border-slate-800 bg-[#0c0c0e] flex-shrink-0">
+            <header className="relative z-20 h-14 flex items-center justify-between px-4 border-b border-[color:var(--vc-border-subtle)] bg-[var(--vc-bg)] flex-shrink-0">
               <div className="flex items-center gap-2 min-w-0">
+                <ControlButton
+                  compact
+                  variant={isSessionSidebarExpanded ? "secondary" : "ghost"}
+                  onClick={() => setIsSessionSidebarExpanded((value) => !value)}
+                  aria-label={t("sidebar.toggle")}
+                  aria-expanded={isSessionSidebarExpanded}
+                >
+                  <PanelLeft className="w-4 h-4" />
+                  <span>{t("sidebar.sessions")}</span>
+                </ControlButton>
                 {isReplayLoading && (
-                  <Loader2 className="w-4 h-4 animate-spin text-indigo-400 flex-shrink-0" />
+                  <Loader2 className="w-4 h-4 animate-spin text-[var(--vc-text-muted)] flex-shrink-0" />
                 )}
                 {currentSessionId ? (
                   <div className="flex flex-col min-w-0">
-                    <span className="text-sm font-medium text-slate-200 truncate">
+                    <span className="text-sm font-medium text-[var(--vc-text-primary)] truncate">
                       {currentSessionTitle}
                     </span>
-                    <span className="text-[11px] text-slate-500 font-mono truncate">
+                    <span className="text-[11px] text-[var(--vc-text-subtle)] font-mono truncate">
                       {currentSessionId}
                     </span>
                   </div>
                 ) : (
-                  <span className="text-sm font-medium text-slate-400">
+                  <span className="text-sm font-medium text-[var(--vc-text-muted)]">
                     {t("chat.newChat")}
                   </span>
                 )}
@@ -284,17 +318,17 @@ function App() {
                 <span
                   className={`px-2.5 py-1 rounded-full text-[11px] font-medium flex items-center border ${
                     isRunning
-                      ? "bg-amber-500/10 text-amber-400 border-amber-500/20"
-                      : "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
+                      ? "bg-[var(--vc-surface-2)] text-[var(--vc-text-muted)] border-[color:var(--vc-border-subtle)]"
+                      : "bg-[var(--vc-surface-1)] text-[var(--vc-text-primary)] border-[color:var(--vc-border-strong)]"
                   }`}
                 >
                   <span
-                    className={`w-1.5 h-1.5 rounded-full mr-1.5 ${isRunning ? "bg-amber-500 animate-pulse" : "bg-emerald-500"}`}
+                    className={`w-1.5 h-1.5 rounded-full mr-1.5 ${isRunning ? "bg-[var(--vc-text-subtle)] animate-pulse" : "bg-[var(--vc-text-muted)]"}`}
                   />
                   {isRunning ? t("session.agentBusy") : t("session.agentIdle")}
                 </span>
 
-                <div className="w-px h-4 bg-slate-800 mx-1" />
+                <div className="w-px h-4 bg-[var(--vc-border-subtle)] mx-1" />
 
                 <StatusBar
                   snapshot={statusSnapshot}
@@ -307,59 +341,69 @@ function App() {
                   }}
                 />
 
-                <button
-                  type="button"
-                  onClick={() => setShowReview((value) => !value)}
-                  title={t("review.title")}
-                  className={`rounded-lg border px-2 py-1.5 text-xs font-medium transition-colors ${
-                    showReview
-                      ? "border-indigo-500/30 bg-indigo-500/10 text-indigo-300"
-                      : "border-slate-700 text-slate-400 hover:bg-slate-800/60 hover:text-slate-200"
-                  }`}
+                <ControlButton
+                  compact
+                  variant={showFileTree ? "secondary" : "ghost"}
+                  onClick={() => setShowFileTree((value) => !value)}
+                  aria-label={t("review.toggleFileTree")}
+                  aria-expanded={showFileTree}
+                  aria-pressed={showFileTree}
+                >
+                  <FolderTree className="w-4 h-4" />
+                  <span>{t("review.fileTree")}</span>
+                </ControlButton>
+
+                <ControlButton
+                  compact
+                  variant={showCodeReview ? "secondary" : "ghost"}
+                  onClick={() => setShowCodeReview((value) => !value)}
+                  aria-label={t("review.toggleCodeReview")}
+                  aria-expanded={showCodeReview}
+                  aria-pressed={showCodeReview}
                 >
                   <GitCompare className="w-4 h-4" />
-                </button>
+                  <span>{t("review.codeReview")}</span>
+                </ControlButton>
 
-                <button
-                  type="button"
+                <ControlButton
+                  compact
+                  icon
+                  variant={showRuntimeOps ? "secondary" : "ghost"}
                   onClick={() => setShowRuntimeOps((value) => !value)}
-                  title={t("runtimeOps.title")}
-                  className={`rounded-lg border px-2 py-1.5 text-xs font-medium transition-colors ${
-                    showRuntimeOps
-                      ? "border-sky-500/30 bg-sky-500/10 text-sky-300"
-                      : "border-slate-700 text-slate-400 hover:bg-slate-800/60 hover:text-slate-200"
-                  }`}
+                  aria-label={t("runtimeOps.title")}
+                  aria-expanded={showRuntimeOps}
                 >
                   <Server className="w-4 h-4" />
-                </button>
+                </ControlButton>
 
-                <button
-                  type="button"
+                <ControlButton
+                  compact
+                  icon
+                  variant="ghost"
                   onClick={testRuntime}
                   disabled={runtimeTestStatus === "testing"}
-                  title={t("debug.testRuntime")}
-                  className="rounded-lg border border-slate-700 bg-transparent px-2 py-1.5 text-slate-400 hover:bg-slate-800/60 hover:text-slate-200 transition-colors"
+                  aria-label={t("debug.testRuntime")}
                 >
                   {runtimeTestStatus === "testing" ? (
-                    <Loader2 className="w-4 h-4 animate-spin text-indigo-400" />
+                    <Loader2 className="w-4 h-4 animate-spin text-[var(--vc-text-muted)]" />
                   ) : runtimeTestStatus === "success" ? (
-                    <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                    <CheckCircle2 className="w-4 h-4 text-[var(--vc-confirm-text)]" />
                   ) : runtimeTestStatus === "error" ? (
-                    <XCircle className="w-4 h-4 text-rose-400" />
+                    <XCircle className="w-4 h-4 text-[var(--vc-danger-text)]" />
                   ) : (
                     <Server className="w-4 h-4" />
                   )}
-                </button>
+                </ControlButton>
               </div>
             </header>
 
             {replayError && (
-              <div className="flex-shrink-0 bg-amber-500/10 border-b border-amber-500/20 px-4 py-2 text-xs text-amber-300">
+              <div className="flex-shrink-0 bg-[var(--vc-surface-1)] border-b border-[color:var(--vc-border-subtle)] px-4 py-2 text-xs text-[var(--vc-text-muted)]">
                 {t("session.replayError", { message: replayError })}
               </div>
             )}
             {runError && (
-              <div className="flex-shrink-0 bg-rose-500/10 border-b border-rose-500/20 px-4 py-2 text-xs text-rose-300">
+              <div className="flex-shrink-0 bg-[var(--vc-surface-1)] border-b border-[color:var(--vc-border-subtle)] px-4 py-2 text-xs text-[var(--vc-danger-text)]">
                 {t("common.errorWithMessage", { message: runError })}
               </div>
             )}
@@ -398,41 +442,42 @@ function App() {
           <div className="flex flex-1 flex-col relative">
             <header className="h-14 flex items-center justify-end px-4 border-b border-transparent flex-shrink-0 absolute top-0 left-0 right-0 z-10">
               <div className="flex items-center gap-2">
-                <button
-                  type="button"
+                <ControlButton
+                  compact
+                  icon
+                  variant="ghost"
                   onClick={testRuntime}
                   disabled={runtimeTestStatus === "testing"}
-                  title={t("debug.testRuntime")}
-                  className="rounded-lg border border-slate-700 bg-slate-900/50 px-2 py-1.5 text-slate-400 hover:bg-slate-800/60 hover:text-slate-200 transition-colors"
+                  aria-label={t("debug.testRuntime")}
                 >
                   {runtimeTestStatus === "testing" ? (
-                    <Loader2 className="w-4 h-4 animate-spin text-indigo-400" />
+                    <Loader2 className="w-4 h-4 animate-spin text-[var(--vc-text-muted)]" />
                   ) : runtimeTestStatus === "success" ? (
-                    <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                    <CheckCircle2 className="w-4 h-4 text-[var(--vc-confirm-text)]" />
                   ) : runtimeTestStatus === "error" ? (
-                    <XCircle className="w-4 h-4 text-rose-400" />
+                    <XCircle className="w-4 h-4 text-[var(--vc-danger-text)]" />
                   ) : (
                     <Server className="w-4 h-4" />
                   )}
-                </button>
+                </ControlButton>
               </div>
             </header>
 
             <div className="flex flex-1 items-center justify-center p-6 pt-14">
-              <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-[#0c0c0e] p-6 text-center shadow-[0_0_30px_rgba(0,0,0,0.25)]">
-                <div className="text-lg font-semibold text-slate-100">
+              <div className="w-full max-w-md rounded-2xl border border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] p-6 text-center shadow-[0_0_30px_rgba(0,0,0,0.25)]">
+                <div className="text-lg font-semibold text-[var(--vc-text-primary)]">
                   {t("project.emptyStateTitle")}
                 </div>
-                <p className="mt-2 text-sm text-slate-400">
+                <p className="mt-2 text-sm text-[var(--vc-text-muted)]">
                   {t("project.emptyStateBody")}
                 </p>
-                <button
-                  type="button"
+                <ControlButton
+                  variant="primary"
                   onClick={() => setShowProjects(true)}
-                  className="mt-5 inline-flex items-center justify-center rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-indigo-500"
+                  className="mt-5"
                 >
                   {t("project.openTitle")}
-                </button>
+                </ControlButton>
               </div>
             </div>
           </div>
@@ -440,8 +485,8 @@ function App() {
       </div>
 
       <ReviewPanel
-        isOpen={showReview}
-        mode={reviewMode}
+        isOpen={showFileTree}
+        surface="file-tree"
         snapshot={reviewSnapshot}
         status={reviewStatus}
         error={reviewError}
@@ -449,8 +494,22 @@ function App() {
         diff={reviewDiff}
         diffStatus={reviewDiffStatus}
         diffError={reviewDiffError}
-        onClose={() => setShowReview(false)}
-        onModeChange={setReviewMode}
+        onClose={() => setShowFileTree(false)}
+        onRefresh={loadReview}
+        onSelectPath={handleFileTreePathSelect}
+      />
+
+      <ReviewPanel
+        isOpen={showCodeReview}
+        surface="code-review"
+        snapshot={reviewSnapshot}
+        status={reviewStatus}
+        error={reviewError}
+        selectedPath={reviewSelectedPath}
+        diff={reviewDiff}
+        diffStatus={reviewDiffStatus}
+        diffError={reviewDiffError}
+        onClose={() => setShowCodeReview(false)}
         onRefresh={loadReview}
         onSelectPath={(path) => {
           void selectReviewPath(path);
