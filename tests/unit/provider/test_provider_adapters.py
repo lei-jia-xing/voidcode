@@ -1117,7 +1117,7 @@ def test_provider_adapter_sanitizes_tool_arguments_and_inline_blobs(
     assert raw_content not in raw_arguments
     assert raw_content not in tool_content
     assert raw_data_uri not in tool_content
-    assert '"omitted": true' in raw_arguments
+    assert '"omitted": true' not in raw_arguments
     assert '"data_uri": {"byte_count"' in tool_content
 
 

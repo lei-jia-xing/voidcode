@@ -180,6 +180,42 @@ def cap_tool_result_output(
     )
 
 
+def _is_redaction_sentinel(value: object) -> bool:
+    """Check if a value matches the redaction sentinel shape produced by _string_summary."""
+    if not isinstance(value, dict):
+        return False
+    sentinel_keys = {"omitted", "byte_count", "line_count"}
+    return set(value.keys()) == sentinel_keys and value.get("omitted") is True
+
+
+def strip_redaction_sentinels(arguments: dict[str, object]) -> dict[str, object]:
+    """Remove redaction sentinel objects from provider-visible tool arguments.
+
+    Historical tool-call arguments can contain redaction sentinel dicts like
+    ``{"omitted": true, "byte_count": ..., "line_count": ...}`` that should
+    never appear in provider-visible ``function.arguments``. Models may copy
+    those schema-shaped placeholders back into future tool calls, producing
+    invalid inputs (e.g. ``todo_write`` expecting ``content: str`` but receiving
+    a sentinel dict instead).
+
+    Returns a new dict with sentinel objects replaced by empty strings.
+    """
+
+    def _strip(value: object) -> object:
+        if _is_redaction_sentinel(value):
+            return ""
+        if isinstance(value, dict):
+            return {str(k): _strip(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [_strip(item) for item in value]
+        if isinstance(value, tuple):
+            return [_strip(item) for item in value]
+        return value
+
+    result = _strip(arguments)
+    return result if isinstance(result, dict) else {}
+
+
 __all__ = [
     "MAX_MODEL_FIELD_CHARS",
     "MAX_TOOL_OUTPUT_BYTES",
@@ -188,4 +224,5 @@ __all__ = [
     "sanitize_tool_arguments",
     "sanitize_tool_data",
     "sanitize_tool_result_data",
+    "strip_redaction_sentinels",
 ]

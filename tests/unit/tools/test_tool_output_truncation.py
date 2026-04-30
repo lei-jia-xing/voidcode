@@ -7,6 +7,7 @@ from voidcode.tools import (
     cap_tool_result_output,
     sanitize_tool_arguments,
     sanitize_tool_result_data,
+    strip_redaction_sentinels,
 )
 
 
@@ -118,3 +119,50 @@ def test_sanitize_tool_result_data_strips_inline_blobs_and_nested_arguments() ->
         "content": {"omitted": True, "byte_count": 13, "line_count": 1},
         "status": "pending",
     }
+
+
+def test_strip_redaction_sentinels_removes_sentinel_objects() -> None:
+    arguments = {
+        "path": "out.txt",
+        "content": {"omitted": True, "byte_count": 13, "line_count": 1},
+    }
+
+    stripped = strip_redaction_sentinels(arguments)
+
+    assert stripped["path"] == "out.txt"
+    assert stripped["content"] == ""
+
+
+def test_strip_redaction_sentinels_handles_nested_todos() -> None:
+    arguments = {
+        "todos": [
+            {
+                "content": {"omitted": True, "byte_count": 34, "line_count": 1},
+                "status": "pending",
+            },
+            {"content": "visible todo", "status": "completed"},
+        ],
+    }
+
+    stripped = strip_redaction_sentinels(arguments)
+
+    assert stripped["todos"][0]["content"] == ""
+    assert stripped["todos"][0]["status"] == "pending"
+    assert stripped["todos"][1]["content"] == "visible todo"
+
+
+def test_strip_redaction_sentinels_preserves_non_sentinel_dicts() -> None:
+    arguments = {
+        "config": {"verbose": True, "depth": 3},
+        "path": "/tmp/test",
+    }
+
+    stripped = strip_redaction_sentinels(arguments)
+
+    assert stripped["config"] == {"verbose": True, "depth": 3}
+    assert stripped["path"] == "/tmp/test"
+
+
+def test_strip_redaction_sentinels_returns_dict_for_non_dict_input() -> None:
+    assert strip_redaction_sentinels("not a dict") == {}  # type: ignore[arg-type]
+    assert strip_redaction_sentinels([]) == {}  # type: ignore[arg-type]
