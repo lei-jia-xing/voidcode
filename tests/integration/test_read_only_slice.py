@@ -2480,6 +2480,59 @@ def test_runtime_requests_approval_for_ast_grep_replace_when_policy_is_ask(tmp_p
     }
 
 
+def test_runtime_does_not_request_external_approval_for_ast_grep_external_path(
+    tmp_path: Path,
+) -> None:
+    runtime_request, runtime_class = _load_runtime_types()
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    config_module = importlib.import_module("voidcode.runtime.config")
+
+    policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="allow")
+    runtime_config = cast(Callable[..., object], config_module.RuntimeConfig)
+    permission_config = cast(
+        Callable[..., object],
+        config_module.ExternalDirectoryPermissionConfig,
+    )
+    policy_config = cast(Callable[..., object], config_module.ExternalDirectoryPolicy)
+
+    outside_file = tmp_path.parent / "external-ast-grep.py"
+    outside_file.write_text("print('outside')\n", encoding="utf-8")
+    runtime = cast(
+        RuntimeRunner,
+        cast(
+            object,
+            runtime_class(
+                workspace=tmp_path,
+                config=runtime_config(
+                    approval_mode="allow",
+                    permission=permission_config(
+                        read=policy_config(rules=(("*", "ask"),)),
+                    ),
+                ),
+                graph=_SingleToolGraph(
+                    "ast_grep_search",
+                    {"pattern": "print($X)", "path": str(outside_file), "lang": "python"},
+                ),
+                permission_policy=policy,
+            ),
+        ),
+    )
+
+    result = runtime.run(
+        runtime_request(prompt="external ast grep", session_id="ast-grep-external")
+    )
+    event_types = [event.event_type for event in result.events]
+    completed_event = next(
+        event for event in result.events if event.event_type == "runtime.tool_completed"
+    )
+
+    assert result.session.status == "completed"
+    assert "runtime.approval_requested" not in event_types
+    assert completed_event.payload["tool"] == "ast_grep_search"
+    assert completed_event.payload["status"] == "error"
+    assert "inside the workspace" in str(completed_event.payload["error"])
+
+
 def test_runtime_requests_external_read_approval_with_context_payload(tmp_path: Path) -> None:
     runtime_request, runtime_class = _load_runtime_types()
     permission_module = importlib.import_module("voidcode.runtime.permission")
@@ -2527,6 +2580,58 @@ def test_runtime_requests_external_read_approval_with_context_payload(tmp_path: 
     assert approval_event.payload["tool"] == "read_file"
     assert approval_event.payload["path_scope"] == "external"
     assert approval_event.payload["operation_class"] == "read"
+    assert approval_event.payload["matched_rule"] == "*"
+    assert approval_event.payload["policy_surface"] == "external_directory_read"
+    assert approval_event.payload["canonical_path"] == str(outside_file.resolve())
+
+
+def test_external_permission_unknown_user_tilde_rule_falls_back_to_later_rule(
+    tmp_path: Path,
+) -> None:
+    runtime_request, runtime_class = _load_runtime_types()
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    config_module = importlib.import_module("voidcode.runtime.config")
+
+    policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="allow")
+    runtime_config = cast(Callable[..., object], config_module.RuntimeConfig)
+    permission_config = cast(
+        Callable[..., object],
+        config_module.ExternalDirectoryPermissionConfig,
+    )
+    policy_config = cast(Callable[..., object], config_module.ExternalDirectoryPolicy)
+
+    outside_root = tmp_path.parent / "external-tilde-fallback-fixture"
+    outside_root.mkdir(parents=True, exist_ok=True)
+    outside_file = outside_root / "ref.txt"
+    outside_file.write_text("external\n", encoding="utf-8")
+
+    runtime = cast(
+        RuntimeRunner,
+        cast(
+            object,
+            runtime_class(
+                workspace=tmp_path,
+                config=runtime_config(
+                    approval_mode="allow",
+                    permission=permission_config(
+                        read=policy_config(
+                            rules=(("~voidcode_unknown_user_for_test/**", "allow"), ("*", "ask"))
+                        ),
+                    ),
+                ),
+                graph=_SingleToolGraph("read_file", {"filePath": str(outside_file)}),
+                permission_policy=policy,
+            ),
+        ),
+    )
+
+    waiting = runtime.run(
+        runtime_request(prompt="external read", session_id="external-tilde-fallback")
+    )
+    approval_event = waiting.events[-1]
+
+    assert waiting.session.status == "waiting"
+    assert approval_event.event_type == "runtime.approval_requested"
     assert approval_event.payload["matched_rule"] == "*"
     assert approval_event.payload["policy_surface"] == "external_directory_read"
     assert approval_event.payload["canonical_path"] == str(outside_file.resolve())

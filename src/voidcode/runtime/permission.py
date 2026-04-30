@@ -177,7 +177,10 @@ def _path_matches_rule(*, normalized_path: str, pattern: str) -> bool:
 
     expanded_pattern = pattern
     if pattern.startswith("~"):
-        expanded_pattern = Path(pattern).expanduser().as_posix()
+        try:
+            expanded_pattern = Path(pattern).expanduser().as_posix()
+        except RuntimeError:
+            return False
     else:
         expanded_pattern = pattern.replace("\\", "/")
 

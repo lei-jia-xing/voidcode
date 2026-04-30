@@ -274,6 +274,15 @@ _BUILTIN_TOOL_NAMES = frozenset(
         "write_file",
     }
 )
+_EXTERNAL_PATH_PRECHECK_KEYS: Mapping[str, tuple[str, ...]] = {
+    "edit": ("path",),
+    "glob": ("path",),
+    "grep": ("path",),
+    "list": ("path",),
+    "multi_edit": ("path", "filePath"),
+    "read_file": ("filePath", "path"),
+    "write_file": ("path",),
+}
 
 _SKILL_BINDING_SCOPE_KEYS = (
     "approval_mode",
@@ -2387,7 +2396,7 @@ class VoidCodeRuntime:
     def _candidate_paths_for_tool_call(tool_call: ToolCall) -> tuple[str, ...]:
         arguments = tool_call.arguments
         candidates: list[str] = []
-        for key in ("path", "filePath"):
+        for key in _EXTERNAL_PATH_PRECHECK_KEYS.get(tool_call.tool_name, ()):
             value = arguments.get(key)
             if isinstance(value, str) and value.strip():
                 candidates.append(value)
