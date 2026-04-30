@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -37,6 +38,13 @@ _DIRECT_REASONING_EFFORT_PROVIDERS = frozenset(
     {"openai", "anthropic", "google", "gemini", "vertex_ai", "litellm", "grok"}
 )
 _THINKING_DISABLED_EFFORTS = frozenset({"none", "off", "disable", "disabled"})
+_OPENCODE_GO_SYNTHETIC_TOOL_FEEDBACK_MODELS = frozenset(
+    {"minimax-m2.5", "minimax-m2.7", "qwen3.5-plus", "qwen3.6-plus"}
+)
+_SYNTHETIC_TOOL_FEEDBACK_PREFIX = "Completed tool calls for current request:"
+_CONTINUITY_SUMMARY_PREFIX = "Runtime continuity summary:"
+
+logger = logging.getLogger(__name__)
 
 
 def _usage_int(raw: object) -> int:
@@ -86,6 +94,10 @@ def _allow_openai_param(kwargs: dict[str, object], param: str) -> None:
     if param not in params:
         params.append(param)
     kwargs["allowed_openai_params"] = params
+
+
+def _message_size_chars(message: dict[str, object]) -> int:
+    return len(json.dumps(message, ensure_ascii=False, sort_keys=True, default=str))
 
 
 def _is_object_json_schema(schema: dict[str, object]) -> bool:
@@ -231,7 +243,10 @@ class LiteLLMBackendSingleAgentProvider:
     def _build_messages(self, request: ProviderTurnRequest) -> list[dict[str, object]]:
         assembled_context = request.assembled_context
         messages: list[dict[str, object]] = []
-        if request.provider_name == "opencode-go":
+        if (
+            request.provider_name == "opencode-go"
+            and request.model_name in _OPENCODE_GO_SYNTHETIC_TOOL_FEEDBACK_MODELS
+        ):
             tool_feedback_lines: list[str] = []
             for segment in assembled_context.segments:
                 if segment.role == "tool":
@@ -353,6 +368,75 @@ class LiteLLMBackendSingleAgentProvider:
             messages.append({"role": segment.role, "content": segment.content})
         return messages
 
+    @staticmethod
+    def _provider_request_diagnostics(
+        *,
+        messages: list[dict[str, object]],
+        request: ProviderTurnRequest,
+    ) -> dict[str, object]:
+        message_sizes = [_message_size_chars(message) for message in messages]
+        largest_index = (
+            max(range(len(message_sizes)), key=message_sizes.__getitem__) if messages else None
+        )
+        largest_message: dict[str, object] | None = None
+        if largest_index is not None:
+            largest = messages[largest_index]
+            largest_message = {
+                "index": largest_index,
+                "role": largest.get("role"),
+                "size_chars": message_sizes[largest_index],
+            }
+            content = largest.get("content")
+            if isinstance(content, str):
+                if content.startswith(_SYNTHETIC_TOOL_FEEDBACK_PREFIX):
+                    largest_message["source"] = "synthetic_tool_feedback"
+                elif content.startswith(_CONTINUITY_SUMMARY_PREFIX):
+                    largest_message["source"] = "continuity_summary"
+
+        synthetic_tool_feedback_size = 0
+        continuity_summary_size = 0
+        for message in messages:
+            content = message.get("content")
+            if not isinstance(content, str):
+                continue
+            if content.startswith(_SYNTHETIC_TOOL_FEEDBACK_PREFIX):
+                synthetic_tool_feedback_size += len(content)
+            if content.startswith(_CONTINUITY_SUMMARY_PREFIX):
+                continuity_summary_size += len(content)
+
+        context_window = request.context_window
+        return {
+            "message_count": len(messages),
+            "estimated_chars": sum(message_sizes),
+            "largest_message": largest_message,
+            "retained_tool_result_count": context_window.retained_tool_result_count,
+            "synthetic_tool_feedback_size_chars": synthetic_tool_feedback_size,
+            "continuity_summary_size_chars": continuity_summary_size,
+            "compacted": context_window.compacted,
+        }
+
+    def _log_provider_request_diagnostics(
+        self,
+        *,
+        messages: list[dict[str, object]],
+        request: ProviderTurnRequest,
+    ) -> None:
+        diagnostics = self._provider_request_diagnostics(messages=messages, request=request)
+        logger.debug(
+            "provider request diagnostics: provider=%s model=%s messages=%d "
+            "estimated_chars=%d retained_tool_results=%d synthetic_tool_feedback_size=%d "
+            "continuity_summary_size=%d largest_message=%s compacted=%s",
+            request.provider_name or self.name,
+            request.model_name or "unknown",
+            diagnostics["message_count"],
+            diagnostics["estimated_chars"],
+            diagnostics["retained_tool_result_count"],
+            diagnostics["synthetic_tool_feedback_size_chars"],
+            diagnostics["continuity_summary_size_chars"],
+            diagnostics["largest_message"],
+            diagnostics["compacted"],
+        )
+
     def _auth_kwargs(self) -> dict[str, object]:
         if self.config is None:
             return {}
@@ -451,9 +535,11 @@ class LiteLLMBackendSingleAgentProvider:
             if self.config is None or self.config.timeout_seconds is None
             else self.config.timeout_seconds
         )
+        messages = self._build_messages(request)
+        self._log_provider_request_diagnostics(messages=messages, request=request)
         payload: dict[str, object] = {
             "model": model_identifier,
-            "messages": self._build_messages(request),
+            "messages": messages,
             "stream": False,
             "api_base": self._api_base(),
             "timeout": timeout_seconds,
@@ -503,9 +589,11 @@ class LiteLLMBackendSingleAgentProvider:
             if self.config is None or self.config.timeout_seconds is None
             else self.config.timeout_seconds
         )
+        messages = self._build_messages(request)
+        self._log_provider_request_diagnostics(messages=messages, request=request)
         payload: dict[str, object] = {
             "model": model_identifier,
-            "messages": self._build_messages(request),
+            "messages": messages,
             "stream": True,
             "api_base": self._api_base(),
             "timeout": timeout_seconds,
