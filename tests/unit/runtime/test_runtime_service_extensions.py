@@ -12178,6 +12178,78 @@ def test_runtime_provider_stream_json_error_payload_maps_to_context_limit_withou
     assert fallback_events == []
 
 
+def test_runtime_provider_transient_failure_after_tool_is_resumable(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "sample.txt").write_text("sample contents", encoding="utf-8")
+    created_providers: list[_ScriptedTurnProvider] = []
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(
+                    (
+                        ProviderStreamEvent(
+                            kind="content",
+                            channel="tool",
+                            text=(
+                                '{"tool_name":"read_file",'
+                                '"arguments":{"filePath":"sample.txt"},'
+                                '"tool_call_id":"read-sample"}'
+                            ),
+                        ),
+                        ProviderStreamEvent(kind="done", done_reason="completed"),
+                    ),
+                    (
+                        ProviderStreamEvent(
+                            kind="error",
+                            channel="error",
+                            error="stream disconnect",
+                            error_kind="transient_failure",
+                        ),
+                        ProviderStreamEvent(kind="done", done_reason="error"),
+                    ),
+                    ProviderTurnResult(output="resumed complete"),
+                ),
+                created_providers=created_providers,
+            ),
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+        model_provider_registry=registry,
+    )
+
+    response = runtime.run(
+        RuntimeRequest(
+            prompt="read sample.txt",
+            session_id="provider-retry-session",
+            metadata={"provider_stream": True},
+        )
+    )
+
+    assert response.session.status == "failed"
+    assert response.events[-1].payload["provider_error_kind"] == "transient_failure"
+    snapshot = runtime.session_debug_snapshot(session_id="provider-retry-session")
+    assert snapshot.resumable is True
+    assert snapshot.resume_checkpoint_kind == "provider_failure_retryable"
+    assert snapshot.suggested_operator_action == "resume_provider_failure"
+    assert snapshot.last_tool is not None
+    assert snapshot.last_tool.tool_name == "read_file"
+
+    resumed = runtime.resume("provider-retry-session")
+
+    assert resumed.session.status == "completed"
+    assert resumed.output == "resumed complete"
+    assert created_providers[0].requests[-1].tool_results
+    assert created_providers[0].requests[-1].tool_results[0].tool_name == "read_file"
+    tool_completed_events = [
+        event for event in resumed.events if event.event_type == "runtime.tool_completed"
+    ]
+    assert len(tool_completed_events) == 1
+
+
 def test_runtime_fallback_event_preserves_provider_error_details(tmp_path: Path) -> None:
     registry = ModelProviderRegistry(
         providers={

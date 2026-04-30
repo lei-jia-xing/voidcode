@@ -197,7 +197,9 @@ class _SQLitePolicy:
 @final
 class SqliteSessionStore:
     _database_path: Path | None
-    _RESUME_CHECKPOINT_KINDS = frozenset({"approval_wait", "question_wait", "terminal"})
+    _RESUME_CHECKPOINT_KINDS = frozenset(
+        {"approval_wait", "question_wait", "provider_failure_retryable", "terminal"}
+    )
     _sqlite_policy = _SQLitePolicy()
 
     _CANONICAL_SCHEMA: dict[str, tuple[tuple[str, str, int, str | None, int], ...]] = {
@@ -1084,7 +1086,7 @@ class SqliteSessionStore:
                     )
                 ),
                 pending_question_json=None,
-                resume_checkpoint=self._terminal_resume_checkpoint(
+                resume_checkpoint=self._run_resume_checkpoint(
                     request=request,
                     response=response,
                 ),
@@ -1586,6 +1588,36 @@ class SqliteSessionStore:
         }
 
     @staticmethod
+    def _provider_failure_retryable_resume_checkpoint(
+        *, request: RuntimeRequest, response: RuntimeResponse, failure_event: EventEnvelope
+    ) -> dict[str, object]:
+        payload = failure_event.payload
+        last_tool: dict[str, object] = next(
+            (
+                event.payload
+                for event in reversed(response.events)
+                if event.event_type == "runtime.tool_completed"
+                and event.payload.get("status") != "error"
+            ),
+            cast(dict[str, object], {}),
+        )
+        return {
+            **SqliteSessionStore._resume_checkpoint_base(
+                request=request,
+                response=response,
+                kind="provider_failure_retryable",
+            ),
+            "provider_error_kind": payload.get("provider_error_kind"),
+            "provider": payload.get("provider"),
+            "model": payload.get("model"),
+            "fallback_exhausted": payload.get("fallback_exhausted"),
+            "provider_error_details": payload.get("provider_error_details"),
+            "failure_event_sequence": failure_event.sequence,
+            "last_successful_tool": last_tool.get("tool"),
+            "last_successful_tool_call_id": last_tool.get("tool_call_id"),
+        }
+
+    @staticmethod
     def _terminal_resume_checkpoint(
         *, request: RuntimeRequest, response: RuntimeResponse
     ) -> dict[str, object]:
@@ -1593,6 +1625,43 @@ class SqliteSessionStore:
             request=request,
             response=response,
             kind="terminal",
+        )
+
+    @staticmethod
+    def _run_resume_checkpoint(
+        *, request: RuntimeRequest, response: RuntimeResponse
+    ) -> dict[str, object]:
+        if response.session.status != "failed":
+            return SqliteSessionStore._terminal_resume_checkpoint(
+                request=request,
+                response=response,
+            )
+        failure_event = next(
+            (event for event in reversed(response.events) if event.event_type == "runtime.failed"),
+            None,
+        )
+        if failure_event is None:
+            return SqliteSessionStore._terminal_resume_checkpoint(
+                request=request,
+                response=response,
+            )
+        if failure_event.payload.get("provider_error_kind") != "transient_failure":
+            return SqliteSessionStore._terminal_resume_checkpoint(
+                request=request,
+                response=response,
+            )
+        if not any(
+            event.event_type == "runtime.tool_completed" and event.payload.get("status") != "error"
+            for event in response.events
+        ):
+            return SqliteSessionStore._terminal_resume_checkpoint(
+                request=request,
+                response=response,
+            )
+        return SqliteSessionStore._provider_failure_retryable_resume_checkpoint(
+            request=request,
+            response=response,
+            failure_event=failure_event,
         )
 
     @staticmethod

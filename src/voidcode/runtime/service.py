@@ -2428,8 +2428,16 @@ class VoidCodeRuntime:
             pending_approval=pending_approval,
             pending_question=pending_question,
         )
+        checkpoint_kind = (
+            cast(str, resume_checkpoint.get("kind"))
+            if isinstance(resume_checkpoint, dict)
+            and isinstance(resume_checkpoint.get("kind"), str)
+            else None
+        )
         terminal = result.session.status in {"completed", "failed"}
-        resumable = result.session.status == "waiting"
+        resumable = result.session.status == "waiting" or (
+            result.session.status == "failed" and checkpoint_kind == "provider_failure_retryable"
+        )
         replayable = bool(result.transcript) or result.output is not None or terminal
         last_relevant_event = self._debug_event(
             next(
@@ -2475,6 +2483,7 @@ class VoidCodeRuntime:
             pending_approval=pending_approval,
             pending_question=pending_question,
             active=active,
+            resumable=resumable,
             terminal=terminal,
             failure=failure,
         )
@@ -2487,12 +2496,7 @@ class VoidCodeRuntime:
             resumable=resumable,
             replayable=replayable,
             terminal=terminal,
-            resume_checkpoint_kind=(
-                cast(str, resume_checkpoint.get("kind"))
-                if isinstance(resume_checkpoint, dict)
-                and isinstance(resume_checkpoint.get("kind"), str)
-                else None
-            ),
+            resume_checkpoint_kind=checkpoint_kind,
             pending_approval=(
                 RuntimeSessionDebugPendingApproval(
                     request_id=pending_approval.request_id,
@@ -3748,7 +3752,7 @@ class VoidCodeRuntime:
             if pending_question is not None and checkpoint_kind != "question_wait":
                 return "pending question does not match the persisted resume checkpoint"
         if result.session.status in {"completed", "failed"}:
-            if checkpoint_kind not in {None, "terminal"}:
+            if checkpoint_kind not in {None, "provider_failure_retryable", "terminal"}:
                 return "terminal session resume checkpoint does not match persisted terminal state"
             if pending_approval is not None or pending_question is not None:
                 return "terminal session still has pending approval/question state"
@@ -3792,6 +3796,7 @@ class VoidCodeRuntime:
         pending_approval: PendingApproval | None,
         pending_question: PendingQuestion | None,
         active: bool,
+        resumable: bool,
         terminal: bool,
         failure: RuntimeSessionDebugFailure | None,
     ) -> tuple[str, str]:
@@ -3814,6 +3819,16 @@ class VoidCodeRuntime:
         if active:
             return ("wait", "Session is currently active in the runtime.")
         if terminal and failure is not None:
+            if failure.classification == "provider_failure" and current_status == "failed":
+                if not resumable:
+                    return (
+                        "inspect_failure",
+                        f"Inspect {failure.classification} and rerun if needed.",
+                    )
+                return (
+                    "resume_provider_failure",
+                    "Resume this session to continue from the provider failure checkpoint.",
+                )
             return ("inspect_failure", f"Inspect {failure.classification} and rerun if needed.")
         if terminal:
             return ("replay", "Session is terminal; replay or inspect transcript if needed.")
@@ -3927,6 +3942,12 @@ class VoidCodeRuntime:
     ) -> RuntimeResponse:
         validate_session_id(session_id)
         if approval_request_id is None and approval_decision is None:
+            checkpoint = self._load_resume_checkpoint(session_id=session_id)
+            if checkpoint is not None and checkpoint.get("kind") == "provider_failure_retryable":
+                return self._resume_provider_failure_response(
+                    session_id=session_id,
+                    checkpoint=checkpoint,
+                )
             response = self._load_stored_response(session_id=session_id)
             self._background_task_supervisor.reconcile_parent_background_task_events_for_session(
                 parent_session_id=session_id
@@ -3958,6 +3979,28 @@ class VoidCodeRuntime:
     ) -> Iterator[RuntimeStreamChunk]:
         validate_session_id(session_id)
         if approval_request_id is None and approval_decision is None:
+            checkpoint = self._load_resume_checkpoint(session_id=session_id)
+            if checkpoint is not None and checkpoint.get("kind") == "provider_failure_retryable":
+                run_id = os.urandom(8).hex()
+                abort_signal = self._register_active_session_id(
+                    session_id,
+                    run_id=run_id,
+                    metadata={
+                        "resume": True,
+                        "resume_kind": "provider_failure_retryable",
+                        "run_id": run_id,
+                    },
+                )
+                try:
+                    yield from self._resume_provider_failure_stream(
+                        session_id=session_id,
+                        checkpoint=checkpoint,
+                        run_id=run_id,
+                        abort_signal=abort_signal,
+                    )
+                finally:
+                    self._unregister_active_session_id(session_id, run_id=run_id)
+                return
             response = self._load_stored_response(session_id=session_id)
             self._background_task_supervisor.reconcile_parent_background_task_events_for_session(
                 parent_session_id=session_id
@@ -4559,6 +4602,29 @@ class VoidCodeRuntime:
 
     def _load_resume_checkpoint(self, *, session_id: str) -> dict[str, object] | None:
         return self._resume_coordinator.load_resume_checkpoint(session_id=session_id)
+
+    def _resume_provider_failure_response(
+        self, *, session_id: str, checkpoint: dict[str, object]
+    ) -> RuntimeResponse:
+        return self._resume_coordinator.resume_provider_failure_response(
+            session_id=session_id,
+            checkpoint=checkpoint,
+        )
+
+    def _resume_provider_failure_stream(
+        self,
+        *,
+        session_id: str,
+        checkpoint: dict[str, object],
+        run_id: str | None = None,
+        abort_signal: ProviderAbortSignal | None = None,
+    ) -> Iterator[RuntimeStreamChunk]:
+        yield from self._resume_coordinator.resume_provider_failure_stream(
+            session_id=session_id,
+            checkpoint=checkpoint,
+            run_id=run_id,
+            abort_signal=abort_signal,
+        )
 
     @staticmethod
     def _tool_results_from_checkpoint(raw_tool_results: list[object]) -> tuple[ToolResult, ...]:
