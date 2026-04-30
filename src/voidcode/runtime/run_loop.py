@@ -61,14 +61,73 @@ def _is_abort_requested(request: GraphRunRequest) -> bool:
     return bool(request.abort_signal is not None and request.abort_signal.cancelled)
 
 
-def _abort_reason(request: GraphRunRequest) -> str | None:
-    reason = getattr(request.abort_signal, "reason", None)
+def _is_abort_signal_requested(abort_signal: ProviderAbortSignal | None) -> bool:
+    return bool(abort_signal is not None and abort_signal.cancelled)
+
+
+def _abort_signal_reason(abort_signal: ProviderAbortSignal | None) -> str | None:
+    reason = getattr(abort_signal, "reason", None)
     return reason if isinstance(reason, str) and reason else None
+
+
+def _abort_reason(request: GraphRunRequest) -> str | None:
+    return _abort_signal_reason(request.abort_signal)
 
 
 class RuntimeRunLoopCoordinator:
     def __init__(self, runtime: VoidCodeRuntime) -> None:
         self._runtime = runtime
+
+    def _started_tool_abort_chunks(
+        self,
+        *,
+        session: SessionState,
+        sequence: int,
+        tool_call: ToolCall,
+        tool_call_id: str,
+        abort_signal: ProviderAbortSignal | None,
+    ) -> tuple[RuntimeStreamChunk, RuntimeStreamChunk]:
+        runtime = self._runtime
+        sanitized_args = sanitize_tool_arguments(dict(tool_call.arguments))
+        failed_display = build_tool_display(tool_call.tool_name, sanitized_args)
+        failed_status = build_tool_status(
+            tool_call.tool_name,
+            tool_call_id,
+            phase="failed",
+            status="failed",
+            display=failed_display,
+        )
+        completed_chunk = RuntimeStreamChunk(
+            kind="event",
+            session=session,
+            event=EventEnvelope(
+                session_id=session.session.id,
+                sequence=sequence + 1,
+                event_type="runtime.tool_completed",
+                source="tool",
+                payload={
+                    "tool": tool_call.tool_name,
+                    "tool_call_id": tool_call_id,
+                    "arguments": sanitized_args,
+                    "status": "error",
+                    "error": "run interrupted",
+                    "display": failed_display,
+                    "tool_status": failed_status,
+                },
+            ),
+        )
+        failed_chunk = runtime._failed_chunk(
+            session=session,
+            sequence=sequence + 2,
+            error="run interrupted",
+            payload={
+                "kind": "interrupted",
+                "cancelled": True,
+                "run_id": runtime._run_id_from_session_metadata(session.metadata),
+                "reason": _abort_signal_reason(abort_signal),
+            },
+        )
+        return completed_chunk, failed_chunk
 
     def execute_approved_tool_call(
         self,
@@ -145,6 +204,16 @@ class RuntimeRunLoopCoordinator:
                 },
             ),
         )
+
+        if _is_abort_signal_requested(abort_signal):
+            yield from self._started_tool_abort_chunks(
+                session=session,
+                sequence=sequence,
+                tool_call=tool_call,
+                tool_call_id=tool_call_id,
+                abort_signal=abort_signal,
+            )
+            return
 
         tool_exception_recovery_enabled = (
             runtime._effective_runtime_config_from_metadata(session.metadata).execution_engine
@@ -934,16 +1003,12 @@ class RuntimeRunLoopCoordinator:
                 ),
             )
             if _is_abort_requested(graph_request):
-                yield runtime._failed_chunk(
+                yield from self._started_tool_abort_chunks(
                     session=session,
-                    sequence=sequence + 1,
-                    error="run interrupted",
-                    payload={
-                        "kind": "interrupted",
-                        "cancelled": True,
-                        "run_id": runtime._run_id_from_session_metadata(session.metadata),
-                        "reason": _abort_reason(graph_request),
-                    },
+                    sequence=sequence,
+                    tool_call=plan_tool_call,
+                    tool_call_id=tool_call_id,
+                    abort_signal=graph_request.abort_signal,
                 )
                 return
             try:

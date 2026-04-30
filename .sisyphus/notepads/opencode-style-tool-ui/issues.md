@@ -446,3 +446,17 @@ Added terminal `runtime.tool_completed` with `payload.status="error"` and `paylo
 ### Fix pattern
 - `execute_approved_tool_call()` accepts the existing `ProviderAbortSignal | None`, and `resume.py` passes `graph_request.abort_signal` into it.
 - Regression coverage uses a custom non-read-only tool invoked through the real approval resume path; it observes the context abort signal, then cancellation mutates that same signal with the expected reason.
+
+---
+
+## P2: Started-tool aborts must close tool UI before failure
+
+**Date:** 2026-04-30
+
+### Problem
+- Cancellation after `runtime.tool_started` but before `tool.invoke(...)` emitted only `runtime.failed`, leaving clients with a running tool card and no terminal `runtime.tool_completed` status.
+- Direct approved-tool resume had the same UI gap and could still invoke an already-cancelled approved tool.
+
+### Fix pattern
+- Started-tool abort branches now emit failed `runtime.tool_completed` with `display` and `tool_status` before the interrupted `runtime.failed` event.
+- Approved-tool resume checks the passed abort signal immediately after `runtime.tool_started` and returns before any side-effecting invoke when cancellation is already requested.

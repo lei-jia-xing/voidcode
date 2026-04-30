@@ -334,6 +334,23 @@ class _AbortCaptureTool:
         )
 
 
+class _AbortBeforeInvokeTool:
+    definition = ToolDefinition(
+        name="write_file",
+        description="Probe that must not run after a started-tool abort",
+        input_schema={"type": "object"},
+        read_only=False,
+    )
+
+    def __init__(self) -> None:
+        self.invoke_count = 0
+
+    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
+        _ = call, workspace
+        self.invoke_count += 1
+        return ToolResult(tool_name=self.definition.name, status="ok", content="invoked")
+
+
 class _QuestionThenDoneGraph:
     def step(
         self,
@@ -1890,6 +1907,61 @@ def test_runtime_cancel_session_interrupts_active_run(tmp_path: Path) -> None:
     assert failed_events[-1].payload["reason"] == "test cancellation"
 
 
+def test_runtime_cancel_after_tool_started_emits_terminal_tool_completed(
+    tmp_path: Path,
+) -> None:
+    tool = _AbortBeforeInvokeTool()
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_AbortSignalApprovalGraph(),
+        tool_registry=ToolRegistry.from_tools([tool]),
+        permission_policy=PermissionPolicy(mode="allow"),
+    )
+    stream = runtime.run_stream(RuntimeRequest(prompt="abort after start", session_id="tool-abort"))
+    chunks: list[RuntimeStreamChunk] = []
+
+    for chunk in stream:
+        chunks.append(chunk)
+        if chunk.event is not None and chunk.event.event_type == "runtime.tool_started":
+            break
+
+    active_metadata = _private_attr(runtime, "_active_session_metadata")("tool-abort")
+    assert isinstance(active_metadata, dict)
+    run_id = cast(str, active_metadata["run_id"])
+
+    result = runtime.cancel_session("tool-abort", run_id=run_id, reason="stop before invoke")
+    chunks.extend(stream)
+
+    event_types = [chunk.event.event_type for chunk in chunks if chunk.event is not None]
+    completed_events = [
+        chunk.event
+        for chunk in chunks
+        if chunk.event is not None and chunk.event.event_type == "runtime.tool_completed"
+    ]
+    failed_events = [
+        chunk.event
+        for chunk in chunks
+        if chunk.event is not None and chunk.event.event_type == "runtime.failed"
+    ]
+    assert result.status == "interrupted"
+    assert tool.invoke_count == 0
+    assert (
+        event_types.index("runtime.tool_started")
+        < event_types.index("runtime.tool_completed")
+        < event_types.index("runtime.failed")
+    )
+    assert completed_events[-1].payload["tool"] == "write_file"
+    assert completed_events[-1].payload["status"] == "error"
+    assert completed_events[-1].payload["error"] == "run interrupted"
+    tool_status = cast(dict[str, object], completed_events[-1].payload["tool_status"])
+    assert tool_status["phase"] == "failed"
+    assert tool_status["status"] == "failed"
+    assert failed_events[-1].payload["kind"] == "interrupted"
+    assert failed_events[-1].payload["cancelled"] is True
+    assert failed_events[-1].payload["run_id"] == run_id
+    assert failed_events[-1].payload["reason"] == "stop before invoke"
+
+
 def test_runtime_cancel_session_preserves_older_overlapping_run_after_newer_run_finishes(
     tmp_path: Path,
 ) -> None:
@@ -2049,6 +2121,70 @@ def test_runtime_approval_resume_tool_context_receives_abort_signal(tmp_path: Pa
     assert failed_events
     assert failed_events[-1].payload["kind"] == "interrupted"
     assert failed_events[-1].payload["run_id"] == run_id
+
+
+def test_runtime_cancel_after_approved_tool_started_skips_invoke_and_closes_tool(
+    tmp_path: Path,
+) -> None:
+    tool = _AbortBeforeInvokeTool()
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_AbortSignalApprovalGraph(),
+        tool_registry=ToolRegistry.from_tools([tool]),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+    waiting = runtime.run(RuntimeRequest(prompt="approved abort", session_id="approved-abort"))
+    approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
+    stream = runtime.resume_stream(
+        "approved-abort",
+        approval_request_id=approval_request_id,
+        approval_decision="allow",
+    )
+    chunks: list[RuntimeStreamChunk] = []
+
+    for chunk in stream:
+        chunks.append(chunk)
+        if chunk.event is not None and chunk.event.event_type == "runtime.tool_started":
+            break
+
+    active_metadata = _private_attr(runtime, "_active_session_metadata")("approved-abort")
+    assert isinstance(active_metadata, dict)
+    run_id = cast(str, active_metadata["run_id"])
+
+    result = runtime.cancel_session(
+        "approved-abort", run_id=run_id, reason="approved stop before invoke"
+    )
+    chunks.extend(stream)
+
+    event_types = [chunk.event.event_type for chunk in chunks if chunk.event is not None]
+    completed_events = [
+        chunk.event
+        for chunk in chunks
+        if chunk.event is not None and chunk.event.event_type == "runtime.tool_completed"
+    ]
+    failed_events = [
+        chunk.event
+        for chunk in chunks
+        if chunk.event is not None and chunk.event.event_type == "runtime.failed"
+    ]
+    assert result.status == "interrupted"
+    assert tool.invoke_count == 0
+    assert (
+        event_types.index("runtime.tool_started")
+        < event_types.index("runtime.tool_completed")
+        < event_types.index("runtime.failed")
+    )
+    assert completed_events[-1].payload["tool"] == "write_file"
+    assert completed_events[-1].payload["status"] == "error"
+    assert completed_events[-1].payload["error"] == "run interrupted"
+    tool_status = cast(dict[str, object], completed_events[-1].payload["tool_status"])
+    assert tool_status["phase"] == "failed"
+    assert tool_status["status"] == "failed"
+    assert failed_events[-1].payload["kind"] == "interrupted"
+    assert failed_events[-1].payload["cancelled"] is True
+    assert failed_events[-1].payload["run_id"] == run_id
+    assert failed_events[-1].payload["reason"] == "approved stop before invoke"
 
 
 def test_runtime_cancel_session_returns_not_active_for_idle_session(tmp_path: Path) -> None:
