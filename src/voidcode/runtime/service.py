@@ -72,6 +72,16 @@ from ..tools.skill import SkillTool
 from ..tools.task import TaskTool
 from .acp import AcpAdapter, AcpAdapterState, build_acp_adapter
 from .background_tasks import RuntimeBackgroundTaskSupervisor
+from .bundle import (
+    SessionBundle,
+    SessionBundleFormat,
+    SessionBundleImportResult,
+    SessionBundleOptions,
+    apply_session_bundle,
+    build_session_bundle,
+    read_session_bundle,
+    write_session_bundle,
+)
 from .config import (
     ExecutionEngineName,
     RuntimeAgentConfig,
@@ -2549,6 +2559,91 @@ class VoidCodeRuntime:
 
     def storage_diagnostics(self) -> dict[str, object]:
         return self._session_store.storage_diagnostics(workspace=self._workspace)
+
+    def export_session_bundle(
+        self,
+        *,
+        session_id: str,
+        options: SessionBundleOptions | None = None,
+    ) -> SessionBundle:
+        validate_session_id(session_id)
+        _ = self._load_session_result(session_id=session_id)
+        return build_session_bundle(
+            session_store=self._session_store,
+            workspace=self._workspace,
+            session_id=session_id,
+            options=options or SessionBundleOptions(),
+            storage_diagnostics=self.storage_diagnostics(),
+            config_summary=self._session_bundle_config_summary(session_id=session_id),
+            provider_summary=self._session_bundle_provider_summary(session_id=session_id),
+        )
+
+    def export_session_bundle_file(
+        self,
+        *,
+        session_id: str,
+        output_path: Path,
+        options: SessionBundleOptions | None = None,
+        fmt: str | None = None,
+    ) -> SessionBundle:
+        bundle = self.export_session_bundle(session_id=session_id, options=options)
+        if fmt is not None and fmt not in {"zip", "json"}:
+            raise ValueError(f"unsupported session bundle format: {fmt!r}")
+        _ = write_session_bundle(
+            bundle,
+            path=output_path,
+            fmt=cast(SessionBundleFormat | None, fmt),
+        )
+        return bundle
+
+    def import_session_bundle_file(
+        self,
+        *,
+        bundle_path: Path,
+        dry_run: bool = False,
+    ) -> SessionBundleImportResult:
+        bundle = read_session_bundle(bundle_path)
+        return apply_session_bundle(
+            bundle,
+            session_store=self._session_store,
+            workspace=self._workspace,
+            dry_run=dry_run,
+        )
+
+    def _session_bundle_config_summary(self, *, session_id: str) -> dict[str, object]:
+        effective_config = self.effective_runtime_config(session_id=session_id)
+        return {
+            "session_id": session_id,
+            "approval_mode": effective_config.approval_mode,
+            "model": effective_config.model,
+            "execution_engine": effective_config.execution_engine,
+            "max_steps": effective_config.max_steps,
+            "reasoning_effort": getattr(effective_config, "reasoning_effort", None),
+            "agent": serialize_runtime_agent_config(getattr(effective_config, "agent", None)),
+            "provider_fallback": serialize_provider_fallback_config(
+                getattr(effective_config, "provider_fallback", None)
+            ),
+            "resolved_provider": resolved_provider_snapshot(
+                getattr(effective_config, "resolved_provider", None)
+            ),
+        }
+
+    def _session_bundle_provider_summary(self, *, session_id: str) -> dict[str, object]:
+        readiness = self.provider_readiness(session_id=session_id)
+        return {
+            "provider": readiness.provider,
+            "model": readiness.model,
+            "configured": readiness.configured,
+            "ok": readiness.ok,
+            "status": readiness.status,
+            "guidance": readiness.guidance,
+            "auth_present": readiness.auth_present,
+            "streaming_configured": readiness.streaming_configured,
+            "streaming_supported": readiness.streaming_supported,
+            "context_window": readiness.context_window,
+            "max_output_tokens": readiness.max_output_tokens,
+            "fallback_chain": list(readiness.fallback_chain),
+        }
 
     def prune_runtime_storage(
         self,
