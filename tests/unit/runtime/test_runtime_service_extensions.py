@@ -10,6 +10,7 @@ import sqlite3
 import sys
 import threading
 import time
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, cast
@@ -86,7 +87,7 @@ from voidcode.runtime.mcp import (
     McpToolCallResult,
     McpToolDescriptor,
 )
-from voidcode.runtime.permission import PermissionPolicy
+from voidcode.runtime.permission import PendingApproval, PermissionPolicy
 from voidcode.runtime.provider_protocol import (
     ProviderExecutionError,
     ProviderStreamEvent,
@@ -259,6 +260,23 @@ class _BlockingApprovalResumeGraph:
         if not self.release_resume.wait(timeout=2.0):
             raise RuntimeError("resume was not released")
         return _StubStep(output="done", is_finished=True)
+
+
+class _DivergentApprovalReplayGraph:
+    def step(
+        self,
+        request: GraphRunRequest,
+        tool_results: tuple[object, ...],
+        *,
+        session: SessionState,
+    ) -> _StubStep:
+        _ = request, tool_results, session
+        return _StubStep(
+            tool_call=ToolCall(
+                tool_name="write_file",
+                arguments={"path": "danger.txt", "content": "divergent"},
+            )
+        )
 
 
 class _QuestionThenDoneGraph:
@@ -1622,6 +1640,95 @@ def test_runtime_session_debug_snapshot_reports_failure_classification_and_last_
     assert snapshot.last_tool is None
     assert snapshot.suggested_operator_action == "inspect_failure"
     assert snapshot.operator_guidance == "Inspect approval_denied and rerun if needed."
+
+
+def test_runtime_denies_divergent_legacy_approval_replay_without_fresh_permission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+    runtime_config_metadata = cast(
+        Callable[[], dict[str, object]],
+        _private_attr(runtime, "_runtime_config_metadata"),
+    )
+    prepare_provider_context_window = cast(
+        Callable[..., RuntimeContextWindow],
+        _private_attr(runtime, "_prepare_provider_context_window"),
+    )
+    assemble_provider_context = cast(
+        Callable[..., object],
+        _private_attr(runtime, "_assemble_provider_context"),
+    )
+    execute_graph_loop = cast(
+        Callable[..., Iterator[Any]],
+        _private_attr(runtime, "_execute_graph_loop"),
+    )
+    session_metadata = {
+        "runtime_config": runtime_config_metadata(),
+    }
+    session = SessionState(
+        session=SessionRef(id="legacy-deny-divergent"),
+        status="running",
+        turn=1,
+        metadata=session_metadata,
+    )
+    tool_registry = ToolRegistry.with_defaults()
+    graph_request = GraphRunRequest(
+        session=session,
+        prompt="write danger.txt",
+        available_tools=tool_registry.definitions(),
+        context_window=prepare_provider_context_window(
+            prompt="write danger.txt",
+            tool_results=(),
+            session_metadata=session.metadata,
+        ),
+        assembled_context=assemble_provider_context(
+            prompt="write danger.txt",
+            tool_results=(),
+            session_metadata=session.metadata,
+        ),
+        metadata={"provider_attempt": 0},
+    )
+    pending = PendingApproval(
+        request_id="approval-original",
+        tool_name="write_file",
+        arguments={"path": "danger.txt", "content": "original"},
+        target_summary="write_file danger.txt",
+        reason="non-read-only tool invocation",
+        policy_mode="ask",
+    )
+
+    def _fail_fresh_permission(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("denied divergent approval replay must not ask fresh permission")
+
+    monkeypatch.setattr(runtime, "_resolve_permission", _fail_fresh_permission)
+
+    chunks: list[Any] = list(
+        execute_graph_loop(
+            graph=_DivergentApprovalReplayGraph(),
+            tool_registry=tool_registry,
+            session=session,
+            sequence=0,
+            graph_request=graph_request,
+            tool_results=[],
+            approval_resolution=(pending, "deny"),
+            permission_policy=PermissionPolicy(mode="ask"),
+        )
+    )
+    events = [chunk.event for chunk in chunks if chunk.event is not None]
+
+    assert [event.event_type for event in events] == [
+        "graph.tool_request_created",
+        "runtime.tool_lookup_succeeded",
+        "runtime.approval_resolved",
+        "runtime.failed",
+    ]
+    assert events[-2].payload == {"request_id": "approval-original", "decision": "deny"}
+    assert events[-1].payload == {"error": "permission denied for tool: write_file"}
+    assert chunks[-1].session.status == "failed"
+    assert (tmp_path / "danger.txt").exists() is False
 
 
 def test_runtime_session_debug_snapshot_classifies_provider_failure(tmp_path: Path) -> None:

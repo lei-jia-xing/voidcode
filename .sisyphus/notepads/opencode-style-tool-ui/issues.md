@@ -411,3 +411,17 @@ Added terminal `runtime.tool_completed` with `payload.status="error"` and `paylo
 - Approval resume now reconstructs the exact persisted `PendingApproval` tool call, emits `runtime.approval_resolved`, executes that tool once through normal hooks/display/status metadata, appends the result, and only then resumes the graph with the tool result.
 - After the direct approved tool result is appended, resume should recompute context/continuity for the next provider turn instead of reinjecting stale pre-approval continuity.
 - Frontend parser marks the matching tool row `pending` on `runtime.approval_requested` so approval-blocked tools do not look indefinitely running.
+
+---
+
+## P1: Denied approval replay must stay terminal on divergence
+
+**Date:** 2026-04-30
+
+### Problem
+- The legacy `execute_graph_loop(..., approval_resolution=...)` path treated any divergent replayed tool call as a fresh permission check, even when the user had denied the original pending approval.
+- For `decision == "deny"`, that can turn a terminal denial into another approval/tool flow and violates the safety expectation that denial ends the approval resume.
+
+### Fix pattern
+- Divergent replay now preserves denial by emitting the original `runtime.approval_resolved` and `runtime.failed` outcome immediately.
+- Only divergent `allow` decisions may fall back to the older fresh permission check behavior for compatibility with older paths.
