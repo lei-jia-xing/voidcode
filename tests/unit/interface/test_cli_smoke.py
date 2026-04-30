@@ -15,6 +15,8 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+from voidcode.runtime.events import runtime_reasoning_part_payload
+
 from .._paths import with_src_pythonpath
 
 
@@ -959,6 +961,87 @@ def test_run_command_forwards_reasoning_effort_flag_to_metadata_and_config() -> 
     assert request.metadata["reasoning_effort"] == "high"
 
 
+def test_run_command_show_thinking_flag_does_not_persist_request_metadata() -> None:
+    cli = importlib.import_module("voidcode.cli")
+    workspace = Path("/tmp/demo-workspace")
+    config = SimpleNamespace(approval_mode="allow")
+    chunks = (
+        _make_chunk(
+            session_id="demo-session",
+            status="completed",
+            event=_runtime_event("runtime.request_received", prompt="read README.md"),
+        ),
+        _make_chunk(session_id="demo-session", status="completed", output="done\n"),
+    )
+
+    with patch.object(cli, "load_runtime_config", autospec=True, return_value=config):
+        with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+            runtime_class.return_value.run_stream.return_value = iter(chunks)
+            result = cli.main(
+                [
+                    "run",
+                    "read README.md",
+                    "--workspace",
+                    str(workspace),
+                    "--show-thinking",
+                ]
+            )
+
+    assert result == 0
+    request = runtime_class.return_value.run_stream.call_args.args[0]
+    assert "show_thinking" not in request.metadata
+
+
+def test_run_json_redacts_reasoning_by_default_and_shows_with_flag(capsys: Any) -> None:
+    cli = importlib.import_module("voidcode.cli")
+    workspace = Path("/tmp/demo-workspace")
+    config = SimpleNamespace(approval_mode="allow")
+
+    def _chunks(*, show_thinking: bool = False) -> tuple[_StubChunk, ...]:
+        reasoning_payload = runtime_reasoning_part_payload(text="private chain")
+        return (
+            _make_chunk(
+                session_id="demo-session",
+                status="completed",
+                event=_runtime_event(
+                    "runtime.reasoning_part",
+                    **reasoning_payload,
+                ),
+                metadata={"show_thinking": show_thinking},
+            ),
+            _make_chunk(session_id="demo-session", status="completed", output="answer\n"),
+        )
+
+    with patch.object(cli, "load_runtime_config", autospec=True, return_value=config):
+        with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+            runtime_class.return_value.run_stream.return_value = iter(_chunks())
+            assert cli.main(["run", "think", "--workspace", str(workspace), "--json"]) == 0
+    redacted = json.loads(capsys.readouterr().out)
+    assert redacted["events"][0]["payload"]["text_omitted"] is True
+    assert redacted["events"][0]["payload"]["preview_omitted"] is True
+    assert "private chain" not in json.dumps(redacted)
+
+    with patch.object(cli, "load_runtime_config", autospec=True, return_value=config):
+        with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+            runtime_class.return_value.run_stream.return_value = iter(_chunks(show_thinking=True))
+            assert (
+                cli.main(
+                    [
+                        "run",
+                        "think",
+                        "--workspace",
+                        str(workspace),
+                        "--json",
+                        "--show-thinking",
+                    ]
+                )
+                == 0
+            )
+    shown = json.loads(capsys.readouterr().out)
+    assert shown["events"][0]["payload"]["text"] == "private chain"
+    assert shown["events"][0]["payload"]["preview"] == "private chain"
+
+
 def test_run_command_omits_reasoning_effort_metadata_when_flag_absent() -> None:
     cli = importlib.import_module("voidcode.cli")
     workspace = Path("/tmp/demo-workspace")
@@ -1779,6 +1862,15 @@ def test_config_show_outputs_workspace_effective_config() -> None:
             "context_window": None,
             "max_output_tokens": None,
             "fallback_chain": ["repo/model"],
+            "reasoning_controls": {
+                "reasoning_effort_requested": True,
+                "reasoning_effort": "medium",
+                "status": "best_effort",
+                "forwarded": True,
+                "translated": False,
+                "ignored": False,
+                "reason": "provider_metadata_unknown",
+            },
         },
         "context_budget": {"context_window": None, "max_output_tokens": None},
         "mcp": _expected_unconfigured_mcp_status(),
@@ -2010,6 +2102,15 @@ def test_config_show_outputs_resumed_session_effective_config() -> None:
             "context_window": None,
             "max_output_tokens": None,
             "fallback_chain": ["repo/model", "repo/session-fallback"],
+            "reasoning_controls": {
+                "reasoning_effort_requested": True,
+                "reasoning_effort": "high",
+                "status": "best_effort",
+                "forwarded": True,
+                "translated": False,
+                "ignored": False,
+                "reason": "provider_metadata_unknown",
+            },
         },
         "context_budget": {"context_window": None, "max_output_tokens": None},
         "mcp": _expected_unconfigured_mcp_status(),
@@ -2126,6 +2227,7 @@ def test_config_show_delegates_to_runtime_effective_config(capsys: Any) -> None:
             "context_window": None,
             "max_output_tokens": None,
             "fallback_chain": ["runtime/model"],
+            "reasoning_controls": {},
         },
         "context_budget": {"context_window": None, "max_output_tokens": None},
         "mcp": _expected_unconfigured_mcp_status(),

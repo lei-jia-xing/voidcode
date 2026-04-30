@@ -74,7 +74,7 @@ from .runtime.contracts import (
     RuntimeStreamChunk,
     validate_runtime_request_metadata,
 )
-from .runtime.events import EventEnvelope
+from .runtime.events import EventEnvelope, redact_reasoning_payload
 from .runtime.permission import PermissionDecision, PermissionResolution
 from .runtime.service import VoidCodeRuntime
 from .runtime.session import SessionState, StoredSessionSummary
@@ -98,6 +98,7 @@ def _handle_run_command(args: argparse.Namespace) -> int:
     workspace = cast(Path, args.workspace)
     request_text = cast(str, args.request)
     json_output = cast(bool, getattr(args, "json", False))
+    show_thinking = cast(bool, getattr(args, "show_thinking", False))
     cli_reasoning_effort = cast(str | None, getattr(args, "reasoning_effort", None))
     config = load_runtime_config(
         workspace,
@@ -129,6 +130,7 @@ def _handle_run_command(args: argparse.Namespace) -> int:
                 request,
                 interactive=interactive,
                 emit_events=interactive and not json_output,
+                show_thinking=show_thinking,
             )
         except KeyboardInterrupt:
             print("Interrupted current run.", file=sys.stderr)
@@ -138,7 +140,13 @@ def _handle_run_command(args: argparse.Namespace) -> int:
 
         blocked_event = _pending_blocked_event(result.session, _last_event(result))
         if json_output:
-            print_json(_runtime_stream_payload(result, workspace=workspace))
+            print_json(
+                _runtime_stream_payload(
+                    result,
+                    workspace=workspace,
+                    show_thinking=show_thinking,
+                )
+            )
             if not interactive and blocked_event is not None:
                 return _blocked_exit_code(blocked_event)
         elif not interactive:
@@ -172,10 +180,12 @@ def _run_with_inline_approval(
     *,
     interactive: bool,
     emit_events: bool,
+    show_thinking: bool = False,
 ) -> RuntimeStreamResult:
     result = _consume_runtime_stream(
         runtime.run_stream(request),
         emit_events=emit_events,
+        show_thinking=show_thinking,
         on_interrupt=lambda session_id, run_id: runtime.cancel_session(
             session_id,
             run_id=run_id,
@@ -194,6 +204,7 @@ def _run_with_inline_approval(
                 approval_decision=_prompt_for_approval(approval_event),
             ),
             emit_events=emit_events,
+            show_thinking=show_thinking,
             on_interrupt=lambda session_id, run_id: runtime.cancel_session(
                 session_id,
                 run_id=run_id,
@@ -218,6 +229,7 @@ def _consume_runtime_stream(
     chunks: Iterator[RuntimeStreamChunk],
     *,
     emit_events: bool,
+    show_thinking: bool = False,
     on_interrupt: Callable[[str, str | None], object] | None = None,
 ) -> RuntimeStreamResult:
     output: str | None = None
@@ -234,6 +246,7 @@ def _consume_runtime_stream(
                             chunk.event.event_type,
                             chunk.event.source,
                             chunk.event.payload,
+                            show_thinking=show_thinking,
                         ),
                         flush=True,
                     )
@@ -327,11 +340,20 @@ def _print_runtime_response(
     *,
     event_offset: int = 0,
     include_result: bool = True,
+    show_thinking: bool = False,
 ) -> int:
     typed_result = cast("RuntimeResponseLike", result)
 
     for event in typed_result.events[event_offset:]:
-        print(format_event(event.event_type, event.source, event.payload), flush=True)
+        print(
+            format_event(
+                event.event_type,
+                event.source,
+                event.payload,
+                show_thinking=show_thinking,
+            ),
+            flush=True,
+        )
 
     if include_result:
         _print_runtime_output(typed_result.output)
@@ -403,13 +425,18 @@ def _print_runtime_failure_footer(
         )
 
 
-def _runtime_stream_payload(result: RuntimeStreamResult, *, workspace: Path) -> dict[str, object]:
+def _runtime_stream_payload(
+    result: RuntimeStreamResult,
+    *,
+    workspace: Path,
+    show_thinking: bool = False,
+) -> dict[str, object]:
     blocked_event = _pending_blocked_event(result.session, _last_event(result))
     payload: dict[str, object] = {
         "workspace": str(workspace),
         "session": serialize_session_state(result.session),
         "output": result.output,
-        "events": [serialize_event(event) for event in result.events],
+        "events": [serialize_event(event, show_thinking=show_thinking) for event in result.events],
     }
     if blocked_event is not None:
         payload["blocked"] = _blocked_payload(result, blocked_event)
@@ -761,7 +788,11 @@ def _format_background_task_summary(task: StoredBackgroundTaskSummary) -> str:
     return _format_named_record("TASK", fields)
 
 
-def _serialize_session_debug_snapshot(snapshot: RuntimeSessionDebugSnapshot) -> dict[str, object]:
+def _serialize_session_debug_snapshot(
+    snapshot: RuntimeSessionDebugSnapshot,
+    *,
+    show_thinking: bool = False,
+) -> dict[str, object]:
     session_payload: dict[str, object] = {"id": snapshot.session.session.id}
     if snapshot.session.session.parent_id is not None:
         session_payload["parent_id"] = snapshot.session.session.parent_id
@@ -807,25 +838,13 @@ def _serialize_session_debug_snapshot(snapshot: RuntimeSessionDebugSnapshot) -> 
         ),
         "revert_marker": _serialize_revert_marker(snapshot.revert_marker),
         "last_event_sequence": snapshot.last_event_sequence,
-        "last_relevant_event": (
-            {
-                "sequence": snapshot.last_relevant_event.sequence,
-                "event_type": snapshot.last_relevant_event.event_type,
-                "source": snapshot.last_relevant_event.source,
-                "payload": snapshot.last_relevant_event.payload,
-            }
-            if snapshot.last_relevant_event is not None
-            else None
+        "last_relevant_event": _serialize_session_debug_event(
+            snapshot.last_relevant_event,
+            show_thinking=show_thinking,
         ),
-        "last_failure_event": (
-            {
-                "sequence": snapshot.last_failure_event.sequence,
-                "event_type": snapshot.last_failure_event.event_type,
-                "source": snapshot.last_failure_event.source,
-                "payload": snapshot.last_failure_event.payload,
-            }
-            if snapshot.last_failure_event is not None
-            else None
+        "last_failure_event": _serialize_session_debug_event(
+            snapshot.last_failure_event,
+            show_thinking=show_thinking,
         ),
         "failure": (
             {
@@ -905,11 +924,32 @@ def _serialize_provider_context_snapshot(
     }
 
 
+def _serialize_session_debug_event(
+    event: object | None,
+    *,
+    show_thinking: bool = False,
+) -> dict[str, object] | None:
+    if event is None:
+        return None
+    typed_event = cast(EventEnvelope, event)
+    return {
+        "sequence": typed_event.sequence,
+        "event_type": typed_event.event_type,
+        "source": typed_event.source,
+        "payload": redact_reasoning_payload(
+            typed_event.event_type,
+            typed_event.payload,
+            show_thinking=show_thinking,
+        ),
+    }
+
+
 def _handle_sessions_resume_command(args: argparse.Namespace) -> int:
     workspace = cast(Path, args.workspace)
     session_id = cast(str, args.session_id)
     dry_run = cast(bool, getattr(args, "dry_run", False))
     approval_decision = cast(PermissionResolution | None, getattr(args, "approval_decision", None))
+    show_thinking = cast(bool, getattr(args, "show_thinking", False))
     runtime = VoidCodeRuntime(workspace=workspace)
     try:
         if dry_run:
@@ -937,7 +977,7 @@ def _handle_sessions_resume_command(args: argparse.Namespace) -> int:
     finally:
         _close_runtime(runtime)
 
-    _print_runtime_response(result)
+    _print_runtime_response(result, show_thinking=show_thinking)
     return 0
 
 
@@ -1012,6 +1052,7 @@ def _handle_sessions_import_command(args: argparse.Namespace) -> int:
 def _handle_sessions_debug_command(args: argparse.Namespace) -> int:
     workspace = cast(Path, args.workspace)
     session_id = cast(str, args.session_id)
+    show_thinking = cast(bool, getattr(args, "show_thinking", False))
     runtime = VoidCodeRuntime(workspace=workspace)
     try:
         try:
@@ -1021,7 +1062,11 @@ def _handle_sessions_debug_command(args: argparse.Namespace) -> int:
     finally:
         _close_runtime(runtime)
 
-    print(json.dumps(_serialize_session_debug_snapshot(snapshot), sort_keys=True))
+    debug_payload = _serialize_session_debug_snapshot(
+        snapshot,
+        show_thinking=show_thinking,
+    )
+    print(json.dumps(debug_payload, sort_keys=True))
     return 0
 
 
@@ -1544,7 +1589,10 @@ def _provider_model_metadata_payload(
             "cost_per_cache_write_token": metadata.cost_per_cache_write_token,
             "supports_reasoning_effort": metadata.supports_reasoning_effort,
             "default_reasoning_effort": metadata.default_reasoning_effort,
+            "supports_reasoning_summary": metadata.supports_reasoning_summary,
+            "supports_thinking_budget": metadata.supports_thinking_budget,
             "supports_interleaved_reasoning": metadata.supports_interleaved_reasoning,
+            "reasoning_visibility": metadata.reasoning_visibility,
             "modalities_input": list(metadata.modalities_input)
             if metadata.modalities_input is not None
             else None,
@@ -1571,6 +1619,7 @@ def _provider_readiness_payload(readiness: ProviderReadinessResult) -> dict[str,
         "context_window": readiness.context_window,
         "max_output_tokens": readiness.max_output_tokens,
         "fallback_chain": list(readiness.fallback_chain),
+        "reasoning_controls": getattr(readiness, "reasoning_controls", {}),
     }
 
 
@@ -1856,6 +1905,11 @@ def build_parser() -> argparse.ArgumentParser:
             "provider when supported (for example, 'low', 'medium', 'high'). Overrides "
             "any reasoning_effort configured in .voidcode.json or VOIDCODE_REASONING_EFFORT."
         ),
+    )
+    _ = run_parser.add_argument(
+        "--show-thinking",
+        action="store_true",
+        help="Show persisted reasoning/thinking text; hidden by default.",
     )
     _ = run_parser.add_argument(
         "--json",
@@ -2191,6 +2245,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Inspect the persisted session without resuming execution.",
     )
+    _ = resume_parser.add_argument(
+        "--show-thinking",
+        action="store_true",
+        help="Show persisted reasoning/thinking events during replay; hidden by default.",
+    )
     resume_parser.set_defaults(handler=_handle_sessions_resume_command)
 
     export_parser = sessions_subparsers.add_parser(
@@ -2286,6 +2345,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=True,
         help="Output JSON debug snapshot (default).",
+    )
+    _ = debug_parser.add_argument(
+        "--show-thinking",
+        action="store_true",
+        help="Include reasoning/thinking text in debug event payloads; hidden by default.",
     )
     debug_parser.set_defaults(handler=_handle_sessions_debug_command)
 
