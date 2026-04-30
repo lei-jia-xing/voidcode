@@ -30,7 +30,10 @@ class ProviderModelMetadata:
     cost_per_cache_write_token: float | None = None
     supports_reasoning_effort: bool | None = None
     default_reasoning_effort: str | None = None
+    supports_reasoning_summary: bool | None = None
+    supports_thinking_budget: bool | None = None
     supports_interleaved_reasoning: bool | None = None
+    reasoning_visibility: str | None = None
     modalities_input: tuple[str, ...] | None = None
     modalities_output: tuple[str, ...] | None = None
     model_status: str | None = None
@@ -80,8 +83,14 @@ class ProviderModelMetadata:
             payload["supports_reasoning_effort"] = self.supports_reasoning_effort
         if self.default_reasoning_effort is not None:
             payload["default_reasoning_effort"] = self.default_reasoning_effort
+        if self.supports_reasoning_summary is not None:
+            payload["supports_reasoning_summary"] = self.supports_reasoning_summary
+        if self.supports_thinking_budget is not None:
+            payload["supports_thinking_budget"] = self.supports_thinking_budget
         if self.supports_interleaved_reasoning is not None:
             payload["supports_interleaved_reasoning"] = self.supports_interleaved_reasoning
+        if self.reasoning_visibility is not None:
+            payload["reasoning_visibility"] = self.reasoning_visibility
         if self.modalities_input is not None:
             payload["modalities_input"] = list(self.modalities_input)
         if self.modalities_output is not None:
@@ -175,7 +184,10 @@ class _OpenAICompatibleModelItem(_DiscoveryPayloadModel):
     supports_json_mode: bool | None = None
     supports_reasoning_effort: bool | None = None
     default_reasoning_effort: str | None = None
+    supports_reasoning_summary: bool | None = None
+    supports_thinking_budget: bool | None = None
     supports_interleaved_reasoning: bool | None = None
+    reasoning_visibility: str | None = None
     modalities: list[str] | None = None
     input_modalities: list[str] | None = None
     output_modalities: list[str] | None = None
@@ -304,7 +316,10 @@ def _metadata(
         cost_per_cache_write_token=_non_negative_float(values.get("cost_per_cache_write_token")),
         supports_reasoning_effort=_optional_bool(values.get("supports_reasoning_effort")),
         default_reasoning_effort=_optional_str(values.get("default_reasoning_effort")),
+        supports_reasoning_summary=_optional_bool(values.get("supports_reasoning_summary")),
+        supports_thinking_budget=_optional_bool(values.get("supports_thinking_budget")),
         supports_interleaved_reasoning=_optional_bool(values.get("supports_interleaved_reasoning")),
+        reasoning_visibility=_optional_str(values.get("reasoning_visibility")),
         modalities_input=_modalities_tuple(values.get("modalities_input")),
         modalities_output=_modalities_tuple(values.get("modalities_output")),
         model_status=_optional_str(values.get("model_status")),
@@ -386,9 +401,19 @@ def _merge_model_metadata(
         default_reasoning_effort=_override_value(
             inferred.default_reasoning_effort, override.default_reasoning_effort
         ),
+        supports_reasoning_summary=_override_value(
+            inferred.supports_reasoning_summary, override.supports_reasoning_summary
+        ),
+        supports_thinking_budget=_override_value(
+            inferred.supports_thinking_budget, override.supports_thinking_budget
+        ),
         supports_interleaved_reasoning=_override_value(
             inferred.supports_interleaved_reasoning,
             override.supports_interleaved_reasoning,
+        ),
+        reasoning_visibility=_override_value(
+            inferred.reasoning_visibility,
+            override.reasoning_visibility,
         ),
         modalities_input=_override_value(inferred.modalities_input, override.modalities_input),
         modalities_output=_override_value(inferred.modalities_output, override.modalities_output),
@@ -412,7 +437,12 @@ def infer_model_metadata(provider_name: str, model_name: str) -> ProviderModelMe
             "default_reasoning_effort": "medium"
             if model.startswith(("gpt-5", "o1", "o3", "o4"))
             else None,
+            "supports_reasoning_summary": model.startswith(("gpt-5", "o1", "o3", "o4")),
+            "supports_thinking_budget": False,
             "supports_interleaved_reasoning": model.startswith(("gpt-5", "o3", "o4")),
+            "reasoning_visibility": "summary"
+            if model.startswith(("gpt-5", "o1", "o3", "o4"))
+            else "hidden",
             "modalities_input": ("text", "image")
             if not model.startswith(("o1", "o3-mini"))
             else ("text",),
@@ -468,9 +498,14 @@ def infer_model_metadata(provider_name: str, model_name: str) -> ProviderModelMe
             "default_reasoning_effort": "medium"
             if model.startswith(("claude-opus-4", "claude-sonnet-4"))
             else None,
+            "supports_reasoning_summary": False,
+            "supports_thinking_budget": model.startswith(("claude-opus-4", "claude-sonnet-4")),
             "supports_interleaved_reasoning": model.startswith(
                 ("claude-opus-4", "claude-sonnet-4")
             ),
+            "reasoning_visibility": "full"
+            if model.startswith(("claude-opus-4", "claude-sonnet-4"))
+            else "hidden",
             "modalities_input": ("text", "image") if "haiku" not in model else ("text",),
             "modalities_output": ("text",),
             "model_status": "active",
@@ -501,7 +536,12 @@ def infer_model_metadata(provider_name: str, model_name: str) -> ProviderModelMe
             "default_reasoning_effort": "medium"
             if model.startswith(("gemini-2.5", "gemini-3"))
             else None,
+            "supports_reasoning_summary": False,
+            "supports_thinking_budget": model.startswith(("gemini-2.5", "gemini-3")),
             "supports_interleaved_reasoning": False,
+            "reasoning_visibility": "summary"
+            if model.startswith(("gemini-2.5", "gemini-3"))
+            else "hidden",
             "modalities_input": ("text", "image", "audio", "video"),
             "modalities_output": ("text",),
             "model_status": "preview" if "preview" in model else "active",
@@ -532,7 +572,10 @@ def infer_model_metadata(provider_name: str, model_name: str) -> ProviderModelMe
             "supports_json_mode": True,
             "supports_reasoning_effort": False,
             "default_reasoning_effort": None,
+            "supports_reasoning_summary": False,
+            "supports_thinking_budget": False,
             "supports_interleaved_reasoning": False,
+            "reasoning_visibility": "full" if "reasoner" in model else "hidden",
             "modalities_input": ("text",),
             "modalities_output": ("text",),
             "model_status": "active",
@@ -555,7 +598,12 @@ def infer_model_metadata(provider_name: str, model_name: str) -> ProviderModelMe
             "supports_json_mode": True,
             "supports_reasoning_effort": False,
             "default_reasoning_effort": None,
+            "supports_reasoning_summary": False,
+            "supports_thinking_budget": False,
             "supports_interleaved_reasoning": False,
+            "reasoning_visibility": "full"
+            if model.startswith(("qwq", "qvq", "qwen3"))
+            else "hidden",
             "modalities_input": ("text", "image")
             if model.startswith(("qvq",)) or "vl" in model
             else ("text",),
@@ -583,7 +631,10 @@ def infer_model_metadata(provider_name: str, model_name: str) -> ProviderModelMe
             "default_reasoning_effort": "medium"
             if provider != "opencode-go" and model.startswith(("glm-5", "glm-z1"))
             else None,
+            "supports_reasoning_summary": False,
+            "supports_thinking_budget": False,
             "supports_interleaved_reasoning": False,
+            "reasoning_visibility": "full" if model.startswith(("glm-5", "glm-z1")) else "hidden",
             "modalities_input": ("text", "image")
             if model.startswith("glm-4v") or "vision" in model
             else ("text",),
@@ -604,7 +655,10 @@ def infer_model_metadata(provider_name: str, model_name: str) -> ProviderModelMe
             "supports_json_mode": True,
             "supports_reasoning_effort": False,
             "default_reasoning_effort": None,
+            "supports_reasoning_summary": False,
+            "supports_thinking_budget": False,
             "supports_interleaved_reasoning": False,
+            "reasoning_visibility": "full" if "thinking" in model else "hidden",
             "modalities_input": ("text",),
             "modalities_output": ("text",),
             "model_status": "active",
@@ -631,7 +685,12 @@ def infer_model_metadata(provider_name: str, model_name: str) -> ProviderModelMe
             "supports_json_mode": True,
             "supports_reasoning_effort": False,
             "default_reasoning_effort": None,
+            "supports_reasoning_summary": False,
+            "supports_thinking_budget": False,
             "supports_interleaved_reasoning": False,
+            "reasoning_visibility": "full"
+            if model.startswith(("minimax-m2", "mimo-v2.5"))
+            else "hidden",
             "modalities_input": ("text", "image")
             if model.startswith("mimo-v2-omni")
             else ("text",),
@@ -656,7 +715,12 @@ def infer_model_metadata(provider_name: str, model_name: str) -> ProviderModelMe
             "default_reasoning_effort": "medium"
             if "reasoning" in model or model.startswith("grok-4")
             else None,
+            "supports_reasoning_summary": False,
+            "supports_thinking_budget": False,
             "supports_interleaved_reasoning": False,
+            "reasoning_visibility": "full"
+            if "reasoning" in model or model.startswith("grok-4")
+            else "hidden",
             "modalities_input": ("text", "image"),
             "modalities_output": ("text",),
             "model_status": "active",

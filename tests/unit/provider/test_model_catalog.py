@@ -84,6 +84,24 @@ def test_discover_available_models_includes_known_model_budget_metadata() -> Non
     assert "unknown-model" not in result.model_metadata
 
 
+def test_infer_model_metadata_exposes_reasoning_visibility_controls() -> None:
+    openai_metadata = infer_model_metadata("openai", "gpt-5")
+    assert openai_metadata is not None
+    assert openai_metadata.supports_reasoning_summary is True
+    assert openai_metadata.supports_thinking_budget is False
+    assert openai_metadata.reasoning_visibility == "summary"
+
+    anthropic_metadata = infer_model_metadata("anthropic", "claude-sonnet-4-6")
+    assert anthropic_metadata is not None
+    assert anthropic_metadata.supports_thinking_budget is True
+    assert anthropic_metadata.reasoning_visibility == "full"
+
+    glm_metadata = infer_model_metadata("glm", "glm-5")
+    assert glm_metadata is not None
+    assert glm_metadata.supports_reasoning_effort is True
+    assert glm_metadata.reasoning_visibility == "full"
+
+
 def test_discover_available_models_merges_remote_metadata_over_inferred_defaults() -> None:
     result = discover_available_models(
         "openai",
@@ -305,7 +323,10 @@ def test_infer_model_metadata_exposes_model_capability_flags() -> None:
         cost_per_output_token=0.000015,
         supports_reasoning_effort=True,
         default_reasoning_effort="medium",
+        supports_reasoning_summary=False,
+        supports_thinking_budget=True,
         supports_interleaved_reasoning=True,
+        reasoning_visibility="full",
         modalities_input=("text", "image"),
         modalities_output=("text",),
         model_status="active",
@@ -323,7 +344,10 @@ def test_provider_model_metadata_payload_includes_limits_and_capabilities() -> N
         cost_per_output_token=0.000002,
         supports_reasoning_effort=True,
         default_reasoning_effort="low",
+        supports_reasoning_summary=True,
+        supports_thinking_budget=False,
         supports_interleaved_reasoning=False,
+        reasoning_visibility="summary",
         modalities_input=("text",),
         modalities_output=("text",),
         model_status="active",
@@ -340,7 +364,10 @@ def test_provider_model_metadata_payload_includes_limits_and_capabilities() -> N
         "cost_per_output_token": 0.000002,
         "supports_reasoning_effort": True,
         "default_reasoning_effort": "low",
+        "supports_reasoning_summary": True,
+        "supports_thinking_budget": False,
         "supports_interleaved_reasoning": False,
+        "reasoning_visibility": "summary",
         "modalities_input": ["text"],
         "modalities_output": ["text"],
         "model_status": "active",
