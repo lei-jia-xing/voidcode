@@ -68,7 +68,14 @@ from ..tools.contracts import (
     ToolResult,
 )
 from ..tools.guidance import definition_with_guidance
-from ..tools.output import sanitize_tool_result_data
+from ..tools.output import (
+    read_tool_output_artifact,
+    sanitize_tool_result_data,
+    search_tool_output_artifact,
+)
+from ..tools.output import (
+    resolve_tool_output_artifact as resolve_tool_output_artifact_metadata,
+)
 from ..tools.question import QuestionTool
 from ..tools.runtime_context import current_runtime_tool_context
 from ..tools.skill import SkillTool
@@ -2647,6 +2654,83 @@ class VoidCodeRuntime:
         self._validate_session_workspace(result.session, session_id=session_id)
         return result
 
+    def resolve_tool_output_artifact(
+        self,
+        *,
+        session_id: str,
+        artifact_id: str | None = None,
+        tool_call_id: str | None = None,
+    ) -> dict[str, object]:
+        """Resolve spilled tool output artifact metadata for a session."""
+
+        result = self._load_session_result(session_id=session_id)
+        artifact = resolve_tool_output_artifact_metadata(
+            result.transcript,
+            artifact_id=artifact_id,
+            tool_call_id=tool_call_id,
+        )
+        if artifact is None:
+            return {
+                "status": "artifact_not_found",
+                "artifact_missing": True,
+                "artifact_id": artifact_id,
+                "tool_call_id": tool_call_id,
+                "session_id": session_id,
+            }
+        read_result = read_tool_output_artifact(artifact, offset=0, limit=0)
+        status = read_result.get("status")
+        return {
+            **artifact,
+            "status": status if isinstance(status, str) else artifact.get("status", "unknown"),
+            "artifact_missing": bool(read_result.get("artifact_missing")),
+        }
+
+    def read_tool_output_artifact(
+        self,
+        *,
+        session_id: str,
+        artifact_id: str | None = None,
+        tool_call_id: str | None = None,
+        offset: int = 0,
+        limit: int = 2000,
+    ) -> dict[str, object]:
+        """Read a bounded slice from a spilled tool output artifact."""
+
+        artifact = self.resolve_tool_output_artifact(
+            session_id=session_id,
+            artifact_id=artifact_id,
+            tool_call_id=tool_call_id,
+        )
+        if artifact.get("status") == "artifact_not_found":
+            return artifact
+        return read_tool_output_artifact(artifact, offset=offset, limit=limit)
+
+    def search_tool_output_artifact(
+        self,
+        *,
+        session_id: str,
+        pattern: str,
+        artifact_id: str | None = None,
+        tool_call_id: str | None = None,
+        case_sensitive: bool = False,
+        limit: int = 100,
+    ) -> dict[str, object]:
+        """Search a spilled tool output artifact by artifact id or tool call id."""
+
+        artifact = self.resolve_tool_output_artifact(
+            session_id=session_id,
+            artifact_id=artifact_id,
+            tool_call_id=tool_call_id,
+        )
+        if artifact.get("status") == "artifact_not_found":
+            return artifact
+        return search_tool_output_artifact(
+            artifact,
+            pattern=pattern,
+            case_sensitive=case_sensitive,
+            limit=limit,
+        )
+
     def session_debug_snapshot(self, *, session_id: str) -> RuntimeSessionDebugSnapshot:
         validate_session_id(session_id)
         active = self._is_active_session_id(session_id)
@@ -4299,6 +4383,7 @@ class VoidCodeRuntime:
             if len(summary) > 160:
                 summary = summary[:157] + "..."
             arguments = payload.get("arguments")
+            artifact = VoidCodeRuntime._artifact_debug_metadata(payload)
             return RuntimeSessionDebugToolSummary(
                 tool_name=tool_name,
                 status=status,
@@ -4306,9 +4391,40 @@ class VoidCodeRuntime:
                 arguments=(
                     dict(cast(dict[str, object], arguments)) if isinstance(arguments, dict) else {}
                 ),
+                artifact=artifact,
                 sequence=event.sequence,
             )
         return None
+
+    @staticmethod
+    def _artifact_debug_metadata(payload: dict[str, object]) -> dict[str, object]:
+        artifact = payload.get("artifact")
+        if not isinstance(artifact, dict):
+            return {}
+        artifact_metadata = dict(cast(dict[str, object], artifact))
+        read_result = read_tool_output_artifact(artifact_metadata, offset=0, limit=0)
+        status = read_result.get("status")
+        if isinstance(status, str):
+            artifact_metadata["status"] = status
+        artifact_metadata["artifact_missing"] = bool(read_result.get("artifact_missing"))
+        if "content" in artifact_metadata:
+            artifact_metadata.pop("content")
+        return artifact_metadata
+
+    @classmethod
+    def _payload_with_artifact_status(cls, payload: dict[str, object]) -> dict[str, object]:
+        artifact = payload.get("artifact")
+        if not isinstance(artifact, dict):
+            return dict(payload)
+        artifact_metadata = cls._artifact_debug_metadata(payload)
+        return {
+            **payload,
+            "artifact": artifact_metadata,
+            "artifact_status": artifact_metadata.get("status", payload.get("artifact_status")),
+            "artifact_missing": artifact_metadata.get(
+                "artifact_missing", payload.get("artifact_missing")
+            ),
+        }
 
     def _provider_context_debug_snapshot(
         self,
@@ -4386,6 +4502,7 @@ class VoidCodeRuntime:
             "tool",
             "tool_status",
         }
+        payload = VoidCodeRuntime._payload_with_artifact_status(payload)
         return sanitize_tool_result_data(
             {key: value for key, value in payload.items() if key not in runtime_envelope_keys}
         )

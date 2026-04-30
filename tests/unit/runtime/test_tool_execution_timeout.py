@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from voidcode.runtime.config import RuntimeConfig
-from voidcode.runtime.contracts import RuntimeRequest
+from voidcode.runtime.contracts import RuntimeProviderContextSegmentSnapshot, RuntimeRequest
 from voidcode.runtime.service import ToolRegistry, VoidCodeRuntime
 from voidcode.tools import ShellExecTool
 from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolResult
@@ -379,6 +379,78 @@ def test_runtime_caps_large_tool_output_before_feedback(tmp_path: Path) -> None:
     assert "line-2099" not in payload["content"]
     assert Path(payload["output_path"]).read_text(encoding="utf-8").endswith("line-2099\n")
     assert not (tmp_path / ".voidcode" / "tool-output").exists()
+
+
+def test_runtime_resolves_tool_output_artifacts_and_reports_missing_debug_state(
+    tmp_path: Path,
+) -> None:
+    session_id = "artifact-resolver-session"
+    runtime = _make_runtime(tmp_path, _LargeOutputTool(), tool_timeout_seconds=None)
+
+    _ = list(runtime.run_stream(RuntimeRequest(prompt="go", session_id=session_id)))
+    replay = runtime.resume(session_id)
+    completed_event = next(
+        event for event in replay.events if event.event_type == "runtime.tool_completed"
+    )
+    artifact_id = completed_event.payload["artifact_id"]
+    tool_call_id = completed_event.payload["tool_call_id"]
+    assert isinstance(artifact_id, str)
+    assert isinstance(tool_call_id, str)
+
+    metadata = runtime.resolve_tool_output_artifact(
+        session_id=session_id,
+        artifact_id=artifact_id,
+    )
+    assert metadata["status"] == "available"
+    assert metadata["artifact_missing"] is False
+
+    read_result = runtime.read_tool_output_artifact(
+        session_id=session_id,
+        tool_call_id=tool_call_id,
+        offset=2099,
+        limit=1,
+    )
+    assert read_result["content"] == "line-2099\n"
+    search_result = runtime.search_tool_output_artifact(
+        session_id=session_id,
+        artifact_id=artifact_id,
+        pattern="line-2099",
+    )
+    assert search_result["match_count"] == 1
+
+    artifact = completed_event.payload["artifact"]
+    assert isinstance(artifact, dict)
+    Path(cast(str, artifact["path"])).unlink()
+
+    missing = runtime.resolve_tool_output_artifact(
+        session_id=session_id,
+        artifact_id=artifact_id,
+    )
+    assert missing["status"] == "missing"
+    assert missing["artifact_missing"] is True
+    missing_read = runtime.read_tool_output_artifact(
+        session_id=session_id,
+        artifact_id=artifact_id,
+    )
+    assert missing_read["status"] == "missing"
+    snapshot = runtime.session_debug_snapshot(session_id=session_id)
+    assert snapshot.last_tool is not None
+    assert snapshot.last_tool.artifact["artifact_id"] == artifact_id
+    assert snapshot.last_tool.artifact["status"] == "missing"
+    assert snapshot.last_tool.artifact["artifact_missing"] is True
+    assert snapshot.provider_context is not None
+    artifact_segments: list[RuntimeProviderContextSegmentSnapshot] = []
+    for segment in snapshot.provider_context.segments:
+        segment_data = segment.metadata.get("data")
+        if not isinstance(segment_data, dict):
+            continue
+        typed_segment_data = cast(dict[str, object], segment_data)
+        if typed_segment_data.get("artifact_id") == artifact_id:
+            artifact_segments.append(segment)
+    assert artifact_segments
+    segment_data = artifact_segments[-1].metadata["data"]
+    assert isinstance(segment_data, dict)
+    assert segment_data["artifact_missing"] is True
 
 
 def test_runtime_sanitizes_tool_arguments_and_data_before_events_and_feedback(
