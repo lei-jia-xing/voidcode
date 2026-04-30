@@ -3833,7 +3833,7 @@ class VoidCodeRuntime:
                     tool_name=str(event.payload.get("tool", "unknown")),
                     status="error" if is_error else "ok",
                     content=str(raw_content) if raw_content is not None and not is_error else None,
-                    data=sanitize_tool_result_data(event.payload),
+                    data=VoidCodeRuntime._provider_visible_tool_result_data(event.payload),
                     error=str(error_value) if is_error else None,
                     truncated=event.payload.get("truncated") is True,
                     partial=event.payload.get("partial") is True,
@@ -3845,6 +3845,20 @@ class VoidCodeRuntime:
                 )
             )
         return prompt, tool_results
+
+    @staticmethod
+    def _provider_visible_tool_result_data(payload: dict[str, object]) -> dict[str, object]:
+        runtime_envelope_keys = {
+            "content",
+            "display",
+            "error",
+            "status",
+            "tool",
+            "tool_status",
+        }
+        return sanitize_tool_result_data(
+            {key: value for key, value in payload.items() if key not in runtime_envelope_keys}
+        )
 
     def _debug_skill_prompt_context(self, metadata: dict[str, object]) -> str:
         snapshot = self._skill_snapshot_from_metadata(metadata)

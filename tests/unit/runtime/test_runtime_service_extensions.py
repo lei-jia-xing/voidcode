@@ -1619,6 +1619,18 @@ def test_runtime_session_debug_snapshot_includes_provider_context(tmp_path: Path
     assert provider_context.segments[-1].source == "retained_tool_result"
     assert provider_context.segments[-1].tool_name == "read_file"
     assert provider_context.segments[-1].metadata["status"] == "ok"
+    reconstructed_data = provider_context.segments[-1].metadata["data"]
+    assert isinstance(reconstructed_data, dict)
+    assert "path" in reconstructed_data
+    assert "content" not in reconstructed_data
+    assert "display" not in reconstructed_data
+    assert "error" not in reconstructed_data
+    assert "status" not in reconstructed_data
+    assert "tool" not in reconstructed_data
+    assert "tool_status" not in reconstructed_data
+    provider_message_content = provider_context.provider_messages[-1].content or ""
+    assert "tool_status" not in provider_message_content
+    assert "display" not in provider_message_content
     assert all(
         diagnostic.code not in {"missing_tool_result", "orphan_tool_result"}
         for diagnostic in provider_context.diagnostics
