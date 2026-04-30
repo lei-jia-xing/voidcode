@@ -20,7 +20,11 @@ from ..hook.config import FormatterCwdPolicy, RuntimeFormatterPresetConfig, Runt
 from ..lsp import LspServerConfigOverride as RuntimeLspServerConfig
 from ..lsp import derive_workspace_lsp_defaults, has_builtin_lsp_server_preset
 from ..provider import config as provider_config
-from .permission import PermissionDecision
+from .permission import (
+    ExternalDirectoryPermissionConfig,
+    ExternalDirectoryPolicy,
+    PermissionDecision,
+)
 from .task import supported_subagent_categories
 
 RuntimeProviderFallbackConfig = provider_config.ProviderFallbackConfig
@@ -60,6 +64,7 @@ _REPO_CONFIG_KEYS = frozenset(
     {
         "$schema",
         "approval_mode",
+        "permission",
         "model",
         "execution_engine",
         "max_steps",
@@ -130,6 +135,7 @@ _FORMATTER_PRESET_CONFIG_KEYS = frozenset(
 _TOOLS_CONFIG_KEYS = frozenset({"builtin", "allowlist", "default"})
 _TOOLS_BUILTIN_CONFIG_KEYS = frozenset({"enabled"})
 _SKILLS_CONFIG_KEYS = frozenset({"enabled", "paths"})
+_PERMISSION_CONFIG_KEYS = frozenset({"external_directory_read", "external_directory_write"})
 _LSP_CONFIG_KEYS = frozenset({"enabled", "servers"})
 _LSP_SERVER_CONFIG_KEYS = frozenset(
     {"preset", "command", "languages", "extensions", "root_markers", "settings", "init_options"}
@@ -379,6 +385,9 @@ class RuntimeCategoryConfig:
 @dataclass(frozen=True, slots=True)
 class RuntimeConfig:
     approval_mode: PermissionDecision = "ask"
+    permission: ExternalDirectoryPermissionConfig = field(
+        default_factory=ExternalDirectoryPermissionConfig
+    )
     model: str | None = None
     execution_engine: ExecutionEngineName = DEFAULT_EXECUTION_ENGINE
     max_steps: int | None = None
@@ -405,6 +414,7 @@ class RuntimeConfig:
 @dataclass(frozen=True, slots=True)
 class RuntimeConfigOverrides:
     approval_mode: PermissionDecision | None = None
+    permission: ExternalDirectoryPermissionConfig | None = None
     model: str | None = None
     execution_engine: ExecutionEngineName | None = None
     max_steps: int | None = None
@@ -540,6 +550,7 @@ def load_runtime_config(
             repo_local=repo_local.approval_mode,
             environment=env_overrides.approval_mode,
         ),
+        permission=repo_local.permission or ExternalDirectoryPermissionConfig(),
         model=_resolve_model(
             explicit=model,
             repo_local=repo_local.model,
@@ -682,9 +693,12 @@ def _load_repo_local_config(
         source=f"runtime config field 'approval_mode' in {config_path}",
         allow_none=True,
     )
+    raw_permission = payload.get("permission")
+    parsed_permission = _parse_permission_config(raw_permission)
 
     return RuntimeConfigOverrides(
         approval_mode=parsed_approval_mode,
+        permission=parsed_permission,
         model=raw_model,
         execution_engine=parsed_execution_engine,
         max_steps=parsed_max_steps,
@@ -705,6 +719,61 @@ def _load_repo_local_config(
         agents=agents,
         categories=categories,
     )
+
+
+def _parse_permission_config(raw_permission: object) -> ExternalDirectoryPermissionConfig | None:
+    if raw_permission is None:
+        return None
+    if not isinstance(raw_permission, dict):
+        raise ValueError("runtime config field 'permission' must be an object when provided")
+
+    permission_payload = cast(dict[str, object], raw_permission)
+    _reject_unknown_config_keys(
+        permission_payload,
+        allowed_keys=_PERMISSION_CONFIG_KEYS,
+        field_path="permission",
+    )
+
+    read_rules = _parse_permission_rules(
+        permission_payload.get("external_directory_read"),
+        field_path="permission.external_directory_read",
+        default=(("*", "ask"),),
+    )
+    write_rules = _parse_permission_rules(
+        permission_payload.get("external_directory_write"),
+        field_path="permission.external_directory_write",
+        default=(("*", "deny"),),
+    )
+    return ExternalDirectoryPermissionConfig(
+        read=ExternalDirectoryPolicy(rules=read_rules),
+        write=ExternalDirectoryPolicy(rules=write_rules),
+    )
+
+
+def _parse_permission_rules(
+    raw_rules: object,
+    *,
+    field_path: str,
+    default: tuple[tuple[str, PermissionDecision], ...],
+) -> tuple[tuple[str, PermissionDecision], ...]:
+    if raw_rules is None:
+        return default
+    if not isinstance(raw_rules, dict):
+        raise ValueError(f"runtime config field '{field_path}' must be an object when provided")
+    parsed: list[tuple[str, PermissionDecision]] = []
+    for raw_pattern, raw_decision in cast(dict[object, object], raw_rules).items():
+        if not isinstance(raw_pattern, str) or not raw_pattern.strip():
+            raise ValueError(f"runtime config field '{field_path}' keys must be non-empty strings")
+        decision = _parse_approval_mode(
+            raw_decision,
+            source=f"runtime config field '{field_path}.{raw_pattern}'",
+            allow_none=False,
+        )
+        assert decision is not None
+        parsed.append((raw_pattern, decision))
+    if not parsed:
+        return default
+    return tuple(parsed)
 
 
 def _load_user_config(env: Mapping[str, str]) -> RuntimeConfigOverrides:

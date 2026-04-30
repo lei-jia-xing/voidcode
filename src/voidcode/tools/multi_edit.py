@@ -86,6 +86,7 @@ class MultiEditTool:
             workspace=workspace,
             raw_path=args.path,
             containment_error="multi_edit only allows paths inside the workspace",
+            allow_outside_workspace=True,
         )
         workspace_root = resolution.workspace_root
         target = resolution.candidate
@@ -124,12 +125,13 @@ class MultiEditTool:
         )
         diagnostics = formatter_diagnostics(formatter_result)
 
-        content = f"Applied {applied} edits to {relative_target}"
+        display_path = str(target.resolve()) if resolution.is_external else relative_target
+        content = f"Applied {applied} edits to {display_path}"
         if diagnostics:
             content += f" Formatter warning: {diagnostics[0]['message']}"
 
         data: dict[str, object] = {
-            "path": relative_target,
+            "path": display_path,
             "applied": applied,
             "edits": details,
             "additions": additions,

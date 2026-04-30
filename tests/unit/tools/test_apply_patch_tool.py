@@ -57,6 +57,32 @@ def test_apply_patch_updates_file_with_valid_patch(tmp_path: Path) -> None:
     assert result.content == "M sample.txt"
 
 
+def test_apply_patch_allows_external_target_file(tmp_path: Path) -> None:
+    outside_dir = tmp_path.parent / "outside-apply-patch"
+    outside_dir.mkdir(exist_ok=True)
+    target = outside_dir / "sample.txt"
+    target.write_text("line-1\nline-2\n", encoding="utf-8")
+
+    patch_text = "\n".join(
+        [
+            "*** Begin Patch",
+            f"*** Update File: {target}",
+            "@@",
+            "-line-1",
+            "+patched-1",
+            "*** End Patch",
+        ]
+    )
+
+    result = ApplyPatchTool().invoke(
+        ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert target.read_text(encoding="utf-8").startswith("patched-1")
+
+
 def test_apply_patch_reports_file_addition_from_unified_diff(tmp_path: Path) -> None:
     _init_git_repo(tmp_path)
 

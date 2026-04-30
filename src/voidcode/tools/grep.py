@@ -8,8 +8,8 @@ from typing import ClassVar, cast, final
 
 from pydantic import ValidationError
 
+from ..security.path_policy import resolve_workspace_path as resolve_workspace_path_policy
 from ._pydantic_args import GrepArgs
-from ._workspace import resolve_workspace_path
 from .contracts import ToolCall, ToolDefinition, ToolResult
 
 MAX_MATCHES = 200
@@ -64,6 +64,7 @@ class GrepTool:
     def _collect_targets(
         root: Path,
         *,
+        project_root: Path,
         include: list[str] | None,
         exclude: list[str] | None,
     ) -> list[Path]:
@@ -76,8 +77,11 @@ class GrepTool:
         for candidate in root.rglob("*"):
             if not candidate.is_file():
                 continue
-            rel = candidate.relative_to(root).as_posix()
-            if any(part in DEFAULT_IGNORE_PATTERNS for part in candidate.relative_to(root).parts):
+            rel = candidate.relative_to(project_root).as_posix()
+            if any(
+                part in DEFAULT_IGNORE_PATTERNS
+                for part in candidate.relative_to(project_root).parts
+            ):
                 continue
             if include_patterns and not any(
                 GrepTool._matches_glob(rel, pat) for pat in include_patterns
@@ -86,7 +90,7 @@ class GrepTool:
             if any(GrepTool._matches_glob(rel, pat) for pat in exclude_patterns):
                 continue
             targets.append(candidate)
-        targets.sort(key=lambda path: path.relative_to(root).as_posix())
+        targets.sort(key=lambda path: path.relative_to(project_root).as_posix())
         return targets
 
     @staticmethod
@@ -133,13 +137,30 @@ class GrepTool:
                 raise ValueError("grep pattern must not be empty") from exc
             raise ValueError("grep requires a string pattern argument") from exc
 
-        candidate, relative_path = resolve_workspace_path(workspace=workspace, raw_path=args.path)
+        resolution = resolve_workspace_path_policy(
+            workspace=workspace,
+            raw_path=args.path,
+            containment_error="grep path must resolve to a valid path",
+            allow_outside_workspace=True,
+        )
+        candidate = resolution.candidate
+        relative_path = resolution.relative_path
 
         if not candidate.exists():
             raise ValueError(f"grep target does not exist: {args.path}")
 
+        workspace_root = workspace.resolve()
+        effective_root = (
+            candidate if resolution.is_external and candidate.is_dir() else workspace_root
+        )
+
         pattern = re.compile(args.pattern if args.regex else re.escape(args.pattern))
-        targets = self._collect_targets(candidate, include=args.include, exclude=args.exclude)
+        targets = self._collect_targets(
+            candidate,
+            project_root=effective_root,
+            include=args.include,
+            exclude=args.exclude,
+        )
 
         matches: list[_GrepMatch] = []
         for target in targets:
@@ -158,7 +179,11 @@ class GrepTool:
                 )
                 matches.append(
                     _GrepMatch(
-                        file=target.relative_to(workspace.resolve()).as_posix(),
+                        file=(
+                            str(target.resolve())
+                            if resolution.is_external
+                            else target.relative_to(workspace_root).as_posix()
+                        ),
                         line=line_index + 1,
                         text=line_text,
                         columns=columns,
@@ -176,7 +201,8 @@ class GrepTool:
         for match in matches[:10]:
             preview_lines.append(f"{match.file}:{match.line}: {match.text}")
 
-        summary = f"Found {total_occurrences} match(es) for {args.pattern!r} in {relative_path}"
+        path_display = str(candidate.resolve()) if resolution.is_external else relative_path
+        summary = f"Found {total_occurrences} match(es) for {args.pattern!r} in {path_display}"
         if preview_lines:
             summary = summary + "\n" + "\n".join(preview_lines)
 
@@ -185,7 +211,7 @@ class GrepTool:
             status="ok",
             content=summary,
             data={
-                "path": relative_path,
+                "path": path_display,
                 "pattern": args.pattern,
                 "regex": args.regex,
                 "context": args.context,

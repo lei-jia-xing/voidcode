@@ -5,7 +5,7 @@ import signal
 import subprocess
 import time
 from pathlib import Path
-from typing import Any, ClassVar, final
+from typing import Any, ClassVar, cast, final
 
 from pydantic import ValidationError
 
@@ -31,7 +31,8 @@ def _truncate(text: str | None) -> tuple[str, bool]:
 def _decode_process_output(payload: bytes | None) -> str:
     if payload is None:
         return ""
-    return payload.decode("utf-8", errors="replace")
+    decoded = payload.decode("utf-8", errors="replace")
+    return decoded.replace("\r\n", "\n")
 
 
 def kill_timed_out_process(process: subprocess.Popen[Any]) -> None:
@@ -42,7 +43,6 @@ def kill_timed_out_process(process: subprocess.Popen[Any]) -> None:
                 ["taskkill", "/PID", str(process.pid), "/T", "/F"],
                 capture_output=True,
                 check=False,
-                text=True,
             )
             taskkill_succeeded = completed.returncode == 0
         except OSError:
@@ -126,6 +126,7 @@ class ShellExecTool:
             creationflags = 0
             if os.name == "nt":
                 creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
+            command_text = command_text.encode("utf-8", errors="replace").decode("utf-8")
             process = subprocess.Popen(
                 command_text,
                 cwd=policy.workspace_root,
@@ -170,8 +171,8 @@ class ShellExecTool:
                 )
             raise ValueError(f"shell_exec command timed out after {timeout_seconds}s")
 
-        stdout = _decode_process_output(stdout_bytes)
-        stderr = _decode_process_output(stderr_bytes)
+        stdout = _decode_process_output(cast(bytes | None, stdout_bytes))
+        stderr = _decode_process_output(cast(bytes | None, stderr_bytes))
 
         output = stdout
         if stderr:

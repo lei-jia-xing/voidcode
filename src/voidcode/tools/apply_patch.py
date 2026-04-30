@@ -47,6 +47,7 @@ def _assert_within_workspace(workspace: Path, rel_path: Path) -> None:
         workspace=workspace,
         raw_path=rel_path.as_posix(),
         containment_error="patch operation must affect paths inside the workspace",
+        allow_outside_workspace=rel_path.is_absolute(),
     )
 
 
@@ -545,6 +546,7 @@ def _formatter_feedback_for_changes(
             workspace=workspace,
             raw_path=path_value,
             containment_error="patch operation must affect paths inside the workspace",
+            allow_outside_workspace=True,
         )
         candidate = resolution.candidate
         if not candidate.is_file():

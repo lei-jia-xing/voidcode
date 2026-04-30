@@ -10,8 +10,9 @@ from typing import ClassVar, cast, final
 
 from pydantic import ValidationError
 
+from ..security.path_policy import resolve_workspace_path as resolve_workspace_path_policy
 from ._pydantic_args import ReadFileArgs
-from ._workspace import resolve_workspace_path, suggest_workspace_paths
+from ._workspace import suggest_workspace_paths
 from .contracts import ToolCall, ToolDefinition, ToolResult
 
 DEFAULT_READ_LIMIT = 2000
@@ -224,8 +225,14 @@ class ReadFileTool:
                 raise ValueError("read_file limit must be greater than or equal to 1") from exc
             raise ValueError("read_file requires a string filePath argument") from exc
 
-        candidate, relative_path = resolve_workspace_path(
-            workspace=workspace, raw_path=args.filePath
+        resolution = resolve_workspace_path_policy(
+            workspace=workspace,
+            raw_path=args.filePath,
+            allow_outside_workspace=True,
+        )
+        candidate = resolution.candidate
+        relative_path = (
+            str(candidate.resolve()) if resolution.is_external else resolution.relative_path
         )
 
         if not candidate.exists():

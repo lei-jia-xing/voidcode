@@ -119,6 +119,11 @@ from voidcode.tools import ToolCall
 from voidcode.tools.contracts import ToolDefinition, ToolResult
 from voidcode.tools.runtime_context import current_runtime_tool_context
 
+_DEFAULT_PERMISSION_METADATA = {
+    "external_directory_read": {"*": "ask"},
+    "external_directory_write": {"*": "deny"},
+}
+
 pytestmark = pytest.mark.usefixtures("force_deterministic_engine_default")
 
 
@@ -147,6 +152,50 @@ def _prompt_materialization_payload(profile: str) -> dict[str, object]:
 
 def _private_attr(instance: object, name: str) -> Any:
     return getattr(instance, name)
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("ls /etc", ("/etc",)),
+        ("du -sh /var", ("/var",)),
+        ("echo hi > /tmp/out.txt", ("/tmp/out.txt",)),
+        ("echo hi 2>/tmp/err.log", ("/tmp/err.log",)),
+        ("echo hi > ./../out.txt", ("./../out.txt",)),
+        ("echo hi > ././../out.txt", ("././../out.txt",)),
+        ("curl --output=/tmp/out.txt https://example.com", ("/tmp/out.txt",)),
+        ("tool --output=././../out.txt", ("././../out.txt",)),
+        ("tool --config=/etc/app.conf", ("/etc/app.conf",)),
+        ("tool --file=2024/report.txt", ()),
+        (r"type C:\temp\out.log", (r"C:\temp\out.log",)),
+        (
+            r"type C:\Windows\System32\drivers\etc\hosts",
+            (r"C:\Windows\System32\drivers\etc\hosts",),
+        ),
+        ("cat 2024/report.txt", ()),
+    ],
+)
+def test_runtime_extracts_shell_external_path_candidates(
+    command: str,
+    expected: tuple[str, ...],
+) -> None:
+    assert VoidCodeRuntime._extract_shell_path_candidates(command) == expected
+
+
+def test_runtime_ignores_shell_executable_path_candidate() -> None:
+    command = f'"{sys.executable}" -c "print(1)"'
+
+    assert VoidCodeRuntime._extract_shell_path_candidates(command) == ()
+
+
+def test_runtime_canonicalize_candidate_path_handles_unknown_user_tilde(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path)
+
+    canonical = runtime._canonicalize_candidate_path("~unknownuser/file.txt")
+
+    assert canonical == (tmp_path / "~unknownuser/file.txt").resolve(strict=False)
 
 
 @dataclass(slots=True)
@@ -8254,6 +8303,7 @@ def test_runtime_effective_runtime_config_recovers_persisted_max_steps(tmp_path:
         "max_steps": 7,
         "tool_timeout_seconds": None,
         "model": "session/model",
+        "permission": _DEFAULT_PERMISSION_METADATA,
         "provider_fallback": None,
         "resolved_provider": {
             "active_target": {
@@ -8714,6 +8764,7 @@ def test_runtime_effective_runtime_config_uses_request_metadata_max_steps_for_ne
         "execution_engine": "deterministic",
         "max_steps": 2,
         "tool_timeout_seconds": None,
+        "permission": _DEFAULT_PERMISSION_METADATA,
         "provider_fallback": None,
         "resolved_provider": None,
         "lsp": {"mode": "disabled", "configured_enabled": False, "servers": []},

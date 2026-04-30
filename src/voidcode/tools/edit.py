@@ -469,6 +469,7 @@ class EditTool:
             workspace=workspace,
             raw_path=path_value,
             containment_error="edit only allows paths inside the workspace",
+            allow_outside_workspace=True,
         )
         workspace_root = resolution.workspace_root
         candidate = resolution.candidate
@@ -516,8 +517,14 @@ class EditTool:
         if diagnostics:
             output += f" Formatter warning: {diagnostics[0]['message']}"
 
+        display_path = (
+            str(candidate.resolve())
+            if resolution.is_external
+            else candidate.relative_to(workspace_root).as_posix()
+        )
+
         data: dict[str, object] = {
-            "path": candidate.relative_to(workspace_root).as_posix(),
+            "path": display_path,
             "additions": additions,
             "deletions": deletions,
             "match_count": match_count,

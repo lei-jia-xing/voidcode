@@ -44,6 +44,7 @@ class WriteFileTool:
             workspace=workspace,
             raw_path=args.path,
             containment_error="write_file only allows paths inside the workspace",
+            allow_outside_workspace=True,
         )
         workspace_root = resolution.workspace_root
         candidate = resolution.candidate
@@ -57,12 +58,19 @@ class WriteFileTool:
             formatter_result = FormatterExecutor(self._hooks_config, workspace_root).run(candidate)
 
         diagnostics = formatter_diagnostics(formatter_result)
-        content = f"Wrote file successfully: {resolution.relative_path}"
+        display_path = (
+            str(candidate.resolve()) if resolution.is_external else resolution.relative_path
+        )
+        content = f"Wrote file successfully: {display_path}"
         if diagnostics:
             content += f" Formatter warning: {diagnostics[0]['message']}"
 
         new_content = candidate.read_text(encoding="utf-8")
-        relative_output_path = candidate.relative_to(workspace_root).as_posix()
+        relative_output_path = (
+            candidate.relative_to(workspace_root).as_posix()
+            if not resolution.is_external
+            else candidate.as_posix()
+        )
         diff = "".join(
             difflib.unified_diff(
                 old_content.splitlines(keepends=True),
@@ -73,7 +81,7 @@ class WriteFileTool:
         )
 
         data: dict[str, object] = {
-            "path": resolution.relative_path,
+            "path": display_path,
             "byte_count": candidate.stat().st_size,
             "diff": diff,
         }

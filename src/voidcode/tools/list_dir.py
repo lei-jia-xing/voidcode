@@ -4,7 +4,7 @@ import fnmatch
 from pathlib import Path
 from typing import ClassVar, cast
 
-from ._workspace import resolve_workspace_path
+from ..security.path_policy import resolve_workspace_path as resolve_workspace_path_policy
 from .contracts import ToolCall, ToolDefinition, ToolResult
 
 IGNORE_PATTERNS = frozenset(
@@ -106,9 +106,16 @@ class ListTool:
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
         path_value = call.arguments.get("path")
         search_path: Path
+        resolution = None
 
         if isinstance(path_value, str):
-            search_path, _ = resolve_workspace_path(workspace=workspace, raw_path=path_value)
+            resolution = resolve_workspace_path_policy(
+                workspace=workspace,
+                raw_path=path_value,
+                containment_error="list path must resolve to a valid path",
+                allow_outside_workspace=True,
+            )
+            search_path = resolution.candidate
 
             if not search_path.exists():
                 raise ValueError(f"list path does not exist: {path_value}")
@@ -119,6 +126,9 @@ class ListTool:
             search_path = workspace.resolve()
 
         workspace_root = workspace.resolve()
+        output_root = (
+            search_path if resolution is not None and resolution.is_external else workspace_root
+        )
 
         extra_ignore_raw = call.arguments.get("ignore")
         if extra_ignore_raw is not None and not isinstance(extra_ignore_raw, list):
@@ -139,7 +149,7 @@ class ListTool:
                     break
 
                 try:
-                    relative_path = item.relative_to(workspace_root)
+                    relative_path = item.relative_to(output_root)
                 except ValueError:
                     relative_path = item
 
@@ -179,7 +189,7 @@ class ListTool:
             content="\n".join(output_lines),
             data={
                 # Expose absolute path in metadata for consistency with the output root
-                "path": str(search_path.as_posix()),
+                "path": str(search_path.resolve()),
                 "count": file_count,
                 "truncated": truncated,
             },

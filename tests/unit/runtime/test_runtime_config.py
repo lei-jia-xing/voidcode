@@ -218,6 +218,33 @@ def test_runtime_config_defaults_to_ask_without_file_or_env(tmp_path: Path) -> N
     assert config.max_steps is None
     assert config.background_task == RuntimeBackgroundTaskConfig()
     assert config.hooks is None
+    assert config.permission.read.rules == (("*", "ask"),)
+    assert config.permission.write.rules == (("*", "deny"),)
+
+
+def test_runtime_config_loads_external_directory_permission_rules(tmp_path: Path) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps(
+            {
+                "permission": {
+                    "external_directory_read": {
+                        "~/.config/voidcode/skills/**": "allow",
+                        "*": "ask",
+                    },
+                    "external_directory_write": {"*": "deny"},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.permission.read.rules == (
+        ("~/.config/voidcode/skills/**", "allow"),
+        ("*", "ask"),
+    )
+    assert config.permission.write.rules == (("*", "deny"),)
 
 
 def test_runtime_config_loads_background_task_concurrency_from_repo_file(
@@ -1931,6 +1958,32 @@ def test_runtime_config_rejects_invalid_max_steps(
             {"skills": {"paths": [False]}},
             "runtime config field 'skills.paths\\[0\\]'",
             id="skills-path-item-type",
+        ),
+        pytest.param(
+            {"permission": []},
+            "runtime config field 'permission'",
+            id="permission-shape",
+        ),
+        pytest.param(
+            {"permission": {"unknown": {"*": "ask"}}},
+            "runtime config field 'permission.unknown'",
+            id="permission-unknown-field",
+        ),
+        pytest.param(
+            {"permission": {"external_directory_read": []}},
+            "runtime config field 'permission.external_directory_read'",
+            id="permission-read-shape",
+        ),
+        pytest.param(
+            {"permission": {"external_directory_read": {"": "ask"}}},
+            "runtime config field 'permission.external_directory_read'"
+            " keys must be non-empty strings",
+            id="permission-read-empty-key",
+        ),
+        pytest.param(
+            {"permission": {"external_directory_write": {"*": "maybe"}}},
+            "permission.external_directory_write.\\*",
+            id="permission-write-invalid-decision",
         ),
         pytest.param({"lsp": []}, "runtime config field 'lsp'", id="lsp-shape"),
         pytest.param(

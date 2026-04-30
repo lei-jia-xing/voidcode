@@ -29,6 +29,7 @@ def test_runtime_config_json_schema_exposes_core_fields() -> None:
         "enum": ["allow", "deny", "ask"],
         "description": "Default approval policy for tool execution.",
     }
+    assert properties["permission"] == {"$ref": "#/$defs/permissionConfig"}
     assert properties["agent"] == {"$ref": "#/$defs/agentConfig"}
     agents = cast(dict[str, object], properties["agents"])
     agent_map_properties = cast(dict[str, object], agents["properties"])
@@ -128,6 +129,10 @@ def test_runtime_config_json_schema_exposes_core_fields() -> None:
     assert tools_config["additionalProperties"] is False
     tools_properties = cast(dict[str, object], tools_config["properties"])
     assert "paths" not in tools_properties
+    permission_config = cast(dict[str, object], defs["permissionConfig"])
+    permission_properties = cast(dict[str, object], permission_config["properties"])
+    assert permission_properties["external_directory_read"] == {"$ref": "#/$defs/permissionRules"}
+    assert permission_properties["external_directory_write"] == {"$ref": "#/$defs/permissionRules"}
 
 
 def test_generate_starter_runtime_config_excludes_secrets() -> None:

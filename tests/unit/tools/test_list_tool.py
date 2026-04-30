@@ -68,14 +68,19 @@ def test_list_tool_respects_path_argument(tmp_path: Path) -> None:
     assert "root.txt" not in result.content
 
 
-def test_list_tool_rejects_path_outside_workspace(tmp_path: Path) -> None:
+def test_list_tool_allows_path_outside_workspace(tmp_path: Path) -> None:
     tool = ListTool()
+    outside = tmp_path.parent / "outside-list"
+    outside.mkdir(exist_ok=True)
+    (outside / "x.txt").write_text("x", encoding="utf-8")
 
-    with pytest.raises(ValueError, match="inside the workspace"):
-        tool.invoke(
-            ToolCall(tool_name="list", arguments={"path": "../escape"}),
-            workspace=tmp_path,
-        )
+    result = tool.invoke(
+        ToolCall(tool_name="list", arguments={"path": str(outside)}),
+        workspace=tmp_path,
+    )
+    assert result.status == "ok"
+    assert result.data["path"] == str(outside.resolve())
+    assert "x.txt" in (result.content or "")
 
 
 def test_list_tool_rejects_nonexistent_path(tmp_path: Path) -> None:

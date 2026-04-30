@@ -65,17 +65,23 @@ def test_read_file_tool_returns_attachment_for_images(tmp_path: Path) -> None:
     assert isinstance(result.data["attachment"], dict)
 
 
-def test_read_file_tool_rejects_workspace_escape(tmp_path: Path) -> None:
+def test_read_file_tool_allows_workspace_escape_path_with_absolute_display(tmp_path: Path) -> None:
+    outside = tmp_path.parent / "outside-read.txt"
+    outside.write_text("outside", encoding="utf-8")
     tool = ReadFileTool()
 
-    with pytest.raises(ValueError, match="inside the workspace"):
-        tool.invoke(
-            ToolCall(tool_name="read_file", arguments={"filePath": "../escape.txt"}),
-            workspace=tmp_path,
-        )
+    result = tool.invoke(
+        ToolCall(tool_name="read_file", arguments={"filePath": "../outside-read.txt"}),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert result.data["path"] == str(outside.resolve())
 
 
-def test_read_file_tool_rejects_symlink_escape(tmp_path: Path) -> None:
+def test_read_file_tool_allows_symlink_escape_when_runtime_permission_allows(
+    tmp_path: Path,
+) -> None:
     outside = tmp_path.parent / "outside_read_escape.txt"
     outside.write_text("secret", encoding="utf-8")
     link = tmp_path / "link.txt"
@@ -85,11 +91,12 @@ def test_read_file_tool_rejects_symlink_escape(tmp_path: Path) -> None:
         pytest.skip("symlink is not available on this platform")
 
     tool = ReadFileTool()
-    with pytest.raises(ValueError, match="inside the workspace"):
-        tool.invoke(
-            ToolCall(tool_name="read_file", arguments={"filePath": "link.txt"}),
-            workspace=tmp_path,
-        )
+    result = tool.invoke(
+        ToolCall(tool_name="read_file", arguments={"filePath": "link.txt"}),
+        workspace=tmp_path,
+    )
+    assert result.status == "ok"
+    assert result.data["path"] == str(outside.resolve())
 
 
 def test_read_file_tool_sniffs_text_with_bounded_stream_read(tmp_path: Path) -> None:
