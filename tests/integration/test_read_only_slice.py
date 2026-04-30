@@ -501,6 +501,38 @@ class _CapturingModelProvider:
 
 
 @dataclass(frozen=True, slots=True)
+class _ReadFileParityModelProvider:
+    name: str
+    requests: list[object]
+
+    def turn_provider(self) -> object:
+        requests = self.requests
+        name = self.name
+
+        class _Provider:
+            def __init__(self) -> None:
+                self.name = name
+
+            def propose_turn(self, request: object) -> object:
+                requests.append(request)
+                provider_protocol_module = importlib.import_module(
+                    "voidcode.runtime.provider_protocol"
+                )
+                tool_contracts_module = importlib.import_module("voidcode.tools.contracts")
+                if not _assembled_context(request).tool_results:
+                    return provider_protocol_module.ProviderTurnResult(
+                        tool_call=tool_contracts_module.ToolCall(
+                            tool_name="read_file",
+                            arguments={"filePath": "sample.txt"},
+                            tool_call_id="read-1",
+                        )
+                    )
+                return provider_protocol_module.ProviderTurnResult(output="done")
+
+        return _Provider()
+
+
+@dataclass(frozen=True, slots=True)
 class _DelegationE2EModelProvider:
     name: str
 
@@ -1279,6 +1311,207 @@ def test_provider_runtime_persists_and_injects_runtime_todo_state(tmp_path: Path
     raw_runtime_state = loaded.session.metadata["runtime_state"]
     assert isinstance(raw_runtime_state, dict)
     assert "todos" in raw_runtime_state
+
+
+def test_provider_context_live_persisted_replay_and_debug_parity_for_read_file(
+    tmp_path: Path,
+) -> None:
+    contracts_module = importlib.import_module("voidcode.runtime.contracts")
+    config_module = importlib.import_module("voidcode.runtime.config")
+    context_window_module = importlib.import_module("voidcode.runtime.context_window")
+    model_provider_module = importlib.import_module("voidcode.provider.registry")
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    service_module = importlib.import_module("voidcode.runtime.service")
+    runtime_request = cast(Callable[..., RuntimeRequestLike], contracts_module.RuntimeRequest)
+    requests: list[object] = []
+    _ = (tmp_path / "sample.txt").write_text("alpha\nbeta\n", encoding="utf-8")
+
+    runtime_config = config_module.RuntimeConfig(
+        approval_mode="allow",
+        execution_engine="provider",
+        model="opencode-go/minimax-m2.7",
+        context_window=config_module.RuntimeContextWindowConfig(
+            auto_compaction=False,
+            max_tool_result_tokens=100_000,
+        ),
+    )
+    runtime = service_module.VoidCodeRuntime(
+        workspace=tmp_path,
+        config=runtime_config,
+        permission_policy=permission_module.PermissionPolicy(mode="allow"),
+        model_provider_registry=model_provider_module.ModelProviderRegistry(
+            providers={
+                "opencode-go": _ReadFileParityModelProvider(
+                    name="opencode-go",
+                    requests=requests,
+                )
+            }
+        ),
+    )
+
+    response = runtime.run(
+        runtime_request(prompt="read sample.txt", session_id="provider-context-parity")
+    )
+    loaded = runtime.session_result(session_id="provider-context-parity")
+    replay_runtime = service_module.VoidCodeRuntime(
+        workspace=tmp_path,
+        config=runtime_config,
+        permission_policy=permission_module.PermissionPolicy(mode="allow"),
+        model_provider_registry=model_provider_module.ModelProviderRegistry(
+            providers={
+                "opencode-go": _ReadFileParityModelProvider(
+                    name="opencode-go",
+                    requests=[],
+                )
+            }
+        ),
+    )
+    replay = replay_runtime.resume("provider-context-parity")
+    snapshot = replay_runtime.session_debug_snapshot(session_id="provider-context-parity")
+
+    assert response.session.status == "completed"
+    assert len(requests) == 2
+    live_tool_result = _assembled_context(requests[1]).tool_results[0]
+    raw_content = live_tool_result.content
+    assert raw_content is not None
+    assert "<path>sample.txt</path>" in raw_content
+    assert "1: alpha" in raw_content
+    assert "2: beta" in raw_content
+    assert live_tool_result.data["tool_call_id"] == "read-1"
+    assert live_tool_result.data["arguments"] == {"filePath": "sample.txt"}
+    live_metadata = _assembled_context(requests[1]).metadata
+    assert (
+        live_metadata["original_tool_result_tokens"] == live_metadata["retained_tool_result_tokens"]
+    )
+    normalized = context_window_module.normalize_read_file_output(raw_content)
+    assert normalized == "alpha\nbeta"
+    normalized_tokens = context_window_module.count_text_tokens(normalized).tokens
+    assert cast(int, live_metadata["original_tool_result_tokens"]) > normalized_tokens
+
+    live_event = next(
+        event for event in response.events if event.event_type == "runtime.tool_completed"
+    )
+    loaded_event = next(
+        event for event in loaded.transcript if event.event_type == "runtime.tool_completed"
+    )
+    replay_event = next(
+        event for event in replay.events if event.event_type == "runtime.tool_completed"
+    )
+    assert live_event.payload["content"] == raw_content
+    assert loaded_event.payload["content"] == raw_content
+    assert replay_event.payload["content"] == raw_content
+    assert loaded_event.payload["tool_call_id"] == "read-1"
+    assert replay_event.payload["arguments"] == {"filePath": "sample.txt"}
+
+    provider_context = snapshot.provider_context
+    assert provider_context is not None
+    assert provider_context.provider == "opencode-go"
+    tool_segments = [segment for segment in provider_context.segments if segment.role == "tool"]
+    assert len(tool_segments) == 1
+    assert tool_segments[0].tool_name == "read_file"
+    assert tool_segments[0].content == raw_content
+    assert tool_segments[0].metadata["status"] == "ok"
+    assert provider_context.provider_messages[-1].source == "provider_synthetic_tool_feedback"
+    synthetic_feedback = provider_context.provider_messages[-1].content or ""
+    assert synthetic_feedback.count('"tool_name": "read_file"') == 1
+    assert "1: alpha" in synthetic_feedback
+    assert "tool_status" not in synthetic_feedback
+    assert "display" not in synthetic_feedback
+
+
+def test_provider_context_compacted_debug_snapshot_keeps_only_retained_live_shape(
+    tmp_path: Path,
+) -> None:
+    contracts_module = importlib.import_module("voidcode.runtime.contracts")
+    config_module = importlib.import_module("voidcode.runtime.config")
+    model_provider_module = importlib.import_module("voidcode.provider.registry")
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    provider_protocol_module = importlib.import_module("voidcode.runtime.provider_protocol")
+    service_module = importlib.import_module("voidcode.runtime.service")
+    tool_contracts_module = importlib.import_module("voidcode.tools.contracts")
+    runtime_request = cast(Callable[..., RuntimeRequestLike], contracts_module.RuntimeRequest)
+    requests: list[object] = []
+    _ = (tmp_path / "sample.txt").write_text("fresh\n", encoding="utf-8")
+
+    class _CompactionModelProvider:
+        def turn_provider(self) -> object:
+            class _Provider:
+                name = "opencode"
+
+                def propose_turn(self, request: object) -> object:
+                    requests.append(request)
+                    if len(requests) == 1:
+                        return provider_protocol_module.ProviderTurnResult(
+                            tool_call=tool_contracts_module.ToolCall(
+                                tool_name="shell_exec",
+                                arguments={
+                                    "command": "printf 'old shell output\\n'",
+                                    "description": "emit old shell output",
+                                },
+                                tool_call_id="shell-1",
+                            )
+                        )
+                    if len(requests) == 2:
+                        return provider_protocol_module.ProviderTurnResult(
+                            tool_call=tool_contracts_module.ToolCall(
+                                tool_name="read_file",
+                                arguments={"filePath": "sample.txt"},
+                                tool_call_id="read-1",
+                            )
+                        )
+                    return provider_protocol_module.ProviderTurnResult(output="done")
+
+            return _Provider()
+
+    runtime = service_module.VoidCodeRuntime(
+        workspace=tmp_path,
+        config=config_module.RuntimeConfig(
+            approval_mode="allow",
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            context_window=config_module.RuntimeContextWindowConfig(max_tool_results=1),
+        ),
+        permission_policy=permission_module.PermissionPolicy(mode="allow"),
+        model_provider_registry=model_provider_module.ModelProviderRegistry(
+            providers={"opencode": _CompactionModelProvider()}
+        ),
+    )
+
+    response = runtime.run(
+        runtime_request(prompt="compact old output", session_id="provider-context-compacted")
+    )
+    snapshot = runtime.session_debug_snapshot(session_id="provider-context-compacted")
+
+    assert response.session.status == "completed"
+    assert len(requests) == 3
+    third_context = _assembled_context(requests[2])
+    assert [result.tool_name for result in third_context.tool_results] == ["read_file"]
+
+    provider_context = snapshot.provider_context
+    assert provider_context is not None
+    assert provider_context.context_window["compacted"] is True
+    assert provider_context.context_window["original_tool_result_count"] == 2
+    assert provider_context.context_window["retained_tool_result_count"] == 1
+    continuity = provider_context.context_window["continuity_state"]
+    assert isinstance(continuity, dict)
+    assert continuity["dropped_tool_result_count"] == 1
+    assert "shell_exec" in cast(str, continuity["summary_text"])
+    retained_tool_segments = [
+        segment for segment in provider_context.segments if segment.role == "tool"
+    ]
+    assert [segment.tool_name for segment in retained_tool_segments] == ["read_file"]
+    assert retained_tool_segments[0].content == third_context.tool_results[0].content
+    provider_message_text = "\n".join(
+        message.content or "" for message in provider_context.provider_messages
+    )
+    assert '"tool_name": "read_file"' in provider_message_text
+    assert '"tool_name": "shell_exec"' not in provider_message_text
+    assert any(
+        segment.role == "system"
+        and segment.source == "continuity_summary"
+        and "shell_exec" in (segment.content or "")
+        for segment in provider_context.segments
+    )
 
 
 def test_runtime_delegated_mcp_and_background_hook_events_have_exact_metadata(

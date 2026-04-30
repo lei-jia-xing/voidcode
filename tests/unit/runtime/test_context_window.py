@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from types import ModuleType
 from typing import Literal, cast
@@ -297,6 +298,194 @@ def test_provider_context_inspector_reports_tool_pairing_problems() -> None:
     assert "missing_tool_result" in diagnostic_codes
     assert "orphan_tool_result" in diagnostic_codes
     assert "provider_requires_tools_schema" in diagnostic_codes
+
+
+def test_provider_context_parity_matrix_preserves_tool_shapes_across_debug_messages() -> None:
+    raw_read_content = "\n".join(
+        [
+            "<path>sample.txt</path>",
+            "<type>file</type>",
+            "<content>",
+            "1: alpha",
+            "2: beta",
+            "(End of file - total 2 lines)",
+            "</content>",
+        ]
+    )
+    tool_results = (
+        ToolResult(
+            tool_name="read_file",
+            status="ok",
+            content=raw_read_content,
+            data={
+                "tool_call_id": "read-1",
+                "arguments": {"path": "sample.txt"},
+                "path": "sample.txt",
+                "type": "file",
+            },
+        ),
+        ToolResult(
+            tool_name="shell_exec",
+            status="ok",
+            content="line-1\n[truncated: .voidcode/tool-output/shell_exec-abc.txt]",
+            data={
+                "tool_call_id": "shell-1",
+                "arguments": {"command": "python script.py"},
+                "command": "python script.py",
+                "exit_code": 0,
+                "output_path": ".voidcode/tool-output/shell_exec-abc.txt",
+            },
+            truncated=True,
+            partial=True,
+            reference=".voidcode/tool-output/shell_exec-abc.txt",
+        ),
+        ToolResult(
+            tool_name="grep",
+            status="ok",
+            content="Found 2 match(es) for 'alpha' in src\nsrc/a.py:1: alpha",
+            data={
+                "tool_call_id": "grep-1",
+                "arguments": {"pattern": "alpha", "path": "src"},
+                "pattern": "alpha",
+                "match_count": 2,
+                "matches": [{"file": "src/a.py", "line": 1, "text": "alpha"}],
+            },
+        ),
+        ToolResult(
+            tool_name="todo_write",
+            status="ok",
+            content="Updated 1 todos\n1. [in_progress/high] preserve context parity",
+            data={
+                "tool_call_id": "todo-1",
+                "arguments": {
+                    "todos": [
+                        {
+                            "content": "preserve context parity",
+                            "status": "in_progress",
+                            "priority": "high",
+                        }
+                    ]
+                },
+                "todos": [
+                    {
+                        "content": "preserve context parity",
+                        "status": "in_progress",
+                        "priority": "high",
+                    }
+                ],
+                "summary": {"total": 1, "in_progress": 1},
+            },
+        ),
+        ToolResult(
+            tool_name="task",
+            status="ok",
+            content="Background task launched.\n\nBackground Task ID: bg_123",
+            data={
+                "tool_call_id": "task-1",
+                "arguments": {"prompt": "inspect child"},
+                "task_id": "bg_123",
+                "child_session_id": "child-session",
+            },
+            reference="session:child-session",
+        ),
+        ToolResult(
+            tool_name="background_output",
+            status="ok",
+            content="Task Result\n\nTask ID: bg_123\nSummary: child done",
+            data={
+                "tool_call_id": "background-1",
+                "arguments": {"task_id": "bg_123"},
+                "task_id": "bg_123",
+                "child_session_id": "child-session",
+                "summary_output": "child done",
+            },
+            reference="session:child-session",
+        ),
+    )
+    assembled = assemble_provider_context(
+        prompt="continue",
+        tool_results=tool_results,
+        session_metadata={
+            "runtime_state": {
+                "todos": {
+                    "version": 1,
+                    "revision": 1,
+                    "todos": [
+                        {
+                            "content": "preserve context parity",
+                            "status": "in_progress",
+                            "priority": "high",
+                            "position": 1,
+                            "updated_at": 1,
+                        }
+                    ],
+                }
+            }
+        },
+        policy=ContextWindowPolicy(auto_compaction=False, max_tool_result_tokens=100_000),
+    )
+
+    standard_snapshot = inspect_provider_context(
+        assembled_context=assembled,
+        provider="openai",
+        model="gpt-4o",
+        execution_engine="provider",
+        available_tool_count=6,
+    )
+    synthetic_tool_results = (tool_results[0], tool_results[-1])
+    synthetic_assembled = assemble_provider_context(
+        prompt="continue",
+        tool_results=synthetic_tool_results,
+        session_metadata={},
+        policy=ContextWindowPolicy(auto_compaction=False, max_tool_result_tokens=100_000),
+    )
+    synthetic_snapshot = inspect_provider_context(
+        assembled_context=synthetic_assembled,
+        provider="opencode-go",
+        model="minimax-m2.7",
+        execution_engine="provider",
+        available_tool_count=6,
+        tool_feedback_mode="synthetic_user_message",
+    )
+
+    tool_segments = [segment for segment in standard_snapshot.segments if segment.role == "tool"]
+    tool_messages = [
+        message for message in standard_snapshot.provider_messages if message.role == "tool"
+    ]
+    assert [segment.tool_name for segment in tool_segments] == [
+        result.tool_name for result in tool_results
+    ]
+    assert len(tool_messages) == len(tool_results)
+    for result, segment, message in zip(tool_results, tool_segments, tool_messages, strict=True):
+        assert segment.content == result.content
+        assert segment.metadata["status"] == result.status
+        assert segment.metadata["reference"] == result.reference
+        assert message.content is not None
+        payload = json.loads(message.content)
+        assert payload["tool_name"] == result.tool_name
+        assert payload["status"] == result.status
+        assert payload["content"] == result.content
+        assert payload["reference"] == result.reference
+        assert "tool_call_id" not in payload["data"]
+        assert "arguments" not in payload["data"]
+
+    todo_system_segments = [
+        segment
+        for segment in standard_snapshot.segments
+        if segment.role == "system" and segment.source == "runtime_todo_state"
+    ]
+    assert len(todo_system_segments) == 1
+    assert "preserve context parity" in (todo_system_segments[0].content or "")
+    synthetic_feedback = synthetic_snapshot.provider_messages[-1].content or ""
+    assert synthetic_snapshot.provider_messages[-1].source == "provider_synthetic_tool_feedback"
+    for result in synthetic_tool_results:
+        assert synthetic_feedback.count(f'"tool_name": "{result.tool_name}"') == 1
+    assert "1: alpha" in synthetic_feedback
+    assert "child done" in synthetic_feedback
+    assert any(
+        diagnostic.code == "provider_path_uses_synthetic_tool_feedback"
+        for diagnostic in synthetic_snapshot.diagnostics
+    )
 
 
 def test_prepare_provider_context_compacts_old_results_and_reports_metadata() -> None:
