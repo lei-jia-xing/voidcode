@@ -105,6 +105,69 @@ def test_tool_output_artifact_resolves_from_events_by_id_or_tool_call(tmp_path: 
     assert by_tool_call_id["tool_call_id"] == "call-1"
 
 
+def test_tool_output_artifact_resolver_skips_invalid_candidate_for_same_tool_call(
+    tmp_path: Path,
+) -> None:
+    result = ToolResult(tool_name="sample", status="ok", content="one\ntwo\nthree\n")
+    capped = cap_tool_result_output(
+        result,
+        workspace=tmp_path,
+        session_id="session-1",
+        tool_call_id="call-1",
+        max_lines=1,
+        max_bytes=10_000,
+    )
+    valid_artifact = capped.data["artifact"]
+    assert isinstance(valid_artifact, dict)
+    forged_artifact = {
+        **cast(dict[str, object], valid_artifact),
+        "artifact_id": "artifact_",
+    }
+    events: list[object] = [
+        {"payload": {"artifact": forged_artifact}},
+        {"payload": {"artifact": valid_artifact}},
+    ]
+
+    resolved = resolve_tool_output_artifact(events, tool_call_id="call-1")
+
+    assert resolved is not None
+    assert resolved["artifact_id"] == capped.data["artifact_id"]
+
+
+def test_tool_output_artifact_resolver_skips_invalid_candidate_for_same_artifact_id(
+    tmp_path: Path,
+) -> None:
+    result = ToolResult(tool_name="sample", status="ok", content="one\ntwo\nthree\n")
+    capped = cap_tool_result_output(
+        result,
+        workspace=tmp_path,
+        session_id="session-1",
+        tool_call_id="call-1",
+        max_lines=1,
+        max_bytes=10_000,
+    )
+    valid_artifact = capped.data["artifact"]
+    assert isinstance(valid_artifact, dict)
+    artifact = cast(dict[str, object], valid_artifact)
+    raw_artifact_id = artifact["artifact_id"]
+    assert isinstance(raw_artifact_id, str)
+    artifact_id = raw_artifact_id
+    artifact_path = Path(cast(str, artifact["path"]))
+    forged_artifact = {
+        **artifact,
+        "path": str(artifact_path.with_name("tool-call-artifact_000000000000000000000000.txt")),
+    }
+    events: list[object] = [
+        {"payload": {"artifact": forged_artifact}},
+        {"payload": {"artifact": valid_artifact}},
+    ]
+
+    resolved = resolve_tool_output_artifact(events, artifact_id=artifact_id)
+
+    assert resolved is not None
+    assert resolved["artifact_id"] == artifact_id
+
+
 def test_tool_output_artifact_rejects_untrusted_paths(tmp_path: Path) -> None:
     outside_file = tmp_path / "secret.txt"
     outside_file.write_text("must not read", encoding="utf-8")

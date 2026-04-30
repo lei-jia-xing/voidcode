@@ -351,7 +351,7 @@ def resolve_tool_output_artifact(
             continue
         artifact_dict = dict(artifact_mapping)
         if _artifact_path_from_metadata(artifact_dict) is None:
-            return None
+            continue
         return artifact_dict
     return None
 

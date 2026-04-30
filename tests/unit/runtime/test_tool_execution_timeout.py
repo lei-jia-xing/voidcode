@@ -7,8 +7,15 @@ from pathlib import Path
 from typing import Any, cast
 
 from voidcode.runtime.config import RuntimeConfig
-from voidcode.runtime.contracts import RuntimeProviderContextSegmentSnapshot, RuntimeRequest
+from voidcode.runtime.contracts import (
+    RuntimeProviderContextSegmentSnapshot,
+    RuntimeRequest,
+    RuntimeResponse,
+)
+from voidcode.runtime.events import EventEnvelope
 from voidcode.runtime.service import ToolRegistry, VoidCodeRuntime
+from voidcode.runtime.session import SessionRef, SessionState
+from voidcode.runtime.storage import SqliteSessionStore
 from voidcode.tools import ShellExecTool
 from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolResult
 from voidcode.tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
@@ -451,6 +458,85 @@ def test_runtime_resolves_tool_output_artifacts_and_reports_missing_debug_state(
     segment_data = artifact_segments[-1].metadata["data"]
     assert isinstance(segment_data, dict)
     assert segment_data["artifact_missing"] is True
+
+
+def test_runtime_artifact_resolver_skips_invalid_candidate_for_same_tool_call(
+    tmp_path: Path,
+) -> None:
+    source_runtime = _make_runtime(tmp_path, _LargeOutputTool(), tool_timeout_seconds=None)
+    _ = list(source_runtime.run_stream(RuntimeRequest(prompt="go", session_id="source-session")))
+    source_replay = source_runtime.resume("source-session")
+    completed_event = next(
+        event for event in source_replay.events if event.event_type == "runtime.tool_completed"
+    )
+    valid_artifact = completed_event.payload["artifact"]
+    assert isinstance(valid_artifact, dict)
+    tool_call_id = completed_event.payload["tool_call_id"]
+    assert isinstance(tool_call_id, str)
+    forged_artifact = {
+        **cast(dict[str, object], valid_artifact),
+        "artifact_id": "artifact_",
+    }
+    session_id = "resolver-invalid-first-session"
+    store = SqliteSessionStore()
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(execution_engine="deterministic"),
+        session_store=store,
+    )
+    store.save_run(
+        workspace=tmp_path,
+        request=RuntimeRequest(prompt="go", session_id=session_id),
+        response=RuntimeResponse(
+            session=SessionState(
+                session=SessionRef(id=session_id),
+                status="completed",
+                turn=1,
+                metadata={},
+            ),
+            events=(
+                EventEnvelope(
+                    session_id=session_id,
+                    sequence=1,
+                    event_type="runtime.tool_completed",
+                    source="tool",
+                    payload={
+                        "tool": "large_output_tool",
+                        "tool_call_id": tool_call_id,
+                        "status": "ok",
+                        "content": "forged",
+                        "artifact": forged_artifact,
+                    },
+                ),
+                EventEnvelope(
+                    session_id=session_id,
+                    sequence=2,
+                    event_type="runtime.tool_completed",
+                    source="tool",
+                    payload={
+                        **completed_event.payload,
+                        "tool_call_id": tool_call_id,
+                    },
+                ),
+            ),
+            output="done",
+        ),
+    )
+
+    metadata = runtime.resolve_tool_output_artifact(
+        session_id=session_id,
+        tool_call_id=tool_call_id,
+    )
+    read_result = runtime.read_tool_output_artifact(
+        session_id=session_id,
+        tool_call_id=tool_call_id,
+        offset=2099,
+        limit=1,
+    )
+
+    assert metadata["artifact_id"] == completed_event.payload["artifact_id"]
+    assert metadata["status"] == "available"
+    assert read_result["content"] == "line-2099\n"
 
 
 def test_runtime_sanitizes_tool_arguments_and_data_before_events_and_feedback(
