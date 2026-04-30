@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -20,11 +21,19 @@ from voidcode.runtime.contracts import RuntimeRequest, RuntimeResponse
 from voidcode.runtime.events import EventEnvelope
 from voidcode.runtime.session import SessionRef, SessionState
 from voidcode.runtime.storage import SqliteSessionStore
+from voidcode.runtime.task import (
+    BackgroundTaskRef,
+    BackgroundTaskRequestSnapshot,
+    BackgroundTaskState,
+)
 
 
 def _save_sample_session(tmp_path: Path, *, session_id: str = "bundle-session") -> None:
     store = SqliteSessionStore()
-    request = RuntimeRequest(prompt="inspect failure", session_id=session_id)
+    request = RuntimeRequest(
+        prompt="inspect failure with api_key=prompt-secret",
+        session_id=session_id,
+    )
     response = RuntimeResponse(
         session=SessionState(
             session=SessionRef(id=session_id),
@@ -78,9 +87,26 @@ def _save_sample_session(tmp_path: Path, *, session_id: str = "bundle-session") 
                 payload={"summary": "done"},
             ),
         ),
-        output="done",
+        output="done with sk-output-secret",
     )
     store.save_run(workspace=tmp_path, request=request, response=response)
+
+
+def _save_background_task_with_secrets(tmp_path: Path) -> None:
+    store = SqliteSessionStore()
+    store.create_background_task(
+        workspace=tmp_path,
+        task=BackgroundTaskState(
+            task=BackgroundTaskRef(id="secret-task"),
+            status="failed",
+            request=BackgroundTaskRequestSnapshot(
+                prompt="delegate with api_key=task-prompt-secret",
+                parent_session_id="bundle-session",
+            ),
+            session_id="child-secret-session",
+            error="failed with Bearer taskerrorsecret",
+        ),
+    )
 
 
 def test_session_bundle_export_redacts_and_bounds_default_payload(tmp_path: Path) -> None:
@@ -103,10 +129,35 @@ def test_session_bundle_export_redacts_and_bounds_default_payload(tmp_path: Path
     assert bundle.manifest.event_count == 2
     assert "raw provider content" not in encoded
     assert "sk-test-secret" not in encoded
+    assert "prompt-secret" not in encoded
+    assert "sk-output-secret" not in encoded
     assert "private chain of thought" not in encoded
     assert "Bearer abcdef123456" not in encoded
     assert SESSION_BUNDLE_REDACTED_PLACEHOLDER in encoded
     assert "truncated by session bundle" in encoded
+
+
+def test_session_bundle_export_redacts_background_task_prompt_and_error(
+    tmp_path: Path,
+) -> None:
+    _save_sample_session(tmp_path)
+    _save_background_task_with_secrets(tmp_path)
+    store = SqliteSessionStore()
+
+    bundle = build_session_bundle(
+        session_store=store,
+        workspace=tmp_path,
+        session_id="bundle-session",
+    )
+    payload = bundle.to_payload()
+    encoded = json.dumps(payload, sort_keys=True)
+
+    assert bundle.manifest.background_task_count == 1
+    assert "task-prompt-secret" not in encoded
+    assert "taskerrorsecret" not in encoded
+    background_tasks = cast(list[dict[str, object]], payload["background_tasks"])
+    assert background_tasks[0]["prompt"] == "delegate with <redacted>"
+    assert background_tasks[0]["error"] == "failed with <redacted>"
 
 
 def test_session_bundle_json_and_zip_roundtrip(tmp_path: Path) -> None:

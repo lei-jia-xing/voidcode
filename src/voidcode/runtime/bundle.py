@@ -333,6 +333,20 @@ def _truncate_string(value: str, *, limit: int) -> str:
     return value[:limit] + suffix
 
 
+def _sanitize_export_text(
+    value: str | None,
+    *,
+    options: SessionBundleOptions,
+    truncate_when_tool_output_hidden: bool = False,
+) -> str | None:
+    if value is None:
+        return None
+    sanitized = _scrub_secret_text(value) if options.redact else value
+    if truncate_when_tool_output_hidden and not options.include_tool_output:
+        return _truncate_string(sanitized, limit=options.tool_output_preview_chars)
+    return sanitized
+
+
 def _strip_reasoning_payload(payload: dict[str, object]) -> dict[str, object]:
     cleaned: dict[str, object] = {}
     for key, value in payload.items():
@@ -519,13 +533,19 @@ class _SessionBundleBuilder:
         )
 
     def _build_session_payload(self, response: RuntimeResponse) -> SessionBundleSessionPayload:
-        prompt = self._session_prompt(session_id=response.session.session.id)
+        prompt = _sanitize_export_text(
+            self._session_prompt(session_id=response.session.session.id),
+            options=self._options,
+        )
+        assert prompt is not None
         raw_events = tuple(self._build_event_payload(event) for event in response.events)
         events = tuple(payload for payload in raw_events if payload is not None)
         metadata = _apply_payload_options(response.session.metadata, options=self._options)
-        output = response.output
-        if output is not None and not self._options.include_tool_output:
-            output = _truncate_string(output, limit=self._options.tool_output_preview_chars)
+        output = _sanitize_export_text(
+            response.output,
+            options=self._options,
+            truncate_when_tool_output_hidden=True,
+        )
         return SessionBundleSessionPayload(
             id=response.session.session.id,
             parent_id=response.session.session.parent_id,
@@ -605,8 +625,8 @@ class _SessionBundleBuilder:
             status=task.status,
             parent_session_id=parent_session_id,
             child_session_id=task.session_id,
-            prompt=task.prompt,
-            error=task.error,
+            prompt=_sanitize_export_text(task.prompt, options=self._options) or "",
+            error=_sanitize_export_text(task.error, options=self._options),
             created_at=task.created_at,
             updated_at=task.updated_at,
         )
