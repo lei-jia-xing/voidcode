@@ -184,3 +184,11 @@ def test_strip_redaction_sentinels_preserves_truncation_previews() -> None:
     stripped = strip_redaction_sentinels({"query": summary})
 
     assert stripped == {"query": summary}
+
+
+def test_strip_redaction_sentinels_preserves_matching_custom_metadata_objects() -> None:
+    metadata = {"omitted": True, "byte_count": 42, "line_count": 2}
+
+    stripped = strip_redaction_sentinels({"metadata": metadata})
+
+    assert stripped == {"metadata": metadata}

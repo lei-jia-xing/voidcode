@@ -27,7 +27,7 @@ def _is_metadata_count(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
-def _is_redaction_summary(value: dict[object, object]) -> bool:
+def _is_sanitizer_redaction_placeholder(value: dict[object, object]) -> bool:
     return (
         value.get("omitted") is True
         and _is_metadata_count(value.get("byte_count"))
@@ -96,18 +96,26 @@ def sanitize_tool_result_data(data: dict[str, object]) -> dict[str, object]:
     return sanitized
 
 
-def strip_redaction_sentinels(value: object) -> object:
-    """Return a schema-safe copy with redaction metadata placeholders removed."""
+def strip_redaction_sentinels(value: object, *, key: str | None = None) -> object:
+    """Return a schema-safe copy with sanitizer-created redaction placeholders removed."""
 
     if isinstance(value, dict):
         raw_value = cast(dict[object, object], value)
-        if _is_redaction_summary(raw_value):
+        if (
+            key in _SENSITIVE_TEXT_ARGUMENT_KEYS | _INLINE_BLOB_KEYS
+            and _is_sanitizer_redaction_placeholder(raw_value)
+        ):
             return ""
-        return {str(key): strip_redaction_sentinels(item) for key, item in raw_value.items()}
+        return {
+            str(item_key): strip_redaction_sentinels(item, key=str(item_key))
+            for item_key, item in raw_value.items()
+        }
     if isinstance(value, list):
-        return [strip_redaction_sentinels(item) for item in cast(list[object], value)]
+        return [strip_redaction_sentinels(item, key=key) for item in cast(list[object], value)]
     if isinstance(value, tuple):
-        return [strip_redaction_sentinels(item) for item in cast(tuple[object, ...], value)]
+        return [
+            strip_redaction_sentinels(item, key=key) for item in cast(tuple[object, ...], value)
+        ]
     return value
 
 
