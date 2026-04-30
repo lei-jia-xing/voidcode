@@ -506,6 +506,153 @@ def test_sessions_debug_outputs_json_snapshot() -> None:
     assert "Traceback" not in debug_result.stderr
 
 
+def test_sessions_resume_dry_run_outputs_debug_without_execution() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        _ = (workspace / "sample.txt").write_text("sample\n", encoding="utf-8")
+        env = with_src_pythonpath(os.environ.copy())
+
+        setup_result = _run_module_cli(
+            "run",
+            "read sample.txt",
+            "--workspace",
+            str(workspace),
+            "--session-id",
+            "dry-run-session",
+            env=env,
+        )
+        resume_result = _run_module_cli(
+            "sessions",
+            "resume",
+            "dry-run-session",
+            "--workspace",
+            str(workspace),
+            "--dry-run",
+            env=env,
+        )
+
+    payload = json.loads(resume_result.stdout)
+    assert setup_result.returncode == 0
+    assert resume_result.returncode == 0
+    assert payload["dry_run"] is True
+    assert payload["session_id"] == "dry-run-session"
+    assert payload["debug"]["prompt"] == "read sample.txt"
+    assert "RESULT" not in resume_result.stdout
+
+
+def test_sessions_export_import_bundle_roundtrip() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        source = root / "source"
+        target = root / "target"
+        source.mkdir()
+        target.mkdir()
+        _ = (source / "sample.txt").write_text("sample\n", encoding="utf-8")
+        bundle_path = root / "session.vcsession.zip"
+        env = with_src_pythonpath(os.environ.copy())
+
+        setup_result = _run_module_cli(
+            "run",
+            "read sample.txt",
+            "--workspace",
+            str(source),
+            "--session-id",
+            "export-session",
+            env=env,
+        )
+        export_result = _run_module_cli(
+            "sessions",
+            "export",
+            "export-session",
+            "--workspace",
+            str(source),
+            "--output",
+            str(bundle_path),
+            "--support",
+            env=env,
+        )
+        dry_run_result = _run_module_cli(
+            "sessions",
+            "import",
+            str(bundle_path),
+            "--workspace",
+            str(target),
+            "--dry-run",
+            env=env,
+        )
+        import_result = _run_module_cli(
+            "sessions",
+            "import",
+            str(bundle_path),
+            "--workspace",
+            str(target),
+            env=env,
+        )
+        debug_result = _run_module_cli(
+            "sessions",
+            "debug",
+            "export-session",
+            "--workspace",
+            str(target),
+            env=env,
+        )
+        bundle_exists = bundle_path.exists()
+
+    export_payload = json.loads(export_result.stdout)
+    dry_run_payload = json.loads(dry_run_result.stdout)
+    import_payload = json.loads(import_result.stdout)
+    debug_payload = json.loads(debug_result.stdout)
+    assert setup_result.returncode == 0
+    assert export_result.returncode == 0
+    assert bundle_exists
+    assert export_payload["manifest"]["support_mode"] is True
+    assert dry_run_result.returncode == 0
+    assert dry_run_payload["import"]["dry_run"] is True
+    assert dry_run_payload["import"]["imported_session_ids"] == ["export-session"]
+    assert import_result.returncode == 0
+    assert import_payload["import"]["imported_session_ids"] == ["export-session"]
+    assert debug_result.returncode == 0
+    assert debug_payload["prompt"] == "read sample.txt"
+    imported_bundle = debug_payload["session"]["metadata"]["imported_bundle"]
+    assert imported_bundle["version"] == 1
+    assert imported_bundle["original_session_id"] == "export-session"
+    assert imported_bundle["imported_at_session_id"] == "export-session"
+    assert imported_bundle["original_workspace"] == str(source)
+
+
+def test_sessions_export_json_to_stdout() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        _ = (workspace / "sample.txt").write_text("sample\n", encoding="utf-8")
+        env = with_src_pythonpath(os.environ.copy())
+
+        setup_result = _run_module_cli(
+            "run",
+            "read sample.txt",
+            "--workspace",
+            str(workspace),
+            "--session-id",
+            "json-export-session",
+            env=env,
+        )
+        export_result = _run_module_cli(
+            "sessions",
+            "export",
+            "json-export-session",
+            "--workspace",
+            str(workspace),
+            "--format",
+            "json",
+            env=env,
+        )
+
+    payload = json.loads(export_result.stdout)
+    assert setup_result.returncode == 0
+    assert export_result.returncode == 0
+    assert payload["schema"] == "voidcode.session.bundle.v1"
+    assert payload["sessions"][0]["id"] == "json-export-session"
+
+
 def test_sessions_list_outputs_json() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         workspace = Path(tmp)

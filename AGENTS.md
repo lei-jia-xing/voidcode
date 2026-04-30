@@ -31,6 +31,7 @@ voidcode/
 | Delegated/background task contract | `docs/contracts/background-task-delegation.md` | runtime-owned subagent routing, result retrieval, retry/cancel notes |
 | Session persistence | `src/voidcode/runtime/storage.py` | SQLite-backed local session store |
 | Runtime contracts | `src/voidcode/runtime/contracts.py` | request/response boundary types |
+| Portable session bundles | `src/voidcode/runtime/bundle.py` | schema-versioned import/export artifact with redaction defaults |
 | Graph planning/finalization | `src/voidcode/graph/read_only_slice.py` | current deterministic slice |
 | Tool behavior | `src/voidcode/tools/` | builtin tools include read/write/edit/glob/grep/list/web_fetch/web_search/apply_patch/code_search/multi_edit/todo_write/lsp |
 | Unit tests | `tests/unit/` | contracts, metadata, import, CLI smoke |
@@ -68,6 +69,7 @@ voidcode/
 - Session recovery is local and SQLite-backed under `.voidcode/`.
 - The backend now exposes a broader tool surface including read/write/edit/search/web and patch workflows under `src/voidcode/tools/`.
 - Runtime-owned delegated child execution exists for supported child presets through background task and child session surfaces; it is not an arbitrary multi-agent topology.
+- Portable session import/export is runtime-owned through `src/voidcode/runtime/bundle.py`; CLI import/export must not read or write SQLite bundle rows directly.
 - Agent manifest `skill_refs` select catalog-visible skills by default, while request `force_load_skills` and delegated `load_skills` inject full skill bodies only into the targeted runtime context.
 - MCP is runtime/session-scoped and config-gated; do not describe workspace-scoped MCP, marketplace, dynamic agents, or direct agent-to-agent bus behavior as implemented.
 - Frontend source is intentionally small and flatter than the aspirational structure described in `frontend/README.md`.
@@ -78,6 +80,8 @@ voidcode/
 mise install
 uv sync --extra dev
 uv run voidcode --help
+uv run voidcode sessions export <session-id> --workspace . --output session.vcsession.zip --support
+uv run voidcode sessions import session.vcsession.zip --workspace . --dry-run
 mise run lint
 mise run typecheck
 mise run test

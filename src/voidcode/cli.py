@@ -42,6 +42,12 @@ from .doctor import (
     format_report_json,
 )
 from .provider.snapshot import resolved_provider_snapshot
+from .runtime.bundle import (
+    SessionBundleError,
+    SessionBundleFormat,
+    SessionBundleOptions,
+    write_session_bundle,
+)
 from .runtime.config import (
     RUNTIME_CONFIG_FILE_NAME,
     RuntimeConfig,
@@ -796,9 +802,24 @@ def _serialize_session_debug_snapshot(snapshot: RuntimeSessionDebugSnapshot) -> 
 def _handle_sessions_resume_command(args: argparse.Namespace) -> int:
     workspace = cast(Path, args.workspace)
     session_id = cast(str, args.session_id)
+    dry_run = cast(bool, getattr(args, "dry_run", False))
     approval_decision = cast(PermissionResolution | None, getattr(args, "approval_decision", None))
     runtime = VoidCodeRuntime(workspace=workspace)
     try:
+        if dry_run:
+            try:
+                snapshot = runtime.session_debug_snapshot(session_id=session_id)
+            except ValueError as exc:
+                raise SystemExit(f"error: {exc}") from None
+            print_json(
+                {
+                    "workspace": str(workspace),
+                    "session_id": session_id,
+                    "dry_run": True,
+                    "debug": _serialize_session_debug_snapshot(snapshot),
+                }
+            )
+            return 0
         try:
             result = runtime.resume(
                 session_id,
@@ -811,6 +832,74 @@ def _handle_sessions_resume_command(args: argparse.Namespace) -> int:
         _close_runtime(runtime)
 
     _print_runtime_response(result)
+    return 0
+
+
+def _session_bundle_options_from_args(args: argparse.Namespace) -> SessionBundleOptions:
+    if cast(bool, getattr(args, "support", False)):
+        return SessionBundleOptions.support_artifact()
+    return SessionBundleOptions(
+        redact=cast(bool, getattr(args, "redact", True)),
+        include_tool_output=cast(bool, getattr(args, "include_tool_output", False)),
+        include_raw_provider_messages=cast(
+            bool,
+            getattr(args, "include_raw_provider_messages", False),
+        ),
+        include_reasoning_text=cast(bool, getattr(args, "include_reasoning_text", False)),
+    )
+
+
+def _handle_sessions_export_command(args: argparse.Namespace) -> int:
+    workspace = cast(Path, args.workspace)
+    session_id = cast(str, args.session_id)
+    output_path = cast(Path | None, getattr(args, "output", None))
+    fmt = cast(SessionBundleFormat, getattr(args, "format", "zip"))
+    options = _session_bundle_options_from_args(args)
+    runtime = VoidCodeRuntime(workspace=workspace)
+    try:
+        try:
+            bundle = runtime.export_session_bundle(session_id=session_id, options=options)
+        except (ValueError, SessionBundleError) as exc:
+            raise SystemExit(f"error: {exc}") from None
+    finally:
+        _close_runtime(runtime)
+
+    if output_path is None and fmt == "json":
+        print(json.dumps(bundle.to_payload(), sort_keys=True))
+        return 0
+
+    if output_path is None:
+        output_path = Path(f"{session_id}.vcsession.zip")
+    written = write_session_bundle(bundle, path=output_path, fmt=fmt)
+    print_json(
+        {
+            "workspace": str(workspace),
+            "session_id": session_id,
+            "output": str(written),
+            "format": fmt,
+            "schema": bundle.to_payload()["schema"],
+            "manifest": bundle.to_payload()["manifest"],
+        }
+    )
+    return 0
+
+
+def _handle_sessions_import_command(args: argparse.Namespace) -> int:
+    workspace = cast(Path, args.workspace)
+    bundle_path = cast(Path, args.bundle_path)
+    dry_run = cast(bool, getattr(args, "dry_run", False))
+    runtime = VoidCodeRuntime(workspace=workspace)
+    try:
+        try:
+            result = runtime.import_session_bundle_file(
+                bundle_path=bundle_path,
+                dry_run=dry_run,
+            )
+        except (ValueError, SessionBundleError) as exc:
+            raise SystemExit(f"error: {exc}") from None
+    finally:
+        _close_runtime(runtime)
+    print_json({"workspace": str(workspace), "import": result.to_payload()})
     return 0
 
 
@@ -1991,7 +2080,90 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("allow", "deny"),
         help="Optional approval decision applied to the pending request during resume.",
     )
+    _ = resume_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Inspect the persisted session without resuming execution.",
+    )
     resume_parser.set_defaults(handler=_handle_sessions_resume_command)
+
+    export_parser = sessions_subparsers.add_parser(
+        "export", help="Export a portable redacted session bundle."
+    )
+    _ = export_parser.add_argument("session_id", help="Persisted session identifier to export.")
+    _ = export_parser.add_argument(
+        "--workspace",
+        type=Path,
+        default=Path.cwd(),
+        help="Workspace root used to resolve the local session database.",
+    )
+    _ = export_parser.add_argument(
+        "--output",
+        type=Path,
+        help="Bundle output path. Defaults to <session-id>.vcsession.zip for zip output.",
+    )
+    _ = export_parser.add_argument(
+        "--format",
+        choices=("zip", "json"),
+        default="zip",
+        help="Bundle output format. JSON without --output prints the artifact to stdout.",
+    )
+    redaction_group = export_parser.add_mutually_exclusive_group()
+    _ = redaction_group.add_argument(
+        "--redact",
+        dest="redact",
+        action="store_true",
+        help="Redact secrets and sensitive fields (default).",
+    )
+    _ = redaction_group.add_argument(
+        "--no-redact",
+        dest="redact",
+        action="store_false",
+        help="Do not redact bundle payloads. Use only for private artifacts.",
+    )
+    export_parser.set_defaults(redact=True)
+    _ = export_parser.add_argument(
+        "--include-tool-output",
+        action="store_true",
+        help="Include full raw tool output instead of bounded previews.",
+    )
+    _ = export_parser.add_argument(
+        "--include-raw-provider-messages",
+        action="store_true",
+        help="Include raw provider request/response payload events when present.",
+    )
+    _ = export_parser.add_argument(
+        "--include-reasoning-text",
+        action="store_true",
+        help="Include full reasoning/thinking text when present.",
+    )
+    _ = export_parser.add_argument(
+        "--support",
+        action="store_true",
+        help="Use support-artifact defaults: redacted, bounded, diagnostics-first.",
+    )
+    export_parser.set_defaults(handler=_handle_sessions_export_command)
+
+    import_parser = sessions_subparsers.add_parser(
+        "import", help="Import a portable session bundle for local inspection."
+    )
+    _ = import_parser.add_argument(
+        "bundle_path",
+        type=Path,
+        help="Session bundle zip or JSON file.",
+    )
+    _ = import_parser.add_argument(
+        "--workspace",
+        type=Path,
+        default=Path.cwd(),
+        help="Workspace root used to resolve the local session database.",
+    )
+    _ = import_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Validate and summarize the bundle without persisting imported sessions.",
+    )
+    import_parser.set_defaults(handler=_handle_sessions_import_command)
 
     debug_parser = sessions_subparsers.add_parser(
         "debug", help="Show a minimal runtime-owned debug snapshot for one session."
