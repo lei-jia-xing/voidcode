@@ -10,7 +10,7 @@ jobs:
         permissions:
             id-token: write
             contents: write
-            pull-requests: write
+            pull-requests: none
             issues: write
         steps:
             - name: Check account age
