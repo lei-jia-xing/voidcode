@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
+import voidcode.tools.output as output_module
 from voidcode.tools import (
     ToolResult,
     cap_tool_result_output,
@@ -51,6 +52,33 @@ def test_cap_tool_result_output_caps_by_line_count_and_saves_full_output(tmp_pat
     assert artifact_path.stat().st_mode & 0o777 == 0o600
     assert tool_output_artifact_temp_root().stat().st_mode & 0o777 == 0o700
     assert capped.data["original_line_count"] == 6
+
+
+def test_tool_output_artifact_temp_root_uses_xdg_cache_home(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setattr(output_module.sys, "platform", "linux")
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache"))
+
+    root = tool_output_artifact_temp_root()
+
+    assert root == tmp_path / "xdg-cache" / "voidcode" / "tool-output"
+    assert root.stat().st_mode & 0o777 == 0o700
+
+
+def test_tool_output_artifact_temp_root_uses_windows_local_app_data(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setattr(output_module.sys, "platform", "win32")
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "LocalAppData"))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "RoamingAppData"))
+
+    root = tool_output_artifact_temp_root()
+
+    assert root == tmp_path / "LocalAppData" / "voidcode" / "tool-output"
+    assert root.stat().st_mode & 0o777 == 0o700
 
 
 def test_tool_output_artifact_retrieval_supports_offsets_and_search(tmp_path: Path) -> None:

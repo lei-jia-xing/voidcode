@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
-import tempfile
+import sys
 import time
 from collections.abc import Mapping
 from dataclasses import replace
@@ -29,7 +29,7 @@ _INLINE_BLOB_KEYS = frozenset({"data_uri", "dataUri", "base64", "blob"})
 _ARTIFACT_REFERENCE_PREFIX = "artifact:"
 _ARTIFACT_PRODUCER = "voidcode.tool_output.v1"
 _ARTIFACT_ID_PATTERN = re.compile(r"^artifact_[0-9a-f]{24}$")
-_ARTIFACT_TEMP_ROOT_NAME = "voidcode-tool-output"
+_ARTIFACT_CACHE_DIR_NAME = "tool-output"
 _EMPTY_REDACTED_ARGUMENT_KEYS: frozenset[str] = frozenset()
 _PROVIDER_REDACTED_ARGUMENT_KEYS_BY_TOOL = {
     "apply_patch": frozenset({"patch"}),
@@ -174,10 +174,24 @@ def _safe_artifact_segment(value: str | None, *, fallback: str) -> str:
     return safe[:96] or fallback
 
 
-def tool_output_artifact_temp_root() -> Path:
-    """Return the private runtime temp root for tool output artifacts."""
+def _user_cache_root() -> Path:
+    if sys.platform == "win32":
+        cache_home = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
+        if cache_home:
+            return Path(cache_home) / "voidcode"
+        return Path.home() / "AppData" / "Local" / "voidcode"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Caches" / "voidcode"
+    cache_home = os.environ.get("XDG_CACHE_HOME")
+    if cache_home:
+        return Path(cache_home) / "voidcode"
+    return Path.home() / ".cache" / "voidcode"
 
-    root = Path(tempfile.gettempdir()) / _ARTIFACT_TEMP_ROOT_NAME
+
+def tool_output_artifact_temp_root() -> Path:
+    """Return the private per-user root for tool output artifacts."""
+
+    root = _user_cache_root() / _ARTIFACT_CACHE_DIR_NAME
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
     try:
         root.chmod(0o700)

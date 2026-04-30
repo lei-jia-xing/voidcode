@@ -16,7 +16,7 @@ from voidcode.runtime.events import EventEnvelope
 from voidcode.runtime.service import ToolRegistry, VoidCodeRuntime
 from voidcode.runtime.session import SessionRef, SessionState
 from voidcode.runtime.storage import SqliteSessionStore
-from voidcode.tools import ShellExecTool
+from voidcode.tools import ShellExecTool, tool_output_artifact_temp_root
 from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolResult
 from voidcode.tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
 
@@ -373,7 +373,9 @@ def test_runtime_caps_large_tool_output_before_feedback(tmp_path: Path) -> None:
     payload = completed_events[0].payload
     assert payload["truncated"] is True
     assert isinstance(payload["output_path"], str)
-    assert str(payload["output_path"]).startswith("/tmp/")
+    output_path = Path(payload["output_path"]).resolve()
+    artifact_root = tool_output_artifact_temp_root().resolve()
+    assert artifact_root in output_path.parents
     assert payload["artifact_missing"] is False
     assert isinstance(payload["artifact_id"], str)
     artifact = payload["artifact"]
@@ -384,7 +386,7 @@ def test_runtime_caps_large_tool_output_before_feedback(tmp_path: Path) -> None:
     assert "Tool output truncated" in payload["content"]
     assert f"artifact_id={payload['artifact_id']}" in payload["content"]
     assert "line-2099" not in payload["content"]
-    assert Path(payload["output_path"]).read_text(encoding="utf-8").endswith("line-2099\n")
+    assert output_path.read_text(encoding="utf-8").endswith("line-2099\n")
     assert not (tmp_path / ".voidcode" / "tool-output").exists()
 
 
