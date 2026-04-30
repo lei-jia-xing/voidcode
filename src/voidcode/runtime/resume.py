@@ -741,6 +741,7 @@ class RuntimeResumeCoordinator:
                 tool_results=tool_results,
                 abort_signal=graph_request.abort_signal,
             ):
+                session = chunk.session
                 if deferred_startup_acp_events and (
                     (
                         chunk.event is not None
@@ -772,6 +773,7 @@ class RuntimeResumeCoordinator:
                             session=updated_session,
                             output=chunk.output,
                         )
+                    session = chunk.session
                 if chunk.event is not None:
                     emitted_sequence += 1
                     resequenced_event = runtime._resequence_event(
@@ -784,7 +786,6 @@ class RuntimeResumeCoordinator:
                 if chunk.kind == "output":
                     output = chunk.output
                     yield chunk
-                session = chunk.session
 
             graph_loop_chunks: Iterator[RuntimeStreamChunk]
             if session.status == "failed":
@@ -802,6 +803,7 @@ class RuntimeResumeCoordinator:
                 )
 
             for chunk in graph_loop_chunks:
+                session = chunk.session
                 if deferred_startup_acp_events and (
                     (
                         chunk.event is not None
@@ -833,6 +835,7 @@ class RuntimeResumeCoordinator:
                             session=updated_session,
                             output=chunk.output,
                         )
+                    session = chunk.session
                 if chunk.event is not None:
                     emitted_sequence += 1
                     resequenced_event = runtime._resequence_event(
@@ -845,7 +848,6 @@ class RuntimeResumeCoordinator:
                 if chunk.kind == "output":
                     output = chunk.output
                     yield chunk
-                session = chunk.session
         except Exception:
             if session.status == "failed":
                 response = RuntimeResponse(

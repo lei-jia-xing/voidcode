@@ -155,7 +155,11 @@ class RuntimeRunLoopCoordinator:
             return
 
         sequence = permission_chunks.last_sequence
-        tool = tool_registry.resolve(tool_call.tool_name)
+        try:
+            tool = tool_registry.resolve(tool_call.tool_name)
+        except Exception as exc:
+            yield runtime._failed_chunk(session=session, sequence=sequence + 1, error=str(exc))
+            raise
 
         pre_hook_outcome = runtime._run_tool_hooks(
             session=session,

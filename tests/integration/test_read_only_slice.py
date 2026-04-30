@@ -12,7 +12,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, cast
@@ -214,6 +214,12 @@ class ReadFileToolType(Protocol):
 
 class ToolRegistryLike(Protocol):
     tools: dict[str, object]
+
+    def excluding(self, tool_names: Iterable[str]) -> ToolRegistryLike: ...
+
+
+class ToolRegistryClassLike(Protocol):
+    def with_defaults(self) -> ToolRegistryLike: ...
 
 
 class SessionStoreLike(Protocol):
@@ -2851,6 +2857,63 @@ def test_runtime_allows_non_read_only_tool_after_explicit_resume_approval(tmp_pa
     ]
     assert resumed.output == "Wrote file successfully: danger.txt"
     assert (tmp_path / "danger.txt").read_text(encoding="utf-8") == "approved later"
+
+
+def test_runtime_approved_resume_persists_failure_when_pending_tool_is_missing(
+    tmp_path: Path,
+) -> None:
+    runtime_request, runtime = _approval_runtime(tmp_path, mode="ask")
+
+    waiting = runtime.run(
+        runtime_request(prompt="write drift.txt unavailable later", session_id="drift-session")
+    )
+    approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
+
+    _, runtime_class = _load_runtime_types()
+    service_module = importlib.import_module("voidcode.runtime.service")
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    tool_registry_class = cast(ToolRegistryClassLike, service_module.ToolRegistry)
+    permission_policy = cast(Callable[..., object], permission_module.PermissionPolicy)
+    resumed_runtime = cast(
+        RuntimeRunner,
+        cast(
+            object,
+            runtime_class(
+                workspace=tmp_path,
+                tool_registry=tool_registry_class.with_defaults().excluding(["write_file"]),
+                permission_policy=permission_policy(mode="ask"),
+            ),
+        ),
+    )
+
+    resumed = resumed_runtime.resume(
+        "drift-session",
+        approval_request_id=approval_request_id,
+        approval_decision="allow",
+    )
+    replay = resumed_runtime.resume("drift-session")
+    sessions = resumed_runtime.list_sessions()
+
+    assert resumed.session.status == "failed"
+    assert [event.event_type for event in resumed.events] == [
+        "runtime.request_received",
+        "runtime.skills_loaded",
+        "graph.loop_step",
+        "graph.model_turn",
+        "graph.tool_request_created",
+        "runtime.tool_lookup_succeeded",
+        "runtime.approval_requested",
+        "runtime.approval_resolved",
+        "runtime.failed",
+    ]
+    assert [event.sequence for event in resumed.events] == list(range(1, 10))
+    assert resumed.events[-1].payload == {"error": "unknown tool: write_file"}
+    assert replay.session.status == "failed"
+    assert [(event.sequence, event.event_type, event.payload) for event in replay.events] == [
+        (event.sequence, event.event_type, event.payload) for event in resumed.events
+    ]
+    assert sessions[0].status == "failed"
+    assert (tmp_path / "drift.txt").exists() is False
 
 
 def test_runtime_resumed_approval_renumbers_fixed_finalize_sequences(tmp_path: Path) -> None:
