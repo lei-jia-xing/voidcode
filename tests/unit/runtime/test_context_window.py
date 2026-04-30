@@ -186,6 +186,51 @@ def test_provider_context_inspector_reports_synthetic_feedback_mode() -> None:
     )
 
 
+def test_provider_context_inspector_strips_sentinels_from_provider_messages() -> None:
+    raw_todo_content = "Secret todo content should not appear in provider messages"
+    assembled = assemble_provider_context(
+        prompt="continue",
+        tool_results=(
+            ToolResult(
+                tool_name="todo_write",
+                content="Updated todos",
+                status="ok",
+                data={
+                    "tool_call_id": "call:todo",
+                    "arguments": {
+                        "todos": [
+                            {
+                                "content": raw_todo_content,
+                                "status": "pending",
+                                "priority": "high",
+                            }
+                        ]
+                    },
+                },
+            ),
+        ),
+        session_metadata={},
+        policy=ContextWindowPolicy(max_tool_results=4),
+    )
+
+    snapshot = inspect_provider_context(
+        assembled_context=assembled,
+        provider="openai",
+        model="gpt-4o",
+        execution_engine="provider",
+        available_tool_count=3,
+    )
+
+    tool_call = snapshot.provider_messages[-2].tool_calls[0]
+    function = cast(dict[str, object], tool_call["function"])
+    provider_arguments = function["arguments"]
+    assert isinstance(provider_arguments, str)
+    assert raw_todo_content not in provider_arguments
+    assert '"content": ""' in provider_arguments
+    assert '"omitted": true' not in provider_arguments
+    assert '"byte_count"' not in provider_arguments
+
+
 def test_provider_context_inspector_redacts_secret_text_from_tool_output() -> None:
     assembled = assemble_provider_context(
         prompt="inspect env",

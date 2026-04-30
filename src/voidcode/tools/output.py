@@ -21,6 +21,28 @@ _SENSITIVE_TEXT_ARGUMENT_KEYS = frozenset(
     }
 )
 _INLINE_BLOB_KEYS = frozenset({"data_uri", "dataUri", "base64", "blob"})
+_EMPTY_REDACTED_ARGUMENT_KEYS: frozenset[str] = frozenset()
+_PROVIDER_REDACTED_ARGUMENT_KEYS_BY_TOOL = {
+    "apply_patch": frozenset({"patch"}),
+    "edit": frozenset({"oldString", "newString"}),
+    "multi_edit": frozenset({"oldString", "newString"}),
+    "todo_write": frozenset({"content"}),
+    "write_file": frozenset({"content"}),
+}
+
+
+def _is_metadata_count(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _is_sanitizer_redaction_placeholder(value: dict[object, object]) -> bool:
+    return (
+        value.get("omitted") is True
+        and _is_metadata_count(value.get("byte_count"))
+        and _is_metadata_count(value.get("line_count"))
+        and "preview" not in value
+        and "omitted_chars" not in value
+    )
 
 
 def _string_summary(value: str, *, include_preview: bool) -> dict[str, object]:
@@ -80,6 +102,48 @@ def sanitize_tool_result_data(data: dict[str, object]) -> dict[str, object]:
     if isinstance(raw_arguments, dict):
         sanitized["arguments"] = sanitize_tool_arguments(cast(dict[str, object], raw_arguments))
     return sanitized
+
+
+def redacted_argument_keys_for_tool(tool_name: str | None) -> frozenset[str]:
+    if tool_name is None:
+        return _EMPTY_REDACTED_ARGUMENT_KEYS
+    return _PROVIDER_REDACTED_ARGUMENT_KEYS_BY_TOOL.get(
+        tool_name,
+        _EMPTY_REDACTED_ARGUMENT_KEYS,
+    )
+
+
+def strip_redaction_sentinels(
+    value: object,
+    *,
+    redacted_keys: frozenset[str] = _EMPTY_REDACTED_ARGUMENT_KEYS,
+    key: str | None = None,
+) -> object:
+    """Return a schema-safe copy with sanitizer-created redaction placeholders removed."""
+
+    if isinstance(value, dict):
+        raw_value = cast(dict[object, object], value)
+        if key in redacted_keys and _is_sanitizer_redaction_placeholder(raw_value):
+            return ""
+        return {
+            str(item_key): strip_redaction_sentinels(
+                item,
+                redacted_keys=redacted_keys,
+                key=str(item_key),
+            )
+            for item_key, item in raw_value.items()
+        }
+    if isinstance(value, list):
+        return [
+            strip_redaction_sentinels(item, redacted_keys=redacted_keys, key=key)
+            for item in cast(list[object], value)
+        ]
+    if isinstance(value, tuple):
+        return [
+            strip_redaction_sentinels(item, redacted_keys=redacted_keys, key=key)
+            for item in cast(tuple[object, ...], value)
+        ]
+    return value
 
 
 def _utf8_prefix(text: str, *, max_bytes: int) -> str:
@@ -185,7 +249,9 @@ __all__ = [
     "MAX_TOOL_OUTPUT_BYTES",
     "MAX_TOOL_OUTPUT_LINES",
     "cap_tool_result_output",
+    "redacted_argument_keys_for_tool",
     "sanitize_tool_arguments",
     "sanitize_tool_data",
     "sanitize_tool_result_data",
+    "strip_redaction_sentinels",
 ]

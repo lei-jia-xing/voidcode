@@ -16,9 +16,11 @@ from .output import (
     MAX_TOOL_OUTPUT_BYTES,
     MAX_TOOL_OUTPUT_LINES,
     cap_tool_result_output,
+    redacted_argument_keys_for_tool,
     sanitize_tool_arguments,
     sanitize_tool_data,
     sanitize_tool_result_data,
+    strip_redaction_sentinels,
 )
 from .question import QuestionTool
 from .read_file import ReadFileTool
@@ -63,7 +65,9 @@ __all__ = [
     "MAX_TOOL_OUTPUT_BYTES",
     "MAX_TOOL_OUTPUT_LINES",
     "cap_tool_result_output",
+    "redacted_argument_keys_for_tool",
     "sanitize_tool_arguments",
     "sanitize_tool_data",
     "sanitize_tool_result_data",
+    "strip_redaction_sentinels",
 ]
