@@ -366,10 +366,19 @@ def test_runtime_caps_large_tool_output_before_feedback(tmp_path: Path) -> None:
     payload = completed_events[0].payload
     assert payload["truncated"] is True
     assert isinstance(payload["output_path"], str)
+    assert str(payload["output_path"]).startswith("/tmp/")
+    assert payload["artifact_missing"] is False
+    assert isinstance(payload["artifact_id"], str)
+    artifact = payload["artifact"]
+    assert isinstance(artifact, dict)
+    assert artifact["session_id"] == completed_events[0].session_id
+    assert artifact["tool_call_id"] == payload["tool_call_id"]
     assert isinstance(payload["content"], str)
     assert "Tool output truncated" in payload["content"]
+    assert f"artifact_id={payload['artifact_id']}" in payload["content"]
     assert "line-2099" not in payload["content"]
-    assert (tmp_path / payload["output_path"]).read_text(encoding="utf-8").endswith("line-2099\n")
+    assert Path(payload["output_path"]).read_text(encoding="utf-8").endswith("line-2099\n")
+    assert not (tmp_path / ".voidcode" / "tool-output").exists()
 
 
 def test_runtime_sanitizes_tool_arguments_and_data_before_events_and_feedback(
