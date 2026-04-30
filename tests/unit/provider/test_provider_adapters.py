@@ -1190,6 +1190,73 @@ def test_provider_adapter_strips_redaction_sentinels_from_todo_history(
     assert '"byte_count"' not in raw_arguments
 
 
+def test_provider_adapter_preserves_truncated_safe_argument_previews(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = OpenAIModelProvider().turn_provider()
+    request = _build_turn_request(model_name="openai")
+    query_prefix = "safe oversized query prefix"
+    large_query = query_prefix + (" x" * 2500)
+    tool_results = (
+        ToolResult(
+            tool_name="code_search",
+            status="ok",
+            content="Found 3 matches",
+            data={
+                "tool_call_id": "call-search",
+                "arguments": {"query": large_query},
+            },
+        ),
+    )
+    request = ProviderTurnRequest(
+        assembled_context=_assembled_from_legacy(
+            prompt=request.prompt,
+            tool_results=tool_results,
+            context_window=_StubContextWindow(
+                prompt=request.context_window.prompt,
+                tool_results=tool_results,
+            ),
+            applied_skills=request.applied_skills,
+        ),
+        available_tools=request.available_tools,
+        raw_model=request.raw_model,
+        provider_name=request.provider_name,
+        model_name=request.model_name,
+        attempt=request.attempt,
+        abort_signal=request.abort_signal,
+    )
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        completion_content="done",
+    )
+
+    _ = provider.propose_turn(request)
+
+    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+    assert isinstance(payload_obj, dict)
+    payload = cast(dict[str, object], payload_obj)
+    messages_obj = payload.get("messages")
+    assert isinstance(messages_obj, list)
+    messages = cast(list[dict[str, object]], messages_obj)
+    assistant_call = messages[1]
+    tool_calls = cast(list[dict[str, object]], assistant_call["tool_calls"])
+    function = cast(dict[str, object], tool_calls[0]["function"])
+    raw_arguments = function["arguments"]
+    assert isinstance(raw_arguments, str)
+    arguments_payload = cast(dict[str, object], json.loads(raw_arguments))
+    query_summary = cast(dict[str, object], arguments_payload["query"])
+    preview = query_summary["preview"]
+    assert isinstance(preview, str)
+    assert query_summary["omitted"] is True
+    assert query_summary["omitted_chars"] == len(large_query) - 4000
+    assert preview == large_query[:4000]
+    assert query_prefix in raw_arguments
+    assert '"preview"' in raw_arguments
+    assert '"omitted_chars"' in raw_arguments
+    assert large_query not in raw_arguments
+
+
 def test_provider_adapter_includes_tool_result_errors(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -91,6 +91,20 @@ def test_sanitize_tool_arguments_omits_sensitive_text_fields() -> None:
     }
 
 
+def test_sanitize_tool_arguments_preserves_preview_for_oversized_benign_text() -> None:
+    large_query = "context prefix " + ("x" * 5000)
+
+    sanitized = sanitize_tool_arguments({"query": large_query})
+
+    query = sanitized["query"]
+    assert isinstance(query, dict)
+    assert query["omitted"] is True
+    assert query["byte_count"] == len(large_query.encode("utf-8"))
+    assert query["line_count"] == 1
+    assert query["preview"] == large_query[:4000]
+    assert query["omitted_chars"] == len(large_query) - 4000
+
+
 def test_sanitize_tool_result_data_strips_inline_blobs_and_nested_arguments() -> None:
     data_uri = "data:image/png;base64," + "A" * 100
     sanitized = sanitize_tool_result_data(
@@ -156,3 +170,17 @@ def test_strip_redaction_sentinels_handles_nested_todo_arguments() -> None:
     )
 
     assert stripped == {"todos": [{"content": "", "status": "pending", "priority": "high"}]}
+
+
+def test_strip_redaction_sentinels_preserves_truncation_previews() -> None:
+    summary = {
+        "omitted": True,
+        "byte_count": 5000,
+        "line_count": 1,
+        "preview": "safe oversized query prefix",
+        "omitted_chars": 300,
+    }
+
+    stripped = strip_redaction_sentinels({"query": summary})
+
+    assert stripped == {"query": summary}

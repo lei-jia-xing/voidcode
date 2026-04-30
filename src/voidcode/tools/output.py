@@ -32,6 +32,8 @@ def _is_redaction_summary(value: dict[object, object]) -> bool:
         value.get("omitted") is True
         and _is_metadata_count(value.get("byte_count"))
         and _is_metadata_count(value.get("line_count"))
+        and "preview" not in value
+        and "omitted_chars" not in value
     )
 
 
