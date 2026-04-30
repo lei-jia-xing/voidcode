@@ -10,6 +10,9 @@ from ..tools.output import sanitize_tool_arguments, sanitize_tool_result_data
 from .context_window import RuntimeAssembledContext, RuntimeContextSegment
 from .contracts import (
     RuntimeProviderContextDiagnostic,
+    RuntimeProviderContextDiagnosticPolicyAction,
+    RuntimeProviderContextDiagnosticPolicyMode,
+    RuntimeProviderContextPolicyDecision,
     RuntimeProviderContextSegmentSnapshot,
     RuntimeProviderContextSnapshot,
     RuntimeProviderMessageSnapshot,
@@ -17,6 +20,15 @@ from .contracts import (
 
 _MAX_DEBUG_CONTENT_CHARS = 2_000
 _OVERSIZED_TOOL_FEEDBACK_CHARS = 8_000
+_PROVIDER_CONTEXT_POLICY_BLOCKING_CODES = frozenset(
+    {
+        "missing_tool_result",
+        "orphan_tool_result",
+        "duplicate_tool_call_id",
+        "oversized_tool_feedback",
+        "provider_requires_tools_schema",
+    }
+)
 _SECRET_KEYS = frozenset(
     {
         "access_token",
@@ -45,6 +57,8 @@ def inspect_provider_context(
     execution_engine: str,
     available_tool_count: int,
     tool_feedback_mode: ToolFeedbackMode = "standard",
+    oversized_tool_feedback_chars: int = _OVERSIZED_TOOL_FEEDBACK_CHARS,
+    diagnostic_policy_mode: RuntimeProviderContextDiagnosticPolicyMode | None = None,
 ) -> RuntimeProviderContextSnapshot:
     segments = tuple(
         _segment_snapshot(index, segment)
@@ -62,8 +76,19 @@ def inspect_provider_context(
             context_metadata=assembled_context.metadata,
             tool_feedback_mode=tool_feedback_mode,
             available_tool_count=available_tool_count,
+            oversized_tool_feedback_chars=oversized_tool_feedback_chars,
         )
     )
+    policy_decision = (
+        evaluate_provider_context_policy(diagnostics, mode=diagnostic_policy_mode)
+        if diagnostic_policy_mode is not None
+        else None
+    )
+    if policy_decision is not None:
+        diagnostics = tuple(
+            _diagnostic_with_policy_metadata(diagnostic, policy_decision)
+            for diagnostic in diagnostics
+        )
     return RuntimeProviderContextSnapshot(
         provider=provider,
         model=model,
@@ -74,6 +99,92 @@ def inspect_provider_context(
         segments=segments,
         provider_messages=provider_messages,
         diagnostics=diagnostics,
+        policy_decision=policy_decision,
+    )
+
+
+def evaluate_provider_context_policy(
+    diagnostics: tuple[RuntimeProviderContextDiagnostic, ...],
+    *,
+    mode: RuntimeProviderContextDiagnosticPolicyMode,
+) -> RuntimeProviderContextPolicyDecision:
+    actionable = tuple(
+        diagnostic for diagnostic in diagnostics if diagnostic.severity in {"warning", "error"}
+    )
+    blocking = tuple(
+        diagnostic
+        for diagnostic in diagnostics
+        if diagnostic.severity == "error"
+        or diagnostic.code in _PROVIDER_CONTEXT_POLICY_BLOCKING_CODES
+    )
+    diagnostic_codes = tuple(diagnostic.code for diagnostic in actionable)
+    blocking_codes = tuple(diagnostic.code for diagnostic in blocking)
+    if mode == "off":
+        return RuntimeProviderContextPolicyDecision(
+            mode=mode,
+            action="ignored",
+            blocked=False,
+            diagnostic_count=len(actionable),
+            diagnostic_codes=diagnostic_codes,
+            blocking_diagnostic_codes=(),
+            message="Provider-context diagnostics policy is off; diagnostics are debug-only.",
+        )
+    if mode == "block" and blocking:
+        return RuntimeProviderContextPolicyDecision(
+            mode=mode,
+            action="block",
+            blocked=True,
+            diagnostic_count=len(actionable),
+            diagnostic_codes=diagnostic_codes,
+            blocking_diagnostic_codes=blocking_codes,
+            message="Provider execution blocked by provider-context diagnostics policy.",
+        )
+    if actionable:
+        return RuntimeProviderContextPolicyDecision(
+            mode=mode,
+            action="warn",
+            blocked=False,
+            diagnostic_count=len(actionable),
+            diagnostic_codes=diagnostic_codes,
+            blocking_diagnostic_codes=blocking_codes if mode == "block" else (),
+            message="Provider-context diagnostics policy recorded warnings without blocking.",
+        )
+    return RuntimeProviderContextPolicyDecision(
+        mode=mode,
+        action="none",
+        blocked=False,
+        diagnostic_count=0,
+        diagnostic_codes=(),
+        blocking_diagnostic_codes=(),
+    )
+
+
+def _diagnostic_with_policy_metadata(
+    diagnostic: RuntimeProviderContextDiagnostic,
+    decision: RuntimeProviderContextPolicyDecision,
+) -> RuntimeProviderContextDiagnostic:
+    if decision.action in {"none", "ignored"}:
+        action: RuntimeProviderContextDiagnosticPolicyAction = decision.action
+        blocking = False
+    elif decision.blocked and diagnostic.code in decision.blocking_diagnostic_codes:
+        action = "block"
+        blocking = True
+    elif diagnostic.severity in {"warning", "error"}:
+        action = "warn"
+        blocking = False
+    else:
+        action = "none"
+        blocking = False
+    return RuntimeProviderContextDiagnostic(
+        severity=diagnostic.severity,
+        code=diagnostic.code,
+        message=diagnostic.message,
+        source=diagnostic.source,
+        segment_indices=diagnostic.segment_indices,
+        suggested_fix=diagnostic.suggested_fix,
+        details={**diagnostic.details, "policy_mode": decision.mode},
+        policy_action=action,
+        policy_blocking=blocking,
     )
 
 
@@ -306,10 +417,17 @@ def _diagnostics(
     context_metadata: dict[str, object],
     tool_feedback_mode: ToolFeedbackMode,
     available_tool_count: int,
+    oversized_tool_feedback_chars: int,
 ) -> list[RuntimeProviderContextDiagnostic]:
     diagnostics: list[RuntimeProviderContextDiagnostic] = []
     diagnostics.extend(_duplicate_system_diagnostics(segments))
-    diagnostics.extend(_tool_pair_diagnostics(segments, available_tool_count=available_tool_count))
+    diagnostics.extend(
+        _tool_pair_diagnostics(
+            segments,
+            available_tool_count=available_tool_count,
+            oversized_tool_feedback_chars=oversized_tool_feedback_chars,
+        )
+    )
     diagnostics.extend(_context_window_diagnostics(context_metadata))
     diagnostics.extend(_todo_projection_diagnostics(segments))
     if tool_feedback_mode == "synthetic_user_message" and any(
@@ -356,7 +474,10 @@ def _duplicate_system_diagnostics(
 
 
 def _tool_pair_diagnostics(
-    segments: tuple[RuntimeContextSegment, ...], *, available_tool_count: int
+    segments: tuple[RuntimeContextSegment, ...],
+    *,
+    available_tool_count: int,
+    oversized_tool_feedback_chars: int,
 ) -> list[RuntimeProviderContextDiagnostic]:
     diagnostics: list[RuntimeProviderContextDiagnostic] = []
     assistant_ids: dict[str, list[int]] = defaultdict(list)
@@ -366,7 +487,7 @@ def _tool_pair_diagnostics(
             assistant_ids[segment.tool_call_id or ""].append(index)
         if segment.role == "tool":
             tool_ids[segment.tool_call_id or ""].append(index)
-            if len(segment.content or "") > _OVERSIZED_TOOL_FEEDBACK_CHARS:
+            if len(segment.content or "") > oversized_tool_feedback_chars:
                 diagnostics.append(
                     RuntimeProviderContextDiagnostic(
                         severity="warning",
@@ -379,7 +500,10 @@ def _tool_pair_diagnostics(
                         suggested_fix=(
                             "Prefer runtime-owned summaries or artifacts for large tool outputs."
                         ),
-                        details={"content_chars": len(segment.content or "")},
+                        details={
+                            "content_chars": len(segment.content or ""),
+                            "threshold_chars": oversized_tool_feedback_chars,
+                        },
                     )
                 )
     for tool_call_id, indices in assistant_ids.items():

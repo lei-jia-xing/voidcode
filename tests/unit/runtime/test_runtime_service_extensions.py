@@ -9492,6 +9492,139 @@ def test_runtime_provider_compaction_emits_continuity_state_and_persists_metadat
     assert replay_runtime_state["continuity"] == expected_continuity
 
 
+def test_runtime_provider_context_policy_warn_does_not_block_provider_call(
+    tmp_path: Path,
+) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("oversized tool feedback", encoding="utf-8")
+    created_providers: list[_ScriptedTurnProvider] = []
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(
+                    ProviderTurnResult(tool_call=ToolCall("read_file", {"filePath": "sample.txt"})),
+                    ProviderTurnResult(output="done"),
+                ),
+                created_providers=created_providers,
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            model="opencode/gpt-5.4",
+            context_window=RuntimeContextWindowConfig(
+                provider_context_diagnostics="warn",
+                provider_context_oversized_feedback_chars=5,
+            ),
+        ),
+        model_provider_registry=registry,
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="read sample.txt", session_id="policy-warn"))
+
+    policy_events = [
+        event for event in response.events if event.event_type == "runtime.provider_context_policy"
+    ]
+    assert response.session.status == "completed"
+    assert response.output == "done"
+    assert len(created_providers) == 1
+    assert len(created_providers[0].requests) == 2
+    assert len(policy_events) == 1
+    assert policy_events[0].payload["mode"] == "warn"
+    assert policy_events[0].payload["action"] == "warn"
+    assert policy_events[0].payload["blocked"] is False
+    assert "oversized_tool_feedback" in policy_events[0].payload["diagnostic_codes"]
+
+
+def test_runtime_provider_context_policy_block_fails_before_provider_call(
+    tmp_path: Path,
+) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("oversized tool feedback", encoding="utf-8")
+    created_providers: list[_ScriptedTurnProvider] = []
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(
+                    ProviderTurnResult(tool_call=ToolCall("read_file", {"filePath": "sample.txt"})),
+                    ProviderTurnResult(output="unused"),
+                ),
+                created_providers=created_providers,
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            model="opencode/gpt-5.4",
+            context_window=RuntimeContextWindowConfig(
+                provider_context_diagnostics="block",
+                provider_context_oversized_feedback_chars=5,
+            ),
+        ),
+        model_provider_registry=registry,
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="read sample.txt", session_id="policy-block"))
+
+    assert response.session.status == "failed"
+    assert len(created_providers) == 1
+    assert len(created_providers[0].requests) == 1
+    failure = response.events[-1]
+    assert failure.event_type == "runtime.failed"
+    assert failure.payload["kind"] == "provider_context_policy_blocked"
+    policy = cast(dict[str, object], failure.payload["provider_context_policy"])
+    assert policy["mode"] == "block"
+    assert policy["action"] == "block"
+    assert policy["blocked"] is True
+    assert "oversized_tool_feedback" in policy["blocking_diagnostic_codes"]
+
+
+def test_runtime_provider_context_policy_off_preserves_provider_execution(
+    tmp_path: Path,
+) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("oversized tool feedback", encoding="utf-8")
+    created_providers: list[_ScriptedTurnProvider] = []
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(
+                    ProviderTurnResult(tool_call=ToolCall("read_file", {"filePath": "sample.txt"})),
+                    ProviderTurnResult(output="done"),
+                ),
+                created_providers=created_providers,
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            model="opencode/gpt-5.4",
+            context_window=RuntimeContextWindowConfig(
+                provider_context_diagnostics="off",
+                provider_context_oversized_feedback_chars=5,
+            ),
+        ),
+        model_provider_registry=registry,
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="read sample.txt", session_id="policy-off"))
+
+    policy_events = [
+        event for event in response.events if event.event_type == "runtime.provider_context_policy"
+    ]
+    assert response.session.status == "completed"
+    assert response.output == "done"
+    assert len(created_providers) == 1
+    assert len(created_providers[0].requests) == 2
+    assert policy_events == []
+
+
 def test_runtime_memory_refreshed_guard_suppresses_duplicate_anchor(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(workspace=tmp_path)
     coordinator = runtime._run_loop_coordinator  # pyright: ignore[reportPrivateUsage]

@@ -125,6 +125,14 @@ def test_runtime_config_json_schema_exposes_core_fields() -> None:
         dict[str, object], context_window_properties["context_pressure_cooldown_steps"]
     )
     assert pressure_cooldown["minimum"] == 1
+    provider_context_diagnostics = cast(
+        dict[str, object], context_window_properties["provider_context_diagnostics"]
+    )
+    assert provider_context_diagnostics["enum"] == ["off", "warn", "block"]
+    provider_context_threshold = cast(
+        dict[str, object], context_window_properties["provider_context_oversized_feedback_chars"]
+    )
+    assert provider_context_threshold["minimum"] == 1
     tools_config = cast(dict[str, object], defs["toolsConfig"])
     assert tools_config["additionalProperties"] is False
     tools_properties = cast(dict[str, object], tools_config["properties"])

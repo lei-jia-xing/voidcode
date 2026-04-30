@@ -507,6 +507,14 @@ def test_sessions_debug_outputs_json_snapshot() -> None:
     assert payload["last_relevant_event"]["event_type"] == "graph.response_ready"
     assert payload["provider_context"]["segment_count"] >= 3
     assert payload["provider_context"]["segments"][-1]["tool_name"] == "read_file"
+    provider_context = payload["provider_context"]
+    policy_decision = provider_context["policy_decision"]
+    assert policy_decision["mode"] == "warn"
+    assert policy_decision["action"] in {"none", "warn"}
+    assert isinstance(policy_decision["diagnostic_codes"], list)
+    for diagnostic in provider_context["diagnostics"]:
+        assert diagnostic["policy_action"] in {"none", "warn", "block", "ignored"}
+        assert isinstance(diagnostic["policy_blocking"], bool)
     assert payload["suggested_operator_action"] == "replay"
     assert "Traceback" not in debug_result.stderr
 
@@ -1004,9 +1012,11 @@ def test_run_json_redacts_reasoning_by_default_and_shows_with_flag(capsys: Any) 
             _make_chunk(
                 session_id="demo-session",
                 status="completed",
-                event=_runtime_event(
-                    "runtime.reasoning_part",
-                    **reasoning_payload,
+                event=_StubEvent(
+                    sequence=0,
+                    event_type="runtime.reasoning_part",
+                    source="runtime",
+                    payload=dict(reasoning_payload),
                 ),
                 metadata={"show_thinking": show_thinking},
             ),

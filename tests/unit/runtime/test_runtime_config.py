@@ -353,6 +353,8 @@ def test_runtime_config_loads_context_window_policy_from_repo_file(tmp_path: Pat
                     "continuity_preview_chars": 120,
                     "context_pressure_threshold": 0.75,
                     "context_pressure_cooldown_steps": 5,
+                    "provider_context_diagnostics": "block",
+                    "provider_context_oversized_feedback_chars": 16_000,
                 }
             }
         ),
@@ -378,6 +380,8 @@ def test_runtime_config_loads_context_window_policy_from_repo_file(tmp_path: Pat
         continuity_preview_chars=120,
         context_pressure_threshold=0.75,
         context_pressure_cooldown_steps=5,
+        provider_context_diagnostics="block",
+        provider_context_oversized_feedback_chars=16_000,
     )
 
 
@@ -404,6 +408,8 @@ def test_runtime_context_window_config_serializes_for_session_resume() -> None:
         per_tool_result_tokens={"shell_exec": 400},
         context_pressure_threshold=0.72,
         context_pressure_cooldown_steps=4,
+        provider_context_diagnostics="block",
+        provider_context_oversized_feedback_chars=12_000,
     )
 
     payload = serialize_runtime_context_window_config(config)
@@ -1919,6 +1925,17 @@ def test_runtime_config_rejects_invalid_repo_local_execution_engine(tmp_path: Pa
             "runtime config field 'context_window.context_pressure_cooldown_steps'"
             ".*greater than or equal to 1",
             id="context-window-pressure-cooldown-zero",
+        ),
+        pytest.param(
+            {"context_window": {"provider_context_diagnostics": "error"}},
+            "runtime config field 'context_window.provider_context_diagnostics'.*off, warn, block",
+            id="context-window-provider-context-diagnostics-invalid",
+        ),
+        pytest.param(
+            {"context_window": {"provider_context_oversized_feedback_chars": 0}},
+            "runtime config field 'context_window.provider_context_oversized_feedback_chars'"
+            ".*greater than or equal to 1",
+            id="context-window-provider-context-threshold-zero",
         ),
     ],
 )
