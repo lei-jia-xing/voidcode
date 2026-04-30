@@ -909,6 +909,7 @@ def _serialize_session_debug_snapshot(
                 "status": snapshot.last_tool.status,
                 "summary": snapshot.last_tool.summary,
                 "arguments": snapshot.last_tool.arguments,
+                "artifact": getattr(snapshot.last_tool, "artifact", {}),
                 "sequence": snapshot.last_tool.sequence,
             }
             if snapshot.last_tool is not None
