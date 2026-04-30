@@ -149,7 +149,7 @@ def _build_copyable(
     if tool_name == "shell_exec":
         command = _first_primitive(arguments, "command")
         if command:
-            payload["command"] = command
+            payload["command"] = _truncate_arg(command)
         if result_data is not None:
             output = result_data.get("stdout")
             if isinstance(output, str) and output:

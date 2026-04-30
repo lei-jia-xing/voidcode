@@ -553,3 +553,12 @@ When `approval_resolution` is provided but the replayed tool call differs from t
 ### Key decisions
 - The terminal event uses `event_type="runtime.tool_completed"` with `source="tool"` — matching the normal completion event type rather than inventing a new event type. The `payload.status == "error"` and `payload.tool_status.status == "failed"` distinguish it as a terminal failure.
 - The unrecovered exception test uses `try/except ValueError` around stream iteration because the exception propagates through `run_stream()` → `_run_with_persistence()` → `_stream_chunks()` → `execute_graph_loop()`, and `_run_with_persistence` persists the session then re-raises. The manually-collected chunks still contain all yielded events up to the raise point.
+
+---
+
+## P2: Shell copyable command display bound
+
+**Date:** 2026-04-30
+
+- `display.copyable.command` for `shell_exec` should be truncated with the same display-argument cap as `display.args`; otherwise long shell commands bloat SSE and persisted replay metadata.
+- This is display-only: keep actual tool arguments and completed `payload.arguments.command` raw/unchanged, and keep `display.copyable.output` behavior unchanged.

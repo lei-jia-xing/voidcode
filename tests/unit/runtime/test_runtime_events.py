@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import cast
+
 from voidcode.runtime.contracts import BackgroundTaskResult
 from voidcode.runtime.events import (
     EMITTED_EVENT_TYPES,
@@ -452,6 +454,36 @@ def test_skill_tool_display_uses_name_argument() -> None:
     assert display["title"] == "Skill"
     assert display["summary"] == "frontend-ui-ux"
     assert display["args"] == ["frontend-ui-ux", "legacy-skill"]
+
+
+def test_shell_tool_display_bounds_copyable_command_metadata() -> None:
+    """Long shell commands must not be emitted raw in display copyable metadata."""
+    raw_command = "python -c '" + "x" * 500 + "'"
+
+    display = build_tool_display("shell_exec", {"command": raw_command})
+
+    assert isinstance(display["summary"], str)
+    assert len(display["summary"]) <= 120
+    assert display["summary"].endswith("...")
+
+    args = display["args"]
+    assert isinstance(args, list)
+    typed_args = cast(list[object], args)
+    assert len(typed_args) == 1
+    arg = typed_args[0]
+    assert isinstance(arg, str)
+    assert len(arg) <= 200
+    assert arg.endswith("...")
+
+    copyable = display["copyable"]
+    assert isinstance(copyable, dict)
+    typed_copyable = cast(dict[str, object], copyable)
+    copyable_command = typed_copyable["command"]
+    assert isinstance(copyable_command, str)
+    assert len(copyable_command) <= 200
+    assert copyable_command.endswith("...")
+    assert len(copyable_command) < len(raw_command)
+    assert copyable_command != raw_command
 
 
 def test_background_cancel_display_uses_camel_case_task_id_argument() -> None:
