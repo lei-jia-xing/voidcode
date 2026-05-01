@@ -162,21 +162,31 @@ def _private_attr(instance: object, name: str) -> Any:
 @pytest.mark.parametrize(
     ("command", "expected"),
     [
-        ("ls /etc", ("/etc",)),
-        ("du -sh /var", ("/var",)),
+        ("ls /etc", ()),
+        ("du -sh /var", ()),
+        ("test -f /usr/include/vulkan/vulkan.h", ()),
+        ("cat /usr/include/vulkan/vulkan.h", ()),
         ("echo hi > /tmp/out.txt", ("/tmp/out.txt",)),
+        ("echo hi > /tmp/out.txt && cat /tmp/out.txt", ("/tmp/out.txt",)),
         ("echo hi 2>/tmp/err.log", ("/tmp/err.log",)),
         ("echo hi > ./../out.txt", ("./../out.txt",)),
         ("echo hi > ././../out.txt", ("././../out.txt",)),
         ("curl --output=/tmp/out.txt https://example.com", ("/tmp/out.txt",)),
+        ("curl -o /tmp/out.txt https://example.com", ("/tmp/out.txt",)),
+        ("curl --write-out=/tmp/format.txt https://example.com", ()),
         ("tool --output=././../out.txt", ("././../out.txt",)),
-        ("tool --config=/etc/app.conf", ("/etc/app.conf",)),
+        ("tool --config=/etc/app.conf", ()),
         ("tool --file=2024/report.txt", ()),
-        (r"type C:\temp\out.log", (r"C:\temp\out.log",)),
+        (r"type C:\temp\out.log", ()),
         (
             r"type C:\Windows\System32\drivers\etc\hosts",
-            (r"C:\Windows\System32\drivers\etc\hosts",),
+            (),
         ),
+        ("touch /tmp/out.txt", ("/tmp/out.txt",)),
+        ("mkdir /tmp/generated", ("/tmp/generated",)),
+        ("rm /tmp/out.txt", ("/tmp/out.txt",)),
+        ("cp /etc/input.conf /tmp/output.conf", ("/tmp/output.conf",)),
+        ("mv /tmp/source.txt /tmp/output.txt", ("/tmp/output.txt",)),
         ("cat 2024/report.txt", ()),
     ],
 )
@@ -193,6 +203,21 @@ def test_runtime_ignores_shell_executable_path_candidate() -> None:
 
     runtime_type = cast(Any, VoidCodeRuntime)
     assert runtime_type._extract_shell_path_candidates(command) == ()
+
+
+def test_runtime_shell_read_probe_external_path_stays_workspace_scoped(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path)
+
+    runtime_private = cast(Any, runtime)
+    context = runtime_private._permission_context_for_tool_call(
+        tool=ToolRegistry.with_defaults().resolve("shell_exec").definition,
+        tool_call=ToolCall(
+            tool_name="shell_exec",
+            arguments={"command": "test -f /usr/include/vulkan/vulkan.h"},
+        ),
+    )
+
+    assert context == ("workspace", None, "execute", ())
 
 
 def test_runtime_canonicalize_candidate_path_handles_unknown_user_tilde(
