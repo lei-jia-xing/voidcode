@@ -2538,12 +2538,12 @@ class VoidCodeRuntime:
                 continue
             if index == 0 and VoidCodeRuntime._looks_like_shell_executable(value):
                 continue
-            if VoidCodeRuntime._is_shell_write_path_candidate(tokens, index, value):
+            if VoidCodeRuntime._is_shell_explicit_output_path_candidate(tokens, index, value):
                 candidates.append(value)
         return tuple(candidates)
 
     @staticmethod
-    def _is_shell_write_path_candidate(tokens: list[str], index: int, value: str) -> bool:
+    def _is_shell_explicit_output_path_candidate(tokens: list[str], index: int, value: str) -> bool:
         if not VoidCodeRuntime._looks_like_shell_path_candidate(value):
             return False
         token = tokens[index].strip()
@@ -2560,28 +2560,6 @@ class VoidCodeRuntime:
             return True
         if has_inline_value:
             return False
-        command_name = VoidCodeRuntime._shell_command_name(tokens, index)
-        if command_name in {"cp", "install", "mv"}:
-            return not VoidCodeRuntime._has_later_shell_path_candidate(tokens, index)
-        return command_name in {
-            "chmod",
-            "chown",
-            "mkdir",
-            "rm",
-            "rmdir",
-            "touch",
-        }
-
-    @staticmethod
-    def _has_later_shell_path_candidate(tokens: list[str], index: int) -> bool:
-        separators = {"&&", "||", ";", "|"}
-        for token in tokens[index + 1 :]:
-            stripped = token.strip()
-            if stripped in separators:
-                return False
-            normalized = VoidCodeRuntime._normalize_shell_path_token(stripped)
-            if VoidCodeRuntime._looks_like_shell_path_candidate(normalized):
-                return True
         return False
 
     @staticmethod
@@ -2598,23 +2576,6 @@ class VoidCodeRuntime:
             option, _value = stripped.split("=", 1)
             return option, True
         return stripped, False
-
-    @staticmethod
-    def _shell_command_name(tokens: list[str], index: int) -> str | None:
-        separators = {"&&", "||", ";", "|"}
-        start_index = 0
-        for candidate_index in range(index - 1, -1, -1):
-            if tokens[candidate_index].strip() in separators:
-                start_index = candidate_index + 1
-                break
-        for token in tokens[start_index:index]:
-            token = token.strip().strip("\"'`")
-            if not token:
-                continue
-            if token.startswith("-") or "=" in token:
-                continue
-            return Path(token).name.lower()
-        return None
 
     @staticmethod
     def _normalize_shell_path_token(token: str) -> str:
