@@ -1216,8 +1216,56 @@ def test_prepare_provider_context_uses_model_assisted_distillation_candidate_whe
     assert context.continuity_state is not None
     assert context.continuity_state.distillation_source == "model_assisted"
     assert context.continuity_state.current_goal == "Ship continuity distillation"
+    assert context.continuity_state.fact_reference_count == 3
+    assert context.continuity_state.source_references == (
+        "session:session:distill",
+        "event:event:42",
+        "tool:tool:pytest",
+    )
+
+
+def test_prepare_provider_context_distillation_references_are_deduplicated() -> None:
+    candidate = {
+        "objective_current_goal": "Goal",
+        "verbatim_user_constraints": ["constraint"],
+        "completed_progress": ["progress"],
+        "blockers_open_questions": ["blocker"],
+        "key_decisions_with_rationale": [
+            {
+                "text": "decision",
+                "rationale": "why",
+                "refs": [{"kind": "event", "id": "event:1"}],
+            }
+        ],
+        "relevant_files_commands_errors": [
+            {
+                "text": "file",
+                "kind": "file",
+                "refs": [{"kind": "event", "id": "event:1"}],
+            }
+        ],
+        "verification_state": {
+            "status": "pending",
+            "details": ["pending"],
+            "refs": [{"kind": "event", "id": "event:1"}],
+        },
+        "next_steps": ["next"],
+        "source_references": [{"kind": "event", "id": "event:1"}],
+    }
+
+    context = prepare_provider_context(
+        prompt="read sample.txt",
+        tool_results=(
+            _continuity_tool_result("ok", content="drop-me"),
+            _continuity_tool_result("ok", content="keep-me"),
+        ),
+        session_metadata={"runtime_state": {"distillation_candidate": candidate}},
+        policy=ContextWindowPolicy(max_tool_results=1, continuity_distillation_enabled=True),
+    )
+
+    assert context.continuity_state is not None
+    assert context.continuity_state.source_references == ("event:event:1",)
     assert context.continuity_state.fact_reference_count == 1
-    assert context.continuity_state.source_references == ("session:session:distill",)
 
 
 def test_prepare_provider_context_invalid_distillation_candidate_falls_back_safely() -> None:

@@ -1222,7 +1222,7 @@ def _continuity_state_from_distillation(
         f"{item.text} — {item.rationale}" for item in distillation.key_decisions_with_rationale
     )
     refs = tuple(item.text for item in distillation.relevant_files_commands_errors)
-    source_references = tuple(f"{item.kind}:{item.id}" for item in distillation.source_references)
+    source_references = _aggregate_distillation_source_references(distillation)
     verification = (
         distillation.verification_state.status,
         *distillation.verification_state.details,
@@ -1250,7 +1250,7 @@ def _continuity_state_from_distillation(
             token_budget=base_state.token_budget,
             token_estimate_source=base_state.token_estimate_source,
             dropped_tool_results=base_state.dropped_tool_results,
-            fact_reference_count=len(distillation.source_references),
+            fact_reference_count=len(source_references),
             source_references=source_references,
         )
     )
@@ -1276,10 +1276,33 @@ def _continuity_state_from_distillation(
         token_budget=base_state.token_budget,
         token_estimate_source=base_state.token_estimate_source,
         dropped_tool_results=base_state.dropped_tool_results,
-        fact_reference_count=len(distillation.source_references),
+        fact_reference_count=len(source_references),
         source_references=source_references,
         version=2,
     )
+
+
+def _aggregate_distillation_source_references(
+    distillation: ContinuityDistillationRecord,
+) -> tuple[str, ...]:
+    refs: list[str] = []
+
+    def _append(kind: str, ref_id: str) -> None:
+        value = f"{kind}:{ref_id}"
+        if value not in refs:
+            refs.append(value)
+
+    for item in distillation.source_references:
+        _append(item.kind, item.id)
+    for item in distillation.key_decisions_with_rationale:
+        for ref in item.refs:
+            _append(ref.kind, ref.id)
+    for item in distillation.relevant_files_commands_errors:
+        for ref in item.refs:
+            _append(ref.kind, ref.id)
+    for ref in distillation.verification_state.refs:
+        _append(ref.kind, ref.id)
+    return tuple(refs)
 
 
 def _summary_anchor(
