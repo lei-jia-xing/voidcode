@@ -350,7 +350,7 @@ def _redact_object(value: object) -> object:
     if isinstance(value, list):
         return [_redact_object(item) for item in cast(list[object], value)]
     if isinstance(value, tuple):
-        return tuple(_redact_object(item) for item in cast(tuple[object, ...], value))
+        return tuple(_redact_object(item) for item in value)
     if isinstance(value, str):
         return _scrub_secret_text(value)
     return value

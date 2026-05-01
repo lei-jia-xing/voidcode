@@ -923,7 +923,7 @@ def test_run_command_prints_provider_failure_footer(capsys: Any) -> None:
             result = cli.main(["run", "go", "--workspace", str(workspace), "--provider-stream"])
 
     captured = capsys.readouterr()
-    assert result == 0
+    assert result == 12
     assert "VoidCode runtime failure summary" in captured.err
     assert "session: provider-failed-session" in captured.err
     assert "status: failed" in captured.err
@@ -934,6 +934,41 @@ def test_run_command_prints_provider_failure_footer(capsys: Any) -> None:
     assert "last_successful_tool: read_file" in captured.err
     assert "voidcode sessions debug provider-failed-session" in captured.err
     assert "voidcode sessions resume provider-failed-session" in captured.err
+
+
+def test_run_json_reports_failed_status_and_returns_runtime_error(capsys: Any) -> None:
+    cli = importlib.import_module("voidcode.cli")
+    workspace = Path("/tmp/demo-workspace")
+    config = SimpleNamespace(approval_mode="allow")
+    chunks = (
+        _make_chunk(
+            session_id="json-failed-session",
+            status="running",
+            event=_runtime_event("runtime.request_received", prompt="go"),
+        ),
+        _make_chunk(
+            session_id="json-failed-session",
+            status="failed",
+            event=_runtime_event(
+                "runtime.failed",
+                sequence=2,
+                error="provider fallback exhausted",
+                provider_error_kind="transient_failure",
+            ),
+        ),
+    )
+
+    with patch.object(cli, "load_runtime_config", autospec=True, return_value=config):
+        with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+            runtime_class.return_value.run_stream.return_value = iter(chunks)
+            result = cli.main(["run", "go", "--workspace", str(workspace), "--json"])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert result == 12
+    assert payload["status"] == "failed"
+    assert payload["error"] == "provider fallback exhausted"
+    assert payload["session"]["status"] == "failed"
 
 
 def test_run_command_forwards_reasoning_effort_flag_to_metadata_and_config() -> None:

@@ -293,9 +293,26 @@ _BUILTIN_AGENT_MANIFESTS: dict[AgentManifestId, AgentManifest] = {
 
 
 def get_builtin_agent_manifest(agent_id: str) -> AgentManifest | None:
-    if agent_id not in _BUILTIN_AGENT_MANIFESTS:
+    manifest_id = _parse_builtin_agent_manifest_id(agent_id)
+    if manifest_id is None:
         return None
-    return _BUILTIN_AGENT_MANIFESTS[agent_id]
+    return _BUILTIN_AGENT_MANIFESTS[manifest_id]
+
+
+def _parse_builtin_agent_manifest_id(agent_id: str) -> AgentManifestId | None:
+    if agent_id == "leader":
+        return "leader"
+    if agent_id == "worker":
+        return "worker"
+    if agent_id == "advisor":
+        return "advisor"
+    if agent_id == "explore":
+        return "explore"
+    if agent_id == "researcher":
+        return "researcher"
+    if agent_id == "product":
+        return "product"
+    return None
 
 
 def list_builtin_agent_manifests() -> tuple[AgentManifest, ...]:

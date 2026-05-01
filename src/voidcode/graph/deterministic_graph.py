@@ -2,9 +2,10 @@ from __future__ import annotations
 
 # pyright: reportMissingTypeStubs=false
 from dataclasses import dataclass
+from importlib import import_module
 from typing import Protocol, cast
 
-from langgraph.graph import END, START, StateGraph
+from langgraph.graph import END, START
 
 from ..command.resolver import resolve_tool_instruction
 from ..runtime.context_window import normalize_read_file_output
@@ -37,6 +38,16 @@ class _StateGraphBuilder(Protocol):
     def compile(self) -> _CompiledGraphApp: ...
 
 
+class _StateGraphFactory(Protocol):
+    def __call__(self, state_schema: object) -> object: ...
+
+
+def _create_state_graph_builder(state_schema: object) -> _StateGraphBuilder:
+    graph_module = import_module("langgraph.graph")
+    state_graph_factory = cast(_StateGraphFactory, vars(graph_module)["StateGraph"])
+    return cast(_StateGraphBuilder, state_graph_factory(state_schema))
+
+
 @dataclass(frozen=True, slots=True)
 class DeterministicReadOnlyStep:
     events: tuple[GraphEvent, ...] = ()
@@ -62,7 +73,7 @@ class DeterministicGraph:
         if max_steps < 1:
             raise ValueError("max_steps must be at least 1")
         self._max_steps = max_steps
-        workflow = cast(_StateGraphBuilder, StateGraph(GraphLoopState))
+        workflow = _create_state_graph_builder(GraphLoopState)
         workflow.add_node("plan_turn", self._plan_turn_node)
         workflow.add_node("finalize_turn", self._finalize_turn_node)
         workflow.add_edge(START, "plan_turn")

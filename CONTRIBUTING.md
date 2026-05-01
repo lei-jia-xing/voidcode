@@ -27,7 +27,7 @@ Current toolchain:
 
 ### Python
 - **Ruff** for linting and formatting
-- **basedpyright** for static type checking
+- **ty** for static type checking
 - **pytest** for tests
 
 ### Frontend
@@ -60,7 +60,7 @@ When needed, you can also invoke the Python tooling directly:
 ```bash
 uv run ruff check .
 uv run ruff format .
-uv run basedpyright --warnings src
+uv run ty check src
 uv run pytest -n auto
 uv run pytest -n auto --cov=voidcode --cov-report=term-missing
 uv run pre-commit run --all-files

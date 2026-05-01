@@ -177,7 +177,7 @@ def build_skill_execution_snapshot(
     return SkillExecutionSnapshot(
         selected_skill_names=selected_names,
         applied_skill_payloads=frozen_payloads,
-        skill_prompt_context=cast(str, snapshot_without_hash["skill_prompt_context"]),
+        skill_prompt_context=snapshot_without_hash["skill_prompt_context"],
         snapshot_hash=_snapshot_hash(snapshot_without_hash),
         snapshot_version=1,
         source=source,

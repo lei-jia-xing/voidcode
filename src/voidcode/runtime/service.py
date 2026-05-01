@@ -280,6 +280,44 @@ _PERSISTED_RUNTIME_CONFIG_KEYS = frozenset(
         "mcp",
     }
 )
+
+
+def _permission_decision_or_none(value: object) -> PermissionDecision | None:
+    if value == "allow":
+        return "allow"
+    if value == "deny":
+        return "deny"
+    if value == "ask":
+        return "ask"
+    return None
+
+
+def _execution_engine_or_none(value: object) -> ExecutionEngineName | None:
+    if value == "deterministic":
+        return "deterministic"
+    if value == "provider":
+        return "provider"
+    return None
+
+
+def _path_scope_or_none(value: object) -> PathScope | None:
+    if value == "workspace":
+        return "workspace"
+    if value == "external":
+        return "external"
+    return None
+
+
+def _operation_class_or_none(value: object) -> OperationClass | None:
+    if value == "read":
+        return "read"
+    if value == "write":
+        return "write"
+    if value == "execute":
+        return "execute"
+    return None
+
+
 _ACP_CONNECTIVITY_ERRORS = frozenset(
     {
         "ACP adapter is not connected",
@@ -1625,8 +1663,8 @@ class VoidCodeRuntime:
             metadata={
                 "prompt": request.prompt,
                 "run_id": run_id,
-                **dict(request.metadata),
-                "request_metadata": dict(request.metadata),
+                **{key: value for key, value in request.metadata.items()},
+                "request_metadata": {key: value for key, value in request.metadata.items()},
             },
         )
         try:
@@ -4962,7 +5000,8 @@ class VoidCodeRuntime:
         payload = approval_event.payload
         raw_policy = cast(dict[str, object], payload.get("policy", {}))
         raw_policy_mode = raw_policy.get("mode", "ask")
-        if raw_policy_mode not in ("allow", "deny", "ask"):
+        policy_mode = _permission_decision_or_none(raw_policy_mode)
+        if policy_mode is None:
             raise ValueError(f"invalid approval policy mode: {raw_policy_mode}")
         path_scope = payload.get("path_scope")
         operation_class = payload.get("operation_class")
@@ -4972,7 +5011,7 @@ class VoidCodeRuntime:
             arguments=cast(dict[str, object], payload.get("arguments", {})),
             target_summary=str(payload.get("target_summary", "")),
             reason=str(payload.get("reason", "")),
-            policy_mode=raw_policy_mode,
+            policy_mode=policy_mode,
             request_event_sequence=approval_event.sequence,
             owner_session_id=(
                 str(payload["owner_session_id"])
@@ -4989,10 +5028,8 @@ class VoidCodeRuntime:
                 if payload.get("delegated_task_id") is not None
                 else None
             ),
-            path_scope=path_scope if path_scope in ("workspace", "external") else None,
-            operation_class=(
-                operation_class if operation_class in ("read", "write", "execute") else None
-            ),
+            path_scope=_path_scope_or_none(path_scope),
+            operation_class=_operation_class_or_none(operation_class),
             canonical_path=(
                 str(payload["canonical_path"])
                 if payload.get("canonical_path") is not None
@@ -5506,7 +5543,7 @@ class VoidCodeRuntime:
             raise RuntimeRequestError("parent_session_id must not match session_id")
 
         metadata = validate_runtime_request_metadata(
-            dict(request.metadata),
+            {key: value for key, value in request.metadata.items()},
             allow_internal_fields=allow_internal_metadata,
         )
         existing_session = (
@@ -6299,14 +6336,16 @@ class VoidCodeRuntime:
     def _force_loaded_skill_payloads(
         snapshot: SkillExecutionSnapshot,
     ) -> tuple[dict[str, object], ...]:
-        return tuple(
-            {
-                "name": payload.get("name"),
-                "source": "force_load",
-                "source_path": payload.get("source_path"),
-            }
-            for payload in snapshot.applied_skill_payloads
-        )
+        payloads: list[dict[str, object]] = []
+        for payload in snapshot.applied_skill_payloads:
+            payloads.append(
+                {
+                    "name": payload.get("name"),
+                    "source": "force_load",
+                    "source_path": payload.get("source_path"),
+                }
+            )
+        return tuple(payloads)
 
     def _skill_snapshot_from_metadata(
         self,
@@ -7010,8 +7049,9 @@ class VoidCodeRuntime:
             if isinstance(persisted_runtime_config, dict):
                 runtime_config = cast(dict[str, object], persisted_runtime_config)
                 persisted_approval_mode = runtime_config.get("approval_mode")
-                if persisted_approval_mode in ("allow", "deny", "ask"):
-                    approval_mode = persisted_approval_mode
+                parsed_approval_mode = _permission_decision_or_none(persisted_approval_mode)
+                if parsed_approval_mode is not None:
+                    approval_mode = parsed_approval_mode
         return PermissionPolicy(mode=approval_mode)
 
     @staticmethod
@@ -7217,8 +7257,9 @@ class VoidCodeRuntime:
                 f"'{unknown_runtime_config_keys[0]}' is not supported"
             )
         persisted_approval_mode = runtime_config.get("approval_mode")
-        if persisted_approval_mode in ("allow", "deny", "ask"):
-            approval_mode = persisted_approval_mode
+        parsed_approval_mode = _permission_decision_or_none(persisted_approval_mode)
+        if parsed_approval_mode is not None:
+            approval_mode = parsed_approval_mode
         permission = self._config.permission
         if "permission" in runtime_config:
             permission = _parse_persisted_external_permission_config(
@@ -7312,8 +7353,10 @@ class VoidCodeRuntime:
                         str(exc),
                     )
                 ) from exc
-        persisted_execution_engine = runtime_config.get("execution_engine")
-        if persisted_execution_engine in ("deterministic", "provider"):
+        persisted_execution_engine = _execution_engine_or_none(
+            runtime_config.get("execution_engine")
+        )
+        if persisted_execution_engine is not None:
             execution_engine = persisted_execution_engine
         raw_resolved_provider = runtime_config.get("resolved_provider")
         if raw_resolved_provider is not None:
@@ -7526,11 +7569,12 @@ def _parse_persisted_external_permission_rules(
     for raw_pattern, raw_decision in cast(dict[object, object], raw_rules).items():
         if not isinstance(raw_pattern, str) or not raw_pattern.strip():
             raise ValueError(f"persisted runtime_config {field_path} keys must be strings")
-        if raw_decision not in ("allow", "deny", "ask"):
+        decision = _permission_decision_or_none(raw_decision)
+        if decision is None:
             raise ValueError(
                 f"persisted runtime_config {field_path}.{raw_pattern} must be allow, deny, or ask"
             )
-        parsed.append((raw_pattern, raw_decision))
+        parsed.append((raw_pattern, decision))
     return tuple(parsed) if parsed else default
 
 

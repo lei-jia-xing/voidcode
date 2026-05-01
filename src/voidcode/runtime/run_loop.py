@@ -55,6 +55,7 @@ from .events import (
     RUNTIME_TOOL_STARTED,
     EventEnvelope,
 )
+from .execution_seams import RuntimeGraphSelection
 from .permission import PendingApproval, PermissionPolicy, PermissionResolution
 from .question import PendingQuestion
 from .session import SessionState
@@ -62,6 +63,7 @@ from .tool_display import build_tool_display, build_tool_status
 
 if TYPE_CHECKING:
     from .service import ToolRegistry, VoidCodeRuntime
+
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +85,65 @@ def _provider_transient_retry_delay_ms(
     return max(0, int(round(capped_delay)))
 
 
+def _tool_error_content(tool_name: str, error: str) -> str:
+    return f"{tool_name} failed: {error}. Please correct the tool arguments and retry."
+
+
+def _metadata_without_provider_attempt(metadata: Mapping[str, object]) -> dict[str, object]:
+    clean_metadata = dict(metadata)
+    clean_metadata.pop("provider_attempt", None)
+    return clean_metadata
+
+
+def _session_without_provider_attempt(session: SessionState) -> SessionState:
+    return SessionState(
+        session=session.session,
+        status=session.status,
+        turn=session.turn,
+        metadata=_metadata_without_provider_attempt(session.metadata),
+    )
+
+
+def _graph_request_without_provider_attempt(
+    request: GraphRunRequest,
+    *,
+    session: SessionState,
+) -> GraphRunRequest:
+    return GraphRunRequest(
+        session=session,
+        prompt=request.prompt,
+        available_tools=request.available_tools,
+        context_window=request.context_window,
+        assembled_context=request.assembled_context,
+        metadata=_metadata_without_provider_attempt(request.metadata),
+        abort_signal=request.abort_signal,
+    )
+
+
+def _provider_attempt_reset_after_tool_result(
+    *,
+    provider_attempt: int,
+    selection: RuntimeGraphSelection | None,
+    graph_request: GraphRunRequest,
+    session: SessionState,
+) -> _ProviderAttemptReset | None:
+    if provider_attempt == 0:
+        return None
+    if selection is None:
+        return None
+    clean_session = _session_without_provider_attempt(session)
+    clean_request = _graph_request_without_provider_attempt(
+        graph_request,
+        session=clean_session,
+    )
+    return _ProviderAttemptReset(
+        provider_attempt=selection.provider_attempt,
+        graph=selection.graph,
+        graph_request=clean_request,
+        session=clean_session,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class _ToolProgressItem:
     payload: dict[str, object]
@@ -96,6 +157,14 @@ class _ToolResultItem:
 @dataclass(frozen=True, slots=True)
 class _ToolExceptionItem:
     exception: Exception
+
+
+@dataclass(frozen=True, slots=True)
+class _ProviderAttemptReset:
+    provider_attempt: int
+    graph: RuntimeGraph
+    graph_request: GraphRunRequest
+    session: SessionState
 
 
 type _ToolQueueItem = _ToolProgressItem | _ToolResultItem | _ToolExceptionItem
@@ -543,6 +612,7 @@ class RuntimeRunLoopCoordinator:
                             "tool_call_id": tool_call_id,
                             "arguments": error_sanitized_args,
                             "status": "error",
+                            "content": _tool_error_content(tool_call.tool_name, str(exc)),
                             "error": str(exc),
                             "display": failed_display,
                             "tool_status": failed_status,
@@ -554,6 +624,7 @@ class RuntimeRunLoopCoordinator:
             tool_result = ToolResult(
                 tool_name=tool_call.tool_name,
                 status="error",
+                content=_tool_error_content(tool_call.tool_name, str(exc)),
                 error=str(exc),
                 data={
                     "tool_call_id": tool_call_id,
@@ -681,7 +752,14 @@ class RuntimeRunLoopCoordinator:
         )
         reasoning_capture_state = runtime._reasoning_capture_state()
         active_graph_request: GraphRunRequest = graph_request
+        pending_provider_attempt_reset: _ProviderAttemptReset | None = None
         while True:
+            if pending_provider_attempt_reset is not None:
+                provider_attempt = pending_provider_attempt_reset.provider_attempt
+                graph = pending_provider_attempt_reset.graph
+                active_graph_request = pending_provider_attempt_reset.graph_request
+                session = pending_provider_attempt_reset.session
+                pending_provider_attempt_reset = None
             sequence = int(sequence)
             current_graph_request: GraphRunRequest = active_graph_request
             current_prompt: str = current_graph_request.prompt
@@ -696,7 +774,7 @@ class RuntimeRunLoopCoordinator:
             )
             current_metadata: dict[str, object] = current_graph_request.metadata
             current_abort_signal: ProviderAbortSignal | None = current_graph_request.abort_signal
-            current_session = self._current_session_state(session)
+            current_session: SessionState = session
             base_context = runtime._prepare_provider_context_window(
                 prompt=current_prompt,
                 tool_results=tuple(tool_results),
@@ -1281,6 +1359,9 @@ class RuntimeRunLoopCoordinator:
                         session.session.id,
                         hook_outcome.failed_error,
                     )
+            if is_final_step and provider_attempt != 0:
+                provider_attempt = 0
+                session = _session_without_provider_attempt(session)
             current_chunk_session = session
             if is_final_step:
                 current_chunk_session = runtime._session_with_plan_state(
@@ -1688,6 +1769,7 @@ class RuntimeRunLoopCoordinator:
                                 "tool_call_id": tool_call_id,
                                 "arguments": error_sanitized_args,
                                 "status": "error",
+                                "content": _tool_error_content(plan_tool_call.tool_name, str(exc)),
                                 "error": str(exc),
                                 "display": failed_display,
                                 "tool_status": failed_status,
@@ -1701,6 +1783,7 @@ class RuntimeRunLoopCoordinator:
                 tool_result = ToolResult(
                     tool_name=plan_tool_call.tool_name,
                     status="error",
+                    content=_tool_error_content(plan_tool_call.tool_name, str(exc)),
                     error=str(exc),
                     data={
                         "tool_call_id": tool_call_id,
@@ -1907,6 +1990,16 @@ class RuntimeRunLoopCoordinator:
                     },
                 )
             )
+            if provider_attempt != 0:
+                pending_provider_attempt_reset = _provider_attempt_reset_after_tool_result(
+                    provider_attempt=provider_attempt,
+                    selection=runtime._graph_selection_for_effective_config(
+                        effective_runtime_config,
+                        provider_attempt=0,
+                    ),
+                    graph_request=active_graph_request,
+                    session=session,
+                )
 
     def _permission_denied_tool_feedback_chunks(
         self,
@@ -1943,6 +2036,7 @@ class RuntimeRunLoopCoordinator:
         tool_result = ToolResult(
             tool_name=tool_call.tool_name,
             status="error",
+            content=_tool_error_content(tool_call.tool_name, error),
             error=error,
             data=sanitize_tool_result_data(result_data),
         )
@@ -2299,13 +2393,13 @@ class RuntimeRunLoopCoordinator:
     def _drain_runtime_events(
         self,
         *,
-        session: Any,
+        session: SessionState,
         start_sequence: int,
     ) -> tuple[tuple[RuntimeStreamChunk, ...], SessionState, int]:
         runtime = self._runtime
         emitted: list[RuntimeStreamChunk] = []
         sequence = start_sequence - 1
-        current_session = session
+        current_session: SessionState = session
         for acp_event in runtime._envelopes_for_acp_events(
             session_id=session.session.id,
             start_sequence=start_sequence,

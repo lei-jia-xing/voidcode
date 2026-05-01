@@ -37,7 +37,7 @@ class WriteFileTool:
             first_error = exc.errors()[0]
             field_name = first_error.get("loc", (None,))[0]
             if field_name == "content":
-                raise ValueError("write_file requires a string content argument") from exc
+                raise ValueError("write_file requires a non-empty string content argument") from exc
             raise ValueError("write_file requires a string path argument") from exc
 
         resolution = resolve_workspace_path(

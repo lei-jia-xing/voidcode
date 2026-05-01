@@ -9,6 +9,28 @@ TODO_STATUSES: tuple[TodoStatus, ...] = ("pending", "in_progress", "completed", 
 TODO_PRIORITIES: tuple[TodoPriority, ...] = ("high", "medium", "low")
 
 
+def _parse_todo_status(value: object) -> TodoStatus | None:
+    if value == "pending":
+        return "pending"
+    if value == "in_progress":
+        return "in_progress"
+    if value == "completed":
+        return "completed"
+    if value == "cancelled":
+        return "cancelled"
+    return None
+
+
+def _parse_todo_priority(value: object) -> TodoPriority | None:
+    if value == "high":
+        return "high"
+    if value == "medium":
+        return "medium"
+    if value == "low":
+        return "low"
+    return None
+
+
 class RuntimeTodoItem(TypedDict):
     content: str
     status: TodoStatus
@@ -54,11 +76,11 @@ def runtime_todos_from_tool_payload(
             continue
         item = cast(dict[object, object], raw_item)
         content = item.get("content")
-        status = item.get("status")
-        priority = item.get("priority")
+        status = _parse_todo_status(item.get("status"))
+        priority = _parse_todo_priority(item.get("priority"))
         if not isinstance(content, str) or not content.strip():
             continue
-        if status not in TODO_STATUSES or priority not in TODO_PRIORITIES:
+        if status is None or priority is None:
             continue
         todos.append(
             {
@@ -81,13 +103,13 @@ def runtime_todos_from_state_payload(raw_todos: object) -> tuple[RuntimeTodoItem
             continue
         item = cast(dict[object, object], raw_item)
         content = item.get("content")
-        status = item.get("status")
-        priority = item.get("priority")
+        status = _parse_todo_status(item.get("status"))
+        priority = _parse_todo_priority(item.get("priority"))
         raw_position = item.get("position")
         raw_updated_at = item.get("updated_at")
         if not isinstance(content, str) or not content.strip():
             continue
-        if status not in TODO_STATUSES or priority not in TODO_PRIORITIES:
+        if status is None or priority is None:
             continue
         position = (
             raw_position

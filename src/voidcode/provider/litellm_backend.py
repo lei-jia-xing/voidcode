@@ -429,9 +429,9 @@ class LiteLLMBackendSingleAgentProvider:
         request: ProviderTurnRequest,
     ) -> dict[str, object]:
         message_sizes = [_message_size_chars(message) for message in messages]
-        largest_index = (
-            max(range(len(message_sizes)), key=message_sizes.__getitem__) if messages else None
-        )
+        largest_index = None
+        if messages:
+            largest_index = max(range(len(message_sizes)), key=lambda index: message_sizes[index])
         largest_message: dict[str, object] | None = None
         if largest_index is not None:
             largest = messages[largest_index]

@@ -25,7 +25,7 @@ from .events import (
     EventEnvelope,
     EventSource,
 )
-from .permission import OperationClass, PathScope, PendingApproval
+from .permission import OperationClass, PathScope, PendingApproval, PermissionDecision
 from .question import PendingQuestion, PendingQuestionOption, PendingQuestionPrompt
 from .session import SessionRef, SessionState, SessionStatus, StoredSessionSummary
 from .task import (
@@ -42,11 +42,31 @@ from .todos import runtime_todos_from_state_payload, todo_state_payload
 
 
 def _pending_path_scope(value: object) -> PathScope | None:
-    return value if value in ("workspace", "external") else None
+    if value == "workspace":
+        return "workspace"
+    if value == "external":
+        return "external"
+    return None
 
 
 def _pending_operation_class(value: object) -> OperationClass | None:
-    return value if value in ("read", "write", "execute") else None
+    if value == "read":
+        return "read"
+    if value == "write":
+        return "write"
+    if value == "execute":
+        return "execute"
+    return None
+
+
+def _pending_permission_decision(value: object) -> PermissionDecision:
+    if value == "allow":
+        return "allow"
+    if value == "deny":
+        return "deny"
+    if value == "ask":
+        return "ask"
+    raise ValueError(f"invalid permission policy mode: {value}")
 
 
 @runtime_checkable
@@ -689,31 +709,43 @@ class SqliteSessionStore:
 
     @staticmethod
     def _parse_session_status(value: str) -> SessionStatus:
-        allowed: tuple[SessionStatus, ...] = ("idle", "running", "waiting", "completed", "failed")
-        if value not in allowed:
-            raise ValueError(f"invalid session status: {value}")
-        return value
+        if value == "idle":
+            return "idle"
+        if value == "running":
+            return "running"
+        if value == "waiting":
+            return "waiting"
+        if value == "completed":
+            return "completed"
+        if value == "failed":
+            return "failed"
+        raise ValueError(f"invalid session status: {value}")
 
     @staticmethod
     def _parse_event_source(value: str) -> EventSource:
-        allowed: tuple[EventSource, ...] = ("runtime", "graph", "tool")
-        if value not in allowed:
-            raise ValueError(f"invalid event source: {value}")
-        return value
+        if value == "runtime":
+            return "runtime"
+        if value == "graph":
+            return "graph"
+        if value == "tool":
+            return "tool"
+        raise ValueError(f"invalid event source: {value}")
 
     @staticmethod
     def _parse_background_task_status(value: str) -> BackgroundTaskStatus:
-        allowed: tuple[BackgroundTaskStatus, ...] = (
-            "queued",
-            "running",
-            "completed",
-            "failed",
-            "cancelled",
-            "interrupted",
-        )
-        if value not in allowed:
-            raise ValueError(f"invalid background task status: {value}")
-        return value
+        if value == "queued":
+            return "queued"
+        if value == "running":
+            return "running"
+        if value == "completed":
+            return "completed"
+        if value == "failed":
+            return "failed"
+        if value == "cancelled":
+            return "cancelled"
+        if value == "interrupted":
+            return "interrupted"
+        raise ValueError(f"invalid background task status: {value}")
 
     @staticmethod
     def _session_last_event_sequence(events: tuple[EventEnvelope, ...]) -> int:
@@ -1206,15 +1238,14 @@ class SqliteSessionStore:
             return None
         data = cast(dict[str, object], json.loads(payload))
         raw_policy_mode = data.get("policy_mode", "ask")
-        if raw_policy_mode not in ("allow", "deny", "ask"):
-            raise ValueError(f"invalid permission policy mode: {raw_policy_mode}")
+        policy_mode = _pending_permission_decision(raw_policy_mode)
         return PendingApproval(
             request_id=cast(str, data["request_id"]),
             tool_name=cast(str, data["tool_name"]),
             arguments=cast(dict[str, object], data.get("arguments", {})),
             target_summary=cast(str, data.get("target_summary", "")),
             reason=cast(str, data.get("reason", "")),
-            policy_mode=raw_policy_mode,
+            policy_mode=policy_mode,
             request_event_sequence=(
                 cast(int, data["request_event_sequence"])
                 if isinstance(data.get("request_event_sequence"), int)

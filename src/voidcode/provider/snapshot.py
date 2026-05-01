@@ -78,8 +78,9 @@ def resolved_provider_snapshot(
     if resolved_provider is None:
         return None
     if isinstance(resolved_provider, Mapping):
-        raw_active_target = resolved_provider.get("active_target")
-        raw_targets = resolved_provider.get("targets")
+        provider_snapshot = cast(Mapping[str, object], resolved_provider)
+        raw_active_target = provider_snapshot.get("active_target")
+        raw_targets = provider_snapshot.get("targets")
         if not isinstance(raw_active_target, Mapping) or not isinstance(raw_targets, list):
             return None
         active_target = _snapshot_target_payload(cast(Mapping[str, object], raw_active_target))

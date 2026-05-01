@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Protocol
 
 from ..hook.config import RuntimeHooksConfig
@@ -15,45 +16,77 @@ from ..tools.web_fetch import WebFetchTool
 from ..tools.web_search import WebSearchTool
 from ..tools.write_file import WriteFileTool
 
+
+class _NoArgToolFactory(Protocol):
+    def __call__(self) -> Tool: ...
+
+
+class _HookedToolFactory(Protocol):
+    def __call__(self, *, hooks_config: RuntimeHooksConfig | None = None) -> Tool: ...
+
+
+class _SkillToolFactory(Protocol):
+    def __call__(
+        self,
+        *,
+        list_skills: Callable[[], tuple[SkillMetadata, ...]],
+        resolve_skill: Callable[[str], SkillMetadata],
+    ) -> Tool: ...
+
+
 # Import optional tools independently so one failure doesn't hide others.
 try:
-    from ..tools.apply_patch import ApplyPatchTool as _ApplyPatchTool
+    from ..tools.apply_patch import ApplyPatchTool
 except ImportError:
-    _ApplyPatchTool = None
+    _ApplyPatchTool: _HookedToolFactory | None = None
+else:
+    _ApplyPatchTool: _HookedToolFactory | None = ApplyPatchTool
 
 try:
-    from ..tools.ast_grep import AstGrepPreviewTool as _AstGrepPreviewTool
-    from ..tools.ast_grep import AstGrepReplaceTool as _AstGrepReplaceTool
-    from ..tools.ast_grep import AstGrepSearchTool as _AstGrepSearchTool
+    from ..tools.ast_grep import AstGrepPreviewTool, AstGrepReplaceTool, AstGrepSearchTool
 except ImportError:
-    _AstGrepPreviewTool = None
-    _AstGrepReplaceTool = None
-    _AstGrepSearchTool = None
+    _AstGrepPreviewTool: _NoArgToolFactory | None = None
+    _AstGrepReplaceTool: _NoArgToolFactory | None = None
+    _AstGrepSearchTool: _NoArgToolFactory | None = None
+else:
+    _AstGrepPreviewTool: _NoArgToolFactory | None = AstGrepPreviewTool
+    _AstGrepReplaceTool: _NoArgToolFactory | None = AstGrepReplaceTool
+    _AstGrepSearchTool: _NoArgToolFactory | None = AstGrepSearchTool
 
 try:
-    from ..tools.code_search import CodeSearchTool as _CodeSearchTool
+    from ..tools.code_search import CodeSearchTool
 except ImportError:
-    _CodeSearchTool = None
+    _CodeSearchTool: _NoArgToolFactory | None = None
+else:
+    _CodeSearchTool: _NoArgToolFactory | None = CodeSearchTool
 
 try:
-    from ..tools.multi_edit import MultiEditTool as _MultiEditTool
+    from ..tools.multi_edit import MultiEditTool
 except ImportError:
-    _MultiEditTool = None
+    _MultiEditTool: _HookedToolFactory | None = None
+else:
+    _MultiEditTool: _HookedToolFactory | None = MultiEditTool
 
 try:
-    from ..tools.question import QuestionTool as _QuestionTool
+    from ..tools.question import QuestionTool
 except ImportError:
-    _QuestionTool = None
+    _QuestionTool: _NoArgToolFactory | None = None
+else:
+    _QuestionTool: _NoArgToolFactory | None = QuestionTool
 
 try:
-    from ..tools.skill import SkillTool as _SkillTool
+    from ..tools.skill import SkillTool
 except ImportError:
-    _SkillTool = None
+    _SkillTool: _SkillToolFactory | None = None
+else:
+    _SkillTool: _SkillToolFactory | None = SkillTool
 
 try:
-    from ..tools.todo_write import TodoWriteTool as _TodoWriteTool
+    from ..tools.todo_write import TodoWriteTool
 except ImportError:
-    _TodoWriteTool = None
+    _TodoWriteTool: _NoArgToolFactory | None = None
+else:
+    _TodoWriteTool: _NoArgToolFactory | None = TodoWriteTool
 
 
 class ToolProvider(Protocol):

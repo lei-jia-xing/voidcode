@@ -28,6 +28,14 @@ type SubagentExecutablePreset = Literal[
 ]
 
 
+def _parse_subagent_execution_mode(value: object) -> SubagentExecutionMode:
+    if value == "sync":
+        return "sync"
+    if value == "background":
+        return "background"
+    raise ValueError("delegation metadata mode must be 'sync' or 'background'")
+
+
 def _normalized_optional_string(
     value: object,
     *,
@@ -176,9 +184,7 @@ def subagent_routing_identity_from_metadata(
         key: value for key, value in routing_items.items() if isinstance(key, str)
     }
 
-    mode = routing_metadata.get("mode")
-    if mode not in ("sync", "background"):
-        raise ValueError("delegation metadata mode must be 'sync' or 'background'")
+    mode = _parse_subagent_execution_mode(routing_metadata.get("mode"))
 
     category = routing_metadata.get("category")
     subagent_type = routing_metadata.get("subagent_type")

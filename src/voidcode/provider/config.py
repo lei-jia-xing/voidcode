@@ -471,6 +471,7 @@ class AnthropicProviderConfig:
 
 
 type GoogleAuthMethod = Literal["api_key", "oauth", "service_account"]
+type LiteLLMAuthScheme = Literal["bearer", "token", "none"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -519,7 +520,7 @@ class LiteLLMProviderConfig:
     base_url: str | None = None
     discovery_base_url: str | None = None
     auth_header: str | None = None
-    auth_scheme: Literal["bearer", "token", "none"] = "bearer"
+    auth_scheme: LiteLLMAuthScheme = "bearer"
     timeout_seconds: float | None = None
     model_map: dict[str, str] = field(default_factory=dict)
     transient_retry: ProviderTransientRetryConfig | None = None
@@ -563,11 +564,44 @@ _VALID_GOOGLE_AUTH_METHODS: tuple[GoogleAuthMethod, ...] = (
     "service_account",
 )
 _VALID_COPILOT_AUTH_METHODS: tuple[CopilotAuthMethod, ...] = ("token", "oauth")
-_VALID_LITELLM_AUTH_SCHEMES: tuple[Literal["bearer", "token", "none"], ...] = (
+_VALID_LITELLM_AUTH_SCHEMES: tuple[LiteLLMAuthScheme, ...] = (
     "bearer",
     "token",
     "none",
 )
+
+
+def _parse_google_auth_method(raw_method: str, *, field_path: str) -> GoogleAuthMethod:
+    if raw_method == "api_key":
+        return "api_key"
+    if raw_method == "oauth":
+        return "oauth"
+    if raw_method == "service_account":
+        return "service_account"
+    allowed = ", ".join(_VALID_GOOGLE_AUTH_METHODS)
+    raise ValueError(f"{_nested_config_field(field_path, 'method')} must be one of: {allowed}")
+
+
+def _parse_copilot_auth_method(raw_method: str, *, field_path: str) -> CopilotAuthMethod:
+    if raw_method == "token":
+        return "token"
+    if raw_method == "oauth":
+        return "oauth"
+    allowed = ", ".join(_VALID_COPILOT_AUTH_METHODS)
+    raise ValueError(f"{_nested_config_field(field_path, 'method')} must be one of: {allowed}")
+
+
+def _parse_litellm_auth_scheme(raw_scheme: str, *, field_path: str) -> LiteLLMAuthScheme:
+    if raw_scheme == "bearer":
+        return "bearer"
+    if raw_scheme == "token":
+        return "token"
+    if raw_scheme == "none":
+        return "none"
+    allowed = ", ".join(_VALID_LITELLM_AUTH_SCHEMES)
+    raise ValueError(f"{_nested_config_field(field_path, 'auth_scheme')} must be one of: {allowed}")
+
+
 _BUILTIN_PROVIDER_NAMES: frozenset[str] = frozenset(
     {
         "openai",
@@ -1252,11 +1286,7 @@ def _parse_google_auth_config(
         )
     )
 
-    raw_method = payload.method
-    if raw_method not in _VALID_GOOGLE_AUTH_METHODS:
-        allowed = ", ".join(_VALID_GOOGLE_AUTH_METHODS)
-        raise ValueError(f"{_nested_config_field(field_path, 'method')} must be one of: {allowed}")
-    method = raw_method
+    method = _parse_google_auth_method(payload.method, field_path=field_path)
 
     api_key = payload.api_key
     if api_key is None:
@@ -1372,11 +1402,7 @@ def _parse_copilot_auth_config(
         )
     )
 
-    raw_method = payload.method
-    if raw_method not in _VALID_COPILOT_AUTH_METHODS:
-        allowed = ", ".join(_VALID_COPILOT_AUTH_METHODS)
-        raise ValueError(f"{_nested_config_field(field_path, 'method')} must be one of: {allowed}")
-    method = raw_method
+    method = _parse_copilot_auth_method(payload.method, field_path=field_path)
 
     token = payload.token
     token_env_var = payload.token_env_var
@@ -1458,14 +1484,9 @@ def _parse_litellm_provider_config(
         base_url = env.get(_LITELLM_BASE_URL_ENV_VAR) or env.get(_LITELLM_PROXY_URL_ENV_VAR)
 
     raw_auth_scheme = payload.auth_scheme
-    auth_scheme: Literal["bearer", "token", "none"] = "bearer"
+    auth_scheme: LiteLLMAuthScheme = "bearer"
     if raw_auth_scheme is not None:
-        if raw_auth_scheme not in _VALID_LITELLM_AUTH_SCHEMES:
-            allowed = ", ".join(_VALID_LITELLM_AUTH_SCHEMES)
-            raise ValueError(
-                f"{_nested_config_field(field_path, 'auth_scheme')} must be one of: {allowed}"
-            )
-        auth_scheme = raw_auth_scheme
+        auth_scheme = _parse_litellm_auth_scheme(raw_auth_scheme, field_path=field_path)
 
     return LiteLLMProviderConfig(
         api_key=api_key,

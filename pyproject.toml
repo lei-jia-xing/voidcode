@@ -43,13 +43,13 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-  "basedpyright",
   "hypothesis",
   "pre-commit",
   "pytest",
   "pytest-cov",
   "pytest-xdist>=3.8.0",
   "ruff",
+  "ty>=0.0.33",
 ]
 
 [project.scripts]
@@ -76,16 +76,6 @@ select = ["B", "E", "F", "I", "UP"]
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
-
-[tool.basedpyright]
-pythonVersion = "3.13"
-typeCheckingMode = "strict"
-include = ["src"]
-failOnWarnings = true
-
-[[tool.basedpyright.executionEnvironments]]
-root = "."
-extraPaths = ["src"]
 
 [tool.pytest.ini_options]
 addopts = ""

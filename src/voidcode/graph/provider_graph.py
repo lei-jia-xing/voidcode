@@ -202,7 +202,7 @@ class ProviderGraph:
         turn_request: ProviderTurnRequest,
         current_turn: int,
     ) -> ProviderStep:
-        stream_provider = cast(StreamableTurnProvider, self._provider)
+        stream_provider = cast(StreamableTurnProvider, cast(object, self._provider))
         stream_events: list[GraphEvent] = []
         output_parts: list[str] = []
         tool_payload_parts: list[str] = []

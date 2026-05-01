@@ -743,6 +743,46 @@ class _DeniedWriteThenReadTurnProvider:
         return iter((ProviderStreamEvent(kind="done", done_reason="completed"),))
 
 
+class _EmptyWriteThenResultAwareTurnProvider:
+    def __init__(self, *, name: str) -> None:
+        self.name = name
+        self.requests: list[ProviderTurnRequest] = []
+
+    def propose_turn(self, request: object) -> ProviderTurnResult:
+        turn_request = cast(ProviderTurnRequest, request)
+        self.requests.append(turn_request)
+        if not turn_request.tool_results:
+            return ProviderTurnResult(
+                tool_call=ToolCall(
+                    tool_name="write_file",
+                    arguments={"path": "shader.frag", "content": ""},
+                )
+            )
+        return ProviderTurnResult(output="recovered from validation error")
+
+    def stream_turn(self, request: object):
+        result = self.propose_turn(request)
+        if result.output is not None:
+            return iter(
+                (
+                    ProviderStreamEvent(kind="delta", channel="text", text=result.output),
+                    ProviderStreamEvent(kind="done", done_reason="completed"),
+                )
+            )
+        return iter((ProviderStreamEvent(kind="done", done_reason="completed"),))
+
+
+@dataclass(frozen=True, slots=True)
+class _EmptyWriteThenResultAwareModelProvider:
+    name: str
+    created_providers: list[_EmptyWriteThenResultAwareTurnProvider]
+
+    def turn_provider(self) -> _EmptyWriteThenResultAwareTurnProvider:
+        provider = _EmptyWriteThenResultAwareTurnProvider(name=self.name)
+        self.created_providers.append(provider)
+        return provider
+
+
 @dataclass(frozen=True, slots=True)
 class _DeniedWriteThenReadModelProvider:
     name: str
@@ -962,6 +1002,70 @@ class _UnexpectedFallbackTurnProvider:
         _ = request
         self.model_provider.calls += 1
         return ProviderTurnResult(output="fallback used")
+
+
+class _TwoEpisodePrimaryModelProvider:
+    def __init__(self, *, name: str) -> None:
+        self.name = name
+        self.calls = 0
+        self.requests: list[ProviderTurnRequest] = []
+
+    def turn_provider(self) -> _TwoEpisodePrimaryTurnProvider:
+        return _TwoEpisodePrimaryTurnProvider(model_provider=self)
+
+
+@dataclass(slots=True)
+class _TwoEpisodePrimaryTurnProvider:
+    model_provider: _TwoEpisodePrimaryModelProvider
+
+    @property
+    def name(self) -> str:
+        return self.model_provider.name
+
+    def propose_turn(self, request: object) -> ProviderTurnResult:
+        turn_request = cast(ProviderTurnRequest, request)
+        self.model_provider.requests.append(turn_request)
+        self.model_provider.calls += 1
+        if self.model_provider.calls in {1, 2}:
+            raise ProviderExecutionError(
+                kind="transient_failure",
+                provider_name=self.name,
+                model_name=turn_request.model_name or "model-a",
+                message=f"transient episode {self.model_provider.calls}",
+            )
+        return ProviderTurnResult(output="primary complete")
+
+
+class _TwoEpisodeFallbackModelProvider:
+    def __init__(self, *, name: str) -> None:
+        self.name = name
+        self.calls = 0
+        self.requests: list[ProviderTurnRequest] = []
+
+    def turn_provider(self) -> _TwoEpisodeFallbackTurnProvider:
+        return _TwoEpisodeFallbackTurnProvider(model_provider=self)
+
+
+@dataclass(slots=True)
+class _TwoEpisodeFallbackTurnProvider:
+    model_provider: _TwoEpisodeFallbackModelProvider
+
+    @property
+    def name(self) -> str:
+        return self.model_provider.name
+
+    def propose_turn(self, request: object) -> ProviderTurnResult:
+        turn_request = cast(ProviderTurnRequest, request)
+        self.model_provider.requests.append(turn_request)
+        self.model_provider.calls += 1
+        if self.model_provider.calls == 1:
+            return ProviderTurnResult(
+                tool_call=ToolCall(
+                    tool_name="read_file",
+                    arguments={"filePath": "sample.txt"},
+                )
+            )
+        return ProviderTurnResult(output="fallback complete")
 
 
 class _BlockingFallbackModelProvider:
@@ -1828,6 +1932,47 @@ def test_runtime_background_rate_limit_retry_precedes_provider_fallback(
     assert fallback.calls == 0
 
 
+def test_runtime_provider_fallback_resets_after_successful_turn(tmp_path: Path) -> None:
+    (tmp_path / "sample.txt").write_text("sample contents", encoding="utf-8")
+    primary = _TwoEpisodePrimaryModelProvider(name="primary")
+    fallback = _TwoEpisodeFallbackModelProvider(name="fallback")
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        model_provider_registry=ModelProviderRegistry(
+            providers={"primary": primary, "fallback": fallback}
+        ),
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="primary/model-a",
+            provider_fallback=RuntimeProviderFallbackConfig(
+                preferred_model="primary/model-a",
+                fallback_models=("fallback/model-b",),
+            ),
+            providers=RuntimeProvidersConfig(
+                custom={
+                    "primary": LiteLLMProviderConfig(
+                        transient_retry=ProviderTransientRetryConfig(max_retries=0)
+                    )
+                }
+            ),
+        ),
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="read sample.txt"))
+
+    assert response.session.status == "completed"
+    assert response.output == "fallback complete"
+    fallback_events = [
+        event for event in response.events if event.event_type == "runtime.provider_fallback"
+    ]
+    assert [event.payload["attempt"] for event in fallback_events] == [1, 1]
+    assert primary.calls == 2
+    assert fallback.calls == 2
+    assert [request.attempt for request in primary.requests] == [0, 0]
+    assert [request.attempt for request in fallback.requests] == [1, 1]
+    assert "provider_attempt" not in response.session.metadata
+
+
 def test_runtime_background_fallback_reacquires_fallback_model_slot(
     tmp_path: Path,
 ) -> None:
@@ -2118,6 +2263,42 @@ def test_runtime_does_not_wait_on_failed_question_tool_result(
     )
     assert tool_completed.payload["status"] == "error"
     assert tool_completed.payload["error"] == "question requires a non-empty questions array"
+
+
+def test_runtime_tool_validation_error_includes_actionable_content(tmp_path: Path) -> None:
+    created_providers: list[_EmptyWriteThenResultAwareTurnProvider] = []
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+        model_provider_registry=ModelProviderRegistry(
+            providers={
+                "opencode": _EmptyWriteThenResultAwareModelProvider(
+                    name="opencode",
+                    created_providers=created_providers,
+                )
+            }
+        ),
+        permission_policy=PermissionPolicy(mode="allow"),
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="empty write", session_id="empty-write"))
+
+    assert response.session.status == "completed"
+    assert response.output == "recovered from validation error"
+    assert (tmp_path / "shader.frag").exists() is False
+    tool_completed = next(
+        event for event in response.events if event.event_type == "runtime.tool_completed"
+    )
+    assert tool_completed.payload["status"] == "error"
+    assert tool_completed.payload["error"] == (
+        "write_file requires a non-empty string content argument"
+    )
+    assert tool_completed.payload["content"] == (
+        "write_file failed: write_file requires a non-empty string content argument. "
+        "Please correct the tool arguments and retry."
+    )
+    failed_tool_result = created_providers[-1].requests[-1].tool_results[-1]
+    assert failed_tool_result.content == tool_completed.payload["content"]
 
 
 def test_runtime_session_debug_snapshot_reports_failure_classification_and_last_tool(
@@ -11849,7 +12030,7 @@ def test_runtime_resume_preserves_provider_attempt_and_target_across_pending_app
     )
     assert resumed.session.status == "completed"
     assert resumed.output == "done"
-    assert resumed.session.metadata["provider_attempt"] == 1
+    assert "provider_attempt" not in resumed.session.metadata
     assert custom_attempts == [1, 1]
     assert all(attempt == 1 for attempt in custom_attempts)
     resumed_fallback_events = [
