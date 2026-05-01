@@ -11,6 +11,7 @@ type ExistingEventType = Literal[
     "runtime.request_received",
     "runtime.skills_loaded",
     "runtime.skills_applied",
+    "runtime.hook_presets_loaded",
     "runtime.provider_fallback",
     "runtime.provider_transient_retry",
     "runtime.category_model_diagnostic",
@@ -117,6 +118,7 @@ def _parse_delegated_lifecycle_status(value: object) -> DelegatedLifecycleStatus
 RUNTIME_REQUEST_RECEIVED: Final[ExistingEventType] = "runtime.request_received"
 RUNTIME_SKILLS_LOADED: Final[ExistingEventType] = "runtime.skills_loaded"
 RUNTIME_SKILLS_APPLIED: Final[ExistingEventType] = "runtime.skills_applied"
+RUNTIME_HOOK_PRESETS_LOADED: Final[ExistingEventType] = "runtime.hook_presets_loaded"
 RUNTIME_PROVIDER_FALLBACK: Final[ExistingEventType] = "runtime.provider_fallback"
 RUNTIME_PROVIDER_TRANSIENT_RETRY: Final[ExistingEventType] = "runtime.provider_transient_retry"
 RUNTIME_CATEGORY_MODEL_DIAGNOSTIC: Final[ExistingEventType] = "runtime.category_model_diagnostic"
@@ -206,6 +208,7 @@ EMITTED_EVENT_TYPES: Final[tuple[ExistingEventType, ...]] = (
     RUNTIME_REQUEST_RECEIVED,
     RUNTIME_SKILLS_LOADED,
     RUNTIME_SKILLS_APPLIED,
+    RUNTIME_HOOK_PRESETS_LOADED,
     RUNTIME_PROVIDER_FALLBACK,
     RUNTIME_PROVIDER_TRANSIENT_RETRY,
     RUNTIME_CATEGORY_MODEL_DIAGNOSTIC,
