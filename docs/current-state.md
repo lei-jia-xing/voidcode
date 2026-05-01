@@ -19,7 +19,7 @@
 - [x] **项目结构**：支持 Hatch/UV 的布局，包含 `src/voidcode/runtime`、`src/voidcode/graph` 和 `src/voidcode/tools`。
 - [x] **CLI 入口点**：`voidcode --help` 和 `voidcode run "read <path>" --workspace <dir>` 均可工作。
 - [x] **依赖管理**：为本地开发完全配置了 `pyproject.toml` 和 `mise.toml`。
-- [x] **开发工具**：集成了 Ruff (lint/format)、basedpyright (types) 和 pytest (tests) 并可正常运行。
+- [x] **开发工具**：集成了 Ruff (lint/format)、ty (types) 和 pytest (tests) 并可正常运行。
 - [x] **契约层**：代码中存在类型化的会话、事件、运行时、图和工具契约。
 - [x] **稳定的 deterministic reference/debug engine**：CLI 可以通过运行时、图和工具边界执行受监管的本地确定性多步请求，并发出可观测事件。它保留为无凭据本地演示、测试和参考 harness；新产品行为优先沿 provider-backed execution path 演进。
 - [x] **扩展基础设施基础**：运行时现在包括工具、技能、LSP 和 ACP 的类型化配置和发现基础设施，并为 hooks/config MVP 提供了清晰的配置边界。
