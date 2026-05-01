@@ -76,6 +76,39 @@ def test_registry_unknown_provider_prefers_custom_provider_config() -> None:
     assert resolved.config == custom_config
 
 
+def test_registry_litellm_provider_config_preserves_ssl_verify() -> None:
+    registry = ModelProviderRegistry.with_defaults(
+        provider_configs=ProviderConfigs(
+            litellm=LiteLLMProviderConfig(
+                api_key="internal-litellm-key",
+                base_url="https://litellm.example.test",
+                ssl_verify=False,
+            )
+        )
+    )
+
+    config = registry.provider_config("litellm")
+
+    assert config is not None
+    assert config.ssl_verify is False
+
+
+def test_registry_simplified_provider_config_preserves_ssl_verify() -> None:
+    registry = ModelProviderRegistry.with_defaults(
+        provider_configs=ProviderConfigs(
+            opencode_go=SimplifiedProviderConfig(
+                api_key="opencode-go-key",
+                ssl_verify=False,
+            )
+        )
+    )
+
+    config = registry.provider_config("opencode-go")
+
+    assert config is not None
+    assert config.ssl_verify is False
+
+
 def test_registry_resolve_with_metadata_distinguishes_builtin_custom_and_default_sources() -> None:
     default_config = LiteLLMProviderConfig(api_key="default")
     custom_config = LiteLLMProviderConfig(api_key="custom", base_url="http://localhost:11434/v1")

@@ -2423,6 +2423,108 @@ def test_glm_provider_does_not_append_v1_to_base_url(monkeypatch: pytest.MonkeyP
     assert payload["api_base"] == "https://open.bigmodel.cn/api/paas/v4"
 
 
+def test_litellm_backend_propose_turn_forwards_ssl_verify(monkeypatch: pytest.MonkeyPatch) -> None:
+    import voidcode.provider.litellm_backend as backend_module
+
+    provider = LiteLLMBackendSingleAgentProvider(
+        name="litellm",
+        config=LiteLLMProviderConfig(
+            api_key="litellm-key",
+            base_url="https://litellm.local",
+            ssl_verify=False,
+        ),
+    )
+
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        completion_content="ok",
+    )
+    monkeypatch.setattr(backend_module.litellm_module, "ssl_verify", True, raising=False)
+
+    original_completion = backend_module.litellm_module.completion
+
+    def _completion_with_ssl_capture(*args: object, **kwargs: object) -> object:
+        _LAST_REQUEST_PAYLOAD["ssl_verify_during_call"] = backend_module.litellm_module.ssl_verify
+        return original_completion(*args, **kwargs)
+
+    monkeypatch.setattr(backend_module.litellm_module, "completion", _completion_with_ssl_capture)
+
+    result = provider.propose_turn(_build_turn_request(model_name="litellm"))
+
+    assert result.output == "ok"
+    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+    assert isinstance(payload_obj, dict)
+    payload = cast(dict[str, object], payload_obj)
+    assert "ssl_verify" not in payload
+    assert _LAST_REQUEST_PAYLOAD["ssl_verify_during_call"] is False
+    assert backend_module.litellm_module.ssl_verify is True
+
+
+def test_litellm_backend_omits_ssl_verify_when_not_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = LiteLLMBackendSingleAgentProvider(
+        name="custom-gateway",
+        config=LiteLLMProviderConfig(
+            api_key="gateway-key",
+            base_url="https://gateway.example.test",
+        ),
+    )
+
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        completion_content="ok",
+    )
+
+    result = provider.propose_turn(_build_turn_request(model_name="custom-gateway"))
+
+    assert result.output == "ok"
+    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+    assert isinstance(payload_obj, dict)
+    payload = cast(dict[str, object], payload_obj)
+    assert "ssl_verify" not in payload
+
+
+def test_litellm_backend_stream_turn_forwards_ssl_verify(monkeypatch: pytest.MonkeyPatch) -> None:
+    import voidcode.provider.litellm_backend as backend_module
+
+    provider = LiteLLMBackendSingleAgentProvider(
+        name="litellm",
+        config=LiteLLMProviderConfig(
+            api_key="litellm-key",
+            base_url="https://litellm.local",
+            ssl_verify=False,
+        ),
+    )
+
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="stream",
+        stream_chunks=(("ok", "stop"),),
+    )
+    monkeypatch.setattr(backend_module.litellm_module, "ssl_verify", True, raising=False)
+
+    original_completion = backend_module.litellm_module.completion
+
+    def _completion_with_ssl_capture(*args: object, **kwargs: object) -> object:
+        _LAST_REQUEST_PAYLOAD["ssl_verify_during_call"] = backend_module.litellm_module.ssl_verify
+        return original_completion(*args, **kwargs)
+
+    monkeypatch.setattr(backend_module.litellm_module, "completion", _completion_with_ssl_capture)
+
+    events = list(provider.stream_turn(_build_turn_request(model_name="litellm")))
+
+    assert events[-1].kind == "done"
+    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+    assert isinstance(payload_obj, dict)
+    payload = cast(dict[str, object], payload_obj)
+    assert "ssl_verify" not in payload
+    assert _LAST_REQUEST_PAYLOAD["ssl_verify_during_call"] is False
+    assert backend_module.litellm_module.ssl_verify is True
+
+
 def test_provider_adapter_propose_turn_returns_tool_call_when_model_requests_tool(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

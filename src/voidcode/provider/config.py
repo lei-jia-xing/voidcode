@@ -185,6 +185,7 @@ class _LiteLLMProviderConfigPayload(_ProviderPayloadModel):
     discovery_base_url: BoundaryOptionalString = None
     auth_header: BoundaryOptionalString = None
     auth_scheme: BoundaryOptionalString = None
+    ssl_verify: BoundaryOptionalBool = None
     timeout_seconds: BoundaryOptionalTimeout = None
     model_map: BoundaryStringMapping = Field(default_factory=dict)
     transient_retry: _ProviderTransientRetryConfigPayload | None = None
@@ -195,6 +196,7 @@ class _SimplifiedProviderConfigPayload(_ProviderPayloadModel):
     api_key_env_var: BoundaryOptionalString = None
     base_url: BoundaryOptionalString = None
     discovery_base_url: BoundaryOptionalString = None
+    ssl_verify: BoundaryOptionalBool = None
     timeout_seconds: BoundaryOptionalTimeout = None
     model_map: BoundaryStringMapping = Field(default_factory=dict)
     transient_retry: _ProviderTransientRetryConfigPayload | None = None
@@ -261,6 +263,7 @@ class SimplifiedProviderConfig:
     api_key_env_var: str | None = None
     base_url: str | None = None
     discovery_base_url: str | None = None
+    ssl_verify: bool | None = None
     timeout_seconds: float | None = None
     model_map: dict[str, str] = field(default_factory=dict)
     transient_retry: ProviderTransientRetryConfig | None = None
@@ -418,6 +421,7 @@ def simplified_config_to_litellm(
         api_key=config.api_key,
         base_url=config.base_url if config.base_url else default_base_url,
         discovery_base_url=discovery_base_url,
+        ssl_verify=config.ssl_verify,
         timeout_seconds=config.timeout_seconds,
         model_map=dict(config.model_map) if config.model_map else default_model_map,
     )
@@ -521,6 +525,7 @@ class LiteLLMProviderConfig:
     discovery_base_url: str | None = None
     auth_header: str | None = None
     auth_scheme: LiteLLMAuthScheme = "bearer"
+    ssl_verify: bool | None = None
     timeout_seconds: float | None = None
     model_map: dict[str, str] = field(default_factory=dict)
     transient_retry: ProviderTransientRetryConfig | None = None
@@ -804,6 +809,7 @@ def _merge_litellm_provider_config(
         auth_header=_prefer_primary(primary.auth_header, fallback.auth_header),
         auth_scheme=(primary.auth_scheme if primary.auth_scheme_explicit else fallback.auth_scheme),
         auth_scheme_explicit=primary.auth_scheme_explicit or fallback.auth_scheme_explicit,
+        ssl_verify=_prefer_primary(primary.ssl_verify, fallback.ssl_verify),
         timeout_seconds=_prefer_primary(primary.timeout_seconds, fallback.timeout_seconds),
         model_map={**fallback.model_map, **primary.model_map},
         transient_retry=_prefer_primary(primary.transient_retry, fallback.transient_retry),
@@ -823,6 +829,7 @@ def _merge_simplified_provider_config(
         api_key_env_var=_prefer_primary(primary.api_key_env_var, fallback.api_key_env_var),
         base_url=_prefer_primary(primary.base_url, fallback.base_url),
         discovery_base_url=_prefer_primary(primary.discovery_base_url, fallback.discovery_base_url),
+        ssl_verify=_prefer_primary(primary.ssl_verify, fallback.ssl_verify),
         timeout_seconds=_prefer_primary(primary.timeout_seconds, fallback.timeout_seconds),
         model_map={**fallback.model_map, **primary.model_map},
         transient_retry=_prefer_primary(primary.transient_retry, fallback.transient_retry),
@@ -1496,6 +1503,7 @@ def _parse_litellm_provider_config(
         auth_header=payload.auth_header,
         auth_scheme=auth_scheme,
         auth_scheme_explicit=raw_auth_scheme is not None,
+        ssl_verify=payload.ssl_verify,
         timeout_seconds=payload.timeout_seconds,
         model_map=payload.model_map,
         transient_retry=_parse_transient_retry_config(
@@ -1541,6 +1549,7 @@ def _parse_simplified_provider_config(
         api_key_env_var=api_key_env,
         base_url=payload.base_url,
         discovery_base_url=payload.discovery_base_url,
+        ssl_verify=payload.ssl_verify,
         timeout_seconds=payload.timeout_seconds,
         model_map=payload.model_map,
         transient_retry=_parse_transient_retry_config(
@@ -1737,6 +1746,8 @@ def _serialize_litellm_provider_config(
     if provider.auth_header is not None:
         payload["auth_header"] = provider.auth_header
     payload["auth_scheme"] = provider.auth_scheme
+    if provider.ssl_verify is not None:
+        payload["ssl_verify"] = provider.ssl_verify
     if provider.timeout_seconds is not None:
         payload["timeout_seconds"] = provider.timeout_seconds
     if provider.model_map:
@@ -1760,6 +1771,8 @@ def _serialize_simplified_provider_config(
         payload["base_url"] = provider.base_url
     if provider.discovery_base_url is not None:
         payload["discovery_base_url"] = provider.discovery_base_url
+    if provider.ssl_verify is not None:
+        payload["ssl_verify"] = provider.ssl_verify
     if provider.timeout_seconds is not None:
         payload["timeout_seconds"] = provider.timeout_seconds
     if provider.model_map:
