@@ -8244,7 +8244,13 @@ def test_runtime_emits_skills_loaded_catalog_without_default_full_injection(tmp_
     assert _SkillCapturingStubGraph.last_request is not None
     assembled = _SkillCapturingStubGraph.last_request.assembled_context
     assert assembled is not None
-    system_segments = [s.content for s in assembled.segments if s.role == "system"]
+    system_segments = [
+        s.content
+        for s in assembled.segments
+        if s.role == "system"
+        and s.metadata is not None
+        and s.metadata.get("source") == "skill_prompt"
+    ]
     assert all(
         not isinstance(item, str) or "Runtime skills catalog (recommended/visible)." in item
         for item in system_segments
@@ -8273,7 +8279,13 @@ def test_runtime_persists_explicit_empty_applied_skill_snapshot(tmp_path: Path) 
     assert _SkillCapturingStubGraph.last_request is not None
     assembled = _SkillCapturingStubGraph.last_request.assembled_context
     assert assembled is not None
-    system_segments = [s.content for s in assembled.segments if s.role == "system"]
+    system_segments = [
+        s.content
+        for s in assembled.segments
+        if s.role == "system"
+        and s.metadata is not None
+        and s.metadata.get("source") == "skill_prompt"
+    ]
     assert all(
         not isinstance(item, str) or "Runtime skills catalog (recommended/visible)." in item
         for item in system_segments
@@ -8580,7 +8592,13 @@ def test_runtime_resume_reuses_frozen_skill_payloads_for_execution_semantics(
     assert _SkillAwareStubGraph.last_request is not None
     assembled = _SkillAwareStubGraph.last_request.assembled_context
     assert assembled is not None
-    assert [s for s in assembled.segments if s.role == "system"] == []
+    assert [
+        s
+        for s in assembled.segments
+        if s.role == "system"
+        and s.metadata is not None
+        and s.metadata.get("source") == "skill_prompt"
+    ] == []
 
 
 def test_runtime_resume_rejects_invalid_persisted_skill_payload_with_source_path(
@@ -8817,7 +8835,13 @@ def test_runtime_resume_uses_frozen_applied_skill_payloads_when_live_skill_chang
     assert _ApprovalThenCaptureSkillGraph.last_request is not None
     assembled = _ApprovalThenCaptureSkillGraph.last_request.assembled_context
     assert assembled is not None
-    assert [s for s in assembled.segments if s.role == "system"] == []
+    assert [
+        s
+        for s in assembled.segments
+        if s.role == "system"
+        and s.metadata is not None
+        and s.metadata.get("source") == "skill_prompt"
+    ] == []
 
 
 def test_runtime_resume_preserves_explicit_empty_applied_skill_snapshot(
@@ -8861,7 +8885,13 @@ def test_runtime_resume_preserves_explicit_empty_applied_skill_snapshot(
     assert _ApprovalThenCaptureSkillGraph.last_request is not None
     assembled = _ApprovalThenCaptureSkillGraph.last_request.assembled_context
     assert assembled is not None
-    assert [s for s in assembled.segments if s.role == "system"] == []
+    assert [
+        s
+        for s in assembled.segments
+        if s.role == "system"
+        and s.metadata is not None
+        and s.metadata.get("source") == "skill_prompt"
+    ] == []
 
 
 def test_runtime_resume_uses_persisted_approval_mode_for_follow_up_gated_tools(
@@ -11753,7 +11783,13 @@ def test_runtime_resume_uses_persisted_selected_skill_names_when_payloads_missin
     assert _ApprovalThenCaptureSkillGraph.last_request is not None
     assembled = _ApprovalThenCaptureSkillGraph.last_request.assembled_context
     assert assembled is not None
-    assert [s for s in assembled.segments if s.role == "system"] == []
+    assert [
+        s
+        for s in assembled.segments
+        if s.role == "system"
+        and s.metadata is not None
+        and s.metadata.get("source") == "skill_prompt"
+    ] == []
 
 
 def test_runtime_request_agent_override_can_enable_skill_loading(

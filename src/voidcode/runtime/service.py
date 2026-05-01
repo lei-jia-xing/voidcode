@@ -1782,7 +1782,11 @@ class VoidCodeRuntime:
                 **session_request_metadata,
                 "workspace": str(self._workspace),
                 "runtime_config": self._runtime_config_metadata(effective_config),
-                "resolved_hook_presets": resolved_hook_presets.to_payload(),
+                **(
+                    {"resolved_hook_presets": resolved_hook_presets.to_payload()}
+                    if resolved_hook_presets.presets
+                    else {}
+                ),
                 "runtime_state": self._runtime_state_metadata(run_id=run_id),
             },
         )
@@ -6496,7 +6500,8 @@ class VoidCodeRuntime:
         if serialized_agent is not None:
             runtime_config_metadata["agent"] = serialized_agent
         resolved_hook_presets = self._build_hook_preset_snapshot(effective_config.agent)
-        runtime_config_metadata["resolved_hook_presets"] = resolved_hook_presets.to_payload()
+        if resolved_hook_presets.presets:
+            runtime_config_metadata["resolved_hook_presets"] = resolved_hook_presets.to_payload()
         serialized_agents = serialize_runtime_agents_config(self._config.agents)
         if serialized_agents is not None:
             runtime_config_metadata["agents"] = serialized_agents
