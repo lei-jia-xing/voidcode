@@ -3663,8 +3663,15 @@ def test_provider_runtime_executes_read_path_and_persists_config(tmp_path: Path)
         "tool_timeout_seconds": None,
     }
     runtime_state = cast(dict[str, object], result.session.metadata["runtime_state"])
-    assert set(runtime_state) == {"acp", "hook_presets", "run_id"}
-    assert runtime_state["hook_presets"] == _LEADER_HOOK_PRESET_SNAPSHOT
+    assert set(runtime_state) == {"acp", "run_id"}
+    persisted_hook_presets = cast(
+        dict[str, object], result.session.metadata["resolved_hook_presets"]
+    )
+    assert persisted_hook_presets["refs"] == _LEADER_HOOK_PRESET_SNAPSHOT["refs"]
+    assert persisted_hook_presets["source"] == "builtin"
+    assert persisted_hook_presets["version"] == 1
+    presets = cast(list[dict[str, object]], persisted_hook_presets["presets"])
+    assert [preset["kind"] for preset in presets] == _LEADER_HOOK_PRESET_SNAPSHOT["kinds"]
     assert runtime_state["acp"] == {
         "available": False,
         "configured_enabled": False,
