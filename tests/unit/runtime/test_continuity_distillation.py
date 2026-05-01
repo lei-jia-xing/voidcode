@@ -115,3 +115,35 @@ def test_build_distillation_input_envelope_redacts_oversized_and_data_uri_fields
     assert isinstance(data, dict)
     assert data["data_uri"] == "[redacted]"
     assert data["stdout"] == "[redacted]"
+    refs = item_dict["source_references"]
+    assert isinstance(refs, list)
+
+
+def test_build_distillation_input_envelope_collects_source_references() -> None:
+    envelope = build_distillation_input_envelope(
+        prompt="summarize",
+        dropped_results=(
+            ToolResult(
+                tool_name="bash",
+                status="ok",
+                content="done",
+                data={"tool_call_id": "call-1", "path": "src/a.py", "command": "pytest"},
+            ),
+        ),
+        retained_results=(),
+        previous_continuity=None,
+        max_items=3,
+        max_chars=200,
+    )
+
+    dropped_raw = envelope["dropped_tool_result_previews"]
+    assert isinstance(dropped_raw, list)
+    preview = cast(dict[str, object], dropped_raw[0])
+    refs = preview["source_references"]
+    assert isinstance(refs, list)
+    typed_refs = cast(list[dict[str, str]], refs)
+    assert {item["id"] for item in typed_refs} == {
+        "call-1",
+        "file:src/a.py",
+        "command:pytest",
+    }

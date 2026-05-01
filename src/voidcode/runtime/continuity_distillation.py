@@ -261,6 +261,19 @@ def build_distillation_input_envelope(
     max_items: int,
     max_chars: int,
 ) -> dict[str, object]:
+    def _source_refs(result: ToolResult) -> list[dict[str, str]]:
+        refs: list[dict[str, str]] = []
+        tool_call_id = result.data.get("tool_call_id")
+        if isinstance(tool_call_id, str) and tool_call_id.strip():
+            refs.append({"kind": "tool", "id": tool_call_id.strip()})
+        path = result.data.get("path")
+        if isinstance(path, str) and path.strip():
+            refs.append({"kind": "event", "id": f"file:{path.strip()}"})
+        command = result.data.get("command")
+        if isinstance(command, str) and command.strip():
+            refs.append({"kind": "event", "id": f"command:{command.strip()}"})
+        return refs
+
     def _preview_result(result: ToolResult) -> dict[str, object]:
         content = result.content or result.error or ""
         safe_content = sanitize_distillation_text(content, max_chars=max_chars)
@@ -276,6 +289,7 @@ def build_distillation_input_envelope(
             "truncated": result.truncated,
             "partial": result.partial,
             "data": data,
+            "source_references": _source_refs(result),
         }
 
     return {

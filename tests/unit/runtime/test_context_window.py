@@ -1217,6 +1217,7 @@ def test_prepare_provider_context_uses_model_assisted_distillation_candidate_whe
     assert context.continuity_state.distillation_source == "model_assisted"
     assert context.continuity_state.current_goal == "Ship continuity distillation"
     assert context.continuity_state.fact_reference_count == 1
+    assert context.continuity_state.source_references == ("session:session:distill",)
 
 
 def test_prepare_provider_context_invalid_distillation_candidate_falls_back_safely() -> None:
@@ -1290,6 +1291,22 @@ def test_prepare_provider_context_distillation_candidate_ignores_raw_oversized_f
     assert context.continuity_state is not None
     assert context.continuity_state.distillation_source == "model_assisted"
     assert "data:image" not in (context.continuity_state.summary_text or "")
+
+
+def test_continuity_state_round_trip_includes_source_references() -> None:
+    state = RuntimeContinuityState(
+        summary_text="summary",
+        dropped_tool_result_count=1,
+        retained_tool_result_count=1,
+        source="tool_result_window",
+        distillation_source="model_assisted",
+        fact_reference_count=2,
+        source_references=("tool:call-1", "event:file:src/a.py"),
+    )
+
+    restored = continuity_state_from_metadata_payload(state.metadata_payload())
+    assert restored is not None
+    assert restored.source_references == ("tool:call-1", "event:file:src/a.py")
 
 
 def test_normalize_read_file_output_preserves_showing_lines_footer() -> None:

@@ -79,6 +79,7 @@ class RuntimeContinuityState:
     distillation_source: str = "deterministic"
     distillation_error: str | None = None
     fact_reference_count: int = 0
+    source_references: tuple[str, ...] = ()
     original_tool_result_tokens: int | None = None
     retained_tool_result_tokens: int | None = None
     dropped_tool_result_tokens: int | None = None
@@ -109,6 +110,7 @@ class RuntimeContinuityState:
             "source": self.source,
             "distillation_source": self.distillation_source,
             "fact_reference_count": self.fact_reference_count,
+            "source_references": list(self.source_references),
             "version": 2,
         }
         if self.distillation_error is not None:
@@ -405,6 +407,7 @@ def continuity_state_from_metadata_payload(
     distillation_source = payload.get("distillation_source")
     distillation_error = payload.get("distillation_error")
     fact_reference_count = payload.get("fact_reference_count")
+    source_references = _metadata_string_tuple(payload, "source_references")
     if not isinstance(dropped, int) or isinstance(dropped, bool):
         return None
     if not isinstance(retained, int) or isinstance(retained, bool):
@@ -463,6 +466,7 @@ def continuity_state_from_metadata_payload(
         distillation_source=distillation_source,
         distillation_error=distillation_error,
         fact_reference_count=fact_reference_count,
+        source_references=source_references,
         original_tool_result_tokens=original_token_count,
         retained_tool_result_tokens=retained_token_count,
         dropped_tool_result_tokens=dropped_token_count,
@@ -1059,6 +1063,7 @@ def _build_continuity_state(
             token_estimate_source=token_estimate_source,
             dropped_tool_results=previous.dropped_tool_results if previous is not None else (),
             distillation_source="deterministic",
+            source_references=previous.source_references if previous is not None else (),
         )
 
     preview_count = min(preview_item_limit, dropped_count)
@@ -1145,6 +1150,7 @@ def _build_continuity_state(
                 token_estimate_source=state_without_summary.token_estimate_source,
                 dropped_tool_results=state_without_summary.dropped_tool_results,
                 fact_reference_count=0,
+                source_references=(),
                 version=2,
             )
 
@@ -1171,6 +1177,7 @@ def _build_continuity_state(
         token_estimate_source=state_without_summary.token_estimate_source,
         dropped_tool_results=state_without_summary.dropped_tool_results,
         distillation_source="deterministic",
+        source_references=state_without_summary.source_references,
         version=2,
     )
 
@@ -1215,6 +1222,7 @@ def _continuity_state_from_distillation(
         f"{item.text} — {item.rationale}" for item in distillation.key_decisions_with_rationale
     )
     refs = tuple(item.text for item in distillation.relevant_files_commands_errors)
+    source_references = tuple(f"{item.kind}:{item.id}" for item in distillation.source_references)
     verification = (
         distillation.verification_state.status,
         *distillation.verification_state.details,
@@ -1243,6 +1251,7 @@ def _continuity_state_from_distillation(
             token_estimate_source=base_state.token_estimate_source,
             dropped_tool_results=base_state.dropped_tool_results,
             fact_reference_count=len(distillation.source_references),
+            source_references=source_references,
         )
     )
     return RuntimeContinuityState(
@@ -1268,6 +1277,7 @@ def _continuity_state_from_distillation(
         token_estimate_source=base_state.token_estimate_source,
         dropped_tool_results=base_state.dropped_tool_results,
         fact_reference_count=len(distillation.source_references),
+        source_references=source_references,
         version=2,
     )
 
