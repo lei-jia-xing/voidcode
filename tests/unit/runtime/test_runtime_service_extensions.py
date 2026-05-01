@@ -743,6 +743,46 @@ class _DeniedWriteThenReadTurnProvider:
         return iter((ProviderStreamEvent(kind="done", done_reason="completed"),))
 
 
+class _EmptyWriteThenResultAwareTurnProvider:
+    def __init__(self, *, name: str) -> None:
+        self.name = name
+        self.requests: list[ProviderTurnRequest] = []
+
+    def propose_turn(self, request: object) -> ProviderTurnResult:
+        turn_request = cast(ProviderTurnRequest, request)
+        self.requests.append(turn_request)
+        if not turn_request.tool_results:
+            return ProviderTurnResult(
+                tool_call=ToolCall(
+                    tool_name="write_file",
+                    arguments={"path": "shader.frag", "content": ""},
+                )
+            )
+        return ProviderTurnResult(output="recovered from validation error")
+
+    def stream_turn(self, request: object):
+        result = self.propose_turn(request)
+        if result.output is not None:
+            return iter(
+                (
+                    ProviderStreamEvent(kind="delta", channel="text", text=result.output),
+                    ProviderStreamEvent(kind="done", done_reason="completed"),
+                )
+            )
+        return iter((ProviderStreamEvent(kind="done", done_reason="completed"),))
+
+
+@dataclass(frozen=True, slots=True)
+class _EmptyWriteThenResultAwareModelProvider:
+    name: str
+    created_providers: list[_EmptyWriteThenResultAwareTurnProvider]
+
+    def turn_provider(self) -> _EmptyWriteThenResultAwareTurnProvider:
+        provider = _EmptyWriteThenResultAwareTurnProvider(name=self.name)
+        self.created_providers.append(provider)
+        return provider
+
+
 @dataclass(frozen=True, slots=True)
 class _DeniedWriteThenReadModelProvider:
     name: str
@@ -2118,6 +2158,42 @@ def test_runtime_does_not_wait_on_failed_question_tool_result(
     )
     assert tool_completed.payload["status"] == "error"
     assert tool_completed.payload["error"] == "question requires a non-empty questions array"
+
+
+def test_runtime_tool_validation_error_includes_actionable_content(tmp_path: Path) -> None:
+    created_providers: list[_EmptyWriteThenResultAwareTurnProvider] = []
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+        model_provider_registry=ModelProviderRegistry(
+            providers={
+                "opencode": _EmptyWriteThenResultAwareModelProvider(
+                    name="opencode",
+                    created_providers=created_providers,
+                )
+            }
+        ),
+        permission_policy=PermissionPolicy(mode="allow"),
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="empty write", session_id="empty-write"))
+
+    assert response.session.status == "completed"
+    assert response.output == "recovered from validation error"
+    assert (tmp_path / "shader.frag").exists() is False
+    tool_completed = next(
+        event for event in response.events if event.event_type == "runtime.tool_completed"
+    )
+    assert tool_completed.payload["status"] == "error"
+    assert tool_completed.payload["error"] == (
+        "write_file requires a non-empty string content argument"
+    )
+    assert tool_completed.payload["content"] == (
+        "write_file failed: write_file requires a non-empty string content argument. "
+        "Please correct the tool arguments and retry."
+    )
+    failed_tool_result = created_providers[-1].requests[-1].tool_results[-1]
+    assert failed_tool_result.content == tool_completed.payload["content"]
 
 
 def test_runtime_session_debug_snapshot_reports_failure_classification_and_last_tool(

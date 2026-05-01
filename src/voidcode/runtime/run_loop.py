@@ -83,6 +83,10 @@ def _provider_transient_retry_delay_ms(
     return max(0, int(round(capped_delay)))
 
 
+def _tool_error_content(tool_name: str, error: str) -> str:
+    return f"{tool_name} failed: {error}. Please correct the tool arguments and retry."
+
+
 @dataclass(frozen=True, slots=True)
 class _ToolProgressItem:
     payload: dict[str, object]
@@ -543,6 +547,7 @@ class RuntimeRunLoopCoordinator:
                             "tool_call_id": tool_call_id,
                             "arguments": error_sanitized_args,
                             "status": "error",
+                            "content": _tool_error_content(tool_call.tool_name, str(exc)),
                             "error": str(exc),
                             "display": failed_display,
                             "tool_status": failed_status,
@@ -554,6 +559,7 @@ class RuntimeRunLoopCoordinator:
             tool_result = ToolResult(
                 tool_name=tool_call.tool_name,
                 status="error",
+                content=_tool_error_content(tool_call.tool_name, str(exc)),
                 error=str(exc),
                 data={
                     "tool_call_id": tool_call_id,
@@ -1688,6 +1694,7 @@ class RuntimeRunLoopCoordinator:
                                 "tool_call_id": tool_call_id,
                                 "arguments": error_sanitized_args,
                                 "status": "error",
+                                "content": _tool_error_content(plan_tool_call.tool_name, str(exc)),
                                 "error": str(exc),
                                 "display": failed_display,
                                 "tool_status": failed_status,
@@ -1701,6 +1708,7 @@ class RuntimeRunLoopCoordinator:
                 tool_result = ToolResult(
                     tool_name=plan_tool_call.tool_name,
                     status="error",
+                    content=_tool_error_content(plan_tool_call.tool_name, str(exc)),
                     error=str(exc),
                     data={
                         "tool_call_id": tool_call_id,
@@ -1943,6 +1951,7 @@ class RuntimeRunLoopCoordinator:
         tool_result = ToolResult(
             tool_name=tool_call.tool_name,
             status="error",
+            content=_tool_error_content(tool_call.tool_name, error),
             error=error,
             data=sanitize_tool_result_data(result_data),
         )
