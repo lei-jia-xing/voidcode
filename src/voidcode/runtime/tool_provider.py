@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
+from fnmatch import fnmatchcase
 from typing import Protocol
 
+from ..agent import get_builtin_agent_manifest
 from ..hook.config import RuntimeHooksConfig
 from ..skills.models import SkillMetadata
 from ..tools.contracts import Tool
@@ -15,6 +17,77 @@ from ..tools.shell_exec import ShellExecTool
 from ..tools.web_fetch import WebFetchTool
 from ..tools.web_search import WebSearchTool
 from ..tools.write_file import WriteFileTool
+from .config import RuntimeAgentConfig
+
+BUILTIN_TOOL_NAMES = frozenset(
+    {
+        "apply_patch",
+        "ast_grep_preview",
+        "ast_grep_replace",
+        "ast_grep_search",
+        "background_cancel",
+        "background_output",
+        "code_search",
+        "edit",
+        "format_file",
+        "glob",
+        "grep",
+        "list",
+        "lsp",
+        "multi_edit",
+        "read_file",
+        "question",
+        "shell_exec",
+        "skill",
+        "task",
+        "todo_write",
+        "web_fetch",
+        "web_search",
+        "write_file",
+    }
+)
+
+
+class ScopedToolRegistry(Protocol):
+    tools: dict[str, Tool]
+
+    def filtered[ToolRegistryT: "ScopedToolRegistry"](
+        self: ToolRegistryT,
+        patterns: Iterable[str],
+    ) -> ToolRegistryT: ...
+
+    def excluding[ToolRegistryT: "ScopedToolRegistry"](
+        self: ToolRegistryT,
+        tool_names: Iterable[str],
+    ) -> ToolRegistryT: ...
+
+
+def scoped_tool_registry_for_agent[ToolRegistryT: ScopedToolRegistry](
+    registry: ToolRegistryT,
+    *,
+    agent: RuntimeAgentConfig | None,
+) -> ToolRegistryT:
+    if agent is None:
+        return registry
+
+    scoped_registry = registry
+    manifest = get_builtin_agent_manifest(agent.preset)
+    if manifest is not None and manifest.tool_allowlist:
+        scoped_registry = scoped_registry.filtered(manifest.tool_allowlist)
+
+    if agent.tools is not None:
+        if agent.tools.builtin is not None and agent.tools.builtin.enabled is False:
+            scoped_registry = scoped_registry.excluding(BUILTIN_TOOL_NAMES)
+        if agent.tools.allowlist is not None:
+            scoped_registry = scoped_registry.filtered(agent.tools.allowlist)
+        if agent.tools.default is not None:
+            scoped_registry = scoped_registry.filtered(agent.tools.default)
+
+    return scoped_registry
+
+
+def tool_name_matches_patterns(tool_name: str, patterns: Iterable[str]) -> bool:
+    return any(fnmatchcase(tool_name, pattern) for pattern in patterns if pattern)
 
 
 class _NoArgToolFactory(Protocol):

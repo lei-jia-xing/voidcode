@@ -250,7 +250,11 @@ from .todos import (
     todo_event_payload,
     todo_state_payload,
 )
-from .tool_provider import BuiltinToolProvider
+from .tool_provider import (
+    BuiltinToolProvider,
+    scoped_tool_registry_for_agent,
+    tool_name_matches_patterns,
+)
 
 if TYPE_CHECKING:
     from ..tools.lsp import FormatTool
@@ -322,33 +326,6 @@ _ACP_CONNECTIVITY_ERRORS = frozenset(
     {
         "ACP adapter is not connected",
         "ACP transport is not connected",
-    }
-)
-_BUILTIN_TOOL_NAMES = frozenset(
-    {
-        "apply_patch",
-        "ast_grep_preview",
-        "ast_grep_replace",
-        "ast_grep_search",
-        "background_cancel",
-        "background_output",
-        "code_search",
-        "edit",
-        "format_file",
-        "glob",
-        "grep",
-        "list",
-        "lsp",
-        "multi_edit",
-        "read_file",
-        "question",
-        "shell_exec",
-        "skill",
-        "task",
-        "todo_write",
-        "web_fetch",
-        "web_search",
-        "write_file",
     }
 )
 _EXTERNAL_PATH_PRECHECK_KEYS: Mapping[str, tuple[str, ...]] = {
@@ -1301,24 +1278,7 @@ class VoidCodeRuntime:
         self,
         effective_config: EffectiveRuntimeConfig,
     ) -> ToolRegistry:
-        agent = effective_config.agent
-        if agent is None:
-            return self._tool_registry
-
-        scoped_registry = self._tool_registry
-        manifest = get_builtin_agent_manifest(agent.preset)
-        if manifest is not None and manifest.tool_allowlist:
-            scoped_registry = scoped_registry.filtered(manifest.tool_allowlist)
-
-        if agent.tools is not None:
-            if agent.tools.builtin is not None and agent.tools.builtin.enabled is False:
-                scoped_registry = scoped_registry.excluding(_BUILTIN_TOOL_NAMES)
-            if agent.tools.allowlist is not None:
-                scoped_registry = scoped_registry.filtered(agent.tools.allowlist)
-            if agent.tools.default is not None:
-                scoped_registry = scoped_registry.filtered(agent.tools.default)
-
-        return scoped_registry
+        return scoped_tool_registry_for_agent(self._tool_registry, agent=effective_config.agent)
 
     def _delegation_tool_policy_error(
         self,
@@ -1338,7 +1298,7 @@ class VoidCodeRuntime:
         manifest = get_builtin_agent_manifest(agent.preset)
         if manifest is None or not manifest.tool_allowlist:
             return None
-        if self._tool_name_matches_patterns(tool_name, manifest.tool_allowlist):
+        if tool_name_matches_patterns(tool_name, manifest.tool_allowlist):
             return None
         if tool_name not in self._base_tool_registry.tools:
             return None
@@ -1347,10 +1307,6 @@ class VoidCodeRuntime:
             f"'{tool_name}' for child preset '{agent.preset}'; this preset may only call "
             "tools allowed by its manifest tool_allowlist"
         )
-
-    @staticmethod
-    def _tool_name_matches_patterns(tool_name: str, patterns: Iterable[str]) -> bool:
-        return any(fnmatchcase(tool_name, pattern) for pattern in patterns if pattern)
 
     def current_lsp_state(self) -> LspManagerState:
         return self._lsp_manager.current_state()

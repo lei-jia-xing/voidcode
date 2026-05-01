@@ -12,7 +12,12 @@ import pytest
 from voidcode.graph.contracts import GraphEvent, GraphStep
 from voidcode.hook.config import RuntimeFormatterPresetConfig, RuntimeHooksConfig
 from voidcode.mcp import McpToolSafety
-from voidcode.runtime.config import RuntimeConfig
+from voidcode.runtime.config import (
+    RuntimeAgentConfig,
+    RuntimeConfig,
+    RuntimeToolsBuiltinConfig,
+    RuntimeToolsConfig,
+)
 from voidcode.runtime.mcp import (
     McpConfigState,
     McpManagerState,
@@ -27,7 +32,7 @@ from voidcode.runtime.service import (
     ToolRegistry,
     VoidCodeRuntime,
 )
-from voidcode.runtime.tool_provider import BuiltinToolProvider
+from voidcode.runtime.tool_provider import BuiltinToolProvider, scoped_tool_registry_for_agent
 from voidcode.tools import (
     AstGrepPreviewTool,
     AstGrepReplaceTool,
@@ -296,6 +301,56 @@ def test_tool_registry_accepts_tools_from_provider_output() -> None:
     for tool_name in optional_tools:
         if tool_name in registry.tools:
             assert registry.resolve(tool_name).definition.name == tool_name
+
+
+def test_scoped_tool_registry_returns_original_registry_without_agent() -> None:
+    registry = ToolRegistry.from_tools(BuiltinToolProvider().provide_tools())
+
+    scoped = scoped_tool_registry_for_agent(registry, agent=None)
+
+    assert scoped is registry
+
+
+def test_scoped_tool_registry_applies_manifest_allowlist() -> None:
+    registry = ToolRegistry.from_tools(BuiltinToolProvider().provide_tools())
+
+    scoped = scoped_tool_registry_for_agent(registry, agent=RuntimeAgentConfig(preset="explore"))
+
+    assert "read_file" in scoped.tools
+    assert "grep" in scoped.tools
+    assert "write_file" not in scoped.tools
+    assert "task" not in scoped.tools
+
+
+def test_scoped_tool_registry_can_exclude_builtins() -> None:
+    registry = ToolRegistry.from_tools(BuiltinToolProvider().provide_tools())
+
+    scoped = scoped_tool_registry_for_agent(
+        registry,
+        agent=RuntimeAgentConfig(
+            preset="leader",
+            tools=RuntimeToolsConfig(builtin=RuntimeToolsBuiltinConfig(enabled=False)),
+        ),
+    )
+
+    assert scoped.tools == {}
+
+
+def test_scoped_tool_registry_applies_agent_allowlist_and_default_filters() -> None:
+    registry = ToolRegistry.from_tools(BuiltinToolProvider().provide_tools())
+
+    scoped = scoped_tool_registry_for_agent(
+        registry,
+        agent=RuntimeAgentConfig(
+            preset="leader",
+            tools=RuntimeToolsConfig(
+                allowlist=("read_file", "grep", "write_file"),
+                default=("read_file", "grep"),
+            ),
+        ),
+    )
+
+    assert set(scoped.tools) == {"read_file", "grep"}
 
 
 def test_default_runtime_scopes_tools_to_leader_manifest(tmp_path: Path) -> None:
