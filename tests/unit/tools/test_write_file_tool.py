@@ -64,6 +64,18 @@ def test_write_file_tool_rejects_non_string_arguments(tmp_path: Path) -> None:
         )
 
 
+def test_write_file_tool_rejects_empty_content(tmp_path: Path) -> None:
+    tool = WriteFileTool()
+
+    with pytest.raises(ValueError, match="non-empty string content"):
+        tool.invoke(
+            ToolCall(tool_name="write_file", arguments={"path": "shader.frag", "content": ""}),
+            workspace=tmp_path,
+        )
+
+    assert (tmp_path / "shader.frag").exists() is False
+
+
 def test_write_file_tool_allows_absolute_paths_outside_workspace(tmp_path: Path) -> None:
     tool = WriteFileTool()
     outside = tmp_path.parent / "outside-write.txt"
