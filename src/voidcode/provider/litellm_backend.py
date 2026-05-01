@@ -508,17 +508,20 @@ class LiteLLMBackendSingleAgentProvider:
 
     @contextmanager
     def _litellm_ssl_verify_context(self) -> Iterator[None]:
-        if self.config is None or self.config.ssl_verify is None or litellm_module is None:
+        if litellm_module is None:
             yield
             return
         with _LITELLM_SSL_VERIFY_LOCK:
             module_any = cast(Any, litellm_module)
             previous = getattr(module_any, "ssl_verify", True)
-            module_any.ssl_verify = self.config.ssl_verify
+            configured_ssl_verify = self.config.ssl_verify if self.config is not None else None
+            if configured_ssl_verify is not None:
+                module_any.ssl_verify = configured_ssl_verify
             try:
                 yield
             finally:
-                module_any.ssl_verify = previous
+                if configured_ssl_verify is not None:
+                    module_any.ssl_verify = previous
 
     @staticmethod
     def _extract_first_tool_call(message: dict[str, object]) -> ToolCall | None:
