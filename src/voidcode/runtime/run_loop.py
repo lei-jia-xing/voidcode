@@ -778,8 +778,17 @@ class RuntimeRunLoopCoordinator:
             current_session: SessionState = session
             current_session_metadata: dict[str, object] = current_session.metadata
             if first_iteration:
-                base_context = cast(RuntimeContextWindow, current_graph_request.context_window)
+                prebuilt_context = cast(RuntimeContextWindow, current_graph_request.context_window)
                 first_iteration = False
+                if prebuilt_context.original_tool_result_count == len(tool_results):
+                    base_context = prebuilt_context
+                else:
+                    base_context = runtime._prepare_provider_context_window(
+                        prompt=current_prompt,
+                        tool_results=tuple(tool_results),
+                        session_metadata=current_session_metadata,
+                        abort_signal=current_abort_signal,
+                    )
             else:
                 base_context = runtime._prepare_provider_context_window(
                     prompt=current_prompt,

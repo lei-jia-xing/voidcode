@@ -9552,6 +9552,81 @@ def test_runtime_execute_graph_loop_reuses_initial_context_window_on_first_itera
     assert any(chunk.kind == "output" and chunk.output == "done" for chunk in chunks)
 
 
+def test_runtime_execute_graph_loop_recomputes_stale_initial_context_window(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path)
+    prepared_calls = 0
+
+    class _ContextWindowCountingGraph:
+        def step(
+            self,
+            request: GraphRunRequest,
+            tool_results: tuple[object, ...],
+            *,
+            session: SessionState,
+        ) -> _StubStep:
+            _ = tool_results, session
+            assert request.context_window.original_tool_result_count == 1
+            return _StubStep(output="done", is_finished=True)
+
+    session = SessionState(
+        session=SessionRef(id="resume-distillation-stale-window"),
+        metadata={"runtime_config": runtime._runtime_config_metadata()},  # pyright: ignore[reportPrivateUsage]
+        turn=0,
+        status="running",
+    )
+    prompt = "read sample.txt"
+    tool_registry = runtime._tool_registry_for_effective_config(  # pyright: ignore[reportPrivateUsage]
+        runtime.effective_runtime_config()
+    )
+    context_window = runtime._prepare_provider_context_window(  # pyright: ignore[reportPrivateUsage]
+        prompt=prompt,
+        tool_results=(),
+        session_metadata=session.metadata,
+    )
+    graph_request = GraphRunRequest(
+        session=session,
+        prompt=prompt,
+        available_tools=tool_registry.definitions(),
+        context_window=context_window,
+        assembled_context=runtime._assemble_provider_context(  # pyright: ignore[reportPrivateUsage]
+            prompt=prompt,
+            tool_results=(),
+            session_metadata=session.metadata,
+        ),
+        metadata=session.metadata,
+    )
+    original_prepare = runtime._prepare_provider_context_window  # pyright: ignore[reportPrivateUsage]
+
+    def _counting_prepare_provider_context_window(*args: object, **kwargs: object) -> object:
+        nonlocal prepared_calls
+        prepared_calls += 1
+        return original_prepare(*args, **kwargs)
+
+    monkeypatch.setattr(
+        runtime,
+        "_prepare_provider_context_window",
+        _counting_prepare_provider_context_window,
+    )
+    tool_results = [ToolResult(tool_name="read_file", status="ok", content="alpha")]
+
+    chunks = list(
+        runtime._execute_graph_loop(  # pyright: ignore[reportPrivateUsage]
+            graph=_ContextWindowCountingGraph(),
+            tool_registry=tool_registry,
+            session=session,
+            sequence=0,
+            graph_request=graph_request,
+            tool_results=tool_results,
+        )
+    )
+
+    assert prepared_calls == 1
+    assert any(chunk.kind == "output" and chunk.output == "done" for chunk in chunks)
+
+
 def test_runtime_provider_fallback_seam_returns_next_graph_selection(tmp_path: Path) -> None:
     created_providers: list[_ScriptedTurnProvider] = []
     registry = ModelProviderRegistry(
