@@ -1002,12 +1002,76 @@ def _parse_formatter_cwd_policy(
 ) -> FormatterCwdPolicy:
     if raw_value is None:
         return default
-    if raw_value not in ("workspace", "nearest_root", "file_directory"):
-        raise ValueError(
-            f"runtime config field '{field_path}' must be one of: "
-            "workspace, nearest_root, file_directory"
-        )
-    return raw_value
+    if raw_value == "workspace":
+        return "workspace"
+    if raw_value == "nearest_root":
+        return "nearest_root"
+    if raw_value == "file_directory":
+        return "file_directory"
+    raise ValueError(
+        f"runtime config field '{field_path}' must be one of: "
+        "workspace, nearest_root, file_directory"
+    )
+
+
+def _parse_provider_context_diagnostic_mode(
+    value: object,
+) -> RuntimeProviderContextDiagnosticMode:
+    if value is None:
+        return "warn"
+    if value == "off":
+        return "off"
+    if value == "warn":
+        return "warn"
+    if value == "block":
+        return "block"
+    raise ValueError(
+        "runtime config field 'context_window.provider_context_diagnostics' must be one "
+        "of: off, warn, block"
+    )
+
+
+def _parse_runtime_mcp_server_scope(value: object, *, field_path: str) -> RuntimeMcpServerScope:
+    if value is None:
+        return "runtime"
+    if value == "runtime":
+        return "runtime"
+    if value == "session":
+        return "session"
+    raise ValueError(f"runtime config field '{field_path}.scope' must be one of: runtime, session")
+
+
+def _parse_runtime_tui_theme_mode(value: object) -> RuntimeTuiThemeMode | None:
+    if value is None:
+        return None
+    if value == "auto":
+        return "auto"
+    if value == "light":
+        return "light"
+    if value == "dark":
+        return "dark"
+    allowed = ", ".join(_VALID_TUI_THEME_MODES)
+    raise ValueError(f"runtime config field 'tui.preferences.theme.mode' must be one of: {allowed}")
+
+
+def _parse_permission_decision(value: object, *, source: str) -> PermissionDecision:
+    if value == "allow":
+        return "allow"
+    if value == "deny":
+        return "deny"
+    if value == "ask":
+        return "ask"
+    allowed = ", ".join(_VALID_APPROVAL_MODES)
+    raise ValueError(f"{source} must be one of: {allowed}")
+
+
+def _parse_execution_engine_name(value: object, *, source: str) -> ExecutionEngineName:
+    if value == "deterministic":
+        return "deterministic"
+    if value == "provider":
+        return "provider"
+    allowed = ", ".join(_VALID_EXECUTION_ENGINES)
+    raise ValueError(f"{source} must be one of: {allowed}")
 
 
 def _reject_unknown_config_keys(
@@ -1315,14 +1379,7 @@ class _RuntimeContextWindowValidationModel(BaseModel):
     def _validate_provider_context_diagnostics(
         cls, value: object
     ) -> RuntimeProviderContextDiagnosticMode:
-        if value is None:
-            return "warn"
-        if value not in ("off", "warn", "block"):
-            raise ValueError(
-                "runtime config field 'context_window.provider_context_diagnostics' must be one "
-                "of: off, warn, block"
-            )
-        return value
+        return _parse_provider_context_diagnostic_mode(value)
 
     @field_validator("provider_context_oversized_feedback_chars", mode="before")
     @classmethod
@@ -1460,14 +1517,8 @@ class _RuntimeMcpServerValidationModel(BaseModel):
     @field_validator("scope", mode="before")
     @classmethod
     def _validate_scope(cls, value: object, info: ValidationInfo) -> RuntimeMcpServerScope:
-        if value is None:
-            return "runtime"
         field_path = _validation_context_field_path(info, default="mcp.servers")
-        if value not in ("runtime", "session"):
-            raise ValueError(
-                f"runtime config field '{field_path}.scope' must be one of: runtime, session"
-            )
-        return value
+        return _parse_runtime_mcp_server_scope(value, field_path=field_path)
 
     def to_runtime_config(self) -> RuntimeMcpServerConfig:
         return RuntimeMcpServerConfig(
@@ -1631,14 +1682,7 @@ class _RuntimeTuiThemePreferencesValidationModel(BaseModel):
     @field_validator("mode", mode="before")
     @classmethod
     def _validate_mode(cls, value: object) -> RuntimeTuiThemeMode | None:
-        if value is None:
-            return None
-        if value not in _VALID_TUI_THEME_MODES:
-            allowed = ", ".join(_VALID_TUI_THEME_MODES)
-            raise ValueError(
-                f"runtime config field 'tui.preferences.theme.mode' must be one of: {allowed}"
-            )
-        return value
+        return _parse_runtime_tui_theme_mode(value)
 
     def to_runtime_config(self) -> RuntimeTuiThemePreferences:
         return RuntimeTuiThemePreferences(name=self.name, mode=self.mode)
@@ -2867,10 +2911,7 @@ def _parse_approval_mode(
 ) -> PermissionDecision | None:
     if raw_value is None and allow_none:
         return None
-    if raw_value not in _VALID_APPROVAL_MODES:
-        allowed = ", ".join(_VALID_APPROVAL_MODES)
-        raise ValueError(f"{source} must be one of: {allowed}")
-    return raw_value
+    return _parse_permission_decision(raw_value, source=source)
 
 
 def _parse_execution_engine(
@@ -2881,10 +2922,7 @@ def _parse_execution_engine(
 ) -> ExecutionEngineName | None:
     if raw_value is None and allow_none:
         return None
-    if raw_value not in _VALID_EXECUTION_ENGINES:
-        allowed = ", ".join(_VALID_EXECUTION_ENGINES)
-        raise ValueError(f"{source} must be one of: {allowed}")
-    return raw_value
+    return _parse_execution_engine_name(raw_value, source=source)
 
 
 def _parse_max_steps(raw_value: object, *, source: str, allow_none: bool) -> int | None:

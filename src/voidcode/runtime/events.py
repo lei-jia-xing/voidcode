@@ -87,6 +87,33 @@ type DelegatedLifecycleStatus = Literal[
 ]
 type KnownEventType = ExistingEventType | PrototypeAdditiveEventType
 
+
+def _parse_delegated_routing_mode(value: object) -> Literal["sync", "background"] | None:
+    if value == "sync":
+        return "sync"
+    if value == "background":
+        return "background"
+    return None
+
+
+def _parse_delegated_lifecycle_status(value: object) -> DelegatedLifecycleStatus | None:
+    if value == "queued":
+        return "queued"
+    if value == "running":
+        return "running"
+    if value == "waiting_approval":
+        return "waiting_approval"
+    if value == "completed":
+        return "completed"
+    if value == "failed":
+        return "failed"
+    if value == "cancelled":
+        return "cancelled"
+    if value == "interrupted":
+        return "interrupted"
+    return None
+
+
 RUNTIME_REQUEST_RECEIVED: Final[ExistingEventType] = "runtime.request_received"
 RUNTIME_SKILLS_LOADED: Final[ExistingEventType] = "runtime.skills_loaded"
 RUNTIME_SKILLS_APPLIED: Final[ExistingEventType] = "runtime.skills_applied"
@@ -448,8 +475,7 @@ class DelegatedRoutingPayload:
     def from_payload(cls, payload: Mapping[str, object] | None) -> DelegatedRoutingPayload | None:
         if payload is None:
             return None
-        raw_mode = payload.get("mode")
-        mode = raw_mode if raw_mode in ("sync", "background") else None
+        mode = _parse_delegated_routing_mode(payload.get("mode"))
         routing = cls(
             mode=mode,
             category=_string_or_none(payload.get("category")),
@@ -503,8 +529,7 @@ class DelegatedExecutionPayload:
         nested_routing = DelegatedRoutingPayload.from_payload(
             _mapping_or_none(payload.get("routing"))
         )
-        raw_status = payload.get("lifecycle_status")
-        parsed_status = raw_status if raw_status in _DELEGATED_LIFECYCLE_STATUSES else None
+        parsed_status = _parse_delegated_lifecycle_status(payload.get("lifecycle_status"))
         return cls(
             parent_session_id=_string_or_none(payload.get("parent_session_id")),
             requested_child_session_id=_string_or_none(payload.get("requested_child_session_id")),
@@ -515,7 +540,7 @@ class DelegatedExecutionPayload:
             routing=nested_routing,
             selected_preset=_string_or_none(payload.get("selected_preset")),
             selected_execution_engine=_string_or_none(payload.get("selected_execution_engine")),
-            lifecycle_status=parsed_status or lifecycle_status,
+            lifecycle_status=parsed_status if parsed_status is not None else lifecycle_status,
             approval_blocked=_bool_or_default(payload.get("approval_blocked")),
             result_available=_bool_or_default(payload.get("result_available")),
             cancellation_cause=_string_or_none(payload.get("cancellation_cause")),
@@ -550,8 +575,7 @@ class DelegatedLifecycleMessage:
     ) -> DelegatedLifecycleMessage:
         if payload is None:
             return cls(status=default_status)
-        raw_status = payload.get("status")
-        status = raw_status if raw_status in _DELEGATED_LIFECYCLE_STATUSES else default_status
+        status = _parse_delegated_lifecycle_status(payload.get("status")) or default_status
         return cls(
             status=status,
             summary_output=_string_or_none(payload.get("summary_output")),

@@ -1343,15 +1343,17 @@ class RuntimeResumeCoordinator:
                 raise ValueError("persisted resume checkpoint tool_results must contain objects")
             payload = cast(dict[str, object], raw_tool_result)
             tool_name = payload.get("tool_name")
-            status = payload.get("status")
+            raw_status = payload.get("status")
+            if raw_status == "ok":
+                status: ToolResultStatus = "ok"
+            elif raw_status == "error":
+                status = "error"
+            else:
+                status = None
             data = payload.get("data")
             content = payload.get("content")
             error = payload.get("error")
-            if (
-                not isinstance(tool_name, str)
-                or status not in ("ok", "error")
-                or not isinstance(data, dict)
-            ):
+            if not isinstance(tool_name, str) or status is None or not isinstance(data, dict):
                 raise ValueError("persisted resume checkpoint tool_results are malformed")
             if content is not None and not isinstance(content, str):
                 raise ValueError(
@@ -1361,12 +1363,11 @@ class RuntimeResumeCoordinator:
                 raise ValueError(
                     "persisted resume checkpoint tool result error must be a string or null"
                 )
-            tool_status: ToolResultStatus = status
             parsed.append(
                 ToolResult(
                     tool_name=tool_name,
                     content=content,
-                    status=tool_status,
+                    status=status,
                     data=sanitize_tool_result_data(cast(dict[str, object], data)),
                     error=error,
                 )

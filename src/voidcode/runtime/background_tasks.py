@@ -367,7 +367,7 @@ class RuntimeBackgroundTaskSupervisor:
                 prompt=validated_request.prompt,
                 session_id=validated_request.session_id,
                 parent_session_id=validated_request.parent_session_id,
-                metadata=dict(validated_request.metadata),
+                metadata={key: value for key, value in validated_request.metadata.items()},
                 allocate_session_id=validated_request.allocate_session_id,
             ),
         )

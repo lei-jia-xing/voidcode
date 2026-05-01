@@ -142,16 +142,15 @@ class TaskTool:
             ) from exc
 
         context = require_runtime_tool_context(self.definition.name)
+        delegation_metadata: dict[str, object] = dict(_delegation_metadata(args).items())
         request_metadata: dict[str, object] = {
             "force_load_skills": list(args.load_skills),
-            "delegation": _delegation_metadata(args),
+            "delegation": delegation_metadata,
         }
         if context.delegation_depth > 0 or context.remaining_spawn_budget is not None:
-            delegation_payload = request_metadata["delegation"]
-            assert isinstance(delegation_payload, dict)
-            delegation_payload["depth"] = context.delegation_depth + 1
+            delegation_metadata["depth"] = context.delegation_depth + 1
             if context.remaining_spawn_budget is not None:
-                delegation_payload["remaining_spawn_budget"] = max(
+                delegation_metadata["remaining_spawn_budget"] = max(
                     context.remaining_spawn_budget - 1,
                     0,
                 )

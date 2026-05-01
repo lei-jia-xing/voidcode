@@ -804,14 +804,18 @@ class ManagedLspManager:
 
     @staticmethod
     def _wait_for_windows_pipe(*, fd: int, timeout: float) -> bool:
-        import ctypes
-        import msvcrt
+        from importlib import import_module
 
-        handle = msvcrt.get_osfhandle(fd)
+        ctypes = import_module("ctypes")
+        msvcrt = import_module("msvcrt")
+        get_osfhandle = vars(msvcrt)["get_osfhandle"]
+        handle = get_osfhandle(fd)
         bytes_available = ctypes.c_ulong()
+        windll = vars(ctypes)["windll"]
+        get_last_error = vars(ctypes)["get_last_error"]
         deadline = time.monotonic() + timeout
         while True:
-            success = ctypes.windll.kernel32.PeekNamedPipe(
+            success = windll.kernel32.PeekNamedPipe(
                 ctypes.c_void_p(handle),
                 None,
                 0,
@@ -820,7 +824,7 @@ class ManagedLspManager:
                 None,
             )
             if success == 0:
-                last_error = ctypes.get_last_error()
+                last_error = get_last_error()
                 if last_error == 109:
                     return True
                 raise OSError(last_error, "PeekNamedPipe failed")

@@ -1948,6 +1948,13 @@ def test_runtime_provider_fallback_resets_after_successful_turn(tmp_path: Path) 
                 preferred_model="primary/model-a",
                 fallback_models=("fallback/model-b",),
             ),
+            providers=RuntimeProvidersConfig(
+                custom={
+                    "primary": LiteLLMProviderConfig(
+                        transient_retry=ProviderTransientRetryConfig(max_retries=0)
+                    )
+                }
+            ),
         ),
     )
 

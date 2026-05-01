@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from .config import LiteLLMProviderConfig
 
 type ToolFeedbackMode = Literal["standard", "synthetic_user_message"]
+type ModelMetadataValue = bool | int | float | str | None | tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -446,7 +447,7 @@ def infer_model_metadata(provider_name: str, model_name: str) -> ProviderModelMe
     if not model:
         return None
     if provider == "openai" or model.startswith(("gpt-5", "gpt-4.1", "gpt-4o", "o1", "o3", "o4")):
-        common_openai = {
+        common_openai: dict[str, ModelMetadataValue] = {
             "supports_tools": True,
             "supports_vision": not model.startswith(("o1", "o3-mini")),
             "supports_streaming": True,
@@ -469,17 +470,17 @@ def infer_model_metadata(provider_name: str, model_name: str) -> ProviderModelMe
             "model_status": "active",
         }
         if model.startswith(("gpt-5.4", "gpt-5.5")):
-            common_openai |= _cost(input_per_million=1.25, output_per_million=10.0)
+            common_openai.update(_cost(input_per_million=1.25, output_per_million=10.0))
         elif model.startswith("gpt-5"):
-            common_openai |= _cost(input_per_million=1.25, output_per_million=10.0)
+            common_openai.update(_cost(input_per_million=1.25, output_per_million=10.0))
         elif model.startswith("gpt-4.1"):
-            common_openai |= _cost(input_per_million=2.0, output_per_million=8.0)
+            common_openai.update(_cost(input_per_million=2.0, output_per_million=8.0))
         elif model.startswith("gpt-4o-mini"):
-            common_openai |= _cost(input_per_million=0.15, output_per_million=0.60)
+            common_openai.update(_cost(input_per_million=0.15, output_per_million=0.60))
         elif model.startswith("gpt-4o"):
-            common_openai |= _cost(input_per_million=2.5, output_per_million=10.0)
+            common_openai.update(_cost(input_per_million=2.5, output_per_million=10.0))
         elif model.startswith(("o1", "o3", "o4")):
-            common_openai |= _cost(input_per_million=2.0, output_per_million=8.0)
+            common_openai.update(_cost(input_per_million=2.0, output_per_million=8.0))
         if model.startswith(("gpt-5.5", "gpt-5.4")) and not model.startswith(
             ("gpt-5.4-mini", "gpt-5.4-nano")
         ):
@@ -507,7 +508,7 @@ def infer_model_metadata(provider_name: str, model_name: str) -> ProviderModelMe
                 context_window=200_000, max_output_tokens=100_000, values=common_openai
             )
     if provider == "anthropic" or model.startswith("claude-"):
-        common_anthropic = {
+        common_anthropic: dict[str, ModelMetadataValue] = {
             "supports_tools": True,
             "supports_vision": "haiku" not in model,
             "supports_streaming": True,
@@ -530,11 +531,11 @@ def infer_model_metadata(provider_name: str, model_name: str) -> ProviderModelMe
             "model_status": "active",
         }
         if "opus" in model:
-            common_anthropic |= _cost(input_per_million=15.0, output_per_million=75.0)
+            common_anthropic.update(_cost(input_per_million=15.0, output_per_million=75.0))
         elif "haiku" in model:
-            common_anthropic |= _cost(input_per_million=0.8, output_per_million=4.0)
+            common_anthropic.update(_cost(input_per_million=0.8, output_per_million=4.0))
         else:
-            common_anthropic |= _cost(input_per_million=3.0, output_per_million=15.0)
+            common_anthropic.update(_cost(input_per_million=3.0, output_per_million=15.0))
         if model.startswith(("claude-opus-4-7", "claude-sonnet-4-6")):
             return _metadata(
                 context_window=1_000_000, max_output_tokens=64_000, values=common_anthropic
@@ -545,7 +546,7 @@ def infer_model_metadata(provider_name: str, model_name: str) -> ProviderModelMe
             )
         return _metadata(context_window=200_000, max_output_tokens=8_192, values=common_anthropic)
     if provider == "google" or model.startswith("gemini-"):
-        common_google = {
+        common_google: dict[str, ModelMetadataValue] = {
             "supports_tools": True,
             "supports_vision": True,
             "supports_streaming": True,
@@ -566,9 +567,9 @@ def infer_model_metadata(provider_name: str, model_name: str) -> ProviderModelMe
             "model_status": "preview" if "preview" in model else "active",
         }
         if "flash" in model:
-            common_google |= _cost(input_per_million=0.30, output_per_million=2.50)
+            common_google.update(_cost(input_per_million=0.30, output_per_million=2.50))
         else:
-            common_google |= _cost(input_per_million=1.25, output_per_million=10.0)
+            common_google.update(_cost(input_per_million=1.25, output_per_million=10.0))
         if model.startswith(("gemini-3-pro-preview", "gemini-3-flash-preview")):
             return _metadata(
                 context_window=1_048_576, max_output_tokens=65_536, values=common_google

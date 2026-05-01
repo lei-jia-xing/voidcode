@@ -90,10 +90,7 @@ def _sanitize_value(value: object, *, key: str | None = None, argument: bool = F
             _sanitize_value(item, key=key, argument=argument) for item in cast(list[object], value)
         ]
     if isinstance(value, tuple):
-        return [
-            _sanitize_value(item, key=key, argument=argument)
-            for item in cast(tuple[object, ...], value)
-        ]
+        return [_sanitize_value(item, key=key, argument=argument) for item in value]
     return value
 
 
@@ -149,8 +146,7 @@ def strip_redaction_sentinels(
         ]
     if isinstance(value, tuple):
         return [
-            strip_redaction_sentinels(item, redacted_keys=redacted_keys, key=key)
-            for item in cast(tuple[object, ...], value)
+            strip_redaction_sentinels(item, redacted_keys=redacted_keys, key=key) for item in value
         ]
     return value
 

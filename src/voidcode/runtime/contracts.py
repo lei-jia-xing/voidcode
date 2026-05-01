@@ -81,6 +81,14 @@ class RuntimeSubagentRoutingMetadata(TypedDict, total=False):
     selected_execution_engine: str
 
 
+def _parse_runtime_subagent_mode(value: object) -> RuntimeSubagentMode:
+    if value == "sync":
+        return "sync"
+    if value == "background":
+        return "background"
+    raise RuntimeRequestError("request metadata 'delegation.mode' must be 'sync' or 'background'")
+
+
 _STABLE_RUNTIME_REQUEST_METADATA_KEYS = frozenset(
     {
         "abort_requested",
@@ -197,11 +205,7 @@ def validate_runtime_subagent_routing_metadata(
         joined = ", ".join(unknown_keys)
         raise RuntimeRequestError(f"unsupported request metadata 'delegation' field(s): {joined}")
 
-    raw_mode = routing_metadata.get("mode")
-    if raw_mode not in ("sync", "background"):
-        raise RuntimeRequestError(
-            "request metadata 'delegation.mode' must be 'sync' or 'background'"
-        )
+    mode = _parse_runtime_subagent_mode(routing_metadata.get("mode"))
 
     category = routing_metadata.get("category")
     subagent_type = routing_metadata.get("subagent_type")
@@ -211,7 +215,7 @@ def validate_runtime_subagent_routing_metadata(
             "'category' or 'subagent_type'"
         )
 
-    normalized: RuntimeSubagentRoutingMetadata = {"mode": raw_mode}
+    normalized: RuntimeSubagentRoutingMetadata = {"mode": mode}
     if category is not None:
         normalized["category"] = _validate_optional_runtime_metadata_string(
             category,
