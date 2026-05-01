@@ -447,6 +447,31 @@ def test_runtime_context_window_config_includes_distillation_controls() -> None:
     assert parsed == config
 
 
+def test_runtime_config_rejects_distillation_max_input_chars_below_minimum(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / RUNTIME_CONFIG_FILE_NAME
+    config_path.write_text(
+        json.dumps(
+            {
+                "context_window": {
+                    "continuity_distillation_enabled": True,
+                    "continuity_distillation_max_input_chars": 63,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "context_window.continuity_distillation_max_input_chars.*greater than or equal to 64"
+        ),
+    ):
+        _ = load_runtime_config(tmp_path, env={})
+
+
 def test_runtime_persists_context_window_config_for_resume(tmp_path: Path) -> None:
     _ = (tmp_path / "README.md").write_text("context window\n", encoding="utf-8")
     context_window = RuntimeContextWindowConfig(

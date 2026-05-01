@@ -1311,7 +1311,6 @@ class _RuntimeContextWindowValidationModel(BaseModel):
         "continuity_preview_items",
         "continuity_preview_chars",
         "continuity_distillation_max_input_items",
-        "continuity_distillation_max_input_chars",
         mode="before",
     )
     @classmethod
@@ -1325,6 +1324,20 @@ class _RuntimeContextWindowValidationModel(BaseModel):
         }:
             defaults = RuntimeContextWindowConfig()
             return cast(int, getattr(defaults, field_name))
+        return parsed
+
+    @field_validator("continuity_distillation_max_input_chars", mode="before")
+    @classmethod
+    def _validate_continuity_distillation_max_input_chars(cls, value: object) -> int:
+        field_path = "context_window.continuity_distillation_max_input_chars"
+        parsed = _parse_optional_positive_int(value, field_path=field_path)
+        if parsed is None:
+            return RuntimeContextWindowConfig().continuity_distillation_max_input_chars
+        if parsed < 64:
+            raise ValueError(
+                "runtime config field 'context_window.continuity_distillation_max_input_chars' "
+                "must be greater than or equal to 64"
+            )
         return parsed
 
     @field_validator("reserved_output_tokens", mode="before")
