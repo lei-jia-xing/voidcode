@@ -138,6 +138,7 @@ from .context_window import (
     assemble_provider_context,
     continuity_state_from_metadata_payload,
     prepare_provider_context,
+    project_tool_results_for_context_window,
 )
 from .continuity_distillation import build_distillation_input_envelope
 from .contracts import (
@@ -5958,18 +5959,10 @@ class VoidCodeRuntime:
     ) -> tuple[dict[str, object] | None, str | None]:
         if not tool_results:
             return None, "empty_tool_results"
-        protected_recent_count = max(
-            policy.minimum_retained_tool_results,
-            policy.recent_tool_result_count,
+        projection = project_tool_results_for_context_window(
+            tool_results=tool_results,
+            policy=policy,
         )
-        protected_recent_count = min(protected_recent_count, len(tool_results))
-        if policy.max_tool_results == 0:
-            retained_count = protected_recent_count
-        else:
-            retained_count = max(policy.max_tool_results, protected_recent_count)
-            retained_count = min(retained_count, len(tool_results))
-        dropped_guess = tool_results[: len(tool_results) - retained_count]
-        retained_guess = tool_results[len(tool_results) - retained_count :]
         previous_continuity: dict[str, object] | None = None
         runtime_state = session_metadata.get("runtime_state")
         if isinstance(runtime_state, dict):
@@ -5978,8 +5971,8 @@ class VoidCodeRuntime:
                 previous_continuity = cast(dict[str, object], raw_continuity)
         envelope = build_distillation_input_envelope(
             prompt=prompt,
-            dropped_results=dropped_guess,
-            retained_results=retained_guess,
+            dropped_results=projection.dropped_results,
+            retained_results=projection.retained_results,
             previous_continuity=previous_continuity,
             max_items=policy.continuity_distillation_max_input_items,
             max_chars=policy.continuity_distillation_max_input_chars,

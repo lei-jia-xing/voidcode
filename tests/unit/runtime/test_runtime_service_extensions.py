@@ -684,6 +684,7 @@ class _DistillAwareTurnProvider:
         self.distill_calls = 0
         self.main_calls = 0
         self.last_distill_abort_signal: object | None = None
+        self.last_distill_input: dict[str, object] | None = None
 
     def propose_turn(self, request: object) -> ProviderTurnResult:
         turn_request = cast(ProviderTurnRequest, request)
@@ -691,6 +692,13 @@ class _DistillAwareTurnProvider:
         if prompt.startswith("Return ONLY valid JSON matching these keys:"):
             self.distill_calls += 1
             self.last_distill_abort_signal = turn_request.abort_signal
+            marker = "INPUT="
+            marker_index = prompt.find(marker)
+            if marker_index != -1:
+                raw_input = prompt[marker_index + len(marker) :].strip()
+                parsed_input = json.loads(raw_input)
+                if isinstance(parsed_input, dict):
+                    self.last_distill_input = parsed_input
             if self.distill_error is not None:
                 raise self.distill_error
             if self.distill_output is None:
@@ -10736,6 +10744,72 @@ def test_runtime_distillation_receives_abort_signal_in_provider_request(tmp_path
 
     assert provider.distill_calls >= 1
     assert provider.last_distill_abort_signal is not None
+
+
+def test_runtime_distillation_uses_importance_aware_projection_split(tmp_path: Path) -> None:
+    provider = _DistillAwareTurnProvider(
+        name="opencode",
+        distill_output='{"objective_current_goal":"Goal"}',
+        distill_error=None,
+    )
+    registry = ModelProviderRegistry(
+        providers={"opencode": _DistillAwareModelProvider(name="opencode", provider=provider)}
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(model="opencode/gpt-5.4"),
+        model_provider_registry=registry,
+    )
+
+    metadata = runtime._session_metadata_with_distillation_candidate(  # pyright: ignore[reportPrivateUsage]
+        prompt="fix failing tests",
+        tool_results=(
+            ToolResult(tool_name="read_file", status="ok", content="content-1", data={"index": 1}),
+            ToolResult(
+                tool_name="read_file",
+                status="error",
+                error="missing file",
+                data={"index": 2, "path": "missing.py"},
+            ),
+            ToolResult(
+                tool_name="shell_exec",
+                status="ok",
+                content="passed",
+                data={"index": 3, "command": "pytest tests/unit/test_sample.py -q"},
+            ),
+            ToolResult(tool_name="read_file", status="ok", content="content-4", data={"index": 4}),
+            ToolResult(tool_name="read_file", status="ok", content="content-5", data={"index": 5}),
+        ),
+        session_metadata={},
+        policy=ContextWindowPolicy(
+            max_tool_results=3,
+            recent_tool_result_count=1,
+            continuity_distillation_enabled=True,
+            recent_tool_result_tokens=None,
+            default_tool_result_tokens=None,
+        ),
+        effective_config=runtime.effective_runtime_config(),
+        abort_signal=None,
+        provider_attempt=0,
+    )
+
+    runtime_state = cast(dict[str, object], metadata["runtime_state"])
+    assert "distillation_candidate" in runtime_state
+    assert provider.last_distill_input is not None
+    dropped_results = cast(
+        list[dict[str, object]],
+        provider.last_distill_input["dropped_tool_result_previews"],
+    )
+    retained_results = cast(
+        list[dict[str, object]],
+        provider.last_distill_input["recent_tail_previews"],
+    )
+    assert [cast(dict[str, object], item["data"])["index"] for item in dropped_results] == [1, 4]
+    assert [cast(dict[str, object], item["data"])["index"] for item in retained_results] == [
+        2,
+        3,
+        5,
+    ]
 
 
 def test_runtime_distillation_is_skipped_when_no_compaction_needed(tmp_path: Path) -> None:

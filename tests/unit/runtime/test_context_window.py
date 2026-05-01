@@ -12,6 +12,9 @@ from voidcode.runtime.context_window import (
     RuntimeAssembledContext,
     RuntimeContextSegment,
     RuntimeContinuityState,
+    _retain_indexes_within_token_budget,
+    _select_tool_result_indexes_by_importance,
+    _tool_result_importance_score,
     assemble_provider_context,
     context_window_policy_from_payload,
     continuity_state_from_metadata_payload,
@@ -63,6 +66,15 @@ def _sized_tool_result(index: int, *, content_size: int) -> ToolResult:
         content=f"content-{index}-" + ("x" * content_size),
         status="ok",
         data={"index": index, "path": f"sample-{index}.txt"},
+    )
+
+
+def _shell_tool_result(index: int, *, command: str, content: str = "ok") -> ToolResult:
+    return ToolResult(
+        tool_name="shell_exec",
+        content=content,
+        status="ok",
+        data={"index": index, "command": command},
     )
 
 
@@ -811,6 +823,379 @@ def test_prepare_provider_context_keeps_count_policy_when_budget_missing() -> No
     assert context.original_tool_result_tokens is None
 
 
+def test_prepare_provider_context_prioritizes_important_older_results() -> None:
+    context = prepare_provider_context(
+        prompt="fix failing tests",
+        tool_results=(
+            _tool_result(1),
+            ToolResult(
+                tool_name="read_file",
+                status="error",
+                error="missing file",
+                data={"index": 2, "path": "missing.py"},
+            ),
+            _shell_tool_result(3, command="run project verification"),
+            _tool_result(4),
+            _tool_result(5),
+        ),
+        session_metadata={},
+        policy=ContextWindowPolicy(
+            max_tool_results=3,
+            recent_tool_result_count=1,
+            max_tool_result_tokens=None,
+            recent_tool_result_tokens=None,
+            default_tool_result_tokens=None,
+        ),
+    )
+
+    assert tuple(result.data["index"] for result in context.tool_results) == (2, 3, 5)
+    assert context.compacted is True
+    assert context.continuity_state is not None
+    dropped_tool_names = [
+        item.metadata_payload()["tool_name"]
+        for item in context.continuity_state.dropped_tool_results
+    ]
+    assert dropped_tool_names == ["read_file", "read_file"]
+    dropped_index_positions = [
+        item.metadata_payload()["index"] for item in context.continuity_state.dropped_tool_results
+    ]
+    assert dropped_index_positions == [1, 4]
+
+
+def test_prepare_provider_context_token_budget_prefers_important_candidates() -> None:
+    context = prepare_provider_context(
+        prompt="verify fix",
+        tool_results=(
+            _sized_tool_result(1, content_size=160),
+            _shell_tool_result(2, command="run project verification", content="passed"),
+            _sized_tool_result(3, content_size=160),
+            _tool_result(4),
+        ),
+        session_metadata={},
+        policy=ContextWindowPolicy(
+            max_tool_results=3,
+            recent_tool_result_count=1,
+            max_tool_result_tokens=120,
+            recent_tool_result_tokens=None,
+            default_tool_result_tokens=None,
+        ),
+    )
+
+    retained_indexes = tuple(result.data["index"] for result in context.tool_results)
+    assert 2 in retained_indexes
+    assert 4 in retained_indexes
+    assert 1 not in retained_indexes or 3 not in retained_indexes
+    assert context.compacted is True
+    assert context.token_budget == 120
+
+
+def test_prepare_provider_context_can_disable_importance_retention() -> None:
+    context = prepare_provider_context(
+        prompt="debug",
+        tool_results=(
+            ToolResult(
+                tool_name="read_file",
+                status="error",
+                error="not found",
+                data={"index": 1, "path": "missing.py"},
+            ),
+            _shell_tool_result(2, command="run project verification", content="ok"),
+            _tool_result(3),
+            _tool_result(4),
+            _tool_result(5),
+        ),
+        session_metadata={},
+        policy=ContextWindowPolicy(
+            max_tool_results=3,
+            recent_tool_result_count=1,
+            importance_retention=False,
+            max_tool_result_tokens=None,
+            recent_tool_result_tokens=None,
+            default_tool_result_tokens=None,
+        ),
+    )
+
+    assert tuple(result.data["index"] for result in context.tool_results) == (3, 4, 5)
+
+
+def test_prepare_provider_context_older_todo_and_task_survive_over_newer_reads() -> None:
+    context = prepare_provider_context(
+        prompt="finish task",
+        tool_results=(
+            ToolResult(
+                tool_name="todo_write",
+                content="Updated todos",
+                status="ok",
+                data={"index": 1},
+            ),
+            ToolResult(
+                tool_name="task",
+                content="Background task launched.",
+                status="ok",
+                data={"index": 2, "task_id": "bg_1"},
+            ),
+            _tool_result(3),
+            _tool_result(4),
+            _tool_result(5),
+        ),
+        session_metadata={},
+        policy=ContextWindowPolicy(
+            max_tool_results=3,
+            recent_tool_result_count=1,
+            max_tool_result_tokens=None,
+            recent_tool_result_tokens=None,
+            default_tool_result_tokens=None,
+        ),
+    )
+
+    retained_indexes = tuple(result.data["index"] for result in context.tool_results)
+    assert retained_indexes == (1, 2, 5)
+
+
+def test_prepare_provider_context_older_write_edit_survive_over_newer_reads() -> None:
+    context = prepare_provider_context(
+        prompt="fix code",
+        tool_results=(
+            ToolResult(
+                tool_name="write_file",
+                content="written",
+                status="ok",
+                data={"index": 1, "path": "src/app.py"},
+            ),
+            ToolResult(
+                tool_name="edit",
+                content="edited",
+                status="ok",
+                data={"index": 2, "path": "src/utils.py"},
+            ),
+            _tool_result(3),
+            _tool_result(4),
+            _tool_result(5),
+        ),
+        session_metadata={},
+        policy=ContextWindowPolicy(
+            max_tool_results=3,
+            recent_tool_result_count=1,
+            max_tool_result_tokens=None,
+            recent_tool_result_tokens=None,
+            default_tool_result_tokens=None,
+        ),
+    )
+
+    retained_indexes = tuple(result.data["index"] for result in context.tool_results)
+    assert retained_indexes == (1, 2, 5)
+
+
+def test_prepare_provider_context_older_error_beats_newer_low_value() -> None:
+    context = prepare_provider_context(
+        prompt="debug",
+        tool_results=(
+            ToolResult(
+                tool_name="read_file",
+                status="error",
+                error="not found",
+                data={"index": 1, "path": "missing.py"},
+            ),
+            _tool_result(2),
+            _tool_result(3),
+            _tool_result(4),
+            _tool_result(5),
+        ),
+        session_metadata={},
+        policy=ContextWindowPolicy(
+            max_tool_results=3,
+            recent_tool_result_count=1,
+            max_tool_result_tokens=None,
+            recent_tool_result_tokens=None,
+            default_tool_result_tokens=None,
+        ),
+    )
+
+    retained_indexes = tuple(result.data["index"] for result in context.tool_results)
+    assert retained_indexes == (1, 4, 5)
+
+
+def test_prepare_provider_context_importance_tie_breaker_prefers_newer() -> None:
+    context = prepare_provider_context(
+        prompt="read files",
+        tool_results=(
+            _tool_result(1),
+            _tool_result(2),
+            _tool_result(3),
+            _tool_result(4),
+            _tool_result(5),
+        ),
+        session_metadata={},
+        policy=ContextWindowPolicy(
+            max_tool_results=3,
+            recent_tool_result_count=1,
+            max_tool_result_tokens=None,
+            recent_tool_result_tokens=None,
+            default_tool_result_tokens=None,
+        ),
+    )
+
+    retained_indexes = tuple(result.data["index"] for result in context.tool_results)
+    assert 5 in retained_indexes
+    assert retained_indexes == (3, 4, 5)
+
+
+def test_prepare_provider_context_protected_recent_always_kept() -> None:
+    context = prepare_provider_context(
+        prompt="continue",
+        tool_results=(
+            ToolResult(
+                tool_name="write_file",
+                content="important write",
+                status="ok",
+                data={"index": 1, "path": "src/app.py"},
+            ),
+            ToolResult(
+                tool_name="read_file",
+                status="error",
+                error="missing",
+                data={"index": 2, "path": "src/missing.py"},
+            ),
+            _tool_result(3),
+        ),
+        session_metadata={},
+        policy=ContextWindowPolicy(
+            max_tool_results=2,
+            recent_tool_result_count=1,
+            max_tool_result_tokens=None,
+            recent_tool_result_tokens=None,
+            default_tool_result_tokens=None,
+        ),
+    )
+
+    retained_indexes = tuple(result.data["index"] for result in context.tool_results)
+    assert 3 in retained_indexes
+
+
+def _error_result(index: int) -> ToolResult:
+    return ToolResult(
+        tool_name="read_file",
+        status="error",
+        error="error message",
+        data={"index": index},
+    )
+
+
+def test_tool_result_importance_score_errors_rank_high() -> None:
+    assert _tool_result_importance_score(_error_result(1)) >= 100
+
+
+def test_tool_result_importance_score_todo_beats_plain_read() -> None:
+    todo = ToolResult(tool_name="todo_write", content="todos", status="ok", data={"index": 1})
+    plain = _tool_result(2)
+    assert _tool_result_importance_score(todo) > _tool_result_importance_score(plain)
+
+
+def test_tool_result_importance_score_write_beats_plain_read() -> None:
+    write = ToolResult(
+        tool_name="write_file",
+        content="data",
+        status="ok",
+        data={"index": 1, "path": "out.txt"},
+    )
+    plain = _tool_result(2)
+    assert _tool_result_importance_score(write) > _tool_result_importance_score(plain)
+
+
+def test_tool_result_importance_score_shell_command_is_generic_signal() -> None:
+    project_shell = ToolResult(
+        tool_name="shell_exec",
+        content="completed",
+        status="ok",
+        data={"index": 1, "command": "run project verification"},
+    )
+    plain_shell = ToolResult(
+        tool_name="shell_exec",
+        content="ok",
+        status="ok",
+        data={"index": 2, "command": "run maintenance task"},
+    )
+    assert _tool_result_importance_score(project_shell) == _tool_result_importance_score(
+        plain_shell
+    )
+
+
+def test_tool_result_importance_score_delete_file_not_treated_as_write() -> None:
+    delete = ToolResult(
+        tool_name="delete_file",
+        content="deleted",
+        status="ok",
+        data={"index": 1, "path": "tmp.txt"},
+    )
+    write = ToolResult(
+        tool_name="write_file",
+        content="data",
+        status="ok",
+        data={"index": 2, "path": "out.txt"},
+    )
+    assert _tool_result_importance_score(delete) < _tool_result_importance_score(write)
+
+
+def test_select_tool_result_indexes_by_importance_max_zero() -> None:
+    results = (_tool_result(1), _tool_result(2), _tool_result(3))
+    selected = _select_tool_result_indexes_by_importance(
+        results, max_tool_results=0, protected_recent_count=1
+    )
+    assert len(selected) == 1
+    assert selected == (2,)
+
+
+def test_retain_indexes_within_token_budget_protects_recent() -> None:
+    results = (
+        _tool_result(1),
+        _tool_result(2),
+        _tool_result(3),
+    )
+    indexes = _retain_indexes_within_token_budget(
+        results,
+        candidate_indexes=(0, 1, 2),
+        token_budget=100,
+        protected_recent_count=1,
+        tokenizer_model=None,
+    )
+    assert len(indexes) >= 1
+
+
+def test_select_tool_result_indexes_by_importance_no_results() -> None:
+    selected = _select_tool_result_indexes_by_importance(
+        (), max_tool_results=3, protected_recent_count=1
+    )
+    assert selected == ()
+
+
+def test_select_tool_result_indexes_by_importance_return_order_is_sorted() -> None:
+    results = (
+        _tool_result(1),
+        ToolResult(
+            tool_name="read_file",
+            status="error",
+            error="fail",
+            data={"index": 2},
+        ),
+        _tool_result(3),
+        _tool_result(4),
+    )
+    selected = _select_tool_result_indexes_by_importance(
+        results, max_tool_results=2, protected_recent_count=1
+    )
+    assert selected == (1, 3)
+
+
+def test_context_window_policy_importance_retention_round_trips() -> None:
+    policy = ContextWindowPolicy(importance_retention=False)
+    parsed = context_window_policy_from_payload(policy.metadata_payload())
+    assert parsed.importance_retention is False
+
+    default_policy = ContextWindowPolicy()
+    default_parsed = context_window_policy_from_payload(default_policy.metadata_payload())
+    assert default_parsed.importance_retention is True
+
+
 def test_count_text_tokens_reports_estimated_fallback_metadata() -> None:
     counted = count_text_tokens("abcd你")
 
@@ -1002,11 +1387,18 @@ def test_continuity_summary_metadata_is_derived_from_state() -> None:
         summary_text="one",
         dropped_tool_result_count=1,
         retained_tool_result_count=3,
+        dropped_tool_results=(
+            DroppedToolResultDiagnostic(tool_name="read_file", status="ok", index=1),
+        ),
     )
     second = RuntimeContinuityState(
         summary_text="one",
         dropped_tool_result_count=2,
         retained_tool_result_count=3,
+        dropped_tool_results=(
+            DroppedToolResultDiagnostic(tool_name="read_file", status="ok", index=1),
+            DroppedToolResultDiagnostic(tool_name="read_file", status="ok", index=2),
+        ),
     )
 
     first_anchor, first_source = continuity_summary_metadata(first)
