@@ -9481,6 +9481,77 @@ def test_runtime_context_window_policy_recomputes_default_for_fallback_attempt(
     assert context_window.token_budget == 4_000
 
 
+def test_runtime_execute_graph_loop_reuses_initial_context_window_on_first_iteration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path)
+
+    class _SingleStepGraph:
+        def step(
+            self,
+            request: GraphRunRequest,
+            tool_results: tuple[object, ...],
+            *,
+            session: SessionState,
+        ) -> _StubStep:
+            _ = request, tool_results, session
+            return _StubStep(output="done", is_finished=True)
+
+    session = SessionState(
+        session=SessionRef(id="resume-distillation-dedupe"),
+        metadata={"runtime_config": runtime._runtime_config_metadata()},  # pyright: ignore[reportPrivateUsage]
+        turn=0,
+        status="running",
+    )
+    prompt = "read sample.txt"
+    tool_registry = runtime._tool_registry_for_effective_config(  # pyright: ignore[reportPrivateUsage]
+        runtime.effective_runtime_config()
+    )
+    context_window = runtime._prepare_provider_context_window(  # pyright: ignore[reportPrivateUsage]
+        prompt=prompt,
+        tool_results=(),
+        session_metadata=session.metadata,
+    )
+    graph_request = GraphRunRequest(
+        session=session,
+        prompt=prompt,
+        available_tools=tool_registry.definitions(),
+        context_window=context_window,
+        assembled_context=runtime._assemble_provider_context(  # pyright: ignore[reportPrivateUsage]
+            prompt=prompt,
+            tool_results=(),
+            session_metadata=session.metadata,
+        ),
+        metadata=session.metadata,
+    )
+
+    def _unexpected_prepare_provider_context_window(*args: object, **kwargs: object) -> object:
+        _ = args, kwargs
+        raise AssertionError(
+            "first loop iteration should reuse existing graph_request.context_window"
+        )
+
+    monkeypatch.setattr(
+        runtime,
+        "_prepare_provider_context_window",
+        _unexpected_prepare_provider_context_window,
+    )
+
+    chunks = list(
+        runtime._execute_graph_loop(  # pyright: ignore[reportPrivateUsage]
+            graph=_SingleStepGraph(),
+            tool_registry=tool_registry,
+            session=session,
+            sequence=0,
+            graph_request=graph_request,
+            tool_results=[],
+        )
+    )
+
+    assert any(chunk.kind == "output" and chunk.output == "done" for chunk in chunks)
+
+
 def test_runtime_provider_fallback_seam_returns_next_graph_selection(tmp_path: Path) -> None:
     created_providers: list[_ScriptedTurnProvider] = []
     registry = ModelProviderRegistry(

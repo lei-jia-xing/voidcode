@@ -753,6 +753,7 @@ class RuntimeRunLoopCoordinator:
         reasoning_capture_state = runtime._reasoning_capture_state()
         active_graph_request: GraphRunRequest = graph_request
         pending_provider_attempt_reset: _ProviderAttemptReset | None = None
+        first_iteration = True
         while True:
             if pending_provider_attempt_reset is not None:
                 provider_attempt = pending_provider_attempt_reset.provider_attempt
@@ -776,12 +777,16 @@ class RuntimeRunLoopCoordinator:
             current_abort_signal: ProviderAbortSignal | None = current_graph_request.abort_signal
             current_session: SessionState = session
             current_session_metadata: dict[str, object] = current_session.metadata
-            base_context = runtime._prepare_provider_context_window(
-                prompt=current_prompt,
-                tool_results=tuple(tool_results),
-                session_metadata=current_session_metadata,
-                abort_signal=current_abort_signal,
-            )
+            if first_iteration:
+                base_context = cast(RuntimeContextWindow, current_graph_request.context_window)
+                first_iteration = False
+            else:
+                base_context = runtime._prepare_provider_context_window(
+                    prompt=current_prompt,
+                    tool_results=tuple(tool_results),
+                    session_metadata=current_session_metadata,
+                    abort_signal=current_abort_signal,
+                )
             reinjected_continuity = continuity_to_reinject
             if reinjected_continuity is not None:
                 summary_anchor, summary_source = continuity_summary_metadata(reinjected_continuity)
