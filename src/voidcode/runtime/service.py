@@ -5929,8 +5929,18 @@ class VoidCodeRuntime:
     ) -> dict[str, object] | None:
         if not tool_results:
             return None
-        dropped_guess = tool_results[:-1]
-        retained_guess = tool_results[-1:]
+        protected_recent_count = max(
+            policy.minimum_retained_tool_results,
+            policy.recent_tool_result_count,
+        )
+        protected_recent_count = min(protected_recent_count, len(tool_results))
+        if policy.max_tool_results == 0:
+            retained_count = protected_recent_count
+        else:
+            retained_count = max(policy.max_tool_results, protected_recent_count)
+            retained_count = min(retained_count, len(tool_results))
+        dropped_guess = tool_results[: len(tool_results) - retained_count]
+        retained_guess = tool_results[len(tool_results) - retained_count :]
         previous_continuity: dict[str, object] | None = None
         runtime_state = session_metadata.get("runtime_state")
         if isinstance(runtime_state, dict):
