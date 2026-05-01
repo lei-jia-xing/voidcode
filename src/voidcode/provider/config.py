@@ -38,6 +38,30 @@ def _parse_optional_boundary_positive_int(value: object) -> int | None:
     return value
 
 
+def _parse_optional_boundary_nonnegative_int(value: object) -> int | None:
+    if value is None:
+        return None
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise ValueError("must be an integer greater than or equal to 0 when provided")
+    return value
+
+
+def _parse_optional_boundary_nonnegative_float(value: object) -> float | None:
+    if value is None:
+        return None
+    if not isinstance(value, int | float) or isinstance(value, bool) or value < 0:
+        raise ValueError("must be a number greater than or equal to 0 when provided")
+    return float(value)
+
+
+def _parse_optional_boundary_bool(value: object) -> bool | None:
+    if value is None:
+        return None
+    if not isinstance(value, bool):
+        raise ValueError("must be a boolean when provided")
+    return value
+
+
 def _parse_boundary_string_list(value: object) -> tuple[str, ...]:
     if value is None:
         return ()
@@ -76,6 +100,13 @@ BoundaryOptionalTimeout = Annotated[float | None, BeforeValidator(_parse_optiona
 BoundaryOptionalPositiveInt = Annotated[
     int | None, BeforeValidator(_parse_optional_boundary_positive_int)
 ]
+BoundaryOptionalNonnegativeInt = Annotated[
+    int | None, BeforeValidator(_parse_optional_boundary_nonnegative_int)
+]
+BoundaryOptionalNonnegativeFloat = Annotated[
+    float | None, BeforeValidator(_parse_optional_boundary_nonnegative_float)
+]
+BoundaryOptionalBool = Annotated[bool | None, BeforeValidator(_parse_optional_boundary_bool)]
 BoundaryStringList = Annotated[tuple[str, ...], BeforeValidator(_parse_boundary_string_list)]
 BoundaryStringMapping = Annotated[dict[str, str], BeforeValidator(_parse_boundary_string_mapping)]
 
@@ -88,6 +119,13 @@ class _ProviderPayloadModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class _ProviderTransientRetryConfigPayload(_ProviderPayloadModel):
+    max_retries: BoundaryOptionalNonnegativeInt = None
+    base_delay_ms: BoundaryOptionalNonnegativeFloat = None
+    max_delay_ms: BoundaryOptionalNonnegativeFloat = None
+    jitter: BoundaryOptionalBool = None
+
+
 class _OpenAIProviderConfigPayload(_ProviderPayloadModel):
     api_key: BoundaryOptionalString = None
     base_url: BoundaryOptionalString = None
@@ -95,6 +133,7 @@ class _OpenAIProviderConfigPayload(_ProviderPayloadModel):
     organization: BoundaryOptionalString = None
     project: BoundaryOptionalString = None
     timeout_seconds: BoundaryOptionalTimeout = None
+    transient_retry: _ProviderTransientRetryConfigPayload | None = None
 
 
 class _AnthropicProviderConfigPayload(_ProviderPayloadModel):
@@ -104,6 +143,7 @@ class _AnthropicProviderConfigPayload(_ProviderPayloadModel):
     version: BoundaryOptionalString = None
     beta_headers: BoundaryStringList = ()
     timeout_seconds: BoundaryOptionalTimeout = None
+    transient_retry: _ProviderTransientRetryConfigPayload | None = None
 
 
 class _GoogleProviderAuthConfigPayload(_ProviderPayloadModel):
@@ -120,6 +160,7 @@ class _GoogleProviderConfigPayload(_ProviderPayloadModel):
     project: BoundaryOptionalString = None
     region: BoundaryOptionalString = None
     timeout_seconds: BoundaryOptionalTimeout = None
+    transient_retry: _ProviderTransientRetryConfigPayload | None = None
 
 
 class _CopilotProviderAuthConfigPayload(_ProviderPayloadModel):
@@ -134,6 +175,7 @@ class _CopilotProviderConfigPayload(_ProviderPayloadModel):
     auth: _CopilotProviderAuthConfigPayload | None = None
     base_url: BoundaryOptionalString = None
     timeout_seconds: BoundaryOptionalTimeout = None
+    transient_retry: _ProviderTransientRetryConfigPayload | None = None
 
 
 class _LiteLLMProviderConfigPayload(_ProviderPayloadModel):
@@ -145,6 +187,7 @@ class _LiteLLMProviderConfigPayload(_ProviderPayloadModel):
     auth_scheme: BoundaryOptionalString = None
     timeout_seconds: BoundaryOptionalTimeout = None
     model_map: BoundaryStringMapping = Field(default_factory=dict)
+    transient_retry: _ProviderTransientRetryConfigPayload | None = None
 
 
 class _SimplifiedProviderConfigPayload(_ProviderPayloadModel):
@@ -154,6 +197,7 @@ class _SimplifiedProviderConfigPayload(_ProviderPayloadModel):
     discovery_base_url: BoundaryOptionalString = None
     timeout_seconds: BoundaryOptionalTimeout = None
     model_map: BoundaryStringMapping = Field(default_factory=dict)
+    transient_retry: _ProviderTransientRetryConfigPayload | None = None
 
 
 class _ProviderConfigsPayload(_ProviderPayloadModel):
@@ -184,6 +228,27 @@ class _ProviderFallbackPayload(_ProviderPayloadModel):
 
 
 @dataclass(frozen=True, slots=True)
+class ProviderTransientRetryConfig:
+    max_retries: int = 2
+    base_delay_ms: float = 1000.0
+    max_delay_ms: float = 10_000.0
+    jitter: bool = True
+
+    def __post_init__(self) -> None:
+        if self.max_retries < 0:
+            raise ValueError("max_retries must be greater than or equal to 0")
+        if self.base_delay_ms < 0:
+            raise ValueError("base_delay_ms must be greater than or equal to 0")
+        if self.max_delay_ms < 0:
+            raise ValueError("max_delay_ms must be greater than or equal to 0")
+        if self.max_delay_ms < self.base_delay_ms:
+            raise ValueError("max_delay_ms must be greater than or equal to base_delay_ms")
+
+
+DEFAULT_PROVIDER_TRANSIENT_RETRY_CONFIG = ProviderTransientRetryConfig()
+
+
+@dataclass(frozen=True, slots=True)
 class SimplifiedProviderConfig:
     """Simplified provider configuration for Chinese AI providers.
 
@@ -197,6 +262,7 @@ class SimplifiedProviderConfig:
     discovery_base_url: str | None = None
     timeout_seconds: float | None = None
     model_map: dict[str, str] = field(default_factory=dict)
+    transient_retry: ProviderTransientRetryConfig | None = None
 
 
 _SIMPLIFIED_DEFAULTS: dict[str, tuple[str, str | None, dict[str, str]]] = {
@@ -384,6 +450,7 @@ class OpenAIProviderConfig:
     organization: str | None = None
     project: str | None = None
     timeout_seconds: float | None = None
+    transient_retry: ProviderTransientRetryConfig | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -394,6 +461,7 @@ class AnthropicProviderConfig:
     version: str | None = None
     beta_headers: tuple[str, ...] = ()
     timeout_seconds: float | None = None
+    transient_retry: ProviderTransientRetryConfig | None = None
     beta_headers_explicit: bool = field(default=False, compare=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -420,6 +488,7 @@ class GoogleProviderConfig:
     project: str | None = None
     region: str | None = None
     timeout_seconds: float | None = None
+    transient_retry: ProviderTransientRetryConfig | None = None
 
 
 type CopilotAuthMethod = Literal["token", "oauth"]
@@ -439,6 +508,7 @@ class CopilotProviderConfig:
     auth: CopilotProviderAuthConfig | None = None
     base_url: str | None = None
     timeout_seconds: float | None = None
+    transient_retry: ProviderTransientRetryConfig | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -451,6 +521,7 @@ class LiteLLMProviderConfig:
     auth_scheme: Literal["bearer", "token", "none"] = "bearer"
     timeout_seconds: float | None = None
     model_map: dict[str, str] = field(default_factory=dict)
+    transient_retry: ProviderTransientRetryConfig | None = None
     auth_scheme_explicit: bool = field(default=False, compare=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -619,6 +690,7 @@ def _merge_openai_provider_config(
         organization=_prefer_primary(primary.organization, fallback.organization),
         project=_prefer_primary(primary.project, fallback.project),
         timeout_seconds=_prefer_primary(primary.timeout_seconds, fallback.timeout_seconds),
+        transient_retry=_prefer_primary(primary.transient_retry, fallback.transient_retry),
     )
 
 
@@ -640,6 +712,7 @@ def _merge_anthropic_provider_config(
         ),
         beta_headers_explicit=primary.beta_headers_explicit or fallback.beta_headers_explicit,
         timeout_seconds=_prefer_primary(primary.timeout_seconds, fallback.timeout_seconds),
+        transient_retry=_prefer_primary(primary.transient_retry, fallback.transient_retry),
     )
 
 
@@ -658,6 +731,7 @@ def _merge_google_provider_config(
         project=_prefer_primary(primary.project, fallback.project),
         region=_prefer_primary(primary.region, fallback.region),
         timeout_seconds=_prefer_primary(primary.timeout_seconds, fallback.timeout_seconds),
+        transient_retry=_prefer_primary(primary.transient_retry, fallback.transient_retry),
     )
 
 
@@ -673,6 +747,7 @@ def _merge_copilot_provider_config(
         auth=_prefer_primary(primary.auth, fallback.auth),
         base_url=_prefer_primary(primary.base_url, fallback.base_url),
         timeout_seconds=_prefer_primary(primary.timeout_seconds, fallback.timeout_seconds),
+        transient_retry=_prefer_primary(primary.transient_retry, fallback.transient_retry),
     )
 
 
@@ -694,6 +769,7 @@ def _merge_litellm_provider_config(
         auth_scheme_explicit=primary.auth_scheme_explicit or fallback.auth_scheme_explicit,
         timeout_seconds=_prefer_primary(primary.timeout_seconds, fallback.timeout_seconds),
         model_map={**fallback.model_map, **primary.model_map},
+        transient_retry=_prefer_primary(primary.transient_retry, fallback.transient_retry),
     )
 
 
@@ -712,6 +788,7 @@ def _merge_simplified_provider_config(
         discovery_base_url=_prefer_primary(primary.discovery_base_url, fallback.discovery_base_url),
         timeout_seconds=_prefer_primary(primary.timeout_seconds, fallback.timeout_seconds),
         model_map={**fallback.model_map, **primary.model_map},
+        transient_retry=_prefer_primary(primary.transient_retry, fallback.transient_retry),
     )
 
 
@@ -1063,6 +1140,10 @@ def _parse_openai_provider_config(
         organization=payload.organization,
         project=payload.project,
         timeout_seconds=payload.timeout_seconds,
+        transient_retry=_parse_transient_retry_config(
+            payload.transient_retry,
+            field_path=_nested_config_field(field_path, "transient_retry"),
+        ),
     )
 
 
@@ -1095,6 +1176,10 @@ def _parse_anthropic_provider_config(
         beta_headers=payload.beta_headers,
         beta_headers_explicit="beta_headers" in payload.model_fields_set,
         timeout_seconds=payload.timeout_seconds,
+        transient_retry=_parse_transient_retry_config(
+            payload.transient_retry,
+            field_path=_nested_config_field(field_path, "transient_retry"),
+        ),
     )
 
 
@@ -1128,6 +1213,10 @@ def _parse_google_provider_config(
         project=payload.project,
         region=payload.region,
         timeout_seconds=payload.timeout_seconds,
+        transient_retry=_parse_transient_retry_config(
+            payload.transient_retry,
+            field_path=_nested_config_field(field_path, "transient_retry"),
+        ),
     )
 
 
@@ -1244,6 +1333,10 @@ def _parse_copilot_provider_config(
         auth=auth,
         base_url=payload.base_url,
         timeout_seconds=payload.timeout_seconds,
+        transient_retry=_parse_transient_retry_config(
+            payload.transient_retry,
+            field_path=_nested_config_field(field_path, "transient_retry"),
+        ),
     )
 
 
@@ -1370,6 +1463,10 @@ def _parse_litellm_provider_config(
         auth_scheme_explicit=raw_auth_scheme is not None,
         timeout_seconds=payload.timeout_seconds,
         model_map=payload.model_map,
+        transient_retry=_parse_transient_retry_config(
+            payload.transient_retry,
+            field_path=_nested_config_field(field_path, "transient_retry"),
+        ),
     )
 
 
@@ -1411,6 +1508,57 @@ def _parse_simplified_provider_config(
         discovery_base_url=payload.discovery_base_url,
         timeout_seconds=payload.timeout_seconds,
         model_map=payload.model_map,
+        transient_retry=_parse_transient_retry_config(
+            payload.transient_retry,
+            field_path=_nested_config_field(field_path, "transient_retry"),
+        ),
+    )
+
+
+def _parse_transient_retry_config(
+    raw_value: object,
+    *,
+    field_path: str,
+) -> ProviderTransientRetryConfig | None:
+    if raw_value is None:
+        return None
+    payload = (
+        raw_value
+        if isinstance(raw_value, _ProviderTransientRetryConfigPayload)
+        else _validate_provider_payload_model(
+            raw_value,
+            field_path=field_path,
+            model_type=_ProviderTransientRetryConfigPayload,
+        )
+    )
+    base_delay_ms = (
+        DEFAULT_PROVIDER_TRANSIENT_RETRY_CONFIG.base_delay_ms
+        if payload.base_delay_ms is None
+        else payload.base_delay_ms
+    )
+    max_delay_ms = (
+        DEFAULT_PROVIDER_TRANSIENT_RETRY_CONFIG.max_delay_ms
+        if payload.max_delay_ms is None
+        else payload.max_delay_ms
+    )
+    if max_delay_ms < base_delay_ms:
+        raise ValueError(
+            f"{_nested_config_field(field_path, 'max_delay_ms')} "
+            "must be greater than or equal to base_delay_ms"
+        )
+    return ProviderTransientRetryConfig(
+        max_retries=(
+            DEFAULT_PROVIDER_TRANSIENT_RETRY_CONFIG.max_retries
+            if payload.max_retries is None
+            else payload.max_retries
+        ),
+        base_delay_ms=base_delay_ms,
+        max_delay_ms=max_delay_ms,
+        jitter=(
+            DEFAULT_PROVIDER_TRANSIENT_RETRY_CONFIG.jitter
+            if payload.jitter is None
+            else payload.jitter
+        ),
     )
 
 
@@ -1432,6 +1580,8 @@ def _serialize_openai_provider_config(
         payload["project"] = provider.project
     if provider.timeout_seconds is not None:
         payload["timeout_seconds"] = provider.timeout_seconds
+    if provider.transient_retry is not None:
+        payload["transient_retry"] = _serialize_transient_retry_config(provider.transient_retry)
     return payload
 
 
@@ -1453,6 +1603,8 @@ def _serialize_anthropic_provider_config(
         payload["beta_headers"] = list(provider.beta_headers)
     if provider.timeout_seconds is not None:
         payload["timeout_seconds"] = provider.timeout_seconds
+    if provider.transient_retry is not None:
+        payload["transient_retry"] = _serialize_transient_retry_config(provider.transient_retry)
     return payload
 
 
@@ -1476,6 +1628,8 @@ def _serialize_google_provider_config(
         payload["region"] = provider.region
     if provider.timeout_seconds is not None:
         payload["timeout_seconds"] = provider.timeout_seconds
+    if provider.transient_retry is not None:
+        payload["transient_retry"] = _serialize_transient_retry_config(provider.transient_retry)
     return payload
 
 
@@ -1509,6 +1663,8 @@ def _serialize_copilot_provider_config(
         payload["base_url"] = provider.base_url
     if provider.timeout_seconds is not None:
         payload["timeout_seconds"] = provider.timeout_seconds
+    if provider.transient_retry is not None:
+        payload["transient_retry"] = _serialize_transient_retry_config(provider.transient_retry)
     return payload
 
 
@@ -1550,6 +1706,8 @@ def _serialize_litellm_provider_config(
         payload["timeout_seconds"] = provider.timeout_seconds
     if provider.model_map:
         payload["model_map"] = dict(provider.model_map)
+    if provider.transient_retry is not None:
+        payload["transient_retry"] = _serialize_transient_retry_config(provider.transient_retry)
     return payload
 
 
@@ -1571,7 +1729,20 @@ def _serialize_simplified_provider_config(
         payload["timeout_seconds"] = provider.timeout_seconds
     if provider.model_map:
         payload["model_map"] = dict(provider.model_map)
+    if provider.transient_retry is not None:
+        payload["transient_retry"] = _serialize_transient_retry_config(provider.transient_retry)
     return payload
+
+
+def _serialize_transient_retry_config(
+    retry_config: ProviderTransientRetryConfig,
+) -> dict[str, object]:
+    return {
+        "max_retries": retry_config.max_retries,
+        "base_delay_ms": retry_config.base_delay_ms,
+        "max_delay_ms": retry_config.max_delay_ms,
+        "jitter": retry_config.jitter,
+    }
 
 
 def _parse_custom_litellm_provider_configs(
