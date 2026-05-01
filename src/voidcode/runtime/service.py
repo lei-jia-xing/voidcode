@@ -153,6 +153,7 @@ from .contracts import (
     ProviderValidationResult,
     ReviewFileDiff,
     RuntimeBackgroundTaskStatusSnapshot,
+    RuntimeHookPresetSnapshot,
     RuntimeNotification,
     RuntimeProviderContextPolicyDecision,
     RuntimeProviderContextSnapshot,
@@ -186,6 +187,7 @@ from .events import (
     RUNTIME_ACP_FAILED,
     RUNTIME_APPROVAL_REQUESTED,
     RUNTIME_CATEGORY_MODEL_DIAGNOSTIC,
+    RUNTIME_HOOK_PRESETS_LOADED,
     RUNTIME_LSP_SERVER_FAILED,
     RUNTIME_LSP_SERVER_REUSED,
     RUNTIME_LSP_SERVER_STARTED,
@@ -1969,6 +1971,23 @@ class VoidCodeRuntime:
                 ),
             )
 
+        hook_preset_snapshot = self._hook_preset_event_payload_from_session_metadata(
+            session.metadata
+        )
+        if hook_preset_snapshot is not None:
+            sequence += 1
+            yield RuntimeStreamChunk(
+                kind="event",
+                session=session,
+                event=EventEnvelope(
+                    session_id=session.session.id,
+                    sequence=sequence,
+                    event_type=RUNTIME_HOOK_PRESETS_LOADED,
+                    source="runtime",
+                    payload=hook_preset_snapshot,
+                ),
+            )
+
         active_agent = effective_config.agent
 
         graph_request = GraphRunRequest(
@@ -2882,6 +2901,7 @@ class VoidCodeRuntime:
             failure=failure,
             last_tool=last_tool,
             provider_context=provider_context,
+            hook_presets=self._debug_hook_preset_snapshot(result.session.metadata),
             suggested_operator_action=suggested_operator_action,
             operator_guidance=operator_guidance,
         )
@@ -7063,7 +7083,11 @@ class VoidCodeRuntime:
             },
         )
 
-    def _runtime_state_metadata(self, *, run_id: str | None = None) -> dict[str, object]:
+    def _runtime_state_metadata(
+        self,
+        *,
+        run_id: str | None = None,
+    ) -> dict[str, object]:
         acp_state = self._acp_adapter.current_state()
         return {
             **({"run_id": run_id} if run_id is not None else {}),
@@ -7083,6 +7107,53 @@ class VoidCodeRuntime:
                 ),
             },
         }
+
+    @staticmethod
+    def _resolved_hook_preset_snapshot_from_session_metadata(
+        metadata: dict[str, object],
+    ) -> ResolvedHookPresetSnapshot | None:
+        raw_snapshot = metadata.get("resolved_hook_presets")
+        if isinstance(raw_snapshot, dict):
+            return hook_preset_snapshot_from_payload(cast(dict[object, object], raw_snapshot))
+        raw_runtime_config = metadata.get("runtime_config")
+        if not isinstance(raw_runtime_config, dict):
+            return None
+        runtime_config_payload = cast(dict[object, object], raw_runtime_config)
+        nested_snapshot = runtime_config_payload.get("resolved_hook_presets")
+        if not isinstance(nested_snapshot, dict):
+            return None
+        return hook_preset_snapshot_from_payload(cast(dict[object, object], nested_snapshot))
+
+    @classmethod
+    def _hook_preset_event_payload_from_session_metadata(
+        cls,
+        metadata: dict[str, object],
+    ) -> dict[str, object] | None:
+        snapshot = cls._resolved_hook_preset_snapshot_from_session_metadata(metadata)
+        if snapshot is None or not snapshot.presets:
+            return None
+        kinds = [preset["kind"] for preset in snapshot.presets]
+        return {
+            "refs": list(snapshot.refs),
+            "kinds": kinds,
+            "source": "builtin",
+            "count": len(snapshot.presets),
+        }
+
+    @classmethod
+    def _debug_hook_preset_snapshot(
+        cls,
+        metadata: dict[str, object],
+    ) -> RuntimeHookPresetSnapshot | None:
+        payload = cls._hook_preset_event_payload_from_session_metadata(metadata)
+        if payload is None:
+            return None
+        return RuntimeHookPresetSnapshot(
+            refs=tuple(cast(list[str], payload["refs"])),
+            kinds=tuple(cast(list[str], payload["kinds"])),
+            source=cast(str, payload["source"]),
+            count=cast(int, payload["count"]),
+        )
 
     @staticmethod
     def _envelopes_for_lsp_events(

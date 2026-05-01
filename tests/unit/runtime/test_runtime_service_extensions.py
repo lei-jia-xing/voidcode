@@ -70,6 +70,7 @@ from voidcode.runtime.events import (
     RUNTIME_BACKGROUND_TASK_FAILED,
     RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL,
     RUNTIME_CONTEXT_PRESSURE,
+    RUNTIME_HOOK_PRESETS_LOADED,
     RUNTIME_MCP_SERVER_FAILED,
     RUNTIME_MCP_SERVER_STARTED,
     RUNTIME_MCP_SERVER_STOPPED,
@@ -3342,7 +3343,12 @@ def test_runtime_constructs_with_builtin_agent_hook_refs(tmp_path: Path) -> None
     response = runtime.run(RuntimeRequest(prompt="custom hook refs", session_id="hook-refs"))
 
     runtime_config = response.session.metadata["runtime_config"]
+    resolved_hook_presets = response.session.metadata["resolved_hook_presets"]
+    hook_event = next(
+        event for event in response.events if event.event_type == RUNTIME_HOOK_PRESETS_LOADED
+    )
     assert isinstance(runtime_config, dict)
+    assert isinstance(resolved_hook_presets, dict)
     assert runtime_config["agent"] == {
         "preset": "leader",
         "prompt_profile": "researcher",
@@ -3352,6 +3358,106 @@ def test_runtime_constructs_with_builtin_agent_hook_refs(tmp_path: Path) -> None
         "hook_refs": ["role_reminder"],
         "execution_engine": "provider",
     }
+    assert resolved_hook_presets["refs"] == ["role_reminder"]
+    assert hook_event.payload == {
+        "refs": ["role_reminder"],
+        "kinds": ["guidance"],
+        "source": "builtin",
+        "count": 1,
+    }
+
+
+def test_runtime_snapshots_manifest_default_hook_refs(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_BackgroundTaskSuccessGraph(),
+        config=RuntimeConfig(
+            agent=RuntimeAgentConfig(preset="leader", execution_engine="provider"),
+        ),
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="manifest hook refs", session_id="manifest-hooks"))
+
+    resolved_hook_presets = response.session.metadata["resolved_hook_presets"]
+    assert isinstance(resolved_hook_presets, dict)
+    assert resolved_hook_presets["refs"] == [
+        "role_reminder",
+        "delegation_guard",
+        "background_output_quality_guidance",
+        "todo_continuation_guidance",
+    ]
+    hook_event = next(
+        event for event in response.events if event.event_type == RUNTIME_HOOK_PRESETS_LOADED
+    )
+    assert hook_event.payload == {
+        "refs": [
+            "role_reminder",
+            "delegation_guard",
+            "background_output_quality_guidance",
+            "todo_continuation_guidance",
+        ],
+        "kinds": ["guidance", "guard", "guidance", "continuation"],
+        "source": "builtin",
+        "count": 4,
+    }
+
+
+def test_runtime_debug_uses_persisted_hook_preset_snapshot_not_formatter_presets(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_BackgroundTaskSuccessGraph(),
+        config=RuntimeConfig(
+            hooks=RuntimeHooksConfig(
+                formatter_presets={
+                    "role_reminder": RuntimeHooksConfig().formatter_presets["python"]
+                }
+            ),
+            agent=RuntimeAgentConfig(
+                preset="leader",
+                hook_refs=("delegation_guard",),
+                execution_engine="provider",
+            ),
+        ),
+    )
+
+    _ = runtime.run(RuntimeRequest(prompt="debug hook refs", session_id="hook-debug"))
+    snapshot = runtime.session_debug_snapshot(session_id="hook-debug")
+
+    assert snapshot.hook_presets is not None
+    assert snapshot.hook_presets.refs == ("delegation_guard",)
+    assert snapshot.hook_presets.kinds == ("guard",)
+    assert snapshot.hook_presets.source == "builtin"
+    assert snapshot.hook_presets.count == 1
+
+
+def test_hook_preset_snapshot_does_not_change_agent_tool_permissions(tmp_path: Path) -> None:
+    runtime_without_hooks = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_BackgroundTaskSuccessGraph(),
+        config=RuntimeConfig(
+            agent=RuntimeAgentConfig(preset="leader", execution_engine="provider")
+        ),
+    )
+    runtime_with_hooks = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_BackgroundTaskSuccessGraph(),
+        config=RuntimeConfig(
+            agent=RuntimeAgentConfig(
+                preset="leader",
+                hook_refs=("role_reminder", "delegation_guard"),
+                execution_engine="provider",
+            )
+        ),
+    )
+
+    no_hook_config = runtime_without_hooks._effective_runtime_config_from_metadata(None)  # pyright: ignore[reportPrivateUsage]
+    hook_config = runtime_with_hooks._effective_runtime_config_from_metadata(None)  # pyright: ignore[reportPrivateUsage]
+    no_hook_tools = runtime_without_hooks._tool_registry_for_effective_config(no_hook_config)  # pyright: ignore[reportPrivateUsage]
+    hook_tools = runtime_with_hooks._tool_registry_for_effective_config(hook_config)  # pyright: ignore[reportPrivateUsage]
+
+    assert tuple(no_hook_tools.tools) == tuple(hook_tools.tools)
 
 
 def test_runtime_category_routing_resolves_real_child_agent_and_persists_identity(

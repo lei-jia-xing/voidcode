@@ -829,6 +829,14 @@ class RuntimeProviderContextSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class RuntimeHookPresetSnapshot:
+    refs: tuple[str, ...]
+    kinds: tuple[str, ...]
+    source: str
+    count: int
+
+
+@dataclass(frozen=True, slots=True)
 class RuntimeSessionDebugSnapshot:
     session: SessionState
     prompt: str
@@ -848,6 +856,7 @@ class RuntimeSessionDebugSnapshot:
     failure: RuntimeSessionDebugFailure | None = None
     last_tool: RuntimeSessionDebugToolSummary | None = None
     provider_context: RuntimeProviderContextSnapshot | None = None
+    hook_presets: RuntimeHookPresetSnapshot | None = None
     suggested_operator_action: str = "inspect_session"
     operator_guidance: str = "Inspect the persisted session state."
 

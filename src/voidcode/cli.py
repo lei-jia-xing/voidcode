@@ -67,6 +67,7 @@ from .runtime.contracts import (
     ProviderInspectResult,
     ProviderModelMetadata,
     ProviderReadinessResult,
+    RuntimeHookPresetSnapshot,
     RuntimeProviderContextSnapshot,
     RuntimeRequest,
     RuntimeSessionDebugSnapshot,
@@ -936,8 +937,22 @@ def _serialize_session_debug_snapshot(
             else None
         ),
         "provider_context": _serialize_provider_context_snapshot(snapshot.provider_context),
+        "hook_presets": _serialize_hook_preset_snapshot(snapshot.hook_presets),
         "suggested_operator_action": snapshot.suggested_operator_action,
         "operator_guidance": snapshot.operator_guidance,
+    }
+
+
+def _serialize_hook_preset_snapshot(
+    snapshot: RuntimeHookPresetSnapshot | None,
+) -> dict[str, object] | None:
+    if snapshot is None:
+        return None
+    return {
+        "refs": list(snapshot.refs),
+        "kinds": list(snapshot.kinds),
+        "source": snapshot.source,
+        "count": snapshot.count,
     }
 
 

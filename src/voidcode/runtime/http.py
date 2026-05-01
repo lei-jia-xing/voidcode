@@ -29,6 +29,7 @@ from .contracts import (
     ReviewChangedFile,
     ReviewFileDiff,
     ReviewTreeNode,
+    RuntimeHookPresetSnapshot,
     RuntimeNotification,
     RuntimeProviderContextSnapshot,
     RuntimeRequest,
@@ -1999,8 +2000,24 @@ class RuntimeTransportApp:
             "provider_context": RuntimeTransportApp._serialize_provider_context_snapshot(
                 snapshot.provider_context
             ),
+            "hook_presets": RuntimeTransportApp._serialize_hook_preset_snapshot(
+                snapshot.hook_presets
+            ),
             "suggested_operator_action": snapshot.suggested_operator_action,
             "operator_guidance": snapshot.operator_guidance,
+        }
+
+    @staticmethod
+    def _serialize_hook_preset_snapshot(
+        snapshot: RuntimeHookPresetSnapshot | None,
+    ) -> dict[str, object] | None:
+        if snapshot is None:
+            return None
+        return {
+            "refs": list(snapshot.refs),
+            "kinds": list(snapshot.kinds),
+            "source": snapshot.source,
+            "count": snapshot.count,
         }
 
     @staticmethod
