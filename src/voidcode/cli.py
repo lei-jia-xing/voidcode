@@ -149,12 +149,16 @@ def _handle_run_command(args: argparse.Namespace) -> int:
             )
             if not interactive and blocked_event is not None:
                 return _blocked_exit_code(blocked_event)
+            if result.session.status == "failed":
+                return EXIT_RUNTIME_ERROR
         elif not interactive:
             if blocked_event is not None:
                 _print_noninteractive_blocked(result, blocked_event)
                 return _blocked_exit_code(blocked_event)
             _print_plain_runtime_output(result.output)
             _print_runtime_failure_footer(runtime, result, workspace=workspace)
+            if result.session.status == "failed":
+                return EXIT_RUNTIME_ERROR
     finally:
         _close_runtime(runtime)
     return EXIT_SUCCESS
@@ -438,9 +442,25 @@ def _runtime_stream_payload(
         "output": result.output,
         "events": [serialize_event(event, show_thinking=show_thinking) for event in result.events],
     }
+    if result.session.status == "failed":
+        payload["status"] = "failed"
+        error = _runtime_failed_error(result)
+        if error is not None:
+            payload["error"] = error
     if blocked_event is not None:
         payload["blocked"] = _blocked_payload(result, blocked_event)
     return payload
+
+
+def _runtime_failed_error(result: RuntimeStreamResult) -> str | None:
+    failed_event = next(
+        (event for event in reversed(result.events) if event.event_type == "runtime.failed"),
+        None,
+    )
+    if failed_event is None:
+        return None
+    error = failed_event.payload.get("error")
+    return error if isinstance(error, str) and error else None
 
 
 def _blocked_payload(result: RuntimeStreamResult, event: EventEnvelope) -> dict[str, object]:
