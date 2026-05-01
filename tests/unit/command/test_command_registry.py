@@ -7,11 +7,13 @@ import pytest
 from voidcode.command import (
     CommandDefinition,
     CommandRegistry,
+    builtin_commands,
     load_command_registry,
     load_markdown_commands,
     resolve_prompt_command,
     resolve_tool_instruction,
 )
+from voidcode.command.templating import render_command_template, split_command_arguments
 from voidcode.tools.contracts import ToolDefinition
 
 
@@ -97,3 +99,185 @@ def test_template_rendering_does_not_rewrite_inserted_arguments_or_dollar_litera
         "Cost $100; first=target; second=; missing=; "
         "args=price=$2 literal; literal=$ARGUMENTS_suffix"
     )
+
+
+class TestBuiltinCommandDiscovery:
+    _EXPECTED_NAMES = ("commit", "explain", "fix", "plan", "review", "test")
+
+    def test_exactly_six_expected_builtins_present(self) -> None:
+        commands = builtin_commands()
+        names = tuple(c.name for c in commands)
+        assert names == self._EXPECTED_NAMES, f"expected {self._EXPECTED_NAMES}, got {names}"
+
+    def test_every_builtin_has_source_and_template(self) -> None:
+        for cmd in builtin_commands():
+            assert cmd.source == "builtin", f"/{cmd.name} source should be builtin"
+            assert cmd.template.strip(), f"/{cmd.name} template must be non-empty"
+            assert "$ARGUMENTS" in cmd.template, f"/{cmd.name} template must contain $ARGUMENTS"
+            assert cmd.description.strip(), f"/{cmd.name} description must be non-empty"
+            assert cmd.enabled, f"/{cmd.name} must be enabled by default"
+
+    def test_commands_registered_in_correct_order(self) -> None:
+        ordered = [c.name for c in builtin_commands()]
+        assert ordered == list(self._EXPECTED_NAMES), f"wrong order: {ordered}"
+
+    def test_plan_command_targets_product_agent(self) -> None:
+        plan = [c for c in builtin_commands() if c.name == "plan"][0]
+        assert plan.agent == "product", f"/plan agent should be product, got {plan.agent}"
+
+    def test_commands_are_disabled_when_hidden_flag_set(self) -> None:
+        registry = CommandRegistry(builtin_commands())
+        hidden_cmd = CommandDefinition("hidden_cmd", "Hidden", "echo $ARGUMENTS", hidden=True)
+        registry.register(hidden_cmd)
+        visible = registry.list()
+        assert all(c.name != "hidden_cmd" for c in visible)
+        all_cmds = registry.list(include_hidden=True)
+        assert any(c.name == "hidden_cmd" for c in all_cmds)
+
+
+class TestBuiltinCommandRendering:
+    def test_fix_renders_arguments_correctly(self) -> None:
+        cmd = [c for c in builtin_commands() if c.name == "fix"][0]
+        rendered = render_command_template(
+            cmd.template,
+            raw_arguments="the null pointer bug in utils.py",
+            arguments=split_command_arguments("the null pointer bug in utils.py"),
+        )
+        assert "null pointer bug in utils.py" in rendered
+        assert "root cause" in rendered
+        assert "smallest safe code change" in rendered
+        assert "run targeted tests" in rendered
+        assert "$ARGUMENTS" not in rendered
+
+    def test_explain_renders_read_only_guidance(self) -> None:
+        cmd = [c for c in builtin_commands() if c.name == "explain"][0]
+        rendered = render_command_template(
+            cmd.template,
+            raw_arguments="the auth.py module",
+            arguments=split_command_arguments("the auth.py module"),
+        )
+        assert "auth.py module" in rendered
+        assert "do not modify any files" in rendered
+        assert "do not hallucinate" in rendered
+
+    def test_plan_renders_no_code_guidance(self) -> None:
+        cmd = [c for c in builtin_commands() if c.name == "plan"][0]
+        rendered = render_command_template(
+            cmd.template,
+            raw_arguments="add dark mode support",
+            arguments=split_command_arguments("add dark mode support"),
+        )
+        assert "dark mode support" in rendered
+        assert "do not write code" in rendered
+        assert "Target agent: product" in rendered
+        assert "acceptance criteria" in rendered
+
+    def test_commit_renders_conventional_commits_guidance(self) -> None:
+        cmd = [c for c in builtin_commands() if c.name == "commit"][0]
+        rendered = render_command_template(
+            cmd.template,
+            raw_arguments="ci pipeline fixes",
+            arguments=split_command_arguments("ci pipeline fixes"),
+        )
+        assert "ci pipeline fixes" in rendered
+        assert "Conventional Commits" in rendered
+        assert "do not create commits" in rendered
+        assert "no staged or unstaged changes" in rendered
+
+    def test_test_renders_verification_guidance(self) -> None:
+        cmd = [c for c in builtin_commands() if c.name == "test"][0]
+        rendered = render_command_template(
+            cmd.template,
+            raw_arguments="src/auth.py",
+            arguments=split_command_arguments("src/auth.py"),
+        )
+        assert "src/auth.py" in rendered
+        assert "verification" in rendered.lower()
+        assert "do not delete or weaken existing tests" in rendered
+        assert "no test framework" in rendered
+
+    def test_review_renders_arguments_and_severity(self) -> None:
+        cmd = [c for c in builtin_commands() if c.name == "review"][0]
+        rendered = render_command_template(
+            cmd.template,
+            raw_arguments="src/app.py",
+            arguments=split_command_arguments("src/app.py"),
+        )
+        assert "src/app.py" in rendered
+        assert "severity" in rendered
+        assert "Read-only by default" in rendered
+        assert "unreadable" in rendered
+
+    def test_dollar_placeholder_substitution_uses_shlex_splitting(self) -> None:
+        cmd = [c for c in builtin_commands() if c.name == "fix"][0]
+        args = split_command_arguments('"path with spaces/file.py" --flag')
+        rendered = render_command_template(
+            cmd.template,
+            raw_arguments='"path with spaces/file.py" --flag',
+            arguments=args,
+        )
+        assert "path with spaces/file.py" in rendered
+        assert args == ("path with spaces/file.py", "--flag")
+
+
+class TestBuiltinCommandProjectOverride:
+    def test_project_fix_overrides_builtin_fix(self, tmp_path: Path) -> None:
+        commands_dir = tmp_path / "commands"
+        commands_dir.mkdir()
+        (commands_dir / "fix.md").write_text(
+            "---\n"
+            "description: Custom project fix command\n"
+            "agent: worker\n"
+            "---\n"
+            "Apply a targeted fix for $1 and verify with tests\n",
+            encoding="utf-8",
+        )
+
+        registry = load_command_registry(workspace=tmp_path)
+        cmd = registry.get("fix")
+        assert cmd is not None
+        assert cmd.source == "project"
+        assert cmd.agent == "worker"
+        resolution = resolve_prompt_command("/fix the login timeout bug", registry)
+        assert resolution is not None
+        assert "targeted fix" in resolution.invocation.rendered_prompt
+        assert "verify with tests" in resolution.invocation.rendered_prompt
+
+    def test_project_override_preserves_other_builtins(self, tmp_path: Path) -> None:
+        commands_dir = tmp_path / "commands"
+        commands_dir.mkdir()
+        (commands_dir / "fix.md").write_text(
+            "---\ndescription: Custom fix\n---\nFix $ARGUMENTS\n",
+            encoding="utf-8",
+        )
+
+        registry = load_command_registry(workspace=tmp_path)
+        fix_cmd = registry.get("fix")
+        assert fix_cmd is not None
+        assert fix_cmd.source == "project"
+        for name in ("review", "explain", "plan", "test", "commit"):
+            cmd = registry.get(name)
+            assert cmd is not None, f"{name} should still be registered"
+            assert cmd.source == "builtin", (
+                f"/{name} source should still be builtin, got {cmd.source}"
+            )
+
+    def test_project_disabled_command_not_listed(self, tmp_path: Path) -> None:
+        commands_dir = tmp_path / "commands"
+        commands_dir.mkdir()
+        (commands_dir / "fix.md").write_text(
+            "---\ndescription: Disabled fix\nenabled: false\n---\nFix $ARGUMENTS\n",
+            encoding="utf-8",
+        )
+
+        registry = load_command_registry(workspace=tmp_path)
+        cmd = registry.get("fix")
+        assert cmd is not None
+        assert not cmd.enabled
+        visible = registry.list()
+        assert not any(c.name == "fix" for c in visible)
+
+    def test_nonexistent_slash_command_still_raises(self, tmp_path: Path) -> None:
+        registry = load_command_registry(workspace=tmp_path)
+        with pytest.raises(ValueError, match="unknown command"):
+            _ = resolve_prompt_command("/nonexistent target", registry)
