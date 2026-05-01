@@ -10121,6 +10121,52 @@ def test_runtime_context_pressure_uses_provider_usage_when_available(tmp_path: P
     assert cast(float, payload["pressure_ratio"]) == 0.8
 
 
+def test_runtime_context_pressure_does_not_reuse_provider_usage_pre_step(
+    tmp_path: Path,
+) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("tiny\n", encoding="utf-8")
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(
+                    ProviderTurnResult(
+                        tool_call=ToolCall("read_file", {"filePath": "sample.txt"}),
+                        usage=ProviderTokenUsage(input_tokens=75, output_tokens=5),
+                    ),
+                    ProviderTurnResult(output="done"),
+                ),
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            context_window=RuntimeContextWindowConfig(
+                model_context_window_tokens=100,
+                context_pressure_threshold=0.7,
+                context_pressure_cooldown_steps=1,
+            ),
+        ),
+        model_provider_registry=registry,
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="read sample.txt"))
+
+    provider_pressure_events = [
+        event
+        for event in response.events
+        if event.event_type == RUNTIME_CONTEXT_PRESSURE
+        and event.payload.get("token_estimate_source") == "provider_usage"
+    ]
+    assert response.session.status == "completed"
+    assert len(provider_pressure_events) == 1
+    assert provider_pressure_events[0].payload["original_tool_result_count"] == 0
+
+
 def test_runtime_context_pressure_keeps_local_fallback_when_provider_usage_is_low(
     tmp_path: Path,
 ) -> None:

@@ -575,6 +575,7 @@ class RuntimeRunLoopCoordinator:
                 session=session,
                 context_window=context_window,
                 threshold=pressure_threshold,
+                include_provider_usage=False,
             )
             if pressure_payload is not None and self._should_emit_context_pressure(
                 session=session,
@@ -855,11 +856,14 @@ class RuntimeRunLoopCoordinator:
                 session,
                 getattr(graph_step, "provider_usage", None),
             )
-            pressure_payload = self._build_context_pressure_payload(
-                session=session,
-                context_window=context_window,
-                threshold=pressure_threshold,
-            )
+            pressure_payload = None
+            if getattr(graph_step, "provider_usage", None) is not None:
+                pressure_payload = self._build_context_pressure_payload(
+                    session=session,
+                    context_window=context_window,
+                    threshold=pressure_threshold,
+                    include_provider_usage=True,
+                )
             if pressure_payload is not None and self._should_emit_context_pressure(
                 session=session,
                 pressure_ratio=cast(float, pressure_payload["pressure_ratio"]),
@@ -1456,14 +1460,18 @@ class RuntimeRunLoopCoordinator:
         session: SessionState,
         context_window: RuntimeContextWindow,
         threshold: float,
+        include_provider_usage: bool = False,
     ) -> dict[str, object] | None:
-        provider_payload = RuntimeRunLoopCoordinator._build_provider_usage_context_pressure_payload(
-            session=session,
-            context_window=context_window,
-            threshold=threshold,
-        )
-        if provider_payload is not None:
-            return provider_payload
+        if include_provider_usage:
+            provider_payload = (
+                RuntimeRunLoopCoordinator._build_provider_usage_context_pressure_payload(
+                    session=session,
+                    context_window=context_window,
+                    threshold=threshold,
+                )
+            )
+            if provider_payload is not None:
+                return provider_payload
 
         budget = context_window.token_budget
         estimated_tokens = context_window.original_tool_result_tokens
