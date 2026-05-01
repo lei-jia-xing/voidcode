@@ -293,6 +293,7 @@ class ModelProviderRegistry:
                     ),
                     auth_header=provider.config.auth_header,
                     auth_scheme=provider.config.auth_scheme,
+                    ssl_verify=provider.config.ssl_verify,
                     timeout_seconds=provider.config.timeout_seconds,
                     model_map=dict(provider.config.model_map),
                 )

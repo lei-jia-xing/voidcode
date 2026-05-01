@@ -142,8 +142,8 @@ class ContextWindowPolicy:
     reserved_output_tokens: int | None = None
     minimum_retained_tool_results: int = 1
     recent_tool_result_count: int = 1
-    recent_tool_result_tokens: int | None = None
-    default_tool_result_tokens: int | None = None
+    recent_tool_result_tokens: int | None = 3_000
+    default_tool_result_tokens: int | None = 1_500
     per_tool_result_tokens: Mapping[str, int] = field(default_factory=_empty_tool_limits)
     tokenizer_model: str | None = None
     continuity_preview_items: int = 3

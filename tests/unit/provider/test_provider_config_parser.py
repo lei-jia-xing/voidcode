@@ -151,6 +151,59 @@ def test_parse_provider_configs_payload_parses_transient_retry_for_simplified_pr
     )
 
 
+def test_parse_provider_configs_payload_parses_ssl_verify_for_simplified_provider() -> None:
+    parsed = parse_provider_configs_payload(
+        {
+            "opencode-go": {
+                "api_key": "opencode-key",
+                "ssl_verify": False,
+            }
+        },
+        source="runtime config field 'providers'",
+    )
+
+    assert parsed == ProviderConfigs(
+        opencode_go=SimplifiedProviderConfig(api_key="opencode-key", ssl_verify=False)
+    )
+
+
+def test_parse_provider_configs_payload_parses_ssl_verify_for_custom_provider() -> None:
+    parsed = parse_provider_configs_payload(
+        {
+            "custom": {
+                "team-gateway": {
+                    "base_url": "https://gateway.example.test/v1",
+                    "ssl_verify": False,
+                }
+            }
+        },
+        source="runtime config field 'providers'",
+    )
+
+    assert parsed == ProviderConfigs(
+        custom={
+            "team-gateway": LiteLLMProviderConfig(
+                base_url="https://gateway.example.test/v1",
+                ssl_verify=False,
+            )
+        }
+    )
+
+
+def test_parse_provider_configs_payload_rejects_invalid_custom_ssl_verify_type() -> None:
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"runtime config field 'providers\.custom\.team-gateway\.ssl_verify' "
+            r"must be a boolean when provided"
+        ),
+    ):
+        _ = parse_provider_configs_payload(
+            {"custom": {"team-gateway": {"ssl_verify": "false"}}},
+            source="runtime config field 'providers'",
+        )
+
+
 def test_parse_provider_configs_payload_rejects_invalid_transient_retry_delay_order() -> None:
     with pytest.raises(
         ValueError,
@@ -211,6 +264,26 @@ def test_merge_provider_configs_preserves_fallback_litellm_token_auth_scheme() -
     )
 
 
+def test_merge_provider_configs_preserves_primary_custom_ssl_verify_false() -> None:
+    primary = ProviderConfigs(custom={"team-gateway": LiteLLMProviderConfig(ssl_verify=False)})
+    fallback = ProviderConfigs(custom={"team-gateway": LiteLLMProviderConfig(ssl_verify=True)})
+
+    merged = merge_provider_configs(primary, fallback)
+
+    assert merged is not None
+    assert merged.custom["team-gateway"] == LiteLLMProviderConfig(ssl_verify=False)
+
+
+def test_merge_provider_configs_preserves_primary_simplified_ssl_verify_false() -> None:
+    primary = ProviderConfigs(opencode_go=SimplifiedProviderConfig(ssl_verify=False))
+    fallback = ProviderConfigs(opencode_go=SimplifiedProviderConfig(ssl_verify=True))
+
+    merged = merge_provider_configs(primary, fallback)
+
+    assert merged is not None
+    assert merged.opencode_go == SimplifiedProviderConfig(ssl_verify=False)
+
+
 def test_merge_provider_configs_allows_empty_anthropic_beta_headers_override() -> None:
     primary = parse_provider_configs_payload(
         {"anthropic": {"beta_headers": []}},
@@ -254,6 +327,22 @@ def test_serialize_provider_configs_preserves_explicit_empty_anthropic_beta_head
     )
 
     assert payload == {"anthropic": {"beta_headers": []}}
+
+
+def test_serialize_provider_configs_includes_custom_ssl_verify() -> None:
+    payload = serialize_provider_configs(
+        ProviderConfigs(custom={"team-gateway": LiteLLMProviderConfig(ssl_verify=False)})
+    )
+
+    assert payload == {"custom": {"team-gateway": {"auth_scheme": "bearer", "ssl_verify": False}}}
+
+
+def test_serialize_provider_configs_includes_simplified_ssl_verify() -> None:
+    payload = serialize_provider_configs(
+        ProviderConfigs(opencode_go=SimplifiedProviderConfig(ssl_verify=False))
+    )
+
+    assert payload == {"opencode-go": {"ssl_verify": False}}
 
 
 def test_parse_provider_configs_payload_rejects_invalid_openai_base_url_type() -> None:

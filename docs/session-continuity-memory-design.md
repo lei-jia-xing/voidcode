@@ -89,7 +89,7 @@ Session Continuity Memory 必须继续由 **runtime** 拥有。
 当前行为可概括为：
 
 1. 当前 runtime 的 provider context-window preparation path 会接收 prompt 与全部 tool results。
-2. 它根据 `ContextWindowPolicy.max_tool_results` 只保留最后 N 个 tool results。
+2. 它根据 `ContextWindowPolicy.max_tool_results`、总 token budget 与默认/按工具 token cap 收缩 provider-facing tool feedback。
 3. 如果发生截断，则 `RuntimeContextWindow.compacted == True`。
 4. `runtime/service.py` 在图执行前发出 `runtime.memory_refreshed`。
 

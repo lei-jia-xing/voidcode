@@ -160,9 +160,11 @@ runtime 仍统一注入工具 schema、审批与会话状态。
 
 - 使用 `providers.custom.<provider_name>` 定义任意自定义 provider（名称必须不包含 `/`）。
 - `providers.custom.<provider_name>` 不能与内置 provider 名称冲突（`openai` / `anthropic` / `google` / `copilot` / `litellm` / `opencode`）。
-- 每个自定义 provider 都复用 LiteLLM 后端调用路径，支持与 `providers.litellm` 相同的字段：
+- 对用户可见配置，给真实后端起一个明确名称放在 `providers.custom` 下；LiteLLM 只是内部兼容调用层，不作为推荐的用户配置入口。
+- 每个自定义 provider 都复用 OpenAI-compatible 后端调用路径，支持：
   - `api_key` / `api_key_env_var`
   - `base_url`
+  - `ssl_verify`（可选；仅在确需连接自签名或私有 CA HTTPS 端点时显式设为 `false`）
   - `auth_scheme` + `auth_header`
   - `model_map`
 - 在模型配置中使用 `model: "<provider_name>/<model_alias_or_raw_model>"` 即可路由到对应自定义 provider。
@@ -192,17 +194,12 @@ runtime 仍统一注入工具 schema、审批与会话状态。
 }
 ```
 
-### LiteLLM 开箱即用
+### OpenAI-compatible 后端与证书校验
 
-- 默认基地址支持 `LITELLM_BASE_URL` / `LITELLM_PROXY_URL`，未配置时回退到 `http://127.0.0.1:4000`。
-- 通过 `model: "litellm/<model>"` 可直接走 LiteLLM OpenAI-Compatible `/v1/chat/completions`。
-- 支持 `providers.litellm.auth_scheme`（`bearer` / `token` / `none`）和 `auth_header` 自定义认证头。
-- 支持 `providers.litellm.model_map` 做别名映射（例如将 `gpt-4o` 映射到 `openrouter/openai/gpt-4o`）。
-
-### `providers.litellm` vs `providers.custom`
-
-- `providers.litellm`：用于配置默认 LiteLLM 兼容后端（provider 名称固定为 `litellm`）。
-- `providers.custom`：用于定义任意自定义 provider 名称（如 `llama-local`、`openrouter-team-a`），每个条目都复用 LiteLLM-compatible 配置结构。
+- 对具名 OpenAI-compatible 后端，使用 `providers.custom.<name>`；例如本地代理、OpenRouter team gateway、内部模型网关等。
+- `ssl_verify: false` 是 HTTPS 证书校验问题的显式逃生口；优先使用 `http://` 本地代理 `base_url` 或修复 CA 信任链，只有在受控环境中才禁用校验。
+- 对内置具体 provider（例如 `opencode-go`），也可以在对应 provider block 上设置 `ssl_verify: false`。
+- 当前该字段作用于实际模型调用路径；模型列表刷新仍走独立 discovery HTTP 路径，不应依赖它绕过 discovery 证书校验。
 
 ### 可用模型列表动态刷新（端点/API 驱动）
 
@@ -210,14 +207,14 @@ runtime 仍统一注入工具 schema、审批与会话状态。
   - `voidcode provider models <provider>`：读取当前缓存
   - `voidcode provider models <provider> --refresh`：主动请求 provider `/v1/models` 刷新
 - provider-specific 端点策略（与 opencode 的 provider 分层思路对齐）：
-  - `openai` / `litellm` / 自定义 OpenAI-compatible：`<base>/v1/models`
+  - `openai` / 自定义 OpenAI-compatible：`<base>/v1/models`
   - `anthropic`：`<base>/v1/models`，并带 `anthropic-version` + `x-api-key`
   - `google`：`<base>/v1beta/models?key=...`（读取 `models[].name`）
 - 刷新结果会融合三类来源并去重：
   1. `model_map` 的别名键（便于用户直接选别名）
   2. provider 端点返回的真实模型 ID
   3. `model_map` 的映射目标值（便于调试真实路由）
-- 对于 OpenAI/LiteLLM 默认支持 endpoint 探测；自定义 provider 若配置了 `base_url` 也会走同样的 OpenAI-compatible `/v1/models` 探测路径。
+- 对于 OpenAI 默认支持 endpoint 探测；自定义 provider 若配置了 `base_url` 也会走同样的 OpenAI-compatible `/v1/models` 探测路径。
 
 ## 流式传输 (Streaming)
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sys
 from types import ModuleType
-from typing import Literal, cast
+from typing import Any, Literal, cast
 from unittest.mock import patch
 
 from voidcode.runtime.context_window import (
@@ -76,8 +76,35 @@ def test_context_window_policy_default_retains_more_tool_results_before_compacti
     )
 
     assert policy.max_tool_results == 8
+    assert policy.recent_tool_result_tokens == 3_000
+    assert policy.default_tool_result_tokens == 1_500
     assert context.compacted is False
     assert context.retained_tool_result_count == 7
+
+
+def test_prepare_provider_context_default_policy_truncates_large_tool_results() -> None:
+    large_content = "x" * 20_000
+
+    context = prepare_provider_context(
+        prompt="inspect large file",
+        tool_results=(
+            ToolResult(
+                tool_name="read_file",
+                status="ok",
+                content=large_content,
+                data={"path": "large.txt"},
+            ),
+        ),
+        session_metadata={},
+    )
+
+    (result,) = context.tool_results
+    assert result.truncated is True
+    assert result.partial is True
+    assert result.content is not None
+    assert len(result.content) < len(large_content)
+    assert context.truncated_tool_result_count == 1
+    assert context.token_budget is None
 
 
 def test_prepare_provider_context_keeps_results_within_limit() -> None:
@@ -300,7 +327,7 @@ def test_provider_context_inspector_redacts_tool_error_and_data_fields() -> None
     assert "data-secret-token" not in tool_message_content
     assert "authorization" not in tool_message_content.lower()
     assert tool_segment.metadata["error"] == "request failed with access_token=[redacted]"
-    tool_data = tool_segment.metadata["data"]
+    tool_data = cast(dict[str, object], tool_segment.metadata["data"])
     assert isinstance(tool_data, dict)
     assert "headers" in tool_data
     assert tool_data["headers"] == {}
@@ -599,7 +626,7 @@ def test_prepare_provider_context_compacts_old_results_and_reports_metadata() ->
     assert context.summary_anchor is not None
     assert context.summary_anchor.startswith("continuity:")
     assert context.summary_source == {"tool_result_start": 0, "tool_result_end": 2}
-    continuity_payload = context.metadata_payload()["continuity_state"]
+    continuity_payload = cast(dict[str, Any], context.metadata_payload()["continuity_state"])
     assert isinstance(continuity_payload, dict)
     assert continuity_payload["summary_text"] == context.continuity_state.summary_text
     assert continuity_payload["objective"] == "read sample.txt"
@@ -674,20 +701,26 @@ def test_prepare_provider_context_derives_budget_from_context_ratio() -> None:
     context = prepare_provider_context(
         prompt="read sample.txt",
         tool_results=(
-            _sized_tool_result(1, content_size=160),
-            _sized_tool_result(2, content_size=32),
+            _sized_tool_result(1, content_size=320),
+            _sized_tool_result(2, content_size=160),
         ),
         session_metadata={},
         policy=ContextWindowPolicy(
+            max_tool_result_tokens=None,
             max_context_ratio=0.1,
             model_context_window_tokens=500,
+            recent_tool_result_tokens=None,
+            default_tool_result_tokens=None,
         ),
     )
 
-    assert tuple(result.data["index"] for result in context.tool_results) == (2,)
     assert context.token_budget == 50
     assert context.retained_tool_result_tokens is not None
-    assert context.retained_tool_result_tokens <= 50
+    assert context.compacted is True
+    assert context.original_tool_result_count == 2
+    assert context.retained_tool_result_count >= 1
+    assert context.dropped_tool_result_tokens is not None
+    assert context.dropped_tool_result_tokens > 0
 
 
 def test_prepare_provider_context_enforces_count_cap_with_token_budget() -> None:
@@ -765,7 +798,12 @@ def test_prepare_provider_context_keeps_count_policy_when_budget_missing() -> No
         prompt="read sample.txt",
         tool_results=(_tool_result(1), _tool_result(2), _tool_result(3)),
         session_metadata={},
-        policy=ContextWindowPolicy(max_tool_results=2),
+        policy=ContextWindowPolicy(
+            max_tool_results=2,
+            max_tool_result_tokens=None,
+            recent_tool_result_tokens=None,
+            default_tool_result_tokens=None,
+        ),
     )
 
     assert tuple(result.data["index"] for result in context.tool_results) == (2, 3)
@@ -797,20 +835,25 @@ def test_prepare_provider_context_honors_reserved_output_budget() -> None:
     context = prepare_provider_context(
         prompt="read sample.txt",
         tool_results=(
-            _sized_tool_result(1, content_size=240),
-            _sized_tool_result(2, content_size=20),
+            _sized_tool_result(1, content_size=480),
+            _sized_tool_result(2, content_size=200),
         ),
         session_metadata={},
         policy=ContextWindowPolicy(
+            max_tool_result_tokens=None,
             model_context_window_tokens=120,
             reserved_output_tokens=40,
+            recent_tool_result_tokens=None,
+            default_tool_result_tokens=None,
         ),
     )
 
-    assert tuple(result.data["index"] for result in context.tool_results) == (2,)
     assert context.token_budget == 80
     assert context.reserved_output_tokens == 40
     assert context.metadata_payload()["reserved_output_tokens"] == 40
+    assert context.compacted is True
+    assert context.original_tool_result_count == 2
+    assert context.retained_tool_result_count >= 1
 
 
 def test_prepare_provider_context_truncates_old_tool_outputs_by_tool_policy() -> None:

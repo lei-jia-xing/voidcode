@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -36,6 +37,7 @@ from voidcode.provider.protocol import (
     ProviderStreamEvent,
     ProviderTokenUsage,
     ProviderTurnRequest,
+    ProviderTurnResult,
     StreamableTurnProvider,
     TurnProvider,
 )
@@ -2421,6 +2423,194 @@ def test_glm_provider_does_not_append_v1_to_base_url(monkeypatch: pytest.MonkeyP
     assert isinstance(payload_obj, dict)
     payload = cast(dict[str, object], payload_obj)
     assert payload["api_base"] == "https://open.bigmodel.cn/api/paas/v4"
+
+
+def test_litellm_backend_propose_turn_forwards_ssl_verify(monkeypatch: pytest.MonkeyPatch) -> None:
+    import voidcode.provider.litellm_backend as backend_module
+
+    provider = LiteLLMBackendSingleAgentProvider(
+        name="litellm",
+        config=LiteLLMProviderConfig(
+            api_key="litellm-key",
+            base_url="https://litellm.local",
+            ssl_verify=False,
+        ),
+    )
+
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        completion_content="ok",
+    )
+    monkeypatch.setattr(backend_module.litellm_module, "ssl_verify", True, raising=False)
+
+    original_completion = backend_module.litellm_module.completion
+
+    def _completion_with_ssl_capture(*args: object, **kwargs: object) -> object:
+        _LAST_REQUEST_PAYLOAD["ssl_verify_during_call"] = backend_module.litellm_module.ssl_verify
+        return original_completion(*args, **kwargs)
+
+    monkeypatch.setattr(backend_module.litellm_module, "completion", _completion_with_ssl_capture)
+
+    result = provider.propose_turn(_build_turn_request(model_name="litellm"))
+
+    assert result.output == "ok"
+    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+    assert isinstance(payload_obj, dict)
+    payload = cast(dict[str, object], payload_obj)
+    assert "ssl_verify" not in payload
+    assert _LAST_REQUEST_PAYLOAD["ssl_verify_during_call"] is False
+    assert backend_module.litellm_module.ssl_verify is True
+
+
+def test_litellm_backend_omits_ssl_verify_when_not_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = LiteLLMBackendSingleAgentProvider(
+        name="custom-gateway",
+        config=LiteLLMProviderConfig(
+            api_key="gateway-key",
+            base_url="https://gateway.example.test",
+        ),
+    )
+
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        completion_content="ok",
+    )
+
+    result = provider.propose_turn(_build_turn_request(model_name="custom-gateway"))
+
+    assert result.output == "ok"
+    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+    assert isinstance(payload_obj, dict)
+    payload = cast(dict[str, object], payload_obj)
+    assert "ssl_verify" not in payload
+
+
+def test_litellm_backend_serializes_default_ssl_verify_with_global_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import voidcode.provider.litellm_backend as backend_module
+
+    explicit_provider = LiteLLMBackendSingleAgentProvider(
+        name="explicit-gateway",
+        config=LiteLLMProviderConfig(
+            api_key="explicit-key",
+            base_url="https://explicit.example.test",
+            ssl_verify=False,
+        ),
+    )
+    default_provider = LiteLLMBackendSingleAgentProvider(
+        name="default-gateway",
+        config=LiteLLMProviderConfig(
+            api_key="default-key",
+            base_url="https://default.example.test",
+        ),
+    )
+    entered_explicit_call = threading.Event()
+    release_explicit_call = threading.Event()
+    explicit_done = threading.Event()
+    observations: list[tuple[str, object]] = []
+    thread_errors: list[BaseException] = []
+
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        completion_content="ok",
+    )
+    monkeypatch.setattr(backend_module.litellm_module, "ssl_verify", True, raising=False)
+
+    def _blocking_completion(*args: object, **kwargs: object) -> object:
+        _ = args, kwargs
+        api_base = kwargs.get("api_base")
+        if api_base == "https://explicit.example.test/v1":
+            observations.append(("explicit", backend_module.litellm_module.ssl_verify))
+            entered_explicit_call.set()
+            assert release_explicit_call.wait(timeout=2)
+        else:
+            observations.append(("default", backend_module.litellm_module.ssl_verify))
+            explicit_done.set()
+        return _StubCompletionResponse(content="ok")
+
+    monkeypatch.setattr(backend_module.litellm_module, "completion", _blocking_completion)
+
+    def _run_explicit_provider() -> None:
+        try:
+            result = explicit_provider.propose_turn(
+                _build_turn_request(model_name="explicit-gateway")
+            )
+            assert result.output == "ok"
+        except BaseException as exc:  # pragma: no cover - re-raised in main test thread
+            thread_errors.append(exc)
+            raise
+
+    explicit_thread = threading.Thread(target=_run_explicit_provider)
+    explicit_thread.start()
+    assert entered_explicit_call.wait(timeout=2)
+
+    default_result_holder: dict[str, object] = {}
+
+    def _run_default_provider() -> None:
+        try:
+            default_result_holder["result"] = default_provider.propose_turn(
+                _build_turn_request(model_name="default-gateway")
+            )
+        except BaseException as exc:  # pragma: no cover - re-raised in main test thread
+            thread_errors.append(exc)
+            raise
+
+    default_thread = threading.Thread(target=_run_default_provider)
+    default_thread.start()
+    assert not explicit_done.wait(timeout=0.05)
+    release_explicit_call.set()
+    explicit_thread.join(timeout=2)
+    default_thread.join(timeout=2)
+
+    assert thread_errors == []
+    default_result = cast(ProviderTurnResult, default_result_holder["result"])
+    assert default_result.output == "ok"
+    assert observations == [("explicit", False), ("default", True)]
+    assert backend_module.litellm_module.ssl_verify is True
+
+
+def test_litellm_backend_stream_turn_forwards_ssl_verify(monkeypatch: pytest.MonkeyPatch) -> None:
+    import voidcode.provider.litellm_backend as backend_module
+
+    provider = LiteLLMBackendSingleAgentProvider(
+        name="litellm",
+        config=LiteLLMProviderConfig(
+            api_key="litellm-key",
+            base_url="https://litellm.local",
+            ssl_verify=False,
+        ),
+    )
+
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="stream",
+        stream_chunks=(("ok", "stop"),),
+    )
+    monkeypatch.setattr(backend_module.litellm_module, "ssl_verify", True, raising=False)
+
+    original_completion = backend_module.litellm_module.completion
+
+    def _completion_with_ssl_capture(*args: object, **kwargs: object) -> object:
+        _LAST_REQUEST_PAYLOAD["ssl_verify_during_call"] = backend_module.litellm_module.ssl_verify
+        return original_completion(*args, **kwargs)
+
+    monkeypatch.setattr(backend_module.litellm_module, "completion", _completion_with_ssl_capture)
+
+    events = list(provider.stream_turn(_build_turn_request(model_name="litellm")))
+
+    assert events[-1].kind == "done"
+    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+    assert isinstance(payload_obj, dict)
+    payload = cast(dict[str, object], payload_obj)
+    assert "ssl_verify" not in payload
+    assert _LAST_REQUEST_PAYLOAD["ssl_verify_during_call"] is False
+    assert backend_module.litellm_module.ssl_verify is True
 
 
 def test_provider_adapter_propose_turn_returns_tool_call_when_model_requests_tool(

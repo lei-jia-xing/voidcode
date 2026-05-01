@@ -4,7 +4,9 @@ import json
 import logging
 import re
 from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, field
+from threading import Lock
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 if TYPE_CHECKING:
@@ -49,6 +51,7 @@ _SYNTHETIC_TOOL_FEEDBACK_PREFIX = "Completed tool calls for current request:"
 _CONTINUITY_SUMMARY_PREFIX = "Runtime continuity summary:"
 
 logger = logging.getLogger(__name__)
+_LITELLM_SSL_VERIFY_LOCK = Lock()
 
 
 def _usage_int(raw: object) -> int:
@@ -503,6 +506,23 @@ class LiteLLMBackendSingleAgentProvider:
             return {"extra_headers": {self.config.auth_header: f"Bearer {self.config.api_key}"}}
         return {"api_key": self.config.api_key}
 
+    @contextmanager
+    def _litellm_ssl_verify_context(self) -> Iterator[None]:
+        if litellm_module is None:
+            yield
+            return
+        with _LITELLM_SSL_VERIFY_LOCK:
+            module_any = cast(Any, litellm_module)
+            previous = getattr(module_any, "ssl_verify", True)
+            configured_ssl_verify = self.config.ssl_verify if self.config is not None else None
+            if configured_ssl_verify is not None:
+                module_any.ssl_verify = configured_ssl_verify
+            try:
+                yield
+            finally:
+                if configured_ssl_verify is not None:
+                    module_any.ssl_verify = previous
+
     @staticmethod
     def _extract_first_tool_call(message: dict[str, object]) -> ToolCall | None:
         raw_tool_calls = message.get("tool_calls")
@@ -606,7 +626,8 @@ class LiteLLMBackendSingleAgentProvider:
             payload["tool_choice"] = "auto"
 
         try:
-            response = self._call_litellm_completion(cast(dict[str, Any], payload))
+            with self._litellm_ssl_verify_context():
+                response = self._call_litellm_completion(cast(dict[str, Any], payload))
             response_payload = cast(dict[str, object], response.model_dump())
             usage = _extract_token_usage(response_payload)
             raw_choices = response_payload.get("choices")
@@ -660,98 +681,99 @@ class LiteLLMBackendSingleAgentProvider:
             payload["tool_choice"] = "auto"
 
         try:
-            stream = cast(
-                Iterator[Any], self._call_litellm_completion(cast(dict[str, Any], payload))
-            )
-            streamed_tool_calls: dict[int, _StreamedToolCallAccumulator] = {}
-            latest_usage: ProviderTokenUsage | None = None
-            for chunk in stream:
-                if request.abort_signal is not None and request.abort_signal.cancelled:
-                    yield ProviderStreamEvent(
-                        kind="error",
-                        channel="error",
-                        error="provider stream cancelled",
-                        error_kind="cancelled",
-                    )
-                    yield ProviderStreamEvent(kind="done", done_reason="cancelled")
-                    return
-                chunk_payload = cast(dict[str, object], chunk.model_dump())
-                latest_usage = _extract_token_usage(chunk_payload) or latest_usage
-                raw_choices = chunk_payload.get("choices")
-                if not isinstance(raw_choices, list) or not raw_choices:
-                    continue
-                choices = cast(list[object], raw_choices)
-                first_choice_obj = choices[0]
-                if not isinstance(first_choice_obj, dict):
-                    continue
-                first_choice = cast(dict[str, object], first_choice_obj)
-                delta_obj = first_choice.get("delta")
-                if isinstance(delta_obj, dict):
-                    delta = cast(dict[str, object], delta_obj)
-                    reasoning_obj = delta.get("reasoning_content") or delta.get("reasoning")
-                    if isinstance(reasoning_obj, str) and reasoning_obj:
+            with self._litellm_ssl_verify_context():
+                stream = cast(
+                    Iterator[Any], self._call_litellm_completion(cast(dict[str, Any], payload))
+                )
+                streamed_tool_calls: dict[int, _StreamedToolCallAccumulator] = {}
+                latest_usage: ProviderTokenUsage | None = None
+                for chunk in stream:
+                    if request.abort_signal is not None and request.abort_signal.cancelled:
                         yield ProviderStreamEvent(
-                            kind="delta",
-                            channel="reasoning",
-                            text=reasoning_obj,
-                            metadata={"source": "delta.reasoning"},
+                            kind="error",
+                            channel="error",
+                            error="provider stream cancelled",
+                            error_kind="cancelled",
                         )
-                    raw_thinking_blocks = delta.get("thinking_blocks")
-                    if isinstance(raw_thinking_blocks, list):
-                        thinking_blocks = cast(list[object], raw_thinking_blocks)
-                        for block_obj in thinking_blocks:
-                            if not isinstance(block_obj, dict):
-                                continue
-                            block = cast(dict[str, object], block_obj)
-                            if block.get("type") != "thinking":
-                                continue
-                            thinking_text = block.get("thinking")
-                            if isinstance(thinking_text, str) and thinking_text:
-                                yield ProviderStreamEvent(
-                                    kind="delta",
-                                    channel="reasoning",
-                                    text=thinking_text,
-                                    metadata={"source": "delta.thinking_blocks"},
+                        yield ProviderStreamEvent(kind="done", done_reason="cancelled")
+                        return
+                    chunk_payload = cast(dict[str, object], chunk.model_dump())
+                    latest_usage = _extract_token_usage(chunk_payload) or latest_usage
+                    raw_choices = chunk_payload.get("choices")
+                    if not isinstance(raw_choices, list) or not raw_choices:
+                        continue
+                    choices = cast(list[object], raw_choices)
+                    first_choice_obj = choices[0]
+                    if not isinstance(first_choice_obj, dict):
+                        continue
+                    first_choice = cast(dict[str, object], first_choice_obj)
+                    delta_obj = first_choice.get("delta")
+                    if isinstance(delta_obj, dict):
+                        delta = cast(dict[str, object], delta_obj)
+                        reasoning_obj = delta.get("reasoning_content") or delta.get("reasoning")
+                        if isinstance(reasoning_obj, str) and reasoning_obj:
+                            yield ProviderStreamEvent(
+                                kind="delta",
+                                channel="reasoning",
+                                text=reasoning_obj,
+                                metadata={"source": "delta.reasoning"},
+                            )
+                        raw_thinking_blocks = delta.get("thinking_blocks")
+                        if isinstance(raw_thinking_blocks, list):
+                            thinking_blocks = cast(list[object], raw_thinking_blocks)
+                            for block_obj in thinking_blocks:
+                                if not isinstance(block_obj, dict):
+                                    continue
+                                block = cast(dict[str, object], block_obj)
+                                if block.get("type") != "thinking":
+                                    continue
+                                thinking_text = block.get("thinking")
+                                if isinstance(thinking_text, str) and thinking_text:
+                                    yield ProviderStreamEvent(
+                                        kind="delta",
+                                        channel="reasoning",
+                                        text=thinking_text,
+                                        metadata={"source": "delta.thinking_blocks"},
+                                    )
+                        text_obj = delta.get("content")
+                        if isinstance(text_obj, str) and text_obj:
+                            yield ProviderStreamEvent(kind="delta", channel="text", text=text_obj)
+                        raw_tool_calls = delta.get("tool_calls")
+                        if isinstance(raw_tool_calls, list):
+                            tool_calls = cast(list[object], raw_tool_calls)
+                            for tool_call_obj in tool_calls:
+                                if not isinstance(tool_call_obj, dict):
+                                    continue
+                                tool_call = cast(dict[str, object], tool_call_obj)
+                                index_obj = tool_call.get("index")
+                                index = index_obj if isinstance(index_obj, int) else 0
+                                accumulator = streamed_tool_calls.get(
+                                    index,
+                                    _StreamedToolCallAccumulator(),
                                 )
-                    text_obj = delta.get("content")
-                    if isinstance(text_obj, str) and text_obj:
-                        yield ProviderStreamEvent(kind="delta", channel="text", text=text_obj)
-                    raw_tool_calls = delta.get("tool_calls")
-                    if isinstance(raw_tool_calls, list):
-                        tool_calls = cast(list[object], raw_tool_calls)
-                        for tool_call_obj in tool_calls:
-                            if not isinstance(tool_call_obj, dict):
-                                continue
-                            tool_call = cast(dict[str, object], tool_call_obj)
-                            index_obj = tool_call.get("index")
-                            index = index_obj if isinstance(index_obj, int) else 0
-                            accumulator = streamed_tool_calls.get(
-                                index,
-                                _StreamedToolCallAccumulator(),
-                            )
-                            tool_call_id_obj = tool_call.get("id")
-                            tool_call_id = accumulator.tool_call_id
-                            if isinstance(tool_call_id_obj, str) and tool_call_id_obj:
-                                tool_call_id = tool_call_id_obj
-                            function_obj = tool_call.get("function")
-                            tool_name = accumulator.tool_name
-                            arguments = accumulator.arguments
-                            if isinstance(function_obj, dict):
-                                function = cast(dict[str, object], function_obj)
-                                name_obj = function.get("name")
-                                if isinstance(name_obj, str) and name_obj:
-                                    tool_name = name_obj
-                                arguments_obj = function.get("arguments")
-                                if isinstance(arguments_obj, str) and arguments_obj:
-                                    arguments += arguments_obj
-                            streamed_tool_calls[index] = _StreamedToolCallAccumulator(
-                                tool_call_id=tool_call_id,
-                                tool_name=tool_name,
-                                arguments=arguments,
-                            )
-                finish_reason = first_choice.get("finish_reason")
-                if isinstance(finish_reason, str) and finish_reason:
-                    continue
+                                tool_call_id_obj = tool_call.get("id")
+                                tool_call_id = accumulator.tool_call_id
+                                if isinstance(tool_call_id_obj, str) and tool_call_id_obj:
+                                    tool_call_id = tool_call_id_obj
+                                function_obj = tool_call.get("function")
+                                tool_name = accumulator.tool_name
+                                arguments = accumulator.arguments
+                                if isinstance(function_obj, dict):
+                                    function = cast(dict[str, object], function_obj)
+                                    name_obj = function.get("name")
+                                    if isinstance(name_obj, str) and name_obj:
+                                        tool_name = name_obj
+                                    arguments_obj = function.get("arguments")
+                                    if isinstance(arguments_obj, str) and arguments_obj:
+                                        arguments += arguments_obj
+                                streamed_tool_calls[index] = _StreamedToolCallAccumulator(
+                                    tool_call_id=tool_call_id,
+                                    tool_name=tool_name,
+                                    arguments=arguments,
+                                )
+                    finish_reason = first_choice.get("finish_reason")
+                    if isinstance(finish_reason, str) and finish_reason:
+                        continue
         except Exception as exc:
             raise self._map_exception(
                 exc,
