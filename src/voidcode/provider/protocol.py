@@ -5,7 +5,6 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Literal, Protocol, cast, runtime_checkable
 
-from ..command.resolver import resolve_tool_instruction
 from ..runtime.context_window import normalize_read_file_output
 from ..tools.contracts import ToolCall, ToolDefinition, ToolResult
 from .model_catalog import ProviderModelMetadata
@@ -349,6 +348,8 @@ class StubTurnProvider:
                 raise ValueError("request must contain at least one actionable command")
             last_result = assembled_context.tool_results[-1]
             return ProviderTurnResult(output=_normalize_tool_output(last_result.content))
+
+        from ..command.resolver import resolve_tool_instruction  # lazy to avoid circular import
 
         resolution = resolve_tool_instruction(
             commands[step_index],

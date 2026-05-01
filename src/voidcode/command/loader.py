@@ -8,18 +8,75 @@ from .registry import CommandRegistry
 
 _BUILTIN_COMMANDS: tuple[CommandDefinition, ...] = (
     CommandDefinition(
-        name="help",
-        description="Explain the available VoidCode command surfaces and how to use them.",
+        name="commit",
+        description="Analyze staged changes and generate a Conventional Commits message.",
         template=(
-            "Explain the available VoidCode prompt commands, runtime tools, and TUI commands. "
-            "Include any user-provided focus: $ARGUMENTS"
+            "Workflow: inspect current git status and diff, then draft a focused Conventional "
+            "Commits message using the repository's style. Arguments are optional context for "
+            "the intended commit: $ARGUMENTS. Read-only by default: do not create commits, "
+            "amend history, or push unless explicitly instructed. Verification: if there are "
+            "no staged or unstaged changes, report that clearly instead of inventing a message."
         ),
         source="builtin",
     ),
     CommandDefinition(
+        name="explain",
+        description="Explain code, concepts, architecture, or errors with clarity.",
+        template=(
+            "Workflow: read the requested target, error, stack trace, or behavior and explain it "
+            "with concrete examples where helpful. Arguments identify the target to explain: "
+            "$ARGUMENTS. Read-only by default: do not modify any files or run destructive "
+            "commands. Verification: if the target cannot be found or read, say so clearly "
+            "and do not hallucinate file contents."
+        ),
+        source="builtin",
+    ),
+    CommandDefinition(
+        name="fix",
+        description="Fix a code issue or bug with a concrete, verifiable patch.",
+        template=(
+            "Workflow: locate the root cause, make the smallest safe code change, and verify "
+            "the fix. Arguments describe the concrete problem to diagnose: $ARGUMENTS. "
+            "Execution mode: editing is allowed when needed, but preserve runtime/tool/approval "
+            "governance. Verification: run targeted tests, lint, or type checks that cover the "
+            "fix; if verification still fails, report the remaining failure clearly."
+        ),
+        source="builtin",
+    ),
+    CommandDefinition(
+        name="plan",
+        description="Create an implementation plan before writing code.",
+        template=(
+            "Workflow: produce an implementation plan, acceptance criteria, risks, and a "
+            "verification strategy for the requested goal. Arguments describe the planning "
+            "target: $ARGUMENTS. Target agent: product. Read-only by default: do not write "
+            "code or modify files unless explicitly instructed after the plan is accepted."
+        ),
+        source="builtin",
+        agent="product",
+    ),
+    CommandDefinition(
         name="review",
         description="Review the requested code or change set.",
-        template="Review the following target and report findings with severity: $ARGUMENTS",
+        template=(
+            "Workflow: review the requested file, directory, diff, PR, or current changes and "
+            "report findings by severity with actionable fixes. Arguments identify the review "
+            "target; if empty, review the current working tree changes: $ARGUMENTS. Read-only "
+            "by default: do not modify files. Verification: if the target is empty, missing, "
+            "or unreadable, explain that instead of producing a generic review."
+        ),
+        source="builtin",
+    ),
+    CommandDefinition(
+        name="test",
+        description="Generate and/or run tests with verification guidance.",
+        template=(
+            "Workflow: add focused tests, run relevant tests, or explain test failures for the "
+            "requested target. Arguments identify the code or behavior under test: $ARGUMENTS. "
+            "Execution mode: editing test files is allowed when adding coverage, but do not "
+            "delete or weaken existing tests. Verification: prefer targeted test commands before "
+            "broad suites; if no test framework is detected, explain the setup steps."
+        ),
         source="builtin",
     ),
 )
