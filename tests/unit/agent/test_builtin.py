@@ -113,6 +113,21 @@ def test_builtin_agent_manifests_have_materialized_prompt_profiles_and_execution
         assert prompt
 
 
+def test_builtin_agent_prompt_materialization_versions_match_prompt_contracts() -> None:
+    expected_versions = {
+        "leader": 2,
+        "worker": 2,
+        "advisor": 2,
+        "explore": 2,
+        "researcher": 2,
+        "product": 2,
+    }
+
+    for manifest in list_builtin_agent_manifests():
+        assert manifest.prompt_materialization is not None
+        assert manifest.prompt_materialization.version == expected_versions[manifest.id]
+
+
 def test_builtin_agent_manifests_declare_top_level_selectability() -> None:
     manifests = list_builtin_agent_manifests()
 
