@@ -19,6 +19,7 @@ from unittest.mock import Mock
 import pytest
 
 import voidcode.runtime.background_tasks as runtime_background_tasks_module
+import voidcode.runtime.run_loop as runtime_run_loop_module
 import voidcode.runtime.service as runtime_service_module
 from voidcode.acp import AcpRequestEnvelope, AcpResponseEnvelope
 from voidcode.agent import LEADER_AGENT_MANIFEST, get_builtin_agent_manifest, render_agent_prompt
@@ -74,6 +75,7 @@ from voidcode.runtime.events import (
     RUNTIME_MCP_SERVER_STARTED,
     RUNTIME_MCP_SERVER_STOPPED,
     RUNTIME_MEMORY_REFRESHED,
+    RUNTIME_PROVIDER_TRANSIENT_RETRY,
     RUNTIME_SESSION_ENDED,
     RUNTIME_SESSION_IDLE,
     RUNTIME_SESSION_STARTED,
@@ -903,6 +905,40 @@ class _RateLimitOnceTurnProvider:
                 message="rate limited once",
             )
         return ProviderTurnResult(output="primary recovered")
+
+
+class _TwoEpisodeTransientModelProvider:
+    def __init__(self, *, name: str) -> None:
+        self.name = name
+        self.calls = 0
+
+    def turn_provider(self) -> _TwoEpisodeTransientTurnProvider:
+        return _TwoEpisodeTransientTurnProvider(model_provider=self)
+
+
+@dataclass(slots=True)
+class _TwoEpisodeTransientTurnProvider:
+    model_provider: _TwoEpisodeTransientModelProvider
+
+    @property
+    def name(self) -> str:
+        return self.model_provider.name
+
+    def propose_turn(self, request: object) -> ProviderTurnResult:
+        turn_request = cast(ProviderTurnRequest, request)
+        self.model_provider.calls += 1
+        if self.model_provider.calls in {1, 3}:
+            raise ProviderExecutionError(
+                kind="transient_failure",
+                provider_name=self.name,
+                model_name=turn_request.model_name or "gpt-5.4",
+                message=f"transient failure episode {self.model_provider.calls}",
+            )
+        if not turn_request.tool_results:
+            return ProviderTurnResult(
+                tool_call=ToolCall(tool_name="read_file", arguments={"filePath": "sample.txt"})
+            )
+        return ProviderTurnResult(output="recovered twice")
 
 
 class _UnexpectedFallbackModelProvider:
@@ -13692,6 +13728,57 @@ def test_runtime_provider_retry_uses_persisted_session_provider_config(
     )
 
     assert retry_config.max_retries == 0
+
+
+def test_runtime_provider_retry_attempt_resets_after_successful_provider_call(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / "sample.txt").write_text("sample contents", encoding="utf-8")
+    primary = _TwoEpisodeTransientModelProvider(name="opencode")
+    fallback = _UnexpectedFallbackModelProvider(name="custom")
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            provider_fallback=RuntimeProviderFallbackConfig(
+                preferred_model="opencode/gpt-5.4",
+                fallback_models=("custom/demo",),
+            ),
+            providers=RuntimeProvidersConfig(
+                opencode=LiteLLMProviderConfig(
+                    transient_retry=ProviderTransientRetryConfig(max_retries=1)
+                )
+            ),
+        ),
+        model_provider_registry=ModelProviderRegistry(
+            providers={"opencode": primary, "custom": fallback}
+        ),
+    )
+
+    monkeypatch.setattr(
+        runtime_run_loop_module,
+        "_provider_transient_retry_delay_ms",
+        lambda *, retry_attempt, base_delay_ms, max_delay_ms, jitter: 0,
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="retry fresh episodes"))
+
+    retry_events = [
+        event for event in response.events if event.event_type == RUNTIME_PROVIDER_TRANSIENT_RETRY
+    ]
+    fallback_events = [
+        event for event in response.events if event.event_type == "runtime.provider_fallback"
+    ]
+
+    assert response.session.status == "completed"
+    assert response.output == "recovered twice"
+    assert primary.calls == 4
+    assert fallback.calls == 0
+    assert [event.payload["retry_attempt"] for event in retry_events] == [1, 1]
+    assert fallback_events == []
+    assert response.session.metadata["provider_retry_attempt"] == 0
 
 
 def test_runtime_provider_stream_json_error_payload_maps_to_context_limit_without_fallback(

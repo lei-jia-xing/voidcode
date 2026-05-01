@@ -925,6 +925,7 @@ class RuntimeRunLoopCoordinator:
                     tool_results=tuple(tool_results),
                     session=session,
                 )
+                provider_retry_attempt = 0
             except Exception as exc:
                 current_provider_attempt = runtime._provider_attempt_from_metadata(
                     {"provider_attempt": provider_attempt}
@@ -1226,6 +1227,13 @@ class RuntimeRunLoopCoordinator:
                 session,
                 getattr(graph_step, "provider_usage", None),
             )
+            if runtime._provider_retry_attempt_from_metadata(session.metadata) != 0:
+                session = SessionState(
+                    session=session.session,
+                    status=session.status,
+                    turn=session.turn,
+                    metadata={**session.metadata, "provider_retry_attempt": 0},
+                )
             pressure_payload = None
             if getattr(graph_step, "provider_usage", None) is not None:
                 pressure_payload = self._build_context_pressure_payload(
