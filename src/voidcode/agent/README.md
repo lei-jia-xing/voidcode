@@ -62,7 +62,7 @@
 - `explore`：delegated local-code exploration preset；可进入 child execution，但不作为任意顶层 active agent 直接运行
 - `researcher`：delegated external research preset；可进入 child execution，但不作为任意顶层 active agent 直接运行
 
-当前 builtin preset 都有 agent-owned prompt profile；active / delegated agent 的 manifest allowlist 会收窄 provider 可见的 `available_tools`，并且同一边界也会约束实际 tool lookup / invocation。builtin `prompt_profile` 由 `src/voidcode/agent/` 统一 materialize 后进入 provider system message，`model_preference` / `execution_engine` 会作为 manifest live defaults 被 runtime 解析，manifest `skill_refs` 会作为默认 skill selection 进入 runtime skill application，`agent.skills` 会覆盖本次运行使用的 runtime-managed skill discovery / application policy。
+当前 builtin preset 都有 agent-owned prompt profile；active / delegated agent 的 manifest allowlist 会收窄 provider 可见的 `available_tools`，并且同一边界也会约束实际 tool lookup / invocation。builtin `prompt_profile` 由 `src/voidcode/agent/` 统一 materialize 后进入 provider system message，`model_preference` / `execution_engine` 会作为 manifest live defaults 被 runtime 解析，manifest `skill_refs` 会作为默认 skill selection 进入 runtime skill application，agent manifest 的 `preset_hook_refs` 必须引用 `src/voidcode/hook/presets.py` 中的 builtin hook preset catalog，`agent.skills` 会覆盖本次运行使用的 runtime-managed skill discovery / application policy。
 
 `prompt_materialization` 是 prompt 审计元数据：它声明 builtin prompt profile、materialization version、source/format，以及可选的 `model_family_overrides`。当前 builtin agents 仍共享各自默认 profile，但这个结构允许后续在不改变执行拓扑的前提下，为特定模型族选择不同 profile。profile 选择规则属于 agent declaration 层；最终 provider system message 的组装仍由 runtime/provider 路径负责。
 
@@ -76,12 +76,12 @@
 
 当前 agent manifest 内部也区分了两类语义：
 
-- **live defaults**：`prompt_profile`、`prompt_materialization`、`top_level_selectable`、`execution_engine`、`model_preference`、`tool_allowlist`、`skill_refs`。这些字段要么已经被 runtime 直接消费，要么作为 active agent 的默认值进入 runtime config truth。`top_level_selectable` 是 declaration，runtime enforcement 仍由 `_EXECUTABLE_AGENT_PRESETS` 持有；`prompt_materialization` 是 declaration，runtime/provider materialization 仍使用 agent 层导出的 prompt rendering helper。
+- **live defaults**：`prompt_profile`、`prompt_materialization`、`top_level_selectable`、`execution_engine`、`model_preference`、`tool_allowlist`、`skill_refs`、`preset_hook_refs`。这些字段要么已经被 runtime 直接消费，要么作为 active agent 的默认值进入 runtime config truth。`top_level_selectable` 是 declaration，runtime enforcement 仍由 `_EXECUTABLE_AGENT_PRESETS` 持有；`prompt_materialization` 是 declaration，runtime/provider materialization 仍使用 agent 层导出的 prompt rendering helper；`preset_hook_refs` 是对 hook preset catalog 的声明式引用，不是 lifecycle hook command。
 - **intent metadata**：`routing_hints`。它仍属于声明层元数据，不是 runtime execution governance truth。
 
 最终的执行真相仍然由 `voidcode.runtime` 持有。
 
-这也意味着：本目录中出现的“建议 hooks / 建议能力”只是在描述 preset intent，不代表 runtime 会把治理权让渡给 agent 层。当前现实里，background task、child-session、notification、result retrieval、tool enforcement、approval 与持久化仍全部由 runtime 持有。
+这也意味着：本目录中出现的“建议 hooks / 建议能力”只是在描述 preset intent，不代表 runtime 会把治理权让渡给 agent 层。当前现实里，background task、child-session、notification、result retrieval、tool enforcement、approval 与持久化仍全部由 runtime 持有。hook preset catalog 只为这些 intent 提供可校验名称与 guidance 元数据；真正何时注入或执行仍属于 runtime。
 
 从 OMO/OMOA 的经验看，更值得借鉴的是以下结构判断，而不是直接照搬执行语义：
 
@@ -95,4 +95,5 @@
 
 - [`docs/agent-architecture.md`](../../../docs/agent-architecture.md)
 - [`docs/agent-boundary.md`](../../../docs/agent-boundary.md)
+- [`docs/contracts/agent-hook-presets.md`](../../../docs/contracts/agent-hook-presets.md)
 - [`docs/architecture.md`](../../../docs/architecture.md)

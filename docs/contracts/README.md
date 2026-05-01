@@ -30,6 +30,7 @@
 - [`approval-flow.md`](./approval-flow.md) — 受控执行与审批语义
 - [`agent-tool-calling.md`](./agent-tool-calling.md) — 面向 agent 的工具调用、参数、返回、审批与选择指南
 - [`agent-tool-enforcement.md`](./agent-tool-enforcement.md) — agent preset 中 tool allowlist/default tool set 如何进入 runtime enforcement
+- [`agent-hook-presets.md`](./agent-hook-presets.md) — agent preset hook refs 如何通过 builtin hook preset catalog 校验与表达角色 intent
 - [`runtime-config.md`](./runtime-config.md) — MVP 配置界面及优先级
 - [`runtime-lifecycle-hooks.md`](./runtime-lifecycle-hooks.md) — richer lifecycle hook phases 的 runtime-owned 执行契约
 - [`background-task-delegation.md`](./background-task-delegation.md) — delegated/background task parent/child linkage、结果读取、retry/cancel 与 fake-provider/fake-MCP 验证立场
@@ -48,6 +49,7 @@
 - #169 runtime enforcement of agent tool allowlists/default tool sets
 - #170 richer runtime lifecycle hook execution
 - #289 delegated child execution E2E baseline
+- #379 builtin hook preset catalog
 
 ## 相关代码
 
@@ -55,6 +57,7 @@
 - `src/voidcode/runtime/events.py`
 - `src/voidcode/runtime/session.py`
 - `src/voidcode/runtime/service.py`
+- `src/voidcode/hook/presets.py`
 - `src/voidcode/graph/contracts.py`
 - `src/voidcode/tools/contracts.py`
 - `src/voidcode/cli.py`

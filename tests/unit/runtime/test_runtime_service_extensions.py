@@ -48,7 +48,6 @@ from voidcode.runtime.config import (
     RuntimeCategoryConfig,
     RuntimeConfig,
     RuntimeContextWindowConfig,
-    RuntimeFormatterPresetConfig,
     RuntimeHooksConfig,
     RuntimeLspConfig,
     RuntimeLspServerConfig,
@@ -3089,7 +3088,7 @@ def test_runtime_missing_delegated_force_loaded_skill_fails_without_child_result
     assert runtime.list_sessions() == ()
 
 
-def test_runtime_constructs_with_custom_agent_hook_refs(tmp_path: Path) -> None:
+def test_runtime_constructs_with_builtin_agent_hook_refs(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_BackgroundTaskSuccessGraph(),
@@ -3099,16 +3098,8 @@ def test_runtime_constructs_with_custom_agent_hook_refs(tmp_path: Path) -> None:
                 prompt_profile="researcher",
                 prompt_ref="researcher",
                 prompt_source="builtin",
-                hook_refs=("customfmt",),
+                hook_refs=("role_reminder",),
                 execution_engine="provider",
-            ),
-            hooks=RuntimeHooksConfig(
-                formatter_presets={
-                    "customfmt": RuntimeFormatterPresetConfig(
-                        command=("customfmt", "--write"),
-                        extensions=(".custom",),
-                    )
-                }
             ),
         ),
     )
@@ -3123,7 +3114,7 @@ def test_runtime_constructs_with_custom_agent_hook_refs(tmp_path: Path) -> None:
         "prompt_materialization": _prompt_materialization_payload("researcher"),
         "prompt_ref": "researcher",
         "prompt_source": "builtin",
-        "hook_refs": ["customfmt"],
+        "hook_refs": ["role_reminder"],
         "execution_engine": "provider",
     }
 

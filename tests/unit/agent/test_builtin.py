@@ -238,6 +238,25 @@ def test_builtin_agent_manifests_use_explicit_preset_hook_refs_not_formatter_ref
     assert worker.preset_hook_refs == ("role_reminder", "delegation_guard")
 
 
+def test_validate_builtin_agent_manifests_rejects_unknown_preset_hook_ref() -> None:
+    with pytest.raises(ValueError, match="references unknown hook preset"):
+        _ = validate_builtin_agent_manifests(
+            (
+                AgentManifest(
+                    id="leader",
+                    name="Leader",
+                    mode="primary",
+                    description="Primary preset",
+                    prompt_profile="leader",
+                    execution_engine="provider",
+                    preset_hook_refs=("missing_hook",),
+                    top_level_selectable=True,
+                    prompt_materialization=AgentPromptMaterialization(profile="leader"),
+                ),
+            )
+        )
+
+
 def test_validate_builtin_agent_manifests_rejects_unknown_prompt_profile() -> None:
     with pytest.raises(ValueError, match="references unknown prompt profile"):
         _ = validate_builtin_agent_manifests(

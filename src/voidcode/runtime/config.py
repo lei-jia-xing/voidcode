@@ -17,6 +17,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from ..agent import AgentManifestId, get_builtin_agent_manifest, list_builtin_agent_manifests
 from ..agent.prompts import has_builtin_prompt_profile
 from ..hook.config import FormatterCwdPolicy, RuntimeFormatterPresetConfig, RuntimeHooksConfig
+from ..hook.presets import validate_hook_preset_refs
 from ..lsp import LspServerConfigOverride as RuntimeLspServerConfig
 from ..lsp import derive_workspace_lsp_defaults, has_builtin_lsp_server_preset
 from ..provider import config as provider_config
@@ -2082,15 +2083,8 @@ def _parse_agent_hook_refs(
     hook_refs = _parse_string_list(raw_hook_refs, field_path="agent.hook_refs")
     if not hook_refs:
         return ()
-    available_hook_refs = set((hooks or RuntimeHooksConfig()).formatter_presets)
-    for hook_ref in hook_refs:
-        if hook_ref not in available_hook_refs:
-            valid_refs = ", ".join(sorted(available_hook_refs))
-            raise ValueError(
-                "runtime config field 'agent.hook_refs' references unknown hook preset: "
-                f"{hook_ref}; valid presets are: {valid_refs}"
-            )
-    return hook_refs
+    _ = hooks
+    return validate_hook_preset_refs(hook_refs, field_path="runtime config field 'agent.hook_refs'")
 
 
 def _parse_agent_provider_fallback_config(
