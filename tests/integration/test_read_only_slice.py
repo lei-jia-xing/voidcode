@@ -26,6 +26,17 @@ _DEFAULT_PERMISSION_METADATA = {
     "external_directory_read": {"*": "ask"},
     "external_directory_write": {"*": "deny"},
 }
+_LEADER_HOOK_PRESET_SNAPSHOT = {
+    "refs": [
+        "role_reminder",
+        "delegation_guard",
+        "background_output_quality_guidance",
+        "todo_continuation_guidance",
+    ],
+    "kinds": ["guidance", "guard", "guidance", "continuation"],
+    "source": "builtin",
+    "count": 4,
+}
 
 
 @pytest.fixture
@@ -2022,13 +2033,15 @@ def test_provider_runtime_falls_back_to_next_provider_target(tmp_path: Path) -> 
     assert [event.event_type for event in response.events] == [
         "runtime.request_received",
         "runtime.skills_loaded",
+        "runtime.hook_presets_loaded",
         "runtime.provider_fallback",
         "graph.loop_step",
         "graph.model_turn",
         "graph.loop_step",
         "graph.response_ready",
     ]
-    assert response.events[2].payload == {
+    assert response.events[2].payload == _LEADER_HOOK_PRESET_SNAPSHOT
+    assert response.events[3].payload == {
         "reason": "rate_limit",
         "from_provider": "opencode",
         "from_model": "gpt-5.4",
@@ -2093,13 +2106,15 @@ def test_provider_runtime_retries_transient_error_on_same_target(tmp_path: Path)
     assert [event.event_type for event in response.events] == [
         "runtime.request_received",
         "runtime.skills_loaded",
+        "runtime.hook_presets_loaded",
         "runtime.provider_transient_retry",
         "graph.loop_step",
         "graph.model_turn",
         "graph.loop_step",
         "graph.response_ready",
     ]
-    assert response.events[2].payload == {
+    assert response.events[2].payload == _LEADER_HOOK_PRESET_SNAPSHOT
+    assert response.events[3].payload == {
         "reason": "transient_failure",
         "provider": "opencode-go",
         "model": "glm-5.1",
@@ -2183,6 +2198,7 @@ def test_provider_runtime_falls_back_after_same_target_retry_budget(
     assert [event.event_type for event in response.events] == [
         "runtime.request_received",
         "runtime.skills_loaded",
+        "runtime.hook_presets_loaded",
         "runtime.provider_transient_retry",
         "runtime.provider_fallback",
         "graph.loop_step",
@@ -2190,7 +2206,8 @@ def test_provider_runtime_falls_back_after_same_target_retry_budget(
         "graph.loop_step",
         "graph.response_ready",
     ]
-    assert response.events[2].payload == {
+    assert response.events[2].payload == _LEADER_HOOK_PRESET_SNAPSHOT
+    assert response.events[3].payload == {
         "reason": "transient_failure",
         "provider": "opencode-go",
         "model": "glm-5.1",
@@ -2198,7 +2215,7 @@ def test_provider_runtime_falls_back_after_same_target_retry_budget(
         "max_retries": 1,
         "delay_ms": 0,
     }
-    assert response.events[3].payload == {
+    assert response.events[4].payload == {
         "reason": "transient_failure",
         "from_provider": "opencode-go",
         "from_model": "glm-5.1",
@@ -3646,7 +3663,8 @@ def test_provider_runtime_executes_read_path_and_persists_config(tmp_path: Path)
         "tool_timeout_seconds": None,
     }
     runtime_state = cast(dict[str, object], result.session.metadata["runtime_state"])
-    assert set(runtime_state) == {"acp", "run_id"}
+    assert set(runtime_state) == {"acp", "hook_presets", "run_id"}
+    assert runtime_state["hook_presets"] == _LEADER_HOOK_PRESET_SNAPSHOT
     assert runtime_state["acp"] == {
         "available": False,
         "configured_enabled": False,
@@ -3658,7 +3676,7 @@ def test_provider_runtime_executes_read_path_and_persists_config(tmp_path: Path)
         "mode": "disabled",
         "status": "disconnected",
     }
-    assert result.events[3].payload["mode"] == "provider"
+    assert result.events[4].payload["mode"] == "provider"
     assert replay.output == result.output
 
 
@@ -3705,7 +3723,7 @@ def test_provider_runtime_requests_and_resumes_write_approval(tmp_path: Path) ->
     )
 
     assert waiting.session.status == "waiting"
-    assert waiting.events[3].payload["mode"] == "provider"
+    assert waiting.events[4].payload["mode"] == "provider"
     assert waiting.events[-1].event_type == "runtime.approval_requested"
     assert resumed.session.status == "completed"
     assert resumed.output == "Wrote file successfully: danger.txt"
