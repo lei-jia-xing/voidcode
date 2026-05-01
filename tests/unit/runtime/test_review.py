@@ -203,6 +203,8 @@ def test_review_snapshot_uses_gitignore_rules_for_non_git_workspace(tmp_path: Pa
     (tmp_path / "logs").mkdir()
     (tmp_path / "logs" / "debug.tmp").write_text("tmp\n", encoding="utf-8")
     (tmp_path / "logs" / "important.tmp").write_text("keep\n", encoding="utf-8")
+    (tmp_path / "logs" / "archive").mkdir()
+    (tmp_path / "logs" / "archive" / "error.tmp").write_text("keep\n", encoding="utf-8")
     (tmp_path / "build").mkdir()
     (tmp_path / "build" / "artifact.txt").write_text("build\n", encoding="utf-8")
     (tmp_path / "src").mkdir()
@@ -220,6 +222,20 @@ def test_review_snapshot_uses_gitignore_rules_for_non_git_workspace(tmp_path: Pa
             changed=False,
             children=(
                 ReviewTreeNode(
+                    path="logs/archive",
+                    name="archive",
+                    kind="directory",
+                    changed=False,
+                    children=(
+                        ReviewTreeNode(
+                            path="logs/archive/error.tmp",
+                            name="error.tmp",
+                            kind="file",
+                            changed=False,
+                        ),
+                    ),
+                ),
+                ReviewTreeNode(
                     path="logs/important.tmp",
                     name="important.tmp",
                     kind="file",
@@ -227,6 +243,41 @@ def test_review_snapshot_uses_gitignore_rules_for_non_git_workspace(tmp_path: Pa
                 ),
             ),
         ),
+        ReviewTreeNode(
+            path="src",
+            name="src",
+            kind="directory",
+            changed=False,
+            children=(
+                ReviewTreeNode(
+                    path="src/app.py",
+                    name="app.py",
+                    kind="file",
+                    changed=False,
+                ),
+            ),
+        ),
+        ReviewTreeNode(
+            path=".gitignore",
+            name=".gitignore",
+            kind="file",
+            changed=False,
+        ),
+    )
+
+
+def test_review_snapshot_does_not_probe_git_for_non_git_workspace(tmp_path: Path) -> None:
+    (tmp_path / ".gitignore").write_text("ignored/\n", encoding="utf-8")
+    (tmp_path / "ignored").mkdir()
+    (tmp_path / "ignored" / "cache.txt").write_text("cache\n", encoding="utf-8")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("print('ok')\n", encoding="utf-8")
+
+    service = WorkspaceReviewService(workspace=tmp_path)
+    with patch.object(service, "_run_git", side_effect=AssertionError("git should not run")):
+        snapshot = service.snapshot(git=GitStatusSnapshot(state="not_git_repo"))
+
+    assert snapshot.tree == (
         ReviewTreeNode(
             path="src",
             name="src",

@@ -57,7 +57,12 @@ class WorkspaceReviewService:
                 error=git.error,
             ),
             changed_files=changed_files,
-            tree=self._tree(tree_root, tree_root=tree_root, changed_paths=changed_paths),
+            tree=self._tree(
+                tree_root,
+                tree_root=tree_root,
+                changed_paths=changed_paths,
+                use_git_ignore=git.state == "git_ready",
+            ),
         )
 
     def diff(self, *, path: str, git: GitStatusSnapshot) -> ReviewFileDiff:
@@ -163,15 +168,21 @@ class WorkspaceReviewService:
         *,
         tree_root: Path,
         changed_paths: set[str],
+        use_git_ignore: bool,
     ) -> tuple[ReviewTreeNode, ...]:
         children: list[ReviewTreeNode] = []
         for entry in sorted(
             root.iterdir(), key=lambda item: (not item.is_dir(), item.name.lower())
         ):
-            if self._should_exclude_from_tree(entry, tree_root):
+            if self._should_exclude_from_tree(entry, tree_root, use_git_ignore=use_git_ignore):
                 continue
             if entry.is_dir() and self._should_descend_into(entry, tree_root):
-                descendants = self._tree(entry, tree_root=tree_root, changed_paths=changed_paths)
+                descendants = self._tree(
+                    entry,
+                    tree_root=tree_root,
+                    changed_paths=changed_paths,
+                    use_git_ignore=use_git_ignore,
+                )
                 is_changed = any(child.changed for child in descendants)
                 children.append(
                     ReviewTreeNode(
@@ -197,7 +208,13 @@ class WorkspaceReviewService:
     def _relative_to_root(self, path: Path, root: Path) -> str:
         return path.relative_to(root).as_posix()
 
-    def _should_exclude_from_tree(self, path: Path, tree_root: Path) -> bool:
+    def _should_exclude_from_tree(
+        self,
+        path: Path,
+        tree_root: Path,
+        *,
+        use_git_ignore: bool,
+    ) -> bool:
         if path.is_dir() and path.name in _VCS_TREE_DIRECTORY_NAMES:
             return True
         relative_path = self._relative_to_root(path, tree_root)
@@ -205,6 +222,7 @@ class WorkspaceReviewService:
             tree_root,
             relative_path,
             is_directory=path.is_dir(),
+            use_git_ignore=use_git_ignore,
         )
 
     def _is_ignored_tree_path(
@@ -213,20 +231,22 @@ class WorkspaceReviewService:
         relative_path: str,
         *,
         is_directory: bool,
+        use_git_ignore: bool,
     ) -> bool:
-        git_check = self._run_git(
-            tree_root,
-            "check-ignore",
-            "--quiet",
-            "--",
-            relative_path,
-        )
-        if git_check.returncode == 0:
-            if is_directory and self._has_tracked_tree_path(tree_root, relative_path):
+        if use_git_ignore:
+            git_check = self._run_git(
+                tree_root,
+                "check-ignore",
+                "--quiet",
+                "--",
+                relative_path,
+            )
+            if git_check.returncode == 0:
+                if is_directory and self._has_tracked_tree_path(tree_root, relative_path):
+                    return False
+                return True
+            if git_check.returncode == 1:
                 return False
-            return True
-        if git_check.returncode == 1:
-            return False
         return _matches_gitignore_path(
             relative_path,
             self._ignore_patterns_for_tree_root(tree_root),
@@ -385,14 +405,22 @@ def _matches_gitignore_pattern(
             return relative_path == normalized_pattern or relative_path.startswith(
                 f"{normalized_pattern}/"
             )
-        return fnmatchcase(relative_path, normalized_pattern)
+        return _matches_path_segments(relative_path, normalized_pattern)
     if directory_only:
         return (
             relative_path == normalized_pattern
             or relative_path.endswith(f"/{normalized_pattern}")
             or f"/{normalized_pattern}/" in f"/{relative_path}/"
         )
-    return fnmatchcase(relative_path, normalized_pattern) or fnmatchcase(
-        relative_path,
-        f"*/{normalized_pattern}",
+    return _matches_path_segments(relative_path, normalized_pattern)
+
+
+def _matches_path_segments(relative_path: str, pattern: str) -> bool:
+    path_parts = Path(relative_path).parts
+    pattern_parts = Path(pattern).parts
+    if len(path_parts) != len(pattern_parts):
+        return False
+    return all(
+        fnmatchcase(path_part, pattern_part)
+        for path_part, pattern_part in zip(path_parts, pattern_parts, strict=True)
     )
