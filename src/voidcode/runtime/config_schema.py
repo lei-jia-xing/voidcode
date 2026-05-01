@@ -349,6 +349,15 @@ def runtime_config_json_schema() -> dict[str, object]:
                     "tokenizer_model": {"type": "string", "minLength": 1},
                     "continuity_preview_items": {"type": "integer", "minimum": 1},
                     "continuity_preview_chars": {"type": "integer", "minimum": 1},
+                    "continuity_distillation_enabled": {"type": "boolean"},
+                    "continuity_distillation_max_input_items": {
+                        "type": "integer",
+                        "minimum": 1,
+                    },
+                    "continuity_distillation_max_input_chars": {
+                        "type": "integer",
+                        "minimum": 64,
+                    },
                     "context_pressure_threshold": {
                         "type": "number",
                         "exclusiveMinimum": 0,

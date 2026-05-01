@@ -9,6 +9,11 @@ from functools import lru_cache
 from typing import Any, Literal, NamedTuple, cast
 
 from ..tools.contracts import ToolResult
+from .continuity_distillation import (
+    ContinuityDistillationRecord,
+    build_distillation_input_envelope,
+    distillation_record_from_payload,
+)
 from .todos import render_provider_todo_state
 
 
@@ -71,6 +76,10 @@ class RuntimeContinuityState:
     dropped_tool_result_count: int = 0
     retained_tool_result_count: int = 0
     source: str = "tool_result_window"
+    distillation_source: str = "deterministic"
+    distillation_error: str | None = None
+    fact_reference_count: int = 0
+    source_references: tuple[str, ...] = ()
     original_tool_result_tokens: int | None = None
     retained_tool_result_tokens: int | None = None
     dropped_tool_result_tokens: int | None = None
@@ -99,8 +108,13 @@ class RuntimeContinuityState:
             "dropped_tool_result_count": self.dropped_tool_result_count,
             "retained_tool_result_count": self.retained_tool_result_count,
             "source": self.source,
+            "distillation_source": self.distillation_source,
+            "fact_reference_count": self.fact_reference_count,
+            "source_references": list(self.source_references),
             "version": 2,
         }
+        if self.distillation_error is not None:
+            payload["distillation_error"] = self.distillation_error
         if self.original_tool_result_tokens is not None:
             payload["original_tool_result_tokens"] = self.original_tool_result_tokens
         if self.retained_tool_result_tokens is not None:
@@ -136,6 +150,9 @@ class ContextWindowPolicy:
     continuity_preview_chars: int = 80
     context_pressure_threshold: float = 0.7
     context_pressure_cooldown_steps: int = 3
+    continuity_distillation_enabled: bool = False
+    continuity_distillation_max_input_items: int = 12
+    continuity_distillation_max_input_chars: int = 4000
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "per_tool_result_tokens", dict(self.per_tool_result_tokens))
@@ -172,6 +189,10 @@ class ContextWindowPolicy:
             raise ValueError("context_pressure_threshold must be > 0 and <= 1")
         if self.context_pressure_cooldown_steps < 1:
             raise ValueError("context_pressure_cooldown_steps must be >= 1")
+        if self.continuity_distillation_max_input_items < 1:
+            raise ValueError("continuity_distillation_max_input_items must be >= 1")
+        if self.continuity_distillation_max_input_chars < 64:
+            raise ValueError("continuity_distillation_max_input_chars must be >= 64")
 
     def metadata_payload(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -201,6 +222,13 @@ class ContextWindowPolicy:
             payload["tokenizer_model"] = self.tokenizer_model
         payload["context_pressure_threshold"] = self.context_pressure_threshold
         payload["context_pressure_cooldown_steps"] = self.context_pressure_cooldown_steps
+        payload["continuity_distillation_enabled"] = self.continuity_distillation_enabled
+        payload["continuity_distillation_max_input_items"] = (
+            self.continuity_distillation_max_input_items
+        )
+        payload["continuity_distillation_max_input_chars"] = (
+            self.continuity_distillation_max_input_chars
+        )
         return payload
 
 
@@ -376,11 +404,25 @@ def continuity_state_from_metadata_payload(
     dropped = payload.get("dropped_tool_result_count")
     retained = payload.get("retained_tool_result_count")
     source = payload.get("source")
+    distillation_source = payload.get("distillation_source")
+    distillation_error = payload.get("distillation_error")
+    fact_reference_count = payload.get("fact_reference_count")
+    source_references = _metadata_string_tuple(payload, "source_references")
     if not isinstance(dropped, int) or isinstance(dropped, bool):
         return None
     if not isinstance(retained, int) or isinstance(retained, bool):
         return None
     if not isinstance(source, str):
+        return None
+    if distillation_source is None:
+        distillation_source = "deterministic"
+    if not isinstance(distillation_source, str):
+        return None
+    if distillation_error is not None and not isinstance(distillation_error, str):
+        return None
+    if fact_reference_count is None:
+        fact_reference_count = 0
+    if not isinstance(fact_reference_count, int) or isinstance(fact_reference_count, bool):
         return None
 
     def _optional_int(value: object) -> int | None:
@@ -421,6 +463,10 @@ def continuity_state_from_metadata_payload(
         dropped_tool_result_count=dropped,
         retained_tool_result_count=retained,
         source=source,
+        distillation_source=distillation_source,
+        distillation_error=distillation_error,
+        fact_reference_count=fact_reference_count,
+        source_references=source_references,
         original_tool_result_tokens=original_token_count,
         retained_tool_result_tokens=retained_token_count,
         dropped_tool_result_tokens=dropped_token_count,
@@ -851,6 +897,14 @@ def context_window_policy_from_payload(raw_payload: object) -> ContextWindowPoli
     tokenizer_model = payload.get("tokenizer_model")
     if tokenizer_model is not None and not isinstance(tokenizer_model, str):
         raise ValueError("context window policy field 'tokenizer_model' must be a string")
+    continuity_distillation_enabled = payload.get(
+        "continuity_distillation_enabled",
+        ContextWindowPolicy().continuity_distillation_enabled,
+    )
+    if not isinstance(continuity_distillation_enabled, bool):
+        raise ValueError(
+            "context window policy field 'continuity_distillation_enabled' must be a boolean"
+        )
     return ContextWindowPolicy(
         auto_compaction=auto_compaction,
         max_tool_results=_coerce_int(
@@ -895,6 +949,17 @@ def context_window_policy_from_payload(raw_payload: object) -> ContextWindowPoli
             payload,
             "context_pressure_cooldown_steps",
             default=ContextWindowPolicy().context_pressure_cooldown_steps,
+        ),
+        continuity_distillation_enabled=continuity_distillation_enabled,
+        continuity_distillation_max_input_items=_coerce_int(
+            payload,
+            "continuity_distillation_max_input_items",
+            default=ContextWindowPolicy().continuity_distillation_max_input_items,
+        ),
+        continuity_distillation_max_input_chars=_coerce_int(
+            payload,
+            "continuity_distillation_max_input_chars",
+            default=ContextWindowPolicy().continuity_distillation_max_input_chars,
         ),
     )
 
@@ -949,6 +1014,10 @@ def _build_continuity_state(
     token_budget: int | None = None,
     token_estimate_source: str | None = None,
     tokenizer_model: str | None = None,
+    continuity_distillation_enabled: bool = False,
+    continuity_distillation_max_input_items: int = 12,
+    continuity_distillation_max_input_chars: int = 4000,
+    distillation_candidate: Mapping[str, object] | None = None,
 ) -> RuntimeContinuityState:
     dropped_count = len(dropped_results)
     previous = _previous_continuity_state(session_metadata)
@@ -993,6 +1062,8 @@ def _build_continuity_state(
             token_budget=token_budget,
             token_estimate_source=token_estimate_source,
             dropped_tool_results=previous.dropped_tool_results if previous is not None else (),
+            distillation_source="deterministic",
+            source_references=previous.source_references if previous is not None else (),
         )
 
     preview_count = min(preview_item_limit, dropped_count)
@@ -1028,7 +1099,61 @@ def _build_continuity_state(
             dropped_results,
             tokenizer_model=tokenizer_model,
         ),
+        distillation_source="deterministic",
     )
+    if previous is not None:
+        previous_payload = previous.metadata_payload()
+    else:
+        previous_payload = None
+
+    if continuity_distillation_enabled:
+        effective_distillation, distillation_error = _try_model_assisted_distillation(
+            prompt=prompt,
+            dropped_results=dropped_results,
+            retained_results=retained_results,
+            previous_continuity=previous_payload,
+            policy_items=continuity_distillation_max_input_items,
+            policy_chars=continuity_distillation_max_input_chars,
+            distillation_candidate=distillation_candidate,
+        )
+        if effective_distillation is not None:
+            return _continuity_state_from_distillation(
+                base_state=state_without_summary,
+                distillation=effective_distillation,
+            )
+        if distillation_error is not None:
+            fallback_summary = _continuity_summary_text(state_without_summary)
+            fallback_text = (
+                f"{fallback_summary}\n\n## Distillation Fallback\n- {distillation_error}"
+            )
+            return RuntimeContinuityState(
+                summary_text=fallback_text,
+                objective=state_without_summary.objective,
+                current_goal=state_without_summary.current_goal,
+                verbatim_user_constraints=state_without_summary.verbatim_user_constraints,
+                progress_completed=state_without_summary.progress_completed,
+                blockers_open_questions=state_without_summary.blockers_open_questions,
+                key_decisions=state_without_summary.key_decisions,
+                relevant_files_commands_errors=state_without_summary.relevant_files_commands_errors,
+                verification_state=state_without_summary.verification_state,
+                delegated_task_summaries=state_without_summary.delegated_task_summaries,
+                recent_tail=state_without_summary.recent_tail,
+                dropped_tool_result_count=state_without_summary.dropped_tool_result_count,
+                retained_tool_result_count=state_without_summary.retained_tool_result_count,
+                source=state_without_summary.source,
+                distillation_source="fallback_after_model_error",
+                distillation_error=distillation_error,
+                original_tool_result_tokens=state_without_summary.original_tool_result_tokens,
+                retained_tool_result_tokens=state_without_summary.retained_tool_result_tokens,
+                dropped_tool_result_tokens=state_without_summary.dropped_tool_result_tokens,
+                token_budget=state_without_summary.token_budget,
+                token_estimate_source=state_without_summary.token_estimate_source,
+                dropped_tool_results=state_without_summary.dropped_tool_results,
+                fact_reference_count=0,
+                source_references=(),
+                version=2,
+            )
+
     canonical_summary = _continuity_summary_text(state_without_summary)
     return RuntimeContinuityState(
         summary_text=f"{canonical_summary}\n\n## Dropped Tool Preview\n{legacy_summary}",
@@ -1051,8 +1176,133 @@ def _build_continuity_state(
         token_budget=state_without_summary.token_budget,
         token_estimate_source=state_without_summary.token_estimate_source,
         dropped_tool_results=state_without_summary.dropped_tool_results,
+        distillation_source="deterministic",
+        source_references=state_without_summary.source_references,
         version=2,
     )
+
+
+def _try_model_assisted_distillation(
+    *,
+    prompt: str,
+    dropped_results: tuple[ToolResult, ...],
+    retained_results: tuple[ToolResult, ...],
+    previous_continuity: Mapping[str, object] | None,
+    policy_items: int,
+    policy_chars: int,
+    distillation_candidate: Mapping[str, object] | None,
+) -> tuple[ContinuityDistillationRecord | None, str | None]:
+    envelope = build_distillation_input_envelope(
+        prompt=prompt,
+        dropped_results=dropped_results,
+        retained_results=retained_results,
+        previous_continuity=previous_continuity,
+        max_items=max(1, policy_items),
+        max_chars=max(64, policy_chars * 16),
+    )
+    candidate: Mapping[str, object] | None = distillation_candidate
+    if candidate is None:
+        embedded = envelope.get("distillation_candidate")
+        if isinstance(embedded, dict):
+            candidate = cast(Mapping[str, object], embedded)
+    if candidate is None:
+        return None, None
+    parsed = distillation_record_from_payload(candidate)
+    if parsed is None:
+        return None, "model-assisted distillation output failed schema validation"
+    return parsed, None
+
+
+def _continuity_state_from_distillation(
+    *,
+    base_state: RuntimeContinuityState,
+    distillation: ContinuityDistillationRecord,
+) -> RuntimeContinuityState:
+    key_decisions = tuple(
+        f"{item.text} — {item.rationale}" for item in distillation.key_decisions_with_rationale
+    )
+    refs = tuple(item.text for item in distillation.relevant_files_commands_errors)
+    source_references = _aggregate_distillation_source_references(distillation)
+    verification = (
+        distillation.verification_state.status,
+        *distillation.verification_state.details,
+    )
+    summary = _continuity_summary_text(
+        RuntimeContinuityState(
+            summary_text=None,
+            objective=base_state.objective,
+            current_goal=distillation.objective_current_goal,
+            verbatim_user_constraints=distillation.verbatim_user_constraints,
+            progress_completed=distillation.completed_progress,
+            blockers_open_questions=distillation.blockers_open_questions,
+            key_decisions=key_decisions,
+            relevant_files_commands_errors=refs,
+            verification_state=verification,
+            delegated_task_summaries=base_state.delegated_task_summaries,
+            recent_tail=base_state.recent_tail,
+            dropped_tool_result_count=base_state.dropped_tool_result_count,
+            retained_tool_result_count=base_state.retained_tool_result_count,
+            source=base_state.source,
+            distillation_source="model_assisted",
+            original_tool_result_tokens=base_state.original_tool_result_tokens,
+            retained_tool_result_tokens=base_state.retained_tool_result_tokens,
+            dropped_tool_result_tokens=base_state.dropped_tool_result_tokens,
+            token_budget=base_state.token_budget,
+            token_estimate_source=base_state.token_estimate_source,
+            dropped_tool_results=base_state.dropped_tool_results,
+            fact_reference_count=len(source_references),
+            source_references=source_references,
+        )
+    )
+    return RuntimeContinuityState(
+        summary_text=summary,
+        objective=base_state.objective,
+        current_goal=distillation.objective_current_goal,
+        verbatim_user_constraints=distillation.verbatim_user_constraints,
+        progress_completed=distillation.completed_progress,
+        blockers_open_questions=distillation.blockers_open_questions,
+        key_decisions=key_decisions,
+        relevant_files_commands_errors=refs,
+        verification_state=verification,
+        delegated_task_summaries=base_state.delegated_task_summaries,
+        recent_tail=base_state.recent_tail,
+        dropped_tool_result_count=base_state.dropped_tool_result_count,
+        retained_tool_result_count=base_state.retained_tool_result_count,
+        source=base_state.source,
+        distillation_source="model_assisted",
+        original_tool_result_tokens=base_state.original_tool_result_tokens,
+        retained_tool_result_tokens=base_state.retained_tool_result_tokens,
+        dropped_tool_result_tokens=base_state.dropped_tool_result_tokens,
+        token_budget=base_state.token_budget,
+        token_estimate_source=base_state.token_estimate_source,
+        dropped_tool_results=base_state.dropped_tool_results,
+        fact_reference_count=len(source_references),
+        source_references=source_references,
+        version=2,
+    )
+
+
+def _aggregate_distillation_source_references(
+    distillation: ContinuityDistillationRecord,
+) -> tuple[str, ...]:
+    refs: list[str] = []
+
+    def _append(kind: str, ref_id: str) -> None:
+        value = f"{kind}:{ref_id}"
+        if value not in refs:
+            refs.append(value)
+
+    for item in distillation.source_references:
+        _append(item.kind, item.id)
+    for item in distillation.key_decisions_with_rationale:
+        for ref in item.refs:
+            _append(ref.kind, ref.id)
+    for item in distillation.relevant_files_commands_errors:
+        for ref in item.refs:
+            _append(ref.kind, ref.id)
+    for ref in distillation.verification_state.refs:
+        _append(ref.kind, ref.id)
+    return tuple(refs)
 
 
 def _summary_anchor(
@@ -1092,7 +1342,12 @@ def prepare_provider_context(
     session_metadata: dict[str, object],
     policy: ContextWindowPolicy | None = None,
 ) -> RuntimeContextWindow:
-    _ = session_metadata
+    runtime_state = session_metadata.get("runtime_state")
+    distillation_candidate: Mapping[str, object] | None = None
+    if isinstance(runtime_state, dict):
+        raw_candidate = cast(dict[str, object], runtime_state).get("distillation_candidate")
+        if isinstance(raw_candidate, dict):
+            distillation_candidate = cast(Mapping[str, object], raw_candidate)
     effective_policy = policy or ContextWindowPolicy()
     original_count = len(tool_results)
     token_budget = _policy_token_budget(effective_policy)
@@ -1211,6 +1466,14 @@ def prepare_provider_context(
             token_budget=token_budget,
             token_estimate_source=token_estimate_source,
             tokenizer_model=effective_policy.tokenizer_model,
+            continuity_distillation_enabled=effective_policy.continuity_distillation_enabled,
+            continuity_distillation_max_input_items=(
+                effective_policy.continuity_distillation_max_input_items
+            ),
+            continuity_distillation_max_input_chars=(
+                effective_policy.continuity_distillation_max_input_chars
+            ),
+            distillation_candidate=distillation_candidate,
         )
         if compacted
         else None

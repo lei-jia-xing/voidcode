@@ -753,6 +753,7 @@ class RuntimeRunLoopCoordinator:
         reasoning_capture_state = runtime._reasoning_capture_state()
         active_graph_request: GraphRunRequest = graph_request
         pending_provider_attempt_reset: _ProviderAttemptReset | None = None
+        first_iteration = True
         while True:
             if pending_provider_attempt_reset is not None:
                 provider_attempt = pending_provider_attempt_reset.provider_attempt
@@ -761,13 +762,13 @@ class RuntimeRunLoopCoordinator:
                 session = pending_provider_attempt_reset.session
                 pending_provider_attempt_reset = None
             sequence = int(sequence)
-            current_graph_request: GraphRunRequest = active_graph_request
-            current_prompt: str = current_graph_request.prompt
-            current_available_tools: tuple[ToolDefinition, ...] = (
-                current_graph_request.available_tools
+            current_graph_request: Any = active_graph_request
+            current_prompt: str = cast(str, current_graph_request.prompt)
+            current_available_tools: tuple[ToolDefinition, ...] = cast(
+                tuple[ToolDefinition, ...], current_graph_request.available_tools
             )
-            current_assembled_context: ProviderAssembledContext = (
-                current_graph_request.assembled_context
+            current_assembled_context: ProviderAssembledContext = cast(
+                ProviderAssembledContext, current_graph_request.assembled_context
             )
             current_segments: tuple[ProviderContextSegmentLike, ...] = (
                 current_assembled_context.segments
@@ -775,11 +776,26 @@ class RuntimeRunLoopCoordinator:
             current_metadata: dict[str, object] = current_graph_request.metadata
             current_abort_signal: ProviderAbortSignal | None = current_graph_request.abort_signal
             current_session: SessionState = session
-            base_context = runtime._prepare_provider_context_window(
-                prompt=current_prompt,
-                tool_results=tuple(tool_results),
-                session_metadata=current_session.metadata,
-            )
+            current_session_metadata: dict[str, object] = current_session.metadata
+            if first_iteration:
+                prebuilt_context = cast(RuntimeContextWindow, current_graph_request.context_window)
+                first_iteration = False
+                if prebuilt_context.original_tool_result_count == len(tool_results):
+                    base_context = prebuilt_context
+                else:
+                    base_context = runtime._prepare_provider_context_window(
+                        prompt=current_prompt,
+                        tool_results=tuple(tool_results),
+                        session_metadata=current_session_metadata,
+                        abort_signal=current_abort_signal,
+                    )
+            else:
+                base_context = runtime._prepare_provider_context_window(
+                    prompt=current_prompt,
+                    tool_results=tuple(tool_results),
+                    session_metadata=current_session_metadata,
+                    abort_signal=current_abort_signal,
+                )
             reinjected_continuity = continuity_to_reinject
             if reinjected_continuity is not None:
                 summary_anchor, summary_source = continuity_summary_metadata(reinjected_continuity)

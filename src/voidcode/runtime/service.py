@@ -55,7 +55,7 @@ from ..provider.models import (
     ResolvedProviderConfig,
     ResolvedProviderModel,
 )
-from ..provider.protocol import ProviderAbortSignal, ProviderTokenUsage
+from ..provider.protocol import ProviderAbortSignal, ProviderTokenUsage, ProviderTurnRequest
 from ..provider.registry import ModelProviderRegistry
 from ..provider.resolution import resolve_provider_config
 from ..provider.snapshot import (
@@ -127,12 +127,14 @@ from .config import (
 from .context_window import (
     ContextWindowPolicy,
     RuntimeAssembledContext,
+    RuntimeContextSegment,
     RuntimeContextWindow,
     RuntimeContinuityState,
     assemble_provider_context,
     continuity_state_from_metadata_payload,
     prepare_provider_context,
 )
+from .continuity_distillation import build_distillation_input_envelope
 from .contracts import (
     AgentSummary,
     BackgroundTaskResult,
@@ -1965,6 +1967,7 @@ class VoidCodeRuntime:
                 prompt=request.prompt,
                 tool_results=(),
                 session_metadata=session.metadata,
+                abort_signal=abort_signal,
             ),
             assembled_context=self._assemble_provider_context(
                 prompt=request.prompt,
@@ -5753,6 +5756,13 @@ class VoidCodeRuntime:
             continuity_preview_chars=policy.continuity_preview_chars,
             context_pressure_threshold=policy.context_pressure_threshold,
             context_pressure_cooldown_steps=policy.context_pressure_cooldown_steps,
+            continuity_distillation_enabled=policy.continuity_distillation_enabled,
+            continuity_distillation_max_input_items=(
+                policy.continuity_distillation_max_input_items
+            ),
+            continuity_distillation_max_input_chars=(
+                policy.continuity_distillation_max_input_chars
+            ),
         )
 
     @staticmethod
@@ -5792,6 +5802,13 @@ class VoidCodeRuntime:
             continuity_preview_chars=config.continuity_preview_chars,
             context_pressure_threshold=config.context_pressure_threshold,
             context_pressure_cooldown_steps=config.context_pressure_cooldown_steps,
+            continuity_distillation_enabled=config.continuity_distillation_enabled,
+            continuity_distillation_max_input_items=(
+                config.continuity_distillation_max_input_items
+            ),
+            continuity_distillation_max_input_chars=(
+                config.continuity_distillation_max_input_chars
+            ),
         )
 
     def _prepare_provider_context_window(
@@ -5801,6 +5818,7 @@ class VoidCodeRuntime:
         tool_results: tuple[ToolResult, ...],
         session_metadata: dict[str, object],
         policy: ContextWindowPolicy | None = None,
+        abort_signal: ProviderAbortSignal | None = None,
     ) -> RuntimeContextWindow:
         effective_config = self._effective_runtime_config_from_metadata(session_metadata)
         provider_attempt = self._provider_attempt_from_metadata(session_metadata)
@@ -5815,12 +5833,167 @@ class VoidCodeRuntime:
             resolved_provider=effective_config.resolved_provider,
             provider_attempt=provider_attempt,
         )
+        if policy.continuity_distillation_enabled and self._should_fetch_distillation_candidate(
+            tool_results=tool_results,
+            policy=policy,
+            prompt=prompt,
+            session_metadata=session_metadata,
+        ):
+            session_metadata = self._session_metadata_with_distillation_candidate(
+                prompt=prompt,
+                tool_results=tool_results,
+                session_metadata=session_metadata,
+                policy=policy,
+                effective_config=effective_config,
+                abort_signal=abort_signal,
+                provider_attempt=provider_attempt,
+            )
         return prepare_provider_context(
             prompt=prompt,
             tool_results=tool_results,
             session_metadata=session_metadata,
             policy=policy or self._default_context_window_policy,
         )
+
+    @staticmethod
+    def _should_fetch_distillation_candidate(
+        *,
+        tool_results: tuple[ToolResult, ...],
+        policy: ContextWindowPolicy,
+        prompt: str,
+        session_metadata: dict[str, object],
+    ) -> bool:
+        if not tool_results:
+            return False
+        probe = prepare_provider_context(
+            prompt=prompt,
+            tool_results=tool_results,
+            session_metadata=session_metadata,
+            policy=policy,
+        )
+        return probe.compacted
+
+    def _session_metadata_with_distillation_candidate(
+        self,
+        *,
+        prompt: str,
+        tool_results: tuple[ToolResult, ...],
+        session_metadata: dict[str, object],
+        policy: ContextWindowPolicy,
+        effective_config: EffectiveRuntimeConfig,
+        abort_signal: ProviderAbortSignal | None,
+        provider_attempt: int,
+    ) -> dict[str, object]:
+        candidate, failure_reason = self._distillation_candidate_from_provider(
+            prompt=prompt,
+            tool_results=tool_results,
+            session_metadata=session_metadata,
+            policy=policy,
+            effective_config=effective_config,
+            abort_signal=abort_signal,
+            provider_attempt=provider_attempt,
+        )
+        raw_runtime_state = session_metadata.get("runtime_state")
+        runtime_state = (
+            dict(cast(dict[str, object], raw_runtime_state))
+            if isinstance(raw_runtime_state, dict)
+            else {}
+        )
+        if candidate is not None:
+            runtime_state["distillation_candidate"] = candidate
+            runtime_state.pop("distillation_failure_reason", None)
+        elif failure_reason is not None:
+            runtime_state.pop("distillation_candidate", None)
+            runtime_state["distillation_failure_reason"] = failure_reason
+        return {**session_metadata, "runtime_state": runtime_state}
+
+    def _distillation_candidate_from_provider(
+        self,
+        *,
+        prompt: str,
+        tool_results: tuple[ToolResult, ...],
+        session_metadata: dict[str, object],
+        policy: ContextWindowPolicy,
+        effective_config: EffectiveRuntimeConfig,
+        abort_signal: ProviderAbortSignal | None,
+        provider_attempt: int,
+    ) -> tuple[dict[str, object] | None, str | None]:
+        if not tool_results:
+            return None, "empty_tool_results"
+        protected_recent_count = max(
+            policy.minimum_retained_tool_results,
+            policy.recent_tool_result_count,
+        )
+        protected_recent_count = min(protected_recent_count, len(tool_results))
+        if policy.max_tool_results == 0:
+            retained_count = protected_recent_count
+        else:
+            retained_count = max(policy.max_tool_results, protected_recent_count)
+            retained_count = min(retained_count, len(tool_results))
+        dropped_guess = tool_results[: len(tool_results) - retained_count]
+        retained_guess = tool_results[len(tool_results) - retained_count :]
+        previous_continuity: dict[str, object] | None = None
+        runtime_state = session_metadata.get("runtime_state")
+        if isinstance(runtime_state, dict):
+            raw_continuity = cast(dict[str, object], runtime_state).get("continuity")
+            if isinstance(raw_continuity, dict):
+                previous_continuity = cast(dict[str, object], raw_continuity)
+        envelope = build_distillation_input_envelope(
+            prompt=prompt,
+            dropped_results=dropped_guess,
+            retained_results=retained_guess,
+            previous_continuity=previous_continuity,
+            max_items=policy.continuity_distillation_max_input_items,
+            max_chars=policy.continuity_distillation_max_input_chars,
+        )
+        provider_target = effective_config.resolved_provider.target_chain.target_at(
+            provider_attempt
+        )
+        if provider_target is None:
+            provider_target = effective_config.resolved_provider.active_target
+        selection = provider_target.selection
+        provider_name = selection.provider
+        if provider_name is None:
+            return None, "missing_provider"
+        provider = self._model_provider_registry.resolve(provider_name)
+        turn_provider = provider.turn_provider()
+        schema_prompt = (
+            "Return ONLY valid JSON matching these keys: "
+            "objective_current_goal, verbatim_user_constraints, completed_progress, "
+            "blockers_open_questions, key_decisions_with_rationale, "
+            "relevant_files_commands_errors, verification_state, next_steps, source_references. "
+            "No markdown; output JSON object only.\n\n"
+            f"INPUT={json.dumps(envelope, ensure_ascii=False)}"
+        )
+        distill_context = RuntimeAssembledContext(
+            prompt=schema_prompt,
+            tool_results=(),
+            continuity_state=None,
+            segments=(RuntimeContextSegment(role="user", content=schema_prompt),),
+            metadata={"source": "continuity_distillation"},
+        )
+        request = ProviderTurnRequest(
+            assembled_context=distill_context,
+            available_tools=(),
+            raw_model=selection.raw_model,
+            provider_name=selection.provider,
+            model_name=selection.model,
+            model_metadata=provider_target.metadata,
+            abort_signal=abort_signal,
+        )
+        try:
+            result = turn_provider.propose_turn(request)
+        except Exception:
+            return None, "provider_error"
+        if not isinstance(result.output, str) or not result.output.strip():
+            return None, "empty_output"
+        try:
+            payload = json.loads(result.output)
+        except json.JSONDecodeError:
+            return None, "invalid_json"
+        if not isinstance(payload, dict):
+            return None, "invalid_schema"
+        return cast(dict[str, object], payload), None
 
     def _assemble_provider_context(
         self,
@@ -5911,6 +6084,11 @@ class VoidCodeRuntime:
             {
                 "anchor": context_window.summary_anchor,
                 "source": context_window.summary_source,
+                "distillation_source": (
+                    context_window.continuity_state.distillation_source
+                    if context_window.continuity_state is not None
+                    else "deterministic"
+                ),
             }
             if context_window.summary_anchor is not None
             else None

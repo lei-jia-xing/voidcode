@@ -131,6 +131,9 @@ _CONTEXT_WINDOW_CONFIG_KEYS = frozenset(
         "context_pressure_cooldown_steps",
         "provider_context_diagnostics",
         "provider_context_oversized_feedback_chars",
+        "continuity_distillation_enabled",
+        "continuity_distillation_max_input_items",
+        "continuity_distillation_max_input_chars",
     }
 )
 _FORMATTER_PRESET_CONFIG_KEYS = frozenset(
@@ -285,6 +288,9 @@ class RuntimeContextWindowConfig:
     context_pressure_cooldown_steps: int = 3
     provider_context_diagnostics: RuntimeProviderContextDiagnosticMode = "warn"
     provider_context_oversized_feedback_chars: int = 8_000
+    continuity_distillation_enabled: bool = False
+    continuity_distillation_max_input_items: int = 12
+    continuity_distillation_max_input_chars: int = 4000
 
 
 @dataclass(frozen=True, slots=True)
@@ -1249,12 +1255,24 @@ class _RuntimeContextWindowValidationModel(BaseModel):
     context_pressure_cooldown_steps: int = 3
     provider_context_diagnostics: RuntimeProviderContextDiagnosticMode = "warn"
     provider_context_oversized_feedback_chars: int = 8_000
+    continuity_distillation_enabled: bool = False
+    continuity_distillation_max_input_items: int = 12
+    continuity_distillation_max_input_chars: int = 4000
 
     @field_validator("auto_compaction", mode="before")
     @classmethod
     def _validate_auto_compaction(cls, value: object) -> bool:
         parsed = _parse_optional_bool(value, field_path="context_window.auto_compaction")
         return True if parsed is None else parsed
+
+    @field_validator("continuity_distillation_enabled", mode="before")
+    @classmethod
+    def _validate_continuity_distillation_enabled(cls, value: object) -> bool:
+        parsed = _parse_optional_bool(
+            value,
+            field_path="context_window.continuity_distillation_enabled",
+        )
+        return False if parsed is None else parsed
 
     @field_validator("version", mode="before")
     @classmethod
@@ -1293,6 +1311,7 @@ class _RuntimeContextWindowValidationModel(BaseModel):
         "default_tool_result_tokens",
         "continuity_preview_items",
         "continuity_preview_chars",
+        "continuity_distillation_max_input_items",
         mode="before",
     )
     @classmethod
@@ -1306,6 +1325,20 @@ class _RuntimeContextWindowValidationModel(BaseModel):
         }:
             defaults = RuntimeContextWindowConfig()
             return cast(int, getattr(defaults, field_name))
+        return parsed
+
+    @field_validator("continuity_distillation_max_input_chars", mode="before")
+    @classmethod
+    def _validate_continuity_distillation_max_input_chars(cls, value: object) -> int:
+        field_path = "context_window.continuity_distillation_max_input_chars"
+        parsed = _parse_optional_positive_int(value, field_path=field_path)
+        if parsed is None:
+            return RuntimeContextWindowConfig().continuity_distillation_max_input_chars
+        if parsed < 64:
+            raise ValueError(
+                "runtime config field 'context_window.continuity_distillation_max_input_chars' "
+                "must be greater than or equal to 64"
+            )
         return parsed
 
     @field_validator("reserved_output_tokens", mode="before")
@@ -1454,6 +1487,9 @@ class _RuntimeContextWindowValidationModel(BaseModel):
             context_pressure_cooldown_steps=self.context_pressure_cooldown_steps,
             provider_context_diagnostics=self.provider_context_diagnostics,
             provider_context_oversized_feedback_chars=self.provider_context_oversized_feedback_chars,
+            continuity_distillation_enabled=self.continuity_distillation_enabled,
+            continuity_distillation_max_input_items=self.continuity_distillation_max_input_items,
+            continuity_distillation_max_input_chars=self.continuity_distillation_max_input_chars,
         )
 
 
@@ -2284,6 +2320,13 @@ def serialize_runtime_context_window_config(
         "recent_tool_result_count": context_window.recent_tool_result_count,
         "continuity_preview_items": context_window.continuity_preview_items,
         "continuity_preview_chars": context_window.continuity_preview_chars,
+        "continuity_distillation_enabled": context_window.continuity_distillation_enabled,
+        "continuity_distillation_max_input_items": (
+            context_window.continuity_distillation_max_input_items
+        ),
+        "continuity_distillation_max_input_chars": (
+            context_window.continuity_distillation_max_input_chars
+        ),
         "context_pressure_threshold": context_window.context_pressure_threshold,
         "context_pressure_cooldown_steps": context_window.context_pressure_cooldown_steps,
         "provider_context_diagnostics": context_window.provider_context_diagnostics,
