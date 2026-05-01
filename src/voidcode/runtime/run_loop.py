@@ -855,6 +855,50 @@ class RuntimeRunLoopCoordinator:
                 session,
                 getattr(graph_step, "provider_usage", None),
             )
+            pressure_payload = self._build_context_pressure_payload(
+                session=session,
+                context_window=context_window,
+                threshold=pressure_threshold,
+            )
+            if pressure_payload is not None and self._should_emit_context_pressure(
+                session=session,
+                pressure_ratio=cast(float, pressure_payload["pressure_ratio"]),
+                threshold=pressure_threshold,
+                cooldown_steps=pressure_cooldown_steps,
+                tool_result_count=context_window.original_tool_result_count,
+            ):
+                session = self._session_with_context_pressure_state(
+                    session=session,
+                    pressure_ratio=cast(float, pressure_payload["pressure_ratio"]),
+                    threshold=pressure_threshold,
+                    tool_result_count=context_window.original_tool_result_count,
+                )
+                sequence += 1
+                yield RuntimeStreamChunk(
+                    kind="event",
+                    session=session,
+                    event=EventEnvelope(
+                        session_id=session.session.id,
+                        sequence=sequence,
+                        event_type=RUNTIME_CONTEXT_PRESSURE,
+                        source="runtime",
+                        payload=pressure_payload,
+                    ),
+                )
+                hook_outcome = runtime._run_lifecycle_hooks(
+                    session=session,
+                    sequence=sequence,
+                    surface="context_pressure",
+                    payload=pressure_payload,
+                )
+                yield from hook_outcome.chunks
+                sequence = hook_outcome.last_sequence
+                if hook_outcome.failed_error is not None:
+                    logger.warning(
+                        "context_pressure hook failed for %s: %s",
+                        session.session.id,
+                        hook_outcome.failed_error,
+                    )
             current_chunk_session = session
             if is_final_step:
                 current_chunk_session = runtime._session_with_plan_state(
@@ -1505,6 +1549,10 @@ class RuntimeRunLoopCoordinator:
         latest_run_id = provider_usage.get("latest_run_id")
         if not isinstance(current_run_id, str) or latest_run_id != current_run_id:
             return None
+        current_provider_attempt = RuntimeRunLoopCoordinator._current_provider_attempt(session)
+        latest_provider_attempt = provider_usage.get("latest_provider_attempt")
+        if latest_provider_attempt != current_provider_attempt:
+            return None
         raw_latest = provider_usage.get("latest")
         if not isinstance(raw_latest, dict):
             return None
@@ -1530,6 +1578,13 @@ class RuntimeRunLoopCoordinator:
         runtime_state = cast(dict[str, object], raw_runtime_state)
         run_id = runtime_state.get("run_id")
         return run_id if isinstance(run_id, str) and run_id else None
+
+    @staticmethod
+    def _current_provider_attempt(session: SessionState) -> int:
+        raw_provider_attempt = session.metadata.get("provider_attempt", 0)
+        if isinstance(raw_provider_attempt, int) and not isinstance(raw_provider_attempt, bool):
+            return raw_provider_attempt
+        return 0
 
     @staticmethod
     def _build_memory_refreshed_payload(

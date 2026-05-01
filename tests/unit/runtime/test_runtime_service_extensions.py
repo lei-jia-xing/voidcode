@@ -9929,6 +9929,7 @@ def test_runtime_provider_turn_usage_is_persisted_in_session_metadata(tmp_path: 
             "cache_read_tokens": 0,
         },
         "latest_run_id": latest_run_id,
+        "latest_provider_attempt": 0,
         "cumulative": {
             "input_tokens": 10,
             "output_tokens": 3,
@@ -9958,6 +9959,7 @@ def test_runtime_context_pressure_ignores_stale_provider_usage(tmp_path: Path) -
                     "cache_read_tokens": 0,
                 },
                 "latest_run_id": "previous-run",
+                "latest_provider_attempt": 0,
                 "cumulative": {
                     "input_tokens": 90,
                     "output_tokens": 10,
@@ -9982,6 +9984,95 @@ def test_runtime_context_pressure_ignores_stale_provider_usage(tmp_path: Path) -
     )
 
     assert payload is None
+
+
+def test_runtime_context_pressure_ignores_previous_provider_attempt_usage(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path)
+    coordinator = runtime._run_loop_coordinator  # pyright: ignore[reportPrivateUsage]
+    session = SessionState(
+        session=SessionRef("stale-provider-attempt"),
+        status="running",
+        metadata={
+            "runtime_state": {"run_id": "current-run"},
+            "provider_attempt": 1,
+            "provider_usage": {
+                "latest": {
+                    "input_tokens": 90,
+                    "output_tokens": 10,
+                    "cache_creation_tokens": 0,
+                    "cache_read_tokens": 0,
+                },
+                "latest_run_id": "current-run",
+                "latest_provider_attempt": 0,
+                "cumulative": {
+                    "input_tokens": 90,
+                    "output_tokens": 10,
+                    "cache_creation_tokens": 0,
+                    "cache_read_tokens": 0,
+                },
+                "turn_count": 1,
+            },
+        },
+    )
+    context_window = RuntimeContextWindow(
+        prompt="fallback prompt",
+        model_context_window_tokens=100,
+        original_tool_result_count=0,
+        retained_tool_result_count=0,
+    )
+
+    payload = coordinator._build_context_pressure_payload(  # pyright: ignore[reportPrivateUsage]
+        session=session,
+        context_window=context_window,
+        threshold=0.7,
+    )
+
+    assert payload is None
+
+
+def test_runtime_context_pressure_emits_after_single_turn_provider_usage(
+    tmp_path: Path,
+) -> None:
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(
+                    ProviderTurnResult(
+                        output="done",
+                        usage=ProviderTokenUsage(input_tokens=75, output_tokens=5),
+                    ),
+                ),
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            context_window=RuntimeContextWindowConfig(
+                model_context_window_tokens=100,
+                context_pressure_threshold=0.7,
+            ),
+        ),
+        model_provider_registry=registry,
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="summarize"))
+
+    pressure_events = [
+        event for event in response.events if event.event_type == RUNTIME_CONTEXT_PRESSURE
+    ]
+    assert response.session.status == "completed"
+    assert response.output == "done"
+    assert len(pressure_events) == 1
+    payload = pressure_events[0].payload
+    assert payload["reason"] == "provider_usage_ratio_exceeded"
+    assert payload["provider_total_tokens"] == 80
+    assert payload["budget_max_tokens"] == 100
 
 
 def test_runtime_context_pressure_uses_provider_usage_when_available(tmp_path: Path) -> None:
