@@ -212,6 +212,26 @@ def hook_preset_snapshot_from_payload(payload: object) -> ResolvedHookPresetSnap
             raise ValueError(
                 f"persisted hook preset snapshot presets[{index}].guidance must be a string"
             )
+        builtin = get_builtin_hook_preset(ref)
+        if builtin is None:
+            raise ValueError(
+                f"persisted hook preset snapshot presets[{index}].ref references unknown "
+                f"hook preset: {ref}"
+            )
+        if source != "builtin":
+            raise ValueError(
+                f"persisted hook preset snapshot presets[{index}].source must be builtin"
+            )
+        if kind != builtin.kind:
+            raise ValueError(
+                f"persisted hook preset snapshot presets[{index}].kind does not match "
+                f"builtin hook preset: {ref}"
+            )
+        if guidance != builtin.guidance:
+            raise ValueError(
+                f"persisted hook preset snapshot presets[{index}].guidance does not match "
+                f"builtin hook preset: {ref}"
+            )
         refs.append(ref)
         presets.append({"ref": ref, "kind": kind, "source": source, "guidance": guidance})
     return ResolvedHookPresetSnapshot(refs=tuple(refs), presets=tuple(presets))
