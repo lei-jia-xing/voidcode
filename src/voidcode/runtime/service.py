@@ -5900,22 +5900,23 @@ class VoidCodeRuntime:
         policy: ContextWindowPolicy,
         effective_config: EffectiveRuntimeConfig,
     ) -> dict[str, object]:
-        candidate = self._distillation_candidate_from_provider(
+        candidate, failure_reason = self._distillation_candidate_from_provider(
             prompt=prompt,
             tool_results=tool_results,
             session_metadata=session_metadata,
             policy=policy,
             effective_config=effective_config,
         )
-        if candidate is None:
-            return session_metadata
         raw_runtime_state = session_metadata.get("runtime_state")
         runtime_state = (
             dict(cast(dict[str, object], raw_runtime_state))
             if isinstance(raw_runtime_state, dict)
             else {}
         )
-        runtime_state["distillation_candidate"] = candidate
+        if candidate is not None:
+            runtime_state["distillation_candidate"] = candidate
+        if failure_reason is not None:
+            runtime_state["distillation_failure_reason"] = failure_reason
         return {**session_metadata, "runtime_state": runtime_state}
 
     def _distillation_candidate_from_provider(
@@ -5926,9 +5927,9 @@ class VoidCodeRuntime:
         session_metadata: dict[str, object],
         policy: ContextWindowPolicy,
         effective_config: EffectiveRuntimeConfig,
-    ) -> dict[str, object] | None:
+    ) -> tuple[dict[str, object] | None, str | None]:
         if not tool_results:
-            return None
+            return None, "empty_tool_results"
         protected_recent_count = max(
             policy.minimum_retained_tool_results,
             policy.recent_tool_result_count,
@@ -5959,7 +5960,7 @@ class VoidCodeRuntime:
         selection = provider_target.selection
         provider_name = selection.provider
         if provider_name is None:
-            return None
+            return None, "missing_provider"
         provider = self._model_provider_registry.resolve(provider_name)
         turn_provider = provider.turn_provider()
         schema_prompt = (
@@ -5988,14 +5989,16 @@ class VoidCodeRuntime:
         try:
             result = turn_provider.propose_turn(request)
         except Exception:
-            return None
+            return None, "provider_error"
         if not isinstance(result.output, str) or not result.output.strip():
-            return None
+            return None, "empty_output"
         try:
             payload = json.loads(result.output)
         except json.JSONDecodeError:
-            return None
-        return cast(dict[str, object], payload) if isinstance(payload, dict) else None
+            return None, "invalid_json"
+        if not isinstance(payload, dict):
+            return None, "invalid_schema"
+        return cast(dict[str, object], payload), None
 
     def _assemble_provider_context(
         self,
