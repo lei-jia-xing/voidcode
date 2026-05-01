@@ -2489,7 +2489,7 @@ def test_litellm_backend_omits_ssl_verify_when_not_configured(
     assert "ssl_verify" not in payload
 
 
-def test_litellm_backend_serializes_default_ssl_verify_with_global_override(
+def test_litellm_backend_default_ssl_verify_waits_for_global_restore_without_serializing_call(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import voidcode.provider.litellm_backend as backend_module
@@ -2510,8 +2510,9 @@ def test_litellm_backend_serializes_default_ssl_verify_with_global_override(
         ),
     )
     entered_explicit_call = threading.Event()
+    entered_default_call = threading.Event()
+    release_default_call = threading.Event()
     release_explicit_call = threading.Event()
-    explicit_done = threading.Event()
     observations: list[tuple[str, object]] = []
     thread_errors: list[BaseException] = []
 
@@ -2531,7 +2532,8 @@ def test_litellm_backend_serializes_default_ssl_verify_with_global_override(
             assert release_explicit_call.wait(timeout=2)
         else:
             observations.append(("default", backend_module.litellm_module.ssl_verify))
-            explicit_done.set()
+            entered_default_call.set()
+            assert release_default_call.wait(timeout=2)
         return _StubCompletionResponse(content="ok")
 
     monkeypatch.setattr(backend_module.litellm_module, "completion", _blocking_completion)
@@ -2563,9 +2565,12 @@ def test_litellm_backend_serializes_default_ssl_verify_with_global_override(
 
     default_thread = threading.Thread(target=_run_default_provider)
     default_thread.start()
-    assert not explicit_done.wait(timeout=0.05)
+    assert not entered_default_call.wait(timeout=0.05)
     release_explicit_call.set()
+    assert entered_default_call.wait(timeout=2)
     explicit_thread.join(timeout=2)
+    assert explicit_thread.is_alive() is False
+    release_default_call.set()
     default_thread.join(timeout=2)
 
     assert thread_errors == []

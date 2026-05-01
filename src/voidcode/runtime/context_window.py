@@ -153,6 +153,7 @@ class ContextWindowPolicy:
     continuity_distillation_enabled: bool = False
     continuity_distillation_max_input_items: int = 12
     continuity_distillation_max_input_chars: int = 4000
+    importance_retention: bool = True
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "per_tool_result_tokens", dict(self.per_tool_result_tokens))
@@ -229,6 +230,7 @@ class ContextWindowPolicy:
         payload["continuity_distillation_max_input_chars"] = (
             self.continuity_distillation_max_input_chars
         )
+        payload["importance_retention"] = self.importance_retention
         return payload
 
 
@@ -282,6 +284,21 @@ class RuntimeContextWindow:
         if self.summary_source is not None:
             payload["summary_source"] = dict(self.summary_source)
         return payload
+
+
+@dataclass(frozen=True, slots=True)
+class ToolResultProjection:
+    prepared_results: tuple[ToolResult, ...]
+    retained_indexes: tuple[int, ...]
+    dropped_indexes: tuple[int, ...]
+    retained_results: tuple[ToolResult, ...]
+    dropped_results: tuple[ToolResult, ...]
+    truncated_count: int
+    original_tokens: int | None = None
+    retained_tokens: int | None = None
+    dropped_tokens: int | None = None
+    token_budget: int | None = None
+    token_estimate_source: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -685,10 +702,14 @@ def _optional_tool_string(result: ToolResult, key: str) -> str | None:
 
 
 def _dropped_tool_diagnostics(
-    results: tuple[ToolResult, ...], *, tokenizer_model: str | None = None
+    results: tuple[ToolResult, ...],
+    *,
+    original_indexes: tuple[int, ...] | None = None,
+    tokenizer_model: str | None = None,
 ) -> tuple[DroppedToolResultDiagnostic, ...]:
     diagnostics: list[DroppedToolResultDiagnostic] = []
-    for index, result in enumerate(results, start=1):
+    for position, result in enumerate(results):
+        index = original_indexes[position] + 1 if original_indexes is not None else position + 1
         diagnostics.append(
             DroppedToolResultDiagnostic(
                 tool_name=result.tool_name,
@@ -708,6 +729,99 @@ def _dropped_tool_diagnostics(
             )
         )
     return tuple(diagnostics)
+
+
+def _tool_result_importance_score(result: ToolResult) -> int:
+    score = 0
+    if result.status == "error":
+        score += 100
+    if result.error_kind is not None:
+        score += 20
+    if result.truncated or result.partial:
+        score += 10
+    if result.tool_name in {"todo_write", "task", "background_output"}:
+        score += 80
+    if result.tool_name in {"write_file", "edit", "multi_edit", "apply_patch"}:
+        score += 70
+    if result.tool_name == "shell_exec":
+        score += 30
+    if any(isinstance(result.data.get(key), str) for key in ("path", "filePath")):
+        score += 10
+    return score
+
+
+def _select_tool_result_indexes_by_importance(
+    results: tuple[ToolResult, ...],
+    *,
+    max_tool_results: int,
+    protected_recent_count: int,
+) -> tuple[int, ...]:
+    if not results:
+        return ()
+    protected_recent_count = min(protected_recent_count, len(results))
+    protected_start = len(results) - protected_recent_count
+    protected_indexes = set(range(protected_start, len(results)))
+    if max_tool_results == 0:
+        return tuple(sorted(protected_indexes))
+
+    count_limit = max(max_tool_results, protected_recent_count)
+    remaining_slots = max(0, count_limit - len(protected_indexes))
+    ranked_candidates = sorted(
+        range(0, protected_start),
+        key=lambda index: (_tool_result_importance_score(results[index]), index),
+        reverse=True,
+    )
+    selected = set(ranked_candidates[:remaining_slots]) | protected_indexes
+    return tuple(sorted(selected))
+
+
+def _select_recent_tool_result_indexes(
+    results: tuple[ToolResult, ...],
+    *,
+    max_tool_results: int,
+    protected_recent_count: int,
+) -> tuple[int, ...]:
+    if not results:
+        return ()
+    count_limit = max(max_tool_results, min(protected_recent_count, len(results)))
+    if max_tool_results == 0:
+        count_limit = min(protected_recent_count, len(results))
+    start = max(0, len(results) - count_limit)
+    return tuple(range(start, len(results)))
+
+
+def _retain_indexes_within_token_budget(
+    results: tuple[ToolResult, ...],
+    candidate_indexes: tuple[int, ...],
+    *,
+    token_budget: int,
+    protected_recent_count: int,
+    tokenizer_model: str | None,
+) -> tuple[int, ...]:
+    if not candidate_indexes:
+        return ()
+    protected_recent_count = min(protected_recent_count, len(results))
+    protected_start = len(results) - protected_recent_count
+    protected_indexes = {index for index in candidate_indexes if index >= protected_start}
+    retained = set(protected_indexes)
+    retained_tokens = sum(
+        _tool_result_token_estimate(results[index], tokenizer_model=tokenizer_model).tokens
+        for index in protected_indexes
+    )
+    ranked_candidates = sorted(
+        (index for index in candidate_indexes if index not in protected_indexes),
+        key=lambda index: (_tool_result_importance_score(results[index]), index),
+        reverse=True,
+    )
+    for index in ranked_candidates:
+        estimate = _tool_result_token_estimate(
+            results[index], tokenizer_model=tokenizer_model
+        ).tokens
+        if retained_tokens + estimate > token_budget:
+            continue
+        retained.add(index)
+        retained_tokens += estimate
+    return tuple(sorted(retained))
 
 
 def _policy_token_budget(policy: ContextWindowPolicy) -> int | None:
@@ -871,6 +985,15 @@ def _coerce_float(payload: Mapping[str, object], key: str, *, default: float) ->
     return float(raw)
 
 
+def _coerce_bool(payload: Mapping[str, object], key: str, *, default: bool) -> bool:
+    raw = payload.get(key)
+    if raw is None:
+        return default
+    if not isinstance(raw, bool):
+        raise ValueError(f"context window policy field '{key}' must be a boolean")
+    return raw
+
+
 def context_window_policy_from_payload(raw_payload: object) -> ContextWindowPolicy:
     if not isinstance(raw_payload, dict):
         raise ValueError("context window policy payload must be an object")
@@ -961,6 +1084,11 @@ def context_window_policy_from_payload(raw_payload: object) -> ContextWindowPoli
             "continuity_distillation_max_input_chars",
             default=ContextWindowPolicy().continuity_distillation_max_input_chars,
         ),
+        importance_retention=_coerce_bool(
+            payload,
+            "importance_retention",
+            default=ContextWindowPolicy().importance_retention,
+        ),
     )
 
 
@@ -1004,6 +1132,7 @@ def _build_continuity_state(
     prompt: str,
     session_metadata: Mapping[str, object],
     dropped_results: tuple[ToolResult, ...],
+    dropped_result_indexes: tuple[int, ...],
     retained_results: tuple[ToolResult, ...],
     retained_count: int,
     preview_item_limit: int,
@@ -1097,6 +1226,7 @@ def _build_continuity_state(
         token_estimate_source=token_estimate_source,
         dropped_tool_results=_dropped_tool_diagnostics(
             dropped_results,
+            original_indexes=dropped_result_indexes,
             tokenizer_model=tokenizer_model,
         ),
         distillation_source="deterministic",
@@ -1324,15 +1454,113 @@ def continuity_summary_metadata(
         dropped_count=continuity_state.dropped_tool_result_count,
         retained_count=continuity_state.retained_tool_result_count,
     )
-    summary_source = (
-        {
-            "tool_result_start": 0,
-            "tool_result_end": continuity_state.dropped_tool_result_count,
-        }
-        if summary_anchor is not None and continuity_state.source == "tool_result_window"
-        else None
-    )
+    summary_source = None
+    if summary_anchor is not None and continuity_state.source == "tool_result_window":
+        dropped_indexes = tuple(item.index for item in continuity_state.dropped_tool_results)
+        if dropped_indexes == tuple(range(1, continuity_state.dropped_tool_result_count + 1)):
+            summary_source = {
+                "tool_result_start": 0,
+                "tool_result_end": continuity_state.dropped_tool_result_count,
+            }
     return summary_anchor, summary_source
+
+
+def project_tool_results_for_context_window(
+    *,
+    tool_results: tuple[ToolResult, ...],
+    policy: ContextWindowPolicy,
+) -> ToolResultProjection:
+    token_budget = _policy_token_budget(policy)
+    original_count = len(tool_results)
+    protected_recent_count = max(
+        policy.minimum_retained_tool_results,
+        policy.recent_tool_result_count,
+    )
+    protected_recent_count = min(protected_recent_count, original_count)
+    protected_start = original_count - protected_recent_count
+    truncated_results: list[ToolResult] = []
+    truncated_count = 0
+    for index, result in enumerate(tool_results):
+        if index >= protected_start:
+            content_limit = policy.recent_tool_result_tokens
+        else:
+            content_limit = _tool_limit_for_result(result, policy)
+        truncated_result, was_truncated = _truncate_tool_result_content(
+            result,
+            limit=content_limit,
+            tokenizer_model=policy.tokenizer_model,
+        )
+        truncated_results.append(truncated_result)
+        if was_truncated:
+            truncated_count += 1
+    prepared_results = tuple(truncated_results)
+
+    count_limited_indexes = (
+        _select_tool_result_indexes_by_importance(
+            prepared_results,
+            max_tool_results=policy.max_tool_results,
+            protected_recent_count=protected_recent_count,
+        )
+        if policy.importance_retention
+        else _select_recent_tool_result_indexes(
+            prepared_results,
+            max_tool_results=policy.max_tool_results,
+            protected_recent_count=protected_recent_count,
+        )
+    )
+    retained_indexes = (
+        _retain_indexes_within_token_budget(
+            prepared_results,
+            count_limited_indexes,
+            token_budget=token_budget,
+            protected_recent_count=protected_recent_count,
+            tokenizer_model=policy.tokenizer_model,
+        )
+        if token_budget is not None
+        else count_limited_indexes
+    )
+    retained_index_set = set(retained_indexes)
+    dropped_indexes = tuple(
+        index for index in range(len(prepared_results)) if index not in retained_index_set
+    )
+    retained_results = tuple(prepared_results[index] for index in retained_indexes)
+    dropped_results = tuple(prepared_results[index] for index in dropped_indexes)
+
+    original_tokens = None
+    retained_tokens = None
+    dropped_tokens = None
+    token_estimate_source = None
+    if token_budget is not None:
+        original_tokens = sum(
+            _tool_result_token_estimate(
+                result,
+                tokenizer_model=policy.tokenizer_model,
+            ).tokens
+            for result in prepared_results
+        )
+        retained_tokens = sum(
+            _tool_result_token_estimate(
+                result,
+                tokenizer_model=policy.tokenizer_model,
+            ).tokens
+            for result in retained_results
+        )
+        dropped_tokens = original_tokens - retained_tokens
+        token_estimate_source = _token_estimate_source(policy)
+
+    return ToolResultProjection(
+        prepared_results=prepared_results,
+        retained_indexes=retained_indexes,
+        dropped_indexes=dropped_indexes,
+        retained_results=retained_results,
+        dropped_results=dropped_results,
+        truncated_count=truncated_count,
+        original_tokens=original_tokens,
+        retained_tokens=retained_tokens,
+        dropped_tokens=dropped_tokens,
+        token_budget=token_budget,
+        token_estimate_source=token_estimate_source,
+    )
 
 
 def prepare_provider_context(
@@ -1385,77 +1613,26 @@ def prepare_provider_context(
             reserved_output_tokens=effective_policy.reserved_output_tokens,
         )
 
-    protected_recent_count = max(
-        effective_policy.minimum_retained_tool_results,
-        effective_policy.recent_tool_result_count,
+    projection = project_tool_results_for_context_window(
+        tool_results=tool_results,
+        policy=effective_policy,
     )
-    protected_recent_count = min(protected_recent_count, original_count)
-    protected_start = original_count - protected_recent_count
-    truncated_results: list[ToolResult] = []
-    truncated_count = 0
-    for index, result in enumerate(tool_results):
-        if index >= protected_start:
-            content_limit = effective_policy.recent_tool_result_tokens
-        else:
-            content_limit = _tool_limit_for_result(result, effective_policy)
-        truncated_result, was_truncated = _truncate_tool_result_content(
-            result,
-            limit=content_limit,
-            tokenizer_model=effective_policy.tokenizer_model,
-        )
-        truncated_results.append(truncated_result)
-        if was_truncated:
-            truncated_count += 1
-    prepared_results = tuple(truncated_results)
-
-    if effective_policy.max_tool_results == 0:
-        count_limited_results = (
-            prepared_results[-protected_recent_count:] if protected_recent_count else ()
-        )
-    else:
-        count_limit = max(effective_policy.max_tool_results, protected_recent_count)
-        count_limited_results = prepared_results[-count_limit:]
-
-    if token_budget is not None:
-        retained_results = _retain_results_within_token_budget(
-            count_limited_results,
-            token_budget=token_budget,
-            minimum_retained_results=protected_recent_count,
-            tokenizer_model=effective_policy.tokenizer_model,
-        )
-    else:
-        retained_results = count_limited_results
-
+    retained_results = projection.retained_results
     retained_count = len(retained_results)
     compacted = retained_count < original_count
-    dropped_results = prepared_results[: original_count - retained_count]
-    original_tokens = None
-    retained_tokens = None
-    dropped_tokens = None
-    token_estimate_source = None
-    if token_budget is not None:
-        original_tokens = sum(
-            _tool_result_token_estimate(
-                result,
-                tokenizer_model=effective_policy.tokenizer_model,
-            ).tokens
-            for result in prepared_results
-        )
-        retained_tokens = sum(
-            _tool_result_token_estimate(
-                result,
-                tokenizer_model=effective_policy.tokenizer_model,
-            ).tokens
-            for result in retained_results
-        )
-        dropped_tokens = original_tokens - retained_tokens
-        token_estimate_source = _token_estimate_source(effective_policy)
+    dropped_indexes = projection.dropped_indexes
+    dropped_results = projection.dropped_results
+    original_tokens = projection.original_tokens
+    retained_tokens = projection.retained_tokens
+    dropped_tokens = projection.dropped_tokens
+    token_estimate_source = projection.token_estimate_source
 
     continuity_state = (
         _build_continuity_state(
             prompt=prompt,
             session_metadata=session_metadata,
             dropped_results=dropped_results,
+            dropped_result_indexes=dropped_indexes,
             retained_results=retained_results,
             retained_count=retained_count,
             preview_item_limit=effective_policy.continuity_preview_items,
@@ -1498,7 +1675,7 @@ def prepare_provider_context(
         token_estimate_source=token_estimate_source,
         model_context_window_tokens=effective_policy.model_context_window_tokens,
         reserved_output_tokens=effective_policy.reserved_output_tokens,
-        truncated_tool_result_count=truncated_count,
+        truncated_tool_result_count=projection.truncated_count,
         continuity_state=continuity_state,
         summary_anchor=summary_anchor,
         summary_source=summary_source,
