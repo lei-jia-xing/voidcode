@@ -37,6 +37,10 @@ from ..provider.auth import (
     ProviderAuthResolutionError,
     ProviderAuthResolver,
 )
+from ..provider.config import (
+    DEFAULT_PROVIDER_TRANSIENT_RETRY_CONFIG,
+    ProviderTransientRetryConfig,
+)
 from ..provider.errors import format_invalid_provider_config_error, guidance_for_provider_error_kind
 from ..provider.model_catalog import (
     ProviderModelCatalog,
@@ -5677,6 +5681,52 @@ class VoidCodeRuntime:
         # Referenced via extracted collaborators.
         raw_provider_attempt = metadata.get("provider_attempt", 0)
         return raw_provider_attempt if isinstance(raw_provider_attempt, int) else 0
+
+    @staticmethod
+    def _provider_retry_attempt_from_metadata(metadata: dict[str, object]) -> int:
+        raw_provider_retry_attempt = metadata.get("provider_retry_attempt", 0)
+        return raw_provider_retry_attempt if isinstance(raw_provider_retry_attempt, int) else 0
+
+    def _provider_transient_retry_config(
+        self,
+        *,
+        provider_name: str,
+        session_metadata: dict[str, object],
+    ) -> ProviderTransientRetryConfig:
+        _ = session_metadata
+        providers = self._config.providers
+        if providers is None:
+            return DEFAULT_PROVIDER_TRANSIENT_RETRY_CONFIG
+        provider_config = None
+        if provider_name == "opencode-go":
+            provider_config = providers.opencode_go
+        elif provider_name == "openai":
+            provider_config = providers.openai
+        elif provider_name == "anthropic":
+            provider_config = providers.anthropic
+        elif provider_name == "google":
+            provider_config = providers.google
+        elif provider_name == "copilot":
+            provider_config = providers.copilot
+        elif provider_name == "litellm":
+            provider_config = providers.litellm
+        elif provider_name == "deepseek":
+            provider_config = providers.deepseek
+        elif provider_name == "glm":
+            provider_config = providers.glm
+        elif provider_name == "grok":
+            provider_config = providers.grok
+        elif provider_name == "minimax":
+            provider_config = providers.minimax
+        elif provider_name == "kimi":
+            provider_config = providers.kimi
+        elif provider_name == "qwen":
+            provider_config = providers.qwen
+        else:
+            provider_config = providers.custom.get(provider_name)
+        if provider_config is None or provider_config.transient_retry is None:
+            return DEFAULT_PROVIDER_TRANSIENT_RETRY_CONFIG
+        return provider_config.transient_retry
 
     @staticmethod
     def _context_window_config_from_policy(
