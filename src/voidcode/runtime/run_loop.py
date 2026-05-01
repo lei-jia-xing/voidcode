@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import logging
 import queue
+import random
 import threading
+import time
 from collections.abc import Generator, Iterator, Mapping
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, cast
@@ -15,6 +17,7 @@ from ..provider.errors import (
     SingleAgentContextLimitError,
     classify_provider_error,
     format_fallback_exhausted_error,
+    format_provider_retry_exhausted_error,
 )
 from ..provider.protocol import (
     ProviderAbortSignal,
@@ -44,6 +47,7 @@ from .contracts import RuntimeProviderContextPolicyDecision, RuntimeStreamChunk
 from .events import (
     RUNTIME_CONTEXT_PRESSURE,
     RUNTIME_MEMORY_REFRESHED,
+    RUNTIME_PROVIDER_TRANSIENT_RETRY,
     RUNTIME_QUESTION_REQUESTED,
     RUNTIME_SKILL_LOADED,
     RUNTIME_TODO_UPDATED,
@@ -63,6 +67,20 @@ logger = logging.getLogger(__name__)
 
 _TOOL_PROGRESS_QUEUE_MAX_ITEMS = 128
 _TOOL_PROGRESS_POLL_SECONDS = 0.05
+_PROVIDER_TRANSIENT_RETRYABLE_KINDS = frozenset({"rate_limit", "transient_failure"})
+
+
+def _provider_transient_retry_delay_ms(
+    *,
+    retry_attempt: int,
+    base_delay_ms: float,
+    max_delay_ms: float,
+    jitter: bool,
+) -> int:
+    capped_delay = min(base_delay_ms * (2 ** max(retry_attempt - 1, 0)), max_delay_ms)
+    if jitter and capped_delay > 0:
+        capped_delay = random.uniform(0, capped_delay)
+    return max(0, int(round(capped_delay)))
 
 
 @dataclass(frozen=True, slots=True)
@@ -658,6 +676,9 @@ class RuntimeRunLoopCoordinator:
         active_permission_policy = permission_policy or runtime._permission_policy
         continuity_to_reinject: RuntimeContinuityState | None = preserved_continuity_state
         provider_attempt = runtime._provider_attempt_from_metadata(graph_request.metadata)
+        provider_retry_attempt: int = runtime._provider_retry_attempt_from_metadata(
+            graph_request.metadata
+        )
         reasoning_capture_state = runtime._reasoning_capture_state()
         active_graph_request: GraphRunRequest = graph_request
         while True:
@@ -904,6 +925,7 @@ class RuntimeRunLoopCoordinator:
                     tool_results=tuple(tool_results),
                     session=session,
                 )
+                provider_retry_attempt = 0
             except Exception as exc:
                 current_provider_attempt = runtime._provider_attempt_from_metadata(
                     {"provider_attempt": provider_attempt}
@@ -950,6 +972,87 @@ class RuntimeRunLoopCoordinator:
                         provider_attempt=current_provider_attempt,
                     )
                     next_attempt = current_provider_attempt + 1
+                    transient_retry_config = runtime._provider_transient_retry_config(
+                        provider_name=provider_error.provider_name,
+                        session_metadata=session.metadata,
+                    )
+                    current_provider_retry_attempt: int = int(provider_retry_attempt)
+                    if (
+                        provider_error.kind in _PROVIDER_TRANSIENT_RETRYABLE_KINDS
+                        and current_provider_retry_attempt < transient_retry_config.max_retries
+                    ):
+                        retry_attempt: int = current_provider_retry_attempt + 1
+                        delay_ms = _provider_transient_retry_delay_ms(
+                            retry_attempt=retry_attempt,
+                            base_delay_ms=transient_retry_config.base_delay_ms,
+                            max_delay_ms=transient_retry_config.max_delay_ms,
+                            jitter=transient_retry_config.jitter,
+                        )
+                        logger.info(
+                            (
+                                "provider transient retry for session %s: %s/%s "
+                                "(reason=%s, retry_attempt=%s, max_retries=%s, delay_ms=%s)"
+                            ),
+                            session.session.id,
+                            provider_error.provider_name,
+                            provider_error.model_name,
+                            provider_error.kind,
+                            retry_attempt,
+                            transient_retry_config.max_retries,
+                            delay_ms,
+                        )
+                        sequence += 1
+                        yield RuntimeStreamChunk(
+                            kind="event",
+                            session=session,
+                            event=EventEnvelope(
+                                session_id=session.session.id,
+                                sequence=sequence,
+                                event_type=RUNTIME_PROVIDER_TRANSIENT_RETRY,
+                                source="runtime",
+                                payload={
+                                    "reason": provider_error.kind,
+                                    "provider": provider_error.provider_name,
+                                    "model": provider_error.model_name,
+                                    "retry_attempt": retry_attempt,
+                                    "max_retries": transient_retry_config.max_retries,
+                                    "delay_ms": delay_ms,
+                                    **(
+                                        {"provider_error_details": provider_error.details}
+                                        if provider_error.details is not None
+                                        else {}
+                                    ),
+                                },
+                            ),
+                        )
+                        if delay_ms > 0:
+                            time.sleep(delay_ms / 1000.0)
+                        provider_retry_attempt = int(retry_attempt)
+                        retry_metadata: dict[str, object] = {
+                            **current_metadata,
+                            "provider_attempt": current_provider_attempt,
+                            "provider_retry_attempt": provider_retry_attempt,
+                        }
+                        session = SessionState(
+                            session=session.session,
+                            status=session.status,
+                            turn=session.turn,
+                            metadata={
+                                **session.metadata,
+                                "provider_attempt": current_provider_attempt,
+                                "provider_retry_attempt": provider_retry_attempt,
+                            },
+                        )
+                        active_graph_request = GraphRunRequest(
+                            session=session,
+                            prompt=current_prompt,
+                            available_tools=current_available_tools,
+                            context_window=context_window,
+                            assembled_context=active_graph_request.assembled_context,
+                            metadata=retry_metadata,
+                            abort_signal=current_abort_signal,
+                        )
+                        continue
                     if fallback_selection is not None:
                         next_target = fallback_selection.provider_target
                         logger.info(
@@ -990,6 +1093,7 @@ class RuntimeRunLoopCoordinator:
                             ),
                         )
                         provider_attempt = fallback_selection.provider_attempt
+                        provider_retry_attempt = 0
                         fallback_prompt: str = current_prompt
                         fallback_available_tools: tuple[ToolDefinition, ...] = (
                             current_available_tools
@@ -1001,13 +1105,18 @@ class RuntimeRunLoopCoordinator:
                         fallback_metadata: dict[str, object] = {
                             **current_metadata,
                             "provider_attempt": provider_attempt,
+                            "provider_retry_attempt": provider_retry_attempt,
                         }
                         fallback_abort_signal: ProviderAbortSignal | None = current_abort_signal
                         session = SessionState(
                             session=session.session,
                             status=session.status,
                             turn=session.turn,
-                            metadata={**session.metadata, "provider_attempt": provider_attempt},
+                            metadata={
+                                **session.metadata,
+                                "provider_attempt": provider_attempt,
+                                "provider_retry_attempt": provider_retry_attempt,
+                            },
                         )
                         graph = fallback_selection.graph
                         active_graph_request = GraphRunRequest(
@@ -1031,16 +1140,32 @@ class RuntimeRunLoopCoordinator:
                         yield runtime._failed_chunk(
                             session=session,
                             sequence=sequence + 1,
-                            error=format_fallback_exhausted_error(
-                                provider_name=provider_error.provider_name,
-                                model_name=provider_error.model_name,
-                                attempt=next_attempt,
+                            error=(
+                                format_provider_retry_exhausted_error(
+                                    provider_name=provider_error.provider_name,
+                                    model_name=provider_error.model_name,
+                                    retry_attempts=provider_retry_attempt,
+                                )
+                                if provider_error.kind in _PROVIDER_TRANSIENT_RETRYABLE_KINDS
+                                else format_fallback_exhausted_error(
+                                    provider_name=provider_error.provider_name,
+                                    model_name=provider_error.model_name,
+                                    attempt=next_attempt,
+                                )
                             ),
                             payload={
                                 "provider_error_kind": provider_error.kind,
                                 "provider": provider_error.provider_name,
                                 "model": provider_error.model_name,
                                 "fallback_exhausted": True,
+                                **(
+                                    {
+                                        "provider_retry_exhausted": True,
+                                        "provider_retry_attempts": provider_retry_attempt,
+                                    }
+                                    if provider_error.kind in _PROVIDER_TRANSIENT_RETRYABLE_KINDS
+                                    else {}
+                                ),
                                 **(
                                     {"provider_error_details": provider_error.details}
                                     if provider_error.details is not None
@@ -1102,6 +1227,13 @@ class RuntimeRunLoopCoordinator:
                 session,
                 getattr(graph_step, "provider_usage", None),
             )
+            if runtime._provider_retry_attempt_from_metadata(session.metadata) != 0:
+                session = SessionState(
+                    session=session.session,
+                    status=session.status,
+                    turn=session.turn,
+                    metadata={**session.metadata, "provider_retry_attempt": 0},
+                )
             pressure_payload = None
             if getattr(graph_step, "provider_usage", None) is not None:
                 pressure_payload = self._build_context_pressure_payload(

@@ -12,6 +12,7 @@ from voidcode.provider.config import (
     OpenAIProviderConfig,
     ProviderConfigs,
     ProviderFallbackConfig,
+    ProviderTransientRetryConfig,
     SimplifiedProviderConfig,
     merge_provider_configs,
     parse_provider_configs_payload,
@@ -43,6 +44,16 @@ def test_parse_provider_configs_payload_parses_provider_blocks_directly() -> Non
                 "auth_scheme": "token",
                 "api_key_env_var": "LITELLM_KEY",
                 "model_map": {"gpt-4o": "openrouter/openai/gpt-4o"},
+                "transient_retry": {
+                    "max_retries": 3,
+                    "base_delay_ms": 250,
+                    "max_delay_ms": 2000,
+                    "jitter": False,
+                },
+            },
+            "opencode": {
+                "auth_scheme": "none",
+                "transient_retry": {"max_retries": 0},
             },
             "custom": {
                 "llama-local": {
@@ -89,6 +100,17 @@ def test_parse_provider_configs_payload_parses_provider_blocks_directly() -> Non
             base_url="http://localhost:4000",
             auth_scheme="token",
             model_map={"gpt-4o": "openrouter/openai/gpt-4o"},
+            transient_retry=ProviderTransientRetryConfig(
+                max_retries=3,
+                base_delay_ms=250.0,
+                max_delay_ms=2000.0,
+                jitter=False,
+            ),
+        ),
+        opencode=LiteLLMProviderConfig(
+            auth_scheme="none",
+            auth_scheme_explicit=True,
+            transient_retry=ProviderTransientRetryConfig(max_retries=0),
         ),
         custom={
             "llama-local": LiteLLMProviderConfig(
@@ -98,6 +120,56 @@ def test_parse_provider_configs_payload_parses_provider_blocks_directly() -> Non
             )
         },
     )
+
+
+def test_parse_provider_configs_payload_parses_transient_retry_for_simplified_provider() -> None:
+    parsed = parse_provider_configs_payload(
+        {
+            "opencode-go": {
+                "api_key_env_var": "OPENCODE_API_KEY",
+                "transient_retry": {
+                    "max_retries": 4,
+                    "base_delay_ms": 500,
+                    "max_delay_ms": 4000,
+                    "jitter": False,
+                },
+            }
+        },
+        source="runtime config field 'providers'",
+    )
+
+    assert parsed == ProviderConfigs(
+        opencode_go=SimplifiedProviderConfig(
+            api_key_env_var="OPENCODE_API_KEY",
+            transient_retry=ProviderTransientRetryConfig(
+                max_retries=4,
+                base_delay_ms=500.0,
+                max_delay_ms=4000.0,
+                jitter=False,
+            ),
+        )
+    )
+
+
+def test_parse_provider_configs_payload_rejects_invalid_transient_retry_delay_order() -> None:
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"runtime config field 'providers\.opencode-go\.transient_retry\.max_delay_ms' "
+            r"must be greater than or equal to base_delay_ms"
+        ),
+    ):
+        _ = parse_provider_configs_payload(
+            {
+                "opencode-go": {
+                    "transient_retry": {
+                        "base_delay_ms": 2000,
+                        "max_delay_ms": 1000,
+                    }
+                }
+            },
+            source="runtime config field 'providers'",
+        )
 
 
 def test_parse_provider_configs_payload_rejects_unknown_provider_block() -> None:

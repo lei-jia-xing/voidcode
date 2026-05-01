@@ -1966,6 +1966,7 @@ def test_provider_runtime_falls_back_to_next_provider_target(tmp_path: Path) -> 
     permission_module = importlib.import_module("voidcode.runtime.permission")
     config_module = importlib.import_module("voidcode.runtime.config")
     model_provider_module = importlib.import_module("voidcode.provider.registry")
+    provider_config_module = importlib.import_module("voidcode.provider.config")
     provider_protocol_module = importlib.import_module("voidcode.runtime.provider_protocol")
     service_module = importlib.import_module("voidcode.runtime.service")
 
@@ -1980,6 +1981,13 @@ def test_provider_runtime_falls_back_to_next_provider_target(tmp_path: Path) -> 
                 provider_fallback=config_module.RuntimeProviderFallbackConfig(
                     preferred_model="opencode/gpt-5.4",
                     fallback_models=("custom/demo",),
+                ),
+                providers=config_module.RuntimeProvidersConfig(
+                    opencode=provider_config_module.LiteLLMProviderConfig(
+                        transient_retry=provider_config_module.ProviderTransientRetryConfig(
+                            max_retries=0,
+                        )
+                    )
                 ),
             ),
             permission_policy=permission_module.PermissionPolicy(mode="allow"),
@@ -2024,6 +2032,176 @@ def test_provider_runtime_falls_back_to_next_provider_target(tmp_path: Path) -> 
         "reason": "rate_limit",
         "from_provider": "opencode",
         "from_model": "gpt-5.4",
+        "to_provider": "custom",
+        "to_model": "demo",
+        "attempt": 1,
+    }
+
+
+def test_provider_runtime_retries_transient_error_on_same_target(tmp_path: Path) -> None:
+    runtime_request, _ = _load_runtime_types()
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    config_module = importlib.import_module("voidcode.runtime.config")
+    model_provider_module = importlib.import_module("voidcode.provider.registry")
+    provider_config_module = importlib.import_module("voidcode.provider.config")
+    provider_protocol_module = importlib.import_module("voidcode.runtime.provider_protocol")
+    service_module = importlib.import_module("voidcode.runtime.service")
+
+    runtime = cast(
+        RuntimeRunner,
+        service_module.VoidCodeRuntime(
+            workspace=tmp_path,
+            config=config_module.RuntimeConfig(
+                approval_mode="allow",
+                execution_engine="provider",
+                model="opencode-go/glm-5.1",
+                providers=config_module.RuntimeProvidersConfig(
+                    opencode_go=provider_config_module.SimplifiedProviderConfig(
+                        transient_retry=provider_config_module.ProviderTransientRetryConfig(
+                            max_retries=2,
+                            base_delay_ms=0,
+                            max_delay_ms=0,
+                            jitter=False,
+                        )
+                    )
+                ),
+            ),
+            permission_policy=permission_module.PermissionPolicy(mode="allow"),
+            model_provider_registry=model_provider_module.ModelProviderRegistry(
+                providers={
+                    "opencode-go": _ScriptedModelProvider(
+                        name="opencode-go",
+                        outcomes=(
+                            provider_protocol_module.ProviderExecutionError(
+                                kind="transient_failure",
+                                provider_name="opencode-go",
+                                model_name="glm-5.1",
+                                message="temporary ssl failure",
+                            ),
+                            provider_protocol_module.ProviderTurnResult(output="retry ok"),
+                        ),
+                    ),
+                }
+            ),
+        ),
+    )
+
+    response = runtime.run(runtime_request(prompt="read sample.txt", session_id="retry-run"))
+
+    assert response.session.status == "completed"
+    assert response.output == "retry ok"
+    assert [event.event_type for event in response.events] == [
+        "runtime.request_received",
+        "runtime.skills_loaded",
+        "runtime.provider_transient_retry",
+        "graph.loop_step",
+        "graph.model_turn",
+        "graph.loop_step",
+        "graph.response_ready",
+    ]
+    assert response.events[2].payload == {
+        "reason": "transient_failure",
+        "provider": "opencode-go",
+        "model": "glm-5.1",
+        "retry_attempt": 1,
+        "max_retries": 2,
+        "delay_ms": 0,
+    }
+
+
+def test_provider_runtime_falls_back_after_same_target_retry_budget(
+    tmp_path: Path,
+) -> None:
+    runtime_request, _ = _load_runtime_types()
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    config_module = importlib.import_module("voidcode.runtime.config")
+    model_provider_module = importlib.import_module("voidcode.provider.registry")
+    provider_config_module = importlib.import_module("voidcode.provider.config")
+    provider_protocol_module = importlib.import_module("voidcode.runtime.provider_protocol")
+    service_module = importlib.import_module("voidcode.runtime.service")
+
+    runtime = cast(
+        RuntimeRunner,
+        service_module.VoidCodeRuntime(
+            workspace=tmp_path,
+            config=config_module.RuntimeConfig(
+                approval_mode="allow",
+                execution_engine="provider",
+                model="opencode-go/glm-5.1",
+                provider_fallback=config_module.RuntimeProviderFallbackConfig(
+                    preferred_model="opencode-go/glm-5.1",
+                    fallback_models=("custom/demo",),
+                ),
+                providers=config_module.RuntimeProvidersConfig(
+                    opencode_go=provider_config_module.SimplifiedProviderConfig(
+                        transient_retry=provider_config_module.ProviderTransientRetryConfig(
+                            max_retries=1,
+                            base_delay_ms=0,
+                            max_delay_ms=0,
+                            jitter=False,
+                        )
+                    )
+                ),
+            ),
+            permission_policy=permission_module.PermissionPolicy(mode="allow"),
+            model_provider_registry=model_provider_module.ModelProviderRegistry(
+                providers={
+                    "opencode-go": _ScriptedModelProvider(
+                        name="opencode-go",
+                        outcomes=(
+                            provider_protocol_module.ProviderExecutionError(
+                                kind="transient_failure",
+                                provider_name="opencode-go",
+                                model_name="glm-5.1",
+                                message="first ssl failure",
+                            ),
+                            provider_protocol_module.ProviderExecutionError(
+                                kind="transient_failure",
+                                provider_name="opencode-go",
+                                model_name="glm-5.1",
+                                message="second ssl failure",
+                            ),
+                        ),
+                    ),
+                    "custom": _ScriptedModelProvider(
+                        name="custom",
+                        outcomes=(
+                            provider_protocol_module.ProviderTurnResult(output="fallback ok"),
+                        ),
+                    ),
+                }
+            ),
+        ),
+    )
+
+    response = runtime.run(
+        runtime_request(prompt="read sample.txt", session_id="retry-then-fallback-run")
+    )
+
+    assert response.session.status == "completed"
+    assert response.output == "fallback ok"
+    assert [event.event_type for event in response.events] == [
+        "runtime.request_received",
+        "runtime.skills_loaded",
+        "runtime.provider_transient_retry",
+        "runtime.provider_fallback",
+        "graph.loop_step",
+        "graph.model_turn",
+        "graph.loop_step",
+        "graph.response_ready",
+    ]
+    assert response.events[2].payload == {
+        "reason": "transient_failure",
+        "provider": "opencode-go",
+        "model": "glm-5.1",
+        "retry_attempt": 1,
+        "max_retries": 1,
+        "delay_ms": 0,
+    }
+    assert response.events[3].payload == {
+        "reason": "transient_failure",
+        "from_provider": "opencode-go",
+        "from_model": "glm-5.1",
         "to_provider": "custom",
         "to_model": "demo",
         "attempt": 1,
