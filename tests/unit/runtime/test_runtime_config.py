@@ -314,6 +314,8 @@ def test_runtime_config_defaults_to_provider_for_product_runs(
     assert config.model is None
     assert RuntimeConfig().execution_engine == "provider"
     assert RuntimeContextWindowConfig().max_tool_results == 8
+    assert RuntimeContextWindowConfig().recent_tool_result_tokens == 3_000
+    assert RuntimeContextWindowConfig().default_tool_result_tokens == 1_500
 
 
 def test_runtime_config_supports_provider_first_opt_in_with_stub_model(
@@ -403,7 +405,11 @@ def test_runtime_config_uses_current_context_window_defaults_for_partial_repo_fi
     config = load_runtime_config(tmp_path, env={})
 
     assert config.context_window is not None
-    assert config.context_window == RuntimeContextWindowConfig(auto_compaction=True)
+    assert config.context_window == RuntimeContextWindowConfig(
+        auto_compaction=True,
+        recent_tool_result_tokens=3_000,
+        default_tool_result_tokens=1_500,
+    )
     assert config.context_window.max_tool_results == 8
 
 
