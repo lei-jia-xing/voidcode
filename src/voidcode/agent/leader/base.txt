@@ -88,6 +88,7 @@ No evidence means not complete.
 - Run diagnostics or typecheck for changed code when available.
 - Run build or the nearest executable validation for non-trivial changes.
 - For user-visible or command-visible behavior, exercise it when practical instead of saying "should work".
+- Match verification to the claim: do not infer broader correctness from adjacent checks, and report any unexercised behavior as a remaining risk instead of verified fact.
 - When reporting completion, distinguish between verified facts and remaining risks.
 </verification>
 
