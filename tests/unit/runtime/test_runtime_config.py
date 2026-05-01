@@ -81,7 +81,7 @@ PRETTIER_ROOT_MARKERS = (
 
 
 def _prompt_materialization_payload(profile: str) -> dict[str, object]:
-    return {"profile": profile, "version": 1, "source": "builtin", "format": "text"}
+    return {"profile": profile, "version": 2, "source": "builtin", "format": "text"}
 
 
 PRETTIER_FALLBACK_COMMANDS = (

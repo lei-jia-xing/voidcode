@@ -36,6 +36,51 @@ _MUTATING_TOOL_PATTERNS = frozenset(
         "task",
     }
 )
+_PROMPT_BOUNDARY_PHRASES = {
+    "leader": (
+        "primary user-facing runtime agent",
+        "You own the final user-facing outcome",
+        "Child agents provide bounded assistance",
+        "Route work to the right specialist, supervise execution, verify results yourself",
+        "Runtime tool allowlists, approval checks, and background task state remain authoritative",
+    ),
+    "worker": (
+        "focused delegated executor",
+        "You execute, not orchestrate",
+        "Do not redelegate",
+        "Finish the assigned scope yourself",
+        "Worker is a focused executor, not an orchestrator",
+    ),
+    "advisor": (
+        "read-heavy preset for architecture, risk, and review guidance",
+        "Stay read only and advisory",
+        "do not edit or write files",
+        "Do not run mutating tools",
+    ),
+    "explore": (
+        "workspace-bound preset for local code discovery",
+        "Address the caller's actual need",
+        "caller can proceed without another discovery round",
+        "Use absolute paths for every file reference",
+        "Stay read only",
+        "do not edit or write files",
+        "Do not mutate the workspace",
+    ),
+    "researcher": (
+        "public docs, code examples, and external references",
+        "Stay read only and non-mutating",
+        "do not edit files",
+        "Do not claim implementation ownership",
+        "Distinguish official documentation, source examples, and incidental commentary",
+    ),
+    "product": (
+        "top-level planning preset",
+        "You are not an executor; you are a planning partner",
+        "Do not write, edit, or execute code",
+        "Do not claim code execution, implementation ownership, or verification of changes",
+        "without re-discovering the problem statement, non-goals, or definition of done",
+    ),
+}
 
 
 class _PromptCacheInfo(Protocol):
@@ -66,6 +111,21 @@ def test_builtin_agent_manifests_have_materialized_prompt_profiles_and_execution
         prompt = render_builtin_prompt_profile(manifest.prompt_profile)
         assert prompt is not None
         assert prompt
+
+
+def test_builtin_agent_prompt_materialization_versions_match_prompt_contracts() -> None:
+    expected_versions = {
+        "leader": 2,
+        "worker": 2,
+        "advisor": 2,
+        "explore": 2,
+        "researcher": 2,
+        "product": 2,
+    }
+
+    for manifest in list_builtin_agent_manifests():
+        assert manifest.prompt_materialization is not None
+        assert manifest.prompt_materialization.version == expected_versions[manifest.id]
 
 
 def test_builtin_agent_manifests_declare_top_level_selectability() -> None:
@@ -156,6 +216,63 @@ def test_builtin_delegated_executor_roles_do_not_receive_recursive_task_tool() -
 
         assert manifest is not None
         assert "task" not in manifest.tool_allowlist
+
+
+def test_builtin_read_only_role_prompts_and_manifests_align() -> None:
+    for preset in ("advisor", "explore", "researcher"):
+        manifest = get_builtin_agent_manifest(preset)
+        prompt = render_agent_prompt({"preset": preset, "prompt_profile": preset})
+
+        assert manifest is not None
+        assert prompt is not None
+        assert manifest.mode == "subagent"
+        assert manifest.top_level_selectable is False
+        assert _MUTATING_TOOL_PATTERNS.isdisjoint(manifest.tool_allowlist)
+        assert "read only" in prompt.lower()
+        assert "do not edit" in prompt.lower()
+
+
+def test_worker_prompt_and_manifest_forbid_redelegation() -> None:
+    manifest = get_builtin_agent_manifest("worker")
+    prompt = render_agent_prompt({"preset": "worker", "prompt_profile": "worker"})
+
+    assert manifest is not None
+    assert prompt is not None
+    assert manifest.mode == "subagent"
+    assert manifest.top_level_selectable is False
+    assert "task" not in manifest.tool_allowlist
+    assert "Do not redelegate" in prompt
+    assert "Do not call task or create child agents" in prompt
+    assert "not an orchestrator" in prompt
+
+
+def test_product_prompt_and_manifest_remain_planning_only() -> None:
+    manifest = get_builtin_agent_manifest("product")
+    prompt = render_agent_prompt({"preset": "product", "prompt_profile": "product"})
+
+    assert manifest is not None
+    assert prompt is not None
+    assert manifest.mode == "primary"
+    assert manifest.top_level_selectable is True
+    assert _MUTATING_TOOL_PATTERNS.isdisjoint(manifest.tool_allowlist)
+    assert "planning preset" in prompt
+    assert "not an executor" in prompt
+    assert "Do not claim code execution" in prompt
+
+
+@pytest.mark.parametrize(
+    ("preset", "required_phrases"),
+    tuple(_PROMPT_BOUNDARY_PHRASES.items()),
+)
+def test_builtin_role_prompts_keep_critical_boundary_contracts(
+    preset: str,
+    required_phrases: tuple[str, ...],
+) -> None:
+    prompt = render_agent_prompt({"preset": preset, "prompt_profile": preset})
+
+    assert prompt is not None
+    for phrase in required_phrases:
+        assert phrase in prompt
 
 
 def test_builtin_agent_preset_hook_refs_resolve_through_hook_catalog() -> None:

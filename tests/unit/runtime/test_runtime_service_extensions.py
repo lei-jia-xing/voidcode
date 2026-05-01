@@ -152,7 +152,7 @@ def test_runtime_top_level_agent_allowlist_matches_manifest_selectability() -> N
 
 
 def _prompt_materialization_payload(profile: str) -> dict[str, object]:
-    return {"profile": profile, "version": 1, "source": "builtin", "format": "text"}
+    return {"profile": profile, "version": 2, "source": "builtin", "format": "text"}
 
 
 def _private_attr(instance: object, name: str) -> Any:
