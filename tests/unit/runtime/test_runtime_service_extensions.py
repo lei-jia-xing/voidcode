@@ -2186,6 +2186,159 @@ def test_runtime_session_debug_snapshot_reconstructs_skill_prompt_context(
     assert "Always explain your reasoning." in (skill_segments[0].content or "")
 
 
+def test_runtime_materializes_leader_hook_preset_guidance_into_provider_context(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SkillCapturingStubGraph(),
+        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="hello", session_id="hook-guidance"))
+    request = _SkillCapturingStubGraph.last_request
+
+    assert request is not None
+    assert response.session.metadata["resolved_hook_presets"] == {
+        "refs": [
+            "role_reminder",
+            "delegation_guard",
+            "background_output_quality_guidance",
+            "todo_continuation_guidance",
+        ],
+        "presets": [
+            {
+                "ref": "role_reminder",
+                "kind": "guidance",
+                "source": "builtin",
+                "guidance": (
+                    "Follow the active agent preset exactly: preserve its responsibility "
+                    "boundary, tool scope, and output obligations for this run."
+                ),
+            },
+            {
+                "ref": "delegation_guard",
+                "kind": "guard",
+                "source": "builtin",
+                "guidance": (
+                    "Delegate only through runtime-owned task routing, respect supported child "
+                    "presets, and never bypass runtime tool, approval, or session governance."
+                ),
+            },
+            {
+                "ref": "background_output_quality_guidance",
+                "kind": "guidance",
+                "source": "builtin",
+                "guidance": (
+                    "When reading background task output, request only the detail needed for the "
+                    "current decision and summarize results before acting on them."
+                ),
+            },
+            {
+                "ref": "todo_continuation_guidance",
+                "kind": "continuation",
+                "source": "builtin",
+                "guidance": (
+                    "For multi-step work, keep todos current, complete finished items "
+                    "immediately, and use remaining todos to resume the next concrete action."
+                ),
+            },
+        ],
+        "source": "builtin",
+        "version": 1,
+    }
+    runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
+    assert (
+        runtime_config["resolved_hook_presets"]
+        == response.session.metadata["resolved_hook_presets"]
+    )
+    hook_segments = [
+        segment
+        for segment in request.assembled_context.segments
+        if segment.role == "system"
+        and segment.metadata is not None
+        and segment.metadata.get("source") == "hook_preset_guidance"
+    ]
+    assert len(hook_segments) == 1
+    assert "active agent preset" in (hook_segments[0].content or "")
+    assert "runtime-owned task routing" in (hook_segments[0].content or "")
+
+
+def test_runtime_materializes_explicit_agent_hook_refs_without_expanding_tools(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SkillCapturingStubGraph(),
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            agent=RuntimeAgentConfig(preset="leader", hook_refs=("role_reminder",)),
+        ),
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="hello", session_id="explicit-hook-guidance"))
+    request = _SkillCapturingStubGraph.last_request
+
+    assert request is not None
+    hook_segments = [
+        segment
+        for segment in request.assembled_context.segments
+        if segment.role == "system"
+        and segment.metadata is not None
+        and segment.metadata.get("source") == "hook_preset_guidance"
+    ]
+    tool_names = {definition.name for definition in request.available_tools}
+    assert len(hook_segments) == 1
+    assert "active agent preset" in (hook_segments[0].content or "")
+    assert "runtime-owned task routing" not in (hook_segments[0].content or "")
+    assert tool_names == {
+        definition.name
+        for definition in runtime._tool_registry_for_effective_config(  # pyright: ignore[reportPrivateUsage]
+            runtime._effective_runtime_config_from_metadata(  # pyright: ignore[reportPrivateUsage]
+                response.session.metadata
+            )
+        ).definitions()
+    }
+
+
+def test_runtime_resume_uses_persisted_hook_preset_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(approval_mode="ask", execution_engine="provider"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+    waiting = runtime.run(RuntimeRequest(prompt="approval", session_id="hook-resume"))
+    approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
+
+    def _fail_live_resolution(_refs: tuple[str, ...]) -> object:
+        raise AssertionError("resume must use persisted hook preset snapshot")
+
+    monkeypatch.setattr(runtime_service_module, "resolve_hook_preset_refs", _fail_live_resolution)
+    resumed = runtime.resume(
+        "hook-resume",
+        approval_request_id=approval_request_id,
+        approval_decision="allow",
+    )
+    request = _ApprovalThenCaptureSkillGraph.last_request
+
+    assert resumed.session.status == "completed"
+    assert request is not None
+    hook_segments = [
+        segment
+        for segment in request.assembled_context.segments
+        if segment.role == "system"
+        and segment.metadata is not None
+        and segment.metadata.get("source") == "hook_preset_guidance"
+    ]
+    assert len(hook_segments) == 1
+    assert "active agent preset" in (hook_segments[0].content or "")
+
+
 def test_runtime_session_debug_snapshot_reports_pending_approval_state(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
