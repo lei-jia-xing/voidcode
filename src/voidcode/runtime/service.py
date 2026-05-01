@@ -1,4 +1,3 @@
-# pyright: reportUnusedFunction=false, reportUnusedImport=false
 from __future__ import annotations
 
 import json
