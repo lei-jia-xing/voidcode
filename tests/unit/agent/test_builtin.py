@@ -15,7 +15,11 @@ from voidcode.agent import (
     select_prompt_profile_for_manifest,
 )
 from voidcode.agent import prompts as prompt_module
-from voidcode.agent.builtin import validate_builtin_agent_manifests
+from voidcode.agent.builtin import (
+    _DELEGATED_PRESET_HOOK_REFS,
+    _LEADER_PRESET_HOOK_REFS,
+    validate_builtin_agent_manifests,
+)
 from voidcode.agent.models import AgentManifest, AgentPromptMaterialization
 
 
@@ -309,3 +313,144 @@ def test_validate_builtin_agent_manifests_rejects_unknown_model_family_override(
                 ),
             )
         )
+
+
+def test_builtin_hook_refs_are_non_empty_and_valid() -> None:
+    manifests = list_builtin_agent_manifests()
+    for manifest in manifests:
+        for hook_ref in manifest.preset_hook_refs:
+            assert hook_ref.strip(), f"manifest '{manifest.id}' has empty hook ref"
+            msg = f"manifest '{manifest.id}' hook ref '{hook_ref}' contains spaces"
+            assert " " not in hook_ref, msg
+
+
+def test_builtin_leader_hook_refs_are_complete() -> None:
+    leader = get_builtin_agent_manifest("leader")
+    assert leader is not None
+    for hook_ref in _LEADER_PRESET_HOOK_REFS:
+        assert hook_ref in leader.preset_hook_refs, (
+            f"leader missing expected hook ref: {hook_ref}"
+        )
+
+
+def test_builtin_delegated_presets_use_consistent_hook_refs() -> None:
+    delegated_presets = ("worker", "advisor", "explore", "researcher")
+    for preset in delegated_presets:
+        manifest = get_builtin_agent_manifest(preset)
+        assert manifest is not None
+        assert manifest.preset_hook_refs == _DELEGATED_PRESET_HOOK_REFS, (
+            f"delegated preset '{preset}' hook refs differ from expected delegated refs"
+        )
+
+
+def test_read_only_roles_do_not_expose_mutating_tools() -> None:
+    mutating_tools = {
+        "write_file",
+        "edit",
+        "multi_edit",
+        "apply_patch",
+        "shell_exec",
+        "format_file",
+    }
+    read_only_presets = ("advisor", "explore")
+    for preset in read_only_presets:
+        manifest = get_builtin_agent_manifest(preset)
+        assert manifest is not None
+        assert mutating_tools.isdisjoint(set(manifest.tool_allowlist)), (
+            f"read-only preset '{preset}' must not have mutating tools: "
+            f"{mutating_tools & set(manifest.tool_allowlist)}"
+        )
+
+
+def test_researcher_role_does_not_expose_workspace_mutating_tools() -> None:
+    workspace_mutating_tools = {
+        "write_file",
+        "edit",
+        "multi_edit",
+        "apply_patch",
+        "shell_exec",
+        "format_file",
+    }
+    researcher = get_builtin_agent_manifest("researcher")
+    assert researcher is not None
+    assert workspace_mutating_tools.isdisjoint(set(researcher.tool_allowlist)), (
+        f"researcher must not have workspace mutating tools: "
+        f"{workspace_mutating_tools & set(researcher.tool_allowlist)}"
+    )
+
+
+def test_delegated_roles_do_not_have_task_tool() -> None:
+    delegated_presets = ("worker", "advisor", "explore", "researcher")
+    for preset in delegated_presets:
+        manifest = get_builtin_agent_manifest(preset)
+        assert manifest is not None
+        assert "task" not in manifest.tool_allowlist, (
+            f"delegated preset '{preset}' must not have 'task' tool "
+            f"(recursion not explicitly supported)"
+        )
+
+
+def test_top_level_selectable_aligned_with_runtime_executable_presets() -> None:
+    _EXECUTABLE_AGENT_PRESETS = frozenset({"leader", "product"})
+
+    manifests = list_builtin_agent_manifests()
+    for manifest in manifests:
+        if manifest.top_level_selectable:
+            assert manifest.id in _EXECUTABLE_AGENT_PRESETS, (
+                f"manifest '{manifest.id}' is top_level_selectable but not in "
+                f"runtime _EXECUTABLE_AGENT_PRESETS: {_EXECUTABLE_AGENT_PRESETS}"
+            )
+        else:
+            assert manifest.id not in _EXECUTABLE_AGENT_PRESETS, (
+                f"manifest '{manifest.id}' is not top_level_selectable but exists in "
+                f"_EXECUTABLE_AGENT_PRESETS"
+            )
+
+
+def test_only_leader_and_product_are_top_level_selectable() -> None:
+    expected_top_level = {"leader", "product"}
+    manifests = list_builtin_agent_manifests()
+    actual_top_level = {
+        manifest.id for manifest in manifests if manifest.top_level_selectable
+    }
+    assert actual_top_level == expected_top_level, (
+        f"top-level selectable presets mismatch: expected {expected_top_level}, "
+        f"got {actual_top_level}"
+    )
+
+
+def test_delegated_presets_are_not_top_level_selectable() -> None:
+    delegated_presets = ("worker", "advisor", "explore", "researcher")
+    for preset in delegated_presets:
+        manifest = get_builtin_agent_manifest(preset)
+        assert manifest is not None
+        assert not manifest.top_level_selectable, (
+            f"delegated preset '{preset}' must not be top_level_selectable"
+        )
+        assert manifest.mode == "subagent", (
+            f"delegated preset '{preset}' must have mode='subagent'"
+        )
+
+
+def test_skill_refs_are_valid_strings() -> None:
+    manifests = list_builtin_agent_manifests()
+    for manifest in manifests:
+        for skill_ref in manifest.skill_refs:
+            assert skill_ref.strip(), (
+                f"manifest '{manifest.id}' has empty skill_ref"
+            )
+            assert " " not in skill_ref, (
+                f"manifest '{manifest.id}' skill_ref '{skill_ref}' contains spaces"
+            )
+
+
+def test_builtin_manifests_have_consistent_tool_allowlist_patterns() -> None:
+    manifests = list_builtin_agent_manifests()
+    for manifest in manifests:
+        for tool_pattern in manifest.tool_allowlist:
+            assert tool_pattern.strip(), (
+                f"manifest '{manifest.id}' has empty tool pattern"
+            )
+            assert "  " not in tool_pattern, (
+                f"manifest '{manifest.id}' tool pattern '{tool_pattern}' has double spaces"
+            )
