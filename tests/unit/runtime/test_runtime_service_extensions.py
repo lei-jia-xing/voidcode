@@ -674,6 +674,42 @@ class _ScriptedModelProvider:
         return provider
 
 
+class _DistillAwareTurnProvider:
+    def __init__(
+        self, *, name: str, distill_output: str | None, distill_error: Exception | None
+    ) -> None:
+        self.name = name
+        self.distill_output = distill_output
+        self.distill_error = distill_error
+        self.distill_calls = 0
+        self.main_calls = 0
+
+    def propose_turn(self, request: object) -> ProviderTurnResult:
+        turn_request = cast(ProviderTurnRequest, request)
+        prompt = turn_request.prompt
+        if prompt.startswith("Return ONLY valid JSON matching these keys:"):
+            self.distill_calls += 1
+            if self.distill_error is not None:
+                raise self.distill_error
+            if self.distill_output is None:
+                return ProviderTurnResult(output="")
+            return ProviderTurnResult(output=self.distill_output)
+
+        self.main_calls += 1
+        if self.main_calls <= 2:
+            return ProviderTurnResult(tool_call=ToolCall("read_file", {"filePath": "sample.txt"}))
+        return ProviderTurnResult(output="done")
+
+
+@dataclass(frozen=True, slots=True)
+class _DistillAwareModelProvider:
+    name: str
+    provider: _DistillAwareTurnProvider
+
+    def turn_provider(self) -> _DistillAwareTurnProvider:
+        return self.provider
+
+
 class _WriteThenResultAwareTurnProvider:
     def __init__(self, *, name: str) -> None:
         self.name = name
@@ -10005,6 +10041,137 @@ def test_runtime_memory_refreshed_guard_suppresses_duplicate_anchor(tmp_path: Pa
     assert first is True
     assert duplicate is False
     assert changed is True
+
+
+def test_runtime_distillation_uses_provider_output_when_valid(tmp_path: Path) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("alpha\n", encoding="utf-8")
+    distill_payload = json.dumps(
+        {
+            "objective_current_goal": "Ship continuity distillation",
+            "verbatim_user_constraints": ["Do not override explicit user instructions"],
+            "completed_progress": ["Mapped runtime continuity"],
+            "blockers_open_questions": ["none"],
+            "key_decisions_with_rationale": [
+                {
+                    "text": "Use deterministic fallback",
+                    "rationale": "resilience",
+                    "refs": [{"kind": "event", "id": "event:1"}],
+                }
+            ],
+            "relevant_files_commands_errors": [
+                {
+                    "text": "src/voidcode/runtime/context_window.py",
+                    "kind": "file",
+                    "refs": [{"kind": "session", "id": "session:distill"}],
+                }
+            ],
+            "verification_state": {
+                "status": "pending",
+                "details": ["pending"],
+                "refs": [{"kind": "tool", "id": "tool:pytest"}],
+            },
+            "next_steps": ["run tests"],
+            "source_references": [{"kind": "session", "id": "session:distill"}],
+        }
+    )
+    provider = _DistillAwareTurnProvider(
+        name="opencode",
+        distill_output=distill_payload,
+        distill_error=None,
+    )
+    registry = ModelProviderRegistry(
+        providers={"opencode": _DistillAwareModelProvider(name="opencode", provider=provider)}
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            model="opencode/gpt-5.4",
+            context_window=RuntimeContextWindowConfig(
+                max_tool_results=1,
+                continuity_distillation_enabled=True,
+            ),
+        ),
+        model_provider_registry=registry,
+    )
+
+    response = runtime.run(
+        RuntimeRequest(prompt="read sample.txt\nread sample.txt", session_id="d1")
+    )
+    runtime_state = cast(dict[str, object], response.session.metadata["runtime_state"])
+    continuity = cast(dict[str, object], runtime_state["continuity"])
+
+    assert response.session.status == "completed"
+    assert provider.distill_calls >= 1
+    assert continuity["distillation_source"] == "model_assisted"
+
+
+def test_runtime_distillation_falls_back_on_invalid_model_output(tmp_path: Path) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("alpha\n", encoding="utf-8")
+    provider = _DistillAwareTurnProvider(
+        name="opencode",
+        distill_output='{"objective_current_goal":""}',
+        distill_error=None,
+    )
+    registry = ModelProviderRegistry(
+        providers={"opencode": _DistillAwareModelProvider(name="opencode", provider=provider)}
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            model="opencode/gpt-5.4",
+            context_window=RuntimeContextWindowConfig(
+                max_tool_results=1,
+                continuity_distillation_enabled=True,
+            ),
+        ),
+        model_provider_registry=registry,
+    )
+
+    response = runtime.run(
+        RuntimeRequest(prompt="read sample.txt\nread sample.txt", session_id="d2")
+    )
+    runtime_state = cast(dict[str, object], response.session.metadata["runtime_state"])
+    continuity = cast(dict[str, object], runtime_state["continuity"])
+
+    assert response.session.status == "completed"
+    assert provider.distill_calls >= 1
+    assert continuity["distillation_source"] == "fallback_after_model_error"
+
+
+def test_runtime_distillation_falls_back_on_provider_failure(tmp_path: Path) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("alpha\n", encoding="utf-8")
+    provider = _DistillAwareTurnProvider(
+        name="opencode",
+        distill_output=None,
+        distill_error=RuntimeError("distiller unavailable"),
+    )
+    registry = ModelProviderRegistry(
+        providers={"opencode": _DistillAwareModelProvider(name="opencode", provider=provider)}
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            model="opencode/gpt-5.4",
+            context_window=RuntimeContextWindowConfig(
+                max_tool_results=1,
+                continuity_distillation_enabled=True,
+            ),
+        ),
+        model_provider_registry=registry,
+    )
+
+    response = runtime.run(
+        RuntimeRequest(prompt="read sample.txt\nread sample.txt", session_id="d3")
+    )
+    runtime_state = cast(dict[str, object], response.session.metadata["runtime_state"])
+    continuity = cast(dict[str, object], runtime_state["continuity"])
+
+    assert response.session.status == "completed"
+    assert provider.distill_calls >= 1
+    assert continuity["distillation_source"] == "deterministic"
 
 
 def test_runtime_emits_context_pressure_with_cooldown_edge_control(tmp_path: Path) -> None:

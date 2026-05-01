@@ -56,7 +56,7 @@ from ..provider.models import (
     ResolvedProviderConfig,
     ResolvedProviderModel,
 )
-from ..provider.protocol import ProviderAbortSignal, ProviderTokenUsage
+from ..provider.protocol import ProviderAbortSignal, ProviderTokenUsage, ProviderTurnRequest
 from ..provider.registry import ModelProviderRegistry
 from ..provider.resolution import resolve_provider_config
 from ..provider.snapshot import (
@@ -128,12 +128,14 @@ from .config import (
 from .context_window import (
     ContextWindowPolicy,
     RuntimeAssembledContext,
+    RuntimeContextSegment,
     RuntimeContextWindow,
     RuntimeContinuityState,
     assemble_provider_context,
     continuity_state_from_metadata_payload,
     prepare_provider_context,
 )
+from .continuity_distillation import build_distillation_input_envelope
 from .contracts import (
     AgentSummary,
     BackgroundTaskResult,
@@ -5874,12 +5876,116 @@ class VoidCodeRuntime:
             resolved_provider=effective_config.resolved_provider,
             provider_attempt=provider_attempt,
         )
+        if policy.continuity_distillation_enabled:
+            session_metadata = self._session_metadata_with_distillation_candidate(
+                prompt=prompt,
+                tool_results=tool_results,
+                session_metadata=session_metadata,
+                policy=policy,
+                effective_config=effective_config,
+            )
         return prepare_provider_context(
             prompt=prompt,
             tool_results=tool_results,
             session_metadata=session_metadata,
             policy=policy or self._default_context_window_policy,
         )
+
+    def _session_metadata_with_distillation_candidate(
+        self,
+        *,
+        prompt: str,
+        tool_results: tuple[ToolResult, ...],
+        session_metadata: dict[str, object],
+        policy: ContextWindowPolicy,
+        effective_config: EffectiveRuntimeConfig,
+    ) -> dict[str, object]:
+        candidate = self._distillation_candidate_from_provider(
+            prompt=prompt,
+            tool_results=tool_results,
+            session_metadata=session_metadata,
+            policy=policy,
+            effective_config=effective_config,
+        )
+        if candidate is None:
+            return session_metadata
+        raw_runtime_state = session_metadata.get("runtime_state")
+        runtime_state = (
+            dict(cast(dict[str, object], raw_runtime_state))
+            if isinstance(raw_runtime_state, dict)
+            else {}
+        )
+        runtime_state["distillation_candidate"] = candidate
+        return {**session_metadata, "runtime_state": runtime_state}
+
+    def _distillation_candidate_from_provider(
+        self,
+        *,
+        prompt: str,
+        tool_results: tuple[ToolResult, ...],
+        session_metadata: dict[str, object],
+        policy: ContextWindowPolicy,
+        effective_config: EffectiveRuntimeConfig,
+    ) -> dict[str, object] | None:
+        if not tool_results:
+            return None
+        dropped_guess = tool_results[:-1]
+        retained_guess = tool_results[-1:]
+        previous_continuity: dict[str, object] | None = None
+        runtime_state = session_metadata.get("runtime_state")
+        if isinstance(runtime_state, dict):
+            raw_continuity = cast(dict[str, object], runtime_state).get("continuity")
+            if isinstance(raw_continuity, dict):
+                previous_continuity = cast(dict[str, object], raw_continuity)
+        envelope = build_distillation_input_envelope(
+            prompt=prompt,
+            dropped_results=dropped_guess,
+            retained_results=retained_guess,
+            previous_continuity=previous_continuity,
+            max_items=policy.continuity_distillation_max_input_items,
+            max_chars=policy.continuity_distillation_max_input_chars,
+        )
+        provider_target = effective_config.resolved_provider.active_target
+        selection = provider_target.selection
+        provider_name = selection.provider
+        if provider_name is None:
+            return None
+        provider = self._model_provider_registry.resolve(provider_name)
+        turn_provider = provider.turn_provider()
+        schema_prompt = (
+            "Return ONLY valid JSON matching these keys: "
+            "objective_current_goal, verbatim_user_constraints, completed_progress, "
+            "blockers_open_questions, key_decisions_with_rationale, "
+            "relevant_files_commands_errors, verification_state, next_steps, source_references. "
+            "No markdown; output JSON object only.\n\n"
+            f"INPUT={json.dumps(envelope, ensure_ascii=False)}"
+        )
+        distill_context = RuntimeAssembledContext(
+            prompt=schema_prompt,
+            tool_results=(),
+            continuity_state=None,
+            segments=(RuntimeContextSegment(role="user", content=schema_prompt),),
+            metadata={"source": "continuity_distillation"},
+        )
+        request = ProviderTurnRequest(
+            assembled_context=distill_context,
+            available_tools=(),
+            raw_model=selection.raw_model,
+            provider_name=selection.provider,
+            model_name=selection.model,
+            model_metadata=provider_target.metadata,
+        )
+        try:
+            result = turn_provider.propose_turn(request)
+        except Exception:
+            return None
+        if not isinstance(result.output, str) or not result.output.strip():
+            return None
+        try:
+            payload = json.loads(result.output)
+        except json.JSONDecodeError:
+            return None
+        return cast(dict[str, object], payload) if isinstance(payload, dict) else None
 
     def _assemble_provider_context(
         self,
