@@ -2157,14 +2157,17 @@ def test_runtime_allows_shell_exec_tool_when_policy_is_allow(tmp_path: Path) -> 
         "runtime.tool_lookup_succeeded",
         "runtime.approval_resolved",
         "runtime.tool_started",
+        "runtime.tool_progress",
         "runtime.tool_completed",
         "graph.loop_step",
         "graph.response_ready",
     ]
     assert allowed.events[6].payload["decision"] == "allow"
     assert allowed.output == f"{tmp_path.resolve()}\n"
-    assert allowed.events[8].payload["command"] == command
-    assert allowed.events[8].payload["exit_code"] == 0
+    assert allowed.events[8].payload["tool"] == "shell_exec"
+    assert allowed.events[8].payload["stream"] == "stdout"
+    assert allowed.events[9].payload["command"] == command
+    assert allowed.events[9].payload["exit_code"] == 0
 
 
 def test_runtime_requests_and_resumes_shell_exec_approval(tmp_path: Path) -> None:
@@ -2205,13 +2208,16 @@ def test_runtime_requests_and_resumes_shell_exec_approval(tmp_path: Path) -> Non
         "runtime.approval_requested",
         "runtime.approval_resolved",
         "runtime.tool_started",
+        "runtime.tool_progress",
         "runtime.tool_completed",
         "graph.loop_step",
         "graph.response_ready",
     ]
     assert resumed.output == f"{tmp_path.resolve()}\n"
-    assert resumed.events[9].payload["command"] == command
-    assert resumed.events[9].payload["exit_code"] == 0
+    assert resumed.events[9].payload["tool"] == "shell_exec"
+    assert resumed.events[9].payload["stream"] == "stdout"
+    assert resumed.events[10].payload["command"] == command
+    assert resumed.events[10].payload["exit_code"] == 0
 
 
 def test_runtime_denies_shell_exec_tool_when_policy_is_deny(tmp_path: Path) -> None:
@@ -2280,6 +2286,7 @@ def test_runtime_emits_pre_and_post_hook_events_around_successful_tool_run(tmp_p
         "runtime.approval_resolved",
         "runtime.tool_hook_pre",
         "runtime.tool_started",
+        "runtime.tool_progress",
         "runtime.tool_completed",
         "runtime.tool_hook_post",
         "graph.loop_step",
@@ -2291,7 +2298,7 @@ def test_runtime_emits_pre_and_post_hook_events_around_successful_tool_run(tmp_p
         "session_id": "hook-success-session",
         "status": "ok",
     }
-    assert result.events[10].payload == {
+    assert result.events[11].payload == {
         "phase": "post",
         "tool_name": "shell_exec",
         "session_id": "hook-success-session",

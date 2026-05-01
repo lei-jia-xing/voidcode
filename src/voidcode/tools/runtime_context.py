@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
@@ -15,6 +15,7 @@ class RuntimeToolInvocationContext:
     delegation_depth: int = 0
     remaining_spawn_budget: int | None = None
     abort_signal: ProviderAbortSignal | None = None
+    emit_tool_progress: Callable[[Mapping[str, object]], None] | None = None
 
 
 _CURRENT_RUNTIME_TOOL_CONTEXT: ContextVar[RuntimeToolInvocationContext | None] = ContextVar(

@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterator
-from dataclasses import replace
+import queue
+import threading
+from collections.abc import Generator, Iterator, Mapping
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
@@ -14,8 +16,18 @@ from ..provider.errors import (
     classify_provider_error,
     format_fallback_exhausted_error,
 )
-from ..provider.protocol import ProviderAbortSignal
-from ..tools.contracts import RuntimeTimeoutAwareTool, RuntimeToolTimeoutError, ToolCall, ToolResult
+from ..provider.protocol import (
+    ProviderAbortSignal,
+    ProviderAssembledContext,
+    ProviderContextSegmentLike,
+)
+from ..tools.contracts import (
+    RuntimeTimeoutAwareTool,
+    RuntimeToolTimeoutError,
+    ToolCall,
+    ToolDefinition,
+    ToolResult,
+)
 from ..tools.output import (
     cap_tool_result_output,
     sanitize_tool_arguments,
@@ -35,6 +47,7 @@ from .events import (
     RUNTIME_QUESTION_REQUESTED,
     RUNTIME_SKILL_LOADED,
     RUNTIME_TODO_UPDATED,
+    RUNTIME_TOOL_PROGRESS,
     RUNTIME_TOOL_STARTED,
     EventEnvelope,
 )
@@ -47,6 +60,27 @@ if TYPE_CHECKING:
     from .service import ToolRegistry, VoidCodeRuntime
 
 logger = logging.getLogger(__name__)
+
+_TOOL_PROGRESS_QUEUE_MAX_ITEMS = 128
+_TOOL_PROGRESS_POLL_SECONDS = 0.05
+
+
+@dataclass(frozen=True, slots=True)
+class _ToolProgressItem:
+    payload: dict[str, object]
+
+
+@dataclass(frozen=True, slots=True)
+class _ToolResultItem:
+    result: ToolResult
+
+
+@dataclass(frozen=True, slots=True)
+class _ToolExceptionItem:
+    exception: Exception
+
+
+type _ToolQueueItem = _ToolProgressItem | _ToolResultItem | _ToolExceptionItem
 
 
 def _is_tool_timeout_like_exception(exc: Exception) -> bool:
@@ -127,6 +161,129 @@ class RuntimeRunLoopCoordinator:
             },
         )
         return completed_chunk, failed_chunk
+
+    @staticmethod
+    def _is_progress_capable_tool(tool_name: str) -> bool:
+        return tool_name == "shell_exec"
+
+    def _invoke_tool_with_progress_events(
+        self,
+        *,
+        tool: Any,
+        tool_call: ToolCall,
+        workspace: Any,
+        tool_timeout: int | None,
+        session: SessionState,
+        start_sequence: int,
+        tool_call_id: str,
+        abort_signal: ProviderAbortSignal | None,
+        parent_session_id: str | None,
+        delegation_depth: int,
+        remaining_spawn_budget: int | None,
+    ) -> Generator[RuntimeStreamChunk, None, tuple[ToolResult | Exception, int]]:
+        progress_queue: queue.Queue[_ToolQueueItem] = queue.Queue(
+            maxsize=_TOOL_PROGRESS_QUEUE_MAX_ITEMS
+        )
+        dropped_progress_events = 0
+        dropped_lock = threading.Lock()
+
+        def emit_tool_progress(payload: Mapping[str, object]) -> None:
+            nonlocal dropped_progress_events
+            with dropped_lock:
+                dropped = dropped_progress_events
+                dropped_progress_events = 0
+            progress_payload: dict[str, object] = {
+                "tool": tool_call.tool_name,
+                "tool_call_id": tool_call_id,
+                **dict(payload),
+            }
+            if dropped:
+                progress_payload["dropped_progress_events"] = dropped
+            try:
+                progress_queue.put_nowait(_ToolProgressItem(progress_payload))
+            except queue.Full:
+                with dropped_lock:
+                    dropped_progress_events += 1 + dropped
+
+        def invoke_tool() -> None:
+            try:
+                with bind_runtime_tool_context(
+                    RuntimeToolInvocationContext(
+                        session_id=session.session.id,
+                        parent_session_id=parent_session_id,
+                        delegation_depth=delegation_depth,
+                        remaining_spawn_budget=remaining_spawn_budget,
+                        abort_signal=abort_signal,
+                        emit_tool_progress=emit_tool_progress,
+                    )
+                ):
+                    if tool_timeout is None:
+                        result = tool.invoke(tool_call, workspace=workspace)
+                    elif isinstance(tool, RuntimeTimeoutAwareTool):
+                        result = tool.invoke_with_runtime_timeout(
+                            tool_call,
+                            workspace=workspace,
+                            timeout_seconds=tool_timeout,
+                        )
+                    else:
+                        result = tool.invoke(tool_call, workspace=workspace)
+                progress_queue.put(_ToolResultItem(result))
+            except Exception as exc:
+                progress_queue.put(_ToolExceptionItem(exc))
+
+        worker = threading.Thread(
+            target=invoke_tool,
+            name=f"runtime-tool-{tool_call.tool_name}-worker",
+            daemon=True,
+        )
+        worker.start()
+
+        sequence = start_sequence - 1
+        terminal_item: _ToolResultItem | _ToolExceptionItem | None = None
+        while terminal_item is None:
+            try:
+                item = progress_queue.get(timeout=_TOOL_PROGRESS_POLL_SECONDS)
+            except queue.Empty:
+                continue
+            if isinstance(item, _ToolProgressItem):
+                sequence += 1
+                yield RuntimeStreamChunk(
+                    kind="event",
+                    session=session,
+                    event=EventEnvelope(
+                        session_id=session.session.id,
+                        sequence=sequence,
+                        event_type=RUNTIME_TOOL_PROGRESS,
+                        source="tool",
+                        payload=item.payload,
+                    ),
+                )
+                continue
+            terminal_item = item
+
+        while True:
+            try:
+                item = progress_queue.get_nowait()
+            except queue.Empty:
+                break
+            if isinstance(item, _ToolProgressItem):
+                sequence += 1
+                yield RuntimeStreamChunk(
+                    kind="event",
+                    session=session,
+                    event=EventEnvelope(
+                        session_id=session.session.id,
+                        sequence=sequence,
+                        event_type=RUNTIME_TOOL_PROGRESS,
+                        source="tool",
+                        payload=item.payload,
+                    ),
+                )
+
+        worker.join(timeout=1)
+        if isinstance(terminal_item, _ToolExceptionItem):
+            return terminal_item.exception, sequence
+        return terminal_item.result, sequence
 
     def execute_approved_tool_call(
         self,
@@ -230,27 +387,47 @@ class RuntimeRunLoopCoordinator:
             == "provider"
         )
         try:
-            with bind_runtime_tool_context(
-                RuntimeToolInvocationContext(
-                    session_id=session.session.id,
+            if self._is_progress_capable_tool(tool_call.tool_name):
+                tool_outcome, sequence = yield from self._invoke_tool_with_progress_events(
+                    tool=tool,
+                    tool_call=tool_call,
+                    workspace=runtime._workspace,
+                    tool_timeout=tool_timeout,
+                    session=session,
+                    start_sequence=sequence + 1,
+                    tool_call_id=tool_call_id,
+                    abort_signal=abort_signal,
                     parent_session_id=session.session.parent_id,
                     delegation_depth=runtime._delegation_depth_from_metadata(session.metadata),
                     remaining_spawn_budget=runtime._remaining_spawn_budget_from_metadata(
                         session.metadata
                     ),
-                    abort_signal=abort_signal,
                 )
-            ):
-                if tool_timeout is None:
-                    tool_result = tool.invoke(tool_call, workspace=runtime._workspace)
-                elif isinstance(tool, RuntimeTimeoutAwareTool):
-                    tool_result = tool.invoke_with_runtime_timeout(
-                        tool_call,
-                        workspace=runtime._workspace,
-                        timeout_seconds=tool_timeout,
+                if isinstance(tool_outcome, Exception):
+                    raise tool_outcome
+                tool_result = tool_outcome
+            else:
+                with bind_runtime_tool_context(
+                    RuntimeToolInvocationContext(
+                        session_id=session.session.id,
+                        parent_session_id=session.session.parent_id,
+                        delegation_depth=runtime._delegation_depth_from_metadata(session.metadata),
+                        remaining_spawn_budget=runtime._remaining_spawn_budget_from_metadata(
+                            session.metadata
+                        ),
+                        abort_signal=abort_signal,
                     )
-                else:
-                    tool_result = tool.invoke(tool_call, workspace=runtime._workspace)
+                ):
+                    if tool_timeout is None:
+                        tool_result = tool.invoke(tool_call, workspace=runtime._workspace)
+                    elif isinstance(tool, RuntimeTimeoutAwareTool):
+                        tool_result = tool.invoke_with_runtime_timeout(
+                            tool_call,
+                            workspace=runtime._workspace,
+                            timeout_seconds=tool_timeout,
+                        )
+                    else:
+                        tool_result = tool.invoke(tool_call, workspace=runtime._workspace)
         except Exception as exc:
             drained_chunks, session, sequence = self._drain_runtime_events(
                 session=session,
@@ -258,6 +435,24 @@ class RuntimeRunLoopCoordinator:
             )
             yield from drained_chunks
             if isinstance(exc, RuntimeToolTimeoutError):
+                partial_timeout_payload: dict[str, object] = {}
+                partial_timeout_content: str | None = None
+                partial_timeout_error: str | None = None
+                partial_result = getattr(exc, "partial_result", None)
+                if isinstance(partial_result, ToolResult):
+                    capped_partial = cap_tool_result_output(
+                        partial_result,
+                        workspace=runtime._workspace,
+                        session_id=session.session.id,
+                        tool_call_id=tool_call_id,
+                    )
+                    capped_partial = replace(
+                        capped_partial,
+                        data=sanitize_tool_result_data(capped_partial.data),
+                    )
+                    partial_timeout_payload.update(capped_partial.data)
+                    partial_timeout_content = capped_partial.content
+                    partial_timeout_error = capped_partial.error
                 sequence += 1
                 yield RuntimeStreamChunk(
                     kind="event",
@@ -292,11 +487,13 @@ class RuntimeRunLoopCoordinator:
                         event_type="runtime.tool_completed",
                         source="tool",
                         payload={
+                            **partial_timeout_payload,
                             "tool": tool_call.tool_name,
                             "tool_call_id": tool_call_id,
                             "arguments": timeout_sanitized_args,
                             "status": "error",
-                            "error": str(exc),
+                            "content": partial_timeout_content,
+                            "error": partial_timeout_error or str(exc),
                             "display": failed_display,
                             "tool_status": failed_status,
                         },
@@ -402,6 +599,20 @@ class RuntimeRunLoopCoordinator:
             ),
         )
 
+        if _is_abort_signal_requested(abort_signal):
+            yield runtime._failed_chunk(
+                session=session,
+                sequence=sequence + 1,
+                error="run interrupted",
+                payload={
+                    "kind": "interrupted",
+                    "cancelled": True,
+                    "run_id": runtime._run_id_from_session_metadata(session.metadata),
+                    "reason": _abort_signal_reason(abort_signal),
+                },
+            )
+            return
+
         if tool_result.status == "ok":
             post_hook_outcome = runtime._run_tool_hooks(
                 session=session,
@@ -448,12 +659,25 @@ class RuntimeRunLoopCoordinator:
         continuity_to_reinject: RuntimeContinuityState | None = preserved_continuity_state
         provider_attempt = runtime._provider_attempt_from_metadata(graph_request.metadata)
         reasoning_capture_state = runtime._reasoning_capture_state()
+        active_graph_request: GraphRunRequest = graph_request
         while True:
             sequence = int(sequence)
-            current_graph_request: GraphRunRequest = graph_request
+            current_graph_request: GraphRunRequest = active_graph_request
+            current_prompt: str = current_graph_request.prompt
+            current_available_tools: tuple[ToolDefinition, ...] = (
+                current_graph_request.available_tools
+            )
+            current_assembled_context: ProviderAssembledContext = (
+                current_graph_request.assembled_context
+            )
+            current_segments: tuple[ProviderContextSegmentLike, ...] = (
+                current_assembled_context.segments
+            )
+            current_metadata: dict[str, object] = current_graph_request.metadata
+            current_abort_signal: ProviderAbortSignal | None = current_graph_request.abort_signal
             current_session = self._current_session_state(session)
             base_context = runtime._prepare_provider_context_window(
-                prompt=current_graph_request.prompt,
+                prompt=current_prompt,
                 tool_results=tuple(tool_results),
                 session_metadata=current_session.metadata,
             )
@@ -486,7 +710,7 @@ class RuntimeRunLoopCoordinator:
             session = runtime._session_with_context_window_metadata(current_session, context_window)
             skill_prompt_context = ""
             preserved_system_segments: list[str] = []
-            for segment in current_graph_request.assembled_context.segments:
+            for segment in current_segments:
                 if segment.role != "system" or not isinstance(segment.content, str):
                     continue
                 if segment.content.startswith("Runtime-managed todo state is active"):
@@ -494,27 +718,27 @@ class RuntimeRunLoopCoordinator:
                 preserved_system_segments.append(segment.content)
                 if segment.content.startswith("Runtime-managed skills are active for this turn."):
                     skill_prompt_context = segment.content
-            graph_request = GraphRunRequest(
+            active_graph_request = GraphRunRequest(
                 session=session,
-                prompt=current_graph_request.prompt,
-                available_tools=current_graph_request.available_tools,
+                prompt=current_prompt,
+                available_tools=current_available_tools,
                 context_window=context_window,
                 assembled_context=runtime._assemble_provider_context(
-                    prompt=current_graph_request.prompt,
+                    prompt=current_prompt,
                     tool_results=context_window.tool_results,
                     session_metadata=session.metadata,
                     skill_prompt_context=skill_prompt_context,
                     preserved_system_segments=tuple(preserved_system_segments),
                 ),
-                metadata=current_graph_request.metadata,
-                abort_signal=current_graph_request.abort_signal,
+                metadata=current_metadata,
+                abort_signal=current_abort_signal,
             )
             effective_runtime_config = runtime._effective_runtime_config_from_metadata(
                 session.metadata
             )
             provider_context_policy_decision: RuntimeProviderContextPolicyDecision | None = (
                 runtime._provider_context_policy_decision_for_graph_request(
-                    graph_request=graph_request,
+                    graph_request=active_graph_request,
                     effective_config=effective_runtime_config,
                 )
             )
@@ -662,7 +886,7 @@ class RuntimeRunLoopCoordinator:
                 effective_runtime_config.execution_engine == "provider"
             )
             try:
-                if _is_abort_requested(graph_request):
+                if _is_abort_requested(active_graph_request):
                     yield runtime._failed_chunk(
                         session=session,
                         sequence=sequence + 1,
@@ -671,12 +895,12 @@ class RuntimeRunLoopCoordinator:
                             "kind": "interrupted",
                             "cancelled": True,
                             "run_id": runtime._run_id_from_session_metadata(session.metadata),
-                            "reason": _abort_reason(graph_request),
+                            "reason": _abort_reason(active_graph_request),
                         },
                     )
                     return
                 graph_step = graph.step(
-                    graph_request,
+                    active_graph_request,
                     tool_results=tuple(tool_results),
                     session=session,
                 )
@@ -701,7 +925,7 @@ class RuntimeRunLoopCoordinator:
                         return
                     if (
                         provider_error.kind == "rate_limit"
-                        and graph_request.metadata.get("background_rate_limit_retry") is True
+                        and active_graph_request.metadata.get("background_rate_limit_retry") is True
                     ):
                         yield runtime._failed_chunk(
                             session=session,
@@ -766,6 +990,19 @@ class RuntimeRunLoopCoordinator:
                             ),
                         )
                         provider_attempt = fallback_selection.provider_attempt
+                        fallback_prompt: str = current_prompt
+                        fallback_available_tools: tuple[ToolDefinition, ...] = (
+                            current_available_tools
+                        )
+                        fallback_context_window = context_window
+                        fallback_assembled_context: ProviderAssembledContext = (
+                            active_graph_request.assembled_context
+                        )
+                        fallback_metadata: dict[str, object] = {
+                            **current_metadata,
+                            "provider_attempt": provider_attempt,
+                        }
+                        fallback_abort_signal: ProviderAbortSignal | None = current_abort_signal
                         session = SessionState(
                             session=session.session,
                             status=session.status,
@@ -773,17 +1010,14 @@ class RuntimeRunLoopCoordinator:
                             metadata={**session.metadata, "provider_attempt": provider_attempt},
                         )
                         graph = fallback_selection.graph
-                        graph_request = GraphRunRequest(
+                        active_graph_request = GraphRunRequest(
                             session=session,
-                            prompt=graph_request.prompt,
-                            available_tools=graph_request.available_tools,
-                            context_window=graph_request.context_window,
-                            assembled_context=graph_request.assembled_context,
-                            metadata={
-                                **graph_request.metadata,
-                                "provider_attempt": provider_attempt,
-                            },
-                            abort_signal=graph_request.abort_signal,
+                            prompt=fallback_prompt,
+                            available_tools=fallback_available_tools,
+                            context_window=fallback_context_window,
+                            assembled_context=fallback_assembled_context,
+                            metadata=fallback_metadata,
+                            abort_signal=fallback_abort_signal,
                         )
                         continue
                     if provider_error.kind in {
@@ -851,7 +1085,7 @@ class RuntimeRunLoopCoordinator:
                 getattr(graph_step, "is_finished", False)
                 or getattr(graph_step, "output", None) is not None
             )
-            if _is_abort_requested(graph_request):
+            if _is_abort_requested(active_graph_request):
                 yield runtime._failed_chunk(
                     session=session,
                     sequence=sequence + 1,
@@ -860,7 +1094,7 @@ class RuntimeRunLoopCoordinator:
                         "kind": "interrupted",
                         "cancelled": True,
                         "run_id": runtime._run_id_from_session_metadata(session.metadata),
-                        "reason": _abort_reason(graph_request),
+                        "reason": _abort_reason(active_graph_request),
                     },
                 )
                 return
@@ -1166,37 +1400,59 @@ class RuntimeRunLoopCoordinator:
                     },
                 ),
             )
-            if _is_abort_requested(graph_request):
+            if _is_abort_requested(active_graph_request):
                 yield from self._started_tool_abort_chunks(
                     session=session,
                     sequence=sequence,
                     tool_call=plan_tool_call,
                     tool_call_id=tool_call_id,
-                    abort_signal=graph_request.abort_signal,
+                    abort_signal=active_graph_request.abort_signal,
                 )
                 return
             try:
-                with bind_runtime_tool_context(
-                    RuntimeToolInvocationContext(
-                        session_id=session.session.id,
+                if self._is_progress_capable_tool(plan_tool_call.tool_name):
+                    tool_outcome, sequence = yield from self._invoke_tool_with_progress_events(
+                        tool=tool,
+                        tool_call=plan_tool_call,
+                        workspace=runtime._workspace,
+                        tool_timeout=tool_timeout,
+                        session=session,
+                        start_sequence=sequence + 1,
+                        tool_call_id=tool_call_id,
+                        abort_signal=active_graph_request.abort_signal,
                         parent_session_id=session.session.parent_id,
                         delegation_depth=runtime._delegation_depth_from_metadata(session.metadata),
                         remaining_spawn_budget=runtime._remaining_spawn_budget_from_metadata(
                             session.metadata
                         ),
-                        abort_signal=graph_request.abort_signal,
                     )
-                ):
-                    if tool_timeout is None:
-                        tool_result = tool.invoke(plan_tool_call, workspace=runtime._workspace)
-                    elif isinstance(tool, RuntimeTimeoutAwareTool):
-                        tool_result = tool.invoke_with_runtime_timeout(
-                            plan_tool_call,
-                            workspace=runtime._workspace,
-                            timeout_seconds=tool_timeout,
+                    if isinstance(tool_outcome, Exception):
+                        raise tool_outcome
+                    tool_result = tool_outcome
+                else:
+                    with bind_runtime_tool_context(
+                        RuntimeToolInvocationContext(
+                            session_id=session.session.id,
+                            parent_session_id=session.session.parent_id,
+                            delegation_depth=runtime._delegation_depth_from_metadata(
+                                session.metadata
+                            ),
+                            remaining_spawn_budget=runtime._remaining_spawn_budget_from_metadata(
+                                session.metadata
+                            ),
+                            abort_signal=active_graph_request.abort_signal,
                         )
-                    else:
-                        tool_result = tool.invoke(plan_tool_call, workspace=runtime._workspace)
+                    ):
+                        if tool_timeout is None:
+                            tool_result = tool.invoke(plan_tool_call, workspace=runtime._workspace)
+                        elif isinstance(tool, RuntimeTimeoutAwareTool):
+                            tool_result = tool.invoke_with_runtime_timeout(
+                                plan_tool_call,
+                                workspace=runtime._workspace,
+                                timeout_seconds=tool_timeout,
+                            )
+                        else:
+                            tool_result = tool.invoke(plan_tool_call, workspace=runtime._workspace)
             except Exception as exc:
                 drained_chunks, session, sequence = self._drain_runtime_events(
                     session=session,
@@ -1204,6 +1460,24 @@ class RuntimeRunLoopCoordinator:
                 )
                 yield from drained_chunks
                 if isinstance(exc, RuntimeToolTimeoutError):
+                    partial_timeout_payload: dict[str, object] = {}
+                    partial_timeout_content: str | None = None
+                    partial_timeout_error: str | None = None
+                    partial_result = getattr(exc, "partial_result", None)
+                    if isinstance(partial_result, ToolResult):
+                        capped_partial = cap_tool_result_output(
+                            partial_result,
+                            workspace=runtime._workspace,
+                            session_id=session.session.id,
+                            tool_call_id=tool_call_id,
+                        )
+                        capped_partial = replace(
+                            capped_partial,
+                            data=sanitize_tool_result_data(capped_partial.data),
+                        )
+                        partial_timeout_payload.update(capped_partial.data)
+                        partial_timeout_content = capped_partial.content
+                        partial_timeout_error = capped_partial.error
                     sequence += 1
                     yield RuntimeStreamChunk(
                         kind="event",
@@ -1240,11 +1514,13 @@ class RuntimeRunLoopCoordinator:
                             event_type="runtime.tool_completed",
                             source="tool",
                             payload={
+                                **partial_timeout_payload,
                                 "tool": plan_tool_call.tool_name,
                                 "tool_call_id": tool_call_id,
                                 "arguments": timeout_sanitized_args,
                                 "status": "error",
-                                "error": str(exc),
+                                "content": partial_timeout_content,
+                                "error": partial_timeout_error or str(exc),
                                 "display": failed_display,
                                 "tool_status": failed_status,
                             },
@@ -1301,19 +1577,6 @@ class RuntimeRunLoopCoordinator:
                 )
 
             runtime_tool_result_data = dict(tool_result.data)
-            if _is_abort_requested(graph_request):
-                yield runtime._failed_chunk(
-                    session=session,
-                    sequence=sequence + 1,
-                    error="run interrupted",
-                    payload={
-                        "kind": "interrupted",
-                        "cancelled": True,
-                        "run_id": runtime._run_id_from_session_metadata(session.metadata),
-                        "reason": _abort_reason(graph_request),
-                    },
-                )
-                return
 
             sanitized_arguments = sanitize_tool_arguments(dict(plan_tool_call.arguments))
             tool_result = cap_tool_result_output(
@@ -1470,6 +1733,20 @@ class RuntimeRunLoopCoordinator:
                         payload=todo_payload,
                     ),
                 )
+
+            if _is_abort_requested(active_graph_request):
+                yield runtime._failed_chunk(
+                    session=session,
+                    sequence=sequence + 1,
+                    error="run interrupted",
+                    payload={
+                        "kind": "interrupted",
+                        "cancelled": True,
+                        "run_id": runtime._run_id_from_session_metadata(session.metadata),
+                        "reason": _abort_reason(active_graph_request),
+                    },
+                )
+                return
 
             if tool_result.status == "ok":
                 post_hook_outcome = runtime._run_tool_hooks(

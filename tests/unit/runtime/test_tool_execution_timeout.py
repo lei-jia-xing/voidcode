@@ -12,13 +12,16 @@ from voidcode.runtime.contracts import (
     RuntimeRequest,
     RuntimeResponse,
 )
-from voidcode.runtime.events import EventEnvelope
+from voidcode.runtime.events import RUNTIME_TOOL_PROGRESS, EventEnvelope
 from voidcode.runtime.service import ToolRegistry, VoidCodeRuntime
 from voidcode.runtime.session import SessionRef, SessionState
 from voidcode.runtime.storage import SqliteSessionStore
 from voidcode.tools import ShellExecTool, tool_output_artifact_temp_root
 from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolResult
-from voidcode.tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
+from voidcode.tools.runtime_context import (
+    RuntimeToolInvocationContext,
+    bind_runtime_tool_context,
+)
 
 
 class _AbortSignal:
@@ -323,6 +326,100 @@ def test_timeout_event_payload_contains_tool_name_and_seconds(tmp_path: Path) ->
     payload = timeout_events[0].payload
     assert payload["tool"] == "shell_exec"
     assert payload["timeout_seconds"] == timeout
+
+
+def test_shell_exec_progress_streams_before_tool_completion(tmp_path: Path) -> None:
+    marker = tmp_path / "command-finished.txt"
+    command = (
+        f'"{sys.executable}" -c "from pathlib import Path; import sys, time; '
+        "sys.stdout.write('alpha\\n'); sys.stdout.flush(); "
+        "time.sleep(0.5); "
+        "Path('command-finished.txt').write_text('done', encoding='utf-8'); "
+        "sys.stdout.write('omega\\n'); sys.stdout.flush()"
+        '"'
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        tool_registry=ToolRegistry.from_tools([ShellExecTool()]),
+        graph=_ShellExecGraph({"command": command, "timeout": 5}),
+        config=RuntimeConfig(approval_mode="allow", execution_engine="deterministic"),
+    )
+
+    chunks: list[Any] = []
+    iterator = runtime.run_stream(RuntimeRequest(prompt="go"))
+    first_progress = None
+    for chunk in iterator:
+        chunks.append(chunk)
+        if (
+            chunk.kind == "event"
+            and chunk.event is not None
+            and chunk.event.event_type == RUNTIME_TOOL_PROGRESS
+        ):
+            first_progress = chunk.event
+            break
+
+    assert first_progress is not None
+    assert marker.exists() is False
+    assert first_progress.payload["tool"] == "shell_exec"
+    assert first_progress.payload["stream"] == "stdout"
+    assert first_progress.payload["chunk"] == "alpha\n"
+
+    chunks.extend(iterator)
+    event_types = [c.event.event_type for c in chunks if c.kind == "event" and c.event is not None]
+    assert event_types.index("runtime.tool_started") < event_types.index(RUNTIME_TOOL_PROGRESS)
+    assert event_types.index(RUNTIME_TOOL_PROGRESS) < event_types.index("runtime.tool_completed")
+    completed = next(
+        c.event
+        for c in chunks
+        if c.kind == "event"
+        and c.event is not None
+        and c.event.event_type == "runtime.tool_completed"
+    )
+    assert completed.payload["stdout"] == "alpha\nomega\n"
+
+
+def test_shell_exec_runtime_timeout_preserves_partial_progress_and_final_output(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        tool_registry=ToolRegistry.from_tools([ShellExecTool()]),
+        graph=_ShellExecGraph(
+            {
+                "command": (
+                    f'"{sys.executable}" -c "import sys, time; '
+                    "sys.stdout.write('partial\\n'); sys.stdout.flush(); time.sleep(2)"
+                    '"'
+                ),
+                "timeout": 10,
+            }
+        ),
+        config=RuntimeConfig(
+            approval_mode="allow",
+            execution_engine="deterministic",
+            tool_timeout_seconds=1,
+        ),
+    )
+
+    chunks = list(runtime.run_stream(RuntimeRequest(prompt="go")))
+    progress_events = [
+        c.event
+        for c in chunks
+        if c.kind == "event" and c.event is not None and c.event.event_type == RUNTIME_TOOL_PROGRESS
+    ]
+    completed = next(
+        c.event
+        for c in chunks
+        if c.kind == "event"
+        and c.event is not None
+        and c.event.event_type == "runtime.tool_completed"
+    )
+
+    assert [event.payload["chunk"] for event in progress_events] == ["partial\n"]
+    assert completed.payload["status"] == "error"
+    assert completed.payload["stdout"] == "partial\n"
+    assert completed.payload["interrupted"] is True
+    assert completed.payload["timed_out"] is True
 
 
 def test_runtime_does_not_hang_after_tool_timeout(tmp_path: Path) -> None:
