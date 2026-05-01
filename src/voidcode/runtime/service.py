@@ -5881,6 +5881,8 @@ class VoidCodeRuntime:
         if policy.continuity_distillation_enabled and self._should_fetch_distillation_candidate(
             tool_results=tool_results,
             policy=policy,
+            prompt=prompt,
+            session_metadata=session_metadata,
         ):
             session_metadata = self._session_metadata_with_distillation_candidate(
                 prompt=prompt,
@@ -5889,6 +5891,7 @@ class VoidCodeRuntime:
                 policy=policy,
                 effective_config=effective_config,
                 abort_signal=abort_signal,
+                provider_attempt=provider_attempt,
             )
         return prepare_provider_context(
             prompt=prompt,
@@ -5902,20 +5905,18 @@ class VoidCodeRuntime:
         *,
         tool_results: tuple[ToolResult, ...],
         policy: ContextWindowPolicy,
+        prompt: str,
+        session_metadata: dict[str, object],
     ) -> bool:
         if not tool_results:
             return False
-        protected_recent_count = max(
-            policy.minimum_retained_tool_results,
-            policy.recent_tool_result_count,
+        probe = prepare_provider_context(
+            prompt=prompt,
+            tool_results=tool_results,
+            session_metadata=session_metadata,
+            policy=policy,
         )
-        protected_recent_count = min(protected_recent_count, len(tool_results))
-        if policy.max_tool_results == 0:
-            retained_count = protected_recent_count
-        else:
-            retained_count = max(policy.max_tool_results, protected_recent_count)
-            retained_count = min(retained_count, len(tool_results))
-        return len(tool_results) > retained_count
+        return probe.compacted
 
     def _session_metadata_with_distillation_candidate(
         self,
@@ -5926,6 +5927,7 @@ class VoidCodeRuntime:
         policy: ContextWindowPolicy,
         effective_config: EffectiveRuntimeConfig,
         abort_signal: ProviderAbortSignal | None,
+        provider_attempt: int,
     ) -> dict[str, object]:
         candidate, failure_reason = self._distillation_candidate_from_provider(
             prompt=prompt,
@@ -5934,6 +5936,7 @@ class VoidCodeRuntime:
             policy=policy,
             effective_config=effective_config,
             abort_signal=abort_signal,
+            provider_attempt=provider_attempt,
         )
         raw_runtime_state = session_metadata.get("runtime_state")
         runtime_state = (
@@ -5956,6 +5959,7 @@ class VoidCodeRuntime:
         policy: ContextWindowPolicy,
         effective_config: EffectiveRuntimeConfig,
         abort_signal: ProviderAbortSignal | None,
+        provider_attempt: int,
     ) -> tuple[dict[str, object] | None, str | None]:
         if not tool_results:
             return None, "empty_tool_results"
@@ -5985,7 +5989,11 @@ class VoidCodeRuntime:
             max_items=policy.continuity_distillation_max_input_items,
             max_chars=policy.continuity_distillation_max_input_chars,
         )
-        provider_target = effective_config.resolved_provider.active_target
+        provider_target = effective_config.resolved_provider.target_chain.target_at(
+            provider_attempt
+        )
+        if provider_target is None:
+            provider_target = effective_config.resolved_provider.active_target
         selection = provider_target.selection
         provider_name = selection.provider
         if provider_name is None:
