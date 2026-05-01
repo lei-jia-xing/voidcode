@@ -473,6 +473,7 @@ class RuntimeRunLoopCoordinator:
                     dropped_tool_result_tokens=base_context.dropped_tool_result_tokens,
                     token_budget=base_context.token_budget,
                     token_estimate_source=base_context.token_estimate_source,
+                    model_context_window_tokens=base_context.model_context_window_tokens,
                     reserved_output_tokens=base_context.reserved_output_tokens,
                     truncated_tool_result_count=base_context.truncated_tool_result_count,
                     continuity_state=reinjected_continuity,
@@ -586,6 +587,7 @@ class RuntimeRunLoopCoordinator:
                 session=session,
                 context_window=context_window,
                 threshold=pressure_threshold,
+                include_provider_usage=False,
             )
             if pressure_payload is not None and self._should_emit_context_pressure(
                 session=session,
@@ -866,6 +868,53 @@ class RuntimeRunLoopCoordinator:
                 session,
                 getattr(graph_step, "provider_usage", None),
             )
+            pressure_payload = None
+            if getattr(graph_step, "provider_usage", None) is not None:
+                pressure_payload = self._build_context_pressure_payload(
+                    session=session,
+                    context_window=context_window,
+                    threshold=pressure_threshold,
+                    include_provider_usage=True,
+                )
+            if pressure_payload is not None and self._should_emit_context_pressure(
+                session=session,
+                pressure_ratio=cast(float, pressure_payload["pressure_ratio"]),
+                threshold=pressure_threshold,
+                cooldown_steps=pressure_cooldown_steps,
+                tool_result_count=context_window.original_tool_result_count,
+            ):
+                session = self._session_with_context_pressure_state(
+                    session=session,
+                    pressure_ratio=cast(float, pressure_payload["pressure_ratio"]),
+                    threshold=pressure_threshold,
+                    tool_result_count=context_window.original_tool_result_count,
+                )
+                sequence += 1
+                yield RuntimeStreamChunk(
+                    kind="event",
+                    session=session,
+                    event=EventEnvelope(
+                        session_id=session.session.id,
+                        sequence=sequence,
+                        event_type=RUNTIME_CONTEXT_PRESSURE,
+                        source="runtime",
+                        payload=pressure_payload,
+                    ),
+                )
+                hook_outcome = runtime._run_lifecycle_hooks(
+                    session=session,
+                    sequence=sequence,
+                    surface="context_pressure",
+                    payload=pressure_payload,
+                )
+                yield from hook_outcome.chunks
+                sequence = hook_outcome.last_sequence
+                if hook_outcome.failed_error is not None:
+                    logger.warning(
+                        "context_pressure hook failed for %s: %s",
+                        session.session.id,
+                        hook_outcome.failed_error,
+                    )
             current_chunk_session = session
             if is_final_step:
                 current_chunk_session = runtime._session_with_plan_state(
@@ -1542,7 +1591,19 @@ class RuntimeRunLoopCoordinator:
         session: SessionState,
         context_window: RuntimeContextWindow,
         threshold: float,
+        include_provider_usage: bool = False,
     ) -> dict[str, object] | None:
+        if include_provider_usage:
+            provider_payload = (
+                RuntimeRunLoopCoordinator._build_provider_usage_context_pressure_payload(
+                    session=session,
+                    context_window=context_window,
+                    threshold=threshold,
+                )
+            )
+            if provider_payload is not None:
+                return provider_payload
+
         budget = context_window.token_budget
         estimated_tokens = context_window.original_tool_result_tokens
         if budget is None or estimated_tokens is None or budget <= 0 or estimated_tokens <= 0:
@@ -1568,6 +1629,101 @@ class RuntimeRunLoopCoordinator:
         if context_window.continuity_state is not None:
             payload["continuity_state"] = context_window.continuity_state.metadata_payload()
         return payload
+
+    @staticmethod
+    def _build_provider_usage_context_pressure_payload(
+        *,
+        session: SessionState,
+        context_window: RuntimeContextWindow,
+        threshold: float,
+    ) -> dict[str, object] | None:
+        budget = RuntimeRunLoopCoordinator._provider_usage_budget(context_window)
+        provider_total_tokens = RuntimeRunLoopCoordinator._latest_current_provider_total_tokens(
+            session
+        )
+        if budget is None or provider_total_tokens is None:
+            return None
+        if budget <= 0 or provider_total_tokens <= 0:
+            return None
+        pressure_ratio = provider_total_tokens / budget
+        if pressure_ratio < threshold:
+            return None
+        payload: dict[str, object] = {
+            "kind": "pressure_signal",
+            "session_id": session.session.id,
+            "estimated_tokens": provider_total_tokens,
+            "provider_total_tokens": provider_total_tokens,
+            "budget_max_tokens": budget,
+            "pressure_ratio": pressure_ratio,
+            "threshold": threshold,
+            "reason": "provider_usage_ratio_exceeded",
+            "compacted": context_window.compacted,
+            "token_estimate_source": "provider_usage",
+            "original_tool_result_count": context_window.original_tool_result_count,
+            "retained_tool_result_count": context_window.retained_tool_result_count,
+        }
+        if context_window.summary_anchor is not None:
+            payload["summary_anchor"] = context_window.summary_anchor
+        if context_window.summary_source is not None:
+            payload["summary_source"] = context_window.summary_source
+        if context_window.continuity_state is not None:
+            payload["continuity_state"] = context_window.continuity_state.metadata_payload()
+        return payload
+
+    @staticmethod
+    def _provider_usage_budget(context_window: RuntimeContextWindow) -> int | None:
+        model_window = context_window.model_context_window_tokens
+        if model_window is None:
+            return None
+        reserved_output_tokens = context_window.reserved_output_tokens or 0
+        return max(1, model_window - reserved_output_tokens)
+
+    @staticmethod
+    def _latest_current_provider_total_tokens(session: SessionState) -> int | None:
+        raw_provider_usage = session.metadata.get("provider_usage")
+        if not isinstance(raw_provider_usage, dict):
+            return None
+        provider_usage = cast(dict[str, object], raw_provider_usage)
+        current_run_id = RuntimeRunLoopCoordinator._current_run_id(session)
+        latest_run_id = provider_usage.get("latest_run_id")
+        if not isinstance(current_run_id, str) or latest_run_id != current_run_id:
+            return None
+        current_provider_attempt = RuntimeRunLoopCoordinator._current_provider_attempt(session)
+        latest_provider_attempt = provider_usage.get("latest_provider_attempt")
+        if latest_provider_attempt != current_provider_attempt:
+            return None
+        raw_latest = provider_usage.get("latest")
+        if not isinstance(raw_latest, dict):
+            return None
+        latest = cast(dict[str, object], raw_latest)
+        total_tokens = 0
+        for key in (
+            "input_tokens",
+            "output_tokens",
+            "cache_creation_tokens",
+            "cache_read_tokens",
+        ):
+            raw_value = latest.get(key, 0)
+            if not isinstance(raw_value, int) or isinstance(raw_value, bool):
+                return None
+            total_tokens += raw_value
+        return total_tokens
+
+    @staticmethod
+    def _current_run_id(session: SessionState) -> str | None:
+        raw_runtime_state = session.metadata.get("runtime_state")
+        if not isinstance(raw_runtime_state, dict):
+            return None
+        runtime_state = cast(dict[str, object], raw_runtime_state)
+        run_id = runtime_state.get("run_id")
+        return run_id if isinstance(run_id, str) and run_id else None
+
+    @staticmethod
+    def _current_provider_attempt(session: SessionState) -> int:
+        raw_provider_attempt = session.metadata.get("provider_attempt", 0)
+        if isinstance(raw_provider_attempt, int) and not isinstance(raw_provider_attempt, bool):
+            return raw_provider_attempt
+        return 0
 
     @staticmethod
     def _build_memory_refreshed_payload(

@@ -5947,6 +5947,8 @@ class VoidCodeRuntime:
         turn_count = 0
         if isinstance(raw_turn_count, int) and not isinstance(raw_turn_count, bool):
             turn_count = raw_turn_count
+        current_run_id = VoidCodeRuntime._run_id_from_session_metadata(session.metadata)
+        current_provider_attempt = VoidCodeRuntime._provider_attempt_from_metadata(session.metadata)
         return SessionState(
             session=session.session,
             status=session.status,
@@ -5955,6 +5957,8 @@ class VoidCodeRuntime:
                 **session.metadata,
                 "provider_usage": {
                     "latest": usage_payload,
+                    "latest_run_id": current_run_id,
+                    "latest_provider_attempt": current_provider_attempt,
                     "cumulative": cumulative_payload,
                     "turn_count": turn_count + 1,
                 },
