@@ -5946,7 +5946,9 @@ class VoidCodeRuntime:
         )
         if candidate is not None:
             runtime_state["distillation_candidate"] = candidate
-        if failure_reason is not None:
+            runtime_state.pop("distillation_failure_reason", None)
+        elif failure_reason is not None:
+            runtime_state.pop("distillation_candidate", None)
             runtime_state["distillation_failure_reason"] = failure_reason
         return {**session_metadata, "runtime_state": runtime_state}
 

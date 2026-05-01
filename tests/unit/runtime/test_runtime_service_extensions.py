@@ -10322,6 +10322,40 @@ def test_runtime_distillation_falls_back_on_provider_failure(tmp_path: Path) -> 
     assert continuity["distillation_source"] == "deterministic"
 
 
+def test_runtime_distillation_failure_clears_stale_candidate(tmp_path: Path) -> None:
+    provider = _DistillAwareTurnProvider(
+        name="opencode",
+        distill_output=None,
+        distill_error=RuntimeError("distiller unavailable"),
+    )
+    registry = ModelProviderRegistry(
+        providers={"opencode": _DistillAwareModelProvider(name="opencode", provider=provider)}
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(model="opencode/gpt-5.4"),
+        model_provider_registry=registry,
+    )
+    stale_candidate = {"objective_current_goal": "Stale prior turn"}
+
+    metadata = runtime._session_metadata_with_distillation_candidate(  # pyright: ignore[reportPrivateUsage]
+        prompt="read sample.txt\nread sample.txt",
+        tool_results=(
+            ToolResult(tool_name="read_file", status="ok", content="alpha"),
+            ToolResult(tool_name="read_file", status="ok", content="beta"),
+        ),
+        session_metadata={"runtime_state": {"distillation_candidate": stale_candidate}},
+        policy=ContextWindowPolicy(max_tool_results=1, continuity_distillation_enabled=True),
+        effective_config=runtime.effective_runtime_config(),
+        abort_signal=None,
+        provider_attempt=0,
+    )
+    runtime_state = cast(dict[str, object], metadata["runtime_state"])
+
+    assert "distillation_candidate" not in runtime_state
+    assert runtime_state["distillation_failure_reason"] == "provider_error"
+
+
 def test_runtime_distillation_receives_abort_signal_in_provider_request(tmp_path: Path) -> None:
     sample_file = tmp_path / "sample.txt"
     sample_file.write_text("alpha\n", encoding="utf-8")
