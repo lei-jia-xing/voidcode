@@ -2538,9 +2538,44 @@ class VoidCodeRuntime:
                 continue
             if index == 0 and VoidCodeRuntime._looks_like_shell_executable(value):
                 continue
-            if VoidCodeRuntime._looks_like_shell_path_candidate(value):
+            if VoidCodeRuntime._is_shell_explicit_output_path_candidate(tokens, index, value):
                 candidates.append(value)
         return tuple(candidates)
+
+    @staticmethod
+    def _is_shell_explicit_output_path_candidate(tokens: list[str], index: int, value: str) -> bool:
+        if not VoidCodeRuntime._looks_like_shell_path_candidate(value):
+            return False
+        token = tokens[index].strip()
+        if VoidCodeRuntime._has_shell_output_redirection(token):
+            return True
+        option, has_inline_value = VoidCodeRuntime._shell_option_name(token)
+        output_options = {"--output", "--output-document", "--out", "--outfile"}
+        if option in output_options:
+            return True
+        previous = tokens[index - 1].strip() if index > 0 else ""
+        if VoidCodeRuntime._has_shell_output_redirection(previous):
+            return True
+        if previous in output_options or previous == "-o":
+            return True
+        if has_inline_value:
+            return False
+        return False
+
+    @staticmethod
+    def _has_shell_output_redirection(token: str) -> bool:
+        stripped = token.strip().lstrip("0123456789")
+        return stripped.startswith(">")
+
+    @staticmethod
+    def _shell_option_name(token: str) -> tuple[str | None, bool]:
+        stripped = token.strip().strip("\"'`")
+        if not stripped.startswith("-"):
+            return None, False
+        if "=" in stripped:
+            option, _value = stripped.split("=", 1)
+            return option, True
+        return stripped, False
 
     @staticmethod
     def _normalize_shell_path_token(token: str) -> str:
