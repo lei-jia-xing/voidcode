@@ -246,7 +246,7 @@ VoidCode 的 Provider 抽象层输出标准化的流式事件包。
 | `invalid_model` | API Key 缺失/无效、模型名称拼写错误、无权限访问 | 检查环境变量和 `.voidcode.json`；确认供应商控制台权限。 |
 | `rate_limit` | 触发供应商频率限制或配额不足。 | 稍后重试或联系供应商增加额度。 |
 | `context_limit` | 对话历史过长或单次 Prompt 超过模型窗口。 | 减少工作区上下文注入或切换到更大窗口的模型。 |
-| `transient_failure` | 供应商服务中断、网络波动、超时。 | 检查网络连接；VoidCode 运行时会自动尝试 Fallback。 |
+| `transient_failure` | 供应商服务中断、网络波动、超时。 | 检查网络连接；若配置了 `provider_fallback` 链，runtime 会自动切换到 fallback target；未配置 fallback 时会话将终止。同 target 自动重试带指数退避是计划中的增强。 |
 | `cancelled` | 用户手动中止任务或客户端断开。 | 无需动作，按预期停止。 |
 
 ## 代码结构

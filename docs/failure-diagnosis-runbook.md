@@ -172,6 +172,8 @@ Common recovery actions:
 - `invalid_model`: fix the provider/model name or model access permissions.
 - `context_limit`: reduce prompt/tool context, rely on compaction, or switch to a larger-context model.
 - `unsupported_feature`: disable streaming/tool features for that provider or switch provider/model.
+- `transient_failure`: transient network or provider-side errors (SSL failures, timeouts, 5xx) currently terminate the session immediately without same-target retry. Configure `provider_fallback` with a secondary model to enable automatic failover, or use `voidcode sessions resume` to continue from persisted state. A same-target retry budget with exponential backoff is a planned enhancement.
+- `rate_limit`: back off and retry; configure `provider_fallback` with a secondary model, or reduce request volume.
 
 ### 3.3 SQLite 直接检查
 
