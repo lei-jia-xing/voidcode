@@ -2716,7 +2716,7 @@ def test_commands_list_outputs_discovered_project_commands_json() -> None:
     command_names = {command["name"] for command in payload["commands"]}
     assert result.returncode == 0
     assert payload["workspace"] == str(workspace)
-    assert {"help", "review", "explain"}.issubset(command_names)
+    assert {"commit", "explain", "fix", "plan", "review", "test"}.issubset(command_names)
 
 
 def test_commands_show_outputs_project_command_json() -> None:

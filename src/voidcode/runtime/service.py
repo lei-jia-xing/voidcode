@@ -5577,6 +5577,7 @@ class VoidCodeRuntime:
         prompt, metadata = self._resolve_prompt_command_for_request(
             prompt=request.prompt,
             metadata=metadata,
+            allow_internal_fields=allow_internal_metadata,
         )
 
         return RuntimeRequest(
@@ -5592,6 +5593,7 @@ class VoidCodeRuntime:
         *,
         prompt: str,
         metadata: RuntimeRequestMetadataPayload,
+        allow_internal_fields: bool,
     ) -> tuple[str, RuntimeRequestMetadataPayload]:
         if "command" in metadata or not is_prompt_command(prompt):
             return prompt, metadata
@@ -5613,8 +5615,12 @@ class VoidCodeRuntime:
             "raw_arguments": resolution.invocation.raw_arguments,
             "original_prompt": resolution.invocation.original_prompt,
         }
-        return resolution.invocation.rendered_prompt, cast(
-            RuntimeRequestMetadataPayload, normalized
+        command_agent = resolution.definition.agent
+        if command_agent is not None and "agent" not in normalized:
+            normalized["agent"] = {"preset": command_agent}
+        return resolution.invocation.rendered_prompt, validate_runtime_request_metadata(
+            normalized,
+            allow_internal_fields=allow_internal_fields,
         )
 
     def _metadata_with_delegation_governance(
