@@ -28,6 +28,8 @@ from voidcode.provider.config import (
     CopilotProviderAuthConfig,
     CopilotProviderConfig,
     LiteLLMProviderConfig,
+    OpenAIProviderConfig,
+    ProviderTransientRetryConfig,
 )
 from voidcode.provider.model_catalog import ProviderModelCatalog, ProviderModelMetadata
 from voidcode.provider.protocol import ProviderErrorKind
@@ -1762,6 +1764,13 @@ def test_runtime_background_rate_limit_retry_precedes_provider_fallback(
                 preferred_model="opencode/gpt-5.4",
                 fallback_models=("custom/demo",),
             ),
+            providers=RuntimeProvidersConfig(
+                custom={
+                    "opencode": LiteLLMProviderConfig(
+                        transient_retry=ProviderTransientRetryConfig(max_retries=0)
+                    ),
+                }
+            ),
         ),
     )
 
@@ -2269,7 +2278,17 @@ def test_runtime_session_debug_snapshot_classifies_provider_failure(tmp_path: Pa
     )
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            providers=RuntimeProvidersConfig(
+                custom={
+                    "opencode": LiteLLMProviderConfig(
+                        transient_retry=ProviderTransientRetryConfig(max_retries=0)
+                    ),
+                }
+            ),
+        ),
         model_provider_registry=registry,
     )
 
@@ -9422,7 +9441,17 @@ def test_runtime_classifies_provider_context_limit_failures(tmp_path: Path) -> N
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_FailingProviderGraph(),
-        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            providers=RuntimeProvidersConfig(
+                custom={
+                    "opencode": LiteLLMProviderConfig(
+                        transient_retry=ProviderTransientRetryConfig(max_retries=0)
+                    ),
+                }
+            ),
+        ),
     )
 
     response = runtime.run(RuntimeRequest(prompt="read sample.txt", session_id="provider-limit"))
@@ -10009,7 +10038,17 @@ def test_runtime_provider_turn_usage_is_persisted_in_session_metadata(tmp_path: 
     )
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            providers=RuntimeProvidersConfig(
+                custom={
+                    "opencode": LiteLLMProviderConfig(
+                        transient_retry=ProviderTransientRetryConfig(max_retries=0)
+                    ),
+                }
+            ),
+        ),
         model_provider_registry=registry,
     )
 
@@ -13051,6 +13090,13 @@ def test_runtime_downgrades_to_next_provider_target_on_provider_failures(
                 preferred_model="opencode/gpt-5.4",
                 fallback_models=("custom/demo",),
             ),
+            providers=RuntimeProvidersConfig(
+                custom={
+                    "opencode": LiteLLMProviderConfig(
+                        transient_retry=ProviderTransientRetryConfig(max_retries=0)
+                    ),
+                }
+            ),
         ),
         model_provider_registry=registry,
     )
@@ -13119,7 +13165,17 @@ def test_runtime_provider_streaming_emits_ordered_provider_stream_events(
     )
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            providers=RuntimeProvidersConfig(
+                custom={
+                    "opencode": LiteLLMProviderConfig(
+                        transient_retry=ProviderTransientRetryConfig(max_retries=0)
+                    ),
+                }
+            ),
+        ),
         model_provider_registry=registry,
     )
 
@@ -13163,7 +13219,17 @@ def test_runtime_provider_streaming_persists_reasoning_as_runtime_part(
     )
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            providers=RuntimeProvidersConfig(
+                custom={
+                    "opencode": LiteLLMProviderConfig(
+                        transient_retry=ProviderTransientRetryConfig(max_retries=0)
+                    ),
+                }
+            ),
+        ),
         model_provider_registry=registry,
     )
 
@@ -13222,7 +13288,17 @@ def test_runtime_reasoning_capture_has_aggregate_limit(tmp_path: Path) -> None:
     )
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            providers=RuntimeProvidersConfig(
+                custom={
+                    "opencode": LiteLLMProviderConfig(
+                        transient_retry=ProviderTransientRetryConfig(max_retries=0)
+                    ),
+                }
+            ),
+        ),
         model_provider_registry=registry,
     )
 
@@ -13278,7 +13354,17 @@ def test_runtime_reasoning_capture_limit_spans_provider_turns(tmp_path: Path) ->
     )
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            providers=RuntimeProvidersConfig(
+                custom={
+                    "opencode": LiteLLMProviderConfig(
+                        transient_retry=ProviderTransientRetryConfig(max_retries=0)
+                    ),
+                }
+            ),
+        ),
         model_provider_registry=registry,
     )
 
@@ -13423,7 +13509,17 @@ def test_runtime_run_stream_preserves_streamed_tool_requests(tmp_path: Path) -> 
     )
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            providers=RuntimeProvidersConfig(
+                custom={
+                    "opencode": LiteLLMProviderConfig(
+                        transient_retry=ProviderTransientRetryConfig(max_retries=0)
+                    ),
+                }
+            ),
+        ),
         model_provider_registry=registry,
     )
 
@@ -13525,6 +13621,13 @@ def test_runtime_provider_stream_error_maps_to_fallback_when_retryable(
                 preferred_model="opencode/gpt-5.4",
                 fallback_models=("custom/demo",),
             ),
+            providers=RuntimeProvidersConfig(
+                custom={
+                    "opencode": LiteLLMProviderConfig(
+                        transient_retry=ProviderTransientRetryConfig(max_retries=0)
+                    ),
+                }
+            ),
         ),
         model_provider_registry=registry,
     )
@@ -13578,6 +13681,13 @@ def test_runtime_provider_stream_json_error_payload_maps_to_context_limit_withou
             provider_fallback=RuntimeProviderFallbackConfig(
                 preferred_model="opencode/gpt-5.4",
                 fallback_models=("custom/demo",),
+            ),
+            providers=RuntimeProvidersConfig(
+                custom={
+                    "opencode": LiteLLMProviderConfig(
+                        transient_retry=ProviderTransientRetryConfig(max_retries=0)
+                    ),
+                }
             ),
         ),
         model_provider_registry=registry,
@@ -13650,7 +13760,17 @@ def test_runtime_provider_transient_failure_after_tool_is_resumable(
     )
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            providers=RuntimeProvidersConfig(
+                custom={
+                    "opencode": LiteLLMProviderConfig(
+                        transient_retry=ProviderTransientRetryConfig(max_retries=0)
+                    ),
+                }
+            ),
+        ),
         model_provider_registry=registry,
     )
 
@@ -13720,7 +13840,17 @@ def test_runtime_provider_failure_resume_reconciles_parent_background_tasks(
     )
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            providers=RuntimeProvidersConfig(
+                custom={
+                    "opencode": LiteLLMProviderConfig(
+                        transient_retry=ProviderTransientRetryConfig(max_retries=0)
+                    ),
+                }
+            ),
+        ),
         model_provider_registry=registry,
     )
     parent_session_id = "provider-parent-retry-session"
@@ -13898,7 +14028,17 @@ def test_runtime_provider_failure_resume_finalizes_background_task_and_releases_
     mcp_manager = _RecordingMcpManager()
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            providers=RuntimeProvidersConfig(
+                custom={
+                    "opencode": LiteLLMProviderConfig(
+                        transient_retry=ProviderTransientRetryConfig(max_retries=0)
+                    ),
+                }
+            ),
+        ),
         model_provider_registry=registry,
         mcp_manager=mcp_manager,
     )
@@ -13994,7 +14134,17 @@ def test_runtime_provider_failure_resume_persists_failed_chunk_when_loop_raises(
     )
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            providers=RuntimeProvidersConfig(
+                custom={
+                    "opencode": LiteLLMProviderConfig(
+                        transient_retry=ProviderTransientRetryConfig(max_retries=0)
+                    ),
+                }
+            ),
+        ),
         model_provider_registry=registry,
     )
     task_id = "bg-provider-failure-raise"
@@ -14106,6 +14256,13 @@ def test_runtime_fallback_event_preserves_provider_error_details(tmp_path: Path)
             provider_fallback=RuntimeProviderFallbackConfig(
                 preferred_model="opencode/gpt-5.4",
                 fallback_models=("custom/demo",),
+            ),
+            providers=RuntimeProvidersConfig(
+                custom={
+                    "opencode": LiteLLMProviderConfig(
+                        transient_retry=ProviderTransientRetryConfig(max_retries=0)
+                    ),
+                }
             ),
         ),
         model_provider_registry=registry,
@@ -14500,6 +14657,16 @@ def test_runtime_provider_fallback_exhaustion_after_three_targets_reports_termin
             provider_fallback=RuntimeProviderFallbackConfig(
                 preferred_model="opencode/gpt-5.4",
                 fallback_models=("openai/gpt-4.1", "anthropic/claude-3-7-sonnet"),
+            ),
+            providers=RuntimeProvidersConfig(
+                openai=OpenAIProviderConfig(
+                    transient_retry=ProviderTransientRetryConfig(max_retries=0)
+                ),
+                custom={
+                    "opencode": LiteLLMProviderConfig(
+                        transient_retry=ProviderTransientRetryConfig(max_retries=0)
+                    ),
+                },
             ),
         ),
         model_provider_registry=registry,

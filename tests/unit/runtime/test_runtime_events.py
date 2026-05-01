@@ -27,6 +27,7 @@ from voidcode.runtime.events import (
     RUNTIME_LSP_SERVER_STOPPED,
     RUNTIME_MCP_SERVER_FAILED,
     RUNTIME_MEMORY_REFRESHED,
+    RUNTIME_PROVIDER_TRANSIENT_RETRY,
     RUNTIME_REASONING_DIAGNOSTIC,
     RUNTIME_REASONING_PART,
     RUNTIME_SESSION_ENDED,
@@ -63,6 +64,7 @@ def test_runtime_event_types_include_stable_emitted_events() -> None:
     assert RUNTIME_MCP_SERVER_FAILED in EMITTED_EVENT_TYPES
     assert "runtime.plan_created" not in EMITTED_EVENT_TYPES
     assert RUNTIME_TOOL_STARTED in EMITTED_EVENT_TYPES
+    assert RUNTIME_PROVIDER_TRANSIENT_RETRY in EMITTED_EVENT_TYPES
 
 
 def test_future_additive_event_types_cover_async_lifecycle_surfaces() -> None:
