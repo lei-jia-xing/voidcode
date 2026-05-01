@@ -11625,6 +11625,46 @@ def test_runtime_request_metadata_agent_override_persists_and_restores_agent_con
     )
 
 
+def test_runtime_prompt_command_agent_metadata_selects_agent_preset(tmp_path: Path) -> None:
+    created_providers: list[_ScriptedTurnProvider] = []
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(ProviderTurnResult(output="plan complete"),),
+                created_providers=created_providers,
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+        model_provider_registry=registry,
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="/plan add command presets"))
+
+    assert response.session.status == "completed"
+    assert response.output == "plan complete"
+    assert response.session.metadata["command"] == {
+        "name": "plan",
+        "source": "builtin",
+        "arguments": ["add", "command", "presets"],
+        "raw_arguments": "add command presets",
+        "original_prompt": "/plan add command presets",
+    }
+    assert response.session.metadata["agent"] == {"preset": "product"}
+    assert created_providers[-1].requests[0].agent_preset == {
+        "preset": "product",
+        "prompt_profile": "product",
+        "prompt_materialization": _prompt_materialization_payload("product"),
+        "model": "opencode/gpt-5.4",
+        "execution_engine": "provider",
+    }
+    runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
+    assert runtime_config["agent"] == created_providers[-1].requests[0].agent_preset
+
+
 def test_runtime_partial_request_agent_override_preserves_inherited_agent_fields(
     tmp_path: Path,
 ) -> None:
