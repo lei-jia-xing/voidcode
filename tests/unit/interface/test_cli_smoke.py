@@ -1329,6 +1329,16 @@ def test_run_command_interactively_streams_resumed_events_incrementally() -> Non
         source="tool",
         tool="write_file",
     )
+    tool_progress = _runtime_event(
+        "runtime.tool_progress",
+        sequence=4,
+        source="tool",
+        tool="shell_exec",
+        tool_call_id="call-1",
+        stream="stdout",
+        chunk="alpha\n",
+        truncated=False,
+    )
 
     def _resumed_stream() -> Any:
         yield _make_chunk(session_id="demo-session", status="running", event=approval_resolved)
@@ -1340,6 +1350,9 @@ def test_run_command_interactively_streams_resumed_events_incrementally() -> Non
         )
         assert "EVENT runtime.tool_completed source=tool tool=write_file\n" not in stdout.getvalue()
         assert "RESULT\n" not in stdout.getvalue()
+        yield _make_chunk(session_id="demo-session", status="running", event=tool_progress)
+        assert "EVENT runtime.tool_progress source=tool" in stdout.getvalue()
+        assert "chunk=alpha" in stdout.getvalue()
         yield _make_chunk(session_id="demo-session", status="completed", event=tool_completed)
         assert "EVENT runtime.tool_completed source=tool tool=write_file\n" in stdout.getvalue()
         assert "RESULT\n" not in stdout.getvalue()
@@ -1372,6 +1385,9 @@ def test_run_command_interactively_streams_resumed_events_incrementally() -> Non
     assert result == 0
     assert stdout.getvalue().count("EVENT runtime.approval_requested") == 1
     assert stdout.getvalue().index("EVENT runtime.approval_resolved") < stdout.getvalue().index(
+        "EVENT runtime.tool_progress"
+    )
+    assert stdout.getvalue().index("EVENT runtime.tool_progress") < stdout.getvalue().index(
         "EVENT runtime.tool_completed"
     )
     assert stdout.getvalue().index("EVENT runtime.tool_completed") < stdout.getvalue().index(

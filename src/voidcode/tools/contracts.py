@@ -10,6 +10,10 @@ type ToolResultStatus = Literal["ok", "error"]
 class RuntimeToolTimeoutError(TimeoutError):
     """Raised when the runtime-owned outer tool timeout wins."""
 
+    def __init__(self, message: str, *, partial_result: object | None = None) -> None:
+        super().__init__(message)
+        self.partial_result = partial_result
+
 
 @dataclass(frozen=True, slots=True)
 class ToolDefinition:

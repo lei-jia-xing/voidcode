@@ -10,6 +10,7 @@ import pytest
 from voidcode.runtime.service import ToolRegistry
 from voidcode.tools import ShellExecTool, ToolCall
 from voidcode.tools.output import MAX_TOOL_OUTPUT_BYTES, cap_tool_result_output
+from voidcode.tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
 from voidcode.tools.shell_exec import kill_timed_out_process
 
 
@@ -197,6 +198,64 @@ def test_shell_exec_tool_returns_full_output_for_large_subprocess(tmp_path: Path
     assert result.data.get("output_char_count") == 250000
 
 
+def test_shell_exec_emits_incremental_stdout_progress_and_preserves_final_output(
+    tmp_path: Path,
+) -> None:
+    tool = ShellExecTool()
+    progress: list[dict[str, object]] = []
+    command = (
+        f'"{sys.executable}" -c "import sys, time; '
+        "sys.stdout.write('alpha\\n'); sys.stdout.flush(); "
+        "time.sleep(0.2); "
+        "sys.stdout.write('omega\\n'); sys.stdout.flush()"
+        '"'
+    )
+
+    with bind_runtime_tool_context(
+        RuntimeToolInvocationContext(
+            session_id="shell-progress",
+            emit_tool_progress=lambda payload: progress.append(dict(payload)),
+        )
+    ):
+        result = tool.invoke(
+            ToolCall(tool_name="shell_exec", arguments={"command": command}),
+            workspace=tmp_path,
+        )
+
+    assert result.status == "ok"
+    assert result.content == "alpha\nomega\n"
+    assert result.data["stdout"] == "alpha\nomega\n"
+    assert [item["stream"] for item in progress] == ["stdout", "stdout"]
+    assert "alpha\n" in {item["chunk"] for item in progress}
+    assert "omega\n" in {item["chunk"] for item in progress}
+
+
+def test_shell_exec_progress_callback_failure_does_not_break_final_result(
+    tmp_path: Path,
+) -> None:
+    tool = ShellExecTool()
+
+    def failing_progress_callback(_payload: object) -> None:
+        raise RuntimeError("consumer disconnected")
+
+    with bind_runtime_tool_context(
+        RuntimeToolInvocationContext(
+            session_id="shell-progress-failure",
+            emit_tool_progress=failing_progress_callback,
+        )
+    ):
+        result = tool.invoke(
+            ToolCall(
+                tool_name="shell_exec",
+                arguments={"command": f'"{sys.executable}" -c "print(\'done\')"'},
+            ),
+            workspace=tmp_path,
+        )
+
+    assert result.status == "ok"
+    assert result.content == "done\n"
+
+
 def test_shell_exec_large_output_spills_full_payload_via_central_cap(tmp_path: Path) -> None:
     payload_size = MAX_TOOL_OUTPUT_BYTES + 10_000
     tool = ShellExecTool()
@@ -219,7 +278,8 @@ def test_shell_exec_large_output_spills_full_payload_via_central_cap(tmp_path: P
 
     artifact = capped.data["artifact"]
     assert isinstance(artifact, dict)
-    reference_path = Path(str(artifact["path"]))
+    typed_artifact = cast(dict[str, object], artifact)
+    reference_path = Path(str(typed_artifact["path"]))
     assert reference_path.exists()
     assert len(reference_path.read_text(encoding="utf-8")) == payload_size
     assert not (tmp_path / ".voidcode" / "tool-output").exists()

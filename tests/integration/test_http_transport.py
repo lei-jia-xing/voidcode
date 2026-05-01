@@ -2440,6 +2440,71 @@ def test_transport_serializes_additive_future_event_type_unchanged() -> None:
     assert cast(dict[str, object], payloads[0]["event"])["event_type"] == future_event_type
 
 
+def test_transport_serializes_tool_progress_event_as_sse_frame() -> None:
+    create_runtime_app = _load_transport_app_factory()
+    runtime_stream_chunk, session_ref, session_state, event_envelope = _load_stream_types()
+    events_module = importlib.import_module("voidcode.runtime.events")
+    session = session_state(
+        session=session_ref(id="tool-progress-session"),
+        status="running",
+        turn=1,
+        metadata={"workspace": "/tmp/workspace"},
+    )
+
+    class StubRuntime:
+        def run_stream(self, request: RuntimeRequestLike) -> Iterator[StreamChunkLike]:
+            assert request.prompt == "stream shell"
+            yield runtime_stream_chunk(
+                kind="event",
+                session=session,
+                event=event_envelope(
+                    session_id="tool-progress-session",
+                    sequence=1,
+                    event_type=cast(str, events_module.RUNTIME_TOOL_PROGRESS),
+                    source="tool",
+                    payload={
+                        "tool": "shell_exec",
+                        "tool_call_id": "call-1",
+                        "stream": "stdout",
+                        "chunk": "alpha\n",
+                        "truncated": False,
+                    },
+                ),
+            )
+
+        def list_sessions(self) -> tuple[StoredSessionSummaryLike, ...]:
+            raise AssertionError("list_sessions should not be called")
+
+        def web_settings(self) -> dict[str, object]:
+            raise AssertionError("web_settings should not be called")
+
+        def update_web_settings(self, **_: object) -> dict[str, object]:
+            raise AssertionError("update_web_settings should not be called")
+
+        def resume(self, session_id: str) -> RuntimeResponseLike:
+            raise AssertionError(f"resume should not be called: {session_id}")
+
+    app = create_runtime_app(
+        workspace=Path("/tmp/workspace"),
+        runtime_factory=lambda: StubRuntime(),
+    )
+
+    response = _run_app(
+        app,
+        method="POST",
+        path="/api/runtime/run/stream",
+        body=json.dumps({"prompt": "stream shell"}).encode("utf-8"),
+    )
+    payloads = _parse_sse_payloads(response)
+
+    assert response.status == 200
+    event = cast(dict[str, object], payloads[0]["event"])
+    assert event["event_type"] == events_module.RUNTIME_TOOL_PROGRESS
+    payload = cast(dict[str, object], event["payload"])
+    assert payload["tool"] == "shell_exec"
+    assert payload["chunk"] == "alpha\n"
+
+
 def test_transport_persists_streamed_run_for_session_listing_and_replay(tmp_path: Path) -> None:
     sample_file = tmp_path / "sample.txt"
     _ = sample_file.write_text("stream replay\n", encoding="utf-8")

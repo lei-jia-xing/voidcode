@@ -62,6 +62,7 @@ EventEnvelope(
 - `runtime.permission_resolved`
 - `runtime.tool_hook_pre`
 - `runtime.tool_hook_post`
+- `runtime.tool_progress`
 - `runtime.tool_completed`
 - `runtime.failed`
 - `graph.response_ready`
@@ -104,19 +105,34 @@ EventEnvelope(
 9. 对于 `ask` 策略发出 `runtime.approval_requested`；或者对于 `allow`/`deny` 策略发出 `runtime.approval_resolved`；或者对于只读操作发出 `runtime.permission_resolved`
 10. `runtime.approval_resolved`（仅在 `ask` 后恢复运行时）
 11. `runtime.tool_started`
-12. `runtime.tool_completed`
-13. `graph.loop_step`
-14. `graph.response_ready`
-15. `runtime.acp_disconnected`（仅在 ACP 已启用且本次 run 结束时出现）
+12. `runtime.tool_progress`（仅支持增量输出的工具在执行中可发出 0 次或多次）
+13. `runtime.tool_completed`
+14. `graph.loop_step`
+15. `graph.response_ready`
+16. `runtime.acp_disconnected`（仅在 ACP 已启用且本次 run 结束时出现）
 
 当前已实现的最小 hooks 路径会在非只读工具的成功执行周围插入：
 
 - `runtime.tool_hook_pre`
 - `runtime.tool_started`
+- `runtime.tool_progress`（可选，0 次或多次）
 - `runtime.tool_completed`
 - `runtime.tool_hook_post`
 
 如果 pre-hook 失败，工具调用必须在执行前中止，并通过已有失败路径对外可见。
+
+### `runtime.tool_progress`
+- source: `tool`
+- 当前 payload:
+  - `tool: str`
+  - `tool_call_id: str`，与同一次工具调用的 `runtime.tool_started` / `runtime.tool_completed` 一致
+  - `stream: str`，当前用于 `shell_exec` 的 `stdout` 或 `stderr`
+  - `chunk: str`，本次增量输出的有界文本片段
+  - `chunk_char_count: int`，本次原始文本片段长度
+  - `truncated: bool`，表示本次 progress payload 是否因事件大小上限而截断
+  - `dropped_progress_events: int`（可选），表示 runtime 为保护内存而合并/丢弃的 progress 事件数量
+- 该事件只描述正在运行工具的观测进度；最终、模型可见且可重放的工具结果仍以 `runtime.tool_completed` 为准。
+- 客户端必须将 progress 当作增量输出流，不能用它替代 terminal tool result，也不能假设每个输出字节都会对应一个 progress 事件。
 
 此序列是目前实现的、最具体的、客户端可见的 MVP 事件流。
 未来的图模式可能会在这些阶段之间添加有序事件，但此回退顺序仍为规范的确定性序列。
