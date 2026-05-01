@@ -761,13 +761,13 @@ class RuntimeRunLoopCoordinator:
                 session = pending_provider_attempt_reset.session
                 pending_provider_attempt_reset = None
             sequence = int(sequence)
-            current_graph_request: GraphRunRequest = active_graph_request
-            current_prompt: str = current_graph_request.prompt
-            current_available_tools: tuple[ToolDefinition, ...] = (
-                current_graph_request.available_tools
+            current_graph_request: Any = active_graph_request
+            current_prompt: str = cast(str, current_graph_request.prompt)
+            current_available_tools: tuple[ToolDefinition, ...] = cast(
+                tuple[ToolDefinition, ...], current_graph_request.available_tools
             )
-            current_assembled_context: ProviderAssembledContext = (
-                current_graph_request.assembled_context
+            current_assembled_context: ProviderAssembledContext = cast(
+                ProviderAssembledContext, current_graph_request.assembled_context
             )
             current_segments: tuple[ProviderContextSegmentLike, ...] = (
                 current_assembled_context.segments
@@ -775,10 +775,11 @@ class RuntimeRunLoopCoordinator:
             current_metadata: dict[str, object] = current_graph_request.metadata
             current_abort_signal: ProviderAbortSignal | None = current_graph_request.abort_signal
             current_session: SessionState = session
+            current_session_metadata: dict[str, object] = current_session.metadata
             base_context = runtime._prepare_provider_context_window(
                 prompt=current_prompt,
                 tool_results=tuple(tool_results),
-                session_metadata=current_session.metadata,
+                session_metadata=current_session_metadata,
                 abort_signal=current_abort_signal,
             )
             reinjected_continuity = continuity_to_reinject
