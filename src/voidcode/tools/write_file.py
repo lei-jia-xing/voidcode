@@ -61,7 +61,10 @@ class WriteFileTool:
         display_path = (
             str(candidate.resolve()) if resolution.is_external else resolution.relative_path
         )
+        is_empty_write = len(args.content) == 0
         content = f"Wrote file successfully: {display_path}"
+        if is_empty_write:
+            content += " Warning: wrote empty file (0 bytes)."
         if diagnostics:
             content += f" Formatter warning: {diagnostics[0]['message']}"
 
@@ -85,6 +88,8 @@ class WriteFileTool:
             "byte_count": candidate.stat().st_size,
             "diff": diff,
         }
+        if is_empty_write:
+            data["warning"] = "empty file written"
         if formatter_result is not None and formatter_result.status != "not_configured":
             data["formatter"] = formatter_payload(formatter_result)
             data["byte_count"] = len(candidate.read_text(encoding="utf-8").encode("utf-8"))

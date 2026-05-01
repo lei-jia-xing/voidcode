@@ -157,6 +157,8 @@ def _handle_run_command(args: argparse.Namespace) -> int:
             _print_runtime_failure_footer(runtime, result, workspace=workspace)
     finally:
         _close_runtime(runtime)
+    if result.session.status == "failed" or _has_runtime_failed_event(result.events):
+        return EXIT_RUNTIME_ERROR
     return EXIT_SUCCESS
 
 
@@ -222,7 +224,13 @@ def _run_with_inline_approval(
     if interactive:
         _print_runtime_output(result.output)
 
-    return result
+    if result.session.status == "failed" or _has_runtime_failed_event(result.events):
+        return EXIT_RUNTIME_ERROR
+    return EXIT_SUCCESS
+
+
+def _has_runtime_failed_event(events: tuple[EventEnvelope, ...]) -> bool:
+    return any(event.event_type == "runtime.failed" for event in events)
 
 
 def _consume_runtime_stream(
@@ -432,12 +440,21 @@ def _runtime_stream_payload(
     show_thinking: bool = False,
 ) -> dict[str, object]:
     blocked_event = _pending_blocked_event(result.session, _last_event(result))
+    failed_event = next(
+        (event for event in reversed(result.events) if event.event_type == "runtime.failed"),
+        None,
+    )
     payload: dict[str, object] = {
         "workspace": str(workspace),
         "session": serialize_session_state(result.session),
         "output": result.output,
         "events": [serialize_event(event, show_thinking=show_thinking) for event in result.events],
     }
+    if result.session.status == "failed" and failed_event is not None:
+        payload["status"] = "failed"
+        payload["error"] = failed_event.payload.get("error", "runtime failed")
+    else:
+        payload["status"] = result.session.status
     if blocked_event is not None:
         payload["blocked"] = _blocked_payload(result, blocked_event)
     return payload

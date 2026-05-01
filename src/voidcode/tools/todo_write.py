@@ -82,12 +82,30 @@ class TodoWriteTool:
         _ = workspace
         todos_value = call.arguments.get("todos", [])
         if not isinstance(todos_value, list):
-            raise ValueError("todo_write requires todos array")
+            return ToolResult(
+                tool_name=self.definition.name,
+                status="error",
+                content="todo_write failed: todos must be an array. Please provide an array of {content, status, priority} objects.",
+                error="todo_write requires todos array",
+            )
         todos = cast(list[object], todos_value)
 
         normalized: list[dict[str, str]] = []
+        errors: list[str] = []
         for idx, item in enumerate(todos, start=1):
-            normalized.append(_parse_todo_item(item, idx=idx))
+            try:
+                normalized.append(_parse_todo_item(item, idx=idx))
+            except ValueError as exc:
+                errors.append(str(exc))
+
+        if errors:
+            error_message = "; ".join(errors)
+            return ToolResult(
+                tool_name=self.definition.name,
+                status="error",
+                content=f"todo_write failed: {error_message}. Please retry with valid todo items.",
+                error=error_message,
+            )
 
         summary = {
             "total": len(normalized),
