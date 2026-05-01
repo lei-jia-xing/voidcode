@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from types import MappingProxyType
 
+from ..hook.presets import validate_hook_preset_refs
 from .models import AgentManifest, AgentManifestId, AgentPromptMaterialization
 from .prompts import render_builtin_prompt_profile
 
@@ -240,6 +241,10 @@ def validate_builtin_agent_manifests(
                 raise ValueError(
                     f"builtin agent manifest '{manifest.id}' preset hook refs must be non-empty"
                 )
+        validate_hook_preset_refs(
+            manifest.preset_hook_refs,
+            field_path=f"builtin agent manifest '{manifest.id}' preset_hook_refs",
+        )
         if manifest.mode == "primary" and not manifest.top_level_selectable:
             raise ValueError(
                 f"builtin agent manifest '{manifest.id}' has mode='primary' but is not "

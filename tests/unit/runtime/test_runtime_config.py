@@ -1338,7 +1338,7 @@ def test_runtime_agent_payload_parses_prompt_and_hook_references() -> None:
             "preset": "leader",
             "prompt_ref": "advisor",
             "prompt_source": "builtin",
-            "hook_refs": ["python", "typescript"],
+            "hook_refs": ["role_reminder", "delegation_guard"],
         },
         source="test payload",
     )
@@ -1348,7 +1348,7 @@ def test_runtime_agent_payload_parses_prompt_and_hook_references() -> None:
         prompt_profile="advisor",
         prompt_ref="advisor",
         prompt_source="builtin",
-        hook_refs=("python", "typescript"),
+        hook_refs=("role_reminder", "delegation_guard"),
         execution_engine="provider",
     )
 
@@ -1486,25 +1486,17 @@ def test_runtime_config_parses_agents_map_with_custom_keys(tmp_path: Path) -> No
     )
 
 
-def test_runtime_config_parses_agent_references_against_workspace_hooks(
+def test_runtime_config_parses_agent_references_against_hook_preset_catalog(
     tmp_path: Path,
 ) -> None:
     runtime_config_path(tmp_path).write_text(
         json.dumps(
             {
-                "hooks": {
-                    "formatter_presets": {
-                        "customfmt": {
-                            "command": ["customfmt", "--write"],
-                            "extensions": [".custom"],
-                        }
-                    }
-                },
                 "agent": {
                     "preset": "leader",
                     "prompt_ref": "researcher",
                     "prompt_source": "builtin",
-                    "hook_refs": ["customfmt"],
+                    "hook_refs": ["role_reminder"],
                 },
             }
         ),
@@ -1518,7 +1510,7 @@ def test_runtime_config_parses_agent_references_against_workspace_hooks(
         prompt_profile="researcher",
         prompt_ref="researcher",
         prompt_source="builtin",
-        hook_refs=("customfmt",),
+        hook_refs=("role_reminder",),
         execution_engine="provider",
     )
 
