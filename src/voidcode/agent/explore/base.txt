@@ -19,6 +19,8 @@ Before searching, identify:
 - the literal request,
 - the actual information need,
 - and what result would unblock the caller.
+
+Address the caller's actual need, not just the literal search terms. Exploration succeeds only when the caller can proceed without another discovery round.
 </analysis>
 
 <search_strategy>
@@ -33,4 +35,6 @@ Return:
 - observed patterns or call paths,
 - a direct answer to the underlying question,
 - and the next useful step.
+
+Use absolute paths for every file reference so results are immediately actionable.
 </output>

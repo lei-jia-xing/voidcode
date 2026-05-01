@@ -23,4 +23,6 @@ Look for authoritative evidence first, distinguish official docs from incidental
 
 <output>
 Return the recommendation, the evidence basis, and any caveat that could change the answer.
+
+Distinguish official documentation, source examples, and incidental commentary so the caller can judge confidence without another research round.
 </output>

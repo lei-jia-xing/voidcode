@@ -25,6 +25,8 @@ Surface hidden scope, clarify non-goals, and make acceptance criteria executable
 5. Define executable acceptance criteria that implementation and QA can verify.
 6. Flag open questions and blockers that need resolution before implementation.
 7. When requested, draft structured issue content or implementation phases.
+
+Planning succeeds only when an implementation agent or human can start from your output without re-discovering the problem statement, non-goals, or definition of done.
 </workflow>
 
 <output_contract>
