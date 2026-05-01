@@ -13,8 +13,6 @@ from voidcode.runtime.context_window import (
     RuntimeContextSegment,
     RuntimeContinuityState,
     _retain_indexes_within_token_budget,
-    _select_tool_result_indexes_by_importance,
-    _tool_result_importance_score,
     assemble_provider_context,
     context_window_policy_from_payload,
     continuity_state_from_metadata_payload,
@@ -22,6 +20,7 @@ from voidcode.runtime.context_window import (
     count_text_tokens,
     normalize_read_file_output,
     prepare_provider_context,
+    project_tool_results_for_context_window,
 )
 from voidcode.runtime.provider_context import inspect_provider_context
 from voidcode.tools.contracts import ToolResult
@@ -382,6 +381,94 @@ def test_provider_context_inspector_reports_tool_pairing_problems() -> None:
     assert "missing_tool_result" in diagnostic_codes
     assert "orphan_tool_result" in diagnostic_codes
     assert "provider_requires_tools_schema" in diagnostic_codes
+
+
+def test_provider_context_inspector_reports_duplicate_tool_result_ids() -> None:
+    assembled = RuntimeAssembledContext(
+        prompt="continue",
+        tool_results=(),
+        continuity_state=None,
+        metadata={},
+        segments=(
+            RuntimeContextSegment(
+                role="assistant",
+                content=None,
+                tool_call_id="duplicate-result",
+                tool_name="read_file",
+            ),
+            RuntimeContextSegment(
+                role="tool",
+                content="first",
+                tool_call_id="duplicate-result",
+                tool_name="read_file",
+                metadata={"status": "ok", "data": {}},
+            ),
+            RuntimeContextSegment(
+                role="tool",
+                content="second",
+                tool_call_id="duplicate-result",
+                tool_name="read_file",
+                metadata={"status": "ok", "data": {}},
+            ),
+        ),
+    )
+
+    snapshot = inspect_provider_context(
+        assembled_context=assembled,
+        provider="openai",
+        model="gpt-4o",
+        execution_engine="provider",
+        available_tool_count=1,
+    )
+
+    duplicate = [
+        diagnostic
+        for diagnostic in snapshot.diagnostics
+        if diagnostic.code == "duplicate_tool_call_id"
+    ]
+    assert len(duplicate) == 1
+    assert duplicate[0].details == {"tool_call_ids": ["duplicate-result"]}
+
+
+def test_provider_context_inspector_reports_oversized_retained_tool_feedback() -> None:
+    assembled = RuntimeAssembledContext(
+        prompt="continue",
+        tool_results=(),
+        continuity_state=None,
+        metadata={},
+        segments=(
+            RuntimeContextSegment(
+                role="assistant",
+                content=None,
+                tool_call_id="large-result",
+                tool_name="read_file",
+            ),
+            RuntimeContextSegment(
+                role="tool",
+                content="x" * 32,
+                tool_call_id="large-result",
+                tool_name="read_file",
+                metadata={"status": "ok", "data": {}},
+            ),
+        ),
+    )
+
+    snapshot = inspect_provider_context(
+        assembled_context=assembled,
+        provider="openai",
+        model="gpt-4o",
+        execution_engine="provider",
+        available_tool_count=1,
+        oversized_tool_feedback_chars=8,
+    )
+
+    oversized = [
+        diagnostic
+        for diagnostic in snapshot.diagnostics
+        if diagnostic.code == "oversized_tool_feedback"
+    ]
+    assert len(oversized) == 1
+    assert oversized[0].details == {"content_chars": 32, "threshold_chars": 8}
 
 
 def test_provider_context_parity_matrix_preserves_tool_shapes_across_debug_messages() -> None:
@@ -823,7 +910,7 @@ def test_prepare_provider_context_keeps_count_policy_when_budget_missing() -> No
     assert context.original_tool_result_tokens is None
 
 
-def test_prepare_provider_context_prioritizes_important_older_results() -> None:
+def test_prepare_provider_context_retains_recent_tail_without_scoring() -> None:
     context = prepare_provider_context(
         prompt="fix failing tests",
         tool_results=(
@@ -848,7 +935,7 @@ def test_prepare_provider_context_prioritizes_important_older_results() -> None:
         ),
     )
 
-    assert tuple(result.data["index"] for result in context.tool_results) == (2, 3, 5)
+    assert tuple(result.data["index"] for result in context.tool_results) == (3, 4, 5)
     assert context.compacted is True
     assert context.continuity_state is not None
     dropped_tool_names = [
@@ -859,10 +946,10 @@ def test_prepare_provider_context_prioritizes_important_older_results() -> None:
     dropped_index_positions = [
         item.metadata_payload()["index"] for item in context.continuity_state.dropped_tool_results
     ]
-    assert dropped_index_positions == [1, 4]
+    assert dropped_index_positions == [1, 2]
 
 
-def test_prepare_provider_context_token_budget_prefers_important_candidates() -> None:
+def test_prepare_provider_context_token_budget_prefers_recent_candidates() -> None:
     context = prepare_provider_context(
         prompt="verify fix",
         tool_results=(
@@ -882,9 +969,9 @@ def test_prepare_provider_context_token_budget_prefers_important_candidates() ->
     )
 
     retained_indexes = tuple(result.data["index"] for result in context.tool_results)
-    assert 2 in retained_indexes
     assert 4 in retained_indexes
-    assert 1 not in retained_indexes or 3 not in retained_indexes
+    assert 3 in retained_indexes
+    assert 1 not in retained_indexes
     assert context.compacted is True
     assert context.token_budget == 120
 
@@ -918,7 +1005,7 @@ def test_prepare_provider_context_can_disable_importance_retention() -> None:
     assert tuple(result.data["index"] for result in context.tool_results) == (3, 4, 5)
 
 
-def test_prepare_provider_context_older_todo_and_task_survive_over_newer_reads() -> None:
+def test_prepare_provider_context_older_todo_and_task_do_not_displace_newer_reads() -> None:
     context = prepare_provider_context(
         prompt="finish task",
         tool_results=(
@@ -949,10 +1036,10 @@ def test_prepare_provider_context_older_todo_and_task_survive_over_newer_reads()
     )
 
     retained_indexes = tuple(result.data["index"] for result in context.tool_results)
-    assert retained_indexes == (1, 2, 5)
+    assert retained_indexes == (3, 4, 5)
 
 
-def test_prepare_provider_context_older_write_edit_survive_over_newer_reads() -> None:
+def test_prepare_provider_context_older_write_edit_do_not_displace_newer_reads() -> None:
     context = prepare_provider_context(
         prompt="fix code",
         tool_results=(
@@ -983,10 +1070,10 @@ def test_prepare_provider_context_older_write_edit_survive_over_newer_reads() ->
     )
 
     retained_indexes = tuple(result.data["index"] for result in context.tool_results)
-    assert retained_indexes == (1, 2, 5)
+    assert retained_indexes == (3, 4, 5)
 
 
-def test_prepare_provider_context_older_error_beats_newer_low_value() -> None:
+def test_prepare_provider_context_older_error_does_not_displace_newer_results() -> None:
     context = prepare_provider_context(
         prompt="debug",
         tool_results=(
@@ -1012,7 +1099,7 @@ def test_prepare_provider_context_older_error_beats_newer_low_value() -> None:
     )
 
     retained_indexes = tuple(result.data["index"] for result in context.tool_results)
-    assert retained_indexes == (1, 4, 5)
+    assert retained_indexes == (3, 4, 5)
 
 
 def test_prepare_provider_context_importance_tie_breaker_prefers_newer() -> None:
@@ -1072,79 +1159,6 @@ def test_prepare_provider_context_protected_recent_always_kept() -> None:
     assert 3 in retained_indexes
 
 
-def _error_result(index: int) -> ToolResult:
-    return ToolResult(
-        tool_name="read_file",
-        status="error",
-        error="error message",
-        data={"index": index},
-    )
-
-
-def test_tool_result_importance_score_errors_rank_high() -> None:
-    assert _tool_result_importance_score(_error_result(1)) >= 100
-
-
-def test_tool_result_importance_score_todo_beats_plain_read() -> None:
-    todo = ToolResult(tool_name="todo_write", content="todos", status="ok", data={"index": 1})
-    plain = _tool_result(2)
-    assert _tool_result_importance_score(todo) > _tool_result_importance_score(plain)
-
-
-def test_tool_result_importance_score_write_beats_plain_read() -> None:
-    write = ToolResult(
-        tool_name="write_file",
-        content="data",
-        status="ok",
-        data={"index": 1, "path": "out.txt"},
-    )
-    plain = _tool_result(2)
-    assert _tool_result_importance_score(write) > _tool_result_importance_score(plain)
-
-
-def test_tool_result_importance_score_shell_command_is_generic_signal() -> None:
-    project_shell = ToolResult(
-        tool_name="shell_exec",
-        content="completed",
-        status="ok",
-        data={"index": 1, "command": "run project verification"},
-    )
-    plain_shell = ToolResult(
-        tool_name="shell_exec",
-        content="ok",
-        status="ok",
-        data={"index": 2, "command": "run maintenance task"},
-    )
-    assert _tool_result_importance_score(project_shell) == _tool_result_importance_score(
-        plain_shell
-    )
-
-
-def test_tool_result_importance_score_delete_file_not_treated_as_write() -> None:
-    delete = ToolResult(
-        tool_name="delete_file",
-        content="deleted",
-        status="ok",
-        data={"index": 1, "path": "tmp.txt"},
-    )
-    write = ToolResult(
-        tool_name="write_file",
-        content="data",
-        status="ok",
-        data={"index": 2, "path": "out.txt"},
-    )
-    assert _tool_result_importance_score(delete) < _tool_result_importance_score(write)
-
-
-def test_select_tool_result_indexes_by_importance_max_zero() -> None:
-    results = (_tool_result(1), _tool_result(2), _tool_result(3))
-    selected = _select_tool_result_indexes_by_importance(
-        results, max_tool_results=0, protected_recent_count=1
-    )
-    assert len(selected) == 1
-    assert selected == (2,)
-
-
 def test_retain_indexes_within_token_budget_protects_recent() -> None:
     results = (
         _tool_result(1),
@@ -1161,39 +1175,19 @@ def test_retain_indexes_within_token_budget_protects_recent() -> None:
     assert len(indexes) >= 1
 
 
-def test_select_tool_result_indexes_by_importance_no_results() -> None:
-    selected = _select_tool_result_indexes_by_importance(
-        (), max_tool_results=3, protected_recent_count=1
-    )
-    assert selected == ()
-
-
-def test_select_tool_result_indexes_by_importance_return_order_is_sorted() -> None:
-    results = (
-        _tool_result(1),
-        ToolResult(
-            tool_name="read_file",
-            status="error",
-            error="fail",
-            data={"index": 2},
-        ),
-        _tool_result(3),
-        _tool_result(4),
-    )
-    selected = _select_tool_result_indexes_by_importance(
-        results, max_tool_results=2, protected_recent_count=1
-    )
-    assert selected == (1, 3)
-
-
-def test_context_window_policy_importance_retention_round_trips() -> None:
+def test_context_window_policy_importance_retention_is_compatibility_only() -> None:
     policy = ContextWindowPolicy(importance_retention=False)
     parsed = context_window_policy_from_payload(policy.metadata_payload())
     assert parsed.importance_retention is False
 
     default_policy = ContextWindowPolicy()
     default_parsed = context_window_policy_from_payload(default_policy.metadata_payload())
-    assert default_parsed.importance_retention is True
+    assert default_parsed.importance_retention is False
+
+    legacy_payload = default_policy.metadata_payload()
+    legacy_payload["importance_retention"] = True
+    legacy_parsed = context_window_policy_from_payload(legacy_payload)
+    assert legacy_parsed.importance_retention is True
 
 
 def test_count_text_tokens_reports_estimated_fallback_metadata() -> None:
@@ -1441,6 +1435,140 @@ def test_prepare_provider_context_continuity_metadata_includes_version() -> None
     assert payload.get("dropped_tool_result_count") == 1
     assert payload.get("retained_tool_result_count") == 1
     assert payload.get("objective") == "read sample.txt"
+
+
+def test_continuity_state_metadata_payload_uses_instance_version() -> None:
+    state = RuntimeContinuityState(
+        summary_text="legacy summary",
+        dropped_tool_result_count=1,
+        retained_tool_result_count=2,
+        source="tool_result_window",
+        version=1,
+    )
+
+    payload = state.metadata_payload()
+
+    assert payload["version"] == 1
+
+
+def test_continuity_state_from_metadata_payload_accepts_explicit_v1_fallback() -> None:
+    payload: dict[str, object] = {
+        "version": 1,
+        "summary_text": "v1 summary",
+        "dropped_tool_result_count": 1,
+        "retained_tool_result_count": 2,
+        "source": "tool_result_window",
+    }
+
+    state = continuity_state_from_metadata_payload(payload)
+
+    assert state is not None
+    assert state.version == 1
+    assert state.summary_text == "v1 summary"
+    assert state.distillation_source == "deterministic"
+
+
+def test_continuity_state_from_metadata_payload_defaults_missing_version_to_v1() -> None:
+    payload: dict[str, object] = {
+        "summary_text": "implicit legacy summary",
+        "dropped_tool_result_count": 1,
+        "retained_tool_result_count": 2,
+        "source": "tool_result_window",
+    }
+
+    state = continuity_state_from_metadata_payload(payload)
+
+    assert state is not None
+    assert state.version == 1
+    assert state.summary_text == "implicit legacy summary"
+
+
+def test_continuity_state_from_metadata_payload_rejects_unknown_version_safely() -> None:
+    payload: dict[str, object] = {
+        "version": 99,
+        "summary_text": "future summary",
+        "dropped_tool_result_count": 1,
+        "retained_tool_result_count": 2,
+        "source": "tool_result_window",
+    }
+
+    assert continuity_state_from_metadata_payload(payload) is None
+
+
+def test_continuity_state_from_metadata_payload_rejects_malformed_version_safely() -> None:
+    payload: dict[str, object] = {
+        "version": "2",
+        "summary_text": "malformed summary",
+        "dropped_tool_result_count": 1,
+        "retained_tool_result_count": 2,
+        "source": "tool_result_window",
+    }
+
+    assert continuity_state_from_metadata_payload(payload) is None
+
+
+def test_assemble_provider_context_ignores_malformed_prior_continuity_metadata() -> None:
+    assembled = assemble_provider_context(
+        prompt="continue",
+        tool_results=(_tool_result(1),),
+        session_metadata={
+            "runtime_state": {
+                "continuity": {
+                    "version": "bad",
+                    "summary_text": "must not be trusted as transcript truth",
+                    "dropped_tool_result_count": 1,
+                    "retained_tool_result_count": 1,
+                    "source": "tool_result_window",
+                }
+            }
+        },
+        policy=ContextWindowPolicy(max_tool_results=4),
+    )
+
+    assert assembled.continuity_state is None
+    assert "continuity_state" not in assembled.metadata
+    assert all(
+        segment.metadata is None or segment.metadata.get("source") != "continuity_summary"
+        for segment in assembled.segments
+    )
+
+
+def test_assemble_provider_context_reconstructs_projection_metadata_from_prior_continuity() -> None:
+    continuity = RuntimeContinuityState(
+        summary_text="Prior compact projection only",
+        objective="ship context continuity",
+        current_goal="resume safely",
+        dropped_tool_result_count=2,
+        retained_tool_result_count=1,
+        source="tool_result_window",
+        dropped_tool_results=(
+            DroppedToolResultDiagnostic(tool_name="read_file", status="ok", index=1),
+            DroppedToolResultDiagnostic(tool_name="grep", status="ok", index=2),
+        ),
+        version=2,
+    )
+
+    assembled = assemble_provider_context(
+        prompt="continue",
+        tool_results=(_tool_result(3),),
+        session_metadata={"runtime_state": {"continuity": continuity.metadata_payload()}},
+        policy=ContextWindowPolicy(max_tool_results=4),
+    )
+
+    assert assembled.continuity_state == continuity
+    assert assembled.metadata["continuity_state"] == continuity.metadata_payload()
+    assert isinstance(assembled.metadata["summary_anchor"], str)
+    assert assembled.metadata["summary_source"] == {"tool_result_start": 0, "tool_result_end": 2}
+    continuity_segments = [
+        segment
+        for segment in assembled.segments
+        if segment.metadata == {"source": "continuity_summary"}
+    ]
+    assert len(continuity_segments) == 1
+    assert "Prior compact projection only" in (continuity_segments[0].content or "")
+    retained_tool_segments = [segment for segment in assembled.segments if segment.role == "tool"]
+    assert len(retained_tool_segments) == 1
+    assert retained_tool_segments[0].content == "content-3"
 
 
 def test_prepare_provider_context_dropped_tool_diagnostics_omit_raw_content() -> None:
@@ -1811,3 +1939,665 @@ def test_context_window_token_estimate_counts_raw_read_file_content() -> None:
     assert raw_context.original_tool_result_tokens is not None
     assert stripped_context.original_tool_result_tokens is not None
     assert raw_context.original_tool_result_tokens > stripped_context.original_tool_result_tokens
+
+
+def test_artifact_placeholder_contract_projects_bounded_reference_for_omitted_output() -> None:
+    raw_output = "artifact payload line\n" * 1_000
+    artifact: dict[str, object] = {
+        "artifact_id": "artifact_111111111111111111111111",
+        "producer": "voidcode.tool_output.v1",
+        "tool_call_id": "call-artifact-1",
+        "tool_name": "shell_exec",
+        "kind": "content",
+        "byte_count": len(raw_output.encode("utf-8")),
+        "line_count": 1_000,
+        "status": "available",
+    }
+    assembled = assemble_provider_context(
+        prompt="summarize artifact output",
+        tool_results=(
+            ToolResult(
+                tool_name="shell_exec",
+                status="ok",
+                content=raw_output,
+                data={
+                    "index": 1,
+                    "tool_call_id": "call-artifact-1",
+                    "artifact": artifact,
+                    "artifact_id": artifact["artifact_id"],
+                    "artifact_status": "available",
+                    "original_byte_count": artifact["byte_count"],
+                    "original_line_count": artifact["line_count"],
+                },
+                truncated=True,
+                partial=True,
+                reference=f"artifact:{artifact['artifact_id']}",
+            ),
+            _tool_result(2),
+        ),
+        session_metadata={},
+        policy=ContextWindowPolicy(
+            max_tool_results=1,
+            recent_tool_result_count=1,
+            max_tool_result_tokens=None,
+            recent_tool_result_tokens=None,
+            default_tool_result_tokens=None,
+            importance_retention=False,
+        ),
+    )
+
+    placeholder_segments = [
+        segment
+        for segment in assembled.segments
+        if segment.metadata is not None
+        and segment.metadata.get("source") == "runtime_context_artifact_reference"
+    ]
+
+    assert len(placeholder_segments) == 1
+    placeholder = placeholder_segments[0]
+    assert placeholder.role == "system"
+    assert placeholder.tool_call_id is None
+    assert placeholder.tool_name is None
+    assert placeholder.content is not None
+    assert len(placeholder.content) < 1_000
+    assert "artifact_111111111111111111111111" in placeholder.content
+    assert "call-artifact-1" in placeholder.content
+    assert "byte_count=22000" in placeholder.content
+    assert raw_output[:200] not in placeholder.content
+    assert "artifact payload line\nartifact payload line" not in placeholder.content
+
+
+def test_artifact_placeholder_contract_is_not_projected_as_fake_tool_result() -> None:
+    assembled = assemble_provider_context(
+        prompt="continue",
+        tool_results=(
+            ToolResult(
+                tool_name="grep",
+                status="ok",
+                content="RAW OMITTED MATCH\n" * 500,
+                data={
+                    "index": 1,
+                    "tool_call_id": "grep-artifact-1",
+                    "artifact_id": "artifact_222222222222222222222222",
+                    "artifact": {
+                        "artifact_id": "artifact_222222222222222222222222",
+                        "producer": "voidcode.tool_output.v1",
+                        "tool_call_id": "grep-artifact-1",
+                        "tool_name": "grep",
+                        "kind": "content",
+                        "byte_count": 9_000,
+                        "line_count": 500,
+                        "status": "available",
+                    },
+                },
+                truncated=True,
+                partial=True,
+                reference="artifact:artifact_222222222222222222222222",
+            ),
+            _tool_result(2),
+        ),
+        session_metadata={},
+        policy=ContextWindowPolicy(
+            max_tool_results=1,
+            recent_tool_result_count=1,
+            max_tool_result_tokens=None,
+            recent_tool_result_tokens=None,
+            default_tool_result_tokens=None,
+            importance_retention=False,
+        ),
+    )
+
+    snapshot = inspect_provider_context(
+        assembled_context=assembled,
+        provider="openai",
+        model="gpt-4o",
+        execution_engine="provider",
+        available_tool_count=3,
+    )
+
+    assert [segment.role for segment in assembled.segments].count("assistant") == 1
+    assert [segment.role for segment in assembled.segments].count("tool") == 1
+    assert all(message.tool_call_id != "grep-artifact-1" for message in snapshot.provider_messages)
+    assert all(
+        message.source != "provider_native_tool_result" or message.tool_call_id != "grep-artifact-1"
+        for message in snapshot.provider_messages
+    )
+    assert any(
+        message.role == "system"
+        and message.source == "runtime_context_artifact_reference"
+        and message.content is not None
+        and "artifact_222222222222222222222222" in message.content
+        for message in snapshot.provider_messages
+    )
+
+
+def test_artifact_placeholder_contract_provider_context_omits_raw_unbounded_output() -> None:
+    raw_output = "unbounded artifact payload " * 2_000
+    assembled = assemble_provider_context(
+        prompt="continue",
+        tool_results=(
+            ToolResult(
+                tool_name="read_file",
+                status="ok",
+                content=raw_output,
+                data={
+                    "index": 1,
+                    "tool_call_id": "read-artifact-1",
+                    "artifact_id": "artifact_333333333333333333333333",
+                    "artifact": {
+                        "artifact_id": "artifact_333333333333333333333333",
+                        "producer": "voidcode.tool_output.v1",
+                        "tool_call_id": "read-artifact-1",
+                        "tool_name": "read_file",
+                        "kind": "content",
+                        "byte_count": len(raw_output.encode("utf-8")),
+                        "line_count": 1,
+                        "status": "available",
+                    },
+                },
+                truncated=True,
+                partial=True,
+                reference="artifact:artifact_333333333333333333333333",
+            ),
+            _tool_result(2),
+        ),
+        session_metadata={},
+        policy=ContextWindowPolicy(
+            max_tool_results=1,
+            recent_tool_result_count=1,
+            max_tool_result_tokens=None,
+            recent_tool_result_tokens=None,
+            default_tool_result_tokens=None,
+            importance_retention=False,
+        ),
+    )
+    snapshot = inspect_provider_context(
+        assembled_context=assembled,
+        provider="opencode-go",
+        model="glm-5",
+        execution_engine="provider",
+        available_tool_count=3,
+        tool_feedback_mode="synthetic_user_message",
+    )
+    provider_text = "\n".join(message.content or "" for message in snapshot.provider_messages)
+
+    assert "artifact_333333333333333333333333" in provider_text
+    assert "read-artifact-1" in provider_text
+    assert len(provider_text) < 4_000
+    assert raw_output[:1_000] not in provider_text
+    assert "unbounded artifact payload unbounded artifact payload" not in provider_text
+
+
+def test_compact_projection_provider_context_preserves_message_invariants() -> None:
+    raw_output = "omitted artifact payload " * 1_000
+    assembled = assemble_provider_context(
+        prompt="continue compact work",
+        tool_results=(
+            ToolResult(
+                tool_name="shell_exec",
+                status="ok",
+                content=raw_output,
+                data={
+                    "tool_call_id": "artifact-call-1",
+                    "artifact_id": "artifact_444444444444444444444444",
+                    "artifact": {
+                        "artifact_id": "artifact_444444444444444444444444",
+                        "producer": "voidcode.tool_output.v1",
+                        "tool_call_id": "artifact-call-1",
+                        "tool_name": "shell_exec",
+                        "kind": "content",
+                        "byte_count": len(raw_output.encode("utf-8")),
+                        "line_count": 1,
+                        "status": "available",
+                    },
+                },
+                truncated=True,
+                partial=True,
+                reference="artifact:artifact_444444444444444444444444",
+            ),
+            ToolResult(
+                tool_name="read_file",
+                status="ok",
+                content="retained content",
+                data={"tool_call_id": "retained-call-1", "arguments": {"path": "sample.txt"}},
+            ),
+        ),
+        session_metadata={},
+        policy=ContextWindowPolicy(
+            max_tool_results=1,
+            recent_tool_result_count=1,
+            max_tool_result_tokens=None,
+            recent_tool_result_tokens=None,
+            default_tool_result_tokens=None,
+        ),
+    )
+
+    snapshot = inspect_provider_context(
+        assembled_context=assembled,
+        provider="openai",
+        model="gpt-4o",
+        execution_engine="provider",
+        available_tool_count=2,
+    )
+    diagnostic_codes = {diagnostic.code for diagnostic in snapshot.diagnostics}
+
+    assert "missing_tool_result" not in diagnostic_codes
+    assert "orphan_tool_result" not in diagnostic_codes
+    assert "duplicate_tool_call_id" not in diagnostic_codes
+    assert "compact_projection_wrong_role" not in diagnostic_codes
+    compact_segments = [
+        segment
+        for segment in snapshot.segments
+        if segment.source in {"continuity_summary", "runtime_context_artifact_reference"}
+    ]
+    assert compact_segments
+    assert all(segment.role == "system" for segment in compact_segments)
+    assert all(segment.tool_call_id is None for segment in compact_segments)
+    assert all(segment.tool_name is None for segment in compact_segments)
+    assert "omitted artifact payload omitted artifact payload" not in "\n".join(
+        message.content or "" for message in snapshot.provider_messages
+    )
+
+
+def test_provider_context_inspector_reports_compact_projection_wrong_role() -> None:
+    assembled = RuntimeAssembledContext(
+        prompt="continue",
+        tool_results=(),
+        continuity_state=None,
+        metadata={},
+        segments=(
+            RuntimeContextSegment(
+                role="assistant",
+                content=None,
+                tool_call_id="fake-summary-call",
+                tool_name="continuity_summary",
+                metadata={"source": "continuity_summary"},
+            ),
+            RuntimeContextSegment(
+                role="tool",
+                content="Runtime artifact reference for omitted tool output",
+                tool_call_id="fake-summary-call",
+                tool_name="continuity_summary",
+                metadata={"source": "runtime_context_artifact_reference", "status": "ok"},
+            ),
+        ),
+    )
+
+    snapshot = inspect_provider_context(
+        assembled_context=assembled,
+        provider="openai",
+        model="gpt-4o",
+        execution_engine="provider",
+        available_tool_count=1,
+    )
+
+    wrong_role = [
+        diagnostic
+        for diagnostic in snapshot.diagnostics
+        if diagnostic.code == "compact_projection_wrong_role"
+    ]
+    assert len(wrong_role) == 2
+    assert {diagnostic.details["role"] for diagnostic in wrong_role} == {"assistant", "tool"}
+
+
+# ── Projection contract tests ───────────────────────────────────────────────
+# These encode the desired runtime context pipeline before production
+# implementation: persisted truth stays complete, provider context receives
+# bounded derived projection, score-driven retention is not the core policy,
+# and there are no command-name-specific verification heuristics.
+
+
+def test_projection_contract_continuity_state_preserves_full_dropped_record() -> None:
+    """Continuity state must record every dropped result with correct tool_name,
+    status, and index, preserving the complete session truth even when the
+    provider only sees a bounded projection."""
+    context = prepare_provider_context(
+        prompt="inspect failing tests",
+        tool_results=(
+            ToolResult(
+                tool_name="read_file",
+                status="ok",
+                content="content-1",
+                data={"index": 1, "path": "src/a.py"},
+            ),
+            ToolResult(
+                tool_name="shell_exec",
+                status="error",
+                error="exit code 1",
+                data={"index": 2, "command": "pytest tests/"},
+            ),
+            ToolResult(
+                tool_name="read_file",
+                status="ok",
+                content="content-3",
+                data={"index": 3, "path": "src/b.py"},
+            ),
+            ToolResult(
+                tool_name="edit",
+                status="ok",
+                content="patched",
+                data={"index": 4, "path": "src/b.py"},
+            ),
+            ToolResult(
+                tool_name="read_file",
+                status="ok",
+                content="content-5",
+                data={"index": 5, "path": "src/c.py"},
+            ),
+        ),
+        session_metadata={},
+        policy=ContextWindowPolicy(
+            max_tool_results=2,
+            recent_tool_result_count=1,
+            max_tool_result_tokens=None,
+            recent_tool_result_tokens=None,
+            default_tool_result_tokens=None,
+        ),
+    )
+
+    assert context.continuity_state is not None
+    assert context.continuity_state.dropped_tool_result_count == 3
+    assert context.continuity_state.retained_tool_result_count == 2
+    assert len(context.continuity_state.dropped_tool_results) == 3
+
+    # Every dropped result has a complete diagnostic entry
+    for diagnostic in context.continuity_state.dropped_tool_results:
+        payload = diagnostic.metadata_payload()
+        assert isinstance(payload["tool_name"], str) and payload["tool_name"]
+        assert isinstance(payload["status"], str) and payload["status"]
+        assert isinstance(payload["index"], int) and payload["index"] >= 1
+
+
+def test_projection_contract_structural_equivalence_across_shell_commands() -> None:
+    """Two shell_exec results with equivalent content and status but different
+    command names must receive the same retention treatment within a count-limited
+    policy. There is no command-name-specific verification taxonomy."""
+    # Identical structure: same content size, same status — only command differs
+    shell_a = ToolResult(
+        tool_name="shell_exec",
+        content="x" * 40,
+        status="ok",
+        data={"index": 1, "command": "pytest tests/unit/test_sample.py -q"},
+    )
+    shell_b = ToolResult(
+        tool_name="shell_exec",
+        content="x" * 40,
+        status="ok",
+        data={"index": 2, "command": "echo hello world"},
+    )
+
+    context_a = prepare_provider_context(
+        prompt="run tests",
+        tool_results=(
+            _tool_result(0),
+            _tool_result(0),
+            shell_a,
+        ),
+        session_metadata={},
+        policy=ContextWindowPolicy(
+            max_tool_results=2,
+            recent_tool_result_count=2,
+            importance_retention=False,
+            max_tool_result_tokens=None,
+            recent_tool_result_tokens=None,
+            default_tool_result_tokens=None,
+        ),
+    )
+    context_b = prepare_provider_context(
+        prompt="run tests",
+        tool_results=(
+            _tool_result(0),
+            _tool_result(0),
+            shell_b,
+        ),
+        session_metadata={},
+        policy=ContextWindowPolicy(
+            max_tool_results=2,
+            recent_tool_result_count=2,
+            importance_retention=False,
+            max_tool_result_tokens=None,
+            recent_tool_result_tokens=None,
+            default_tool_result_tokens=None,
+        ),
+    )
+
+    # Both shell results should be retained equally — no command-name bias
+    indices_a = [r.data["index"] for r in context_a.tool_results]
+    indices_b = [r.data["index"] for r in context_b.tool_results]
+    assert 1 in indices_a
+    assert 2 in indices_b
+    assert context_a.retained_tool_result_count == context_b.retained_tool_result_count
+
+
+def test_projection_contract_importance_retention_equals_recency() -> None:
+    """When importance_retention=True, retention behavior must match
+    importance_retention=False: both must select purely by recency, not by
+    tool-name or command-name scoring.
+
+    This encodes the architectural decision that score-driven retention is
+    NOT the core policy; importance_retention is compatibility-only recency
+    behavior."""
+    results: tuple[ToolResult, ...] = (
+        ToolResult(
+            tool_name="read_file",
+            status="error",
+            error="file not found",
+            data={"index": 1, "path": "missing.py"},
+        ),
+        _tool_result(2),
+        _tool_result(3),
+        _tool_result(4),
+        _tool_result(5),
+    )
+
+    policy_base = ContextWindowPolicy(
+        max_tool_results=3,
+        recent_tool_result_count=1,
+        max_tool_result_tokens=None,
+        recent_tool_result_tokens=None,
+        default_tool_result_tokens=None,
+    )
+
+    # With importance_retention=True — the compat field
+    context_importance = prepare_provider_context(
+        prompt="read sample.txt",
+        tool_results=results,
+        session_metadata={},
+        policy=ContextWindowPolicy(
+            max_tool_results=policy_base.max_tool_results,
+            recent_tool_result_count=policy_base.recent_tool_result_count,
+            max_tool_result_tokens=policy_base.max_tool_result_tokens,
+            recent_tool_result_tokens=policy_base.recent_tool_result_tokens,
+            default_tool_result_tokens=policy_base.default_tool_result_tokens,
+            importance_retention=True,
+        ),
+    )
+
+    # With importance_retention=False — explicit recency-only
+    context_recency = prepare_provider_context(
+        prompt="read sample.txt",
+        tool_results=results,
+        session_metadata={},
+        policy=ContextWindowPolicy(
+            max_tool_results=policy_base.max_tool_results,
+            recent_tool_result_count=policy_base.recent_tool_result_count,
+            max_tool_result_tokens=policy_base.max_tool_result_tokens,
+            recent_tool_result_tokens=policy_base.recent_tool_result_tokens,
+            default_tool_result_tokens=policy_base.default_tool_result_tokens,
+            importance_retention=False,
+        ),
+    )
+
+    # Contract: both policies must produce identical retained results.
+    importance_indices = tuple(result.data["index"] for result in context_importance.tool_results)
+    recency_indices = tuple(result.data["index"] for result in context_recency.tool_results)
+    assert importance_indices == recency_indices, (
+        "importance_retention=True must behave identically to "
+        "importance_retention=False (recency-only). "
+        f"Got importance={importance_indices}, recency={recency_indices}"
+    )
+
+
+def test_projection_contract_score_driven_tool_name_bias_not_acceptable() -> None:
+    """Tool name categories (write_file, todo_write, shell_exec, etc.) must
+    not influence retention priority. A write_file result at position 2 must
+    not displace a read_file result at position 3 just because write_file
+    had a higher score."""
+    results: tuple[ToolResult, ...] = (
+        _tool_result(1),
+        ToolResult(
+            tool_name="write_file",
+            content="written",
+            status="ok",
+            data={"index": 2, "path": "src/app.py"},
+        ),
+        _tool_result(3),
+        _tool_result(4),
+        _tool_result(5),
+    )
+
+    context = prepare_provider_context(
+        prompt="fix code",
+        tool_results=results,
+        session_metadata={},
+        policy=ContextWindowPolicy(
+            max_tool_results=3,
+            recent_tool_result_count=1,
+            max_tool_result_tokens=None,
+            recent_tool_result_tokens=None,
+            default_tool_result_tokens=None,
+            importance_retention=True,
+        ),
+    )
+
+    retained_indexes = tuple(result.data["index"] for result in context.tool_results)
+
+    # Contract: retention should follow the ordered tail, not tool-name scoring.
+    # The most recent three results (3, 4, 5) should be retained, with index 5
+    # always included as the protected recent. Index 2 (write_file) should NOT
+    # jump ahead of index 3 or 4 just because its tool name scores higher.
+    assert 5 in retained_indexes, "most recent result (protected) must always be retained"
+    assert retained_indexes == (3, 4, 5), (
+        "retention must be recency-based, not tool-name scored. "
+        f"Got {retained_indexes}, expected (3, 4, 5)"
+    )
+
+
+def test_projection_contract_token_budget_uses_recency_not_scoring() -> None:
+    """When a token budget constrains selection, the ranking must prefer recent
+    results over scoring by tool name. Older high-scoring results must not
+    displace newer results within budget."""
+    context = prepare_provider_context(
+        prompt="verify fix",
+        tool_results=(
+            _sized_tool_result(1, content_size=160),
+            ToolResult(
+                tool_name="shell_exec",
+                content="passed",
+                status="ok",
+                data={"index": 2, "command": "python -m pytest"},
+            ),
+            _sized_tool_result(3, content_size=160),
+            _tool_result(4),
+        ),
+        session_metadata={},
+        policy=ContextWindowPolicy(
+            max_tool_results=3,
+            recent_tool_result_count=1,
+            max_tool_result_tokens=120,
+            recent_tool_result_tokens=None,
+            default_tool_result_tokens=None,
+            importance_retention=True,
+        ),
+    )
+
+    retained_indexes = tuple(result.data["index"] for result in context.tool_results)
+
+    # Contract: index 4 (most recent) is always retained as protected.
+    # The remaining slots should be filled from newest to oldest within budget,
+    # not based on shell_exec scoring higher than read_file.
+    # Current scoring: shell_exec(index 2) gets +30, potentially displacing
+    # newer read_file results. This must not happen.
+    assert 4 in retained_indexes, "most recent result must always be retained"
+    # Newest results (3, 4) should be preferred. index 1 should not survive
+    # over index 3 just because it's more recent than 2 (which gets scored higher).
+    assert 3 in retained_indexes, (
+        f"newer results should be preferred over tool-name scoring. Got {retained_indexes}"
+    )
+    # Older index 1 should be dropped; it's not protected and not recent enough
+    assert 1 not in retained_indexes, (
+        f"oldest result (index 1) must be dropped in favor of newer results. Got {retained_indexes}"
+    )
+
+
+def test_projection_contract_default_policy_does_not_require_importance_retention() -> None:
+    """The default ContextWindowPolicy must NOT depend on importance_retention
+    for correct behavior. A policy with importance_retention defaults produces
+    the same projection result as a policy where importance_retention is
+    explicitly False, for identical input."""
+    default_policy = ContextWindowPolicy(
+        max_tool_results=3,
+        recent_tool_result_count=1,
+        max_tool_result_tokens=None,
+        recent_tool_result_tokens=None,
+        default_tool_result_tokens=None,
+    )
+    explicit_policy = ContextWindowPolicy(
+        max_tool_results=3,
+        recent_tool_result_count=1,
+        max_tool_result_tokens=None,
+        recent_tool_result_tokens=None,
+        default_tool_result_tokens=None,
+        importance_retention=False,
+    )
+
+    results: tuple[ToolResult, ...] = (
+        _tool_result(1),
+        ToolResult(
+            tool_name="read_file",
+            status="error",
+            error="missing",
+            data={"index": 2, "path": "missing.py"},
+        ),
+        _tool_result(3),
+        _tool_result(4),
+        _tool_result(5),
+    )
+
+    context_default = prepare_provider_context(
+        prompt="read sample.txt",
+        tool_results=results,
+        session_metadata={},
+        policy=default_policy,
+    )
+    context_explicit = prepare_provider_context(
+        prompt="read sample.txt",
+        tool_results=results,
+        session_metadata={},
+        policy=explicit_policy,
+    )
+
+    default_indices = tuple(r.data["index"] for r in context_default.tool_results)
+    explicit_indices = tuple(r.data["index"] for r in context_explicit.tool_results)
+    assert default_indices == explicit_indices, (
+        "default policy must produce same results as importance_retention=False. "
+        f"Got default={default_indices}, explicit={explicit_indices}"
+    )
+
+
+def test_projection_contract_projection_preserves_original_count_in_metadata() -> None:
+    """The RuntimeContextWindow metadata must record the original tool result
+    count and retained count, so consumers can distinguish the projection
+    from the full truth."""
+    projection = project_tool_results_for_context_window(
+        tool_results=(_tool_result(1), _tool_result(2), _tool_result(3), _tool_result(4)),
+        policy=ContextWindowPolicy(max_tool_results=2),
+    )
+
+    assert len(projection.prepared_results) == 4  # full set after truncation only
+    assert len(projection.retained_results) == 2  # bounded projection
+    assert len(projection.dropped_results) == 2  # what was excluded
+    assert len(projection.retained_indexes) == 2
+    assert len(projection.dropped_indexes) == 2
+    assert set(projection.retained_indexes) | set(projection.dropped_indexes) == {0, 1, 2, 3}
+    assert projection.truncated_count >= 0

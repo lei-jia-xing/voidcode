@@ -445,6 +445,7 @@ def _diagnostics(
 ) -> list[RuntimeProviderContextDiagnostic]:
     diagnostics: list[RuntimeProviderContextDiagnostic] = []
     diagnostics.extend(_duplicate_system_diagnostics(segments))
+    diagnostics.extend(_compact_projection_role_diagnostics(segments))
     diagnostics.extend(
         _tool_pair_diagnostics(
             segments,
@@ -495,6 +496,40 @@ def _duplicate_system_diagnostics(
         for indices in by_fingerprint.values()
         if len(indices) > 1
     ]
+
+
+def _compact_projection_role_diagnostics(
+    segments: tuple[RuntimeContextSegment, ...],
+) -> list[RuntimeProviderContextDiagnostic]:
+    compact_sources = {
+        "continuity_summary",
+        "runtime_context_artifact_reference",
+    }
+    diagnostics: list[RuntimeProviderContextDiagnostic] = []
+    for index, segment in enumerate(segments):
+        source = _source_from_metadata(segment)
+        if source not in compact_sources:
+            continue
+        if segment.role == "system" and segment.tool_call_id is None and segment.tool_name is None:
+            continue
+        diagnostics.append(
+            RuntimeProviderContextDiagnostic(
+                severity="error",
+                code="compact_projection_wrong_role",
+                message=(
+                    "Runtime compact projection segments must be system context, not "
+                    "provider tool-role messages or synthetic assistant tool calls."
+                ),
+                source=source,
+                segment_indices=(index,),
+                suggested_fix=(
+                    "Insert continuity summaries and artifact references as runtime-owned "
+                    "system segments without tool_call_id or tool_name."
+                ),
+                details={"role": segment.role},
+            )
+        )
+    return diagnostics
 
 
 def _tool_pair_diagnostics(
@@ -560,9 +595,14 @@ def _tool_pair_diagnostics(
                     details={"tool_call_id": tool_call_id},
                 )
             )
-    duplicate_ids = [
-        tool_call_id for tool_call_id, indices in assistant_ids.items() if len(indices) > 1
-    ]
+    duplicate_ids = sorted(
+        {
+            tool_call_id
+            for ids_by_role in (assistant_ids, tool_ids)
+            for tool_call_id, indices in ids_by_role.items()
+            if len(indices) > 1
+        }
+    )
     if duplicate_ids:
         diagnostics.append(
             RuntimeProviderContextDiagnostic(
