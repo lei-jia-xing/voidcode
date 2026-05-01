@@ -4,8 +4,10 @@ import pytest
 
 from voidcode.hook.presets import (
     get_builtin_hook_preset,
+    hook_preset_snapshot_from_payload,
     is_builtin_hook_preset_ref,
     list_builtin_hook_presets,
+    resolve_hook_preset_refs,
     validate_hook_preset_refs,
 )
 
@@ -37,3 +39,17 @@ def test_hook_preset_ref_helpers_reject_unknown_refs() -> None:
 
     with pytest.raises(ValueError, match="references unknown hook preset: python"):
         _ = validate_hook_preset_refs(("python",), field_path="agent.hook_refs")
+
+
+def test_resolved_hook_preset_snapshot_renders_guidance_context() -> None:
+    snapshot = resolve_hook_preset_refs(("role_reminder", "role_reminder", "delegation_guard"))
+    payload = snapshot.to_payload()
+    restored = hook_preset_snapshot_from_payload(payload)
+
+    assert payload["refs"] == ["role_reminder", "delegation_guard"]
+    assert restored is not None
+    context = restored.guidance_context()
+    assert "Resolved agent hook preset guidance." in context
+    assert "do not expand tool permissions" in context
+    assert "active agent preset" in context
+    assert "runtime-owned task routing" in context
