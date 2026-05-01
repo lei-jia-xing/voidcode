@@ -234,6 +234,8 @@ VoidCode 已经拥有扎实的 pre-MVP 基础：
 3. **默认项目尽量少配置即可工作**：LSP / formatter defaults 能覆盖主流 Python / TypeScript 场景；
 4. **主客户端闭环稳定**：CLI + Web 可以稳定跑通输入任务、工具执行、审批、恢复与继续执行。
 
+截至 2026 年 5 月，capability doctor 的 first-task readiness、Web review tree / diff、backend-owned tool display/status payload、Web question answer 与 workspace/runtime ops 基线都已经落地。后续 backlog 判断应以当前代码为准，避免继续把这些已交付能力当作“未开始”的缺口。
+
 因此，TUI polish、额外 provider 扩展和更宽的 capability surface，不应先于这些结果。
 
 ## 仓库立即要做的待办
@@ -248,4 +250,8 @@ VoidCode 已经拥有扎实的 pre-MVP 基础：
 - [x] 完成 issue #120：让 edit 流程具备 formatter-aware 和 re-read aligned 行为
 - [x] 完成 issue #111：把默认 LSP 配置推进到主流项目开箱可用
 - [x] 用 CLI + Web 主路径固化一条标准 demo flow，并把失败诊断/恢复路径写成可重复操作手册
+- [x] Web 客户端接入 review tree / diff、question answer、workspace 切换、runtime status 和 backend-owned tool display/status 基线
+- [x] `voidcode doctor` 输出 first-task readiness summary 与 actionable next step
+- [ ] 完成 issue #390：定义最小用户可见 prompt command 集（`/review`、`/fix`、`/explain`、`/plan`、`/test`、`/commit`）
+- [ ] 为 CLI 补齐 pending question 的回答入口，使其与 HTTP/Web question answer 路径对等
 - [ ] 在 runtime 主线稳定之后，再重新评估 TUI 特定 epic 和剩余客户端 polish 工作

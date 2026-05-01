@@ -1,6 +1,6 @@
 # 当前实现状态
 
-本文档提供了 VoidCode 仓库截至 2026 年 4 月的真实快照。VoidCode 当前已经具备清晰的 **MVP 主路径基线**：稳定的 execution engine 基线、受监管的工具执行、会话恢复，以及由 CLI 与 Web 共享的真实运行时路径都已经落地；TUI 仍停留在初始实现阶段。
+本文档提供了 VoidCode 仓库截至 2026 年 5 月的真实快照。VoidCode 当前已经具备清晰的 **MVP 主路径基线**：稳定的 execution engine 基线、受监管的工具执行、会话恢复，以及由 CLI 与 Web 共享的真实运行时路径都已经落地；TUI 仍停留在初始实现阶段。
 
 关于将当前仓库状态连接到预期 MVP 的具体交付清单，请参阅 [`docs/mvp-todo-plan.md`](./mvp-todo-plan.md)。关于规范的客户端面向契约，请参阅 [`docs/contracts/README.md`](./contracts/README.md)。
 
@@ -29,6 +29,8 @@
 - [x] **极简 HTTP 传输**：精简的后端 HTTP 层现在暴露了 `GET /api/sessions`、`GET /api/sessions/{session_id}` 和 `POST /api/runtime/run/stream`，其中 SSE 数据块直接从运行时边界序列化，并且现在可以通过 `voidcode serve` 在本地提供服务。
 - [x] **运行时配置分层**：运行时现在显式支持 `execution_engine`、`provider_fallback` 与 `max_steps`，并将恢复关键配置持久化到 `SessionState.metadata["runtime_config"]`，以保证 `config show`、resume 和 provider fallback 语义一致。
 - [x] **Delegated child execution 基线**：runtime-owned `task` / background task / child session path 已经支持受控 subagent routing、parent/child lineage、result retrieval、cancel surfaces、hook guardrails、CLI/HTTP parity 与 fake-provider/fake-MCP 测试覆盖；它仍不是任意拓扑 multi-agent 平台。
+- [x] **工具活动显示契约基线**：运行时现在为工具事件附加 backend-owned `display` 与 `tool_status` payload（包含 tool name、phase/status、label 与可用的 invocation id），Web 侧通过 `frontend/src/lib/runtime/event-parser.ts` 消费这些字段，而不是仅依赖事件名猜测工具状态。
+- [x] **Capability doctor 与 first-task readiness**：`voidcode doctor` 已经输出结构化 capability report，并包含 `first_task_readiness`，用于把 provider/model/auth、本地工具、formatter/LSP/MCP 状态转化为首次真实任务的 next step。
 
 ### 计划中 / 进行中
 - [x] **LangGraph 编排**：当前 deterministic reference/debug engine 已稳定，支持顺序轮次执行、工具解析和中断/恢复。
@@ -44,7 +46,7 @@
 - [~] **ACP 能力面**：`acp` 已具备 runtime-managed transport / lifecycle、run / approval-resume integration 与事件基线；当前仍未进入更宽的 agent control-plane 或跨运行时协作语义。
 - [~] **当前剩余的 runtime / tooling 主线 gap**：最近已经完成 agent preset 最小接入、runtime skill execution 最小模型、session continuity memory 第一切片、`#174` background approval notification，以及 issue #289 delegated child execution E2E 基线。下一轮 backlog 应围绕这些能力的深化与产品化缺口继续推进，而不是继续沿用已完成的最小接入 issue 作为“当前剩余主线”。
 - [~] **TUI 客户端**：已具备提示词输入和审批处理的初始实现，但会话管理、恢复/重放与规范冒烟验证仍未收口，当前优先级也已下调。
-- [x] **Web 客户端集成**：已接入真实的会话列表、会话重放、流式运行和审批处理路径，并具备真实 store/client 闭环验证。
+- [x] **Web 客户端集成**：已接入真实的会话列表、会话重放、流式运行、审批处理、question answer、workspace 切换、runtime status、review tree / diff 与 runtime ops 路径，并具备真实 store/client 闭环验证。
 
 ---
 
@@ -53,18 +55,18 @@
 ### 今日已实现
 - [x] **UI 框架**：React 18、Tailwind CSS 和 Lucide React 外壳。
 - [x] **组件库**：布局、导航和消息线程 UI 组件。
-- [x] **最小运行时传输接入**：前端现在通过 Zustand store 和运行时客户端消费真实的会话列表、会话重放、流式运行事件以及审批处理路径。
+- [x] **最小运行时传输接入**：前端现在通过 Zustand store 和运行时客户端消费真实的会话列表、会话重放、流式运行事件、审批/question 处理、review tree / diff、runtime status 与设置路径。
 - [x] **前端工具**：基于 Vite 的开发服务器，支持 Bun、ESLint 和 Prettier。
 
 ### 计划中 / 进行中
-- [x] **实时 API 集成**：前端已经接入会话列表、会话重放、流式运行事件与审批处理，并具备面向真实 store/client 的闭环验证。
+- [x] **实时 API 集成**：前端已经接入会话列表、会话重放、流式运行事件、审批处理、question answer、review tree / diff、workspace 切换与 runtime ops，并具备面向真实 store/client 的闭环验证。
 - [x] **HTTP + SSE 流式传输主路径**：当前 Web 客户端的实时运行时事件流基线已经是共享 runtime 的 HTTP + SSE 路径；WebSocket 不是当前 MVP/runtime 架构的必需项。
 - [x] **会话持久化**：后端数据库驱动的真实会话持久化和重放已经可用，CLI/TUI/Web 都能消费这一共享路径。
-- [ ] **文件系统浏览器**：与本地工作区集成以进行代码阅读。
+- [~] **文件系统浏览器 / review tree**：Web 已经通过 `GET /api/review` 与 `GET /api/review/diff` 消费 runtime-owned review tree，并提供 file-tree / code-review panel；后续仍可继续打磨目录折叠、文件预览、非 git workspace 展示与大仓库 UX。
 
 ### 规划状态
 - [x] **基础 / Epic 0**：开发工具、仓库结构、CI 基准和面向贡献者的文档已基本到位。
-- [ ] **面向客户端的可执行契约层**：契约文档现在存在于 `docs/contracts/` 下，但针对它们的实现工作仍在进行中。
+- [~] **面向客户端的可执行契约层**：契约文档现在存在于 `docs/contracts/` 下，主要 CLI/Web 路径已有实现与测试；剩余工作应聚焦于文档与代码持续对齐、TUI 对等和少数尚未产品化的用户入口。
 
 ---
 

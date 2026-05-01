@@ -92,6 +92,8 @@ This is not a parity checklist. Each concern is deliberately classified as one o
 
 ### 7. Tool lifecycle states
 
+**Current status:** Implemented as a baseline. `src/voidcode/runtime/tool_display.py` now builds additive `display` and `tool_status` payloads, `src/voidcode/runtime/run_loop.py` attaches them to tool lifecycle events, and `frontend/src/lib/runtime/event-parser.ts` consumes `tool_status.status`, `tool_status.phase`, `tool_status.label`, and `tool_status.invocation_id` when present. Future work should refine coverage/labels rather than treat this as missing from scratch.
+
 - **OpenCode references**:
   - `https://github.com/anomalyco/opencode/blob/4877eccc0d06c747624bf61aaa6f3e65cea9cc8d/packages/opencode/src/session/message-v2.ts`
   - `https://github.com/anomalyco/opencode/blob/4877eccc0d06c747624bf61aaa6f3e65cea9cc8d/packages/opencode/src/session/status.ts`
@@ -99,11 +101,13 @@ This is not a parity checklist. Each concern is deliberately classified as one o
 - **Decision**: **Adapt**
 - **Why**: OpenCode's per-tool `pending/running/completed/error` model is the right production pattern, but VoidCode already has richer runtime/task lifecycle concepts. The correct move is to add a stable per-tool web contract without flattening the rest of the runtime.
 - **VoidCode target**:
-  - Add backend-owned tool invocation state fields for web rendering
+  - Keep backend-owned tool invocation state fields for web rendering
   - Preserve existing runtime/delegation/task semantics separately
-  - Frontend must consume explicit status/phase/label values rather than infer from event names
+  - Continue moving frontend rendering toward explicit status/phase/label values, with legacy fallbacks only for older/persisted events
 
 ### 8. Pending labels and progress text
+
+**Current status:** Implemented as a generic backend-owned metadata baseline. Tool labels currently come from curated runtime display summaries rather than a bespoke phrase table for every action. Future work may add more user-friendly pending copy, but the browser no longer needs to synthesize the primary metadata from raw JSON.
 
 - **OpenCode references**:
   - `https://github.com/anomalyco/opencode/blob/4877eccc0d06c747624bf61aaa6f3e65cea9cc8d/packages/ui/src/components/tool-status-title.tsx`
@@ -115,11 +119,13 @@ This is not a parity checklist. Each concern is deliberately classified as one o
 - **Decision**: **Adapt**
 - **Why**: The user explicitly wants labels like `Preparing patch...` and `Delegating...`. OpenCode and OMOA together show the right shape: backend-authored metadata/title, frontend rendering.
 - **VoidCode target**:
-  - Emit stable backend label/title fields for tool lifecycle UI
-  - Required labels include at least: `Preparing patch...`, `Delegating...`, `Reading file...`, `Searching content...`, `Writing command...`
-  - No heuristic string synthesis in the browser
+  - Keep emitting stable backend label/title fields for tool lifecycle UI
+  - Improve copy for high-frequency actions such as patch preparation, delegation, file reads, searches, and shell commands
+  - Keep browser-side heuristics as backward-compatible fallbacks only
 
 ### 9. Invocation identity
+
+**Current status:** Implemented for provider tool calls where an invocation id is available. `tool_status.invocation_id` is part of the emitted payload and frontend parser. Deterministic/dev harness or legacy events may still lack an id, so clients must preserve fallback behavior for historical replay.
 
 - **OpenCode reference**: `https://github.com/anomalyco/opencode/blob/4877eccc0d06c747624bf61aaa6f3e65cea9cc8d/packages/opencode/src/session/message-v2.ts`
 - **OMOA reference**: `https://github.com/code-yeongyu/oh-my-openagent/blob/708891dabe5d4f37c76a0de63dc353cdf05902b0/src/features/tool-metadata-store/publish-tool-metadata.ts`
@@ -127,8 +133,8 @@ This is not a parity checklist. Each concern is deliberately classified as one o
 - **Decision**: **Adapt**
 - **Why**: Repeated same-name tool calls are a real ambiguity risk. OpenCode's `callID` model and OMOA's metadata-publishing pattern both support the same conclusion: the web contract needs a stable invocation identifier.
 - **VoidCode target**:
-  - Add per-tool invocation identifiers to web-visible status payloads
-  - Make status updates correlate to one tool call deterministically
+  - Preserve per-tool invocation identifiers in web-visible status payloads when available
+  - Make status updates correlate to one tool call deterministically for provider-backed runs
   - Keep subagent/delegation contracts separate from per-tool identity
 
 ### 10. Intentional top-level agent selection
@@ -157,6 +163,8 @@ This is not a parity checklist. Each concern is deliberately classified as one o
 
 ### 12. Status rendering architecture
 
+**Current status:** Partially implemented. The frontend parser already consumes backend-authored `tool_status` / `display` payloads and keeps legacy event-name fallbacks for persisted or older events. Remaining work is polish and contract hardening, not first implementation.
+
 - **OpenCode references**:
   - `https://github.com/anomalyco/opencode/blob/4877eccc0d06c747624bf61aaa6f3e65cea9cc8d/packages/ui/src/components/message-part.tsx`
   - `https://github.com/anomalyco/opencode/blob/4877eccc0d06c747624bf61aaa6f3e65cea9cc8d/packages/ui/src/components/basic-tool.tsx`
@@ -166,7 +174,8 @@ This is not a parity checklist. Each concern is deliberately classified as one o
 - **Why**: OpenCode's rendering stack is more layered than VoidCode needs, but the core principle is correct: UI components render backend-owned tool state rather than deriving hidden logic from raw streams.
 - **VoidCode target**:
   - Keep frontend rendering lighter-weight than OpenCode
-  - Still move to backend-authored status/title fields as the primary rendering source
+  - Keep backend-authored status/title fields as the primary rendering source
+  - Retain fallback parsing only for backward-compatible replay of older sessions
 
 ### Delegation policy after Task 7
 
@@ -222,7 +231,7 @@ This is not a parity checklist. Each concern is deliberately classified as one o
 
 1. `Task 2` should refactor command ownership enough that `web` is not an ad hoc branch inside a monolithic parser.
 2. `Task 3` should define the canonical runtime-owned settings schema and explicitly separate runtime-owned fields from local UI-only fields.
-3. `Task 4` should add a stable backend tool status contract with label/title/invocation identity fields and explicit leader/category boundary behavior.
+3. `Task 4` is now implemented as a baseline through runtime `display` / `tool_status` payloads and frontend parser support; future work should harden labels, tests, and replay compatibility.
 4. `Task 5` should implement the terminal launcher UX modeled on OpenCode's `web.ts`, but through VoidCode's existing `server.py` / `runtime/http.py` path.
-5. `Task 6` should delete or bypass heuristic-only frontend status interpretation and move to backend-provided rendering inputs.
+5. `Task 6` is partially complete: frontend rendering consumes backend-provided inputs first, while legacy heuristics remain for older/persisted event streams.
 6. `Task 7` should remove category-route surface from web-visible contracts while preserving any necessary internal delegation mechanics.
