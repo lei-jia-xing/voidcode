@@ -3,6 +3,7 @@ from __future__ import annotations
 import shlex
 import subprocess
 from dataclasses import dataclass
+from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Literal
 
@@ -14,19 +15,7 @@ from .contracts import (
     WorkspaceReviewSnapshot,
 )
 
-_EXCLUDED_TREE_DIRECTORY_NAMES = frozenset(
-    {
-        ".git",
-        ".mypy_cache",
-        ".playwright-mcp",
-        ".pytest_cache",
-        ".ruff_cache",
-        ".sisyphus",
-        ".venv",
-        "__pycache__",
-        "node_modules",
-    }
-)
+_VCS_TREE_DIRECTORY_NAMES = frozenset({".git", ".hg", ".svn"})
 
 type ReviewChangeType = Literal[
     "added",
@@ -50,6 +39,7 @@ class GitCommandResult:
 class WorkspaceReviewService:
     def __init__(self, *, workspace: Path) -> None:
         self._workspace = workspace.resolve()
+        self._tree_ignore_patterns: dict[Path, tuple[str, ...]] = {}
 
     def snapshot(self, *, git: GitStatusSnapshot) -> WorkspaceReviewSnapshot:
         root = Path(git.root).resolve() if git.root is not None else self._workspace
@@ -208,10 +198,55 @@ class WorkspaceReviewService:
         return path.relative_to(root).as_posix()
 
     def _should_exclude_from_tree(self, path: Path, tree_root: Path) -> bool:
-        if not path.is_dir():
+        if path.is_dir() and path.name in _VCS_TREE_DIRECTORY_NAMES:
+            return True
+        relative_path = self._relative_to_root(path, tree_root)
+        return self._is_ignored_tree_path(
+            tree_root,
+            relative_path,
+            is_directory=path.is_dir(),
+        )
+
+    def _is_ignored_tree_path(
+        self,
+        tree_root: Path,
+        relative_path: str,
+        *,
+        is_directory: bool,
+    ) -> bool:
+        git_check = self._run_git(
+            tree_root,
+            "check-ignore",
+            "--quiet",
+            "--no-index",
+            "--",
+            relative_path,
+        )
+        if git_check.returncode == 0:
+            return True
+        if git_check.returncode == 1:
             return False
-        relative_parts = path.relative_to(tree_root).parts
-        return any(part in _EXCLUDED_TREE_DIRECTORY_NAMES for part in relative_parts)
+        return _matches_gitignore_path(
+            relative_path,
+            self._ignore_patterns_for_tree_root(tree_root),
+            is_directory=is_directory,
+        )
+
+    def _ignore_patterns_for_tree_root(self, tree_root: Path) -> tuple[str, ...]:
+        cached = self._tree_ignore_patterns.get(tree_root)
+        if cached is not None:
+            return cached
+        gitignore = tree_root / ".gitignore"
+        if gitignore.is_file():
+            patterns = tuple(
+                line.strip()
+                for line in gitignore.read_text(encoding="utf-8").splitlines()
+                if line.strip() and not line.lstrip().startswith("#")
+            )
+        else:
+            patterns = ()
+        self._tree_ignore_patterns[tree_root] = patterns
+        return patterns
 
     def _should_descend_into(self, path: Path, root: Path) -> bool:
         if not path.is_symlink():
@@ -286,3 +321,73 @@ class WorkspaceReviewService:
             stdout=result.stdout,
             stderr=result.stderr,
         )
+
+
+def _matches_gitignore_path(
+    relative_path: str,
+    patterns: tuple[str, ...],
+    *,
+    is_directory: bool,
+) -> bool:
+    normalized = relative_path.strip("/")
+    if not normalized:
+        return False
+    ignored = False
+    for pattern in patterns:
+        normalized_pattern = pattern.strip()
+        if not normalized_pattern or normalized_pattern.startswith("#"):
+            continue
+        negated = normalized_pattern.startswith("!")
+        if negated:
+            normalized_pattern = normalized_pattern[1:]
+        if _matches_gitignore_pattern(
+            normalized,
+            normalized_pattern,
+            is_directory=is_directory,
+        ):
+            ignored = not negated
+    return ignored
+
+
+def _matches_gitignore_pattern(
+    relative_path: str,
+    pattern: str,
+    *,
+    is_directory: bool,
+) -> bool:
+    normalized_pattern = pattern.strip()
+    if not normalized_pattern or normalized_pattern.startswith("#"):
+        return False
+    if normalized_pattern.startswith("!"):
+        return False
+
+    directory_only = normalized_pattern.endswith("/")
+    if directory_only and not is_directory:
+        return False
+    anchored = normalized_pattern.startswith("/")
+    normalized_pattern = normalized_pattern.strip("/")
+    if not normalized_pattern:
+        return False
+
+    path_parts = Path(relative_path).parts
+    if "/" not in normalized_pattern:
+        if directory_only:
+            return normalized_pattern in path_parts
+        return any(fnmatchcase(part, normalized_pattern) for part in path_parts)
+
+    if anchored:
+        if directory_only:
+            return relative_path == normalized_pattern or relative_path.startswith(
+                f"{normalized_pattern}/"
+            )
+        return fnmatchcase(relative_path, normalized_pattern)
+    if directory_only:
+        return (
+            relative_path == normalized_pattern
+            or relative_path.endswith(f"/{normalized_pattern}")
+            or f"/{normalized_pattern}/" in f"/{relative_path}/"
+        )
+    return fnmatchcase(relative_path, normalized_pattern) or fnmatchcase(
+        relative_path,
+        f"*/{normalized_pattern}",
+    )
