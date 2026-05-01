@@ -218,11 +218,12 @@ class WorkspaceReviewService:
             tree_root,
             "check-ignore",
             "--quiet",
-            "--no-index",
             "--",
             relative_path,
         )
         if git_check.returncode == 0:
+            if is_directory and self._has_tracked_tree_path(tree_root, relative_path):
+                return False
             return True
         if git_check.returncode == 1:
             return False
@@ -231,6 +232,10 @@ class WorkspaceReviewService:
             self._ignore_patterns_for_tree_root(tree_root),
             is_directory=is_directory,
         )
+
+    def _has_tracked_tree_path(self, tree_root: Path, relative_path: str) -> bool:
+        tracked = self._run_git(tree_root, "ls-files", "--", f"{relative_path}/")
+        return tracked.returncode == 0 and bool(tracked.stdout.strip())
 
     def _ignore_patterns_for_tree_root(self, tree_root: Path) -> tuple[str, ...]:
         cached = self._tree_ignore_patterns.get(tree_root)

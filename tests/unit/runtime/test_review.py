@@ -290,6 +290,48 @@ def test_review_snapshot_uses_git_check_ignore_for_git_workspace(tmp_path: Path)
     )
 
 
+def test_review_snapshot_keeps_tracked_gitignored_files_in_git_workspace(
+    tmp_path: Path,
+) -> None:
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    (tmp_path / ".gitignore").write_text("generated/\n", encoding="utf-8")
+    (tmp_path / "generated").mkdir()
+    (tmp_path / "generated" / "tracked.txt").write_text("tracked\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "add", "-f", "generated/tracked.txt"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+
+    snapshot = WorkspaceReviewService(workspace=tmp_path).snapshot(
+        git=GitStatusSnapshot(state="git_ready", root=str(tmp_path))
+    )
+
+    assert snapshot.tree == (
+        ReviewTreeNode(
+            path="generated",
+            name="generated",
+            kind="directory",
+            changed=True,
+            children=(
+                ReviewTreeNode(
+                    path="generated/tracked.txt",
+                    name="tracked.txt",
+                    kind="file",
+                    changed=True,
+                ),
+            ),
+        ),
+        ReviewTreeNode(
+            path=".gitignore",
+            name=".gitignore",
+            kind="file",
+            changed=True,
+        ),
+    )
+
+
 def test_review_diff_reads_untracked_file_from_nested_workspace_under_git_root(
     tmp_path: Path,
 ) -> None:
