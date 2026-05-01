@@ -261,6 +261,35 @@ def build_distillation_input_envelope(
     max_items: int,
     max_chars: int,
 ) -> dict[str, object]:
+    max_collection_items = max(1, max_items)
+
+    def _bounded_payload(value: object, *, depth: int = 0) -> object:
+        if depth >= 4:
+            return "[truncated-depth]"
+        if isinstance(value, str):
+            return sanitize_distillation_text(value, max_chars=max_chars)
+        if isinstance(value, dict):
+            raw_mapping = cast(dict[object, object], value)
+            bounded: dict[str, object] = {}
+            for index, (raw_key, raw_value) in enumerate(raw_mapping.items()):
+                if index >= max_collection_items:
+                    bounded["__truncated_items__"] = len(raw_mapping) - max_collection_items
+                    break
+                key = str(raw_key)
+                bounded[key] = _bounded_payload(raw_value, depth=depth + 1)
+            return bounded
+        if isinstance(value, list | tuple):
+            source = cast(list[object] | tuple[object, ...], value)
+            bounded_items = [
+                _bounded_payload(item, depth=depth + 1) for item in source[:max_collection_items]
+            ]
+            if len(source) > max_collection_items:
+                bounded_items.append({"__truncated_items__": len(source) - max_collection_items})
+            return bounded_items
+        if isinstance(value, bool | int | float) or value is None:
+            return value
+        return sanitize_distillation_text(str(value), max_chars=max_chars)
+
     def _source_refs(result: ToolResult) -> list[dict[str, str]]:
         refs: list[dict[str, str]] = []
         tool_call_id = result.data.get("tool_call_id")
@@ -281,6 +310,8 @@ def build_distillation_input_envelope(
         for key in ("data_uri", "image_data", "raw_output", "stdout", "stderr"):
             if key in data:
                 data[key] = "[redacted]"
+        bounded_data = _bounded_payload(data)
+        assert isinstance(bounded_data, dict)
         return {
             "tool_name": result.tool_name,
             "status": result.status,
@@ -288,7 +319,7 @@ def build_distillation_input_envelope(
             "error_kind": result.error_kind,
             "truncated": result.truncated,
             "partial": result.partial,
-            "data": data,
+            "data": bounded_data,
             "source_references": _source_refs(result),
         }
 

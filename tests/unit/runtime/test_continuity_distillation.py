@@ -147,3 +147,35 @@ def test_build_distillation_input_envelope_collects_source_references() -> None:
         "file:src/a.py",
         "command:pytest",
     }
+
+
+def test_build_distillation_input_envelope_bounds_nested_data_structures() -> None:
+    envelope = build_distillation_input_envelope(
+        prompt="summarize",
+        dropped_results=(
+            ToolResult(
+                tool_name="grep",
+                status="ok",
+                content="ok",
+                data={
+                    "matches": [{"line": i, "text": "x" * 200} for i in range(10)],
+                    "meta": {"a": {"b": {"c": {"d": "deep"}}}},
+                },
+            ),
+        ),
+        retained_results=(),
+        previous_continuity=None,
+        max_items=3,
+        max_chars=50,
+    )
+
+    dropped_raw = envelope["dropped_tool_result_previews"]
+    assert isinstance(dropped_raw, list)
+    preview = cast(dict[str, object], dropped_raw[0])
+    data = preview["data"]
+    assert isinstance(data, dict)
+    matches = data["matches"]
+    assert isinstance(matches, list)
+    assert len(matches) <= 4  # 3 items + truncation marker
+    assert isinstance(matches[-1], dict)
+    assert cast(dict[str, object], matches[-1]).get("__truncated_items__") == 7

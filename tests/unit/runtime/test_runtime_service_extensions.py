@@ -683,12 +683,14 @@ class _DistillAwareTurnProvider:
         self.distill_error = distill_error
         self.distill_calls = 0
         self.main_calls = 0
+        self.last_distill_abort_signal: object | None = None
 
     def propose_turn(self, request: object) -> ProviderTurnResult:
         turn_request = cast(ProviderTurnRequest, request)
         prompt = turn_request.prompt
         if prompt.startswith("Return ONLY valid JSON matching these keys:"):
             self.distill_calls += 1
+            self.last_distill_abort_signal = turn_request.abort_signal
             if self.distill_error is not None:
                 raise self.distill_error
             if self.distill_output is None:
@@ -10172,6 +10174,93 @@ def test_runtime_distillation_falls_back_on_provider_failure(tmp_path: Path) -> 
     assert response.session.status == "completed"
     assert provider.distill_calls >= 1
     assert continuity["distillation_source"] == "deterministic"
+
+
+def test_runtime_distillation_receives_abort_signal_in_provider_request(tmp_path: Path) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("alpha\n", encoding="utf-8")
+    distill_payload = json.dumps(
+        {
+            "objective_current_goal": "Goal",
+            "verbatim_user_constraints": ["x"],
+            "completed_progress": ["x"],
+            "blockers_open_questions": ["x"],
+            "key_decisions_with_rationale": [
+                {
+                    "text": "x",
+                    "rationale": "x",
+                    "refs": [{"kind": "event", "id": "event:1"}],
+                }
+            ],
+            "relevant_files_commands_errors": [
+                {
+                    "text": "x",
+                    "kind": "file",
+                    "refs": [{"kind": "session", "id": "session:x"}],
+                }
+            ],
+            "verification_state": {
+                "status": "pending",
+                "details": ["x"],
+                "refs": [{"kind": "tool", "id": "tool:x"}],
+            },
+            "next_steps": ["x"],
+            "source_references": [{"kind": "session", "id": "session:x"}],
+        }
+    )
+    provider = _DistillAwareTurnProvider(
+        name="opencode",
+        distill_output=distill_payload,
+        distill_error=None,
+    )
+    registry = ModelProviderRegistry(
+        providers={"opencode": _DistillAwareModelProvider(name="opencode", provider=provider)}
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            model="opencode/gpt-5.4",
+            context_window=RuntimeContextWindowConfig(
+                max_tool_results=1,
+                continuity_distillation_enabled=True,
+            ),
+        ),
+        model_provider_registry=registry,
+    )
+
+    _ = runtime.run(RuntimeRequest(prompt="read sample.txt\nread sample.txt", session_id="d5"))
+
+    assert provider.distill_calls >= 1
+    assert provider.last_distill_abort_signal is not None
+
+
+def test_runtime_distillation_is_skipped_when_no_compaction_needed(tmp_path: Path) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("alpha\n", encoding="utf-8")
+    provider = _DistillAwareTurnProvider(
+        name="opencode",
+        distill_output='{"objective_current_goal":"unused"}',
+        distill_error=None,
+    )
+    registry = ModelProviderRegistry(
+        providers={"opencode": _DistillAwareModelProvider(name="opencode", provider=provider)}
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            model="opencode/gpt-5.4",
+            context_window=RuntimeContextWindowConfig(
+                max_tool_results=20,
+                continuity_distillation_enabled=True,
+            ),
+        ),
+        model_provider_registry=registry,
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="read sample.txt", session_id="d6"))
+
+    assert response.session.status == "completed"
+    assert provider.distill_calls == 0
 
 
 def test_runtime_distillation_disabled_does_not_call_distiller(tmp_path: Path) -> None:

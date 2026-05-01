@@ -779,6 +779,7 @@ class RuntimeRunLoopCoordinator:
                 prompt=current_prompt,
                 tool_results=tuple(tool_results),
                 session_metadata=current_session.metadata,
+                abort_signal=current_abort_signal,
             )
             reinjected_continuity = continuity_to_reinject
             if reinjected_continuity is not None:
