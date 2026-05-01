@@ -1004,6 +1004,70 @@ class _UnexpectedFallbackTurnProvider:
         return ProviderTurnResult(output="fallback used")
 
 
+class _TwoEpisodePrimaryModelProvider:
+    def __init__(self, *, name: str) -> None:
+        self.name = name
+        self.calls = 0
+        self.requests: list[ProviderTurnRequest] = []
+
+    def turn_provider(self) -> _TwoEpisodePrimaryTurnProvider:
+        return _TwoEpisodePrimaryTurnProvider(model_provider=self)
+
+
+@dataclass(slots=True)
+class _TwoEpisodePrimaryTurnProvider:
+    model_provider: _TwoEpisodePrimaryModelProvider
+
+    @property
+    def name(self) -> str:
+        return self.model_provider.name
+
+    def propose_turn(self, request: object) -> ProviderTurnResult:
+        turn_request = cast(ProviderTurnRequest, request)
+        self.model_provider.requests.append(turn_request)
+        self.model_provider.calls += 1
+        if self.model_provider.calls in {1, 2}:
+            raise ProviderExecutionError(
+                kind="transient_failure",
+                provider_name=self.name,
+                model_name=turn_request.model_name or "model-a",
+                message=f"transient episode {self.model_provider.calls}",
+            )
+        return ProviderTurnResult(output="primary complete")
+
+
+class _TwoEpisodeFallbackModelProvider:
+    def __init__(self, *, name: str) -> None:
+        self.name = name
+        self.calls = 0
+        self.requests: list[ProviderTurnRequest] = []
+
+    def turn_provider(self) -> _TwoEpisodeFallbackTurnProvider:
+        return _TwoEpisodeFallbackTurnProvider(model_provider=self)
+
+
+@dataclass(slots=True)
+class _TwoEpisodeFallbackTurnProvider:
+    model_provider: _TwoEpisodeFallbackModelProvider
+
+    @property
+    def name(self) -> str:
+        return self.model_provider.name
+
+    def propose_turn(self, request: object) -> ProviderTurnResult:
+        turn_request = cast(ProviderTurnRequest, request)
+        self.model_provider.requests.append(turn_request)
+        self.model_provider.calls += 1
+        if self.model_provider.calls == 1:
+            return ProviderTurnResult(
+                tool_call=ToolCall(
+                    tool_name="read_file",
+                    arguments={"filePath": "sample.txt"},
+                )
+            )
+        return ProviderTurnResult(output="fallback complete")
+
+
 class _BlockingFallbackModelProvider:
     def __init__(self, *, name: str) -> None:
         self.name = name
@@ -1866,6 +1930,40 @@ def test_runtime_background_rate_limit_retry_precedes_provider_fallback(
     assert child.output == "primary recovered"
     assert primary.attempts == 2
     assert fallback.calls == 0
+
+
+def test_runtime_provider_fallback_resets_after_successful_turn(tmp_path: Path) -> None:
+    (tmp_path / "sample.txt").write_text("sample contents", encoding="utf-8")
+    primary = _TwoEpisodePrimaryModelProvider(name="primary")
+    fallback = _TwoEpisodeFallbackModelProvider(name="fallback")
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        model_provider_registry=ModelProviderRegistry(
+            providers={"primary": primary, "fallback": fallback}
+        ),
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="primary/model-a",
+            provider_fallback=RuntimeProviderFallbackConfig(
+                preferred_model="primary/model-a",
+                fallback_models=("fallback/model-b",),
+            ),
+        ),
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="read sample.txt"))
+
+    assert response.session.status == "completed"
+    assert response.output == "fallback complete"
+    fallback_events = [
+        event for event in response.events if event.event_type == "runtime.provider_fallback"
+    ]
+    assert [event.payload["attempt"] for event in fallback_events] == [1, 1]
+    assert primary.calls == 2
+    assert fallback.calls == 2
+    assert [request.attempt for request in primary.requests] == [0, 0]
+    assert [request.attempt for request in fallback.requests] == [1, 1]
+    assert "provider_attempt" not in response.session.metadata
 
 
 def test_runtime_background_fallback_reacquires_fallback_model_slot(
@@ -11925,7 +12023,7 @@ def test_runtime_resume_preserves_provider_attempt_and_target_across_pending_app
     )
     assert resumed.session.status == "completed"
     assert resumed.output == "done"
-    assert resumed.session.metadata["provider_attempt"] == 1
+    assert "provider_attempt" not in resumed.session.metadata
     assert custom_attempts == [1, 1]
     assert all(attempt == 1 for attempt in custom_attempts)
     resumed_fallback_events = [
