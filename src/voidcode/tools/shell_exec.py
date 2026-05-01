@@ -250,8 +250,8 @@ class ShellExecTool:
             except subprocess.TimeoutExpired:
                 continue
 
-        stdout_reader.join(timeout=1)
-        stderr_reader.join(timeout=1)
+        stdout_reader.join()
+        stderr_reader.join()
 
         stdout_bytes = b"".join(stdout_chunks)
         stderr_bytes = b"".join(stderr_chunks)

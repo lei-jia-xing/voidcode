@@ -198,6 +198,28 @@ def test_shell_exec_tool_returns_full_output_for_large_subprocess(tmp_path: Path
     assert result.data.get("output_char_count") == 250000
 
 
+def test_shell_exec_waits_for_pipe_readers_before_final_output(tmp_path: Path) -> None:
+    tool = ShellExecTool()
+    stdout_size = 700_000
+    stderr_size = 650_000
+    command = (
+        f'"{sys.executable}" -c "import sys; '
+        f"sys.stdout.write('o' * {stdout_size}); sys.stdout.flush(); "
+        f"sys.stderr.write('e' * {stderr_size}); sys.stderr.flush()"
+        '"'
+    )
+
+    result = tool.invoke(
+        ToolCall(tool_name="shell_exec", arguments={"command": command}),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert result.data["stdout"] == "o" * stdout_size
+    assert result.data["stderr"] == "e" * stderr_size
+    assert result.content == ("o" * stdout_size) + ("e" * stderr_size)
+
+
 def test_shell_exec_emits_incremental_stdout_progress_and_preserves_final_output(
     tmp_path: Path,
 ) -> None:
