@@ -9821,6 +9821,7 @@ def test_runtime_provider_compaction_emits_continuity_state_and_persists_metadat
     assert runtime_state["continuity_summary"] == {
         "anchor": summary_anchor,
         "source": summary_source,
+        "distillation_source": "deterministic",
     }
     assert runtime_state["memory_refreshed"] == {
         "last_summary_anchor": summary_anchor,

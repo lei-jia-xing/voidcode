@@ -351,6 +351,9 @@ def test_runtime_config_loads_context_window_policy_from_repo_file(tmp_path: Pat
                     "tokenizer_model": "gpt-4o",
                     "continuity_preview_items": 4,
                     "continuity_preview_chars": 120,
+                    "continuity_distillation_enabled": True,
+                    "continuity_distillation_max_input_items": 9,
+                    "continuity_distillation_max_input_chars": 2048,
                     "context_pressure_threshold": 0.75,
                     "context_pressure_cooldown_steps": 5,
                     "provider_context_diagnostics": "block",
@@ -378,6 +381,9 @@ def test_runtime_config_loads_context_window_policy_from_repo_file(tmp_path: Pat
         tokenizer_model="gpt-4o",
         continuity_preview_items=4,
         continuity_preview_chars=120,
+        continuity_distillation_enabled=True,
+        continuity_distillation_max_input_items=9,
+        continuity_distillation_max_input_chars=2048,
         context_pressure_threshold=0.75,
         context_pressure_cooldown_steps=5,
         provider_context_diagnostics="block",
@@ -418,6 +424,26 @@ def test_runtime_context_window_config_serializes_for_session_resume() -> None:
         source="test runtime_config.context_window",
     )
 
+    assert parsed == config
+
+
+def test_runtime_context_window_config_includes_distillation_controls() -> None:
+    config = RuntimeContextWindowConfig(
+        continuity_distillation_enabled=True,
+        continuity_distillation_max_input_items=11,
+        continuity_distillation_max_input_chars=3072,
+    )
+
+    payload = serialize_runtime_context_window_config(config)
+    assert payload is not None
+    assert payload["continuity_distillation_enabled"] is True
+    assert payload["continuity_distillation_max_input_items"] == 11
+    assert payload["continuity_distillation_max_input_chars"] == 3072
+
+    parsed = parse_runtime_context_window_payload(
+        payload,
+        source="test runtime_config.context_window.distillation",
+    )
     assert parsed == config
 
 

@@ -618,6 +618,18 @@ def _context_window_diagnostics(
     continuity_payload = (
         cast(dict[str, object], continuity) if isinstance(continuity, dict) else None
     )
+    if continuity_payload is not None:
+        source = continuity_payload.get("distillation_source")
+        if isinstance(source, str) and source:
+            diagnostics.append(
+                RuntimeProviderContextDiagnostic(
+                    severity="info",
+                    code="continuity_distillation_source",
+                    message=("Continuity summary source recorded for provider context debugging."),
+                    source="context_window",
+                    details={"distillation_source": source},
+                )
+            )
     if continuity_payload is not None and not continuity_payload.get("summary_text") and dropped:
         diagnostics.append(
             RuntimeProviderContextDiagnostic(

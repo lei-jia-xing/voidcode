@@ -5798,6 +5798,13 @@ class VoidCodeRuntime:
             continuity_preview_chars=policy.continuity_preview_chars,
             context_pressure_threshold=policy.context_pressure_threshold,
             context_pressure_cooldown_steps=policy.context_pressure_cooldown_steps,
+            continuity_distillation_enabled=policy.continuity_distillation_enabled,
+            continuity_distillation_max_input_items=(
+                policy.continuity_distillation_max_input_items
+            ),
+            continuity_distillation_max_input_chars=(
+                policy.continuity_distillation_max_input_chars
+            ),
         )
 
     @staticmethod
@@ -5837,6 +5844,13 @@ class VoidCodeRuntime:
             continuity_preview_chars=config.continuity_preview_chars,
             context_pressure_threshold=config.context_pressure_threshold,
             context_pressure_cooldown_steps=config.context_pressure_cooldown_steps,
+            continuity_distillation_enabled=config.continuity_distillation_enabled,
+            continuity_distillation_max_input_items=(
+                config.continuity_distillation_max_input_items
+            ),
+            continuity_distillation_max_input_chars=(
+                config.continuity_distillation_max_input_chars
+            ),
         )
 
     def _prepare_provider_context_window(
@@ -5956,6 +5970,11 @@ class VoidCodeRuntime:
             {
                 "anchor": context_window.summary_anchor,
                 "source": context_window.summary_source,
+                "distillation_source": (
+                    context_window.continuity_state.distillation_source
+                    if context_window.continuity_state is not None
+                    else "deterministic"
+                ),
             }
             if context_window.summary_anchor is not None
             else None

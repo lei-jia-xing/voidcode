@@ -996,6 +996,9 @@ def test_context_window_policy_metadata_round_trips() -> None:
         default_tool_result_tokens=30,
         per_tool_result_tokens={"grep": 10},
         tokenizer_model="gpt-4o",
+        continuity_distillation_enabled=True,
+        continuity_distillation_max_input_items=9,
+        continuity_distillation_max_input_chars=1024,
     )
 
     parsed = context_window_policy_from_payload(policy.metadata_payload())
@@ -1133,6 +1136,9 @@ def test_continuity_state_metadata_payload_round_trips_v2_fields() -> None:
         dropped_tool_result_count=2,
         retained_tool_result_count=1,
         source="tool_result_window",
+        distillation_source="deterministic",
+        distillation_error=None,
+        fact_reference_count=0,
         dropped_tool_results=(
             DroppedToolResultDiagnostic(
                 tool_name="read_file",
@@ -1149,6 +1155,141 @@ def test_continuity_state_metadata_payload_round_trips_v2_fields() -> None:
     restored = continuity_state_from_metadata_payload(state.metadata_payload())
 
     assert restored == state
+
+
+def test_prepare_provider_context_continuity_state_exposes_distillation_source_metadata() -> None:
+    context = prepare_provider_context(
+        prompt="read sample.txt",
+        tool_results=(
+            _continuity_tool_result("ok", content="dropped"),
+            _continuity_tool_result("ok", content="retained"),
+        ),
+        session_metadata={},
+        policy=ContextWindowPolicy(max_tool_results=1),
+    )
+
+    assert context.continuity_state is not None
+    payload = context.continuity_state.metadata_payload()
+    assert payload["distillation_source"] == "deterministic"
+    assert payload["fact_reference_count"] == 0
+
+
+def test_prepare_provider_context_uses_model_assisted_distillation_candidate_when_enabled() -> None:
+    candidate = {
+        "objective_current_goal": "Ship continuity distillation",
+        "verbatim_user_constraints": ["Do not override user instructions"],
+        "completed_progress": ["Mapped runtime continuity flow"],
+        "blockers_open_questions": ["Need integration tests"],
+        "key_decisions_with_rationale": [
+            {
+                "text": "Use deterministic fallback",
+                "rationale": "Preserve resilience",
+                "refs": [{"kind": "event", "id": "event:42"}],
+            }
+        ],
+        "relevant_files_commands_errors": [
+            {
+                "text": "src/voidcode/runtime/context_window.py",
+                "kind": "file",
+                "refs": [{"kind": "session", "id": "session:distill"}],
+            }
+        ],
+        "verification_state": {
+            "status": "pending",
+            "details": ["tests not run"],
+            "refs": [{"kind": "tool", "id": "tool:pytest"}],
+        },
+        "next_steps": ["Run tests"],
+        "source_references": [{"kind": "session", "id": "session:distill"}],
+    }
+
+    context = prepare_provider_context(
+        prompt="read sample.txt",
+        tool_results=(
+            _continuity_tool_result("ok", content="drop-me"),
+            _continuity_tool_result("ok", content="keep-me"),
+        ),
+        session_metadata={"runtime_state": {"distillation_candidate": candidate}},
+        policy=ContextWindowPolicy(max_tool_results=1, continuity_distillation_enabled=True),
+    )
+
+    assert context.continuity_state is not None
+    assert context.continuity_state.distillation_source == "model_assisted"
+    assert context.continuity_state.current_goal == "Ship continuity distillation"
+    assert context.continuity_state.fact_reference_count == 1
+
+
+def test_prepare_provider_context_invalid_distillation_candidate_falls_back_safely() -> None:
+    invalid_candidate = {
+        "objective_current_goal": "",
+        "verbatim_user_constraints": ["x"],
+    }
+
+    context = prepare_provider_context(
+        prompt="read sample.txt",
+        tool_results=(
+            _continuity_tool_result("ok", content="drop-me"),
+            _continuity_tool_result("ok", content="keep-me"),
+        ),
+        session_metadata={"runtime_state": {"distillation_candidate": invalid_candidate}},
+        policy=ContextWindowPolicy(max_tool_results=1, continuity_distillation_enabled=True),
+    )
+
+    assert context.continuity_state is not None
+    assert context.continuity_state.distillation_source == "fallback_after_model_error"
+    assert context.continuity_state.distillation_error is not None
+    assert "failed schema validation" in context.continuity_state.distillation_error
+
+
+def test_prepare_provider_context_distillation_candidate_ignores_raw_oversized_fields() -> None:
+    large_data_uri = "data:image/png;base64," + ("A" * 8000)
+    candidate = {
+        "objective_current_goal": "Goal",
+        "verbatim_user_constraints": ["constraint"],
+        "completed_progress": ["progress"],
+        "blockers_open_questions": ["blocker"],
+        "key_decisions_with_rationale": [
+            {
+                "text": "decision",
+                "rationale": "why",
+                "refs": [{"kind": "event", "id": "event:1"}],
+            }
+        ],
+        "relevant_files_commands_errors": [
+            {
+                "text": "cmd",
+                "kind": "command",
+                "refs": [{"kind": "tool", "id": "tool:1"}],
+            }
+        ],
+        "verification_state": {
+            "status": "pending",
+            "details": ["pending"],
+            "refs": [{"kind": "session", "id": "session:1"}],
+        },
+        "next_steps": ["next"],
+        "source_references": [{"kind": "session", "id": "session:1"}],
+        "raw_output": large_data_uri,
+    }
+
+    context = prepare_provider_context(
+        prompt="read sample.txt",
+        tool_results=(
+            ToolResult(
+                tool_name="read_file",
+                status="ok",
+                content=large_data_uri,
+                data={"data_uri": large_data_uri},
+            ),
+            _continuity_tool_result("ok", content="keep-me"),
+        ),
+        session_metadata={"runtime_state": {"distillation_candidate": candidate}},
+        policy=ContextWindowPolicy(max_tool_results=1, continuity_distillation_enabled=True),
+    )
+
+    assert context.continuity_state is not None
+    assert context.continuity_state.distillation_source == "model_assisted"
+    assert "data:image" not in (context.continuity_state.summary_text or "")
 
 
 def test_normalize_read_file_output_preserves_showing_lines_footer() -> None:
