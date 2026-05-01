@@ -3610,13 +3610,16 @@ def test_provider_runtime_executes_read_path_and_persists_config(tmp_path: Path)
     assert set(result.session.metadata) == {
         "workspace",
         "runtime_config",
+        "resolved_hook_presets",
         "runtime_state",
         "context_window",
     }
     runtime_config_payload = cast(dict[str, object], result.session.metadata["runtime_config"])
     agent_payload = runtime_config_payload.pop("agent")
+    resolved_hook_presets = runtime_config_payload.pop("resolved_hook_presets")
     assert isinstance(agent_payload, dict)
     assert agent_payload["preset"] == "leader"
+    assert resolved_hook_presets == result.session.metadata["resolved_hook_presets"]
     assert runtime_config_payload == {
         "approval_mode": "allow",
         "execution_engine": "provider",

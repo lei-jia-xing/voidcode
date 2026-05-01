@@ -30,6 +30,11 @@ from ..hook.executor import (
     run_lifecycle_hooks,
     run_tool_hooks,
 )
+from ..hook.presets import (
+    ResolvedHookPresetSnapshot,
+    hook_preset_snapshot_from_payload,
+    resolve_hook_preset_refs,
+)
 from ..mcp.redaction import redact_mcp_command
 from ..provider.auth import (
     ProviderAuthAuthorizeRequest,
@@ -277,6 +282,7 @@ _PERSISTED_RUNTIME_CONFIG_KEYS = frozenset(
         "providers",
         "provider_fallback",
         "resolved_provider",
+        "resolved_hook_presets",
         "agent",
         "agents",
         "categories",
@@ -1765,6 +1771,7 @@ class VoidCodeRuntime:
         if self._graph_override is None:
             self._validate_provider_execution_ready(effective_config)
         request_metadata = self._fresh_request_metadata(request.metadata)
+        resolved_hook_presets = self._build_hook_preset_snapshot(effective_config.agent)
         session_request_metadata = dict(request_metadata)
         session_request_metadata.pop("background_rate_limit_retry", None)
         session_request_metadata.pop("show_thinking", None)
@@ -1776,6 +1783,11 @@ class VoidCodeRuntime:
                 **session_request_metadata,
                 "workspace": str(self._workspace),
                 "runtime_config": self._runtime_config_metadata(effective_config),
+                **(
+                    {"resolved_hook_presets": resolved_hook_presets.to_payload()}
+                    if resolved_hook_presets.presets
+                    else {}
+                ),
                 "runtime_state": self._runtime_state_metadata(run_id=run_id),
             },
         )
@@ -6036,12 +6048,17 @@ class VoidCodeRuntime:
         )
         model_family = effective_config.resolved_provider.active_target.selection.provider
         agent_prompt_context = render_agent_prompt(agent_preset, model_family=model_family) or ""
+        hook_preset_context = self._hook_preset_context_from_metadata(
+            session_metadata,
+            agent=effective_config.agent,
+        )
         return assemble_provider_context(
             prompt=prompt,
             tool_results=tool_results,
             session_metadata=session_metadata,
             policy=policy or self._default_context_window_policy,
             agent_prompt_context=agent_prompt_context,
+            hook_preset_context=hook_preset_context,
             skill_prompt_context=skill_prompt_context,
             preserved_system_segments=preserved_system_segments,
             loaded_skills=loaded_skills,
@@ -6465,6 +6482,46 @@ class VoidCodeRuntime:
             "skill_snapshot": snapshot_payload(snapshot),
         }
 
+    def _build_hook_preset_snapshot(
+        self,
+        agent: RuntimeAgentConfig | None,
+    ) -> ResolvedHookPresetSnapshot:
+        refs = self._hook_preset_refs_for_agent(agent)
+        return resolve_hook_preset_refs(refs)
+
+    @staticmethod
+    def _hook_preset_refs_for_agent(agent: RuntimeAgentConfig | None) -> tuple[str, ...]:
+        if agent is None:
+            return ()
+        if agent.hook_refs:
+            return agent.hook_refs
+        manifest = get_builtin_agent_manifest(agent.preset)
+        if manifest is None:
+            return ()
+        return manifest.preset_hook_refs
+
+    def _hook_preset_context_from_metadata(
+        self,
+        metadata: dict[str, object],
+        *,
+        agent: RuntimeAgentConfig | None,
+    ) -> str:
+        raw_snapshot: object | None = metadata.get("resolved_hook_presets")
+        if isinstance(raw_snapshot, dict):
+            raw_snapshot_payload: object | None = cast(dict[object, object], raw_snapshot)
+        else:
+            raw_snapshot_payload = None
+            raw_runtime_config = metadata.get("runtime_config")
+            if isinstance(raw_runtime_config, dict):
+                runtime_config_payload = cast(dict[object, object], raw_runtime_config)
+                nested_snapshot: object = runtime_config_payload.get("resolved_hook_presets")
+                if isinstance(nested_snapshot, dict):
+                    raw_snapshot_payload = cast(dict[object, object], nested_snapshot)
+        snapshot = hook_preset_snapshot_from_payload(raw_snapshot_payload)
+        if snapshot is None:
+            snapshot = self._build_hook_preset_snapshot(agent)
+        return snapshot.guidance_context()
+
     @staticmethod
     def _force_loaded_skill_payloads(
         snapshot: SkillExecutionSnapshot,
@@ -6619,6 +6676,9 @@ class VoidCodeRuntime:
         serialized_agent = serialize_runtime_agent_config(effective_config.agent)
         if serialized_agent is not None:
             runtime_config_metadata["agent"] = serialized_agent
+        resolved_hook_presets = self._build_hook_preset_snapshot(effective_config.agent)
+        if resolved_hook_presets.presets:
+            runtime_config_metadata["resolved_hook_presets"] = resolved_hook_presets.to_payload()
         serialized_agents = serialize_runtime_agents_config(self._config.agents)
         if serialized_agents is not None:
             runtime_config_metadata["agents"] = serialized_agents

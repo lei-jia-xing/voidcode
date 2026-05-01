@@ -1513,6 +1513,7 @@ def assemble_provider_context(
     policy: ContextWindowPolicy | None = None,
     skill_prompt_context: str = "",
     agent_prompt_context: str = "",
+    hook_preset_context: str = "",
     preserved_system_segments: tuple[str, ...] = (),
     loaded_skills: tuple[dict[str, object], ...] = (),
     preserved_continuity_state: RuntimeContinuityState | None = None,
@@ -1540,6 +1541,7 @@ def assemble_provider_context(
         )
 
     _append_system_segment(agent_prompt_context, source="agent_prompt")
+    _append_system_segment(hook_preset_context, source="hook_preset_guidance")
     for segment_content in preserved_system_segments:
         _append_system_segment(segment_content, source="preserved_system_segment")
     _append_system_segment(skill_prompt_context, source="skill_prompt")
