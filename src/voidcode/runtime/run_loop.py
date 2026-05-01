@@ -16,8 +16,18 @@ from ..provider.errors import (
     classify_provider_error,
     format_fallback_exhausted_error,
 )
-from ..provider.protocol import ProviderAbortSignal
-from ..tools.contracts import RuntimeTimeoutAwareTool, RuntimeToolTimeoutError, ToolCall, ToolResult
+from ..provider.protocol import (
+    ProviderAbortSignal,
+    ProviderAssembledContext,
+    ProviderContextSegmentLike,
+)
+from ..tools.contracts import (
+    RuntimeTimeoutAwareTool,
+    RuntimeToolTimeoutError,
+    ToolCall,
+    ToolDefinition,
+    ToolResult,
+)
 from ..tools.output import (
     cap_tool_result_output,
     sanitize_tool_arguments,
@@ -649,12 +659,25 @@ class RuntimeRunLoopCoordinator:
         continuity_to_reinject: RuntimeContinuityState | None = preserved_continuity_state
         provider_attempt = runtime._provider_attempt_from_metadata(graph_request.metadata)
         reasoning_capture_state = runtime._reasoning_capture_state()
+        active_graph_request: GraphRunRequest = graph_request
         while True:
             sequence = int(sequence)
-            current_graph_request: GraphRunRequest = graph_request
+            current_graph_request: GraphRunRequest = active_graph_request
+            current_prompt: str = current_graph_request.prompt
+            current_available_tools: tuple[ToolDefinition, ...] = (
+                current_graph_request.available_tools
+            )
+            current_assembled_context: ProviderAssembledContext = (
+                current_graph_request.assembled_context
+            )
+            current_segments: tuple[ProviderContextSegmentLike, ...] = (
+                current_assembled_context.segments
+            )
+            current_metadata: dict[str, object] = current_graph_request.metadata
+            current_abort_signal: ProviderAbortSignal | None = current_graph_request.abort_signal
             current_session = self._current_session_state(session)
             base_context = runtime._prepare_provider_context_window(
-                prompt=current_graph_request.prompt,
+                prompt=current_prompt,
                 tool_results=tuple(tool_results),
                 session_metadata=current_session.metadata,
             )
@@ -687,7 +710,7 @@ class RuntimeRunLoopCoordinator:
             session = runtime._session_with_context_window_metadata(current_session, context_window)
             skill_prompt_context = ""
             preserved_system_segments: list[str] = []
-            for segment in current_graph_request.assembled_context.segments:
+            for segment in current_segments:
                 if segment.role != "system" or not isinstance(segment.content, str):
                     continue
                 if segment.content.startswith("Runtime-managed todo state is active"):
@@ -695,27 +718,27 @@ class RuntimeRunLoopCoordinator:
                 preserved_system_segments.append(segment.content)
                 if segment.content.startswith("Runtime-managed skills are active for this turn."):
                     skill_prompt_context = segment.content
-            graph_request = GraphRunRequest(
+            active_graph_request = GraphRunRequest(
                 session=session,
-                prompt=current_graph_request.prompt,
-                available_tools=current_graph_request.available_tools,
+                prompt=current_prompt,
+                available_tools=current_available_tools,
                 context_window=context_window,
                 assembled_context=runtime._assemble_provider_context(
-                    prompt=current_graph_request.prompt,
+                    prompt=current_prompt,
                     tool_results=context_window.tool_results,
                     session_metadata=session.metadata,
                     skill_prompt_context=skill_prompt_context,
                     preserved_system_segments=tuple(preserved_system_segments),
                 ),
-                metadata=current_graph_request.metadata,
-                abort_signal=current_graph_request.abort_signal,
+                metadata=current_metadata,
+                abort_signal=current_abort_signal,
             )
             effective_runtime_config = runtime._effective_runtime_config_from_metadata(
                 session.metadata
             )
             provider_context_policy_decision: RuntimeProviderContextPolicyDecision | None = (
                 runtime._provider_context_policy_decision_for_graph_request(
-                    graph_request=graph_request,
+                    graph_request=active_graph_request,
                     effective_config=effective_runtime_config,
                 )
             )
@@ -863,7 +886,7 @@ class RuntimeRunLoopCoordinator:
                 effective_runtime_config.execution_engine == "provider"
             )
             try:
-                if _is_abort_requested(graph_request):
+                if _is_abort_requested(active_graph_request):
                     yield runtime._failed_chunk(
                         session=session,
                         sequence=sequence + 1,
@@ -872,12 +895,12 @@ class RuntimeRunLoopCoordinator:
                             "kind": "interrupted",
                             "cancelled": True,
                             "run_id": runtime._run_id_from_session_metadata(session.metadata),
-                            "reason": _abort_reason(graph_request),
+                            "reason": _abort_reason(active_graph_request),
                         },
                     )
                     return
                 graph_step = graph.step(
-                    graph_request,
+                    active_graph_request,
                     tool_results=tuple(tool_results),
                     session=session,
                 )
@@ -902,7 +925,7 @@ class RuntimeRunLoopCoordinator:
                         return
                     if (
                         provider_error.kind == "rate_limit"
-                        and graph_request.metadata.get("background_rate_limit_retry") is True
+                        and active_graph_request.metadata.get("background_rate_limit_retry") is True
                     ):
                         yield runtime._failed_chunk(
                             session=session,
@@ -967,6 +990,19 @@ class RuntimeRunLoopCoordinator:
                             ),
                         )
                         provider_attempt = fallback_selection.provider_attempt
+                        fallback_prompt: str = current_prompt
+                        fallback_available_tools: tuple[ToolDefinition, ...] = (
+                            current_available_tools
+                        )
+                        fallback_context_window = context_window
+                        fallback_assembled_context: ProviderAssembledContext = (
+                            active_graph_request.assembled_context
+                        )
+                        fallback_metadata: dict[str, object] = {
+                            **current_metadata,
+                            "provider_attempt": provider_attempt,
+                        }
+                        fallback_abort_signal: ProviderAbortSignal | None = current_abort_signal
                         session = SessionState(
                             session=session.session,
                             status=session.status,
@@ -974,17 +1010,14 @@ class RuntimeRunLoopCoordinator:
                             metadata={**session.metadata, "provider_attempt": provider_attempt},
                         )
                         graph = fallback_selection.graph
-                        graph_request = GraphRunRequest(
+                        active_graph_request = GraphRunRequest(
                             session=session,
-                            prompt=graph_request.prompt,
-                            available_tools=graph_request.available_tools,
-                            context_window=graph_request.context_window,
-                            assembled_context=graph_request.assembled_context,
-                            metadata={
-                                **graph_request.metadata,
-                                "provider_attempt": provider_attempt,
-                            },
-                            abort_signal=graph_request.abort_signal,
+                            prompt=fallback_prompt,
+                            available_tools=fallback_available_tools,
+                            context_window=fallback_context_window,
+                            assembled_context=fallback_assembled_context,
+                            metadata=fallback_metadata,
+                            abort_signal=fallback_abort_signal,
                         )
                         continue
                     if provider_error.kind in {
@@ -1052,7 +1085,7 @@ class RuntimeRunLoopCoordinator:
                 getattr(graph_step, "is_finished", False)
                 or getattr(graph_step, "output", None) is not None
             )
-            if _is_abort_requested(graph_request):
+            if _is_abort_requested(active_graph_request):
                 yield runtime._failed_chunk(
                     session=session,
                     sequence=sequence + 1,
@@ -1061,7 +1094,7 @@ class RuntimeRunLoopCoordinator:
                         "kind": "interrupted",
                         "cancelled": True,
                         "run_id": runtime._run_id_from_session_metadata(session.metadata),
-                        "reason": _abort_reason(graph_request),
+                        "reason": _abort_reason(active_graph_request),
                     },
                 )
                 return
@@ -1367,13 +1400,13 @@ class RuntimeRunLoopCoordinator:
                     },
                 ),
             )
-            if _is_abort_requested(graph_request):
+            if _is_abort_requested(active_graph_request):
                 yield from self._started_tool_abort_chunks(
                     session=session,
                     sequence=sequence,
                     tool_call=plan_tool_call,
                     tool_call_id=tool_call_id,
-                    abort_signal=graph_request.abort_signal,
+                    abort_signal=active_graph_request.abort_signal,
                 )
                 return
             try:
@@ -1386,7 +1419,7 @@ class RuntimeRunLoopCoordinator:
                         session=session,
                         start_sequence=sequence + 1,
                         tool_call_id=tool_call_id,
-                        abort_signal=graph_request.abort_signal,
+                        abort_signal=active_graph_request.abort_signal,
                         parent_session_id=session.session.parent_id,
                         delegation_depth=runtime._delegation_depth_from_metadata(session.metadata),
                         remaining_spawn_budget=runtime._remaining_spawn_budget_from_metadata(
@@ -1407,7 +1440,7 @@ class RuntimeRunLoopCoordinator:
                             remaining_spawn_budget=runtime._remaining_spawn_budget_from_metadata(
                                 session.metadata
                             ),
-                            abort_signal=graph_request.abort_signal,
+                            abort_signal=active_graph_request.abort_signal,
                         )
                     ):
                         if tool_timeout is None:
@@ -1701,7 +1734,7 @@ class RuntimeRunLoopCoordinator:
                     ),
                 )
 
-            if _is_abort_requested(graph_request):
+            if _is_abort_requested(active_graph_request):
                 yield runtime._failed_chunk(
                     session=session,
                     sequence=sequence + 1,
@@ -1710,7 +1743,7 @@ class RuntimeRunLoopCoordinator:
                         "kind": "interrupted",
                         "cancelled": True,
                         "run_id": runtime._run_id_from_session_metadata(session.metadata),
-                        "reason": _abort_reason(graph_request),
+                        "reason": _abort_reason(active_graph_request),
                     },
                 )
                 return
