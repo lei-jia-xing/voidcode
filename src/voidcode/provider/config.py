@@ -206,6 +206,7 @@ class _ProviderConfigsPayload(_ProviderPayloadModel):
     google: _GoogleProviderConfigPayload | None = None
     copilot: _CopilotProviderConfigPayload | None = None
     litellm: _LiteLLMProviderConfigPayload | None = None
+    opencode: _LiteLLMProviderConfigPayload | None = None
     deepseek: _SimplifiedProviderConfigPayload | None = None
     glm: _SimplifiedProviderConfigPayload | None = None
     grok: _SimplifiedProviderConfigPayload | None = None
@@ -536,6 +537,7 @@ class ProviderConfigs:
     google: GoogleProviderConfig | None = None
     copilot: CopilotProviderConfig | None = None
     litellm: LiteLLMProviderConfig | None = None
+    opencode: LiteLLMProviderConfig | None = None
     deepseek: SimplifiedProviderConfig | None = None
     glm: SimplifiedProviderConfig | None = None
     grok: SimplifiedProviderConfig | None = None
@@ -661,6 +663,7 @@ def merge_provider_configs(
         google=_merge_google_provider_config(primary.google, fallback.google),
         copilot=_merge_copilot_provider_config(primary.copilot, fallback.copilot),
         litellm=_merge_litellm_provider_config(primary.litellm, fallback.litellm),
+        opencode=_merge_litellm_provider_config(primary.opencode, fallback.opencode),
         deepseek=_merge_simplified_provider_config(primary.deepseek, fallback.deepseek),
         glm=_merge_simplified_provider_config(primary.glm, fallback.glm),
         grok=_merge_simplified_provider_config(primary.grok, fallback.grok),
@@ -819,6 +822,7 @@ def _provider_configs_has_entries(providers: ProviderConfigs) -> bool:
             providers.google,
             providers.copilot,
             providers.litellm,
+            providers.opencode,
             providers.deepseek,
             providers.glm,
             providers.grok,
@@ -948,6 +952,11 @@ def parse_provider_configs_payload(
             field_path=_nested_config_field(source, "litellm"),
             env=environment,
         ),
+        opencode=_parse_litellm_provider_config(
+            payload.opencode,
+            field_path=_nested_config_field(source, "opencode"),
+            env=environment,
+        ),
         deepseek=_parse_simplified_provider_config(
             payload.deepseek,
             field_path=_nested_config_field(source, "deepseek"),
@@ -1030,6 +1039,11 @@ def serialize_provider_configs(
     if providers.litellm is not None:
         serialized["litellm"] = _serialize_litellm_provider_config(
             providers.litellm,
+            include_secrets=include_secrets,
+        )
+    if providers.opencode is not None:
+        serialized["opencode"] = _serialize_litellm_provider_config(
+            providers.opencode,
             include_secrets=include_secrets,
         )
     if providers.deepseek is not None:

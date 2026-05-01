@@ -106,16 +106,19 @@ from .config import (
     RuntimeContextWindowConfig,
     RuntimeHooksConfig,
     RuntimeProviderFallbackConfig,
+    RuntimeProvidersConfig,
     RuntimeSkillsConfig,
     RuntimeWebSettings,
     load_global_web_settings,
     load_runtime_config,
+    parse_provider_configs_payload,
     parse_provider_fallback_payload,
     parse_runtime_agent_payload,
     parse_runtime_agents_payload,
     parse_runtime_categories_payload,
     parse_runtime_context_window_payload,
     save_global_web_settings,
+    serialize_provider_configs,
     serialize_provider_fallback_config,
     serialize_runtime_agent_config,
     serialize_runtime_agents_config,
@@ -266,6 +269,7 @@ _PERSISTED_RUNTIME_CONFIG_KEYS = frozenset(
         "tool_timeout_seconds",
         "reasoning_effort",
         "model",
+        "providers",
         "provider_fallback",
         "resolved_provider",
         "agent",
@@ -326,6 +330,7 @@ _SKILL_BINDING_SCOPE_KEYS = (
     "tool_timeout_seconds",
     "reasoning_effort",
     "model",
+    "providers",
     "provider_fallback",
     "resolved_provider",
     "agent",
@@ -759,6 +764,7 @@ class VoidCodeRuntime:
             max_steps=self._config.max_steps,
             tool_timeout_seconds=self._config.tool_timeout_seconds,
             provider_fallback=initial_provider_fallback,
+            providers=self._config.providers,
             resolved_provider=self._resolved_provider_config,
             agent=initial_agent,
             context_window=initial_context_window,
@@ -1080,6 +1086,7 @@ class VoidCodeRuntime:
                 tool_timeout_seconds=resolved.tool_timeout_seconds,
                 reasoning_effort=resolved.reasoning_effort,
                 provider_fallback=resolved.provider_fallback,
+                providers=resolved.providers,
                 resolved_provider=resolved.resolved_provider,
                 agent=resolved.agent,
                 context_window=resolved.context_window,
@@ -1094,6 +1101,7 @@ class VoidCodeRuntime:
                 tool_timeout_seconds=resolved.tool_timeout_seconds,
                 reasoning_effort=request_reasoning_effort,
                 provider_fallback=resolved.provider_fallback,
+                providers=resolved.providers,
                 resolved_provider=resolved.resolved_provider,
                 agent=resolved.agent,
                 context_window=resolved.context_window,
@@ -4228,6 +4236,7 @@ class VoidCodeRuntime:
             max_steps=self._config.max_steps,
             tool_timeout_seconds=self._config.tool_timeout_seconds,
             provider_fallback=initial_provider_fallback,
+            providers=self._config.providers,
             resolved_provider=self._resolved_provider_config,
             agent=initial_agent,
             context_window=self._config.context_window,
@@ -5693,8 +5702,7 @@ class VoidCodeRuntime:
         provider_name: str,
         session_metadata: dict[str, object],
     ) -> ProviderTransientRetryConfig:
-        _ = session_metadata
-        providers = self._config.providers
+        providers = self._effective_runtime_config_from_metadata(session_metadata).providers
         if providers is None:
             return DEFAULT_PROVIDER_TRANSIENT_RETRY_CONFIG
         provider_config = None
@@ -5710,6 +5718,8 @@ class VoidCodeRuntime:
             provider_config = providers.copilot
         elif provider_name == "litellm":
             provider_config = providers.litellm
+        elif provider_name == "opencode":
+            provider_config = providers.opencode
         elif provider_name == "deepseek":
             provider_config = providers.deepseek
         elif provider_name == "glm":
@@ -6421,6 +6431,10 @@ class VoidCodeRuntime:
             ),
             "resolved_provider": resolved_provider_snapshot(effective_config.resolved_provider),
         }
+        serialized_providers = serialize_provider_configs(effective_config.providers)
+        serialized_runtime_providers = _runtime_provider_config_metadata(serialized_providers)
+        if serialized_runtime_providers:
+            runtime_config_metadata["providers"] = serialized_runtime_providers
         serialized_context_window = serialize_runtime_context_window_config(
             effective_config.context_window
         )
@@ -6546,6 +6560,7 @@ class VoidCodeRuntime:
             tool_timeout_seconds=resolved.tool_timeout_seconds,
             reasoning_effort=resolved.reasoning_effort,
             provider_fallback=provider_fallback,
+            providers=resolved.providers,
             resolved_provider=resolved_provider,
             agent=merged_agent,
             context_window=resolved.context_window,
@@ -7117,6 +7132,7 @@ class VoidCodeRuntime:
         execution_engine = self._config.execution_engine
         max_steps = self._config.max_steps
         reasoning_effort = self._config.reasoning_effort
+        providers = self._config.providers
         provider_fallback = self._config.provider_fallback
         agent = self._config.agent
         if agent is None and execution_engine == "provider":
@@ -7181,6 +7197,7 @@ class VoidCodeRuntime:
                 tool_timeout_seconds=self._config.tool_timeout_seconds,
                 reasoning_effort=reasoning_effort,
                 provider_fallback=provider_fallback,
+                providers=providers,
                 resolved_provider=resolved_provider,
                 agent=agent,
                 context_window=context_window,
@@ -7241,6 +7258,19 @@ class VoidCodeRuntime:
                 raise ValueError(
                     "persisted runtime_config reasoning_effort must be a non-empty string"
                 )
+        if "providers" in runtime_config:
+            try:
+                providers = parse_provider_configs_payload(
+                    runtime_config.get("providers"),
+                    source="persisted runtime_config.providers",
+                )
+            except ValueError as exc:
+                raise ValueError(
+                    format_invalid_provider_config_error(
+                        "persisted runtime_config.providers",
+                        str(exc),
+                    )
+                ) from exc
         provider_fallback = None
         if "provider_fallback" in runtime_config:
             try:
@@ -7309,6 +7339,7 @@ class VoidCodeRuntime:
             tool_timeout_seconds=tool_timeout_seconds,
             reasoning_effort=reasoning_effort,
             provider_fallback=provider_fallback,
+            providers=providers,
             resolved_provider=resolved_provider,
             agent=agent,
             context_window=context_window,
@@ -7334,6 +7365,7 @@ class VoidCodeRuntime:
             and effective_config.reasoning_effort == self._initial_effective_config.reasoning_effort
             and effective_config.provider_fallback
             == self._initial_effective_config.provider_fallback
+            and effective_config.providers == self._initial_effective_config.providers
             and effective_config.agent == self._initial_effective_config.agent
             and effective_config.context_window == self._initial_effective_config.context_window
         ):
@@ -7502,6 +7534,36 @@ def _parse_persisted_external_permission_rules(
     return tuple(parsed) if parsed else default
 
 
+def _runtime_provider_config_metadata(
+    serialized_providers: dict[str, object] | None,
+) -> dict[str, object] | None:
+    if not serialized_providers:
+        return None
+    retained: dict[str, object] = {}
+    for provider_name, raw_provider in serialized_providers.items():
+        if provider_name == "custom":
+            if not isinstance(raw_provider, dict):
+                continue
+            retained_custom: dict[str, object] = {}
+            for custom_name, raw_custom_provider in cast(dict[str, object], raw_provider).items():
+                if not isinstance(raw_custom_provider, dict):
+                    continue
+                custom_provider_payload = cast(dict[str, object], raw_custom_provider)
+                if "transient_retry" in custom_provider_payload:
+                    retained_custom[custom_name] = {
+                        "transient_retry": custom_provider_payload["transient_retry"]
+                    }
+            if retained_custom:
+                retained[provider_name] = retained_custom
+            continue
+        if not isinstance(raw_provider, dict):
+            continue
+        provider_payload = cast(dict[str, object], raw_provider)
+        if "transient_retry" in provider_payload:
+            retained[provider_name] = {"transient_retry": provider_payload["transient_retry"]}
+    return retained or None
+
+
 @dataclass(frozen=True, slots=True)
 class EffectiveRuntimeConfig:
     approval_mode: PermissionDecision
@@ -7512,6 +7574,7 @@ class EffectiveRuntimeConfig:
     tool_timeout_seconds: int | None = None
     reasoning_effort: str | None = None
     provider_fallback: RuntimeProviderFallbackConfig | None = None
+    providers: RuntimeProvidersConfig | None = None
     resolved_provider: ResolvedProviderConfig = field(default_factory=ResolvedProviderConfig)
     agent: RuntimeAgentConfig | None = None
     context_window: RuntimeContextWindowConfig | None = None

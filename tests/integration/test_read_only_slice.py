@@ -1983,13 +1983,11 @@ def test_provider_runtime_falls_back_to_next_provider_target(tmp_path: Path) -> 
                     fallback_models=("custom/demo",),
                 ),
                 providers=config_module.RuntimeProvidersConfig(
-                    custom={
-                        "opencode": provider_config_module.LiteLLMProviderConfig(
-                            transient_retry=provider_config_module.ProviderTransientRetryConfig(
-                                max_retries=0,
-                            )
-                        ),
-                    }
+                    opencode=provider_config_module.LiteLLMProviderConfig(
+                        transient_retry=provider_config_module.ProviderTransientRetryConfig(
+                            max_retries=0,
+                        )
+                    )
                 ),
             ),
             permission_policy=permission_module.PermissionPolicy(mode="allow"),

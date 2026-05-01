@@ -51,6 +51,10 @@ def test_parse_provider_configs_payload_parses_provider_blocks_directly() -> Non
                     "jitter": False,
                 },
             },
+            "opencode": {
+                "auth_scheme": "none",
+                "transient_retry": {"max_retries": 0},
+            },
             "custom": {
                 "llama-local": {
                     "base_url": "http://localhost:11434/v1",
@@ -102,6 +106,11 @@ def test_parse_provider_configs_payload_parses_provider_blocks_directly() -> Non
                 max_delay_ms=2000.0,
                 jitter=False,
             ),
+        ),
+        opencode=LiteLLMProviderConfig(
+            auth_scheme="none",
+            auth_scheme_explicit=True,
+            transient_retry=ProviderTransientRetryConfig(max_retries=0),
         ),
         custom={
             "llama-local": LiteLLMProviderConfig(
