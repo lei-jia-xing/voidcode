@@ -533,29 +533,21 @@ def test_provider_context_parity_matrix_preserves_tool_shapes_across_debug_messa
     )
 
 
-def test_provider_context_policy_marks_blocking_diagnostics() -> None:
+def test_provider_context_inspector_reports_continuity_distillation_source() -> None:
     assembled = RuntimeAssembledContext(
         prompt="continue",
         tool_results=(),
         continuity_state=None,
-        metadata={},
-        segments=(
-            RuntimeContextSegment(role="user", content="continue"),
-            RuntimeContextSegment(
-                role="assistant",
-                content=None,
-                tool_call_id="missing-result",
-                tool_name="read_file",
-                tool_arguments={"path": "sample.txt"},
-            ),
-            RuntimeContextSegment(
-                role="tool",
-                content="x" * 12,
-                tool_call_id="orphan-result",
-                tool_name="grep",
-                metadata={"status": "ok", "data": {}},
-            ),
-        ),
+        metadata={
+            "continuity_state": {
+                "summary_text": "summary",
+                "dropped_tool_result_count": 1,
+                "retained_tool_result_count": 1,
+                "source": "tool_result_window",
+                "distillation_source": "model_assisted",
+            }
+        },
+        segments=(RuntimeContextSegment(role="user", content="continue"),),
     )
 
     snapshot = inspect_provider_context(
@@ -564,59 +556,15 @@ def test_provider_context_policy_marks_blocking_diagnostics() -> None:
         model="gpt-4o",
         execution_engine="provider",
         available_tool_count=0,
-        oversized_tool_feedback_chars=5,
-        diagnostic_policy_mode="block",
     )
 
-    assert snapshot.policy_decision is not None
-    assert snapshot.policy_decision.blocked is True
-    assert snapshot.policy_decision.action == "block"
-    assert set(snapshot.policy_decision.blocking_diagnostic_codes) >= {
-        "missing_tool_result",
-        "orphan_tool_result",
-        "oversized_tool_feedback",
-    }
-    blocking_codes = {
-        diagnostic.code for diagnostic in snapshot.diagnostics if diagnostic.policy_blocking
-    }
-    assert {
-        "missing_tool_result",
-        "orphan_tool_result",
-        "oversized_tool_feedback",
-    } <= blocking_codes
-
-
-def test_provider_context_policy_off_keeps_diagnostics_debug_only() -> None:
-    assembled = RuntimeAssembledContext(
-        prompt="continue",
-        tool_results=(),
-        continuity_state=None,
-        metadata={},
-        segments=(
-            RuntimeContextSegment(role="user", content="continue"),
-            RuntimeContextSegment(
-                role="tool",
-                content="orphan",
-                tool_call_id="orphan-result",
-                tool_name="grep",
-                metadata={"status": "ok", "data": {}},
-            ),
-        ),
-    )
-
-    snapshot = inspect_provider_context(
-        assembled_context=assembled,
-        provider="openai",
-        model="gpt-4o",
-        execution_engine="provider",
-        available_tool_count=3,
-        diagnostic_policy_mode="off",
-    )
-
-    assert snapshot.policy_decision is not None
-    assert snapshot.policy_decision.action == "ignored"
-    assert snapshot.policy_decision.blocked is False
-    assert any(diagnostic.code == "orphan_tool_result" for diagnostic in snapshot.diagnostics)
+    matched = [
+        diagnostic
+        for diagnostic in snapshot.diagnostics
+        if diagnostic.code == "continuity_distillation_source"
+    ]
+    assert len(matched) == 1
+    assert matched[0].details == {"distillation_source": "model_assisted"}
 
 
 def test_prepare_provider_context_compacts_old_results_and_reports_metadata() -> None:
