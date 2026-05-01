@@ -3,6 +3,9 @@ from __future__ import annotations
 from typing import cast
 
 from voidcode.runtime.continuity_distillation import (
+    _DISTILLATION_OUTPUT_MAX_ITEMS,
+    _DISTILLATION_OUTPUT_MAX_REFERENCES,
+    _DISTILLATION_OUTPUT_MAX_TEXT_CHARS,
     ContinuityDistillationRecord,
     build_distillation_input_envelope,
     distillation_record_from_payload,
@@ -82,6 +85,71 @@ def test_distillation_record_round_trip_payload_is_stable() -> None:
     meta = parsed.metadata_payload()
     reparsed = distillation_record_from_payload(meta)
     assert reparsed == parsed
+
+
+def test_distillation_record_from_payload_bounds_model_output_sizes() -> None:
+    payload = _valid_payload()
+    oversized = "data:text/plain," + ("x" * (_DISTILLATION_OUTPUT_MAX_TEXT_CHARS * 2))
+    payload["objective_current_goal"] = oversized
+    payload["verbatim_user_constraints"] = [oversized for _ in range(50)]
+    payload["completed_progress"] = [oversized for _ in range(50)]
+    payload["blockers_open_questions"] = [oversized for _ in range(50)]
+    payload["next_steps"] = [oversized for _ in range(50)]
+    payload["key_decisions_with_rationale"] = [
+        {
+            "text": oversized,
+            "rationale": oversized,
+            "refs": [
+                {
+                    "kind": "event",
+                    "id": f"event:{index}:{oversized}",
+                    "detail": oversized,
+                }
+                for index in range(50)
+            ],
+        }
+        for _ in range(50)
+    ]
+    payload["relevant_files_commands_errors"] = [
+        {
+            "text": oversized,
+            "kind": "other",
+            "refs": [{"kind": "tool", "id": f"tool:{index}:{oversized}"} for index in range(50)],
+        }
+        for _ in range(50)
+    ]
+    payload["verification_state"] = {
+        "status": "pending",
+        "details": [oversized for _ in range(50)],
+        "refs": [
+            {"kind": "background_task", "id": f"bg:{index}:{oversized}"} for index in range(50)
+        ],
+    }
+    payload["source_references"] = [
+        {"kind": "session", "id": f"session:{index}:{oversized}", "detail": oversized}
+        for index in range(50)
+    ]
+
+    parsed = distillation_record_from_payload(payload)
+
+    assert parsed is not None
+    assert len(parsed.objective_current_goal) <= _DISTILLATION_OUTPUT_MAX_TEXT_CHARS
+    assert "data:text/plain" not in parsed.objective_current_goal
+    assert len(parsed.verbatim_user_constraints) == _DISTILLATION_OUTPUT_MAX_ITEMS
+    assert len(parsed.completed_progress) == _DISTILLATION_OUTPUT_MAX_ITEMS
+    assert len(parsed.blockers_open_questions) == _DISTILLATION_OUTPUT_MAX_ITEMS
+    assert len(parsed.next_steps) == _DISTILLATION_OUTPUT_MAX_ITEMS
+    assert len(parsed.key_decisions_with_rationale) == _DISTILLATION_OUTPUT_MAX_ITEMS
+    assert len(parsed.relevant_files_commands_errors) == _DISTILLATION_OUTPUT_MAX_ITEMS
+    assert len(parsed.verification_state.details) == _DISTILLATION_OUTPUT_MAX_ITEMS
+    assert len(parsed.source_references) == _DISTILLATION_OUTPUT_MAX_REFERENCES
+    first_decision = parsed.key_decisions_with_rationale[0]
+    assert len(first_decision.text) <= _DISTILLATION_OUTPUT_MAX_TEXT_CHARS
+    assert len(first_decision.rationale) <= _DISTILLATION_OUTPUT_MAX_TEXT_CHARS
+    assert len(first_decision.refs) == _DISTILLATION_OUTPUT_MAX_REFERENCES
+    assert len(first_decision.refs[0].id) <= _DISTILLATION_OUTPUT_MAX_TEXT_CHARS
+    assert first_decision.refs[0].detail is not None
+    assert len(first_decision.refs[0].detail) <= _DISTILLATION_OUTPUT_MAX_TEXT_CHARS
 
 
 def test_build_distillation_input_envelope_redacts_oversized_and_data_uri_fields() -> None:

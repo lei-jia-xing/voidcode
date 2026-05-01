@@ -10,6 +10,10 @@ SourceReferenceKind = Literal["event", "tool", "session", "background_task"]
 EvidenceKind = Literal["file", "command", "error", "other"]
 VerificationStatus = Literal["passed", "failed", "pending", "unknown"]
 
+_DISTILLATION_OUTPUT_MAX_TEXT_CHARS = 1_000
+_DISTILLATION_OUTPUT_MAX_ITEMS = 12
+_DISTILLATION_OUTPUT_MAX_REFERENCES = 24
+
 
 @dataclass(frozen=True, slots=True)
 class ContinuitySourceReference:
@@ -101,10 +105,10 @@ def _string_tuple(payload: Mapping[str, object], key: str) -> tuple[str, ...] | 
     if not isinstance(raw, list | tuple):
         return None
     values: list[str] = []
-    for item in cast(list[object] | tuple[object, ...], raw):
+    for item in cast(list[object] | tuple[object, ...], raw)[:_DISTILLATION_OUTPUT_MAX_ITEMS]:
         if not isinstance(item, str):
             return None
-        stripped = item.strip()
+        stripped = _bounded_output_text(item)
         if stripped:
             values.append(stripped)
     return tuple(values)
@@ -114,7 +118,7 @@ def _source_references_from_payload(raw: object) -> tuple[ContinuitySourceRefere
     if not isinstance(raw, list | tuple):
         return None
     refs: list[ContinuitySourceReference] = []
-    for item in cast(list[object] | tuple[object, ...], raw):
+    for item in cast(list[object] | tuple[object, ...], raw)[:_DISTILLATION_OUTPUT_MAX_REFERENCES]:
         if not isinstance(item, dict):
             return None
         entry = cast(dict[str, object], item)
@@ -125,11 +129,15 @@ def _source_references_from_payload(raw: object) -> tuple[ContinuitySourceRefere
         if not isinstance(raw_id, str) or not raw_id.strip():
             return None
         raw_detail = entry.get("detail")
-        detail = raw_detail.strip() if isinstance(raw_detail, str) and raw_detail.strip() else None
+        detail = (
+            _bounded_output_text(raw_detail)
+            if isinstance(raw_detail, str) and raw_detail.strip()
+            else None
+        )
         refs.append(
             ContinuitySourceReference(
                 kind=cast(SourceReferenceKind, raw_kind),
-                id=raw_id.strip(),
+                id=_bounded_output_text(raw_id),
                 detail=detail,
             )
         )
@@ -140,7 +148,7 @@ def _decisions_from_payload(raw: object) -> tuple[ContinuityDecisionFact, ...] |
     if not isinstance(raw, list | tuple):
         return None
     facts: list[ContinuityDecisionFact] = []
-    for item in cast(list[object] | tuple[object, ...], raw):
+    for item in cast(list[object] | tuple[object, ...], raw)[:_DISTILLATION_OUTPUT_MAX_ITEMS]:
         if not isinstance(item, dict):
             return None
         entry = cast(dict[str, object], item)
@@ -154,7 +162,11 @@ def _decisions_from_payload(raw: object) -> tuple[ContinuityDecisionFact, ...] |
         if refs is None:
             return None
         facts.append(
-            ContinuityDecisionFact(text=text.strip(), rationale=rationale.strip(), refs=refs)
+            ContinuityDecisionFact(
+                text=_bounded_output_text(text),
+                rationale=_bounded_output_text(rationale),
+                refs=refs,
+            )
         )
     return tuple(facts)
 
@@ -163,7 +175,7 @@ def _evidence_from_payload(raw: object) -> tuple[ContinuityEvidenceFact, ...] | 
     if not isinstance(raw, list | tuple):
         return None
     facts: list[ContinuityEvidenceFact] = []
-    for item in cast(list[object] | tuple[object, ...], raw):
+    for item in cast(list[object] | tuple[object, ...], raw)[:_DISTILLATION_OUTPUT_MAX_ITEMS]:
         if not isinstance(item, dict):
             return None
         entry = cast(dict[str, object], item)
@@ -178,7 +190,7 @@ def _evidence_from_payload(raw: object) -> tuple[ContinuityEvidenceFact, ...] | 
             return None
         facts.append(
             ContinuityEvidenceFact(
-                text=text.strip(),
+                text=_bounded_output_text(text),
                 kind=cast(EvidenceKind, kind),
                 refs=refs,
             )
@@ -233,7 +245,7 @@ def distillation_record_from_payload(
         return None
 
     return ContinuityDistillationRecord(
-        objective_current_goal=objective.strip(),
+        objective_current_goal=_bounded_output_text(objective),
         verbatim_user_constraints=constraints,
         completed_progress=progress,
         blockers_open_questions=blockers,
@@ -250,6 +262,13 @@ def sanitize_distillation_text(value: str, *, max_chars: int) -> str:
     if len(redacted) <= max_chars:
         return redacted
     return redacted[:max_chars]
+
+
+def _bounded_output_text(value: str) -> str:
+    return sanitize_distillation_text(
+        value.strip(),
+        max_chars=_DISTILLATION_OUTPUT_MAX_TEXT_CHARS,
+    )
 
 
 def build_distillation_input_envelope(
