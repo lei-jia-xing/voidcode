@@ -151,6 +151,13 @@ class RuntimeRunLoopCoordinator:
         if permission_chunks.chunks:
             session = permission_chunks.chunks[-1].session
         if permission_chunks.denied:
+            yield from self._permission_denied_tool_feedback_chunks(
+                session=session,
+                sequence=permission_chunks.last_sequence,
+                tool_call=tool_call,
+                pending=permission_chunks.denied_approval or pending,
+                tool_results=tool_results,
+            )
             return
 
         sequence = permission_chunks.last_sequence
@@ -444,7 +451,7 @@ class RuntimeRunLoopCoordinator:
         while True:
             sequence = int(sequence)
             current_graph_request: GraphRunRequest = graph_request
-            current_session = session
+            current_session = self._current_session_state(session)
             base_context = runtime._prepare_provider_context_window(
                 prompt=current_graph_request.prompt,
                 tool_results=tuple(tool_results),
@@ -1033,7 +1040,35 @@ class RuntimeRunLoopCoordinator:
             if permission_chunks.pending_approval is not None:
                 return
             if permission_chunks.denied:
-                return
+                denied_pending = permission_chunks.denied_approval
+                denied_replayed_tool_changed = denied_pending is not None and (
+                    plan_tool_call.tool_name != denied_pending.tool_name
+                    or dict(plan_tool_call.arguments) != denied_pending.arguments
+                )
+                denied_tool_call = (
+                    ToolCall(
+                        tool_name=denied_pending.tool_name,
+                        arguments=dict(denied_pending.arguments),
+                        tool_call_id=plan_tool_call.tool_call_id,
+                    )
+                    if denied_replayed_tool_changed and denied_pending is not None
+                    else plan_tool_call
+                )
+                yield from self._permission_denied_tool_feedback_chunks(
+                    session=session,
+                    sequence=permission_chunks.last_sequence,
+                    tool_call=denied_tool_call,
+                    pending=denied_pending,
+                    tool_results=tool_results,
+                    tool_call_id=tool_call_id,
+                )
+                sequence = permission_chunks.last_sequence + 1
+                if (
+                    denied_replayed_tool_changed
+                    or effective_runtime_config.execution_engine != "provider"
+                ):
+                    return
+                continue
 
             sequence = permission_chunks.last_sequence
 
@@ -1414,6 +1449,92 @@ class RuntimeRunLoopCoordinator:
                     },
                 )
             )
+
+    def _permission_denied_tool_feedback_chunks(
+        self,
+        *,
+        session: SessionState,
+        sequence: int,
+        tool_call: ToolCall,
+        pending: PendingApproval | None,
+        tool_results: list[ToolResult],
+        tool_call_id: str | None = None,
+    ) -> Iterator[RuntimeStreamChunk]:
+        tool_feedback_id = tool_call_id or tool_call.tool_call_id or f"runtime-tool-{uuid4().hex}"
+        sanitized_arguments = sanitize_tool_arguments(dict(tool_call.arguments))
+        error = f"permission denied for tool: {tool_call.tool_name}"
+        result_data: dict[str, object] = {
+            "tool_call_id": tool_feedback_id,
+            "arguments": sanitized_arguments,
+            "permission_denied": True,
+        }
+        if pending is not None:
+            result_data["approval_request_id"] = pending.request_id
+            result_data["approval_decision"] = "deny"
+            if pending.path_scope is not None:
+                result_data["path_scope"] = pending.path_scope
+            if pending.operation_class is not None:
+                result_data["operation_class"] = pending.operation_class
+            if pending.canonical_path is not None:
+                result_data["canonical_path"] = pending.canonical_path
+            if pending.matched_rule is not None:
+                result_data["matched_rule"] = pending.matched_rule
+            if pending.policy_surface is not None:
+                result_data["policy_surface"] = pending.policy_surface
+
+        tool_result = ToolResult(
+            tool_name=tool_call.tool_name,
+            status="error",
+            error=error,
+            data=sanitize_tool_result_data(result_data),
+        )
+        completed_display = build_tool_display(
+            tool_call.tool_name,
+            sanitized_arguments,
+            result_data=tool_result.data,
+        )
+        completed_status = build_tool_status(
+            tool_call.tool_name,
+            tool_feedback_id,
+            phase="failed",
+            status="failed",
+            display=completed_display,
+        )
+        yield RuntimeStreamChunk(
+            kind="event",
+            session=session,
+            event=EventEnvelope(
+                session_id=session.session.id,
+                sequence=sequence + 1,
+                event_type="runtime.tool_completed",
+                source="tool",
+                payload={
+                    **tool_result.data,
+                    "tool": tool_result.tool_name,
+                    "tool_call_id": tool_feedback_id,
+                    "arguments": sanitized_arguments,
+                    "status": tool_result.status,
+                    "content": tool_result.content,
+                    "error": tool_result.error,
+                    "display": completed_display,
+                    "tool_status": completed_status,
+                },
+            ),
+        )
+        tool_results.append(
+            replace(
+                tool_result,
+                data={
+                    **tool_result.data,
+                    "tool_call_id": tool_feedback_id,
+                    "arguments": sanitized_arguments,
+                },
+            )
+        )
+
+    @staticmethod
+    def _current_session_state(session: SessionState) -> SessionState:
+        return session
 
     @staticmethod
     def _build_context_pressure_payload(

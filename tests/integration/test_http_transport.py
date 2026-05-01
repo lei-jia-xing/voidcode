@@ -1705,7 +1705,7 @@ def test_transport_resolves_pending_approval_deny_over_http(tmp_path: Path) -> N
 
     assert response.status == 200
     assert cast(dict[str, object], payload["session"])["session"] == {"id": "deny-session"}
-    assert cast(dict[str, object], payload["session"])["status"] == "failed"
+    assert cast(dict[str, object], payload["session"])["status"] == "running"
     assert cast(dict[str, object], payload["session"])["turn"] == 1
     _assert_runtime_session_metadata(
         cast(dict[str, object], payload["session"])["metadata"],
@@ -1721,8 +1721,12 @@ def test_transport_resolves_pending_approval_deny_over_http(tmp_path: Path) -> N
         "runtime.tool_lookup_succeeded",
         "runtime.approval_requested",
         "runtime.approval_resolved",
-        "runtime.failed",
+        "runtime.tool_completed",
     ]
+    events = cast(list[dict[str, object]], payload["events"])
+    feedback_payload = cast(dict[str, object], events[-1]["payload"])
+    assert feedback_payload["status"] == "error"
+    assert feedback_payload["permission_denied"] is True
     assert (tmp_path / "danger.txt").exists() is False
 
 
@@ -1912,7 +1916,7 @@ def test_transport_denied_multi_step_loop_preserves_failed_replay_over_http(tmp_
     assert cast(dict[str, object], deny_payload["session"])["session"] == {
         "id": "http-deny-loop-session"
     }
-    assert cast(dict[str, object], deny_payload["session"])["status"] == "failed"
+    assert cast(dict[str, object], deny_payload["session"])["status"] == "running"
     assert cast(dict[str, object], deny_payload["session"])["turn"] == 1
     _assert_runtime_session_metadata(
         cast(dict[str, object], deny_payload["session"])["metadata"],
@@ -1937,7 +1941,7 @@ def test_transport_denied_multi_step_loop_preserves_failed_replay_over_http(tmp_
         "runtime.tool_lookup_succeeded",
         "runtime.approval_requested",
         "runtime.approval_resolved",
-        "runtime.failed",
+        "runtime.tool_completed",
     ]
     assert [
         event["sequence"] for event in cast(list[dict[str, object]], deny_payload["events"])
@@ -1946,7 +1950,7 @@ def test_transport_denied_multi_step_loop_preserves_failed_replay_over_http(tmp_
     assert list_response.json() == [
         {
             "session": {"id": "http-deny-loop-session"},
-            "status": "failed",
+            "status": "running",
             "turn": 1,
             "prompt": _multi_step_prompt(),
             "updated_at": 2,

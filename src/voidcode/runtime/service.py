@@ -2387,30 +2387,17 @@ class VoidCodeRuntime:
             payload=resolution_payload,
         )
         if decision == "deny":
-            failed_session = self._session_with_plan_state(
-                SessionState(
-                    session=session.session,
-                    status="failed",
-                    turn=session.turn,
-                    metadata=session.metadata,
-                ),
-                status="failed",
-                error=f"permission denied for tool: {pending.tool_name}",
-            )
-            failed_event = EventEnvelope(
-                session_id=session.session.id,
-                sequence=sequence + 1,
-                event_type="runtime.failed",
-                source="runtime",
-                payload={"error": f"permission denied for tool: {pending.tool_name}"},
-            )
             return _PermissionOutcome(
                 chunks=(
-                    RuntimeStreamChunk(kind="event", session=session, event=resolution_event),
-                    RuntimeStreamChunk(kind="event", session=failed_session, event=failed_event),
+                    RuntimeStreamChunk(
+                        kind="event",
+                        session=self._session_with_plan_state(session, status="in_progress"),
+                        event=resolution_event,
+                    ),
                 ),
-                last_sequence=sequence + 1,
+                last_sequence=sequence,
                 denied=True,
+                denied_approval=pending,
             )
         return _PermissionOutcome(
             chunks=(
@@ -4363,8 +4350,6 @@ class VoidCodeRuntime:
                 return "terminal session resume checkpoint does not match persisted terminal state"
             if pending_approval is not None or pending_question is not None:
                 return "terminal session still has pending approval/question state"
-        if result.session.status == "running" and checkpoint_kind == "terminal":
-            return "running session should not carry a terminal resume checkpoint"
         return None
 
     @staticmethod
@@ -7498,6 +7483,7 @@ class _PermissionOutcome:
     last_sequence: int
     pending_approval: PendingApproval | None = None
     denied: bool = False
+    denied_approval: PendingApproval | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -2221,7 +2221,7 @@ def test_runtime_denies_shell_exec_tool_when_policy_is_deny(tmp_path: Path) -> N
     prompt = f"run {command}"
     denied = runtime.run(runtime_request(prompt=prompt, session_id="shell-deny-session"))
 
-    assert denied.session.status == "failed"
+    assert denied.session.status == "running"
     assert [event.event_type for event in denied.events] == [
         "runtime.request_received",
         "runtime.skills_loaded",
@@ -2230,9 +2230,11 @@ def test_runtime_denies_shell_exec_tool_when_policy_is_deny(tmp_path: Path) -> N
         "graph.tool_request_created",
         "runtime.tool_lookup_succeeded",
         "runtime.approval_resolved",
-        "runtime.failed",
+        "runtime.tool_completed",
     ]
     assert denied.events[6].payload["decision"] == "deny"
+    assert denied.events[-1].payload["status"] == "error"
+    assert denied.events[-1].payload["permission_denied"] is True
     assert denied.output is None
 
 
@@ -2651,7 +2653,7 @@ def test_runtime_denies_non_read_only_tool_when_policy_is_deny(tmp_path: Path) -
         runtime_request(prompt="write danger.txt denied write", session_id="deny-session")
     )
 
-    assert denied.session.status == "failed"
+    assert denied.session.status == "running"
     assert [event.event_type for event in denied.events] == [
         "runtime.request_received",
         "runtime.skills_loaded",
@@ -2660,9 +2662,11 @@ def test_runtime_denies_non_read_only_tool_when_policy_is_deny(tmp_path: Path) -
         "graph.tool_request_created",
         "runtime.tool_lookup_succeeded",
         "runtime.approval_resolved",
-        "runtime.failed",
+        "runtime.tool_completed",
     ]
     assert denied.events[6].payload["decision"] == "deny"
+    assert denied.events[-1].payload["status"] == "error"
+    assert denied.events[-1].payload["permission_denied"] is True
     assert denied.output is None
     assert (tmp_path / "danger.txt").exists() is False
 
@@ -2936,14 +2940,23 @@ def test_runtime_denies_external_write_when_permission_rule_denies(tmp_path: Pat
     )
 
     denied = runtime.run(runtime_request(prompt="external write", session_id="external-write-deny"))
-    assert denied.session.status == "failed"
-    assert denied.events[-2].event_type == "runtime.approval_resolved"
-    assert denied.events[-2].payload["decision"] == "deny"
-    assert denied.events[-2].payload["path_scope"] == "external"
-    assert denied.events[-2].payload["operation_class"] == "write"
-    assert denied.events[-2].payload["matched_rule"] == "*"
-    assert denied.events[-2].payload["policy_surface"] == "external_directory_write"
-    assert denied.events[-2].payload["canonical_path"] == str(outside_file.resolve())
+    assert denied.session.status == "completed"
+    denial = next(
+        event for event in denied.events if event.event_type == "runtime.approval_resolved"
+    )
+    assert denial.payload["decision"] == "deny"
+    assert denial.payload["path_scope"] == "external"
+    assert denial.payload["operation_class"] == "write"
+    assert denial.payload["matched_rule"] == "*"
+    assert denial.payload["policy_surface"] == "external_directory_write"
+    assert denial.payload["canonical_path"] == str(outside_file.resolve())
+    feedback = next(
+        event
+        for event in denied.events
+        if event.event_type == "runtime.tool_completed"
+        and event.payload.get("permission_denied") is True
+    )
+    assert feedback.payload["status"] == "error"
     assert outside_file.exists() is False
 
 
@@ -2994,14 +3007,23 @@ def test_runtime_denies_shell_exec_external_write_when_permission_rule_denies(
     denied = runtime.run(
         runtime_request(prompt="external shell write", session_id="external-shell-write-deny")
     )
-    assert denied.session.status == "failed"
-    assert denied.events[-2].event_type == "runtime.approval_resolved"
-    assert denied.events[-2].payload["decision"] == "deny"
-    assert denied.events[-2].payload["path_scope"] == "external"
-    assert denied.events[-2].payload["operation_class"] == "execute"
-    assert denied.events[-2].payload["matched_rule"] == "*"
-    assert denied.events[-2].payload["policy_surface"] == "external_directory_write"
-    assert denied.events[-2].payload["canonical_path"] == str(outside_file.resolve())
+    assert denied.session.status == "completed"
+    denial = next(
+        event for event in denied.events if event.event_type == "runtime.approval_resolved"
+    )
+    assert denial.payload["decision"] == "deny"
+    assert denial.payload["path_scope"] == "external"
+    assert denial.payload["operation_class"] == "execute"
+    assert denial.payload["matched_rule"] == "*"
+    assert denial.payload["policy_surface"] == "external_directory_write"
+    assert denial.payload["canonical_path"] == str(outside_file.resolve())
+    feedback = next(
+        event
+        for event in denied.events
+        if event.event_type == "runtime.tool_completed"
+        and event.payload.get("permission_denied") is True
+    )
+    assert feedback.payload["status"] == "error"
     assert outside_file.exists() is False
 
 
@@ -3052,13 +3074,22 @@ def test_runtime_denies_shell_exec_dot_parent_external_write_when_rule_denies(
         runtime_request(prompt="dot parent shell write", session_id="dot-parent-shell-write-deny")
     )
 
-    assert denied.session.status == "failed"
-    assert denied.events[-2].event_type == "runtime.approval_resolved"
-    assert denied.events[-2].payload["decision"] == "deny"
-    assert denied.events[-2].payload["path_scope"] == "external"
-    assert denied.events[-2].payload["operation_class"] == "execute"
-    assert denied.events[-2].payload["policy_surface"] == "external_directory_write"
-    assert denied.events[-2].payload["canonical_path"] == str(outside_file.resolve())
+    assert denied.session.status == "completed"
+    denial = next(
+        event for event in denied.events if event.event_type == "runtime.approval_resolved"
+    )
+    assert denial.payload["decision"] == "deny"
+    assert denial.payload["path_scope"] == "external"
+    assert denial.payload["operation_class"] == "execute"
+    assert denial.payload["policy_surface"] == "external_directory_write"
+    assert denial.payload["canonical_path"] == str(outside_file.resolve())
+    feedback = next(
+        event
+        for event in denied.events
+        if event.event_type == "runtime.tool_completed"
+        and event.payload.get("permission_denied") is True
+    )
+    assert feedback.payload["status"] == "error"
     assert outside_file.exists() is False
 
 
@@ -3104,13 +3135,22 @@ def test_runtime_denies_shell_exec_flag_absolute_path_when_rule_denies(
         runtime_request(prompt="flag shell write", session_id="flag-shell-write-deny")
     )
 
-    assert denied.session.status == "failed"
-    assert denied.events[-2].event_type == "runtime.approval_resolved"
-    assert denied.events[-2].payload["decision"] == "deny"
-    assert denied.events[-2].payload["path_scope"] == "external"
-    assert denied.events[-2].payload["operation_class"] == "execute"
-    assert denied.events[-2].payload["policy_surface"] == "external_directory_write"
-    assert denied.events[-2].payload["canonical_path"] == str(outside_file.resolve())
+    assert denied.session.status == "completed"
+    denial = next(
+        event for event in denied.events if event.event_type == "runtime.approval_resolved"
+    )
+    assert denial.payload["decision"] == "deny"
+    assert denial.payload["path_scope"] == "external"
+    assert denial.payload["operation_class"] == "execute"
+    assert denial.payload["policy_surface"] == "external_directory_write"
+    assert denial.payload["canonical_path"] == str(outside_file.resolve())
+    feedback = next(
+        event
+        for event in denied.events
+        if event.event_type == "runtime.tool_completed"
+        and event.payload.get("permission_denied") is True
+    )
+    assert feedback.payload["status"] == "error"
     assert outside_file.exists() is False
 
 
@@ -3194,7 +3234,7 @@ def test_runtime_uses_persisted_external_permission_rules_after_resume(
         approval_decision="allow",
     )
 
-    assert denied.session.status == "failed"
+    assert denied.session.status == "completed"
     assert first_file.read_text(encoding="utf-8") == "first"
     assert second_file.exists() is False
     first_resolution = next(
@@ -3209,11 +3249,22 @@ def test_runtime_uses_persisted_external_permission_rules_after_resume(
     assert first_resolution.payload["matched_rule"] == f"{allowed_root.as_posix()}/**"
     assert first_resolution.payload["policy_surface"] == "external_directory_write"
     assert first_resolution.payload["canonical_path"] == str(first_file.resolve())
-    assert denied.events[-2].event_type == "runtime.approval_resolved"
-    assert denied.events[-2].payload["decision"] == "deny"
-    assert denied.events[-2].payload["matched_rule"] == "*"
-    assert denied.events[-2].payload["policy_surface"] == "external_directory_write"
-    assert denied.events[-2].payload["canonical_path"] == str(second_file.resolve())
+    second_resolution = next(
+        event
+        for event in denied.events
+        if event.event_type == "runtime.approval_resolved"
+        and event.payload.get("decision") == "deny"
+    )
+    assert second_resolution.payload["matched_rule"] == "*"
+    assert second_resolution.payload["policy_surface"] == "external_directory_write"
+    assert second_resolution.payload["canonical_path"] == str(second_file.resolve())
+    feedback = next(
+        event
+        for event in denied.events
+        if event.event_type == "runtime.tool_completed"
+        and event.payload.get("permission_denied") is True
+    )
+    assert feedback.payload["status"] == "error"
 
 
 def test_runtime_denies_when_any_external_path_in_patch_is_denied(tmp_path: Path) -> None:
@@ -3269,11 +3320,20 @@ def test_runtime_denies_when_any_external_path_in_patch_is_denied(tmp_path: Path
     )
 
     denied = runtime.run(runtime_request(prompt="mixed patch", session_id="external-patch-mixed"))
-    assert denied.session.status == "failed"
-    assert denied.events[-2].event_type == "runtime.approval_resolved"
-    assert denied.events[-2].payload["decision"] == "deny"
-    assert denied.events[-2].payload["policy_surface"] == "external_directory_write"
-    assert denied.events[-2].payload["matched_rule"] == "*"
+    assert denied.session.status == "completed"
+    denial = next(
+        event for event in denied.events if event.event_type == "runtime.approval_resolved"
+    )
+    assert denial.payload["decision"] == "deny"
+    assert denial.payload["policy_surface"] == "external_directory_write"
+    assert denial.payload["matched_rule"] == "*"
+    feedback = next(
+        event
+        for event in denied.events
+        if event.event_type == "runtime.tool_completed"
+        and event.payload.get("permission_denied") is True
+    )
+    assert feedback.payload["status"] == "error"
     assert denied_file.exists() is False
 
 
@@ -4127,7 +4187,9 @@ def test_runtime_resumes_multi_step_loop_with_approval_and_stable_replay(tmp_pat
     assert (tmp_path / "copied.txt").read_text(encoding="utf-8") == "copied marker"
 
 
-def test_runtime_denied_multi_step_loop_stops_before_follow_up_tools(tmp_path: Path) -> None:
+def test_runtime_denied_multi_step_loop_returns_tool_feedback_before_follow_up_tools(
+    tmp_path: Path,
+) -> None:
     _ = (tmp_path / "source.txt").write_text("alpha\nbeta alpha\n", encoding="utf-8")
     runtime_request, runtime = _approval_runtime(tmp_path, mode="ask")
 
@@ -4163,7 +4225,7 @@ def test_runtime_denied_multi_step_loop_stops_before_follow_up_tools(tmp_path: P
         "runtime.approval_requested",
     ]
 
-    assert denied.session.status == "failed"
+    assert denied.session.status == "running"
     assert [event.event_type for event in denied.events] == [
         "runtime.request_received",
         "runtime.skills_loaded",
@@ -4180,10 +4242,12 @@ def test_runtime_denied_multi_step_loop_stops_before_follow_up_tools(tmp_path: P
         "runtime.tool_lookup_succeeded",
         "runtime.approval_requested",
         "runtime.approval_resolved",
-        "runtime.failed",
+        "runtime.tool_completed",
     ]
     assert [event.sequence for event in denied.events] == list(range(1, 17))
-    assert denied.events[-1].payload == {"error": "permission denied for tool: write_file"}
+    assert denied.events[-1].payload["status"] == "error"
+    assert denied.events[-1].payload["permission_denied"] is True
+    assert denied.events[-1].payload["error"] == "permission denied for tool: write_file"
     assert denied.output is None
     assert replay.output is None
     assert [(event.sequence, event.event_type, event.payload) for event in replay.events] == [
@@ -4196,7 +4260,7 @@ def test_runtime_denied_multi_step_loop_stops_before_follow_up_tools(tmp_path: P
         if event.event_type == "graph.tool_request_created"
     ]
     assert [summary.session.id for summary in sessions] == ["deny-loop-session"]
-    assert sessions[0].status == "failed"
+    assert sessions[0].status == "running"
     assert sessions[0].updated_at == 2
     assert (tmp_path / "copied.txt").exists() is False
 
@@ -4469,11 +4533,14 @@ def test_runtime_denies_non_read_only_tool_on_resume(tmp_path: Path) -> None:
         approval_decision="deny",
     )
 
-    assert denied.session.status == "failed"
+    assert denied.session.status == "running"
     assert [event.event_type for event in denied.events[-2:]] == [
         "runtime.approval_resolved",
-        "runtime.failed",
+        "runtime.tool_completed",
     ]
+    assert denied.events[-1].payload["status"] == "error"
+    assert denied.events[-1].payload["permission_denied"] is True
+    assert denied.events[-1].payload["error"] == "permission denied for tool: write_file"
     assert denied.output is None
     assert (tmp_path / "danger.txt").exists() is False
 
@@ -4837,7 +4904,7 @@ def test_cli_run_command_approval_deny_blocks_write_under_tty_and_replays_failur
     assert "EVENT runtime.approval_requested" in transcript
     assert "EVENT runtime.approval_resolved" in transcript
     assert "decision=deny" in transcript
-    assert "EVENT runtime.failed" in transcript
+    assert "EVENT runtime.tool_completed" in transcript
     assert "permission denied for tool: write_file" in transcript
     assert "RESULT" in transcript
     assert denied_file.exists() is False
@@ -4845,7 +4912,7 @@ def test_cli_run_command_approval_deny_blocks_write_under_tty_and_replays_failur
     assert resume_result.returncode == 0
     assert "EVENT runtime.approval_requested" in resume_result.stdout
     assert "EVENT runtime.approval_resolved" in resume_result.stdout
-    assert "EVENT runtime.failed" in resume_result.stdout
+    assert "EVENT runtime.tool_completed" in resume_result.stdout
     assert "permission denied for tool: write_file" in resume_result.stdout
 
 
@@ -5215,12 +5282,12 @@ def test_runtime_resume_stream_reconstructs_replayed_chunk_statuses(tmp_path: Pa
     assert [chunk.event.event_type for chunk in failed_chunks[-3:] if chunk.event is not None] == [
         "runtime.approval_requested",
         "runtime.approval_resolved",
-        "runtime.failed",
+        "runtime.tool_completed",
     ]
     assert [chunk.session.status for chunk in failed_chunks[-3:]] == [
         "waiting",
         "running",
-        "failed",
+        "running",
     ]
 
 
