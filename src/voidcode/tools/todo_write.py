@@ -75,7 +75,7 @@ class TodoWriteTool:
         input_schema={
             "todos": {"type": "array", "description": "Array of {content, status, priority}"},
         },
-        read_only=False,
+        read_only=True,
     )
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:

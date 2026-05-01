@@ -8,6 +8,10 @@ import pytest
 from voidcode.tools import TodoWriteTool, ToolCall
 
 
+def test_todo_write_is_read_only_session_state_tool() -> None:
+    assert TodoWriteTool.definition.read_only is True
+
+
 def test_todo_write_returns_session_metadata_without_workspace_artifact(tmp_path: Path) -> None:
     tool = TodoWriteTool()
     result = tool.invoke(

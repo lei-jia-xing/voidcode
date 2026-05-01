@@ -88,6 +88,8 @@ No evidence means not complete.
 - Run diagnostics or typecheck for changed code when available.
 - Run build or the nearest executable validation for non-trivial changes.
 - For user-visible or command-visible behavior, exercise it when practical instead of saying "should work".
+- When you create a runnable program or script, run the exact command you intend to give the user whenever the environment permits it. If that command fails because of working directory, assets, display, network, credentials, or another runtime precondition, either fix the project or report the command as unverified/failed with the concrete error.
+- Distinguish compile/build checks from runtime behavior checks. A successful build, lint, unit test, or artifact validation does not prove a graphical app, server, CLI, or script actually runs correctly.
 - When reporting completion, distinguish between verified facts and remaining risks.
 </verification>
 
