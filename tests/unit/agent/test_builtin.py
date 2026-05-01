@@ -17,6 +17,25 @@ from voidcode.agent import (
 from voidcode.agent import prompts as prompt_module
 from voidcode.agent.builtin import validate_builtin_agent_manifests
 from voidcode.agent.models import AgentManifest, AgentPromptMaterialization
+from voidcode.hook.presets import is_builtin_hook_preset_ref, list_builtin_hook_presets
+from voidcode.runtime import service as runtime_service_module
+from voidcode.runtime.task import SubagentRoutingIdentity, resolve_subagent_route
+
+_READ_ONLY_AGENT_PRESETS = ("advisor", "explore", "researcher", "product")
+_DELEGATED_ONLY_AGENT_PRESETS = ("worker", "advisor", "explore", "researcher")
+_CALLABLE_CHILD_AGENT_PRESETS = (*_DELEGATED_ONLY_AGENT_PRESETS, "product")
+_MUTATING_TOOL_PATTERNS = frozenset(
+    {
+        "write_file",
+        "edit",
+        "multi_edit",
+        "apply_patch",
+        "shell_exec",
+        "format_file",
+        "ast_grep_replace",
+        "task",
+    }
+)
 
 
 class _PromptCacheInfo(Protocol):
@@ -69,6 +88,45 @@ def test_builtin_agent_manifests_declare_top_level_selectability() -> None:
     )
 
 
+def test_builtin_top_level_selectability_matches_runtime_executable_presets() -> None:
+    top_level_manifest_ids = {
+        manifest.id for manifest in list_builtin_agent_manifests() if manifest.top_level_selectable
+    }
+    executable_agent_presets = cast(
+        frozenset[str],
+        vars(runtime_service_module)["_EXECUTABLE_AGENT_PRESETS"],
+    )
+
+    assert top_level_manifest_ids == {"leader", "product"}
+    assert top_level_manifest_ids == executable_agent_presets
+
+
+def test_builtin_delegated_only_agent_manifests_are_not_top_level_selectable() -> None:
+    for preset in _DELEGATED_ONLY_AGENT_PRESETS:
+        manifest = get_builtin_agent_manifest(preset)
+
+        assert manifest is not None
+        assert manifest.mode == "subagent"
+        assert manifest.top_level_selectable is False
+        assert is_agent_top_level_selectable(preset) is False
+
+
+def test_builtin_callable_child_presets_align_with_runtime_delegation_routes() -> None:
+    executable_subagent_presets = cast(
+        frozenset[str],
+        vars(runtime_service_module)["_EXECUTABLE_SUBAGENT_PRESETS"],
+    )
+
+    assert executable_subagent_presets == set(_CALLABLE_CHILD_AGENT_PRESETS)
+    for preset in _CALLABLE_CHILD_AGENT_PRESETS:
+        route = resolve_subagent_route(SubagentRoutingIdentity(mode="sync", subagent_type=preset))
+
+        assert route.selected_preset == preset
+
+    with pytest.raises(ValueError, match="leader.*not a callable child preset"):
+        _ = resolve_subagent_route(SubagentRoutingIdentity(mode="sync", subagent_type="leader"))
+
+
 def test_builtin_subagent_tool_allowlists_enforce_role_boundaries() -> None:
     write_tools = {"write_file", "edit", "multi_edit", "apply_patch"}
 
@@ -82,6 +140,38 @@ def test_builtin_subagent_tool_allowlists_enforce_role_boundaries() -> None:
     assert worker is not None
     assert write_tools.issubset(worker.tool_allowlist)
     assert "task" not in worker.tool_allowlist
+
+
+def test_builtin_read_only_agent_tool_allowlists_exclude_mutating_capabilities() -> None:
+    for preset in _READ_ONLY_AGENT_PRESETS:
+        manifest = get_builtin_agent_manifest(preset)
+
+        assert manifest is not None
+        assert _MUTATING_TOOL_PATTERNS.isdisjoint(manifest.tool_allowlist)
+
+
+def test_builtin_delegated_executor_roles_do_not_receive_recursive_task_tool() -> None:
+    for preset in _CALLABLE_CHILD_AGENT_PRESETS:
+        manifest = get_builtin_agent_manifest(preset)
+
+        assert manifest is not None
+        assert "task" not in manifest.tool_allowlist
+
+
+def test_builtin_agent_preset_hook_refs_resolve_through_hook_catalog() -> None:
+    catalog_refs = {preset.ref for preset in list_builtin_hook_presets()}
+
+    assert catalog_refs
+    for manifest in list_builtin_agent_manifests():
+        assert manifest.preset_hook_refs
+        assert set(manifest.preset_hook_refs) <= catalog_refs
+        for hook_ref in manifest.preset_hook_refs:
+            assert is_builtin_hook_preset_ref(hook_ref) is True
+
+
+def test_builtin_agent_skill_refs_follow_explicit_catalog_lazy_policy() -> None:
+    for manifest in list_builtin_agent_manifests():
+        assert manifest.skill_refs == ()
 
 
 def test_prompt_profile_selection_uses_materialization_fallback() -> None:
