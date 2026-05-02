@@ -6,7 +6,7 @@
 
 ## 状态
 
-当前实现已经包含一组内置 workflow preset，以及仓库本地声明式覆盖入口。它们由 runtime materialize 为 audit safe 的 workflow metadata，并进入 session 相关快照，用于 fresh run、resume、debug、replay 和 bundle 读回。
+当前实现已经包含一组内置 workflow preset，以及仓库本地声明式覆盖入口。它们由 runtime materialize 为 audit safe 的 workflow metadata，并进入 session 相关快照，用于 fresh run、resume、debug、replay 和 bundle 读回。内置 preset 现在只引用 source-backed builtin skill catalog metadata 和 descriptor/config-backed MCP intent，而不是只保存自由字符串或本地编写的假 skill body。
 
 这层契约的核心是：workflow preset 记录的是运行时意图和约束，真正的执行治理仍归 runtime。
 
@@ -95,9 +95,9 @@ workflow preset 只声明意图，不绕过 runtime 既有边界。
 
 | 领域 | 契约要求 |
 | --- | --- |
-| read only | `read_only_default` 只表示保守默认值，实际工具是否可写仍由 runtime permission 决策决定 |
-| tool policy | `tool_policy_ref` 只是引用，只有当前 runtime primitive 真正识别并执行时才会产生强约束 |
-| permission policy | `permission_policy_ref` 只作为 runtime governed 的 policy 入口，不是新的绕过通道 |
+| read only | `read_only_default` 会保守过滤/拒绝 write 与 execute 类工具；只读工具以及 `skill`、`question`、`background_output`、`background_cancel` 这类非写入 runtime 支撑工具保留 |
+| tool policy | workflow 不引入专用仓库操作策略；安全依赖 agent/tool allowlist、generic read-only filtering、runtime approval、hooks 和 guidance |
+| permission policy | `permission_policy_ref=runtime_default` 解析为现有 runtime approval/permission 默认值，不提供绕过通道 |
 | hook refs | hook preset ref 只能提供 guidance 或 guardrails，不等于执行生命周期钩子脚本 |
 | MCP | MCP binding intent 不能启动 server，也不能声明 workspace global lifecycle |
 
@@ -109,18 +109,61 @@ workflow preset 只声明意图，不绕过 runtime 既有边界。
 
 | preset | default_agent | category | read_only_default | 主要 intent |
 | --- | --- | --- | --- | --- |
-| research | `researcher` | `research` | true | 只读研究，强调公开资料和证据来源，配合 `background_output_quality_guidance` |
-| implementation | `leader` | `implementation` | false | 实现变更并验证，配合 `todo_continuation_guidance` 和 `runtime_default` permission policy |
-| frontend | `leader` | `frontend` | false | 前端变更和验证，配合 `todo_continuation_guidance` 和 `runtime_default` permission policy |
-| review | `advisor` | `review` | true | 只读审查，要求按严重性和文件位置报告问题 |
-| git | `leader` | `git` | false | Git 操作受控且可审计，使用 `git_safety` tool policy 和 `runtime_default` permission policy |
+| research | `researcher` | `research` | true | 只读研究，强调公开资料和证据来源，配合 `background_output_quality_guidance`，并声明 `context7`、`websearch`、`grep_app` optional MCP/search intent |
+| implementation | `leader` | `implementation` | false | 实现变更并验证；通用实现 guidance 保留在 preset prompt/verification guidance 中，配合 `todo_continuation_guidance` 和 `runtime_default` permission policy |
+| frontend | `leader` | `frontend` | false | 前端变更和验证，声明 `frontend-design` 与 `playwright` skill ref，包含 `playwright` optional browser/MCP intent，配合 `todo_continuation_guidance` 和 `runtime_default` permission policy |
+| review | `advisor` | `review` | true | 只读审查，声明 `review-work` skill ref 以及 `context7`、`websearch`、`grep_app` optional MCP/search intent，要求按严重性和文件位置报告问题 |
+| git | `leader` | `git` | false | Git 操作受控且可审计，声明 `git-master` skill ref，使用 `runtime_default` permission policy 和普通 runtime approval；不使用专用仓库操作策略 |
+
+### issue #405 命名能力映射
+
+issue #405 中点名的 MVP examples 必须能在 builtin preset payload 和 persisted workflow snapshot 中直接看到。当前映射如下：
+
+| issue example | VoidCode workflow declaration | 语义 |
+| --- | --- | --- |
+| `git-master` | `git.skill_refs = ["git-master"]`，并在 prompt guidance 中写明 `git-master-style safety guidance` | catalog-visible git 安全能力语义；不是自动 force-load，不绕过 tool/approval policy，也不添加专用仓库操作策略 |
+| `frontend-design` | `frontend.skill_refs = ["frontend-design"]` | catalog-visible 前端设计和 UI 实现 guidance 语义；来源于 Anthropic public skill，本地 vendored 后离线加载 |
+| Playwright / browser verification | `frontend.skill_refs = ["frontend-design", "playwright"]`，`frontend.mcp_binding_intents` optional server `playwright` | builtin `playwright` skill 带有 skill-scoped MCP descriptor `command: npx`, `args: ["@playwright/mcp@latest"]`；只有配置了 server 才可执行，不自动全局启动 |
+| `context7` | `research` 和 `review` 的 optional MCP server intent | 文档查询/官方资料 lookup intent |
+| `websearch` | `research` 和 `review` 的 optional MCP server intent | 公网搜索/研究 intent |
+| `grep_app` | `research` 和 `review` 的 optional MCP server intent | 代码搜索 example intent；descriptor 不声明远程 endpoint，实际执行必须由用户配置同名 MCP server |
+| `review-work` | `review.skill_refs = ["review-work"]`，并在 prompt guidance 中写明 result-quality/read-only analysis | catalog-visible review/result-quality guidance 语义 |
+
+这些映射是声明式 capability bundle semantics：runtime 会把它们写入 workflow snapshot / capability snapshot，并对 generic read-only workflow policy 执行保守 runtime enforcement，但不会因此实现平台式 MCP 语义、全局 MCP lifecycle、浏览器自动启动、专用仓库操作策略、或新的 agent 拓扑。
+
+### builtin skill / MCP registry
+
+VoidCode backend ships these builtin skills even when the workspace has no `.voidcode/skills/**/SKILL.md` files:
+
+| skill | 用途 |
+| --- | --- |
+| `git-master` | git 安全、hook 保留、generic runtime approval guidance |
+| `frontend-design` | 前端设计、UI 实现与验证 guidance |
+| `playwright` | VoidCode-local browser verification guidance；Playwright MCP 仍由 descriptor/config intent 表达 |
+| `review-work` | 只读审查、发现报告、严重性与证据 guidance |
+
+这些 builtin skill metadata 和可注入内容必须离线来自本地 package resource。`frontend-design` 基于 Anthropic public `skills/frontend-design/SKILL.md` 做本地适配，因为其内容不依赖 OhMyOpenAgent 专属 agent 语义；`playwright` 是 VoidCode-local concise browser verification guide，借鉴通用 Playwright 验证流程但不复制 Claude/plugin-specific 操作假设；`review-work` 是 VoidCode-local adaptation，只描述当前支持的只读审查、验证、MCP descriptor intent 与 delegated child preset；`git-master` 保留 OpenAgent commit `e17850cbab3e3a609444c1a0cec26afb244c3fc5` 的来源记录，但在 VoidCode 中仍受 runtime approval、tool policy 与 config-gated MCP 约束。
+
+本地 workspace skill 与 builtin skill 同名时保持 fail closed：registry 会报 duplicate skill name，而不是悄悄覆盖 builtin catalog metadata。
+
+VoidCode backend also ships these builtin MCP descriptors:
+
+| descriptor | transport | lifecycle | 用途 |
+| --- | --- | --- | --- |
+| `context7` | remote HTTP descriptor | descriptor-only, config-gated | documentation lookup intent |
+| `websearch` | remote HTTP descriptor | descriptor-only, config-gated | public web search intent |
+| `grep_app` | configured server intent descriptor | descriptor-only, config-gated | optional code search intent; requires a user-configured `grep_app` server for execution |
+| `playwright` | stdio command `npx @playwright/mcp@latest` | skill-scoped descriptor-only, config-gated | browser verification intent |
+
+Remote/configured-server-intent descriptors are availability metadata in workflow snapshots; current runtime execution still supports configured stdio MCP lifecycle only. `grep_app` is descriptor/intent-only and intentionally carries no builtin URL because no endpoint is verified here; actual code-search MCP execution requires a real user-configured server named `grep_app`. Required workflow MCP intents fail fresh run when their named configured server is absent. Optional intents record degraded/missing availability and do not fail normal runs.
 
 ### builtin 语义补充
 
 1. `research` 和 `review` 都是保守只读默认值，适合分析和审查类任务。
 2. `implementation` 和 `frontend` 默认面向修改和验证，但仍受 runtime 权限和工具边界约束。
-3. `git` 不是自由的 repo 改写入口，它只声明 narrow、auditable、user requested 的 git intent。
-4. `git` 的安全指导必须继续表达禁止 destructive operations、禁止 hook bypass、禁止 force push、禁止 history rewrite，除非用户显式要求并且 runtime 允许。
+3. `git` 不是自由的 repo 改写入口，它只声明 narrow、auditable、user requested 的 git intent，并继续经过 runtime approval。
+4. `git` 的安全指导必须继续提醒用户检查状态、保留 hooks、避免扩大权限；runtime 不维护专用仓库操作策略，因为这类策略无法枚举完整风险面。
+5. `context7`、`websearch`、`grep_app` 和 `playwright` 都是 optional MCP binding intent；普通 workspace 没有配置这些 server 时 builtin preset validation 仍应通过，snapshot 记录 descriptor availability 与 degraded/missing server availability。
 
 ## verification guidance
 
