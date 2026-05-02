@@ -7,6 +7,7 @@ from typing import cast
 import pytest
 
 from voidcode.agent import LEADER_AGENT_MANIFEST, get_builtin_agent_manifest
+from voidcode.agent.models import AgentMcpBindingIntent
 from voidcode.provider.config import (
     AnthropicProviderConfig,
     CopilotProviderAuthConfig,
@@ -1232,6 +1233,7 @@ def test_runtime_config_parses_agent_preset_from_repo_file(tmp_path: Path) -> No
                     "model": "opencode/gpt-5.4",
                     "tools": {"builtin": {"enabled": True}},
                     "skills": {"enabled": True, "paths": [".voidcode/skills"]},
+                    "mcp_binding": {"profile": "docs", "servers": ["context7", "github"]},
                     "provider_fallback": {
                         "preferred_model": "opencode/gpt-5.4",
                         "fallback_models": ["custom/demo"],
@@ -1253,6 +1255,7 @@ def test_runtime_config_parses_agent_preset_from_repo_file(tmp_path: Path) -> No
             builtin=RuntimeToolsBuiltinConfig(enabled=True),
         ),
         skills=RuntimeSkillsConfig(enabled=True, paths=(".voidcode/skills",)),
+        mcp_binding=AgentMcpBindingIntent(profile="docs", servers=("context7", "github")),
         provider_fallback=RuntimeProviderFallbackConfig(
             preferred_model="opencode/gpt-5.4",
             fallback_models=("custom/demo",),
@@ -1286,6 +1289,7 @@ def test_runtime_agent_payload_round_trips_through_serialization() -> None:
                 "default": ["read_file"],
             },
             "skills": {"enabled": False, "paths": [".voidcode/skills"]},
+            "mcp_binding": {"servers": ["context7"]},
         },
         source="test payload",
     )
@@ -1303,7 +1307,19 @@ def test_runtime_agent_payload_round_trips_through_serialization() -> None:
             "default": ["read_file"],
         },
         "skills": {"enabled": False, "paths": [".voidcode/skills"]},
+        "mcp_binding": {"servers": ["context7"]},
     }
+
+
+def test_runtime_agent_payload_rejects_invalid_mcp_binding() -> None:
+    with pytest.raises(
+        ValueError,
+        match=r"runtime config field 'agent.mcp_binding.servers\[0\]' must be a string",
+    ):
+        _ = parse_runtime_agent_payload(
+            {"preset": "leader", "mcp_binding": {"servers": [123]}},
+            source="test payload",
+        )
 
 
 def test_runtime_agent_serialization_materialization_preserves_prompt_profile_override() -> None:

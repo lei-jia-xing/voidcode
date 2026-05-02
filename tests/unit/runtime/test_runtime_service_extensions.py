@@ -2261,6 +2261,109 @@ def test_runtime_session_debug_snapshot_reconstructs_skill_prompt_context(
     assert "Always explain your reasoning." in (skill_segments[0].content or "")
 
 
+def test_runtime_persists_agent_capability_snapshot_for_replay(
+    tmp_path: Path,
+) -> None:
+    class _StubMcpManager:
+        @property
+        def configuration(self) -> McpConfigState:
+            return McpConfigState(configured_enabled=True, servers={"echo": object()})
+
+        def current_state(self) -> McpManagerState:
+            return McpManagerState(mode="managed", configuration=self.configuration)
+
+        def list_tools(
+            self,
+            *,
+            workspace: Path,
+            owner_session_id: str | None = None,
+            parent_session_id: str | None = None,
+        ):
+            _ = workspace, parent_session_id
+            if owner_session_id != "capability-snapshot":
+                return ()
+            return (
+                McpToolDescriptor(
+                    server_name="echo",
+                    tool_name="echo",
+                    description="Echo input",
+                    input_schema={"type": "object"},
+                ),
+            )
+
+        def call_tool(
+            self,
+            *,
+            server_name: str,
+            tool_name: str,
+            arguments: dict[str, object],
+            workspace: Path,
+            owner_session_id: str | None = None,
+            parent_session_id: str | None = None,
+        ) -> McpToolCallResult:
+            _ = server_name, tool_name, arguments, workspace, owner_session_id, parent_session_id
+            return McpToolCallResult(content=[{"type": "text", "text": "echo"}])
+
+        def shutdown(self):
+            return ()
+
+        def drain_events(self):
+            return ()
+
+    skill_dir = tmp_path / ".voidcode" / "skills" / "demo"
+    _write_demo_skill(skill_dir, content="# Demo\nSnapshot this skill body.")
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SkillCapturingStubGraph(),
+        mcp_manager=_StubMcpManager(),
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            skills=RuntimeSkillsConfig(enabled=True),
+            agent=RuntimeAgentConfig(
+                preset="leader",
+                hook_refs=("role_reminder",),
+                tools=RuntimeToolsConfig(allowlist=("read_file", "skill", "mcp/*")),
+            ),
+        ),
+    )
+
+    response = runtime.run(
+        RuntimeRequest(
+            prompt="snapshot capabilities",
+            session_id="capability-snapshot",
+            metadata={"force_load_skills": ["demo"]},
+        )
+    )
+    metadata = response.session.metadata
+    capability_snapshot = cast(dict[str, object], metadata["agent_capability_snapshot"])
+    skill_snapshot = cast(dict[str, object], metadata["skill_snapshot"])
+
+    assert capability_snapshot["snapshot_version"] == 1
+    assert cast(dict[str, object], capability_snapshot["agent"])["preset"] == "leader"
+    assert cast(dict[str, object], capability_snapshot["tools"])["effective_names"] == [
+        "mcp/echo/echo",
+        "read_file",
+        "skill",
+    ]
+    assert cast(dict[str, object], capability_snapshot["skills"])["force_loaded_names"] == ["demo"]
+    assert cast(dict[str, object], capability_snapshot["hooks"])["resolved_refs"] == [
+        "role_reminder"
+    ]
+    assert cast(dict[str, object], capability_snapshot["mcp"])["governance"] == (
+        "runtime_session_scoped_config_gated"
+    )
+    binding_snapshot = cast(dict[str, object], skill_snapshot["binding_snapshot"])
+    assert binding_snapshot["approval_mode"] == "ask"
+    assert binding_snapshot["execution_engine"] == "provider"
+    assert binding_snapshot["model"] == "opencode/gpt-5.4"
+    assert binding_snapshot["agent"] == capability_snapshot["agent"]
+    assert binding_snapshot["mcp"] == capability_snapshot["mcp"]
+
+    replayed = runtime.session_result(session_id="capability-snapshot")
+    assert replayed.session.metadata["agent_capability_snapshot"] == capability_snapshot
+
+
 def test_runtime_materializes_leader_hook_preset_guidance_into_provider_context(
     tmp_path: Path,
 ) -> None:
@@ -3334,6 +3437,25 @@ def test_runtime_parent_loaded_skill_body_does_not_leak_to_sync_child_prompt(
         isinstance(item, str) and "Parent-only loaded body must not leak." in item
         for item in _ParentSkillThenSyncTaskGraph.child_system_segments
     )
+    parent_result = runtime.session_result(session_id="parent-skill")
+    child_results = [
+        summary
+        for summary in runtime.list_sessions()
+        if summary.session.parent_id == "parent-skill"
+    ]
+    assert child_results
+    child_result = runtime.session_result(session_id=child_results[0].session.id)
+    parent_snapshot = cast(
+        dict[str, object],
+        parent_result.session.metadata["agent_capability_snapshot"],
+    )
+    child_snapshot = cast(
+        dict[str, object],
+        child_result.session.metadata["agent_capability_snapshot"],
+    )
+    assert cast(dict[str, object], parent_snapshot["skills"])["scope"] == "target_session"
+    assert cast(dict[str, object], child_snapshot["skills"])["force_loaded_names"] == []
+    assert child_snapshot != parent_snapshot
 
 
 def test_runtime_missing_delegated_force_loaded_skill_fails_without_child_result(
@@ -10080,6 +10202,7 @@ def test_runtime_effective_runtime_config_uses_request_metadata_max_steps_for_ne
     assert set(response.session.metadata) == {
         "workspace",
         "runtime_config",
+        "agent_capability_snapshot",
         "runtime_state",
         "context_window",
         "max_steps",

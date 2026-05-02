@@ -62,6 +62,19 @@ def test_runtime_config_json_schema_exposes_core_fields() -> None:
             "requires agent.model as the preferred model."
         ),
     }
+    assert agent_properties["mcp_binding"] == {"$ref": "#/$defs/agentMcpBindingConfig"}
+    agent_mcp_binding_config = cast(dict[str, object], defs["agentMcpBindingConfig"])
+    assert agent_mcp_binding_config["additionalProperties"] is False
+    agent_mcp_binding_properties = cast(
+        dict[str, object],
+        agent_mcp_binding_config["properties"],
+    )
+    assert agent_mcp_binding_properties["profile"] == {"type": "string", "minLength": 1}
+    assert agent_mcp_binding_properties["servers"] == {
+        "type": "array",
+        "items": {"type": "string", "minLength": 1},
+        "uniqueItems": True,
+    }
     custom_agent_config = cast(dict[str, object], defs["customAgentConfig"])
     assert custom_agent_config["required"] == ["preset"]
     mcp_schema = cast(dict[str, object], properties["mcp"])

@@ -14,7 +14,12 @@ from typing import Literal, Protocol, cast
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from ..agent import AgentManifestId, get_builtin_agent_manifest, list_builtin_agent_manifests
+from ..agent import (
+    AgentManifestId,
+    AgentMcpBindingIntent,
+    get_builtin_agent_manifest,
+    list_builtin_agent_manifests,
+)
 from ..agent.prompts import has_builtin_prompt_profile
 from ..hook.config import FormatterCwdPolicy, RuntimeFormatterPresetConfig, RuntimeHooksConfig
 from ..hook.presets import validate_hook_preset_refs
@@ -165,10 +170,12 @@ _AGENT_CONFIG_KEYS = frozenset(
         "execution_engine",
         "tools",
         "skills",
+        "mcp_binding",
         "provider_fallback",
         "fallback_models",
     }
 )
+_AGENT_MCP_BINDING_CONFIG_KEYS = frozenset({"profile", "servers"})
 
 
 class _EnvironmentRuntimeSettings(BaseSettings):
@@ -386,6 +393,7 @@ class RuntimeAgentConfig:
     execution_engine: ExecutionEngineName | None = None
     tools: RuntimeToolsConfig | None = None
     skills: RuntimeSkillsConfig | None = None
+    mcp_binding: AgentMcpBindingIntent | None = None
     provider_fallback: RuntimeProviderFallbackConfig | None = None
 
 
@@ -2087,6 +2095,10 @@ def _parse_agent_config(
         execution_engine=execution_engine,
         tools=_parse_tools_config(payload.get("tools"), field_path="agent.tools"),
         skills=_parse_skills_config(payload.get("skills")),
+        mcp_binding=_parse_agent_mcp_binding(
+            payload.get("mcp_binding"),
+            field_path="agent.mcp_binding",
+        ),
         provider_fallback=provider_fallback,
     )
 
@@ -2106,9 +2118,36 @@ def _resolve_agent_config(agent: RuntimeAgentConfig | None) -> RuntimeAgentConfi
             execution_engine=agent.execution_engine or manifest.execution_engine,
             tools=agent.tools,
             skills=agent.skills,
+            mcp_binding=(
+                agent.mcp_binding if agent.mcp_binding is not None else manifest.mcp_binding
+            ),
             provider_fallback=agent.provider_fallback,
         )
     return agent
+
+
+def _parse_agent_mcp_binding(
+    raw_binding: object,
+    *,
+    field_path: str,
+) -> AgentMcpBindingIntent | None:
+    if raw_binding is None:
+        return None
+    if not isinstance(raw_binding, dict):
+        raise ValueError(f"runtime config field '{field_path}' must be an object when provided")
+    payload = cast(dict[str, object], raw_binding)
+    _reject_unknown_config_keys(
+        payload,
+        allowed_keys=_AGENT_MCP_BINDING_CONFIG_KEYS,
+        field_path=field_path,
+    )
+    profile = payload.get("profile")
+    if profile is not None and (not isinstance(profile, str) or not profile.strip()):
+        raise ValueError(f"runtime config field '{field_path}.profile' must be a non-empty string")
+    return AgentMcpBindingIntent(
+        profile=profile.strip() if isinstance(profile, str) else None,
+        servers=_parse_string_list(payload.get("servers"), field_path=f"{field_path}.servers"),
+    )
 
 
 def _parse_agent_hook_refs(
@@ -2406,6 +2445,8 @@ def serialize_runtime_agent_config(agent: RuntimeAgentConfig | None) -> dict[str
             "enabled": agent.skills.enabled,
             "paths": list(agent.skills.paths) if agent.skills.paths else None,
         }
+    if agent.mcp_binding is not None:
+        payload["mcp_binding"] = agent.mcp_binding.to_payload()
     if agent.provider_fallback is not None:
         payload["provider_fallback"] = serialize_provider_fallback_config(agent.provider_fallback)
     return {key: value for key, value in payload.items() if value is not None}

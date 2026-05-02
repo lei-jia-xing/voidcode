@@ -245,6 +245,24 @@ def validate_builtin_agent_manifests(
             manifest.preset_hook_refs,
             field_path=f"builtin agent manifest '{manifest.id}' preset_hook_refs",
         )
+        if manifest.mcp_binding is not None:
+            binding_profile = manifest.mcp_binding.profile
+            if binding_profile is not None and not binding_profile.strip():
+                raise ValueError(
+                    f"builtin agent manifest '{manifest.id}' mcp_binding.profile must be "
+                    "a non-empty string"
+                )
+            if len(manifest.mcp_binding.servers) != len(set(manifest.mcp_binding.servers)):
+                raise ValueError(
+                    f"builtin agent manifest '{manifest.id}' mcp_binding.servers must not "
+                    "contain duplicate server refs"
+                )
+            for server_ref in manifest.mcp_binding.servers:
+                if not server_ref.strip():
+                    raise ValueError(
+                        f"builtin agent manifest '{manifest.id}' mcp_binding.servers refs "
+                        "must be non-empty"
+                    )
         if manifest.mode == "primary" and not manifest.top_level_selectable:
             raise ValueError(
                 f"builtin agent manifest '{manifest.id}' has mode='primary' but is not "

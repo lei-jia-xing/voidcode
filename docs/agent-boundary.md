@@ -44,7 +44,7 @@
 
 这些内容应当保持为**声明式配置或类型化定义**，供 runtime 解析与消费。
 
-当前仓库里已经存在的 `src/voidcode/agent/README.md` 与 `src/voidcode/agent/<role>/README.md`，应被理解为这层声明边界的文档化外壳，而不是独立 agent runtime 的证据。`preset_hook_refs` 现在由 `src/voidcode/hook/presets.py` 中的 builtin hook preset catalog 校验，表达的是角色 guidance / guard / continuation intent，不是 runtime lifecycle hook command。
+当前仓库里已经存在的 `src/voidcode/agent/README.md` 与 `src/voidcode/agent/<role>/README.md`，应被理解为这层声明边界的文档化外壳，而不是独立 agent runtime 的证据。`preset_hook_refs` 现在由 `src/voidcode/hook/presets.py` 中的 builtin hook preset catalog 校验，表达的是角色 guidance / guard / continuation intent，不是 runtime lifecycle hook command。`mcp_binding` 也同样只是 profile/server 绑定意图，不包含 MCP command/env，也不能绕过 runtime-owned MCP lifecycle。
 
 ## 哪些东西必须继续留在 `runtime/`
 
@@ -117,7 +117,7 @@
 
 让 runtime 在现有 execution path 中能够解析和应用 agent preset，同时继续保持 runtime 对 approval、permission、event、persistence 的控制。
 
-当前实现已经完成 runtime 对 agent preset 的第一阶段落地：`leader` 作为默认顶层 active preset 进入 provider-backed 主路径，`product` 可以作为显式顶层 planning preset 被选择。runtime 会向 provider 注入所选 preset 的 `prompt_profile` / `prompt_materialization`，应用 agent-scoped model / execution engine / provider fallback，收窄可见与可调用工具，校验 agent hook preset refs，并让 manifest `skill_refs` / agent-scoped skills 进入本次运行的 runtime-managed skill application。相关可执行配置会持久化到 session runtime config，以便 resume 保持同一 agent truth。`advisor`、`explore`、`product`、`researcher`、`worker` 现在也可以作为 delegated child preset 进入 runtime-owned child execution，但除 `leader` 与 `product` 外，它们仍不能被当作任意顶层 active agent 直接启动。
+当前实现已经完成 runtime 对 agent preset 的第一阶段落地：`leader` 作为默认顶层 active preset 进入 provider-backed 主路径，`product` 可以作为显式顶层 planning preset 被选择。runtime 会向 provider 注入所选 preset 的 `prompt_profile` / `prompt_materialization`，应用 agent-scoped model / execution engine / provider fallback，收窄可见与可调用工具，校验 agent hook preset refs，并让 manifest `skill_refs` / agent-scoped skills 进入本次运行的 runtime-managed skill application。runtime 还会把 tools、skills、hook preset guidance、MCP binding intent 与 provider/model metadata materialize 成 `agent_capability_snapshot` 并持久化到 session metadata；skill snapshot 的 binding 也引用这份 snapshot，从而让 replay/debug 使用历史 truth，而不是重新从变动后的 catalog 推导。`advisor`、`explore`、`product`、`researcher`、`worker` 现在也可以作为 delegated child preset 进入 runtime-owned child execution，但除 `leader` 与 `product` 外，它们仍不能被当作任意顶层 active agent 直接启动。
 
 ### Phase 3：再评估 multi-agent orchestration
 

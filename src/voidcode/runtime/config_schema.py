@@ -431,6 +431,7 @@ def runtime_config_json_schema() -> dict[str, object]:
                     },
                     "tools": {"$ref": "#/$defs/toolsConfig"},
                     "skills": {"$ref": "#/$defs/skillsConfig"},
+                    "mcp_binding": {"$ref": "#/$defs/agentMcpBindingConfig"},
                     "provider_fallback": {
                         "type": "object",
                         "additionalProperties": False,
@@ -446,6 +447,22 @@ def runtime_config_json_schema() -> dict[str, object]:
                             "Agent-scoped shorthand for provider_fallback.fallback_models; "
                             "requires agent.model as the preferred model."
                         ),
+                    },
+                },
+            },
+            "agentMcpBindingConfig": {
+                "type": "object",
+                "additionalProperties": False,
+                "description": (
+                    "Declarative MCP profile/server binding intent for this agent. Runtime "
+                    "MCP config, lifecycle, approval, and tool allowlists remain authoritative."
+                ),
+                "properties": {
+                    "profile": {"type": "string", "minLength": 1},
+                    "servers": {
+                        "type": "array",
+                        "items": {"type": "string", "minLength": 1},
+                        "uniqueItems": True,
                     },
                 },
             },
