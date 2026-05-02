@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import cast
 
 import pytest
 
+from voidcode.runtime.config import load_runtime_config
 from voidcode.runtime.config_schema import (
     RUNTIME_CONFIG_SCHEMA_ID,
     format_starter_runtime_config_json,
@@ -24,6 +26,7 @@ def test_runtime_config_json_schema_exposes_core_fields() -> None:
     assert schema["additionalProperties"] is False
     assert "plan" not in properties
     assert "agents" in properties
+    assert "workflows" in properties
     assert properties["approval_mode"] == {
         "type": "string",
         "enum": ["allow", "deny", "ask"],
@@ -71,6 +74,58 @@ def test_runtime_config_json_schema_exposes_core_fields() -> None:
     }
     custom_agent_config = cast(dict[str, object], defs["customAgentConfig"])
     assert custom_agent_config["required"] == ["preset"]
+    workflows = cast(dict[str, object], properties["workflows"])
+    workflow_map_properties = cast(dict[str, object], workflows["properties"])
+    assert set(workflow_map_properties) == {
+        "research",
+        "implementation",
+        "frontend",
+        "review",
+        "git",
+    }
+    assert workflows["additionalProperties"] == {"$ref": "#/$defs/workflowPresetConfig"}
+    workflow_property_names = cast(dict[str, object], workflows["propertyNames"])
+    assert workflow_property_names["pattern"] == "^[a-z][a-z0-9_-]*$"
+    workflow_preset_config = cast(dict[str, object], defs["workflowPresetConfig"])
+    assert workflow_preset_config["additionalProperties"] is False
+    assert workflow_preset_config["required"] == ["id", "default_agent", "category"]
+    workflow_preset_properties = cast(dict[str, object], workflow_preset_config["properties"])
+    assert set(workflow_preset_properties) == {
+        "id",
+        "default_agent",
+        "category",
+        "prompt_append",
+        "skill_refs",
+        "force_load_skills",
+        "hook_preset_refs",
+        "mcp_binding_intents",
+        "tool_policy_ref",
+        "permission_policy_ref",
+        "read_only_default",
+        "verification_guidance",
+    }
+    assert workflow_preset_properties["id"] == {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_-]*$",
+    }
+    assert workflow_preset_properties["force_load_skills"] == {
+        "type": "array",
+        "items": {"type": "string", "minLength": 1},
+        "uniqueItems": True,
+    }
+    assert workflow_preset_properties["mcp_binding_intents"] == {
+        "type": "array",
+        "items": {"$ref": "#/$defs/workflowMcpBindingIntentConfig"},
+    }
+    workflow_mcp_binding = cast(dict[str, object], defs["workflowMcpBindingIntentConfig"])
+    assert workflow_mcp_binding["additionalProperties"] is False
+    workflow_mcp_properties = cast(dict[str, object], workflow_mcp_binding["properties"])
+    assert workflow_mcp_properties["required"] == {"type": "boolean", "default": True}
+    assert workflow_mcp_properties["servers"] == {
+        "type": "array",
+        "items": {"type": "string", "minLength": 1},
+        "uniqueItems": True,
+    }
     mcp_schema = cast(dict[str, object], properties["mcp"])
     mcp_properties = cast(dict[str, object], mcp_schema["properties"])
     mcp_servers = cast(dict[str, object], mcp_properties["servers"])
@@ -222,3 +277,83 @@ def test_format_starter_runtime_config_json_preserves_order() -> None:
     payload = generate_starter_runtime_config(include_schema_reference=False)
 
     assert format_starter_runtime_config_json(payload) == '{\n  "approval_mode": "ask"\n}\n'
+
+
+def test_runtime_config_loads_workflow_preset_declarations(tmp_path: Path) -> None:
+    skill_dir = tmp_path / ".voidcode" / "skills" / "demo"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: demo\ndescription: Demo skill.\n---\n# Demo\n",
+        encoding="utf-8",
+    )
+    config_path = tmp_path / ".voidcode.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "mcp": {
+                    "servers": {
+                        "docs": {
+                            "command": ["docs-mcp"],
+                        }
+                    }
+                },
+                "workflows": {
+                    "custom": {
+                        "id": "custom",
+                        "default_agent": "leader",
+                        "category": "implementation",
+                        "force_load_skills": ["demo"],
+                        "mcp_binding_intents": [{"servers": ["docs"], "required": True}],
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.workflows is not None
+    custom = config.workflows.get("custom")
+    assert custom is not None
+    assert custom.default_agent == "leader"
+    assert custom.force_load_skills == ("demo",)
+    assert custom.mcp_binding_intents[0].servers == ("docs",)
+
+
+def test_runtime_config_without_workflows_skips_skill_discovery(tmp_path: Path) -> None:
+    bad_skill_dir = tmp_path / ".voidcode" / "skills" / "bad"
+    bad_skill_dir.mkdir(parents=True)
+    (bad_skill_dir / "SKILL.md").write_text(
+        "---\nname: bad\n---\n# Missing description\n",
+        encoding="utf-8",
+    )
+    config_path = tmp_path / ".voidcode.json"
+    config_path.write_text(json.dumps({"approval_mode": "ask"}), encoding="utf-8")
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.approval_mode == "ask"
+    assert config.workflows is None
+
+
+def test_runtime_config_rejects_workflow_missing_forced_skill(tmp_path: Path) -> None:
+    config_path = tmp_path / ".voidcode.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "workflows": {
+                    "custom": {
+                        "id": "custom",
+                        "default_agent": "leader",
+                        "category": "implementation",
+                        "force_load_skills": ["missing"],
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="force_load_skills references missing skill: missing"):
+        _ = load_runtime_config(tmp_path, env={})
