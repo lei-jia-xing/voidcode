@@ -1797,20 +1797,6 @@ class VoidCodeRuntime:
                 "runtime_state": self._runtime_state_metadata(run_id=run_id),
             },
         )
-        session = SessionState(
-            session=session.session,
-            status=session.status,
-            turn=session.turn,
-            metadata={
-                **session.metadata,
-                "agent_capability_snapshot": self._agent_capability_snapshot(
-                    effective_config=effective_config,
-                    metadata=session.metadata,
-                    request_metadata=request_metadata,
-                    resolved_hook_presets=resolved_hook_presets,
-                ),
-            },
-        )
         sequence = 1
 
         yield RuntimeStreamChunk(
@@ -1898,6 +1884,13 @@ class VoidCodeRuntime:
         if mcp_failed_chunk is not None:
             yield mcp_failed_chunk
             return
+
+        session = self._session_with_agent_capability_snapshot(
+            session=session,
+            effective_config=effective_config,
+            request_metadata=request_metadata,
+            resolved_hook_presets=resolved_hook_presets,
+        )
 
         tool_registry = self._tool_registry_for_effective_config(effective_config)
         skill_registry = self._skill_registry_for_effective_config(effective_config)
@@ -6666,6 +6659,29 @@ class VoidCodeRuntime:
                 "reasoning_effort": effective_config.reasoning_effort,
             },
         }
+
+    def _session_with_agent_capability_snapshot(
+        self,
+        *,
+        session: SessionState,
+        effective_config: EffectiveRuntimeConfig,
+        request_metadata: dict[str, object],
+        resolved_hook_presets: ResolvedHookPresetSnapshot,
+    ) -> SessionState:
+        return SessionState(
+            session=session.session,
+            status=session.status,
+            turn=session.turn,
+            metadata={
+                **session.metadata,
+                "agent_capability_snapshot": self._agent_capability_snapshot(
+                    effective_config=effective_config,
+                    metadata=session.metadata,
+                    request_metadata=request_metadata,
+                    resolved_hook_presets=resolved_hook_presets,
+                ),
+            },
+        )
 
     @staticmethod
     def _agent_capability_agent_snapshot(

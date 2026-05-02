@@ -2264,11 +2264,58 @@ def test_runtime_session_debug_snapshot_reconstructs_skill_prompt_context(
 def test_runtime_persists_agent_capability_snapshot_for_replay(
     tmp_path: Path,
 ) -> None:
+    class _StubMcpManager:
+        @property
+        def configuration(self) -> McpConfigState:
+            return McpConfigState(configured_enabled=True, servers={"echo": object()})
+
+        def current_state(self) -> McpManagerState:
+            return McpManagerState(mode="managed", configuration=self.configuration)
+
+        def list_tools(
+            self,
+            *,
+            workspace: Path,
+            owner_session_id: str | None = None,
+            parent_session_id: str | None = None,
+        ):
+            _ = workspace, parent_session_id
+            if owner_session_id != "capability-snapshot":
+                return ()
+            return (
+                McpToolDescriptor(
+                    server_name="echo",
+                    tool_name="echo",
+                    description="Echo input",
+                    input_schema={"type": "object"},
+                ),
+            )
+
+        def call_tool(
+            self,
+            *,
+            server_name: str,
+            tool_name: str,
+            arguments: dict[str, object],
+            workspace: Path,
+            owner_session_id: str | None = None,
+            parent_session_id: str | None = None,
+        ) -> McpToolCallResult:
+            _ = server_name, tool_name, arguments, workspace, owner_session_id, parent_session_id
+            return McpToolCallResult(content=[{"type": "text", "text": "echo"}])
+
+        def shutdown(self):
+            return ()
+
+        def drain_events(self):
+            return ()
+
     skill_dir = tmp_path / ".voidcode" / "skills" / "demo"
     _write_demo_skill(skill_dir, content="# Demo\nSnapshot this skill body.")
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_SkillCapturingStubGraph(),
+        mcp_manager=_StubMcpManager(),
         config=RuntimeConfig(
             execution_engine="provider",
             model="opencode/gpt-5.4",
@@ -2276,7 +2323,7 @@ def test_runtime_persists_agent_capability_snapshot_for_replay(
             agent=RuntimeAgentConfig(
                 preset="leader",
                 hook_refs=("role_reminder",),
-                tools=RuntimeToolsConfig(allowlist=("read_file", "skill")),
+                tools=RuntimeToolsConfig(allowlist=("read_file", "skill", "mcp/*")),
             ),
         ),
     )
@@ -2295,6 +2342,7 @@ def test_runtime_persists_agent_capability_snapshot_for_replay(
     assert capability_snapshot["snapshot_version"] == 1
     assert cast(dict[str, object], capability_snapshot["agent"])["preset"] == "leader"
     assert cast(dict[str, object], capability_snapshot["tools"])["effective_names"] == [
+        "mcp/echo/echo",
         "read_file",
         "skill",
     ]
