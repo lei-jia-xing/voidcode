@@ -176,11 +176,11 @@ hook 在这里很重要，但它更多是通知与干预层，而不是异步 ag
 - tool allowlist 或默认 tool set
 - skill 引用
 - hook preset 引用
-- MCP profile 引用
+- MCP profile / configured server binding intent
 - provider / model preference metadata
 - 可选 routing hints（仅元数据，不是执行逻辑）
 
-这些内容应当被 runtime 解析和消费，而不是由 `agent/` 自己执行。
+这些内容应当被 runtime 解析和消费，而不是由 `agent/` 自己执行。当前 runtime 会为每次 run / delegated child session 持久化 `agent_capability_snapshot`，把 prompt/profile materialization、tools、skills、hook preset guidance、MCP binding intent 与 provider/model metadata 收口成一个可审计 bundle；这份 snapshot 是 replay/debug truth，不代表 agent declaration layer 获得了执行治理权。
 
 当前建议的文档化落点是：
 
@@ -203,6 +203,7 @@ hook 在这里很重要，但它更多是通知与干预层，而不是异步 ag
 - persistence / resume / replay correctness
 - provider fallback 与 execution governance
 - MCP / LSP / ACP lifecycle truth
+- agent capability snapshot 的持久化、resume 与 replay truth
 
 这意味着 `agent/` 能描述“一个 agent 默认要带什么配置”，但不能拥有“系统最终如何执行、如何治理、如何恢复”的权力。
 
