@@ -1,0 +1,13 @@
+Task 11 evidence: `mise run check`
+
+Result: passed.
+
+Key outputs:
+- `ruff check`: All checks passed.
+- `ty check src`: All checks passed.
+- `pytest -n auto`: 2128 passed.
+- `frontend:check`: lint, typecheck, and vitest all passed.
+
+Notes:
+- The initial broad prompt-materialization selector returned 0 selected tests, so the final evidence uses exact runtime-config regressions instead.
+- Exact prompt-materialization regressions passed via `tests/unit/runtime/test_runtime_config.py::test_runtime_agent_serialization_materialization_preserves_prompt_profile_override`, `tests/unit/runtime/test_runtime_config.py::test_runtime_agent_payload_applies_explicit_prompt_override`, and `tests/unit/runtime/test_runtime_config.py::test_runtime_agent_payload_appends_to_builtin_prompt`.
