@@ -1213,6 +1213,33 @@ def test_run_trace_conflicts_with_json(capsys: Any) -> None:
     assert "--json and --trace cannot be used together" in captured.err
 
 
+def test_run_json_strips_runtime_failed_prefix_from_error_summary(capsys: Any) -> None:
+    cli = importlib.import_module("voidcode.cli")
+    workspace = Path("/tmp/demo-workspace")
+    config = SimpleNamespace(approval_mode="allow")
+    chunks = (
+        _make_chunk(
+            session_id="json-summary-session",
+            status="failed",
+            event=_runtime_event(
+                "runtime.failed",
+                sequence=1,
+                error="Runtime failed: provider fallback exhausted",
+            ),
+        ),
+    )
+
+    with patch.object(cli, "load_runtime_config", autospec=True, return_value=config):
+        with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+            runtime_class.return_value.run_stream.return_value = iter(chunks)
+            result = cli.main(["run", "go", "--workspace", str(workspace), "--json"])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert result == 12
+    assert payload["error"] == "provider fallback exhausted"
+
+
 def test_run_command_forwards_reasoning_effort_flag_to_metadata_and_config() -> None:
     cli = importlib.import_module("voidcode.cli")
     workspace = Path("/tmp/demo-workspace")
