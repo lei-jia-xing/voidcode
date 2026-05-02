@@ -69,7 +69,7 @@ Replay/debug 应优先读取 persisted `agent_capability_snapshot`。旧 session
 
 - 不定义任意多 agent topology；
 - 不定义 agent-to-agent messaging bus；
-- 不定义 MCP marketplace 或 workspace-scoped MCP lifecycle；
+- 不定义 MCP 生态市场式语义或 workspace-scoped MCP lifecycle；
 - 不把 provider/model/tool/MCP execution governance 移交给 agent declaration layer；
 - 不允许客户端直接调用 tools/MCP 绕过 runtime。
 

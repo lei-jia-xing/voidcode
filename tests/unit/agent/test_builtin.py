@@ -20,6 +20,15 @@ from voidcode.agent.models import AgentManifest, AgentMcpBindingIntent, AgentPro
 from voidcode.hook.presets import is_builtin_hook_preset_ref, list_builtin_hook_presets
 from voidcode.runtime import service as runtime_service_module
 from voidcode.runtime.task import SubagentRoutingIdentity, resolve_subagent_route
+from voidcode.runtime.workflow import (
+    WorkflowMcpBindingIntent,
+    WorkflowPreset,
+    list_builtin_workflow_presets,
+    load_builtin_workflow_preset_registry,
+    validate_workflow_presets,
+    workflow_preset_from_payload,
+    workflow_presets_from_payload,
+)
 
 _READ_ONLY_AGENT_PRESETS = ("advisor", "explore", "researcher", "product")
 _DELEGATED_ONLY_AGENT_PRESETS = ("worker", "advisor", "explore", "researcher")
@@ -289,6 +298,192 @@ def test_builtin_agent_preset_hook_refs_resolve_through_hook_catalog() -> None:
 def test_builtin_agent_skill_refs_follow_explicit_catalog_lazy_policy() -> None:
     for manifest in list_builtin_agent_manifests():
         assert manifest.skill_refs == ()
+
+
+def test_builtin_workflow_presets_cover_mvp_registry_foundation() -> None:
+    registry = load_builtin_workflow_preset_registry()
+    expected_ids = (
+        "research",
+        "implementation",
+        "frontend",
+        "review",
+        "git",
+    )
+
+    assert tuple(preset.id for preset in list_builtin_workflow_presets()) == expected_ids
+    assert tuple(preset.id for preset in registry.list_presets()) == expected_ids
+    assert set(registry.presets) == set(expected_ids)
+    research = registry.get("research")
+    implementation = registry.get("implementation")
+    frontend = registry.get("frontend")
+    review = registry.get("review")
+    git = registry.get("git")
+    assert research is not None
+    assert implementation is not None
+    assert frontend is not None
+    assert review is not None
+    assert git is not None
+    assert research.default_agent == "researcher"
+    assert research.read_only_default is True
+    assert implementation.default_agent == "leader"
+    assert frontend.default_agent == "leader"
+    assert review.default_agent == "advisor"
+    assert review.read_only_default is True
+    assert implementation.read_only_default is False
+    assert frontend.read_only_default is False
+    assert git.category == "git"
+    assert git.read_only_default is False
+
+
+def test_builtin_workflow_presets_expose_issue_405_named_capability_intents() -> None:
+    registry = load_builtin_workflow_preset_registry()
+
+    git = registry.get("git")
+    frontend = registry.get("frontend")
+    research = registry.get("research")
+    review = registry.get("review")
+    assert git is not None
+    assert frontend is not None
+    assert research is not None
+    assert review is not None
+
+    assert "git-master" in git.skill_refs
+    assert "frontend-design" in frontend.skill_refs
+    assert "review-work" in review.skill_refs
+    assert _workflow_mcp_servers(frontend) == {"playwright"}
+    assert _workflow_mcp_servers(research) == {"context7", "websearch", "grep_app"}
+    assert _workflow_mcp_servers(review) == {"context7", "websearch", "grep_app"}
+    assert all(binding.required is False for binding in frontend.mcp_binding_intents)
+    assert all(binding.required is False for binding in research.mcp_binding_intents)
+    assert all(binding.required is False for binding in review.mcp_binding_intents)
+
+
+def test_builtin_git_workflow_preset_declares_strict_safety_guidance() -> None:
+    git = load_builtin_workflow_preset_registry().get("git")
+
+    assert git is not None
+    assert git.default_agent == "leader"
+    assert git.tool_policy_ref is None
+    assert git.permission_policy_ref == "runtime_default"
+    assert git.read_only_default is False
+    git_guidance = f"{git.prompt_append} {git.verification_guidance}".lower()
+    assert "status" in git_guidance
+    assert "diff" in git_guidance
+    assert "runtime approval" in git_guidance
+    assert "generic" in git_guidance
+    assert "approval" in git_guidance
+    assert "preserve hooks" in git_guidance
+    assert "auto-approval" not in git_guidance
+
+
+def _workflow_mcp_servers(preset: WorkflowPreset) -> set[str]:
+    return {server for binding in preset.mcp_binding_intents for server in binding.servers}
+
+
+def test_builtin_workflow_presets_validate_with_empty_capability_catalogs() -> None:
+    presets = validate_workflow_presets(list_builtin_workflow_presets())
+
+    assert tuple(preset.id for preset in presets) == (
+        "research",
+        "implementation",
+        "frontend",
+        "review",
+        "git",
+    )
+
+
+def test_workflow_preset_payload_parser_rejects_unknown_fields() -> None:
+    with pytest.raises(ValueError, match="unsupported key"):
+        _ = workflow_preset_from_payload(
+            {
+                "id": "custom",
+                "default_agent": "leader",
+                "category": "implementation",
+                "unexpected": True,
+            },
+            field_path="workflows.custom",
+        )
+
+
+def test_workflow_preset_payload_parser_requires_id() -> None:
+    with pytest.raises(ValueError, match="id is required"):
+        _ = workflow_preset_from_payload(
+            {"default_agent": "leader", "category": "implementation"},
+            field_path="workflows.custom",
+        )
+
+
+def test_validate_workflow_presets_rejects_duplicate_ids() -> None:
+    with pytest.raises(ValueError, match="duplicate workflow preset id"):
+        _ = validate_workflow_presets(
+            (
+                WorkflowPreset(id="custom", default_agent="leader", category="implementation"),
+                WorkflowPreset(id="custom", default_agent="advisor", category="review"),
+            )
+        )
+
+
+def test_validate_workflow_presets_rejects_missing_force_loaded_skill() -> None:
+    with pytest.raises(ValueError, match="force_load_skills references missing skill"):
+        _ = validate_workflow_presets(
+            (
+                WorkflowPreset(
+                    id="custom",
+                    default_agent="leader",
+                    category="implementation",
+                    force_load_skills=("missing-skill",),
+                ),
+            ),
+            available_skill_names=("git-master",),
+        )
+
+
+def test_validate_workflow_presets_requires_configured_required_mcp_binding() -> None:
+    with pytest.raises(ValueError, match="required mcp_binding_intents server is missing"):
+        _ = validate_workflow_presets(
+            (
+                WorkflowPreset(
+                    id="custom",
+                    default_agent="leader",
+                    category="implementation",
+                    mcp_binding_intents=(WorkflowMcpBindingIntent(servers=("docs",)),),
+                ),
+            ),
+            available_mcp_servers=(),
+        )
+
+
+def test_validate_workflow_presets_allows_optional_missing_mcp_binding() -> None:
+    presets = validate_workflow_presets(
+        (
+            WorkflowPreset(
+                id="custom",
+                default_agent="leader",
+                category="implementation",
+                mcp_binding_intents=(
+                    WorkflowMcpBindingIntent(profile="docs", servers=("context7",), required=False),
+                ),
+            ),
+        ),
+        available_mcp_profiles=(),
+        available_mcp_servers=(),
+    )
+
+    assert presets[0].mcp_binding_intents[0].required is False
+
+
+def test_workflow_presets_from_payload_rejects_map_key_id_mismatch() -> None:
+    with pytest.raises(ValueError, match="id must match workflow preset map key"):
+        _ = workflow_presets_from_payload(
+            {
+                "custom": {
+                    "id": "other",
+                    "default_agent": "leader",
+                    "category": "implementation",
+                }
+            },
+            available_skill_names=(),
+        )
 
 
 def test_prompt_profile_selection_uses_materialization_fallback() -> None:

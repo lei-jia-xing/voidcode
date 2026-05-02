@@ -2339,6 +2339,7 @@ def test_transport_run_stream_accepts_metadata_passthrough_for_skills_and_max_st
                 "provider_stream": True,
                 "max_steps": 6,
                 "skills": ["demo"],
+                "workflow_preset": "review",
             }
             yield runtime_stream_chunk(
                 kind="event",
@@ -2376,7 +2377,12 @@ def test_transport_run_stream_accepts_metadata_passthrough_for_skills_and_max_st
             {
                 "prompt": "transport meta",
                 "session_id": "stream-meta-session",
-                "metadata": {"provider_stream": True, "max_steps": 6, "skills": ["demo"]},
+                "metadata": {
+                    "provider_stream": True,
+                    "max_steps": 6,
+                    "skills": ["demo"],
+                    "workflow_preset": "review",
+                },
             }
         ).encode("utf-8"),
     )

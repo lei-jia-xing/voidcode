@@ -167,18 +167,57 @@ def _parse_input_schema(value: object, *, manifest_path: Path) -> dict[str, obje
 def _validate_command_entrypoint(
     command: tuple[str, ...], *, manifest_path: Path, workspace: Path
 ) -> None:
-    entrypoint = command[-1]
-    if "${manifest_dir}" not in entrypoint:
-        return
-    rendered = Template(entrypoint).safe_substitute(manifest_dir=str(manifest_path.parent))
-    resolved_entrypoint = Path(rendered).expanduser().resolve()
-    try:
-        resolved_entrypoint.relative_to(workspace)
-    except ValueError as exc:
-        raise ValueError(
-            "local custom tool manifest "
-            f"{manifest_path} command entrypoint must stay inside workspace"
-        ) from exc
+    _validate_rendered_manifest_dir_command_parts(
+        command,
+        rendered_command=tuple(
+            Template(part).safe_substitute(manifest_dir=str(manifest_path.parent))
+            for part in command
+        ),
+        manifest_path=manifest_path,
+        workspace=workspace,
+    )
+
+
+def _validate_rendered_manifest_dir_command_parts(
+    command: tuple[str, ...],
+    *,
+    rendered_command: tuple[str, ...],
+    manifest_path: Path,
+    workspace: Path,
+) -> None:
+    manifest_dir = str(manifest_path.parent)
+    for part, rendered_part in zip(command, rendered_command, strict=True):
+        if "${manifest_dir}" not in part:
+            continue
+        for rendered_path in _manifest_dir_rendered_paths(
+            part, rendered_part=rendered_part, manifest_dir=manifest_dir
+        ):
+            resolved_part = Path(rendered_path).expanduser().resolve()
+            try:
+                resolved_part.relative_to(workspace)
+            except ValueError as exc:
+                raise ValueError(
+                    "local custom tool manifest "
+                    f"{manifest_path} command part using manifest_dir must stay inside workspace"
+                ) from exc
+
+
+def _manifest_dir_rendered_paths(
+    part: str, *, rendered_part: str, manifest_dir: str
+) -> tuple[str, ...]:
+    paths: list[str] = []
+    manifest_dir_token = "${manifest_dir}"
+    rendered_cursor = 0
+    segments = part.split(manifest_dir_token)
+    rendered_cursor += len(segments[0])
+    for suffix in segments[1:]:
+        rendered_path = rendered_part[rendered_cursor:]
+        next_separator = rendered_path.find(os.pathsep)
+        if next_separator != -1:
+            rendered_path = rendered_path[:next_separator]
+        paths.append(rendered_path)
+        rendered_cursor += len(manifest_dir) + len(suffix)
+    return tuple(paths)
 
 
 @final
@@ -214,12 +253,19 @@ class LocalCustomTool:
         workspace: Path,
         timeout_seconds: int | None,
     ) -> ToolResult:
-        command = self._render_command(workspace=workspace.resolve())
-        env = self._build_environment(call=call, workspace=workspace.resolve())
+        resolved_workspace = workspace.resolve()
+        command = self._render_command(workspace=resolved_workspace)
+        _validate_rendered_manifest_dir_command_parts(
+            self._manifest.command,
+            rendered_command=command,
+            manifest_path=self._manifest.manifest_path,
+            workspace=resolved_workspace,
+        )
+        env = self._build_environment(call=call, workspace=resolved_workspace)
         start = time.monotonic()
         completed = self._run_command(
             command=command,
-            workspace=workspace.resolve(),
+            workspace=resolved_workspace,
             env=env,
             input_text=json.dumps(call.arguments),
             timeout_seconds=timeout_seconds,
@@ -321,7 +367,6 @@ class LocalCustomTool:
         context = current_runtime_tool_context()
         env["VOIDCODE_WORKSPACE"] = str(workspace)
         env["VOIDCODE_TOOL_NAME"] = self._manifest.name
-        env["VOIDCODE_TOOL_ARGUMENTS"] = json.dumps(call.arguments)
         if call.tool_call_id is not None:
             env["VOIDCODE_TOOL_CALL_ID"] = call.tool_call_id
         if context is not None:

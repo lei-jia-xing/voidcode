@@ -32,6 +32,7 @@
 - [`agent-tool-enforcement.md`](./agent-tool-enforcement.md) — agent preset 中 tool allowlist/default tool set 如何进入 runtime enforcement
 - [`agent-hook-presets.md`](./agent-hook-presets.md) — agent preset hook refs 如何通过 builtin hook preset catalog 校验与表达角色 intent
 - [`agent-capability-bindings.md`](./agent-capability-bindings.md) — agent preset 的 tools/skills/hooks/MCP/provider binding 如何由 runtime materialize 成可重放 snapshot
+- [`workflow-presets.md`](./workflow-presets.md) — workflow preset 的 MVP 语义、优先级、快照和非目标
 - [`runtime-config.md`](./runtime-config.md) — MVP 配置界面及优先级
 - [`runtime-lifecycle-hooks.md`](./runtime-lifecycle-hooks.md) — richer lifecycle hook phases 的 runtime-owned 执行契约
 - [`background-task-delegation.md`](./background-task-delegation.md) — delegated/background task parent/child linkage、结果读取、retry/cancel 与 fake-provider/fake-MCP 验证立场

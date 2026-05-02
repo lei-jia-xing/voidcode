@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from voidcode.mcp import get_builtin_mcp_descriptor, list_builtin_mcp_descriptors
 from voidcode.runtime import config as runtime_config
 from voidcode.runtime.config import RuntimeMcpConfig, RuntimeMcpServerConfig, load_runtime_config
 
@@ -174,3 +175,37 @@ def test_parse_mcp_config_defaults_transport_and_preserves_public_dataclasses() 
 def test_parse_mcp_config_rejects_invalid_shapes_and_values(raw_value: object, match: str) -> None:
     with pytest.raises(ValueError, match=match):
         _ = _parse_mcp_config(raw_value)
+
+
+def test_builtin_mcp_descriptors_model_issue_405_capabilities() -> None:
+    descriptors = {descriptor.name: descriptor for descriptor in list_builtin_mcp_descriptors()}
+
+    assert set(descriptors) == {"context7", "websearch", "grep_app", "playwright"}
+    assert descriptors["context7"].transport == "remote-http"
+    assert descriptors["websearch"].transport == "remote-http"
+    assert descriptors["grep_app"].transport == "configured-server-intent"
+    assert descriptors["grep_app"].url is None
+    assert descriptors["grep_app"].command == ()
+    assert descriptors["grep_app"].lifecycle == "descriptor_only_config_gated"
+    grep_app_payload = descriptors["grep_app"].to_payload()
+    assert "url" not in grep_app_payload
+    assert "command" not in grep_app_payload
+    playwright = get_builtin_mcp_descriptor("playwright")
+    assert playwright is not None
+    assert playwright.transport == "stdio"
+    assert playwright.command == ("npx", "@playwright/mcp@latest")
+    assert playwright.skill_scoped is True
+    assert playwright.skill_name == "playwright"
+
+
+def test_builtin_grep_app_descriptor_is_not_configured_runtime_server() -> None:
+    descriptor = get_builtin_mcp_descriptor("grep_app")
+
+    assert descriptor is not None
+    assert descriptor.name == "grep_app"
+    assert descriptor.url is None
+    assert descriptor.command == ()
+
+    config = RuntimeMcpConfig(enabled=True)
+
+    assert config.servers is None

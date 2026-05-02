@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -11,9 +12,12 @@ from voidcode.skills import (
     LocalSkillMetadataLoader,
     SkillManifestFrontmatter,
     SkillManifestParseError,
+    SkillMetadata,
     SkillRegistry,
+    load_builtin_skill_registry,
     parse_skill_frontmatter,
     parse_skill_manifest,
+    skill_registry_with_builtins,
 )
 
 
@@ -65,6 +69,22 @@ def test_skill_loader_discovers_local_skills_from_default_workspace_path(tmp_pat
         summarize_dir.resolve(),
     )
     assert tuple(skill.entry_path.name for skill in skills) == ("SKILL.md", "SKILL.md")
+    assert tuple(skill.origin for skill in skills) == ("workspace", "workspace")
+
+
+def test_skill_metadata_rejects_invalid_origin(tmp_path: Path) -> None:
+    skill_dir = tmp_path / ".voidcode" / "skills" / "demo"
+    skill_dir.mkdir(parents=True)
+
+    with pytest.raises(ValueError, match="origin must be one of: workspace, builtin"):
+        _ = SkillMetadata(
+            name="demo",
+            description="Demo skill",
+            content="# Demo",
+            directory=skill_dir,
+            entry_path=skill_dir / "SKILL.md",
+            origin=cast(Any, "remote"),
+        )
 
 
 def test_skill_loader_discovers_nested_skill_directories(tmp_path: Path) -> None:
@@ -121,6 +141,84 @@ def test_skill_registry_discovers_and_resolves_skills(tmp_path: Path) -> None:
 
     assert tuple(registry.skills) == ("summarize",)
     assert registry.resolve("summarize").description == "Summarize selected files."
+
+
+def test_builtin_skill_registry_provides_workflow_skill_catalog() -> None:
+    registry = load_builtin_skill_registry()
+
+    assert set(registry.skills) == {
+        "git-master",
+        "frontend-design",
+        "playwright",
+        "review-work",
+    }
+    git_master_content = registry.resolve("git-master").content
+    assert "name: git-master" in git_master_content
+    assert "description: Help with git history, commit preparation" in git_master_content
+    assert "Preserve hooks, approvals, and repository policy." in git_master_content
+    assert "status, diff, log, show, blame, and bisect" in git_master_content
+    assert "MUST USE for ANY git operations" not in git_master_content
+    assert "name: frontend-design" in registry.resolve("frontend-design").content
+    assert (
+        "Guidance for distinctive, production-grade frontend UI/UX work"
+        in registry.resolve("frontend-design").content
+    )
+    assert "when editing tools are available" in registry.resolve("frontend-design").content
+    assert "# Playwright Browser Verification" in registry.resolve("playwright").content
+    assert "descriptor/config-gated" in registry.resolve("playwright").content
+    assert "Claude plugin" in registry.resolve("playwright").content
+    assert (
+        "# Review Work - VoidCode-Compatible Read-Only Review Guidance"
+        in registry.resolve("review-work").content
+    )
+    assert "unsupported agents" in registry.resolve("review-work").content
+    unsupported_review_role = "or" + "acle"
+    assert unsupported_review_role not in registry.resolve("review-work").content.lower()
+    removed_placeholder = "Catalog-visible builtin skill metadata only"
+    assert removed_placeholder not in registry.resolve("playwright").content
+    removed_skill_names = {"coding" + "-guidance", "research" + "-guidance"}
+    assert removed_skill_names.isdisjoint(registry.skills)
+
+
+def test_builtin_skill_catalog_descriptions_stay_guidance_scoped() -> None:
+    registry = load_builtin_skill_registry()
+
+    descriptions = "\n".join(
+        registry.resolve(skill_name).description for skill_name in registry.skills
+    )
+
+    assert "MUST USE" not in descriptions
+    assert "all browser interactions" not in descriptions
+    assert "Guidance for safe git workflows" in registry.resolve("git-master").description
+    assert (
+        "without assuming browser automation is always present"
+        in registry.resolve("playwright").description
+    )
+
+
+def test_builtin_skill_registry_loads_content_from_local_markdown_resources() -> None:
+    registry = load_builtin_skill_registry()
+
+    for skill_name in registry.skills:
+        skill = registry.resolve(skill_name)
+        assert skill.entry_path == (
+            Path("/builtin/voidcode/skills") / skill_name / f"{skill_name}.md"
+        )
+        assert skill.directory == Path("/builtin/voidcode/skills") / skill_name
+        assert skill.origin == "builtin"
+        assert skill.content.strip()
+        assert "https://github.com" not in skill.entry_path.as_posix()
+
+    assert len(registry.resolve("frontend-design").content.splitlines()) > 40
+    assert len(registry.resolve("playwright").content.splitlines()) > 20
+    assert len(registry.resolve("review-work").content.splitlines()) > 40
+
+
+def test_builtin_skill_merge_rejects_workspace_duplicate() -> None:
+    builtin = load_builtin_skill_registry().resolve("git-master")
+
+    with pytest.raises(ValueError, match="duplicate skill name 'git-master' discovered"):
+        _ = skill_registry_with_builtins((builtin,))
 
 
 def test_runtime_build_runtime_contexts_from_skill_bodies(tmp_path: Path) -> None:

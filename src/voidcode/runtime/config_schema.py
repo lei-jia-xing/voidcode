@@ -265,6 +265,22 @@ def runtime_config_json_schema() -> dict[str, object]:
                 "additionalProperties": {"$ref": "#/$defs/customAgentConfig"},
                 "propertyNames": {"pattern": "^[a-z][a-z0-9_-]*$"},
             },
+            "workflows": {
+                "type": "object",
+                "description": (
+                    "Declarative workflow preset declarations. Runtime selection, snapshot "
+                    "resolution, and execution wiring are owned by later runtime phases."
+                ),
+                "properties": {
+                    "research": {"$ref": "#/$defs/workflowPresetConfig"},
+                    "implementation": {"$ref": "#/$defs/workflowPresetConfig"},
+                    "frontend": {"$ref": "#/$defs/workflowPresetConfig"},
+                    "review": {"$ref": "#/$defs/workflowPresetConfig"},
+                    "git": {"$ref": "#/$defs/workflowPresetConfig"},
+                },
+                "additionalProperties": {"$ref": "#/$defs/workflowPresetConfig"},
+                "propertyNames": {"pattern": "^[a-z][a-z0-9_-]*$"},
+            },
             "categories": {
                 "type": "object",
                 "description": "Per task-category runtime model overrides for delegated sessions.",
@@ -529,6 +545,58 @@ def runtime_config_json_schema() -> dict[str, object]:
                 "additionalProperties": True,
                 "properties": {
                     "model": {"type": "string", "minLength": 1},
+                },
+            },
+            "workflowPresetConfig": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["id", "default_agent", "category"],
+                "properties": {
+                    "id": {"type": "string", "pattern": "^[a-z][a-z0-9_-]*$"},
+                    "default_agent": {"type": "string", "pattern": "^[a-z][a-z0-9_-]*$"},
+                    "category": {"type": "string", "minLength": 1},
+                    "prompt_append": {"type": "string", "minLength": 1},
+                    "skill_refs": {
+                        "type": "array",
+                        "items": {"type": "string", "minLength": 1},
+                        "uniqueItems": True,
+                    },
+                    "force_load_skills": {
+                        "type": "array",
+                        "items": {"type": "string", "minLength": 1},
+                        "uniqueItems": True,
+                    },
+                    "hook_preset_refs": {
+                        "type": "array",
+                        "items": {"type": "string", "minLength": 1},
+                        "uniqueItems": True,
+                    },
+                    "mcp_binding_intents": {
+                        "type": "array",
+                        "items": {"$ref": "#/$defs/workflowMcpBindingIntentConfig"},
+                    },
+                    "tool_policy_ref": {"type": "string", "minLength": 1},
+                    "permission_policy_ref": {"type": "string", "minLength": 1},
+                    "read_only_default": {"type": "boolean"},
+                    "verification_guidance": {"type": "string", "minLength": 1},
+                },
+            },
+            "workflowMcpBindingIntentConfig": {
+                "type": "object",
+                "additionalProperties": False,
+                "description": (
+                    "Workflow-level MCP binding intent. Required missing bindings fail "
+                    "validation; optional missing bindings can be represented for later "
+                    "degraded snapshot handling."
+                ),
+                "properties": {
+                    "profile": {"type": "string", "minLength": 1},
+                    "servers": {
+                        "type": "array",
+                        "items": {"type": "string", "minLength": 1},
+                        "uniqueItems": True,
+                    },
+                    "required": {"type": "boolean", "default": True},
                 },
             },
             "permissionConfig": {

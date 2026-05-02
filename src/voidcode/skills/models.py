@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal, cast
+
+SkillOrigin = Literal["workspace", "builtin"]
 
 
 def _validated_non_empty_string(value: object, *, field_name: str) -> str:
@@ -23,6 +26,12 @@ def _validated_path(value: object, *, field_name: str) -> Path:
     if not isinstance(value, Path):
         raise ValueError(f"{field_name} must be a pathlib.Path")
     return value
+
+
+def _validated_skill_origin(value: object) -> SkillOrigin:
+    if value == "workspace" or value == "builtin":
+        return cast(SkillOrigin, value)
+    raise ValueError("origin must be one of: workspace, builtin")
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,12 +65,15 @@ class SkillManifest(SkillManifestFrontmatter):
 class SkillMetadata(SkillManifest):
     directory: Path
     entry_path: Path
+    origin: SkillOrigin = "workspace"
 
     def __post_init__(self) -> None:
         SkillManifest.__post_init__(self)
         directory = _validated_path(self.directory, field_name="directory")
         entry_path = _validated_path(self.entry_path, field_name="entry_path")
+        origin = _validated_skill_origin(self.origin)
         object.__setattr__(self, "directory", directory)
         object.__setattr__(self, "entry_path", entry_path)
+        object.__setattr__(self, "origin", origin)
         if entry_path.parent != directory:
             raise ValueError("entry_path must live inside directory")

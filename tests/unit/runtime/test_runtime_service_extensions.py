@@ -56,6 +56,7 @@ from voidcode.runtime.config import (
     RuntimeHooksConfig,
     RuntimeLspConfig,
     RuntimeLspServerConfig,
+    RuntimeMcpConfig,
     RuntimeMcpServerConfig,
     RuntimeProviderFallbackConfig,
     RuntimeProvidersConfig,
@@ -129,6 +130,11 @@ from voidcode.runtime.task import (
     BackgroundTaskState,
     StoredBackgroundTaskSummary,
     is_background_task_terminal,
+)
+from voidcode.runtime.workflow import (
+    WorkflowMcpBindingIntent,
+    WorkflowPreset,
+    WorkflowPresetRegistry,
 )
 from voidcode.skills import SkillRegistry
 from voidcode.tools import ToolCall
@@ -1294,6 +1300,32 @@ class _TaskToolGraph:
         return _StubStep(output="delegation started", is_finished=True)
 
 
+class _AdvisorTaskToolGraph:
+    def step(
+        self,
+        request: GraphRunRequest,
+        tool_results: tuple[object, ...],
+        *,
+        session: SessionState,
+    ) -> _StubStep:
+        _ = request, session
+        if session.session.parent_id is not None:
+            return _StubStep(output="advisor child done", is_finished=True)
+        if not tool_results:
+            return _StubStep(
+                tool_call=ToolCall(
+                    tool_name="task",
+                    arguments={
+                        "prompt": "delegated read-only child prompt",
+                        "run_in_background": True,
+                        "load_skills": [],
+                        "subagent_type": "advisor",
+                    },
+                )
+            )
+        return _StubStep(output="delegation started", is_finished=True)
+
+
 class _ParentSkillThenSyncTaskGraph:
     child_system_segments: tuple[str | None, ...] = ()
 
@@ -1442,6 +1474,20 @@ def _write_demo_skill(skill_dir: Path, *, description: str = "Demo skill", conte
     )
 
 
+def _write_named_skill(
+    skill_dir: Path,
+    *,
+    name: str,
+    description: str = "Workflow skill",
+    content: str,
+) -> None:
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: {description}\n---\n{content}\n",
+        encoding="utf-8",
+    )
+
+
 def _expected_demo_skill_payload(
     skill_dir: Path,
     *,
@@ -1499,7 +1545,12 @@ def test_runtime_initializes_empty_extension_state_by_default(tmp_path: Path) ->
         assert provider_model.selection.raw_model is None
         assert provider_model.provider is None
         assert runtime.provider_auth_resolver.methods("openai").default_method == "api_key"
-        assert skill_registry.skills == {}
+        assert set(skill_registry.skills) >= {
+            "git-master",
+            "frontend-design",
+            "playwright",
+            "review-work",
+        }
         assert lsp_manager.current_state().mode == "disabled"
         assert lsp_manager.configuration.configured_enabled is False
         assert acp_adapter.current_state().mode == "disabled"
@@ -7284,7 +7335,13 @@ def test_runtime_keeps_skill_registry_empty_when_skills_not_explicitly_enabled(
         ),
     )
 
-    assert _private_attr(runtime, "_skill_registry").skills == {}
+    assert set(_private_attr(runtime, "_skill_registry").skills) >= {
+        "git-master",
+        "frontend-design",
+        "playwright",
+        "review-work",
+    }
+    assert "demo" not in _private_attr(runtime, "_skill_registry").skills
 
 
 def test_runtime_retains_explicit_injected_extension_instances(tmp_path: Path) -> None:
@@ -8923,6 +8980,10 @@ def test_runtime_emits_skills_loaded_catalog_without_default_full_injection(tmp_
         isinstance(item, str) and "Always explain your reasoning." in item
         for item in system_segments
     )
+    skill_tool = runtime._skill_registry.resolve("git-master")  # pyright: ignore[reportPrivateUsage]
+    assert skill_tool.name == "git-master"
+    assert skill_tool.origin == "builtin"
+    assert skill_tool.entry_path.as_posix().startswith("/builtin/voidcode/skills/")
 
 
 def test_runtime_persists_explicit_empty_applied_skill_snapshot(tmp_path: Path) -> None:
@@ -9037,6 +9098,897 @@ def test_runtime_rejects_unknown_requested_skill(tmp_path: Path) -> None:
         _ = runtime.run(RuntimeRequest(prompt="hello", metadata={"force_load_skills": ["missing"]}))
 
 
+def test_runtime_request_metadata_accepts_review_workflow_without_child_agent_promotion(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SkillCapturingStubGraph(),
+        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+    )
+
+    response = runtime.run(
+        RuntimeRequest(
+            prompt="review this",
+            session_id="workflow-review",
+            metadata={"workflow_preset": "review"},
+        )
+    )
+    request = _SkillCapturingStubGraph.last_request
+
+    assert request is not None
+    runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
+    agent_snapshot = cast(dict[str, object], runtime_config["agent"])
+    assert response.session.metadata["workflow_preset"] == "review"
+    assert agent_snapshot["preset"] == "leader"
+    assert "prompt_append" not in agent_snapshot
+    hook_snapshot = cast(dict[str, object], runtime_config["resolved_hook_presets"])
+    assert hook_snapshot["refs"] == [
+        "role_reminder",
+        "delegation_guard",
+        "background_output_quality_guidance",
+        "todo_continuation_guidance",
+    ]
+    assert request.metadata["workflow_preset"] == "review"
+
+
+def test_runtime_research_workflow_fresh_records_read_only_metadata_without_widening_tools(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SkillCapturingStubGraph(),
+        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+    )
+
+    response = runtime.run(
+        RuntimeRequest(
+            prompt="research this",
+            session_id="workflow-research-fresh",
+            metadata={"workflow_preset": "research"},
+        )
+    )
+    request = _SkillCapturingStubGraph.last_request
+
+    assert request is not None
+    runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
+    workflow_snapshot = cast(dict[str, object], runtime_config["workflow"])
+    capability_snapshot = cast(
+        dict[str, object], response.session.metadata["agent_capability_snapshot"]
+    )
+    capability_workflow = cast(dict[str, object], capability_snapshot["workflow"])
+    tool_snapshot = cast(dict[str, object], capability_snapshot["tools"])
+    effective_tool_names = cast(list[str], tool_snapshot["effective_names"])
+    request_workflow = cast(dict[str, object], request.metadata["workflow"])
+    assert response.session.metadata["workflow_preset"] == "research"
+    assert workflow_snapshot["selected_preset"] == "research"
+    assert workflow_snapshot["category"] == "research"
+    assert workflow_snapshot["read_only_default"] is True
+    assert workflow_snapshot["skill_refs"] == []
+    research_mcp_intents = cast(list[dict[str, object]], workflow_snapshot["mcp_binding_intents"])
+    assert research_mcp_intents[0]["servers"] == ["context7", "websearch", "grep_app"]
+    assert research_mcp_intents[0]["required"] is False
+    assert workflow_snapshot["effective_agent"] is None
+    assert workflow_snapshot["default_agent_executable_top_level"] is False
+    assert capability_workflow["read_only_default"] is True
+    assert "write_file" not in effective_tool_names
+    assert "shell_exec" not in effective_tool_names
+    assert "read_file" in effective_tool_names
+    assert tool_snapshot["request_allowlist"] is None
+    assert tool_snapshot["request_default"] is None
+    assert request_workflow["read_only_default"] is True
+    assert "arguments" not in workflow_snapshot
+
+
+def test_runtime_rejects_client_supplied_workflow_snapshot_on_fresh_request(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SkillCapturingStubGraph(),
+        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+    )
+
+    with pytest.raises(
+        RuntimeRequestError,
+        match="request metadata 'workflow' is internal runtime state",
+    ):
+        _ = runtime.run(
+            RuntimeRequest(
+                prompt="research this",
+                session_id="workflow-forged-fresh",
+                metadata={
+                    "workflow_preset": "research",
+                    "workflow": {
+                        "selected_preset": "git",
+                        "read_only_default": False,
+                    },
+                },
+            )
+        )
+
+
+def test_runtime_builtin_workflow_snapshots_expose_issue_405_capability_intents(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SkillCapturingStubGraph(),
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            mcp=RuntimeMcpConfig(
+                enabled=True,
+                servers={
+                    "playwright": RuntimeMcpServerConfig(command=("playwright-mcp",)),
+                    "context7": RuntimeMcpServerConfig(command=("context7-mcp",)),
+                    "websearch": RuntimeMcpServerConfig(command=("websearch-mcp",)),
+                    "grep_app": RuntimeMcpServerConfig(command=("grep-app-mcp",)),
+                },
+            ),
+        ),
+    )
+
+    expected: dict[str, dict[str, list[str]]] = {
+        "git": {"skills": ["git-master"], "servers": []},
+        "implementation": {"skills": [], "servers": []},
+        "frontend": {"skills": ["frontend-design", "playwright"], "servers": ["playwright"]},
+        "review": {
+            "skills": ["review-work"],
+            "servers": ["context7", "websearch", "grep_app"],
+        },
+        "research": {
+            "skills": [],
+            "servers": ["context7", "websearch", "grep_app"],
+        },
+    }
+
+    for preset_id, expected_capabilities in expected.items():
+        response = runtime.run(
+            RuntimeRequest(
+                prompt=f"snapshot {preset_id}",
+                session_id=f"workflow-issue-405-{preset_id}",
+                metadata={"workflow_preset": preset_id},
+            )
+        )
+        runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
+        workflow_snapshot = cast(dict[str, object], runtime_config["workflow"])
+        capability_snapshot = cast(
+            dict[str, object], response.session.metadata["agent_capability_snapshot"]
+        )
+        capability_workflow = cast(dict[str, object], capability_snapshot["workflow"])
+        mcp_intents = cast(list[dict[str, object]], workflow_snapshot["mcp_binding_intents"])
+        servers = [
+            server
+            for intent in mcp_intents
+            for server in cast(list[str], intent.get("servers", []))
+        ]
+
+        assert workflow_snapshot == capability_workflow
+        assert workflow_snapshot["skill_refs"] == expected_capabilities["skills"]
+        assert servers == expected_capabilities["servers"]
+        assert all(intent["required"] is False for intent in mcp_intents)
+        for intent in mcp_intents:
+            availability = cast(dict[str, object], intent["availability"])
+            assert availability["missing_servers"] == []
+            assert availability["degraded"] is False
+            descriptors = cast(list[dict[str, object]], availability["descriptors"])
+            assert [descriptor["name"] for descriptor in descriptors] == expected_capabilities[
+                "servers"
+            ]
+
+
+def test_runtime_workflow_selected_builtin_skill_refs_are_catalog_visible_not_loaded(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SkillCapturingStubGraph(),
+        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+    )
+
+    response = runtime.run(
+        RuntimeRequest(
+            prompt="snapshot frontend workflow",
+            session_id="workflow-builtin-skill-catalog-visible",
+            metadata={"workflow_preset": "frontend"},
+        )
+    )
+
+    skills_loaded = next(
+        event for event in response.events if event.event_type == "runtime.skills_loaded"
+    )
+    assert skills_loaded.payload["skills"] == []
+    assert skills_loaded.payload["selected_skills"] == ["frontend-design", "playwright"]
+    assert cast(int, skills_loaded.payload["catalog_context_length"]) > 0
+    assert "applied_skills" not in response.session.metadata
+    assert "applied_skill_payloads" not in response.session.metadata
+    assert runtime._skill_registry.resolve("frontend-design").name == "frontend-design"  # pyright: ignore[reportPrivateUsage]
+    assert runtime._skill_registry.resolve("playwright").name == "playwright"  # pyright: ignore[reportPrivateUsage]
+
+
+def test_runtime_git_workflow_uses_generic_runtime_approval_without_bespoke_policy(
+    tmp_path: Path,
+) -> None:
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(
+                    ProviderTurnResult(
+                        tool_call=ToolCall(
+                            tool_name="shell_exec",
+                            arguments={"command": "pwd"},
+                        )
+                    ),
+                    ProviderTurnResult(output="done"),
+                ),
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            approval_mode="ask",
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+        ),
+        model_provider_registry=registry,
+    )
+
+    response = runtime.run(
+        RuntimeRequest(
+            prompt="rewrite history",
+            session_id="workflow-git-fresh",
+            metadata={"workflow_preset": "git"},
+        )
+    )
+
+    runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
+    workflow_snapshot = cast(dict[str, object], runtime_config["workflow"])
+    capability_snapshot = cast(
+        dict[str, object], response.session.metadata["agent_capability_snapshot"]
+    )
+    capability_workflow = cast(dict[str, object], capability_snapshot["workflow"])
+    approval_event = response.events[-1]
+    assert response.session.status == "waiting"
+    assert approval_event.event_type == "runtime.approval_requested"
+    assert approval_event.payload["tool"] == "shell_exec"
+    assert workflow_snapshot["selected_preset"] == "git"
+    assert workflow_snapshot["category"] == "git"
+    assert workflow_snapshot["permission_policy_ref"] == "runtime_default"
+    assert workflow_snapshot.get("tool_policy_ref") is None
+    assert workflow_snapshot["verification_guidance"] == (
+        "Check git status before and after the requested operation, preserve hooks, and "
+        "keep repository mutations behind explicit user intent plus runtime approval."
+    )
+    assert capability_workflow["permission_policy_ref"] == "runtime_default"
+    assert capability_workflow.get("tool_policy_ref") is None
+    assert approval_event.payload["decision"] == "ask"
+    assert approval_event.payload.get("policy_surface") is None
+    assert approval_event.payload.get("matched_rule") is None
+
+
+def test_runtime_workflow_snapshot_persists_policy_refs_mcp_intent_and_safe_metadata(
+    tmp_path: Path,
+) -> None:
+    _write_named_skill(
+        tmp_path / ".voidcode" / "skills" / "forced-skill",
+        name="forced-skill",
+        content="Forced workflow skill.",
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SkillCapturingStubGraph(),
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            skills=RuntimeSkillsConfig(enabled=True),
+            mcp=RuntimeMcpConfig(
+                enabled=True,
+                servers={"docs": RuntimeMcpServerConfig(command=("docs-server",))},
+            ),
+            workflows=WorkflowPresetRegistry(
+                presets={
+                    "snapshot": WorkflowPreset(
+                        id="snapshot",
+                        default_agent="leader",
+                        category="implementation",
+                        prompt_append="Snapshot append.",
+                        skill_refs=("catalog-skill",),
+                        force_load_skills=("forced-skill",),
+                        hook_preset_refs=("role_reminder",),
+                        mcp_binding_intents=(
+                            WorkflowMcpBindingIntent(servers=("docs", "missing"), required=False),
+                        ),
+                        tool_policy_ref="readonly-tools",
+                        permission_policy_ref="runtime_default",
+                        read_only_default=True,
+                        verification_guidance="Verify the persisted snapshot.",
+                    )
+                }
+            ),
+        ),
+    )
+
+    response = runtime.run(
+        RuntimeRequest(
+            prompt="snapshot please",
+            session_id="workflow-snapshot-safe",
+            metadata={"workflow_preset": "snapshot"},
+        )
+    )
+
+    runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
+    workflow_snapshot = cast(dict[str, object], runtime_config["workflow"])
+    top_level_workflow = cast(dict[str, object], response.session.metadata["workflow"])
+    capability_snapshot = cast(
+        dict[str, object], response.session.metadata["agent_capability_snapshot"]
+    )
+    capability_workflow = cast(dict[str, object], capability_snapshot["workflow"])
+    mcp_intents = cast(list[dict[str, object]], workflow_snapshot["mcp_binding_intents"])
+    availability = cast(dict[str, object], mcp_intents[0]["availability"])
+    serialized = json.dumps(workflow_snapshot, sort_keys=True)
+
+    assert workflow_snapshot == top_level_workflow == capability_workflow
+    assert workflow_snapshot["snapshot_version"] == 1
+    assert workflow_snapshot["preset_source"] == "runtime_config"
+    assert workflow_snapshot["tool_policy_ref"] == "readonly-tools"
+    assert workflow_snapshot["permission_policy_ref"] == "runtime_default"
+    assert workflow_snapshot["read_only_default"] is True
+    assert workflow_snapshot["skill_refs"] == ["catalog-skill"]
+    assert workflow_snapshot["force_load_skills"] == ["forced-skill"]
+    assert workflow_snapshot["hook_preset_refs"] == ["role_reminder"]
+    assert workflow_snapshot["verification_guidance"] == "Verify the persisted snapshot."
+    assert mcp_intents[0]["servers"] == ["docs", "missing"]
+    assert availability["configured_enabled"] is True
+    assert availability["available_servers"] == ["docs"]
+    assert availability["missing_servers"] == ["missing"]
+    assert availability["degraded"] is True
+    assert all(
+        forbidden not in serialized
+        for forbidden in ("arguments", "stdin", "env", "secret", "token", "password")
+    )
+
+
+def test_runtime_required_workflow_mcp_intent_fails_fresh_run_when_missing(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SkillCapturingStubGraph(),
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            workflows=WorkflowPresetRegistry(
+                presets={
+                    "requires-docs": WorkflowPreset(
+                        id="requires-docs",
+                        default_agent="leader",
+                        category="research",
+                        mcp_binding_intents=(
+                            WorkflowMcpBindingIntent(servers=("docs",), required=True),
+                        ),
+                    )
+                }
+            ),
+        ),
+    )
+
+    with pytest.raises(
+        RuntimeRequestError,
+        match=r"workflow preset 'requires-docs' requires unavailable MCP server\(s\): docs",
+    ):
+        _ = runtime.run(
+            RuntimeRequest(
+                prompt="docs required",
+                metadata={"workflow_preset": "requires-docs"},
+            )
+        )
+
+
+def test_runtime_required_workflow_mcp_intent_passes_when_configured(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SkillCapturingStubGraph(),
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            mcp=RuntimeMcpConfig(
+                enabled=False,
+                servers={"docs": RuntimeMcpServerConfig(command=("docs-mcp",))},
+            ),
+            workflows=WorkflowPresetRegistry(
+                presets={
+                    "requires-docs": WorkflowPreset(
+                        id="requires-docs",
+                        default_agent="leader",
+                        category="research",
+                        mcp_binding_intents=(
+                            WorkflowMcpBindingIntent(servers=("docs",), required=True),
+                        ),
+                    )
+                }
+            ),
+        ),
+    )
+
+    response = runtime.run(
+        RuntimeRequest(
+            prompt="docs required",
+            metadata={"workflow_preset": "requires-docs"},
+        )
+    )
+
+    workflow = cast(dict[str, object], response.session.metadata["workflow"])
+    intents = cast(list[dict[str, object]], workflow["mcp_binding_intents"])
+    availability = cast(dict[str, object], intents[0]["availability"])
+    assert availability["missing_servers"] == []
+
+
+def test_runtime_workflow_resume_stable_debug_and_bundle_preserve_persisted_snapshot(
+    tmp_path: Path,
+) -> None:
+    _write_named_skill(
+        tmp_path / ".voidcode" / "skills" / "forced-original",
+        name="forced-original",
+        content="Original forced skill.",
+    )
+    initial_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(
+            approval_mode="ask",
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            skills=RuntimeSkillsConfig(enabled=True),
+            workflows=WorkflowPresetRegistry(
+                presets={
+                    "stable": WorkflowPreset(
+                        id="stable",
+                        default_agent="leader",
+                        category="implementation",
+                        prompt_append="Original append.",
+                        skill_refs=("original-skill",),
+                        force_load_skills=("forced-original",),
+                        hook_preset_refs=("role_reminder",),
+                        permission_policy_ref="original-permission",
+                        tool_policy_ref="original-tools",
+                        verification_guidance="Original verification.",
+                    )
+                }
+            ),
+        ),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    waiting = initial_runtime.run(
+        RuntimeRequest(
+            prompt="resume snapshot",
+            session_id="workflow-resume-stable",
+            metadata={"workflow_preset": "stable"},
+        )
+    )
+    approval_request_id = str(waiting.events[-1].payload["request_id"])
+    original_runtime_config = cast(dict[str, object], waiting.session.metadata["runtime_config"])
+    original_workflow = cast(dict[str, object], original_runtime_config["workflow"])
+
+    drifted_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SkillCapturingStubGraph(),
+        config=RuntimeConfig(
+            approval_mode="ask",
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            skills=RuntimeSkillsConfig(enabled=True),
+            workflows=WorkflowPresetRegistry(
+                presets={
+                    "stable": WorkflowPreset(
+                        id="stable",
+                        default_agent="leader",
+                        category="implementation",
+                        prompt_append="Drifted append.",
+                        skill_refs=("drifted-skill",),
+                        force_load_skills=("forced-drifted",),
+                        permission_policy_ref="drifted-permission",
+                        tool_policy_ref="drifted-tools",
+                        verification_guidance="Drifted verification.",
+                    )
+                }
+            ),
+        ),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    resumed = drifted_runtime.resume(
+        session_id="workflow-resume-stable",
+        approval_request_id=approval_request_id,
+        approval_decision="allow",
+    )
+    debug_snapshot = drifted_runtime.session_debug_snapshot(session_id="workflow-resume-stable")
+    replay = drifted_runtime.resume("workflow-resume-stable")
+    bundle = drifted_runtime.export_session_bundle(session_id="workflow-resume-stable")
+    bundled_metadata = bundle.sessions[0].metadata
+    bundled_runtime_config = cast(dict[str, object], bundled_metadata["runtime_config"])
+
+    resumed_runtime_config = cast(dict[str, object], resumed.session.metadata["runtime_config"])
+    replay_runtime_config = cast(dict[str, object], replay.session.metadata["runtime_config"])
+    debug_runtime_config = cast(
+        dict[str, object], debug_snapshot.session.metadata["runtime_config"]
+    )
+
+    assert cast(dict[str, object], resumed_runtime_config["workflow"]) == original_workflow
+    assert cast(dict[str, object], replay_runtime_config["workflow"]) == original_workflow
+    assert cast(dict[str, object], debug_runtime_config["workflow"]) == original_workflow
+    assert cast(dict[str, object], bundled_runtime_config["workflow"]) == original_workflow
+    assert original_workflow["prompt_append"] == "Original append."
+    assert original_workflow["skill_refs"] == ["original-skill"]
+    assert original_workflow["force_load_skills"] == ["forced-original"]
+    assert original_workflow["permission_policy_ref"] == "original-permission"
+    assert original_workflow["tool_policy_ref"] == "original-tools"
+    assert original_workflow["verification_guidance"] == "Original verification."
+    assert "Drifted" not in json.dumps(resumed_runtime_config, sort_keys=True)
+
+
+def test_runtime_delegated_workflow_readonly_child_inherits_parent_restrictions(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_AdvisorTaskToolGraph(),
+        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+    )
+
+    response = runtime.run(
+        RuntimeRequest(
+            prompt="delegate readonly review",
+            session_id="workflow-readonly-parent",
+            metadata={"workflow_preset": "review"},
+        )
+    )
+    tasks = runtime.list_background_tasks_by_parent_session(
+        parent_session_id="workflow-readonly-parent"
+    )
+
+    assert response.output == "delegation started"
+    assert len(tasks) == 1
+    task = runtime.load_background_task(tasks[0].task.id)
+    task_workflow = cast(dict[str, object], task.request.metadata["workflow"])
+    delegated_child = cast(dict[str, object], task_workflow["delegated_child"])
+    terminal_task = _wait_for_background_task(runtime, task.task.id)
+    child_session_id = cast(str, terminal_task.session_id)
+    child_result = runtime.session_result(session_id=child_session_id)
+    child_runtime_config = cast(dict[str, object], child_result.session.metadata["runtime_config"])
+    child_workflow = cast(dict[str, object], child_runtime_config["workflow"])
+    child_capability = cast(
+        dict[str, object], child_result.session.metadata["agent_capability_snapshot"]
+    )
+    child_capability_workflow = cast(dict[str, object], child_capability["workflow"])
+    child_tools = cast(dict[str, object], child_capability["tools"])
+
+    assert task_workflow["selected_preset"] == "review"
+    assert task_workflow["default_agent"] == "advisor"
+    assert task_workflow["read_only_default"] is True
+    assert delegated_child == {
+        "inherited_from_parent": True,
+        "selected_child_preset": "advisor",
+        "override": False,
+        "validation": "narrowed_to_selected_delegated_preset",
+        "policy_enforcement": "audit_metadata_only",
+    }
+    child_delegated = cast(dict[str, object], child_workflow["delegated_child"])
+    assert child_delegated == {
+        "inherited_from_parent": False,
+        "selected_child_preset": "advisor",
+        "override": True,
+        "validation": "narrowed_to_selected_delegated_preset",
+        "policy_enforcement": "audit_metadata_only",
+    }
+    assert child_workflow == child_capability_workflow
+    assert {key: value for key, value in child_workflow.items() if key != "delegated_child"} == {
+        key: value for key, value in task_workflow.items() if key != "delegated_child"
+    }
+    assert cast(dict[str, object], child_runtime_config["agent"])["preset"] == "advisor"
+    assert "write_file" not in cast(list[str], child_tools["effective_names"])
+
+
+def test_runtime_delegated_workflow_disallowed_preset_fails_before_child_execution(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_BackgroundTaskSuccessGraph(),
+        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+    )
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="workflow-disallowed-parent"))
+
+    with pytest.raises(
+        RuntimeRequestError,
+        match=(
+            "request metadata 'workflow_preset' default_agent 'leader' is not allowed for "
+            "delegated child preset 'worker'"
+        ),
+    ):
+        _ = runtime.start_background_task(
+            RuntimeRequest(
+                prompt="child should fail before execution",
+                parent_session_id="workflow-disallowed-parent",
+                metadata={
+                    "workflow_preset": "implementation",
+                    "delegation": {"mode": "background", "category": "quick"},
+                },
+                allocate_session_id=True,
+            )
+        )
+
+    assert (
+        runtime.list_background_tasks_by_parent_session(
+            parent_session_id="workflow-disallowed-parent"
+        )
+        == ()
+    )
+    assert [
+        summary
+        for summary in runtime.list_sessions()
+        if summary.session.parent_id == "workflow-disallowed-parent"
+    ] == []
+
+
+def test_runtime_delegated_workflow_unknown_preset_fails_before_child_execution(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_BackgroundTaskSuccessGraph(),
+        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+    )
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="workflow-unknown-parent"))
+
+    with pytest.raises(
+        RuntimeRequestError,
+        match="request metadata 'workflow_preset' references unknown preset: missing",
+    ):
+        _ = runtime.start_background_task(
+            RuntimeRequest(
+                prompt="child should fail before execution",
+                parent_session_id="workflow-unknown-parent",
+                metadata={
+                    "workflow_preset": "missing",
+                    "delegation": {"mode": "background", "category": "quick"},
+                },
+                allocate_session_id=True,
+            )
+        )
+
+    assert (
+        runtime.list_background_tasks_by_parent_session(parent_session_id="workflow-unknown-parent")
+        == ()
+    )
+
+
+def test_runtime_delegated_workflow_child_resume_uses_child_snapshot_after_registry_drift(
+    tmp_path: Path,
+) -> None:
+    initial_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_QuestionThenDoneGraph(),
+        config=RuntimeConfig(
+            approval_mode="ask",
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            workflows=WorkflowPresetRegistry(
+                presets={
+                    "child-review": WorkflowPreset(
+                        id="child-review",
+                        default_agent="advisor",
+                        category="review",
+                        prompt_append="Original child review.",
+                        read_only_default=True,
+                        tool_policy_ref="original-readonly-tools",
+                        verification_guidance="Original child verification.",
+                    )
+                }
+            ),
+        ),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+    _ = initial_runtime.run(RuntimeRequest(prompt="leader", session_id="workflow-child-parent"))
+
+    started = initial_runtime.start_background_task(
+        RuntimeRequest(
+            prompt="child waits",
+            parent_session_id="workflow-child-parent",
+            metadata={
+                "workflow_preset": "child-review",
+                "delegation": {"mode": "background", "subagent_type": "advisor"},
+            },
+            allocate_session_id=True,
+        )
+    )
+    running = _wait_for_background_task_session(initial_runtime, started.task.id)
+    child_session_id = cast(str, running.session_id)
+    child_waiting = _wait_for_session_event(
+        initial_runtime,
+        child_session_id,
+        "runtime.question_requested",
+    )
+    question_request_id = cast(str, child_waiting.events[-1].payload["request_id"])
+    original_runtime_config = cast(
+        dict[str, object], child_waiting.session.metadata["runtime_config"]
+    )
+    original_workflow = cast(dict[str, object], original_runtime_config["workflow"])
+
+    drifted_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_QuestionThenDoneGraph(),
+        config=RuntimeConfig(
+            approval_mode="ask",
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            workflows=WorkflowPresetRegistry(
+                presets={
+                    "child-review": WorkflowPreset(
+                        id="child-review",
+                        default_agent="advisor",
+                        category="review",
+                        prompt_append="Drifted child review.",
+                        read_only_default=False,
+                        tool_policy_ref="drifted-tools",
+                        verification_guidance="Drifted child verification.",
+                    )
+                }
+            ),
+        ),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    resumed = drifted_runtime.answer_question(
+        child_session_id,
+        question_request_id=question_request_id,
+        responses=(QuestionResponse(header="Runtime path", answers=("Reuse existing",)),),
+    )
+    replay = drifted_runtime.resume(child_session_id)
+
+    resumed_runtime_config = cast(dict[str, object], resumed.session.metadata["runtime_config"])
+    replay_runtime_config = cast(dict[str, object], replay.session.metadata["runtime_config"])
+    assert cast(dict[str, object], resumed_runtime_config["workflow"]) == original_workflow
+    assert cast(dict[str, object], replay_runtime_config["workflow"]) == original_workflow
+    assert original_workflow["prompt_append"] == "Original child review."
+    assert original_workflow["tool_policy_ref"] == "original-readonly-tools"
+    assert original_workflow["verification_guidance"] == "Original child verification."
+    assert "Drifted" not in json.dumps(resumed_runtime_config, sort_keys=True)
+
+
+def test_runtime_rejects_unknown_workflow_preset_before_execution(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SkillCapturingStubGraph(),
+        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+    )
+    _SkillCapturingStubGraph.last_request = None
+
+    with pytest.raises(
+        RuntimeRequestError,
+        match="request metadata 'workflow_preset' references unknown preset: missing",
+    ):
+        _ = runtime.run(RuntimeRequest(prompt="hello", metadata={"workflow_preset": "missing"}))
+
+    assert _SkillCapturingStubGraph.last_request is None
+
+
+def test_runtime_workflow_preset_resolution_precedence_and_prompt_materialization(
+    tmp_path: Path,
+) -> None:
+    base_materialization = {
+        "profile": "custom-leader",
+        "version": 1,
+        "source": "custom_markdown",
+        "format": "markdown",
+        "body": "Custom runtime materialization.",
+    }
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SkillCapturingStubGraph(),
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="runtime/default",
+            agent=RuntimeAgentConfig(
+                preset="leader",
+                prompt_materialization=base_materialization,
+                prompt_source="custom_markdown",
+                model="manifest/model",
+            ),
+            workflows=WorkflowPresetRegistry(
+                presets={
+                    "implementation": WorkflowPreset(
+                        id="implementation",
+                        default_agent="leader",
+                        category="implementation",
+                        prompt_append="Preset append.",
+                    )
+                }
+            ),
+        ),
+    )
+
+    response = runtime.run(
+        RuntimeRequest(
+            prompt="implement",
+            session_id="workflow-precedence",
+            metadata={
+                "workflow_preset": "implementation",
+                "agent": {"preset": "leader", "model": "request/model"},
+            },
+        )
+    )
+    request = _SkillCapturingStubGraph.last_request
+
+    assert request is not None
+    runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
+    assert runtime_config["model"] == "request/model"
+    agent_snapshot = cast(dict[str, object], runtime_config["agent"])
+    # Precedence is request metadata > workflow preset > agent manifest > runtime defaults.
+    assert agent_snapshot["model"] == "request/model"
+    assert agent_snapshot["prompt_append"] == "Preset append."
+    prompt_materialization = cast(dict[str, object], agent_snapshot["prompt_materialization"])
+    assert prompt_materialization == base_materialization
+    assert prompt_materialization["body"] == "Custom runtime materialization."
+
+
+def test_runtime_request_prompt_materialization_wins_over_workflow_preset(
+    tmp_path: Path,
+) -> None:
+    request_materialization = {
+        "profile": "request-custom",
+        "version": 1,
+        "source": "custom_markdown",
+        "format": "markdown",
+        "body": "Request materialization.",
+    }
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SkillCapturingStubGraph(),
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            agent=RuntimeAgentConfig(
+                preset="leader",
+                prompt_materialization={
+                    "profile": "base-custom",
+                    "version": 1,
+                    "source": "custom_markdown",
+                    "format": "markdown",
+                    "body": "Base materialization.",
+                },
+                prompt_source="custom_markdown",
+            ),
+        ),
+    )
+
+    response = runtime.run(
+        RuntimeRequest(
+            prompt="implement",
+            session_id="workflow-request-materialization",
+            metadata={
+                "workflow_preset": "implementation",
+                "agent": {
+                    "preset": "leader",
+                    "prompt_materialization": request_materialization,
+                    "prompt_source": "custom_markdown",
+                },
+            },
+        )
+    )
+
+    runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
+    agent_snapshot = cast(dict[str, object], runtime_config["agent"])
+    assert cast(dict[str, object], agent_snapshot["prompt_materialization"]) == (
+        request_materialization
+    )
+
+
 def test_runtime_rejects_client_supplied_applied_skill_payloads_on_new_run(
     tmp_path: Path,
 ) -> None:
@@ -9095,7 +10047,10 @@ def test_runtime_rejects_non_string_request_metadata_key(tmp_path: Path) -> None
         _ = runtime.run(
             RuntimeRequest(
                 prompt="hello",
-                metadata=cast(object, {1: "broken"}),  # pyright: ignore[reportArgumentType]
+                metadata=cast(
+                    RuntimeRequestMetadataPayload,
+                    cast(object, {1: "broken"}),
+                ),
             )
         )
 
@@ -12168,6 +13123,147 @@ def test_runtime_request_metadata_agent_override_persists_and_restores_agent_con
     )
 
 
+def test_runtime_request_agent_override_preserves_existing_prompt_materialization(
+    tmp_path: Path,
+) -> None:
+    initial_materialization = {
+        "profile": "leader",
+        "version": 1,
+        "source": "custom_markdown",
+        "format": "markdown",
+        "body": "Use the repo-specific leader prompt.",
+    }
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(),
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/original",
+            agent=RuntimeAgentConfig(
+                preset="leader",
+                prompt_materialization=initial_materialization,
+            ),
+        ),
+        model_provider_registry=registry,
+    )
+
+    resolved = cast(Any, runtime)._runtime_config_for_request(
+        RuntimeRequest(
+            prompt="hello",
+            metadata={"agent": {"preset": "leader", "model": "opencode/gpt-5.4"}},
+        )
+    )
+
+    assert resolved.model == "opencode/gpt-5.4"
+    assert resolved.agent is not None
+    assert resolved.agent.prompt_materialization == initial_materialization
+
+
+def test_runtime_request_agent_explicit_prompt_materialization_replaces_existing(
+    tmp_path: Path,
+) -> None:
+    initial_materialization = {
+        "profile": "leader",
+        "version": 1,
+        "source": "custom_markdown",
+        "format": "markdown",
+        "body": "Use the repo-specific leader prompt.",
+    }
+    explicit_materialization = {
+        "profile": "leader",
+        "version": 1,
+        "source": "custom_markdown",
+        "format": "markdown",
+        "body": "Use the request-specific leader prompt.",
+    }
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(),
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/original",
+            agent=RuntimeAgentConfig(
+                preset="leader",
+                prompt_materialization=initial_materialization,
+            ),
+        ),
+        model_provider_registry=registry,
+    )
+
+    resolved = cast(Any, runtime)._runtime_config_for_request(
+        RuntimeRequest(
+            prompt="hello",
+            metadata={
+                "agent": {
+                    "preset": "leader",
+                    "model": "opencode/gpt-5.4",
+                    "prompt_materialization": explicit_materialization,
+                }
+            },
+        )
+    )
+
+    assert resolved.model == "opencode/gpt-5.4"
+    assert resolved.agent is not None
+    assert resolved.agent.prompt_materialization == explicit_materialization
+
+
+def test_runtime_preserved_prompt_materialization_reaches_render_agent_prompt(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SkillCapturingStubGraph(),
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/original",
+            agent=RuntimeAgentConfig(
+                preset="leader",
+                prompt="Use only the custom leader prompt.",
+            ),
+        ),
+    )
+
+    response = runtime.run(
+        RuntimeRequest(
+            prompt="hello",
+            session_id="leader-partial-agent-prompt-materialization",
+            metadata={"agent": {"preset": "leader", "model": "opencode/gpt-5.4"}},
+        )
+    )
+    request = _SkillCapturingStubGraph.last_request
+
+    assert response.session.status == "completed"
+    assert request is not None
+    agent_segments = [
+        segment
+        for segment in request.assembled_context.segments
+        if segment.role == "system" and segment.metadata == {"source": "agent_prompt"}
+    ]
+    assert len(agent_segments) == 1
+    assert agent_segments[0].content == "Use only the custom leader prompt."
+    assert "Delegate when the task is multi-step" not in agent_segments[0].content
+    runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
+    agent_payload = cast(dict[str, object], runtime_config["agent"])
+    prompt_materialization = cast(dict[str, object], agent_payload["prompt_materialization"])
+    assert prompt_materialization["source"] == "custom_markdown"
+    assert prompt_materialization["body"] == "Use only the custom leader prompt."
+
+
 def test_runtime_prompt_command_agent_metadata_selects_agent_preset(tmp_path: Path) -> None:
     created_providers: list[_ScriptedTurnProvider] = []
     registry = ModelProviderRegistry(
@@ -12641,7 +13737,9 @@ def test_runtime_agent_skills_config_loads_and_persists_runtime_skills(
 
     assert response.session.status == "completed"
     assert response.events[1].event_type == "runtime.skills_loaded"
-    assert response.events[1].payload["skills"] == ["demo"]
+    loaded_skills = cast(list[str], response.events[1].payload["skills"])
+    assert "demo" in loaded_skills
+    assert "git-master" not in loaded_skills
     assert response.events[1].payload["selected_skills"] == []
     assert response.session.metadata["applied_skills"] == []
     assert "applied_skill_payloads" not in response.session.metadata

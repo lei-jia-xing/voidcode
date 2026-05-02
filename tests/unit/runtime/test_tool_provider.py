@@ -181,8 +181,9 @@ def _write_local_tool_manifest(
     name: str = "local/echo",
     read_only: bool = True,
     command: list[str] | None = None,
+    relative_path: str = ".voidcode/tools",
 ) -> Path:
-    tools_dir = workspace / ".voidcode" / "tools"
+    tools_dir = workspace / relative_path
     tools_dir.mkdir(parents=True, exist_ok=True)
     script = tools_dir / "echo.py"
     script.write_text(
@@ -193,10 +194,30 @@ def _write_local_tool_manifest(
             import sys
 
             args = json.loads(sys.stdin.read() or "{}")
+            serialized_args = json.dumps(args)
+            env_values = tuple(os.environ.values())
             print(json.dumps({
                 "args": args,
                 "workspace": os.environ.get("VOIDCODE_WORKSPACE"),
                 "session": os.environ.get("VOIDCODE_SESSION_ID"),
+                "env": {
+                    key: os.environ.get(key)
+                    for key in (
+                        "VOIDCODE_WORKSPACE",
+                        "VOIDCODE_TOOL_NAME",
+                        "VOIDCODE_TOOL_CALL_ID",
+                        "VOIDCODE_SESSION_ID",
+                        "VOIDCODE_PARENT_SESSION_ID",
+                        "VOIDCODE_DELEGATION_DEPTH",
+                    )
+                },
+                "has_tool_arguments_env": "VOIDCODE_TOOL_ARGUMENTS" in os.environ,
+                "env_contains_serialized_args": any(
+                    serialized_args in value for value in env_values
+                ),
+                "env_contains_secret": any(
+                    "super-secret-token" in value for value in env_values
+                ),
             }, sort_keys=True))
             """
         ),
@@ -731,6 +752,153 @@ def test_local_custom_tool_invokes_command_with_runtime_context(tmp_path: Path) 
     assert payload["args"] == {"message": "hi"}
     assert payload["workspace"] == str(tmp_path.resolve())
     assert payload["session"] == "ses_local"
+
+
+def test_local_custom_tool_environment_excludes_arguments_while_stdin_receives_payload(
+    tmp_path: Path,
+) -> None:
+    _write_local_tool_manifest(tmp_path)
+    tool = LocalCustomToolProvider(
+        workspace=tmp_path,
+        config=RuntimeToolsLocalConfig(enabled=True, path=".voidcode/tools"),
+    ).provide_tools()[0]
+
+    with bind_runtime_tool_context(
+        RuntimeToolInvocationContext(
+            session_id="ses_local",
+            parent_session_id="ses_parent",
+            delegation_depth=2,
+        )
+    ):
+        result = tool.invoke(
+            ToolCall(
+                tool_name="local/echo",
+                arguments={"message": "super-secret-token"},
+                tool_call_id="call_local",
+            ),
+            workspace=tmp_path,
+        )
+
+    assert result.status == "ok"
+    assert result.content is not None
+    payload = json.loads(result.content)
+    assert payload["args"] == {"message": "super-secret-token"}
+    assert payload["env"] == {
+        "VOIDCODE_WORKSPACE": str(tmp_path.resolve()),
+        "VOIDCODE_TOOL_NAME": "local/echo",
+        "VOIDCODE_TOOL_CALL_ID": "call_local",
+        "VOIDCODE_SESSION_ID": "ses_local",
+        "VOIDCODE_PARENT_SESSION_ID": "ses_parent",
+        "VOIDCODE_DELEGATION_DEPTH": "2",
+    }
+    assert payload["has_tool_arguments_env"] is False
+    assert payload["env_contains_serialized_args"] is False
+    assert payload["env_contains_secret"] is False
+
+
+def test_local_custom_tool_accepts_safe_manifest_dir_parts_and_literal_flags(
+    tmp_path: Path,
+) -> None:
+    wrapper = tmp_path / ".voidcode" / "tools" / "wrapper.py"
+    _write_local_tool_manifest(
+        tmp_path,
+        command=[
+            sys.executable,
+            "${manifest_dir}/wrapper.py",
+            "--verbose",
+            "${manifest_dir}/echo.py",
+        ],
+    )
+    wrapper.write_text(
+        textwrap.dedent(
+            """
+            import runpy
+            import sys
+
+            assert sys.argv[1] == "--verbose"
+            runpy.run_path(sys.argv[2], run_name="__main__")
+            """
+        ),
+        encoding="utf-8",
+    )
+    tool = LocalCustomToolProvider(
+        workspace=tmp_path,
+        config=RuntimeToolsLocalConfig(enabled=True, path=".voidcode/tools"),
+    ).provide_tools()[0]
+
+    result = tool.invoke(
+        ToolCall(tool_name="local/echo", arguments={"message": "hi"}), workspace=tmp_path
+    )
+
+    assert result.status == "ok"
+    assert result.content is not None
+    assert json.loads(result.content)["args"] == {"message": "hi"}
+
+
+def test_local_custom_tool_accepts_safe_embedded_manifest_dir_argument(
+    tmp_path: Path,
+) -> None:
+    wrapper = tmp_path / ".voidcode" / "tools" / "wrapper.py"
+    _write_local_tool_manifest(
+        tmp_path,
+        command=[sys.executable, "${manifest_dir}/wrapper.py", "--script=${manifest_dir}/echo.py"],
+    )
+    wrapper.write_text(
+        textwrap.dedent(
+            """
+            import runpy
+            import sys
+
+            prefix = "--script="
+            assert sys.argv[1].startswith(prefix)
+            runpy.run_path(sys.argv[1][len(prefix):], run_name="__main__")
+            """
+        ),
+        encoding="utf-8",
+    )
+    tool = LocalCustomToolProvider(
+        workspace=tmp_path,
+        config=RuntimeToolsLocalConfig(enabled=True, path=".voidcode/tools"),
+    ).provide_tools()[0]
+
+    result = tool.invoke(
+        ToolCall(tool_name="local/echo", arguments={"message": "hi"}), workspace=tmp_path
+    )
+
+    assert result.status == "ok"
+    assert result.content is not None
+    assert json.loads(result.content)["args"] == {"message": "hi"}
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ("${manifest_dir}/../../outside-workspace/script.py", "--safe", sys.executable),
+        (sys.executable, "${manifest_dir}/../../outside-workspace/script.py", "--safe"),
+        (sys.executable, "--safe", "${manifest_dir}/../../outside-workspace/script.py"),
+        (sys.executable, "--script=${manifest_dir}/../../outside-workspace/script.py"),
+        (
+            "${manifest_dir}/echo.py",
+            "${manifest_dir}/../../outside-workspace/script.py",
+            "${manifest_dir}/echo.py",
+        ),
+    ],
+    ids=["first", "middle", "final", "embedded", "multiple"],
+)
+def test_local_custom_tool_rejects_manifest_dir_escape_before_process_creation(
+    tmp_path: Path,
+    command: tuple[str, ...],
+) -> None:
+    _write_local_tool_manifest(tmp_path, command=list(command), relative_path="tools")
+
+    with patch.object(LocalCustomTool, "_run_command", autospec=True) as run_command_mock:
+        with pytest.raises(ValueError, match="manifest_dir must stay inside workspace"):
+            _ = LocalCustomToolProvider(
+                workspace=tmp_path,
+                config=RuntimeToolsLocalConfig(enabled=True, path="tools"),
+            ).provide_tools()
+
+    run_command_mock.assert_not_called()
 
 
 def test_local_custom_tool_timeout_polling_does_not_resend_stdin(tmp_path: Path) -> None:
