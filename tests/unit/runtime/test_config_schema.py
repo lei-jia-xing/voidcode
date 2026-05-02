@@ -154,6 +154,17 @@ def test_runtime_config_json_schema_exposes_core_fields() -> None:
     permission_properties = cast(dict[str, object], permission_config["properties"])
     assert permission_properties["external_directory_read"] == {"$ref": "#/$defs/permissionRules"}
     assert permission_properties["external_directory_write"] == {"$ref": "#/$defs/permissionRules"}
+    permission_rule_list = cast(dict[str, object], permission_properties["rules"])
+    assert permission_rule_list["items"] == {"$ref": "#/$defs/patternPermissionRule"}
+    pattern_permission_rule = cast(dict[str, object], defs["patternPermissionRule"])
+    assert pattern_permission_rule["additionalProperties"] is False
+    assert pattern_permission_rule["required"] == ["decision"]
+    pattern_permission_properties = cast(dict[str, object], pattern_permission_rule["properties"])
+    assert pattern_permission_properties["decision"] == {
+        "type": "string",
+        "enum": ["allow", "deny", "ask"],
+    }
+    assert set(pattern_permission_properties) == {"tool", "path", "command", "decision"}
 
 
 def test_generate_starter_runtime_config_excludes_secrets() -> None:

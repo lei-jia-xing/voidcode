@@ -91,7 +91,13 @@ from voidcode.runtime.mcp import (
     McpToolCallResult,
     McpToolDescriptor,
 )
-from voidcode.runtime.permission import PendingApproval, PermissionPolicy
+from voidcode.runtime.permission import (
+    ExternalDirectoryPermissionConfig,
+    ExternalDirectoryPolicy,
+    PatternPermissionRule,
+    PendingApproval,
+    PermissionPolicy,
+)
 from voidcode.runtime.provider_protocol import (
     ProviderExecutionError,
     ProviderStreamEvent,
@@ -319,6 +325,47 @@ class _ApprovalThenCaptureSkillGraph:
             return _StubStep(
                 tool_call=ToolCall(
                     tool_name="write_file", arguments={"path": "alpha.txt", "content": "1"}
+                )
+            )
+        return _StubStep(output="done", is_finished=True)
+
+
+class _GithubWorkflowWriteGraph:
+    def step(
+        self,
+        request: GraphRunRequest,
+        tool_results: tuple[object, ...],
+        *,
+        session: SessionState,
+    ) -> _StubStep:
+        _ = request, session
+        if not tool_results:
+            return _StubStep(
+                tool_call=ToolCall(
+                    tool_name="write_file",
+                    arguments={"path": ".github/workflows/ci.yml", "content": "name: CI\n"},
+                )
+            )
+        return _StubStep(output="done", is_finished=True)
+
+
+class _ExternalWriteGraph:
+    def __init__(self, target: Path) -> None:
+        self._target = target
+
+    def step(
+        self,
+        request: GraphRunRequest,
+        tool_results: tuple[object, ...],
+        *,
+        session: SessionState,
+    ) -> _StubStep:
+        _ = request, session
+        if not tool_results:
+            return _StubStep(
+                tool_call=ToolCall(
+                    tool_name="write_file",
+                    arguments={"path": self._target.as_posix(), "content": "blocked"},
                 )
             )
         return _StubStep(output="done", is_finished=True)
@@ -2847,6 +2894,145 @@ def test_runtime_provider_recovers_after_permission_denial_feedback(tmp_path: Pa
     denied_tool_result = created_providers[-1].requests[1].tool_results[-1]
     assert denied_tool_result.status == "error"
     assert denied_tool_result.data["permission_denied"] is True
+
+
+def test_runtime_pattern_permission_rule_asks_for_workspace_write(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_GithubWorkflowWriteGraph(),
+        config=RuntimeConfig(
+            permission=ExternalDirectoryPermissionConfig(
+                rules=(PatternPermissionRule(tool="write_file", path=".github/**", decision="ask"),)
+            )
+        ),
+        permission_policy=PermissionPolicy(mode="allow"),
+    )
+
+    response = runtime.run(
+        RuntimeRequest(prompt="write github workflow", session_id="pattern-workspace-ask")
+    )
+
+    approval_event = response.events[-1]
+    assert response.session.status == "waiting"
+    assert approval_event.event_type == "runtime.approval_requested"
+    assert approval_event.payload["policy_surface"] == "permission.rules"
+    assert approval_event.payload["matched_rule"] == (
+        "permission.rules[0] tool='write_file' path='.github/**' decision='ask'"
+    )
+
+
+def test_runtime_pattern_permission_rule_denies_shell_command(tmp_path: Path) -> None:
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(
+                    ProviderTurnResult(
+                        tool_call=ToolCall(
+                            tool_name="shell_exec",
+                            arguments={"command": "rm -rf *"},
+                        )
+                    ),
+                    ProviderTurnResult(output="done"),
+                ),
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            approval_mode="allow",
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            permission=ExternalDirectoryPermissionConfig(
+                rules=(
+                    PatternPermissionRule(
+                        tool="shell_exec",
+                        command="rm -rf *",
+                        decision="deny",
+                    ),
+                )
+            ),
+        ),
+        model_provider_registry=registry,
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="run destructive command"))
+
+    denied_event = next(
+        event for event in response.events if event.event_type == "runtime.approval_resolved"
+    )
+    denied_feedback = next(
+        event
+        for event in response.events
+        if event.event_type == "runtime.tool_completed"
+        and event.payload.get("permission_denied") is True
+    )
+    assert denied_event.payload["decision"] == "deny"
+    assert denied_event.payload["policy_surface"] == "permission.rules"
+    assert denied_event.payload["matched_rule"] == (
+        "permission.rules[0] tool='shell_exec' command='rm -rf *' decision='deny'"
+    )
+    assert denied_feedback.payload["error"] == "permission denied for tool: shell_exec"
+
+
+def test_runtime_pattern_permission_rule_cannot_bypass_external_write_policy(
+    tmp_path: Path,
+) -> None:
+    external_path = tmp_path.parent / "external-pattern-denied.txt"
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ExternalWriteGraph(external_path),
+        config=RuntimeConfig(
+            permission=ExternalDirectoryPermissionConfig(
+                write=ExternalDirectoryPolicy(rules=(("*", "deny"),)),
+                rules=(
+                    PatternPermissionRule(
+                        tool="write_file",
+                        path=external_path.as_posix(),
+                        decision="allow",
+                    ),
+                ),
+            )
+        ),
+        permission_policy=PermissionPolicy(mode="allow"),
+    )
+
+    response = runtime.run(
+        RuntimeRequest(prompt=f"write {external_path} blocked", session_id="pattern-external-deny")
+    )
+
+    denied_event = next(
+        event for event in response.events if event.event_type == "runtime.approval_resolved"
+    )
+    assert denied_event.payload["decision"] == "deny"
+    assert denied_event.payload["policy_surface"] == "external_directory_write"
+    assert external_path.exists() is False
+
+
+def test_runtime_persists_pattern_permission_rules_for_resume(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            execution_engine="deterministic",
+            permission=ExternalDirectoryPermissionConfig(
+                rules=(PatternPermissionRule(tool="read_file", path="src/**", decision="allow"),)
+            ),
+        ),
+    )
+    (tmp_path / "sample.txt").write_text("persist permissions\n", encoding="utf-8")
+
+    response = runtime.run(RuntimeRequest(prompt="read sample.txt", session_id="persist-rules"))
+    runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
+    permission = cast(dict[str, object], runtime_config["permission"])
+
+    assert permission["rules"] == [{"tool": "read_file", "path": "src/**", "decision": "allow"}]
+    resumed = VoidCodeRuntime(workspace=tmp_path).effective_runtime_config(
+        session_id="persist-rules"
+    )
+    assert resumed.permission.rules == (
+        PatternPermissionRule(tool="read_file", path="src/**", decision="allow"),
+    )
 
 
 def test_runtime_session_debug_snapshot_classifies_provider_failure(tmp_path: Path) -> None:
