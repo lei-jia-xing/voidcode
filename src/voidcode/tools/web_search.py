@@ -8,7 +8,7 @@ from typing import ClassVar
 import httpx
 from pydantic import ValidationError
 
-from ._pydantic_args import WebSearchArgs
+from ._pydantic_args import WebSearchArgs, format_validation_error
 from .contracts import ToolCall, ToolDefinition, ToolResult
 
 DEFAULT_NUM_RESULTS = 8
@@ -150,18 +150,16 @@ class WebSearchTool:
         runtime_timeout_seconds: int | None,
     ) -> ToolResult:
         try:
-            args = WebSearchArgs.model_validate({"query": call.arguments.get("query")})
+            args = WebSearchArgs.model_validate(
+                {
+                    "query": call.arguments.get("query"),
+                    "numResults": call.arguments.get("numResults", DEFAULT_NUM_RESULTS),
+                }
+            )
         except ValidationError as exc:
-            first_error = exc.errors()[0]
-            if first_error.get("type") == "value_error":
-                raise ValueError("web_search query must not be empty") from exc
-            raise ValueError("web_search requires a string query argument") from exc
+            raise ValueError(format_validation_error(self.definition.name, exc)) from exc
 
-        num_results = call.arguments.get("numResults", DEFAULT_NUM_RESULTS)
-        if isinstance(num_results, (int, float)) and num_results > 0:
-            num_results = min(int(num_results), 20)
-        else:
-            num_results = DEFAULT_NUM_RESULTS
+        num_results = min(args.numResults, 20)
 
         timeout = (
             DEFAULT_TIMEOUT

@@ -207,20 +207,32 @@ def test_grep_tool_rejects_invalid_arguments_and_non_utf8_files(tmp_path: Path) 
     binary_file = tmp_path / "sample.bin"
     _ = binary_file.write_bytes(b"\xff\xfe\x00x")
     tool = GrepTool()
+    pattern_type_error = (
+        r"grep invalid arguments: pattern: "
+        r"Input should be a valid string \(received int\)"
+    )
 
-    with pytest.raises(ValueError, match="string pattern"):
+    with pytest.raises(ValueError, match=pattern_type_error):
         tool.invoke(
             ToolCall(tool_name="grep", arguments={"pattern": 123, "path": "sample.txt"}),
             workspace=tmp_path,
         )
 
-    with pytest.raises(ValueError, match="string path"):
+    path_type_error = (
+        r"grep invalid arguments: path: "
+        r"Input should be a valid string \(received int\)"
+    )
+    with pytest.raises(ValueError, match=path_type_error):
         tool.invoke(
             ToolCall(tool_name="grep", arguments={"pattern": "alpha", "path": 123}),
             workspace=tmp_path,
         )
 
-    with pytest.raises(ValueError, match="must not be empty"):
+    empty_pattern_error = (
+        r"grep invalid arguments: pattern: Value error, "
+        r"pattern must not be empty \(received str\)"
+    )
+    with pytest.raises(ValueError, match=empty_pattern_error):
         tool.invoke(
             ToolCall(tool_name="grep", arguments={"pattern": "", "path": "sample.txt"}),
             workspace=tmp_path,
@@ -241,6 +253,39 @@ def test_grep_tool_rejects_invalid_arguments_and_non_utf8_files(tmp_path: Path) 
     )
     assert result.status == "ok"
     assert result.data["match_count"] == 0
+
+
+def test_grep_tool_reports_missing_required_args_and_invalid_regex(tmp_path: Path) -> None:
+    tool = GrepTool()
+    missing_pattern_error = (
+        r"grep invalid arguments: pattern: "
+        r"Input should be a valid string \(received NoneType\)"
+    )
+    missing_path_error = (
+        r"grep invalid arguments: path: "
+        r"Input should be a valid string \(received NoneType\)"
+    )
+
+    with pytest.raises(ValueError, match=missing_pattern_error):
+        tool.invoke(
+            ToolCall(tool_name="grep", arguments={"path": "sample.txt"}),
+            workspace=tmp_path,
+        )
+
+    with pytest.raises(ValueError, match=missing_path_error):
+        tool.invoke(ToolCall(tool_name="grep", arguments={"pattern": "alpha"}), workspace=tmp_path)
+
+    with pytest.raises(
+        ValueError,
+        match=r"grep invalid arguments: pattern: invalid regex pattern .* \(received str\)",
+    ):
+        tool.invoke(
+            ToolCall(
+                tool_name="grep",
+                arguments={"pattern": "[unclosed", "path": ".", "regex": True},
+            ),
+            workspace=tmp_path,
+        )
 
 
 def test_tools_package_and_default_registry_export_grep_tool() -> None:
