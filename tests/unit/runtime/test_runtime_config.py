@@ -60,6 +60,7 @@ from voidcode.runtime.config import (
     serialize_runtime_context_window_config,
     user_runtime_config_path,
 )
+from voidcode.runtime.permission import PatternPermissionRule
 from voidcode.runtime.service import RuntimeRequest, VoidCodeRuntime
 
 _parse_tui_config = runtime_config.__dict__["_parse_tui_config"]
@@ -246,6 +247,41 @@ def test_runtime_config_loads_external_directory_permission_rules(tmp_path: Path
         ("*", "ask"),
     )
     assert config.permission.write.rules == (("*", "deny"),)
+
+
+def test_runtime_config_loads_pattern_permission_rules(tmp_path: Path) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps(
+            {
+                "permission": {
+                    "rules": [
+                        {"tool": "read_file", "path": "src/**", "decision": "allow"},
+                        {"tool": "write_file", "path": ".github/**", "decision": "ask"},
+                        {"tool": "shell_exec", "command": "rm -rf *", "decision": "deny"},
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.permission.rules == (
+        PatternPermissionRule(tool="read_file", path="src/**", decision="allow"),
+        PatternPermissionRule(tool="write_file", path=".github/**", decision="ask"),
+        PatternPermissionRule(tool="shell_exec", command="rm -rf *", decision="deny"),
+    )
+
+
+def test_runtime_config_rejects_invalid_pattern_permission_rule(tmp_path: Path) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps({"permission": {"rules": [{"tool": "shell_exec"}]}}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=r"permission.rules\[0\].decision"):
+        _ = load_runtime_config(tmp_path, env={})
 
 
 def test_runtime_config_loads_background_task_concurrency_from_repo_file(

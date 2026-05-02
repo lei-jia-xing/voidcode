@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Literal
 from uuid import uuid4
@@ -34,11 +35,20 @@ class ExternalDirectoryPolicy:
 
 
 @dataclass(frozen=True, slots=True)
+class PatternPermissionRule:
+    decision: PermissionDecision
+    tool: str = "*"
+    path: str | None = None
+    command: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ExternalDirectoryPermissionConfig:
     read: ExternalDirectoryPolicy = field(default_factory=ExternalDirectoryPolicy)
     write: ExternalDirectoryPolicy = field(
         default_factory=lambda: ExternalDirectoryPolicy(rules=(("*", "deny"),))
     )
+    rules: tuple[PatternPermissionRule, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,7 +96,25 @@ def resolve_permission(
     matched_rule: str | None = None,
     policy_surface: str | None = None,
     external_decision: PermissionDecision | None = None,
+    rule_decision: PermissionDecision | None = None,
 ) -> PermissionOutcome:
+    if rule_decision is not None:
+        pending_approval = build_pending_approval(
+            tool_call,
+            policy=PermissionPolicy(mode=rule_decision),
+            owner_session_id=owner_session_id,
+            owner_parent_session_id=owner_parent_session_id,
+            delegated_task_id=delegated_task_id,
+            path_scope=path_scope,
+            operation_class=operation_class,
+            canonical_path=canonical_path,
+            matched_rule=matched_rule,
+            policy_surface=policy_surface,
+        )
+        if rule_decision == "ask":
+            return PermissionOutcome(decision="ask", pending_approval=pending_approval)
+        return PermissionOutcome(decision=rule_decision, pending_approval=pending_approval)
+
     if path_scope == "workspace" and tool.read_only:
         return PermissionOutcome(decision="allow")
 
@@ -170,6 +198,57 @@ def evaluate_external_directory_policy(
         if _path_matches_rule(normalized_path=normalized_path, pattern=pattern):
             return decision, pattern
     return "ask", "*"
+
+
+def evaluate_pattern_permission_rules(
+    *,
+    rules: tuple[PatternPermissionRule, ...],
+    tool_name: str,
+    path_candidates: tuple[str, ...] = (),
+    command: str | None = None,
+) -> tuple[PermissionDecision, str] | None:
+    for index, rule in enumerate(rules):
+        if not _tool_matches_rule(tool_name=tool_name, pattern=rule.tool):
+            continue
+        if rule.command is not None and not _command_matches_rule(
+            command=command, pattern=rule.command
+        ):
+            continue
+        if rule.path is not None and not _path_candidates_match_rule(
+            path_candidates=path_candidates,
+            pattern=rule.path,
+        ):
+            continue
+        return rule.decision, _format_pattern_permission_rule(index=index, rule=rule)
+    return None
+
+
+def _tool_matches_rule(*, tool_name: str, pattern: str) -> bool:
+    return fnmatchcase(tool_name, pattern)
+
+
+def _command_matches_rule(*, command: str | None, pattern: str) -> bool:
+    if command is None:
+        return False
+    return fnmatchcase(command, pattern)
+
+
+def _path_candidates_match_rule(*, path_candidates: tuple[str, ...], pattern: str) -> bool:
+    if not path_candidates:
+        return False
+    return any(
+        _path_matches_rule(normalized_path=path, pattern=pattern) for path in path_candidates
+    )
+
+
+def _format_pattern_permission_rule(*, index: int, rule: PatternPermissionRule) -> str:
+    parts = [f"permission.rules[{index}]", f"tool={rule.tool!r}"]
+    if rule.path is not None:
+        parts.append(f"path={rule.path!r}")
+    if rule.command is not None:
+        parts.append(f"command={rule.command!r}")
+    parts.append(f"decision={rule.decision!r}")
+    return " ".join(parts)
 
 
 def _path_matches_rule(*, normalized_path: str, pattern: str) -> bool:

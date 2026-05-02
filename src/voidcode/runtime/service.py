@@ -224,11 +224,13 @@ from .permission import (
     ExternalDirectoryPolicy,
     OperationClass,
     PathScope,
+    PatternPermissionRule,
     PendingApproval,
     PermissionDecision,
     PermissionPolicy,
     PermissionResolution,
     evaluate_external_directory_policy,
+    evaluate_pattern_permission_rules,
     resolve_permission,
 )
 from .provider_context import inspect_provider_context
@@ -2286,6 +2288,15 @@ class VoidCodeRuntime:
         external_decision: PermissionDecision | None = None
         matched_rule: str | None = None
         policy_surface: str | None = None
+        rule_decision: PermissionDecision | None = None
+        normalized_paths = self._normalized_permission_path_candidates(tool_call, external_paths)
+        shell_command = self._shell_command_for_tool_call(tool_call)
+        pattern_match = evaluate_pattern_permission_rules(
+            rules=self._effective_runtime_config_from_metadata(session.metadata).permission.rules,
+            tool_name=tool_call.tool_name,
+            path_candidates=normalized_paths,
+            command=shell_command,
+        )
         if path_scope == "external" and canonical_path is not None:
             uses_write_policy = operation_class in ("write", "execute")
             policy_surface = (
@@ -2308,6 +2319,18 @@ class VoidCodeRuntime:
             selected = deny_match or ask_match or allow_match
             if selected is not None:
                 external_decision, matched_rule, canonical_path = selected
+            if pattern_match is not None and external_decision is not None:
+                candidate_decision, candidate_rule = pattern_match
+                decision_rank = {"allow": 0, "ask": 1, "deny": 2}
+                if decision_rank[candidate_decision] > decision_rank[external_decision]:
+                    rule_decision = candidate_decision
+                    matched_rule = candidate_rule
+                    policy_surface = "permission.rules"
+        else:
+            if pattern_match is not None:
+                rule_decision, matched_rule = pattern_match
+                policy_surface = "permission.rules"
+                canonical_path = normalized_paths[0] if normalized_paths else None
 
         # Referenced via extracted run-loop collaborator.
         permission = resolve_permission(
@@ -2320,6 +2343,7 @@ class VoidCodeRuntime:
             matched_rule=matched_rule,
             policy_surface=policy_surface,
             external_decision=external_decision,
+            rule_decision=rule_decision,
             owner_session_id=session.session.id,
             owner_parent_session_id=session.session.parent_id,
             delegated_task_id=(
@@ -2381,7 +2405,11 @@ class VoidCodeRuntime:
             "owner_parent_session_id": pending.owner_parent_session_id,
             "delegated_task_id": pending.delegated_task_id,
         }
-        if pending.path_scope == "external":
+        if pending.policy_surface in {
+            "external_directory_read",
+            "external_directory_write",
+            "permission.rules",
+        }:
             request_payload.update(
                 {
                     "path_scope": pending.path_scope,
@@ -2419,7 +2447,11 @@ class VoidCodeRuntime:
             "request_id": pending.request_id,
             "decision": decision,
         }
-        if pending.path_scope == "external":
+        if pending.policy_surface in {
+            "external_directory_read",
+            "external_directory_write",
+            "permission.rules",
+        }:
             resolution_payload.update(
                 {
                     "path_scope": pending.path_scope,
@@ -2480,6 +2512,35 @@ class VoidCodeRuntime:
         if external_paths:
             return "external", external_paths[0], operation_class, tuple(external_paths)
         return "workspace", None, operation_class, ()
+
+    def _normalized_permission_path_candidates(
+        self,
+        tool_call: ToolCall,
+        external_paths: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        normalized: list[str] = []
+        for external_path in external_paths:
+            normalized.append(Path(external_path).as_posix())
+        for raw_path in self._candidate_paths_for_tool_call(tool_call):
+            canonical = self._canonicalize_candidate_path(raw_path)
+            if canonical is not None:
+                normalized.append(canonical.as_posix())
+            text = raw_path.strip().replace("\\", "/")
+            if text:
+                normalized.append(text)
+        workspace_prefix = f"{self._workspace.as_posix().rstrip('/')}/"
+        relative: list[str] = []
+        for path in normalized:
+            if path.startswith(workspace_prefix):
+                relative.append(path.removeprefix(workspace_prefix))
+        return tuple(dict.fromkeys((*relative, *normalized)))
+
+    @staticmethod
+    def _shell_command_for_tool_call(tool_call: ToolCall) -> str | None:
+        if tool_call.tool_name != "shell_exec":
+            return None
+        command = tool_call.arguments.get("command")
+        return command if isinstance(command, str) else None
 
     @staticmethod
     def _operation_class_for_tool(tool_name: str, read_only: bool) -> OperationClass:
@@ -8074,10 +8135,25 @@ class VoidCodeRuntime:
 def _serialize_external_permission_config(
     permission: ExternalDirectoryPermissionConfig,
 ) -> dict[str, object]:
-    return {
+    payload: dict[str, object] = {
         "external_directory_read": dict(permission.read.rules),
         "external_directory_write": dict(permission.write.rules),
     }
+    if permission.rules:
+        payload["rules"] = [
+            {
+                key: value
+                for key, value in {
+                    "tool": rule.tool,
+                    "path": rule.path,
+                    "command": rule.command,
+                    "decision": rule.decision,
+                }.items()
+                if value is not None
+            }
+            for rule in permission.rules
+        ]
+    return payload
 
 
 def _parse_persisted_external_permission_config(
@@ -8086,7 +8162,7 @@ def _parse_persisted_external_permission_config(
     if not isinstance(raw_permission, dict):
         raise ValueError("persisted runtime_config permission must be an object")
     payload = cast(dict[object, object], raw_permission)
-    allowed_keys = {"external_directory_read", "external_directory_write"}
+    allowed_keys = {"external_directory_read", "external_directory_write", "rules"}
     unknown_keys = sorted(str(key) for key in payload if key not in allowed_keys)
     if unknown_keys:
         raise ValueError(
@@ -8107,6 +8183,7 @@ def _parse_persisted_external_permission_config(
                 default=(("*", "deny"),),
             )
         ),
+        rules=_parse_persisted_pattern_permission_rules(payload.get("rules")),
     )
 
 
@@ -8131,6 +8208,52 @@ def _parse_persisted_external_permission_rules(
             )
         parsed.append((raw_pattern, decision))
     return tuple(parsed) if parsed else default
+
+
+def _parse_persisted_pattern_permission_rules(
+    raw_rules: object,
+) -> tuple[PatternPermissionRule, ...]:
+    if raw_rules is None:
+        return ()
+    if not isinstance(raw_rules, list):
+        raise ValueError("persisted runtime_config permission.rules must be an array")
+    parsed: list[PatternPermissionRule] = []
+    allowed_keys = {"tool", "path", "command", "decision"}
+    for index, raw_rule in enumerate(raw_rules):
+        field_path = f"permission.rules[{index}]"
+        if not isinstance(raw_rule, dict):
+            raise ValueError(f"persisted runtime_config {field_path} must be an object")
+        payload = cast(dict[object, object], raw_rule)
+        unknown_keys = sorted(str(key) for key in payload if key not in allowed_keys)
+        if unknown_keys:
+            raise ValueError(
+                f"persisted runtime_config {field_path}.{unknown_keys[0]} is not supported"
+            )
+        raw_tool = payload.get("tool", "*")
+        if not isinstance(raw_tool, str) or not raw_tool.strip():
+            raise ValueError(f"persisted runtime_config {field_path}.tool must be a string")
+        raw_path = payload.get("path")
+        if raw_path is not None and (not isinstance(raw_path, str) or not raw_path.strip()):
+            raise ValueError(f"persisted runtime_config {field_path}.path must be a string")
+        raw_command = payload.get("command")
+        if raw_command is not None and (
+            not isinstance(raw_command, str) or not raw_command.strip()
+        ):
+            raise ValueError(f"persisted runtime_config {field_path}.command must be a string")
+        decision = _permission_decision_or_none(payload.get("decision"))
+        if decision is None:
+            raise ValueError(
+                f"persisted runtime_config {field_path}.decision must be allow, deny, or ask"
+            )
+        parsed.append(
+            PatternPermissionRule(
+                tool=raw_tool,
+                path=raw_path,
+                command=raw_command,
+                decision=decision,
+            )
+        )
+    return tuple(parsed)
 
 
 def _runtime_provider_config_metadata(
