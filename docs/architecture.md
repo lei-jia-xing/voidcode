@@ -114,10 +114,10 @@ graph 是执行引擎和编排层，当前包含两条并行路径：
 - 支持的 child preset 是 `advisor`、`explore`、`product`、`researcher`、`worker`；它们不等价于可任意直接启动的顶层 agent。
 - runtime 根据 agent manifest 和 request tool config 收窄 provider 可见工具，并在实际 tool lookup 时再次执行 allowlist guardrail。
 - `skill_refs` 是 manifest/catalog 默认选择；`force_load_skills` 与 delegated `load_skills` 只在目标 run 或 child session 注入完整 skill body，不从 parent 泄漏到 child。
-- MCP server lifecycle 由 runtime 以 runtime scope 或 session scope 管理，并通过 fake MCP 覆盖测试；当前不宣称 workspace-scoped MCP、MCP marketplace 或动态 agent marketplace。
+- MCP server lifecycle 由 runtime 以 runtime scope 或 session scope 管理，并通过 fake MCP 覆盖测试；当前不宣称 workspace-scoped MCP、MCP 生态市场式语义或动态 agent marketplace。
 - 背景结果通过 `background_output` / `load_background_task_result` 读取，可选择有界 full-session transcript；失败输出只给出显式 user-request retry guidance，不做无限自动重试。
 
-以下能力仍不属于当前实现：workspace-scoped MCP、provider/agent marketplace、动态 agent 发现、直接 agent-to-agent bus、任意拓扑 multi-agent orchestration，以及 #285 context assembly / compaction 的完整产品化语义。
+以下能力仍不属于当前实现：workspace-scoped MCP、provider/agent marketplace、动态 agent 发现、peer-to-peer agent bus、任意拓扑 multi-agent orchestration，以及 #285 context assembly / compaction 的完整产品化语义。
 
 ### `tui/`
 

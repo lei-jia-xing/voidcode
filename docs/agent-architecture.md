@@ -290,7 +290,7 @@ hook 在这里很重要，但它更多是通知与干预层，而不是异步 ag
 
 ### Phase 3：再评估更宽的 multi-agent orchestration
 
-当前已成立的是 background task / child-session / leader notification / result retrieval substrate，以及受支持 child preset 的 runtime-governed execution。下一阶段需要评估的是是否引入更宽的 supervisor / worker topology、跨 child handoff、direct agent-to-agent bus 或 ACP 协作控制面。
+当前已成立的是 background task / child-session / leader notification / result retrieval substrate，以及受支持 child preset 的 runtime-governed execution。下一阶段需要评估的是是否引入更宽的 supervisor / worker topology、跨 child handoff、peer-to-peer agent bus 或 ACP 协作控制面。
 
 这些能力仍不能被写成当前 shipped behavior。它们只有在 runtime-managed skill execution、managed LSP、ACP 或等价控制面，以及 resume / replay / approval 语义进一步稳定后，才适合作为单独设计进入路线图。
 

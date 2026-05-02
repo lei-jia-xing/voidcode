@@ -24,8 +24,8 @@ VoidCode 仍处于 pre-MVP 开发阶段。路线图从基础工作贯穿至 MVP 
 - 云端协作
 - IDE 插件
 - 插件市场支持
-- workspace-scoped MCP、MCP marketplace 或动态 agent marketplace
-- 直接 agent-to-agent bus
+- workspace-scoped MCP、MCP 生态市场式语义或动态 agent marketplace
+- peer-to-peer agent bus
 - #285 context assembly / compaction 的完整产品化语义
 - 高级 MCP 生态系统工作
 - 复杂的视觉工作台
