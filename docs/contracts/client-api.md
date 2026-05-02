@@ -113,6 +113,21 @@ StoredSessionSummary(
 - 运行时：`VoidCodeRuntime.resume(session_id)`
 - CLI：`voidcode sessions resume <session_id> [--workspace]`
 
+### 回答等待中的问题 (Answer pending question)
+
+输入：
+- `session_id`
+- `question_request_id`
+- `responses`: 一个或多个 `{header, answers}` 结构；CLI 简单文本模式会把 `--response` 归一化为 header 为 `response` 的单项回答
+
+输出：
+- 恢复后的 `RuntimeResponse`
+
+当前实现层面：
+- 运行时：`VoidCodeRuntime.answer_question(session_id, question_request_id=..., responses=...)`
+- CLI：`voidcode sessions answer <session_id> --question-request-id <id> --response <text> [--workspace]`
+- CLI 多问题/精确 header 形态：`--response-json '[{"header":"Confirm","answers":["yes"]}]'`
+
 ## 会话生命周期
 
 MVP 生命周期：

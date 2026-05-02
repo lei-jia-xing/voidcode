@@ -253,5 +253,5 @@ VoidCode 已经拥有扎实的 pre-MVP 基础：
 - [x] Web 客户端接入 review tree / diff、question answer、workspace 切换、runtime status 和 backend-owned tool display/status 基线
 - [x] `voidcode doctor` 输出 first-task readiness summary 与 actionable next step
 - [ ] 完成 issue #390：定义最小用户可见 prompt command 集（`/review`、`/fix`、`/explain`、`/plan`、`/test`、`/commit`）
-- [ ] 为 CLI 补齐 pending question 的回答入口，使其与 HTTP/Web question answer 路径对等
+- [x] 为 CLI 补齐 pending question 的回答入口，使其与 HTTP/Web question answer 路径对等
 - [ ] 在 runtime 主线稳定之后，再重新评估 TUI 特定 epic 和剩余客户端 polish 工作
