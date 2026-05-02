@@ -11,6 +11,15 @@ Issue: https://github.com/lei-jia-xing/voidcode/issues/107
 from __future__ import annotations
 
 # Config - static configuration models
+from .builtin import (
+    BuiltinMcpDescriptor,
+    BuiltinMcpDescriptorRegistry,
+    builtin_mcp_descriptor_names,
+    get_builtin_mcp_descriptor,
+    known_mcp_server_names,
+    list_builtin_mcp_descriptors,
+    load_builtin_mcp_descriptor_registry,
+)
 from .config import (
     DEFAULT_MCP_TRANSPORT,
     McpConfig,
@@ -68,6 +77,13 @@ __all__ = [
     "McpToolCallResult",
     "McpToolDescriptor",
     "McpToolSafety",
+    "BuiltinMcpDescriptor",
+    "BuiltinMcpDescriptorRegistry",
+    "builtin_mcp_descriptor_names",
+    "get_builtin_mcp_descriptor",
+    "known_mcp_server_names",
+    "list_builtin_mcp_descriptors",
+    "load_builtin_mcp_descriptor_registry",
     "MCP_CLIENT_NAME",
     "MCP_CLIENT_VERSION",
     "MCP_PROTOCOL_VERSION",
