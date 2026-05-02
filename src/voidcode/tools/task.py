@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Protocol
 
@@ -14,6 +15,7 @@ from ..runtime.contracts import (
     validate_runtime_request_metadata,
 )
 from ..runtime.task import BackgroundTaskState, StoredBackgroundTaskSummary
+from ._pydantic_args import format_validation_error
 from .contracts import ToolCall, ToolDefinition, ToolResult
 from .runtime_context import require_runtime_tool_context
 
@@ -49,6 +51,20 @@ class _TaskArgs(BaseModel):
         if not stripped:
             raise ValueError("prompt must be a non-empty string")
         return stripped
+
+    @field_validator("load_skills", mode="before")
+    @classmethod
+    def _parse_load_skills(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        stripped = value.strip()
+        if not stripped:
+            return []
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError:
+            return value
+        return parsed
 
     @field_validator("load_skills", mode="after")
     @classmethod
@@ -115,16 +131,89 @@ def _delegated_prompt(args: _TaskArgs) -> str:
 class TaskTool:
     definition = ToolDefinition(
         name="task",
-        description="Delegate work to a child runtime session or background task.",
+        description=(
+            "Delegate work to a child runtime session. Always include prompt, "
+            "run_in_background, and load_skills. Provide exactly one of category or "
+            "subagent_type. Prefer run_in_background=true for delegated work that can "
+            "run independently."
+        ),
         input_schema={
-            "prompt": {"type": "string"},
-            "run_in_background": {"type": "boolean"},
-            "load_skills": {"type": "array", "items": {"type": "string"}},
-            "category": {"type": "string"},
-            "subagent_type": {"type": "string"},
-            "description": {"type": "string"},
-            "session_id": {"type": "string"},
-            "command": {"type": "string"},
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "prompt": {
+                    "type": "string",
+                    "description": "Full delegated task prompt for the child session.",
+                    "minLength": 1,
+                },
+                "run_in_background": {
+                    "type": "boolean",
+                    "description": (
+                        "Required. true starts delegated work in the background and returns "
+                        "a task_id. false runs the child session synchronously. Prefer true "
+                        "for independent delegated work."
+                    ),
+                },
+                "load_skills": {
+                    "type": "array",
+                    "description": (
+                        "Required. Array of skill names to force-load in the child session. "
+                        "Pass [] when no extra skills are needed."
+                    ),
+                    "items": {
+                        "type": "string",
+                        "minLength": 1,
+                    },
+                },
+                "category": {
+                    "type": "string",
+                    "description": (
+                        "Runtime-selected child route. Provide this or subagent_type, but not both."
+                    ),
+                    "minLength": 1,
+                },
+                "subagent_type": {
+                    "type": "string",
+                    "description": (
+                        "Explicit child preset. Provide this or category, but not both."
+                    ),
+                    "minLength": 1,
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Optional short delegation description.",
+                    "minLength": 1,
+                },
+                "session_id": {
+                    "type": "string",
+                    "description": "Optional existing child session id to continue.",
+                    "minLength": 1,
+                },
+                "command": {
+                    "type": "string",
+                    "description": "Optional originating command label for delegated work.",
+                    "minLength": 1,
+                },
+            },
+            "required": ["prompt", "run_in_background", "load_skills"],
+            "oneOf": [
+                {"required": ["category"], "not": {"required": ["subagent_type"]}},
+                {"required": ["subagent_type"], "not": {"required": ["category"]}},
+            ],
+            "examples": [
+                {
+                    "prompt": "Find where background task cancellation is implemented.",
+                    "run_in_background": True,
+                    "load_skills": [],
+                    "subagent_type": "explore",
+                },
+                {
+                    "prompt": "Review the architecture tradeoffs and summarize them.",
+                    "run_in_background": False,
+                    "load_skills": [],
+                    "category": "writing",
+                },
+            ],
         },
         read_only=True,
     )
@@ -137,9 +226,7 @@ class TaskTool:
         try:
             args = _TaskArgs.model_validate(call.arguments)
         except ValidationError as exc:
-            raise ValueError(
-                "task requires prompt, run_in_background, load_skills, and exactly one of category or subagent_type"  # noqa: E501
-            ) from exc
+            raise ValueError(format_validation_error(self.definition.name, exc)) from exc
 
         context = require_runtime_tool_context(self.definition.name)
         delegation_metadata: dict[str, object] = dict(_delegation_metadata(args).items())

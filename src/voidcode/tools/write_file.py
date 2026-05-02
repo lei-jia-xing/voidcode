@@ -9,7 +9,7 @@ from pydantic import ValidationError
 from ..hook.config import RuntimeHooksConfig
 from ..security.path_policy import resolve_workspace_path
 from ._formatter import FormatterExecutor, formatter_diagnostics, formatter_payload
-from ._pydantic_args import WriteFileArgs
+from ._pydantic_args import WriteFileArgs, format_validation_error
 from .contracts import ToolCall, ToolDefinition, ToolResult
 
 
@@ -34,11 +34,7 @@ class WriteFileTool:
                 }
             )
         except ValidationError as exc:
-            first_error = exc.errors()[0]
-            field_name = first_error.get("loc", (None,))[0]
-            if field_name == "content":
-                raise ValueError("write_file requires a non-empty string content argument") from exc
-            raise ValueError("write_file requires a string path argument") from exc
+            raise ValueError(format_validation_error(self.definition.name, exc)) from exc
 
         resolution = resolve_workspace_path(
             workspace=workspace,

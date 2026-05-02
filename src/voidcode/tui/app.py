@@ -355,8 +355,9 @@ class VoidCodeTUI(App[int]):
             decision = payload.get("decision", "unknown")
             text = Text(f"ℹ Approval {decision} for tool: {tool_name}", style="bold cyan")
         elif event.event_type == "runtime.failed":
-            error_msg = payload.get("error", "Unknown error")
-            text = Text(f"✖ Failed: {error_msg}", style="bold red")
+            error_msg = payload.get("error_summary", payload.get("error", "Unknown error"))
+            formatted_error = self._format_runtime_error(error_msg)
+            text = Text(f"✖ Failed: {formatted_error}", style="bold red")
         else:
             text = Text(f"EVENT {event.event_type} source={event.source}", style="dim")
 
@@ -364,6 +365,17 @@ class VoidCodeTUI(App[int]):
 
     def _write_output_line(self, output: str) -> None:
         self.query_one("#transcript-log", RichLog).write(Markdown(output))
+
+    @staticmethod
+    def _format_runtime_error(error: object) -> str:
+        if not isinstance(error, str):
+            return "Unknown error"
+        cleaned = error.removeprefix("Error: ").strip()
+        for prefix in ("Runtime failed:", "runtime failed:"):
+            if cleaned.startswith(prefix):
+                cleaned = cleaned[len(prefix) :].strip()
+                break
+        return cleaned or error
 
     @staticmethod
     def _context_int_value(context_window: dict[str, object], key: str, default: int = 0) -> int:
@@ -546,7 +558,7 @@ class VoidCodeTUI(App[int]):
 
     def on_stream_failed(self, message: StreamFailed) -> None:
         self.query_one("#transcript-log", RichLog).write(
-            Text(f"Error: {message.error}", style="bold red")
+            Text(f"Error: {self._format_runtime_error(message.error)}", style="bold red")
         )
         self.pending_request_id = None
         self._set_state("Failed")

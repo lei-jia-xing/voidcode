@@ -1353,6 +1353,10 @@ class RuntimeResumeCoordinator:
             data = payload.get("data")
             content = payload.get("content")
             error = payload.get("error")
+            error_kind = payload.get("error_kind")
+            error_summary = payload.get("error_summary")
+            error_details = payload.get("error_details")
+            retry_guidance = payload.get("retry_guidance")
             if not isinstance(tool_name, str) or status is None or not isinstance(data, dict):
                 raise ValueError("persisted resume checkpoint tool_results are malformed")
             if content is not None and not isinstance(content, str):
@@ -1363,6 +1367,24 @@ class RuntimeResumeCoordinator:
                 raise ValueError(
                     "persisted resume checkpoint tool result error must be a string or null"
                 )
+            if error_kind is not None and not isinstance(error_kind, str):
+                raise ValueError(
+                    "persisted resume checkpoint tool result error_kind must be a string or null"
+                )
+            if error_summary is not None and not isinstance(error_summary, str):
+                raise ValueError(
+                    "persisted resume checkpoint tool result error_summary must be a string or null"
+                )
+            if error_details is not None and not isinstance(error_details, dict):
+                raise ValueError(
+                    "persisted resume checkpoint tool result error_details "
+                    "must be an object or null"
+                )
+            if retry_guidance is not None and not isinstance(retry_guidance, str):
+                raise ValueError(
+                    "persisted resume checkpoint tool result retry_guidance "
+                    "must be a string or null"
+                )
             parsed.append(
                 ToolResult(
                     tool_name=tool_name,
@@ -1370,6 +1392,14 @@ class RuntimeResumeCoordinator:
                     status=status,
                     data=sanitize_tool_result_data(cast(dict[str, object], data)),
                     error=error,
+                    error_kind=error_kind,
+                    error_summary=error_summary,
+                    error_details=(
+                        cast(dict[str, object], error_details)
+                        if isinstance(error_details, dict)
+                        else None
+                    ),
+                    retry_guidance=retry_guidance,
                 )
             )
         return tuple(parsed)
@@ -1451,6 +1481,26 @@ class RuntimeResumeCoordinator:
                     status="error" if is_err else "ok",
                     data=sanitize_tool_result_data(event.payload),
                     error=str(error_value) if is_err else None,
+                    error_kind=(
+                        cast(str, event.payload.get("error_kind"))
+                        if isinstance(event.payload.get("error_kind"), str) and is_err
+                        else None
+                    ),
+                    error_summary=(
+                        cast(str, event.payload.get("error_summary"))
+                        if isinstance(event.payload.get("error_summary"), str) and is_err
+                        else None
+                    ),
+                    error_details=(
+                        cast(dict[str, object], event.payload.get("error_details"))
+                        if isinstance(event.payload.get("error_details"), dict) and is_err
+                        else None
+                    ),
+                    retry_guidance=(
+                        cast(str, event.payload.get("retry_guidance"))
+                        if isinstance(event.payload.get("retry_guidance"), str) and is_err
+                        else None
+                    ),
                 )
             )
         return prompt, tool_results

@@ -459,6 +459,11 @@ def test_provider_runtime_surfaces_provider_context_limit_failure_kind(tmp_path:
     assert failed.events[-1].payload == {
         "error": "provider context window exceeded",
         "kind": "provider_context_limit",
+        "error_summary": "provider context window exceeded",
+        "error_details": {
+            "message": "provider context window exceeded",
+            "summary": "provider context window exceeded",
+        },
     }
 
 
@@ -1961,13 +1966,19 @@ def test_runtime_rejects_denied_raw_provider_tool_calls_for_delegated_agents(
                 events.append(chunk.event)
 
     assert events[-1].event_type == "runtime.failed"
+    expected_error = (
+        f"delegation policy denied tool '{tool_name}' for child preset '{subagent_type}'; "
+        "this preset may only call tools allowed by its manifest tool_allowlist"
+    )
     assert events[-1].payload == {
-        "error": (
-            f"delegation policy denied tool '{tool_name}' for child preset '{subagent_type}'; "
-            "this preset may only call tools allowed by its manifest tool_allowlist"
-        ),
+        "error": expected_error,
         "kind": "delegation_tool_policy_denied",
         "tool": tool_name,
+        "error_summary": expected_error,
+        "error_details": {
+            "message": expected_error,
+            "summary": expected_error,
+        },
     }
     assert target.exists() is False
 
@@ -2797,7 +2808,14 @@ def test_runtime_persists_initial_allow_finalize_failure_for_resume(tmp_path: Pa
     assert resumed.session.status == "failed"
     assert resumed.events[-2].event_type == "runtime.tool_completed"
     assert resumed.events[-1].event_type == "runtime.failed"
-    assert resumed.events[-1].payload == {"error": "finalize boom"}
+    assert resumed.events[-1].payload == {
+        "error": "finalize boom",
+        "error_summary": "finalize boom",
+        "error_details": {
+            "message": "finalize boom",
+            "summary": "finalize boom",
+        },
+    }
 
 
 def test_runtime_persists_initial_plan_failure_for_resume(tmp_path: Path) -> None:
@@ -2845,7 +2863,14 @@ def test_runtime_persists_initial_plan_failure_for_resume(tmp_path: Path) -> Non
 
     assert resumed.session.status == "failed"
     assert resumed.events[-1].event_type == "runtime.failed"
-    assert resumed.events[-1].payload == {"error": "plan boom"}
+    assert resumed.events[-1].payload == {
+        "error": "plan boom",
+        "error_summary": "plan boom",
+        "error_details": {
+            "message": "plan boom",
+            "summary": "plan boom",
+        },
+    }
 
 
 def test_runtime_denies_non_read_only_tool_when_policy_is_deny(tmp_path: Path) -> None:
@@ -4047,7 +4072,14 @@ def test_runtime_approved_resume_persists_failure_when_pending_tool_is_missing(
         "runtime.failed",
     ]
     assert [event.sequence for event in resumed.events] == list(range(1, 10))
-    assert resumed.events[-1].payload == {"error": "unknown tool: write_file"}
+    assert resumed.events[-1].payload == {
+        "error": "unknown tool: write_file",
+        "error_summary": "unknown tool: write_file",
+        "error_details": {
+            "message": "unknown tool: write_file",
+            "summary": "unknown tool: write_file",
+        },
+    }
     assert replay.session.status == "failed"
     assert [(event.sequence, event.event_type, event.payload) for event in replay.events] == [
         (event.sequence, event.event_type, event.payload) for event in resumed.events

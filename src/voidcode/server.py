@@ -36,11 +36,13 @@ def serve(
     _run_runtime_server(workspace=workspace, host=host, port=port, config=config)
 
 
-_BANNER = """\
-  ╭─────────────────────────────────╮
-  │          VoidCode Web           │
-  │    Local-first Coding Agent     │
-  ╰─────────────────────────────────╯
+_BANNER = r"""\
+            _     _               _
+__   _____ (_) __| | ___ ___   __| | ___
+\ \ / / _ \| |/ _` |/ __/ _ \ / _` |/ _ \
+ \ V / (_) | | (_| | (_| (_) | (_| |  __/
+  \_/ \___/|_|\__,_|\___\___/ \__,_|\___|
+
 """
 
 # Locate the built frontend dist relative to this package.
@@ -69,6 +71,7 @@ def web(
     url = f"http://{host}:{port}"
     frontend_dist = _resolve_frontend_dist()
 
+    print("VoidCode")
     print(_BANNER)
     print(f"  Local server running at: {url}")
     print()

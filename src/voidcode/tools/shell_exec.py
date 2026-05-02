@@ -15,7 +15,7 @@ from ..security.shell_policy import (
     DEFAULT_TIMEOUT_SECONDS,
     resolve_shell_execution_policy,
 )
-from ._pydantic_args import ShellExecArgs
+from ._pydantic_args import ShellExecArgs, format_validation_error
 from .contracts import RuntimeToolTimeoutError, ToolCall, ToolDefinition, ToolResult
 from .runtime_context import current_runtime_tool_context
 
@@ -156,12 +156,14 @@ class ShellExecTool:
         runtime_timeout_seconds: int | None,
     ) -> ToolResult:
         try:
-            args = ShellExecArgs.model_validate({"command": call.arguments.get("command")})
+            args = ShellExecArgs.model_validate(
+                {
+                    "command": call.arguments.get("command"),
+                    "description": call.arguments.get("description"),
+                }
+            )
         except ValidationError as exc:
-            first_error = exc.errors()[0]
-            if first_error.get("type") == "value_error":
-                raise ValueError("shell_exec command must not be empty") from exc
-            raise ValueError("shell_exec requires a string command argument") from exc
+            raise ValueError(format_validation_error(self.definition.name, exc)) from exc
 
         command_text = args.command.strip()
 

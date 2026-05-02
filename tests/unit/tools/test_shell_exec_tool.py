@@ -66,18 +66,54 @@ def test_shell_exec_tool_supports_shell_operators(tmp_path: Path) -> None:
 
 def test_shell_exec_tool_rejects_invalid_command_arguments(tmp_path: Path) -> None:
     tool = ShellExecTool()
+    command_type_error = (
+        r"shell_exec Validation error: command: "
+        r"Input should be a valid string \(received int\)"
+        r"\. Please retry with corrected arguments that satisfy the tool schema\."
+    )
 
-    with pytest.raises(ValueError, match="string command"):
+    with pytest.raises(ValueError, match=command_type_error):
         tool.invoke(
             ToolCall(tool_name="shell_exec", arguments={"command": 123}),
             workspace=tmp_path,
         )
 
-    with pytest.raises(ValueError, match="must not be empty"):
+    command_empty_error = (
+        r"shell_exec Validation error: command: Value error, "
+        r"command must not be empty \(received str\)"
+        r"\. Please retry with corrected arguments that satisfy the tool schema\."
+    )
+    with pytest.raises(ValueError, match=command_empty_error):
         tool.invoke(
             ToolCall(tool_name="shell_exec", arguments={"command": "   "}),
             workspace=tmp_path,
         )
+
+    description_error = (
+        r"shell_exec Validation error: description: Value error, "
+        r"description must not be empty when provided \(received str\)"
+        r"\. Please retry with corrected arguments that satisfy the tool schema\."
+    )
+    with pytest.raises(ValueError, match=description_error):
+        tool.invoke(
+            ToolCall(
+                tool_name="shell_exec",
+                arguments={"command": "pwd", "description": "   "},
+            ),
+            workspace=tmp_path,
+        )
+
+
+def test_shell_exec_tool_reports_missing_command(tmp_path: Path) -> None:
+    tool = ShellExecTool()
+    missing_command_error = (
+        r"shell_exec Validation error: command: "
+        r"Input should be a valid string \(received NoneType\)"
+        r"\. Please retry with corrected arguments that satisfy the tool schema\."
+    )
+
+    with pytest.raises(ValueError, match=missing_command_error):
+        tool.invoke(ToolCall(tool_name="shell_exec", arguments={}), workspace=tmp_path)
 
 
 def test_tools_package_and_default_registry_export_shell_exec_tool() -> None:

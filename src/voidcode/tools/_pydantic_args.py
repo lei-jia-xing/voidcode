@@ -1,6 +1,35 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, field_validator
+from collections.abc import Iterable, Mapping
+
+from pydantic import BaseModel, ValidationError, field_validator
+
+
+def format_validation_error(tool_name: str, exc: ValidationError) -> str:
+    details = "; ".join(_format_validation_error_item(error) for error in exc.errors())
+    return (
+        f"{tool_name} Validation error: {details}. "
+        "Please retry with corrected arguments that satisfy the tool schema."
+    )
+
+
+def _format_validation_error_item(error: Mapping[str, object]) -> str:
+    loc = error.get("loc", ())
+    field_path = _format_error_location(loc)
+    message = str(error.get("msg") or "invalid value")
+    input_value = error.get("input")
+    input_type = type(input_value).__name__
+    return f"{field_path}: {message} (received {input_type})"
+
+
+def _format_error_location(loc: object) -> str:
+    if isinstance(loc, str):
+        return loc
+    if isinstance(loc, Iterable):
+        parts = [str(part) for part in loc]
+        if parts:
+            return ".".join(parts)
+    return "arguments"
 
 
 class ReadFileArgs(BaseModel):
@@ -87,12 +116,20 @@ class GrepArgs(BaseModel):
 
 class WebSearchArgs(BaseModel):
     query: str
+    numResults: int = 8
 
     @field_validator("query", mode="after")
     @classmethod
     def _validate_query(cls, value: str) -> str:
         if not value.strip():
             raise ValueError("query must not be empty")
+        return value
+
+    @field_validator("numResults", mode="after")
+    @classmethod
+    def _validate_num_results(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("numResults must be greater than or equal to 1")
         return value
 
 

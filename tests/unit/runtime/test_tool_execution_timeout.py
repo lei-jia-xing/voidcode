@@ -991,6 +991,17 @@ def test_timeout_exit_emits_terminal_tool_status_with_error(
 
     assert payload["status"] == "error", "terminal tool status must be error"
     assert payload["tool"] == "shell_exec"
+    assert payload["error_kind"] == "tool_timeout"
+    assert payload["error_summary"] == "tool 'shell_exec' exceeded runtime timeout of 1s"
+    assert payload["error_details"] == {
+        "tool_name": "shell_exec",
+        "message": "tool 'shell_exec' exceeded runtime timeout of 1s",
+        "summary": "tool 'shell_exec' exceeded runtime timeout of 1s",
+        "error_kind": "tool_timeout",
+        "timed_out": True,
+        "timeout_seconds": 1,
+    }
+    assert payload["retry_guidance"] == "Reduce the command scope, increase the timeout, or retry."
 
     assert "tool_call_id" in payload
     assert isinstance(payload["tool_call_id"], str)
@@ -1132,6 +1143,8 @@ def test_timeout_replay_preserves_terminal_tool_status_with_matching_call_id(
     completed_payload = completed_events[0].payload
     assert completed_payload["status"] == "error"
     assert completed_payload["tool"] == "shell_exec"
+    assert completed_payload["error_kind"] == "tool_timeout"
+    assert completed_payload["error_summary"] == "tool 'shell_exec' exceeded runtime timeout of 1s"
 
     started_call_id = started_events[0].payload["tool_call_id"]
     assert isinstance(started_call_id, str)

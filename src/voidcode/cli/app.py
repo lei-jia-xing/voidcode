@@ -772,8 +772,24 @@ def _runtime_failed_error(result: RuntimeStreamResult) -> str | None:
     )
     if failed_event is None:
         return None
+    summary = failed_event.payload.get("error_summary")
+    if isinstance(summary, str) and summary:
+        return _format_runtime_error_summary(summary)
     error = failed_event.payload.get("error")
-    return error if isinstance(error, str) and error else None
+    if not isinstance(error, str) or not error:
+        return None
+    return _format_runtime_error_summary(error)
+
+
+def _format_runtime_error_summary(error: str) -> str:
+    cleaned = error.removeprefix("Error: ").strip()
+    if not cleaned:
+        return error
+    for prefix in ("Runtime failed:", "runtime failed:"):
+        if cleaned.startswith(prefix):
+            cleaned = cleaned[len(prefix) :].strip()
+            break
+    return cleaned or error
 
 
 def _blocked_payload(result: RuntimeStreamResult, event: EventEnvelope) -> dict[str, object]:

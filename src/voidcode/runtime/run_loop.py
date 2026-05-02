@@ -29,6 +29,7 @@ from ..tools.contracts import (
     RuntimeToolTimeoutError,
     ToolCall,
     ToolDefinition,
+    ToolErrorDetails,
     ToolResult,
 )
 from ..tools.output import (
@@ -87,6 +88,66 @@ def _provider_transient_retry_delay_ms(
 
 def _tool_error_content(tool_name: str, error: str) -> str:
     return f"{tool_name} failed: {error}. Please correct the tool arguments and retry."
+
+
+def _tool_error_summary(error: str) -> str:
+    cleaned = error.removeprefix("Error: ").strip()
+    return cleaned or error
+
+
+def _tool_error_retry_guidance(error: str) -> str | None:
+    lowered = error.lower()
+    if "validation error:" in lowered:
+        return "Retry with corrected arguments that satisfy the tool schema."
+    if "permission denied" in lowered:
+        return "Adjust the request or approval settings, then retry."
+    if "timed out" in lowered or "timeout" in lowered:
+        return "Reduce the command scope, increase the timeout, or retry."
+    return None
+
+
+def _tool_error_details(
+    *,
+    tool_name: str,
+    error: str,
+    error_kind: str | None = None,
+    extra: dict[str, object] | None = None,
+) -> ToolErrorDetails:
+    details: ToolErrorDetails = {
+        "tool_name": tool_name,
+        "message": error,
+        "summary": _tool_error_summary(error),
+    }
+    if error_kind is not None:
+        details["error_kind"] = error_kind
+    if extra:
+        details.update(extra)
+    return details
+
+
+def _tool_error_payload(
+    *,
+    tool_name: str,
+    error: str,
+    error_kind: str | None = None,
+    extra_details: dict[str, object] | None = None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "error": error,
+        "error_summary": _tool_error_summary(error),
+        "error_details": _tool_error_details(
+            tool_name=tool_name,
+            error=error,
+            error_kind=error_kind,
+            extra=extra_details,
+        ),
+    }
+    if error_kind is not None:
+        payload["error_kind"] = error_kind
+    retry_guidance = _tool_error_retry_guidance(error)
+    if retry_guidance is not None:
+        payload["retry_guidance"] = retry_guidance
+    return payload
 
 
 def _metadata_without_provider_attempt(metadata: Mapping[str, object]) -> dict[str, object]:
@@ -595,7 +656,15 @@ class RuntimeRunLoopCoordinator:
                             "arguments": timeout_sanitized_args,
                             "status": "error",
                             "content": partial_timeout_content,
-                            "error": partial_timeout_error or str(exc),
+                            **_tool_error_payload(
+                                tool_name=tool_call.tool_name,
+                                error=partial_timeout_error or str(exc),
+                                error_kind="tool_timeout",
+                                extra_details={
+                                    "timed_out": True,
+                                    "timeout_seconds": tool_timeout,
+                                },
+                            ),
                             "display": failed_display,
                             "tool_status": failed_status,
                         },
@@ -628,7 +697,10 @@ class RuntimeRunLoopCoordinator:
                             "arguments": error_sanitized_args,
                             "status": "error",
                             "content": _tool_error_content(tool_call.tool_name, str(exc)),
-                            "error": str(exc),
+                            **_tool_error_payload(
+                                tool_name=tool_call.tool_name,
+                                error=str(exc),
+                            ),
                             "display": failed_display,
                             "tool_status": failed_status,
                         },
@@ -645,6 +717,9 @@ class RuntimeRunLoopCoordinator:
                     "tool_call_id": tool_call_id,
                     "arguments": dict(tool_call.arguments),
                 },
+                error_summary=_tool_error_summary(str(exc)),
+                error_details=_tool_error_details(tool_name=tool_call.tool_name, error=str(exc)),
+                retry_guidance=_tool_error_retry_guidance(str(exc)),
             )
 
         sanitized_arguments = sanitize_tool_arguments(dict(tool_call.arguments))
@@ -673,6 +748,14 @@ class RuntimeRunLoopCoordinator:
             "content": tool_result.content,
             "error": tool_result.error,
         }
+        if tool_result.error_kind is not None:
+            completed_payload["error_kind"] = tool_result.error_kind
+        if tool_result.error_summary is not None:
+            completed_payload["error_summary"] = tool_result.error_summary
+        if tool_result.error_details is not None:
+            completed_payload["error_details"] = tool_result.error_details
+        if tool_result.retry_guidance is not None:
+            completed_payload["retry_guidance"] = tool_result.retry_guidance
         completed_payload.setdefault("tool", tool_result.tool_name)
 
         completed_display = build_tool_display(
@@ -1782,7 +1865,15 @@ class RuntimeRunLoopCoordinator:
                                 "arguments": timeout_sanitized_args,
                                 "status": "error",
                                 "content": partial_timeout_content,
-                                "error": partial_timeout_error or str(exc),
+                                **_tool_error_payload(
+                                    tool_name=plan_tool_call.tool_name,
+                                    error=partial_timeout_error or str(exc),
+                                    error_kind="tool_timeout",
+                                    extra_details={
+                                        "timed_out": True,
+                                        "timeout_seconds": tool_timeout,
+                                    },
+                                ),
                                 "display": failed_display,
                                 "tool_status": failed_status,
                             },
@@ -1819,7 +1910,10 @@ class RuntimeRunLoopCoordinator:
                                 "arguments": error_sanitized_args,
                                 "status": "error",
                                 "content": _tool_error_content(plan_tool_call.tool_name, str(exc)),
-                                "error": str(exc),
+                                **_tool_error_payload(
+                                    tool_name=plan_tool_call.tool_name,
+                                    error=str(exc),
+                                ),
                                 "display": failed_display,
                                 "tool_status": failed_status,
                             },
@@ -1838,6 +1932,12 @@ class RuntimeRunLoopCoordinator:
                         "tool_call_id": tool_call_id,
                         "arguments": dict(plan_tool_call.arguments),
                     },
+                    error_summary=_tool_error_summary(str(exc)),
+                    error_details=_tool_error_details(
+                        tool_name=plan_tool_call.tool_name,
+                        error=str(exc),
+                    ),
+                    retry_guidance=_tool_error_retry_guidance(str(exc)),
                 )
 
             runtime_tool_result_data = dict(tool_result.data)
@@ -1921,6 +2021,14 @@ class RuntimeRunLoopCoordinator:
                 "content": tool_result.content,
                 "error": tool_result.error,
             }
+            if tool_result.error_kind is not None:
+                completed_payload["error_kind"] = tool_result.error_kind
+            if tool_result.error_summary is not None:
+                completed_payload["error_summary"] = tool_result.error_summary
+            if tool_result.error_details is not None:
+                completed_payload["error_details"] = tool_result.error_details
+            if tool_result.retry_guidance is not None:
+                completed_payload["retry_guidance"] = tool_result.retry_guidance
             completed_payload.setdefault("tool", tool_result.tool_name)
 
             completed_display = build_tool_display(
@@ -2088,6 +2196,15 @@ class RuntimeRunLoopCoordinator:
             content=_tool_error_content(tool_call.tool_name, error),
             error=error,
             data=sanitize_tool_result_data(result_data),
+            error_kind="permission_denied",
+            error_summary=_tool_error_summary(error),
+            error_details=_tool_error_details(
+                tool_name=tool_call.tool_name,
+                error=error,
+                error_kind="permission_denied",
+                extra={"permission_denied": True},
+            ),
+            retry_guidance="Adjust the request or approval settings, then retry.",
         )
         completed_display = build_tool_display(
             tool_call.tool_name,
@@ -2117,6 +2234,10 @@ class RuntimeRunLoopCoordinator:
                     "status": tool_result.status,
                     "content": tool_result.content,
                     "error": tool_result.error,
+                    "error_kind": tool_result.error_kind,
+                    "error_summary": tool_result.error_summary,
+                    "error_details": tool_result.error_details,
+                    "retry_guidance": tool_result.retry_guidance,
                     "display": completed_display,
                     "tool_status": completed_status,
                 },

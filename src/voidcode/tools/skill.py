@@ -6,6 +6,7 @@ from pathlib import Path
 from pydantic import BaseModel, ValidationError, field_validator
 
 from ..skills.models import SkillMetadata
+from ._pydantic_args import format_validation_error
 from .contracts import ToolCall, ToolDefinition, ToolResult
 
 
@@ -79,7 +80,7 @@ class SkillTool:
         try:
             args = _SkillArgs.model_validate(call.arguments)
         except ValidationError as exc:
-            raise ValueError("skill requires a non-empty string name") from exc
+            raise ValueError(format_validation_error("skill", exc)) from exc
 
         skill = self._resolve_skill(args.name)
         content_lines = [

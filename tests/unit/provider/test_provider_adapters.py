@@ -568,9 +568,18 @@ def test_provider_adapter_wraps_task_tool_description_argument(
     properties = cast(dict[str, object], properties_obj)
 
     assert parameters["type"] == "object"
-    assert "description" not in parameters
-    assert properties["description"] == {"type": "string"}
-    assert properties["prompt"] == {"type": "string"}
+    assert parameters["additionalProperties"] is False
+    assert parameters["required"] == ["prompt", "run_in_background", "load_skills"]
+    one_of = cast(list[object], parameters["oneOf"])
+    assert len(one_of) == 2
+    examples = cast(list[object], parameters["examples"])
+    assert cast(dict[str, object], examples[0])["run_in_background"] is True
+    assert cast(dict[str, object], examples[1])["run_in_background"] is False
+    description_property = cast(dict[str, object], properties["description"])
+    prompt_property = cast(dict[str, object], properties["prompt"])
+    assert description_property["type"] == "string"
+    assert prompt_property["type"] == "string"
+    assert "Full delegated task prompt" in cast(str, prompt_property["description"])
 
 
 def test_provider_adapter_preserves_object_schema_without_explicit_type(

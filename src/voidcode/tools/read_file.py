@@ -11,7 +11,7 @@ from typing import ClassVar, cast, final
 from pydantic import ValidationError
 
 from ..security.path_policy import resolve_workspace_path as resolve_workspace_path_policy
-from ._pydantic_args import ReadFileArgs
+from ._pydantic_args import ReadFileArgs, format_validation_error
 from ._workspace import suggest_workspace_paths
 from .contracts import ToolCall, ToolDefinition, ToolResult
 
@@ -218,12 +218,7 @@ class ReadFileTool:
                 }
             )
         except ValidationError as exc:
-            first_error = exc.errors()[0]
-            if first_error.get("loc", (None,))[0] == "offset":
-                raise ValueError("read_file offset must be greater than or equal to 1") from exc
-            if first_error.get("loc", (None,))[0] == "limit":
-                raise ValueError("read_file limit must be greater than or equal to 1") from exc
-            raise ValueError("read_file requires a string filePath argument") from exc
+            raise ValueError(format_validation_error(self.definition.name, exc)) from exc
 
         resolution = resolve_workspace_path_policy(
             workspace=workspace,

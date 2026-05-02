@@ -9,7 +9,7 @@ from typing import ClassVar, cast, final
 from pydantic import ValidationError
 
 from ..security.path_policy import resolve_workspace_path as resolve_workspace_path_policy
-from ._pydantic_args import GrepArgs
+from ._pydantic_args import GrepArgs, format_validation_error
 from .contracts import ToolCall, ToolDefinition, ToolResult
 
 MAX_MATCHES = 200
@@ -129,13 +129,7 @@ class GrepTool:
                 }
             )
         except ValidationError as exc:
-            first_error = exc.errors()[0]
-            field_name = first_error.get("loc", (None,))[0]
-            if field_name == "path":
-                raise ValueError("grep requires a string path argument") from exc
-            if first_error.get("type") == "value_error":
-                raise ValueError("grep pattern must not be empty") from exc
-            raise ValueError("grep requires a string pattern argument") from exc
+            raise ValueError(format_validation_error(self.definition.name, exc)) from exc
 
         resolution = resolve_workspace_path_policy(
             workspace=workspace,
@@ -154,7 +148,14 @@ class GrepTool:
             candidate if resolution.is_external and candidate.is_dir() else workspace_root
         )
 
-        pattern = re.compile(args.pattern if args.regex else re.escape(args.pattern))
+        try:
+            pattern = re.compile(args.pattern if args.regex else re.escape(args.pattern))
+        except re.error as exc:
+            raise ValueError(
+                "grep Validation error: pattern: invalid regex pattern "
+                f"({exc.msg}) (received str). "
+                "Please retry with corrected arguments that satisfy the tool schema."
+            ) from exc
         targets = self._collect_targets(
             candidate,
             project_root=effective_root,

@@ -320,14 +320,11 @@ def test_background_output_tool_returns_task_summary(tmp_path: Path) -> None:
     assert "raw child output is not injected" in result.content
     assert result.reference == "session:child-session"
     assert result.data["task_id"] == "task-1"
-    delegation_payload = result.data["delegation"]
-    assert isinstance(delegation_payload, dict)
+    delegation_payload = cast(dict[str, object], result.data["delegation"])
     assert delegation_payload["delegated_task_id"] == "task-1"
-    message_payload = result.data["message"]
-    assert isinstance(message_payload, dict)
+    message_payload = cast(dict[str, object], result.data["message"])
     assert message_payload["status"] == "completed"
-    session_payload = result.data["session"]
-    assert isinstance(session_payload, dict)
+    session_payload = cast(dict[str, object], result.data["session"])
     assert session_payload["session_id"] == "child-session"
     assert session_payload["child_session_id"] == "child-session"
     assert session_payload["output_available"] is True
@@ -371,8 +368,7 @@ def test_background_output_full_session_preserves_approval_summary(tmp_path: Pat
     assert "Approval blocked on write_file: write_file alpha.txt" in result.content
     assert "Running child session" not in result.content
     assert result.data["summary_output"] == ("Approval blocked on write_file: write_file alpha.txt")
-    message_payload = result.data["message"]
-    assert isinstance(message_payload, dict)
+    message_payload = cast(dict[str, object], result.data["message"])
     assert message_payload["summary_output"] == (
         "Approval blocked on write_file: write_file alpha.txt"
     )
@@ -389,8 +385,7 @@ def test_background_output_tool_bounds_full_session_transcript(tmp_path: Path) -
         workspace=tmp_path,
     )
 
-    session_payload = result.data["session"]
-    assert isinstance(session_payload, dict)
+    session_payload = cast(dict[str, object], result.data["session"])
     assert session_payload["message_limit"] == 100
     assert session_payload["transcript_count"] == 100
     assert session_payload["transcript_truncated"] is True
@@ -465,8 +460,7 @@ def test_background_output_tool_handles_interrupted_terminal_state(tmp_path: Pat
     assert result.data["status"] == "interrupted"
     assert result.data["result_available"] is True
     assert result.data["retrieval_instruction"] == 'background_output(task_id="task-1")'
-    handoff = result.data["handoff_summary"]
-    assert isinstance(handoff, dict)
+    handoff = cast(dict[str, object], result.data["handoff_summary"])
     assert handoff["blocked_reason"] == "background task interrupted before completion"
     assert "interrupted before completion" in str(result.data["guidance"])
 
@@ -572,9 +566,85 @@ def test_background_cancel_tool_reports_unknown_task_deterministically(tmp_path:
 
 def test_background_cancel_tool_rejects_all_true(tmp_path: Path) -> None:
     tool = BackgroundCancelTool(runtime=_StubBackgroundRuntime())
+    all_true_error = (
+        r"background_cancel Validation error: all: Value error, "
+        r"all=true is not supported in VoidCode yet \(received bool\)"
+    )
 
-    with pytest.raises(ValueError, match="not supported"):
+    with pytest.raises(ValueError, match=all_true_error):
         tool.invoke(
             ToolCall(tool_name="background_cancel", arguments={"all": True}),
+            workspace=tmp_path,
+        )
+
+
+def test_background_cancel_tool_reports_task_id_validation_errors(tmp_path: Path) -> None:
+    tool = BackgroundCancelTool(runtime=_StubBackgroundRuntime())
+    task_id_type_error = (
+        r"background_cancel Validation error: taskId: "
+        r"Input should be a valid string \(received int\)"
+        r"\. Please retry with corrected arguments that satisfy the tool schema\."
+    )
+
+    with pytest.raises(ValueError, match=task_id_type_error):
+        tool.invoke(
+            ToolCall(tool_name="background_cancel", arguments={"taskId": 123}),
+            workspace=tmp_path,
+        )
+
+    task_id_empty_error = (
+        r"background_cancel Validation error: taskId: Value error, "
+        r"taskId must be a non-empty string when provided \(received str\)"
+        r"\. Please retry with corrected arguments that satisfy the tool schema\."
+    )
+    with pytest.raises(ValueError, match=task_id_empty_error):
+        tool.invoke(
+            ToolCall(tool_name="background_cancel", arguments={"taskId": "   "}),
+            workspace=tmp_path,
+        )
+
+    missing_task_id_error = (
+        r"background_cancel Validation error: taskId: Value error, "
+        r"taskId is required when all is false \(received NoneType\)"
+    )
+    with pytest.raises(ValueError, match=missing_task_id_error):
+        tool.invoke(
+            ToolCall(tool_name="background_cancel", arguments={}),
+            workspace=tmp_path,
+        )
+
+
+def test_background_cancel_tool_validates_coerced_boolean_inputs(tmp_path: Path) -> None:
+    tool = BackgroundCancelTool(runtime=_StubBackgroundRuntime())
+    all_true_error = (
+        r"background_cancel Validation error: all: Value error, "
+        r"all=true is not supported in VoidCode yet \(received bool\)"
+    )
+    missing_task_id_error = (
+        r"background_cancel Validation error: taskId: Value error, "
+        r"taskId is required when all is false \(received NoneType\)"
+    )
+
+    with pytest.raises(ValueError, match=all_true_error):
+        tool.invoke(
+            ToolCall(tool_name="background_cancel", arguments={"all": 1}),
+            workspace=tmp_path,
+        )
+
+    with pytest.raises(ValueError, match=all_true_error):
+        tool.invoke(
+            ToolCall(tool_name="background_cancel", arguments={"all": "true"}),
+            workspace=tmp_path,
+        )
+
+    with pytest.raises(ValueError, match=missing_task_id_error):
+        tool.invoke(
+            ToolCall(tool_name="background_cancel", arguments={"all": 0}),
+            workspace=tmp_path,
+        )
+
+    with pytest.raises(ValueError, match=missing_task_id_error):
+        tool.invoke(
+            ToolCall(tool_name="background_cancel", arguments={"all": "false"}),
             workspace=tmp_path,
         )

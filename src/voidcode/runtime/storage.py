@@ -1737,17 +1737,25 @@ class SqliteSessionStore:
                 is_err = payload.get("error") is not None
             raw_content = payload.get("content")
             raw_error = payload.get("error")
-            tool_results.append(
-                {
-                    "tool_name": str(payload.get("tool", "unknown")),
-                    "content": (
-                        str(raw_content) if raw_content is not None and not is_err else None
-                    ),
-                    "status": "error" if is_err else "ok",
-                    "data": payload,
-                    "error": str(raw_error) if raw_error is not None and is_err else None,
-                }
-            )
+            tool_result: dict[str, object] = {
+                "tool_name": str(payload.get("tool", "unknown")),
+                "content": str(raw_content) if raw_content is not None and not is_err else None,
+                "status": "error" if is_err else "ok",
+                "data": payload,
+                "error": str(raw_error) if raw_error is not None and is_err else None,
+            }
+            if is_err:
+                if payload.get("error_kind") is not None:
+                    tool_result["error_kind"] = str(payload.get("error_kind"))
+                if payload.get("error_summary") is not None:
+                    tool_result["error_summary"] = str(payload.get("error_summary"))
+                if isinstance(payload.get("error_details"), dict):
+                    tool_result["error_details"] = cast(
+                        dict[str, object], payload.get("error_details")
+                    )
+                if payload.get("retry_guidance") is not None:
+                    tool_result["retry_guidance"] = str(payload.get("retry_guidance"))
+            tool_results.append(tool_result)
         return tool_results
 
     def has_session(self, *, workspace: Path, session_id: str) -> bool:

@@ -131,6 +131,55 @@ def test_read_file_tool_rejects_non_regular_target(tmp_path: Path) -> None:
         )
 
 
+def test_read_file_tool_reports_field_specific_validation_errors(tmp_path: Path) -> None:
+    tool = ReadFileTool()
+
+    file_path_error = (
+        r"read_file Validation error: filePath: "
+        r"Input should be a valid string \(received int\)"
+        r"\. Please retry with corrected arguments that satisfy the tool schema\."
+    )
+    with pytest.raises(ValueError, match=file_path_error):
+        tool.invoke(
+            ToolCall(tool_name="read_file", arguments={"filePath": 123}),
+            workspace=tmp_path,
+        )
+
+    offset_error = (
+        r"read_file Validation error: offset: Value error, "
+        r"offset must be greater than or equal to 1 \(received int\)"
+        r"\. Please retry with corrected arguments that satisfy the tool schema\."
+    )
+    with pytest.raises(ValueError, match=offset_error):
+        tool.invoke(
+            ToolCall(tool_name="read_file", arguments={"filePath": "sample.txt", "offset": 0}),
+            workspace=tmp_path,
+        )
+
+    limit_error = (
+        r"read_file Validation error: limit: Value error, "
+        r"limit must be greater than or equal to 1 \(received int\)"
+        r"\. Please retry with corrected arguments that satisfy the tool schema\."
+    )
+    with pytest.raises(ValueError, match=limit_error):
+        tool.invoke(
+            ToolCall(tool_name="read_file", arguments={"filePath": "sample.txt", "limit": 0}),
+            workspace=tmp_path,
+        )
+
+
+def test_read_file_tool_reports_missing_file_path(tmp_path: Path) -> None:
+    tool = ReadFileTool()
+    missing_file_path_error = (
+        r"read_file Validation error: filePath: "
+        r"Input should be a valid string \(received NoneType\)"
+        r"\. Please retry with corrected arguments that satisfy the tool schema\."
+    )
+
+    with pytest.raises(ValueError, match=missing_file_path_error):
+        tool.invoke(ToolCall(tool_name="read_file", arguments={}), workspace=tmp_path)
+
+
 def test_read_file_tool_rejects_oversized_attachment_before_read_bytes(tmp_path: Path) -> None:
     image = tmp_path / "image.png"
     _ = image.write_bytes(b"\x89PNG\r\n\x1a\n" + (b"x" * MAX_ATTACHMENT_BYTES))

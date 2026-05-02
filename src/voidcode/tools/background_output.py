@@ -8,6 +8,7 @@ from pydantic import BaseModel, ValidationError, field_validator
 
 from ..runtime.contracts import BackgroundTaskResult, RuntimeSessionResult
 from ..runtime.task import is_background_task_terminal
+from ._pydantic_args import format_validation_error
 from .contracts import ToolCall, ToolDefinition, ToolResult
 
 
@@ -65,7 +66,7 @@ class BackgroundOutputTool:
         try:
             args = _BackgroundOutputArgs.model_validate(call.arguments)
         except ValidationError as exc:
-            raise ValueError("background_output requires a non-empty task_id") from exc
+            raise ValueError(format_validation_error(self.definition.name, exc)) from exc
 
         deadline = time.monotonic() + max(args.timeout, 1) / 1000
         result = self._runtime.load_background_task_result(

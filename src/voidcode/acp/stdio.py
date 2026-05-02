@@ -230,6 +230,7 @@ class StdioAcpServer:
     ) -> None:
         stop_reason = "end_turn"
         failed_execution = False
+        failure_message: str | None = None
         final_session_status: object = None
         try:
             request = RuntimeRequest(
@@ -259,6 +260,9 @@ class StdioAcpServer:
                 if chunk.event is not None:
                     if _optional_attr(chunk.event, "event_type") == "runtime.failed":
                         failed_execution = True
+                        failure_message = _runtime_failure_summary(
+                            _mapping_attr(chunk.event, "payload")
+                        )
                     self._write_runtime_event_update(
                         acp_session_id=acp_session_id,
                         runtime_session_id=chunk.session.session.id,
@@ -278,7 +282,11 @@ class StdioAcpServer:
             if binding.cancel_requested:
                 stop_reason = "cancelled"
             if failed_execution or final_session_status == "failed":
-                self._write_error(request_id, _ERROR_INTERNAL, "runtime execution failed")
+                self._write_error(
+                    request_id,
+                    _ERROR_INTERNAL,
+                    failure_message or "runtime execution failed",
+                )
                 return
             self._write_result(
                 request_id,
@@ -286,14 +294,15 @@ class StdioAcpServer:
             )
         except Exception as exc:
             self._log_exception("ACP prompt failed", exc)
+            summary = _runtime_failure_summary({"error": str(exc)})
             self._write_session_update(
                 acp_session_id,
                 {
                     "sessionUpdate": "agent_message_chunk",
-                    "content": {"type": "text", "text": "Runtime failed."},
+                    "content": {"type": "text", "text": summary},
                 },
             )
-            self._write_error(request_id, _ERROR_INTERNAL, "runtime execution failed")
+            self._write_error(request_id, _ERROR_INTERNAL, summary)
         finally:
             binding.active = False
             binding.active_run_id = None
@@ -378,13 +387,14 @@ class StdioAcpServer:
             )
             return
         if event_type == "runtime.failed":
+            summary = _runtime_failure_summary(payload)
             self._write_session_update(
                 acp_session_id,
                 {
                     "sessionUpdate": "agent_message_chunk",
                     "content": {
                         "type": "text",
-                        "text": "Runtime failed.",
+                        "text": summary,
                     },
                 },
             )
@@ -531,3 +541,13 @@ def _tool_call_id(payload: Mapping[str, object], runtime_session_id: str) -> str
             return value
     tool_name = _string_payload(payload, "tool", default="tool")
     return f"{runtime_session_id}:{tool_name}"
+
+
+def _runtime_failure_summary(payload: Mapping[str, object]) -> str:
+    summary = payload.get("error_summary")
+    if isinstance(summary, str) and summary.strip():
+        return summary.strip()
+    error = payload.get("error")
+    if isinstance(error, str) and error.strip():
+        return error.strip()
+    return "Runtime failed."

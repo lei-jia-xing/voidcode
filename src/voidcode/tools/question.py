@@ -6,6 +6,7 @@ from typing import ClassVar
 from pydantic import BaseModel, ValidationError, field_validator
 
 from ..runtime.question import PendingQuestionOption, PendingQuestionPrompt, QuestionResponse
+from ._pydantic_args import format_validation_error
 from .contracts import ToolCall, ToolDefinition, ToolResult
 
 
@@ -73,7 +74,7 @@ class QuestionTool:
         try:
             parsed = _QuestionArgsModel.model_validate(arguments)
         except ValidationError as exc:
-            raise ValueError("question requires a non-empty questions array") from exc
+            raise ValueError(format_validation_error("question", exc)) from exc
         return tuple(
             PendingQuestionPrompt(
                 question=item.question,
