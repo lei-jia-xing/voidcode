@@ -443,19 +443,44 @@ def runtime_config_json_schema() -> dict[str, object]:
                 "properties": {
                     "preset": {
                         "type": "string",
-                        "enum": [
-                            "leader",
-                            "worker",
-                            "advisor",
-                            "explore",
-                            "researcher",
-                            "product",
-                        ],
+                        "pattern": "^[a-z][a-z0-9_-]*$",
                     },
                     "prompt_profile": {"type": "string", "minLength": 1},
+                    "prompt": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Explicit prompt/profile text for this agent config entry.",
+                    },
+                    "prompt_append": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": (
+                            "Additional local guidance appended to the resolved base prompt."
+                        ),
+                    },
                     "prompt_materialization": {"type": "object"},
                     "prompt_ref": {"type": "string", "minLength": 1},
-                    "prompt_source": {"type": "string", "enum": ["builtin"]},
+                    "prompt_source": {
+                        "type": "string",
+                        "enum": ["builtin", "custom_markdown"],
+                    },
+                    "manifest_source_scope": {
+                        "type": "string",
+                        "enum": ["builtin", "project", "user"],
+                    },
+                    "manifest_source_path": {"type": "string", "minLength": 1},
+                    "manifest_tool_allowlist": {
+                        "type": "array",
+                        "items": {"type": "string", "minLength": 1},
+                    },
+                    "manifest_skill_refs": {
+                        "type": "array",
+                        "items": {"type": "string", "minLength": 1},
+                    },
+                    "manifest_hook_refs": {
+                        "type": "array",
+                        "items": {"type": "string", "minLength": 1},
+                    },
                     "hook_refs": {"type": "array", "items": {"type": "string"}},
                     "model": {"type": "string", "minLength": 1},
                     "execution_engine": {

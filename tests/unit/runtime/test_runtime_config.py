@@ -87,6 +87,11 @@ def _prompt_materialization_payload(profile: str) -> dict[str, object]:
     return {"profile": profile, "version": 2, "source": "builtin", "format": "text"}
 
 
+def _write_agent_manifest(path: Path, frontmatter: str, body: str = "Custom prompt.") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"---\n{frontmatter}\n---\n{body}\n", encoding="utf-8")
+
+
 PRETTIER_FALLBACK_COMMANDS = (
     ("bunx", "prettier", "--write"),
     ("pnpm", "exec", "prettier", "--write"),
@@ -1317,6 +1322,124 @@ def test_runtime_config_rejects_agent_preset_alias_maps(
         _ = load_runtime_config(tmp_path, env={})
 
 
+def test_runtime_config_resolves_custom_primary_manifest(tmp_path: Path) -> None:
+    manifest_path = tmp_path / ".voidcode" / "agents" / "planner.md"
+    _write_agent_manifest(
+        manifest_path,
+        "\n".join(
+            (
+                "id: local-planner",
+                "name: Local Planner",
+                "description: Local primary planner",
+                "mode: primary",
+                "model: opencode/planner",
+                "fallback_models: [opencode/fallback]",
+                "tool_allowlist: [read_file, grep]",
+                "skill_refs: [planning]",
+                "preset_hook_refs: [role_reminder]",
+            )
+        ),
+        body="Plan locally from markdown.",
+    )
+    runtime_config_path(tmp_path).write_text(
+        json.dumps({"agent": {"preset": "local-planner"}}),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.agent is not None
+    assert config.agent.preset == "local-planner"
+    assert config.agent.prompt_source == "custom_markdown"
+    assert config.agent.prompt_materialization == {
+        "profile": "local-planner",
+        "version": 1,
+        "source": "custom_markdown",
+        "format": "markdown",
+        "body": "Plan locally from markdown.",
+        "source_scope": "project",
+        "source_path": str(manifest_path),
+    }
+    assert config.agent.manifest_source_scope == "project"
+    assert config.agent.manifest_source_path == str(manifest_path)
+    assert config.agent.manifest_tool_allowlist == ("read_file", "grep")
+    assert config.agent.manifest_skill_refs == ("planning",)
+    assert config.agent.manifest_hook_refs == ("role_reminder",)
+    assert config.agent.model == "opencode/planner"
+    assert config.agent.provider_fallback == RuntimeProviderFallbackConfig(
+        preferred_model="opencode/planner",
+        fallback_models=("opencode/fallback",),
+    )
+    serialized_agent = serialize_runtime_agent_config(config.agent)
+    assert serialized_agent is not None
+    assert serialized_agent["prompt_materialization"] == config.agent.prompt_materialization
+
+
+def test_runtime_config_allows_agents_key_for_discovered_custom_manifest(tmp_path: Path) -> None:
+    _write_agent_manifest(
+        tmp_path / ".voidcode" / "agents" / "reviewer.md",
+        "\n".join(
+            (
+                "id: local-reviewer",
+                "name: Local Reviewer",
+                "description: review",
+                "mode: subagent",
+                "tool_allowlist: [read_file, grep]",
+                "skill_refs: [review]",
+                "preset_hook_refs: [role_reminder]",
+            )
+        ),
+        body="Review from markdown.",
+    )
+    runtime_config_path(tmp_path).write_text(
+        json.dumps({"agents": {"local-reviewer": {"model": "opencode/reviewer"}}}),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.agents is not None
+    agent = config.agents["local-reviewer"]
+    assert agent.preset == "local-reviewer"
+    assert agent.prompt_source == "custom_markdown"
+    assert agent.prompt_materialization is not None
+    assert agent.prompt_materialization["body"] == "Review from markdown."
+    assert agent.manifest_tool_allowlist == ("read_file", "grep")
+    assert agent.manifest_skill_refs == ("review",)
+    assert agent.manifest_hook_refs == ("role_reminder",)
+    assert agent.model == "opencode/reviewer"
+
+
+def test_runtime_config_applies_manifest_fallback_models_to_configured_agent_model(
+    tmp_path: Path,
+) -> None:
+    _write_agent_manifest(
+        tmp_path / ".voidcode" / "agents" / "reviewer.md",
+        "\n".join(
+            (
+                "id: local-reviewer",
+                "name: Local Reviewer",
+                "description: review",
+                "mode: subagent",
+                "fallback_models: [opencode/reviewer-fallback]",
+            )
+        ),
+        body="Review from markdown.",
+    )
+    runtime_config_path(tmp_path).write_text(
+        json.dumps({"agents": {"local-reviewer": {"model": "opencode/reviewer"}}}),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.agents is not None
+    assert config.agents["local-reviewer"].provider_fallback == RuntimeProviderFallbackConfig(
+        preferred_model="opencode/reviewer",
+        fallback_models=("opencode/reviewer-fallback",),
+    )
+
+
 def test_runtime_agent_payload_round_trips_through_serialization() -> None:
     agent = parse_runtime_agent_payload(
         {
@@ -1479,6 +1602,40 @@ def test_runtime_agent_payload_parses_prompt_and_hook_references() -> None:
         hook_refs=("role_reminder", "delegation_guard"),
         execution_engine="provider",
     )
+
+
+def test_runtime_agent_payload_applies_explicit_prompt_override() -> None:
+    agent = parse_runtime_agent_payload(
+        {
+            "preset": "leader",
+            "prompt": "You are a local reviewer.",
+            "prompt_append": "Always include file paths.",
+        },
+        source="test payload",
+    )
+
+    assert agent is not None
+    assert agent.prompt == "You are a local reviewer."
+    assert agent.prompt_append == "Always include file paths."
+    assert agent.prompt_source == "custom_markdown"
+    assert agent.prompt_materialization is not None
+    assert agent.prompt_materialization["body"] == "You are a local reviewer."
+    assert agent.prompt_materialization["prompt_append"] == "Always include file paths."
+
+
+def test_runtime_agent_payload_appends_to_builtin_prompt() -> None:
+    agent = parse_runtime_agent_payload(
+        {"preset": "leader", "prompt_append": "Prefer concise findings."},
+        source="test payload",
+    )
+
+    assert agent is not None
+    assert agent.prompt_append == "Prefer concise findings."
+    assert agent.prompt_materialization is not None
+    body = agent.prompt_materialization["body"]
+    assert isinstance(body, str)
+    assert "Prefer concise findings." not in body
+    assert agent.prompt_materialization["prompt_append"] == "Prefer concise findings."
 
 
 def test_runtime_agent_payload_rejects_unknown_prompt_reference() -> None:

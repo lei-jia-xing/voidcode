@@ -296,12 +296,17 @@ def runtime_subagent_routing_from_metadata(
 
 def runtime_subagent_route_from_metadata(
     metadata: RuntimeRequestMetadataPayload | dict[str, object] | None,
+    *,
+    callable_subagent_presets: frozenset[str] | None = None,
 ) -> ResolvedSubagentRoute | None:
     routing = runtime_subagent_routing_from_metadata(metadata)
     if routing is None:
         return None
     try:
-        resolved = resolve_subagent_route(routing)
+        resolved = resolve_subagent_route(
+            routing,
+            callable_subagent_presets=callable_subagent_presets,
+        )
     except ValueError as exc:
         raise RuntimeRequestError(str(exc)) from exc
     if metadata is None:
@@ -632,6 +637,8 @@ class AgentSummary:
     model_source: str | None = None
     provider: str | None = None
     fallback_chain: tuple[str, ...] = ()
+    source_scope: str | None = None
+    source_path: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

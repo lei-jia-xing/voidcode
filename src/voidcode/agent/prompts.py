@@ -74,6 +74,19 @@ def _select_profile_from_materialization_payload(
     return override_profile.strip()
 
 
+def _render_materialization_payload(materialization: Mapping[str, object]) -> str | None:
+    source = materialization.get("source")
+    if source == "custom_markdown":
+        body = materialization.get("body")
+        if isinstance(body, str) and body.strip():
+            prompt_append = materialization.get("prompt_append")
+            if isinstance(prompt_append, str) and prompt_append.strip():
+                return f"{body.strip()}\n\n{prompt_append.strip()}"
+            return body.strip()
+        return None
+    return None
+
+
 def render_agent_prompt(
     agent_preset: Mapping[str, object] | None = None,
     *,
@@ -84,10 +97,20 @@ def render_agent_prompt(
     materialization = agent_preset.get("prompt_materialization")
     selected_profile: str | None = None
     if isinstance(materialization, AgentPromptMaterialization):
+        if materialization.source == "custom_markdown":
+            if materialization.body is None:
+                return None
+            if materialization.prompt_append is not None:
+                return f"{materialization.body.strip()}\n\n{materialization.prompt_append.strip()}"
+            return materialization.body.strip()
         selected_profile = materialization.select_profile(model_family)
     elif isinstance(materialization, Mapping):
+        materialization_payload = cast(Mapping[str, object], materialization)
+        rendered_payload = _render_materialization_payload(materialization_payload)
+        if rendered_payload is not None:
+            return rendered_payload
         selected_profile = _select_profile_from_materialization_payload(
-            cast(Mapping[str, object], materialization),
+            materialization_payload,
             model_family,
         )
     if selected_profile is None:

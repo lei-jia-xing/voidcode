@@ -201,7 +201,7 @@ PRODUCT_AGENT_MANIFEST = AgentManifest(
 def validate_builtin_agent_manifests(
     manifests: tuple[AgentManifest, ...],
 ) -> tuple[AgentManifest, ...]:
-    manifest_ids: set[AgentManifestId] = set()
+    manifest_ids: set[str] = set()
     for manifest in manifests:
         if manifest.id in manifest_ids:
             raise ValueError(f"duplicate builtin agent manifest id: {manifest.id}")
@@ -310,7 +310,7 @@ _VALIDATED_BUILTIN_AGENT_MANIFESTS = validate_builtin_agent_manifests(
     )
 )
 
-_BUILTIN_AGENT_MANIFESTS: dict[AgentManifestId, AgentManifest] = {
+_BUILTIN_AGENT_MANIFESTS: dict[str, AgentManifest] = {
     manifest.id: manifest for manifest in _VALIDATED_BUILTIN_AGENT_MANIFESTS
 }
 

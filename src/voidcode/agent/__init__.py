@@ -17,11 +17,13 @@ from .models import (
     AgentManifest,
     AgentManifestFieldSemantic,
     AgentManifestId,
+    AgentManifestKey,
     AgentMcpBindingIntent,
     AgentMode,
     AgentPromptFormat,
     AgentPromptMaterialization,
     AgentPromptSource,
+    AgentSourceScope,
 )
 from .prompts import (
     is_builtin_prompt_profile,
@@ -29,17 +31,29 @@ from .prompts import (
     render_builtin_prompt_profile,
     select_prompt_profile_for_manifest,
 )
+from .registry import (
+    AgentManifestRegistry,
+    agent_manifest_id_from_name,
+    is_valid_agent_manifest_id,
+    load_agent_manifest_registry,
+    manifest_from_markdown_file,
+    project_agent_manifest_dir,
+    user_agent_manifest_dir,
+)
 
 __all__ = [
     "AgentExecutionEngineName",
     "AgentManifest",
     "AgentManifestFieldSemantic",
     "AgentManifestId",
+    "AgentManifestKey",
     "AgentMcpBindingIntent",
     "AgentMode",
     "AgentPromptFormat",
     "AgentPromptMaterialization",
     "AgentPromptSource",
+    "AgentSourceScope",
+    "AgentManifestRegistry",
     "ADVISOR_AGENT_MANIFEST",
     "EXPLORE_AGENT_MANIFEST",
     "LEADER_AGENT_MANIFEST",
@@ -56,4 +70,10 @@ __all__ = [
     "render_builtin_prompt_profile",
     "render_leader_prompt",
     "select_prompt_profile_for_manifest",
+    "agent_manifest_id_from_name",
+    "is_valid_agent_manifest_id",
+    "load_agent_manifest_registry",
+    "manifest_from_markdown_file",
+    "project_agent_manifest_dir",
+    "user_agent_manifest_dir",
 ]

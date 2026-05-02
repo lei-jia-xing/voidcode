@@ -46,14 +46,8 @@ def test_runtime_config_json_schema_exposes_core_fields() -> None:
     assert "plan" not in agent_properties
     assert "leader_mode" not in agent_properties
     preset_property = cast(dict[str, object], agent_properties["preset"])
-    assert preset_property["enum"] == [
-        "leader",
-        "worker",
-        "advisor",
-        "explore",
-        "researcher",
-        "product",
-    ]
+    assert preset_property["pattern"] == "^[a-z][a-z0-9_-]*$"
+    assert "enum" not in preset_property
     assert agent_properties["fallback_models"] == {
         "type": "array",
         "items": {"type": "string", "minLength": 1},

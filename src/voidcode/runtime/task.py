@@ -19,13 +19,7 @@ type SubagentApprovalOwner = Literal["child_session"]
 type SubagentCancellationOwner = Literal["delegated_task"]
 type SubagentResumeOwner = Literal["child_session"]
 type SubagentRestartReconciliationOwner = Literal["runtime"]
-type SubagentExecutablePreset = Literal[
-    "worker",
-    "advisor",
-    "explore",
-    "researcher",
-    "product",
-]
+type SubagentExecutablePreset = str
 
 
 def _parse_subagent_execution_mode(value: object) -> SubagentExecutionMode:
@@ -121,19 +115,25 @@ def supported_subagent_categories() -> tuple[str, ...]:
     return SUPPORTED_SUBAGENT_CATEGORIES
 
 
-def resolve_subagent_route(requested: SubagentRoutingIdentity) -> ResolvedSubagentRoute:
+def resolve_subagent_route(
+    requested: SubagentRoutingIdentity,
+    *,
+    callable_subagent_presets: frozenset[str] | None = None,
+) -> ResolvedSubagentRoute:
+    callable_presets = callable_subagent_presets or _CALLABLE_SUBAGENT_PRESETS
     if requested.subagent_type is not None:
         if requested.subagent_type == "leader":
             raise ValueError("subagent_type 'leader' is not a callable child preset")
-        if requested.subagent_type not in _CALLABLE_SUBAGENT_PRESETS:
+        if requested.subagent_type not in callable_presets:
+            valid_presets = ", ".join(sorted(callable_presets))
             raise ValueError(
                 "unknown subagent_type "
                 f"'{requested.subagent_type}'; valid child presets are: "
-                "advisor, explore, product, researcher, worker"
+                f"{valid_presets}"
             )
         return ResolvedSubagentRoute(
             requested=requested,
-            selected_preset=cast(SubagentExecutablePreset, requested.subagent_type),
+            selected_preset=requested.subagent_type,
         )
 
     assert requested.category is not None

@@ -22,7 +22,12 @@ import voidcode.runtime.background_tasks as runtime_background_tasks_module
 import voidcode.runtime.run_loop as runtime_run_loop_module
 import voidcode.runtime.service as runtime_service_module
 from voidcode.acp import AcpRequestEnvelope, AcpResponseEnvelope
-from voidcode.agent import LEADER_AGENT_MANIFEST, get_builtin_agent_manifest, render_agent_prompt
+from voidcode.agent import (
+    LEADER_AGENT_MANIFEST,
+    get_builtin_agent_manifest,
+    list_builtin_agent_manifests,
+    render_agent_prompt,
+)
 from voidcode.graph.deterministic_graph import DeterministicGraph
 from voidcode.provider.auth import ProviderAuthAuthorizeRequest
 from voidcode.provider.config import (
@@ -135,6 +140,12 @@ _DEFAULT_PERMISSION_METADATA = {
     "external_directory_write": {"*": "deny"},
 }
 
+
+def _write_agent_manifest(path: Path, frontmatter: str, body: str = "Custom prompt.") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"---\n{frontmatter}\n---\n{body}\n", encoding="utf-8")
+
+
 pytestmark = pytest.mark.usefixtures("force_deterministic_engine_default")
 
 
@@ -145,9 +156,7 @@ def force_deterministic_engine_default(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_runtime_top_level_agent_allowlist_matches_manifest_selectability() -> None:
     top_level_manifest_ids = {
-        manifest.id
-        for manifest in runtime_service_module.list_builtin_agent_manifests()
-        if manifest.top_level_selectable
+        manifest.id for manifest in list_builtin_agent_manifests() if manifest.top_level_selectable
     }
     executable_agent_presets = cast(
         frozenset[str],
@@ -2413,6 +2422,74 @@ def test_runtime_persists_agent_capability_snapshot_for_replay(
     assert replayed.session.metadata["agent_capability_snapshot"] == capability_snapshot
 
 
+def test_runtime_custom_primary_agent_summary_and_capability_snapshot(tmp_path: Path) -> None:
+    manifest_path = tmp_path / ".voidcode" / "agents" / "planner.md"
+    _write_agent_manifest(
+        manifest_path,
+        "\n".join(
+            (
+                "id: local-planner",
+                "name: Local Planner",
+                "description: Local planning agent",
+                "mode: primary",
+                "tool_allowlist: [read_file]",
+                "skill_refs: [planning]",
+                "preset_hook_refs: [role_reminder]",
+            )
+        ),
+        body="Custom planner prompt body.",
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SkillCapturingStubGraph(),
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            agent=RuntimeAgentConfig(preset="local-planner"),
+        ),
+    )
+
+    summaries = {summary.id: summary for summary in runtime.list_agent_summaries()}
+    assert summaries["local-planner"].selectable is True
+    assert summaries["local-planner"].source_scope == "project"
+    assert summaries["local-planner"].source_path == str(manifest_path)
+
+    response = runtime.run(RuntimeRequest(prompt="use planner", session_id="custom-primary"))
+    request = _SkillCapturingStubGraph.last_request
+    assert request is not None
+    agent_segments = [
+        segment
+        for segment in request.assembled_context.segments
+        if segment.role == "system" and segment.metadata == {"source": "agent_prompt"}
+    ]
+    assert len(agent_segments) == 1
+    assert agent_segments[0].content == "Custom planner prompt body."
+    capability_snapshot = cast(
+        dict[str, object],
+        response.session.metadata["agent_capability_snapshot"],
+    )
+    agent_snapshot = cast(dict[str, object], capability_snapshot["agent"])
+    prompt_snapshot = cast(dict[str, object], capability_snapshot["prompt"])
+    tools_snapshot = cast(dict[str, object], capability_snapshot["tools"])
+    skills_snapshot = cast(dict[str, object], capability_snapshot["skills"])
+    assert agent_snapshot["preset"] == "local-planner"
+    assert agent_snapshot["source_scope"] == "project"
+    assert agent_snapshot["source_path"] == str(manifest_path)
+    materialization = cast(dict[str, object], prompt_snapshot["materialization"])
+    assert materialization["source"] == "custom_markdown"
+    assert materialization["body"] == "Custom planner prompt body."
+    assert tools_snapshot["manifest_allowlist"] == ["read_file"]
+    assert skills_snapshot["manifest_refs"] == ["planning"]
+
+    manifest_path.unlink()
+    replayed = runtime.session_result(session_id="custom-primary")
+    replayed_snapshot = cast(
+        dict[str, object],
+        replayed.session.metadata["agent_capability_snapshot"],
+    )
+    assert replayed_snapshot == capability_snapshot
+
+
 def test_runtime_materializes_leader_hook_preset_guidance_into_provider_context(
     tmp_path: Path,
 ) -> None:
@@ -3891,6 +3968,59 @@ def test_runtime_subagent_type_routing_resolves_real_child_agent_and_persists_id
         "depth": 1,
         "remaining_spawn_budget": 3,
         "selected_preset": "explore",
+        "selected_execution_engine": "provider",
+    }
+
+
+def test_runtime_subagent_type_routing_allows_custom_subagent_manifest(
+    tmp_path: Path,
+) -> None:
+    manifest_path = tmp_path / ".voidcode" / "agents" / "auditor.md"
+    _write_agent_manifest(
+        manifest_path,
+        "\n".join(
+            (
+                "id: local-auditor",
+                "name: Local Auditor",
+                "description: Local delegated auditor",
+                "mode: subagent",
+                "tool_allowlist: [read_file]",
+            )
+        ),
+        body="Audit from local markdown.",
+    )
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+
+    response = runtime.run(
+        RuntimeRequest(
+            prompt="delegated child",
+            session_id="custom-child-session",
+            parent_session_id="leader-session",
+            metadata={
+                "delegation": {
+                    "mode": "sync",
+                    "subagent_type": "local-auditor",
+                }
+            },
+        )
+    )
+
+    runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
+    agent_payload = cast(dict[str, object], runtime_config["agent"])
+    assert agent_payload["preset"] == "local-auditor"
+    assert agent_payload["prompt_source"] == "custom_markdown"
+    assert agent_payload["manifest_source_scope"] == "project"
+    assert agent_payload["manifest_source_path"] == str(manifest_path)
+    assert agent_payload["manifest_tool_allowlist"] == ["read_file"]
+    prompt_materialization = cast(dict[str, object], agent_payload["prompt_materialization"])
+    assert prompt_materialization["body"] == "Audit from local markdown."
+    assert response.session.metadata["delegation"] == {
+        "mode": "sync",
+        "subagent_type": "local-auditor",
+        "depth": 1,
+        "remaining_spawn_budget": 3,
+        "selected_preset": "local-auditor",
         "selected_execution_engine": "provider",
     }
 

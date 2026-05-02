@@ -8,7 +8,7 @@
 
 runtime materialize agent capability 时按以下顺序收口：
 
-1. builtin `AgentManifest` defaults：preset、prompt/profile、tool allowlist、skill refs、hook preset refs、MCP binding intent、model/execution defaults；
+1. resolved `AgentManifest` defaults：builtin preset defaults，或从 project/user 本地 markdown manifest 发现并解析出的 custom defaults（prompt body、tool allowlist、skill refs、hook preset refs、MCP binding intent、model/execution defaults）；
 2. repo/runtime config overrides：`agent`、`agents`、`categories`、provider/model、tool/skill/MCP config；
 3. request metadata overrides：request `agent`、`skills`、`force_load_skills`、delegation route metadata；
 4. delegated child-only bindings：`load_skills` / `force_load_skills` 只进入目标 child session。
@@ -20,8 +20,8 @@ runtime materialize agent capability 时按以下顺序收口：
 每次 run / delegated child session 会持久化 `agent_capability_snapshot`，包含：
 
 - `snapshot_version`：当前为 `1`；
-- `agent`：selected preset、manifest id、mode、来源；
-- `prompt`：profile/ref/source 与 builtin prompt materialization metadata；
+- `agent`：selected preset、manifest id、mode、来源、source scope/path；
+- `prompt`：profile/ref/source 与 prompt materialization metadata；builtin 使用 profile/version，custom markdown 使用 `source=custom_markdown`、`format=markdown`、持久化 markdown body 与可选 `prompt_append`；
 - `tools`：manifest allowlist、request allowlist/default、builtin-tool 开关、effective tool names；
 - `skills`：manifest refs、selected names、force-loaded names、target-session scope；
 - `hooks`：manifest refs、resolved refs、resolved guidance snapshot、`guidance_only` materialization；
@@ -42,6 +42,18 @@ MCP lifecycle 仍由 runtime/session-scoped `runtime.mcp` 管理：
 - MCP tools 仍必须经过 runtime tool registry、agent tool allowlist、approval 与 normal tool execution path。
 
 因此，agent MCP binding 不能绕过 runtime MCP lifecycle、approval、scope 或 tool allowlist。
+
+## Builtin preset、configured alias 与 local manifest
+
+当前有三类容易混淆的 agent 输入：
+
+- **builtin preset**：仓库内置 `leader`、`product`、`worker`、`advisor`、`explore`、`researcher` manifest 与 prompt profile。
+- **configured alias/default**：`.voidcode.json` 的 `agent` / `agents.<key>` 只配置已存在 preset 的 model、fallback、tools、skills、MCP intent 等 runtime defaults。它不定义新 prompt，也不创建新 agent manifest。
+- **true local manifest**：project `.voidcode/agents/*.md` 或 user config agents 目录中的 markdown 文件。frontmatter 定义 manifest metadata，markdown body 定义 prompt material。project scope 对同 id 的 user scope custom manifest 覆盖；custom manifest 不允许替换 builtin id。
+
+Custom markdown manifest 与 config-defined prompt override 的 prompt materialization 会随 session 持久化到 runtime config metadata / `agent_capability_snapshot`，而不是在 replay 时重新读取文件或重新解析 `.voidcode.json`。`body` 表示 base prompt，`prompt_append` 表示追加 guidance，provider context 渲染时只追加一次。这保证文件变更或删除后，历史 session 仍按当时的 prompt/capability snapshot 解释。
+
+Custom manifest 仍只是 declaration layer：它可以收窄或建议 capability defaults，但不能授予 runtime 未配置、未允许、未审批或未通过现有 delegation/session contract 的执行权。
 
 ## Hooks 与 skills 边界
 

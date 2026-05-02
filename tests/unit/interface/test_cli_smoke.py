@@ -273,6 +273,44 @@ def test_top_level_help_includes_examples() -> None:
     assert "voidcode commands list" in result.stdout
 
 
+def test_agents_list_outputs_builtin_and_custom_agent_sources() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        manifest_path = workspace / ".voidcode" / "agents" / "local-planner.md"
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        manifest_path.write_text(
+            "\n".join(
+                (
+                    "---",
+                    "id: local-planner",
+                    "name: Local Planner",
+                    "description: Plans locally",
+                    "mode: primary",
+                    "---",
+                    "Plan from a local prompt.",
+                )
+            ),
+            encoding="utf-8",
+        )
+        env = with_src_pythonpath(os.environ.copy())
+
+        result = _run_module_cli(
+            "agents",
+            "list",
+            "--workspace",
+            str(workspace),
+            "--json",
+            env=env,
+        )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    agents = {agent["id"]: agent for agent in payload["agents"]}
+    assert agents["leader"]["source_scope"] == "builtin"
+    assert agents["local-planner"]["source_scope"] == "project"
+    assert agents["local-planner"]["source_path"] == str(manifest_path)
+
+
 def test_storage_diagnostics_outputs_json() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         workspace = Path(tmp)
@@ -919,6 +957,31 @@ def test_run_command_accepts_agent_skills_max_steps_and_provider_stream_flags() 
     assert request.metadata["skills"] == ["demo", "review"]
     assert request.metadata["max_steps"] == 7
     assert request.metadata["provider_stream"] is True
+
+
+def test_run_command_accepts_runtime_discovered_custom_agent_id() -> None:
+    cli = importlib.import_module("voidcode.cli")
+    workspace = Path("/tmp/demo-workspace")
+    config = SimpleNamespace(approval_mode="allow")
+    chunks = (_make_chunk(session_id="demo-session", status="completed", output="done\n"),)
+
+    with patch.object(cli, "load_runtime_config", autospec=True, return_value=config):
+        with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+            runtime_class.return_value.run_stream.return_value = iter(chunks)
+            result = cli.main(
+                [
+                    "run",
+                    "read README.md",
+                    "--workspace",
+                    str(workspace),
+                    "--agent",
+                    "local-planner",
+                ]
+            )
+
+    assert result == 0
+    request = runtime_class.return_value.run_stream.call_args.args[0]
+    assert request.metadata["agent"] == {"preset": "local-planner"}
 
 
 def test_run_command_prints_provider_failure_footer(capsys: Any) -> None:

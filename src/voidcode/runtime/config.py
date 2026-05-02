@@ -15,12 +15,15 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, ValidationIn
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from ..agent import (
-    AgentManifestId,
+    AgentManifest,
+    AgentManifestRegistry,
     AgentMcpBindingIntent,
     get_builtin_agent_manifest,
+    is_valid_agent_manifest_id,
     list_builtin_agent_manifests,
+    load_agent_manifest_registry,
 )
-from ..agent.prompts import has_builtin_prompt_profile
+from ..agent.prompts import has_builtin_prompt_profile, render_builtin_prompt_profile
 from ..hook.config import FormatterCwdPolicy, RuntimeFormatterPresetConfig, RuntimeHooksConfig
 from ..hook.presets import validate_hook_preset_refs
 from ..lsp import LspServerConfigOverride as RuntimeLspServerConfig
@@ -55,8 +58,8 @@ _VALID_TUI_COMMANDS = ("command_palette", "session_new", "session_resume")
 type ExecutionEngineName = Literal["deterministic", "provider"]
 DEFAULT_EXECUTION_ENGINE: ExecutionEngineName = "provider"
 type RuntimeProviderContextDiagnosticMode = Literal["off", "warn", "block"]
-type RuntimeAgentPresetId = AgentManifestId
-type RuntimeAgentPromptSource = Literal["builtin"]
+type RuntimeAgentPresetId = str
+type RuntimeAgentPromptSource = Literal["builtin", "custom_markdown"]
 
 _VALID_EXECUTION_ENGINES: tuple[ExecutionEngineName, ...] = ("deterministic", "provider")
 _TOP_LEVEL_ENV_VARS = (
@@ -167,9 +170,16 @@ _AGENT_CONFIG_KEYS = frozenset(
     {
         "preset",
         "prompt_profile",
+        "prompt",
+        "prompt_append",
         "prompt_materialization",
         "prompt_ref",
         "prompt_source",
+        "manifest_source_scope",
+        "manifest_source_path",
+        "manifest_tool_allowlist",
+        "manifest_skill_refs",
+        "manifest_hook_refs",
         "hook_refs",
         "model",
         "execution_engine",
@@ -396,10 +406,18 @@ class EffectiveRuntimeTuiPreferences:
 
 @dataclass(frozen=True, slots=True)
 class RuntimeAgentConfig:
-    preset: RuntimeAgentPresetId
+    preset: str
     prompt_profile: str | None = None
+    prompt: str | None = None
+    prompt_append: str | None = None
     prompt_ref: str | None = None
     prompt_source: RuntimeAgentPromptSource | None = None
+    prompt_materialization: Mapping[str, object] | None = field(default=None, compare=False)
+    manifest_source_scope: str | None = field(default=None, compare=False)
+    manifest_source_path: str | None = field(default=None, compare=False)
+    manifest_tool_allowlist: tuple[str, ...] = field(default=(), compare=False)
+    manifest_skill_refs: tuple[str, ...] = field(default=(), compare=False)
+    manifest_hook_refs: tuple[str, ...] = field(default=(), compare=False)
     hook_refs: tuple[str, ...] = ()
     model: str | None = None
     execution_engine: ExecutionEngineName | None = None
@@ -563,12 +581,17 @@ def load_runtime_config(
 ) -> RuntimeConfig:
     resolved_workspace = workspace.resolve()
     environment: Mapping[str, str] = os.environ if env is None else env
+    agent_registry = load_agent_manifest_registry(resolved_workspace, env=environment)
     env_overrides = _load_environment_runtime_config(environment)
     global_config = _load_user_config(environment)
-    repo_local = _load_repo_local_config(resolved_workspace, env=environment)
+    repo_local = _load_repo_local_config(
+        resolved_workspace,
+        env=environment,
+        agent_registry=agent_registry,
+    )
     resolved_tui = _resolve_tui_config(global_config.tui, repo_local.tui)
     resolved_lsp = repo_local.lsp or _derive_workspace_lsp_config(resolved_workspace)
-    resolved_agent = _resolve_agent_config(repo_local.agent)
+    resolved_agent = _resolve_agent_config(repo_local.agent, agent_registry=agent_registry)
 
     env_providers = provider_configs_from_env(environment)
     resolved_providers = merge_provider_configs(
@@ -636,6 +659,7 @@ def _load_repo_local_config(
     workspace: Path,
     *,
     env: Mapping[str, str],
+    agent_registry: AgentManifestRegistry | None = None,
 ) -> RuntimeConfigOverrides:
     config_path = runtime_config_path(workspace)
     if not config_path.exists():
@@ -713,9 +737,9 @@ def _load_repo_local_config(
     providers = _parse_providers_config(raw_providers, env=env)
 
     raw_agent = payload.get("agent")
-    agent = _parse_agent_config(raw_agent, hooks=hooks)
+    agent = _parse_agent_config(raw_agent, hooks=hooks, agent_registry=agent_registry)
     raw_agents = payload.get("agents")
-    agents = _parse_agents_config(raw_agents, hooks=hooks)
+    agents = _parse_agents_config(raw_agents, hooks=hooks, agent_registry=agent_registry)
     raw_categories = payload.get("categories")
     categories = _parse_categories_config(raw_categories)
 
@@ -2156,6 +2180,7 @@ def _parse_agent_config(
     raw_agent: object,
     *,
     hooks: RuntimeHooksConfig | None = None,
+    agent_registry: AgentManifestRegistry | None = None,
 ) -> RuntimeAgentConfig | None:
     if raw_agent is None:
         return None
@@ -2168,8 +2193,21 @@ def _parse_agent_config(
         raise ValueError("runtime config field 'agent.preset' is required")
 
     raw_preset = payload.get("preset")
-    if not isinstance(raw_preset, str) or get_builtin_agent_manifest(raw_preset) is None:
-        valid_presets = ", ".join(manifest.id for manifest in list_builtin_agent_manifests())
+    if not isinstance(raw_preset, str) or not is_valid_agent_manifest_id(raw_preset):
+        valid_presets = _valid_agent_preset_message(agent_registry)
+        raise ValueError(f"runtime config field 'agent.preset' must be one of: {valid_presets}")
+    manifest = _agent_manifest_for_preset(raw_preset, agent_registry)
+    raw_prompt_materialization = payload.get("prompt_materialization")
+    prompt_materialization = _parse_agent_prompt_materialization(
+        raw_prompt_materialization,
+        field_path="agent.prompt_materialization",
+    )
+    has_persisted_custom_materialization = (
+        prompt_materialization is not None
+        and prompt_materialization.get("source") == "custom_markdown"
+    )
+    if manifest is None and not has_persisted_custom_materialization:
+        valid_presets = _valid_agent_preset_message(agent_registry)
         raise ValueError(f"runtime config field 'agent.preset' must be one of: {valid_presets}")
 
     prompt_profile = payload.get("prompt_profile")
@@ -2178,14 +2216,26 @@ def _parse_agent_config(
     ):
         raise ValueError("runtime config field 'agent.prompt_profile' must be a non-empty string")
 
+    prompt = payload.get("prompt")
+    if prompt is not None and (not isinstance(prompt, str) or not prompt.strip()):
+        raise ValueError("runtime config field 'agent.prompt' must be a non-empty string")
+
+    prompt_append = payload.get("prompt_append")
+    if prompt_append is not None and (
+        not isinstance(prompt_append, str) or not prompt_append.strip()
+    ):
+        raise ValueError("runtime config field 'agent.prompt_append' must be a non-empty string")
+
     prompt_ref = payload.get("prompt_ref")
     if prompt_ref is not None and (not isinstance(prompt_ref, str) or not prompt_ref.strip()):
         raise ValueError("runtime config field 'agent.prompt_ref' must be a non-empty string")
 
     prompt_source = payload.get("prompt_source")
-    if prompt_source is not None and prompt_source != "builtin":
-        raise ValueError("runtime config field 'agent.prompt_source' must be one of: builtin")
-    if prompt_source is not None and prompt_ref is None:
+    if prompt_source is not None and prompt_source not in {"builtin", "custom_markdown"}:
+        raise ValueError(
+            "runtime config field 'agent.prompt_source' must be one of: builtin, custom_markdown"
+        )
+    if prompt_source is not None and prompt_ref is None and raw_prompt_materialization is None:
         raise ValueError("runtime config field 'agent.prompt_ref' is required with prompt_source")
     normalized_prompt_ref = prompt_ref.strip() if isinstance(prompt_ref, str) else None
     if normalized_prompt_ref is not None and not has_builtin_prompt_profile(normalized_prompt_ref):
@@ -2193,6 +2243,17 @@ def _parse_agent_config(
             "runtime config field 'agent.prompt_ref' references unknown prompt profile"
         )
     normalized_prompt_source = "builtin" if normalized_prompt_ref is not None else None
+    if prompt_materialization is not None:
+        raw_source = prompt_materialization.get("source")
+        if prompt_source is not None and prompt_source != raw_source:
+            raise ValueError(
+                "runtime config field 'agent.prompt_source' must match "
+                "agent.prompt_materialization.source"
+            )
+        if raw_source == "custom_markdown":
+            normalized_prompt_source = "custom_markdown"
+        elif raw_source == "builtin" and prompt_ref is not None:
+            normalized_prompt_source = "builtin"
 
     hook_refs = _parse_agent_hook_refs(payload.get("hook_refs"), hooks=hooks)
 
@@ -2208,12 +2269,37 @@ def _parse_agent_config(
     provider_fallback = _parse_agent_provider_fallback_config(payload, model=model)
 
     return RuntimeAgentConfig(
-        preset=cast(RuntimeAgentPresetId, raw_preset),
+        preset=raw_preset,
         prompt_profile=(
             prompt_profile.strip() if isinstance(prompt_profile, str) else normalized_prompt_ref
         ),
+        prompt=prompt.strip() if isinstance(prompt, str) else None,
+        prompt_append=prompt_append.strip() if isinstance(prompt_append, str) else None,
         prompt_ref=normalized_prompt_ref,
         prompt_source=cast(RuntimeAgentPromptSource, normalized_prompt_source),
+        prompt_materialization=prompt_materialization,
+        manifest_source_scope=_optional_string_from_mapping(
+            payload,
+            "manifest_source_scope",
+            field_path="agent.manifest_source_scope",
+        ),
+        manifest_source_path=_optional_string_from_mapping(
+            payload,
+            "manifest_source_path",
+            field_path="agent.manifest_source_path",
+        ),
+        manifest_tool_allowlist=_parse_string_list(
+            payload.get("manifest_tool_allowlist"),
+            field_path="agent.manifest_tool_allowlist",
+        ),
+        manifest_skill_refs=_parse_string_list(
+            payload.get("manifest_skill_refs"),
+            field_path="agent.manifest_skill_refs",
+        ),
+        manifest_hook_refs=_parse_string_list(
+            payload.get("manifest_hook_refs"),
+            field_path="agent.manifest_hook_refs",
+        ),
         hook_refs=hook_refs,
         model=model.strip() if isinstance(model, str) else None,
         execution_engine=execution_engine,
@@ -2231,27 +2317,179 @@ def _parse_agent_config(
     )
 
 
-def _resolve_agent_config(agent: RuntimeAgentConfig | None) -> RuntimeAgentConfig | None:
+def _resolve_agent_config(
+    agent: RuntimeAgentConfig | None,
+    *,
+    agent_registry: AgentManifestRegistry | None = None,
+) -> RuntimeAgentConfig | None:
     if agent is None:
         return None
-    manifest = get_builtin_agent_manifest(agent.preset)
+    manifest = _agent_manifest_for_preset(agent.preset, agent_registry)
     if manifest is not None:
+        prompt_materialization = _resolve_agent_prompt_materialization(agent, manifest)
+        provider_fallback = agent.provider_fallback
+        model = agent.model or manifest.model_preference
+        if provider_fallback is None and model is not None and manifest.fallback_models:
+            provider_fallback = parse_provider_fallback_payload(
+                {
+                    "preferred_model": model,
+                    "fallback_models": list(manifest.fallback_models),
+                },
+                source=f"agent manifest '{manifest.id}' fallback_models",
+            )
         return RuntimeAgentConfig(
             preset=agent.preset,
             prompt_profile=agent.prompt_profile or manifest.prompt_profile,
+            prompt=agent.prompt,
+            prompt_append=agent.prompt_append,
             prompt_ref=agent.prompt_ref,
-            prompt_source=agent.prompt_source,
+            prompt_source=(
+                agent.prompt_source
+                or (
+                    manifest.prompt_materialization.source
+                    if manifest.prompt_materialization is not None
+                    and manifest.prompt_materialization.source == "custom_markdown"
+                    else None
+                )
+                or (
+                    "custom_markdown"
+                    if prompt_materialization is not None
+                    and prompt_materialization.get("source") == "custom_markdown"
+                    else None
+                )
+            ),
+            prompt_materialization=prompt_materialization,
+            manifest_source_scope=agent.manifest_source_scope or manifest.source_scope,
+            manifest_source_path=agent.manifest_source_path or manifest.source_path,
+            manifest_tool_allowlist=agent.manifest_tool_allowlist or manifest.tool_allowlist,
+            manifest_skill_refs=agent.manifest_skill_refs or manifest.skill_refs,
+            manifest_hook_refs=agent.manifest_hook_refs or manifest.preset_hook_refs,
             hook_refs=agent.hook_refs,
-            model=agent.model or manifest.model_preference,
+            model=model,
             execution_engine=agent.execution_engine or manifest.execution_engine,
             tools=agent.tools,
             skills=agent.skills,
             mcp_binding=(
                 agent.mcp_binding if agent.mcp_binding is not None else manifest.mcp_binding
             ),
-            provider_fallback=agent.provider_fallback,
+            provider_fallback=provider_fallback,
         )
     return agent
+
+
+def _resolve_agent_prompt_materialization(
+    agent: RuntimeAgentConfig,
+    manifest: AgentManifest,
+) -> Mapping[str, object] | None:
+    if agent.prompt is None and agent.prompt_append is None:
+        if agent.prompt_materialization is not None:
+            return agent.prompt_materialization
+        if (
+            manifest.prompt_materialization is not None
+            and manifest.prompt_materialization.source == "custom_markdown"
+        ):
+            return manifest.prompt_materialization.to_payload(
+                profile=agent.prompt_profile or manifest.prompt_materialization.profile,
+            )
+        return None
+
+    base_prompt = agent.prompt
+    if base_prompt is None:
+        base_prompt = _base_prompt_for_manifest_override(agent, manifest)
+    if base_prompt is None or not base_prompt.strip():
+        raise ValueError(
+            f"runtime config field 'agent.prompt_append' cannot be applied because agent "
+            f"preset '{agent.preset}' has no materialized base prompt"
+        )
+    return {
+        "profile": agent.prompt_profile or manifest.prompt_profile or agent.preset,
+        "version": 1,
+        "source": "custom_markdown",
+        "format": "markdown",
+        "body": base_prompt.strip(),
+        **({"prompt_append": agent.prompt_append} if agent.prompt_append is not None else {}),
+        "source_scope": agent.manifest_source_scope or manifest.source_scope,
+        **(
+            {"source_path": agent.manifest_source_path or manifest.source_path}
+            if agent.manifest_source_path is not None or manifest.source_path is not None
+            else {}
+        ),
+    }
+
+
+def _base_prompt_for_manifest_override(
+    agent: RuntimeAgentConfig,
+    manifest: AgentManifest,
+) -> str | None:
+    if agent.prompt_materialization is not None:
+        body = agent.prompt_materialization.get("body")
+        if isinstance(body, str) and body.strip():
+            return body.strip()
+    materialization = manifest.prompt_materialization
+    if materialization is not None:
+        if materialization.body is not None and materialization.body.strip():
+            return materialization.body.strip()
+        selected_profile = materialization.select_profile(None)
+        rendered = render_builtin_prompt_profile(selected_profile)
+        if rendered is not None:
+            return rendered
+    prompt_profile = agent.prompt_profile or manifest.prompt_profile
+    if prompt_profile is not None:
+        return render_builtin_prompt_profile(prompt_profile)
+    return None
+
+
+def _agent_manifest_for_preset(
+    preset: str,
+    agent_registry: AgentManifestRegistry | None,
+) -> AgentManifest | None:
+    if agent_registry is not None:
+        return agent_registry.get(preset)
+    return get_builtin_agent_manifest(preset)
+
+
+def _valid_agent_preset_message(agent_registry: AgentManifestRegistry | None) -> str:
+    if agent_registry is None:
+        return ", ".join(manifest.id for manifest in list_builtin_agent_manifests())
+    return ", ".join(manifest.id for manifest in agent_registry.list_manifests())
+
+
+def _parse_agent_prompt_materialization(
+    value: object,
+    *,
+    field_path: str,
+) -> Mapping[str, object] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError(f"runtime config field '{field_path}' must be an object when provided")
+    payload = {
+        key: item for key, item in cast(dict[str, object], value).items() if isinstance(key, str)
+    }
+    source = payload.get("source")
+    if source not in {"builtin", "custom_markdown"}:
+        raise ValueError(
+            f"runtime config field '{field_path}.source' must be one of: builtin, custom_markdown"
+        )
+    if source == "custom_markdown":
+        body = payload.get("body")
+        if not isinstance(body, str) or not body.strip():
+            raise ValueError(f"runtime config field '{field_path}.body' must be a non-empty string")
+    return payload
+
+
+def _optional_string_from_mapping(
+    payload: Mapping[str, object],
+    key: str,
+    *,
+    field_path: str,
+) -> str | None:
+    value = payload.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"runtime config field '{field_path}' must be a non-empty string")
+    return value.strip()
 
 
 def _parse_agent_mcp_binding(
@@ -2325,6 +2563,7 @@ def _parse_agents_config(
     raw_agents: object,
     *,
     hooks: RuntimeHooksConfig | None = None,
+    agent_registry: AgentManifestRegistry | None = None,
 ) -> Mapping[str, RuntimeAgentConfig] | None:
     if raw_agents is None:
         return None
@@ -2340,27 +2579,29 @@ def _parse_agents_config(
             raise ValueError(f"runtime config field 'agents.{key}' must be an object when provided")
 
         entry_payload = dict(cast(dict[str, object], value))
-        is_builtin_key = get_builtin_agent_manifest(key) is not None
+        is_known_key = _agent_manifest_for_preset(key, agent_registry) is not None
         if "preset" not in entry_payload:
-            if is_builtin_key:
+            if is_known_key:
                 entry_payload["preset"] = key
             else:
-                valid_presets = ", ".join(
-                    manifest.id for manifest in list_builtin_agent_manifests()
-                )
+                valid_presets = _valid_agent_preset_message(agent_registry)
                 raise ValueError(
                     f"runtime config field 'agents.{key}.preset' must be one of: {valid_presets}"
                 )
 
         try:
-            parsed_entry = _parse_agent_config(entry_payload, hooks=hooks)
+            parsed_entry = _parse_agent_config(
+                entry_payload,
+                hooks=hooks,
+                agent_registry=agent_registry,
+            )
         except ValueError as exc:
             message = (
                 str(exc).replace("agent.", f"agents.{key}.").replace("'agent'", f"'agents.{key}'")
             )
             raise ValueError(message) from exc
 
-        resolved_entry = _resolve_agent_config(parsed_entry)
+        resolved_entry = _resolve_agent_config(parsed_entry, agent_registry=agent_registry)
         if resolved_entry is None:
             raise ValueError(f"runtime config field 'agents.{key}' must resolve to a valid agent")
         parsed[key] = resolved_entry
@@ -2433,9 +2674,13 @@ def parse_runtime_agent_payload(
     *,
     source: str,
     hooks: RuntimeHooksConfig | None = None,
+    agent_registry: AgentManifestRegistry | None = None,
 ) -> RuntimeAgentConfig | None:
     try:
-        return _resolve_agent_config(_parse_agent_config(raw_agent, hooks=hooks))
+        return _resolve_agent_config(
+            _parse_agent_config(raw_agent, hooks=hooks, agent_registry=agent_registry),
+            agent_registry=agent_registry,
+        )
     except ValueError as exc:
         raise ValueError(f"{source}: {exc}") from exc
 
@@ -2445,9 +2690,10 @@ def parse_runtime_agents_payload(
     *,
     source: str,
     hooks: RuntimeHooksConfig | None = None,
+    agent_registry: AgentManifestRegistry | None = None,
 ) -> Mapping[str, RuntimeAgentConfig] | None:
     try:
-        return _parse_agents_config(raw_agents, hooks=hooks)
+        return _parse_agents_config(raw_agents, hooks=hooks, agent_registry=agent_registry)
     except ValueError as exc:
         raise ValueError(f"{source}: {exc}") from exc
 
@@ -2571,7 +2817,13 @@ def serialize_runtime_agent_config(agent: RuntimeAgentConfig | None) -> dict[str
     manifest = get_builtin_agent_manifest(agent.preset)
     if agent.prompt_profile is not None:
         payload["prompt_profile"] = agent.prompt_profile
-    if manifest is not None and manifest.prompt_materialization is not None:
+    if agent.prompt is not None:
+        payload["prompt"] = agent.prompt
+    if agent.prompt_append is not None:
+        payload["prompt_append"] = agent.prompt_append
+    if agent.prompt_materialization is not None:
+        payload["prompt_materialization"] = dict(agent.prompt_materialization)
+    elif manifest is not None and manifest.prompt_materialization is not None:
         prompt_materialization_profile = (
             agent.prompt_profile or manifest.prompt_materialization.profile
         )
@@ -2580,8 +2832,21 @@ def serialize_runtime_agent_config(agent: RuntimeAgentConfig | None) -> dict[str
         )
     if agent.prompt_ref is not None:
         payload["prompt_ref"] = agent.prompt_ref
-    if agent.prompt_source is not None:
+    if agent.prompt_source is not None and (
+        agent.prompt_source != "builtin" or agent.prompt_ref is not None
+    ):
         payload["prompt_source"] = agent.prompt_source
+    include_manifest_metadata = agent.manifest_source_scope not in (None, "builtin")
+    if include_manifest_metadata and agent.manifest_source_scope is not None:
+        payload["manifest_source_scope"] = agent.manifest_source_scope
+    if include_manifest_metadata and agent.manifest_source_path is not None:
+        payload["manifest_source_path"] = agent.manifest_source_path
+    if include_manifest_metadata and agent.manifest_tool_allowlist:
+        payload["manifest_tool_allowlist"] = list(agent.manifest_tool_allowlist)
+    if include_manifest_metadata and agent.manifest_skill_refs:
+        payload["manifest_skill_refs"] = list(agent.manifest_skill_refs)
+    if include_manifest_metadata and agent.manifest_hook_refs:
+        payload["manifest_hook_refs"] = list(agent.manifest_hook_refs)
     if agent.hook_refs:
         payload["hook_refs"] = list(agent.hook_refs)
     if agent.model is not None:

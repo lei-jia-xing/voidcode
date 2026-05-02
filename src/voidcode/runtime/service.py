@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast, final
 
 from ..acp import AcpDelegatedExecution, AcpEventEnvelope, AcpRequestEnvelope, AcpResponseEnvelope
-from ..agent import get_builtin_agent_manifest, list_builtin_agent_manifests
+from ..agent import AgentManifestRegistry, get_builtin_agent_manifest, load_agent_manifest_registry
 from ..agent.prompts import render_agent_prompt
 from ..command import (
     COMMAND_RESOLVED,
@@ -705,6 +705,7 @@ class VoidCodeRuntime:
     _background_task_threads: dict[str, threading.Thread]
     _background_tasks_reconciled: bool
     _context_window_config_override: RuntimeContextWindowConfig | None
+    _agent_registry: AgentManifestRegistry
     _run_loop_coordinator: RuntimeRunLoopCoordinator
     _resume_coordinator: RuntimeResumeCoordinator
     _background_task_supervisor: RuntimeBackgroundTaskSupervisor
@@ -728,6 +729,7 @@ class VoidCodeRuntime:
         context_window_policy: ContextWindowPolicy | None = None,
     ) -> None:
         self._workspace = workspace.resolve()
+        self._agent_registry = self._runtime_agent_registry()
         self._config = config or load_runtime_config(self._workspace)
         self._model_provider_registry = (
             model_provider_registry
@@ -742,6 +744,7 @@ class VoidCodeRuntime:
                 serialize_runtime_agent_config(initial_agent),
                 source="runtime config agent",
                 hooks=self._config.hooks,
+                agent_registry=self._agent_registry,
             )
             assert initial_agent is not None
             self._validate_runtime_agent_for_execution(
@@ -1336,16 +1339,21 @@ class VoidCodeRuntime:
         # Runtime-owned child preset governance: provider-visible schemas are already
         # narrowed, but malicious/raw provider tool calls still need a clear policy
         # denial before normal lookup can obscure the reason as an unknown tool.
-        if runtime_subagent_route_from_metadata(session.metadata) is None:
+        if (
+            runtime_subagent_route_from_metadata(
+                session.metadata,
+                callable_subagent_presets=self._agent_registry.executable_subagent_ids(),
+            )
+            is None
+        ):
             return None
         effective_config = self._effective_runtime_config_from_metadata(session.metadata)
         agent = effective_config.agent
         if agent is None:
             return None
-        manifest = get_builtin_agent_manifest(agent.preset)
-        if manifest is None or not manifest.tool_allowlist:
+        if not agent.manifest_tool_allowlist:
             return None
-        if tool_name_matches_patterns(tool_name, manifest.tool_allowlist):
+        if tool_name_matches_patterns(tool_name, agent.manifest_tool_allowlist):
             return None
         if tool_name not in self._base_tool_registry.tools:
             return None
@@ -1502,6 +1510,15 @@ class VoidCodeRuntime:
             logger.debug("failed to reconnect ACP for delegated request retry", exc_info=True)
             return response
         return self._acp_adapter.request(envelope)
+
+    def _runtime_agent_registry(self) -> AgentManifestRegistry:
+        registry = load_agent_manifest_registry(self._workspace)
+        builtin = dict(registry.builtin)
+        for agent_id in tuple(builtin):
+            manifest = get_builtin_agent_manifest(agent_id)
+            if manifest is not None:
+                builtin[agent_id] = manifest
+        return AgentManifestRegistry(builtin=builtin, custom=registry.custom)
 
     def _delegated_execution_for_task(
         self,
@@ -3212,7 +3229,8 @@ class VoidCodeRuntime:
         payload: dict[str, object] = {}
         for category in supported_subagent_categories():
             route = runtime_subagent_route_from_metadata(
-                {"delegation": {"mode": "background", "category": category}}
+                {"delegation": {"mode": "background", "category": category}},
+                callable_subagent_presets=self._agent_registry.executable_subagent_ids(),
             )
             assert route is not None
             category_config = categories.get(category)
@@ -3237,7 +3255,7 @@ class VoidCodeRuntime:
             session_id=session_id
         )
         payload: dict[str, object] = {}
-        for manifest in list_builtin_agent_manifests():
+        for manifest in self._agent_registry.list_manifests():
             preset_agent = agents.get(manifest.id)
             model = preset_agent.model if preset_agent is not None else manifest.model_preference
             if model is None:
@@ -3303,6 +3321,7 @@ class VoidCodeRuntime:
             payload.get("agents"),
             source="persisted runtime_config.agents",
             hooks=self._config.hooks,
+            agent_registry=self._agent_registry,
         )
         return categories or {}, agents or {}, base_model, base_provider_fallback
 
@@ -4034,7 +4053,7 @@ class VoidCodeRuntime:
     def list_agent_summaries(self) -> tuple[AgentSummary, ...]:
         summaries: list[AgentSummary] = []
         configured_agent = self._config.agent
-        for manifest in list_builtin_agent_manifests():
+        for manifest in self._agent_registry.list_manifests():
             if manifest.mode != "primary":
                 continue
 
@@ -4094,8 +4113,10 @@ class VoidCodeRuntime:
                     label=manifest.name,
                     description=manifest.description,
                     mode=manifest.mode,
-                    selectable=manifest.id in _EXECUTABLE_AGENT_PRESETS,
+                    selectable=manifest.id in self._agent_registry.executable_primary_ids(),
                     configured=configured,
+                    source_scope=manifest.source_scope,
+                    source_path=manifest.source_path,
                     execution_engine=execution_engine,
                     model=resolved_model,
                     model_label=active_selection.model,
@@ -4378,6 +4399,7 @@ class VoidCodeRuntime:
         return cast(dict[str, object], raw_payload)
 
     def _reload_runtime_config_state(self) -> None:
+        self._agent_registry = self._runtime_agent_registry()
         self._config = load_runtime_config(self._workspace)
         self._model_provider_registry = ModelProviderRegistry.with_defaults(
             provider_configs=self._config.providers
@@ -4394,6 +4416,7 @@ class VoidCodeRuntime:
                 serialize_runtime_agent_config(initial_agent),
                 source="runtime config agent",
                 hooks=self._config.hooks,
+                agent_registry=self._agent_registry,
             )
             assert initial_agent is not None
             self._validate_runtime_agent_for_execution(
@@ -6226,6 +6249,10 @@ class VoidCodeRuntime:
                     typed.append(entry)
             loaded_skills = tuple(typed)
         raw_agent_preset = session_metadata.get("agent_preset")
+        if raw_agent_preset is None:
+            raw_runtime_config = session_metadata.get("runtime_config")
+            if isinstance(raw_runtime_config, dict):
+                raw_agent_preset = cast(dict[str, object], raw_runtime_config).get("agent")
         agent_preset = (
             cast(dict[str, object], raw_agent_preset)
             if isinstance(raw_agent_preset, dict)
@@ -6698,7 +6725,7 @@ class VoidCodeRuntime:
             cast(dict[str, object], runtime_config) if isinstance(runtime_config, dict) else {}
         )
         agent = effective_config.agent
-        manifest = get_builtin_agent_manifest(agent.preset) if agent is not None else None
+        manifest = self._agent_registry.get(agent.preset) if agent is not None else None
         force_load_skills = self._request_skill_names_from_metadata(
             request_metadata,
             key="force_load_skills",
@@ -6744,7 +6771,7 @@ class VoidCodeRuntime:
             ),
             "tools": self._agent_capability_tool_snapshot(agent, manifest),
             "skills": {
-                "manifest_refs": list(manifest.skill_refs) if manifest is not None else [],
+                "manifest_refs": list(agent.manifest_skill_refs) if agent is not None else [],
                 "selected_names": list(selected_skills or ()),
                 "force_loaded_names": list(
                     dict.fromkeys(force_load_skills or ()).keys()
@@ -6754,7 +6781,7 @@ class VoidCodeRuntime:
                 "scope": "target_session",
             },
             "hooks": {
-                "manifest_refs": list(manifest.preset_hook_refs) if manifest is not None else [],
+                "manifest_refs": list(agent.manifest_hook_refs) if agent is not None else [],
                 "resolved_refs": list(resolved_hook_presets.refs),
                 "snapshot": resolved_hook_presets.to_payload(),
                 "materialization": "guidance_only",
@@ -6816,7 +6843,9 @@ class VoidCodeRuntime:
             "preset": agent.preset,
             "manifest_id": manifest_id if isinstance(manifest_id, str) else None,
             "mode": getattr(manifest, "mode", None),
-            "source": "builtin_manifest" if manifest is not None else "runtime_config",
+            "source": "manifest" if manifest is not None else "runtime_config",
+            "source_scope": agent.manifest_source_scope,
+            "source_path": agent.manifest_source_path,
         }
 
     @staticmethod
@@ -6843,6 +6872,9 @@ class VoidCodeRuntime:
                 prompt["materialization"] = materialization.to_payload(
                     profile=agent.prompt_profile if agent is not None else None
                 )
+        if "materialization" not in prompt and agent is not None:
+            if agent.prompt_materialization is not None:
+                prompt["materialization"] = dict(agent.prompt_materialization)
         return {key: value for key, value in prompt.items() if value is not None}
 
     def _agent_capability_tool_snapshot(
@@ -6850,7 +6882,8 @@ class VoidCodeRuntime:
         agent: RuntimeAgentConfig | None,
         manifest: object | None,
     ) -> dict[str, object]:
-        manifest_allowlist = getattr(manifest, "tool_allowlist", ()) if manifest is not None else ()
+        _ = manifest
+        manifest_allowlist = agent.manifest_tool_allowlist if agent is not None else ()
         effective_tool_names = sorted(
             scoped_tool_registry_for_agent(self._tool_registry, agent=agent).tools
         )
@@ -6920,10 +6953,7 @@ class VoidCodeRuntime:
             return ()
         if agent.hook_refs:
             return agent.hook_refs
-        manifest = get_builtin_agent_manifest(agent.preset)
-        if manifest is None:
-            return ()
-        return manifest.preset_hook_refs
+        return agent.manifest_hook_refs
 
     def _hook_preset_context_from_metadata(
         self,
@@ -6984,9 +7014,7 @@ class VoidCodeRuntime:
             manifest_skill_refs = persisted_selected_skill_names
         if agent is not None:
             if not persisted_selected_explicit and not manifest_skill_refs:
-                manifest = get_builtin_agent_manifest(agent.preset)
-                if manifest is not None:
-                    manifest_skill_refs = manifest.skill_refs
+                manifest_skill_refs = agent.manifest_skill_refs
 
         if request_skill_names is None:
             if persisted_selected_explicit:
@@ -7138,6 +7166,7 @@ class VoidCodeRuntime:
             raw_agent,
             source="request metadata 'agent'",
             hooks=self._config.hooks,
+            agent_registry=self._agent_registry,
         )
         if agent is None:
             raise ValueError("request metadata 'agent' must be an object when provided")
@@ -7167,6 +7196,20 @@ class VoidCodeRuntime:
                 if resolved.agent is not None
                 else None
             ),
+            prompt=(
+                agent.prompt
+                if agent.prompt is not None
+                else resolved.agent.prompt
+                if resolved.agent is not None
+                else None
+            ),
+            prompt_append=(
+                agent.prompt_append
+                if agent.prompt_append is not None
+                else resolved.agent.prompt_append
+                if resolved.agent is not None
+                else None
+            ),
             prompt_ref=(
                 agent.prompt_ref
                 if agent.prompt_ref is not None
@@ -7181,6 +7224,12 @@ class VoidCodeRuntime:
                 if resolved.agent is not None
                 else None
             ),
+            prompt_materialization=agent.prompt_materialization,
+            manifest_source_scope=agent.manifest_source_scope,
+            manifest_source_path=agent.manifest_source_path,
+            manifest_tool_allowlist=agent.manifest_tool_allowlist,
+            manifest_skill_refs=agent.manifest_skill_refs,
+            manifest_hook_refs=agent.manifest_hook_refs,
             hook_refs=(
                 agent.hook_refs
                 if agent.hook_refs
@@ -7234,20 +7283,22 @@ class VoidCodeRuntime:
             tools=resolved.tools,
         )
 
-    @staticmethod
     def _validate_runtime_agent_for_execution(
+        self,
         agent: RuntimeAgentConfig,
         *,
         source: str,
         allow_subagent_presets: bool = False,
     ) -> None:
-        if agent.preset in _EXECUTABLE_AGENT_PRESETS:
+        executable_primary = self._agent_registry.executable_primary_ids()
+        executable_subagents = self._agent_registry.executable_subagent_ids()
+        if agent.preset in executable_primary:
             return
-        if allow_subagent_presets and agent.preset in _EXECUTABLE_SUBAGENT_PRESETS:
+        if allow_subagent_presets and agent.preset in executable_subagents:
             return
-        valid = ", ".join(sorted(_EXECUTABLE_AGENT_PRESETS))
+        valid = ", ".join(sorted(executable_primary))
         if allow_subagent_presets:
-            valid = ", ".join(sorted((*_EXECUTABLE_AGENT_PRESETS, *_EXECUTABLE_SUBAGENT_PRESETS)))
+            valid = ", ".join(sorted((*executable_primary, *executable_subagents)))
         if allow_subagent_presets:
             raise ValueError(
                 f"{source}: agent preset '{agent.preset}' is not executable for this "
@@ -7264,7 +7315,10 @@ class VoidCodeRuntime:
         *,
         allow_internal_fields: bool,
     ) -> RuntimeRequestMetadataPayload:
-        resolved_route = runtime_subagent_route_from_metadata(metadata)
+        resolved_route = runtime_subagent_route_from_metadata(
+            metadata,
+            callable_subagent_presets=self._agent_registry.executable_subagent_ids(),
+        )
         if resolved_route is None:
             return metadata
 
@@ -7308,6 +7362,7 @@ class VoidCodeRuntime:
                 },
                 source="delegation.selected_preset",
                 hooks=self._config.hooks,
+                agent_registry=self._agent_registry,
             )
             assert agent is not None
         else:
@@ -7315,6 +7370,7 @@ class VoidCodeRuntime:
                 raw_agent,
                 source="request metadata 'agent'",
                 hooks=self._config.hooks,
+                agent_registry=self._agent_registry,
             )
             if agent is None:
                 raise RuntimeRequestError(
@@ -7861,13 +7917,18 @@ class VoidCodeRuntime:
         allow_persisted_subagent_presets = False
         if metadata is not None:
             allow_persisted_subagent_presets = (
-                runtime_subagent_route_from_metadata(metadata) is not None
+                runtime_subagent_route_from_metadata(
+                    metadata,
+                    callable_subagent_presets=self._agent_registry.executable_subagent_ids(),
+                )
+                is not None
             )
         if agent is not None:
             agent = parse_runtime_agent_payload(
                 serialize_runtime_agent_config(agent),
                 source="runtime config agent",
                 hooks=self._config.hooks,
+                agent_registry=self._agent_registry,
             )
             assert agent is not None
             self._validate_runtime_agent_for_execution(
@@ -7879,6 +7940,7 @@ class VoidCodeRuntime:
                 serialize_runtime_agent_config(RuntimeAgentConfig(preset="leader")),
                 source="runtime config agent",
                 hooks=self._config.hooks,
+                agent_registry=self._agent_registry,
             )
             assert agent is not None
             self._validate_runtime_agent_for_execution(
@@ -8015,6 +8077,7 @@ class VoidCodeRuntime:
                 runtime_config.get("agent"),
                 source="persisted runtime_config.agent",
                 hooks=self._config.hooks,
+                agent_registry=self._agent_registry,
             )
             if agent is not None:
                 self._validate_runtime_agent_for_execution(
