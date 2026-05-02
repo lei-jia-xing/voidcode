@@ -90,6 +90,12 @@ def _validate_input_schema(raw_schema: object) -> dict[str, object]:
     return schema
 
 
+def _read_write_streams(transport_streams: tuple[object, ...]) -> tuple[object, object]:
+    if len(transport_streams) < 2:
+        raise ValueError("MCP transport context must provide read and write streams")
+    return transport_streams[0], transport_streams[1]
+
+
 def _validate_call_arguments_against_schema(
     *,
     tool_name: str,
@@ -203,7 +209,7 @@ class _RunningMcpServer:
         *,
         server_name: str,
         workspace_root: Path,
-        transport_context: AbstractContextManager[tuple[object, object]],
+        transport_context: AbstractContextManager[tuple[object, ...]],
         session_context: AbstractContextManager[ClientSession],
         session: ClientSession,
         stderr_log: IO[str] | None,
@@ -529,7 +535,7 @@ class ManagedMcpManager:
 
         workspace_root = workspace.resolve()
         stderr_log: IO[str] | None = None
-        transport_context: AbstractContextManager[tuple[object, object]] | None = None
+        transport_context: AbstractContextManager[tuple[object, ...]] | None = None
         session_context: AbstractContextManager[ClientSession] | None = None
 
         with self._state_lock:
@@ -547,7 +553,9 @@ class ManagedMcpManager:
                     pending_transport_context = portal.wrap_async_context_manager(
                         cast(Any, streamable_http_client(url))
                     )
-                    read_stream, write_stream = pending_transport_context.__enter__()
+                    read_stream, write_stream = _read_write_streams(
+                        pending_transport_context.__enter__()
+                    )
                     transport_context = pending_transport_context
                 else:
                     stderr_log = open(
@@ -564,12 +572,14 @@ class ManagedMcpManager:
                     pending_transport_context = portal.wrap_async_context_manager(
                         cast(Any, stdio_client(params, errlog=stderr_log))
                     )
-                    read_stream, write_stream = pending_transport_context.__enter__()
+                    read_stream, write_stream = _read_write_streams(
+                        pending_transport_context.__enter__()
+                    )
                     transport_context = pending_transport_context
                 pending_session_context = portal.wrap_async_context_manager(
                     ClientSession(
-                        read_stream,
-                        write_stream,
+                        cast(Any, read_stream),
+                        cast(Any, write_stream),
                         read_timeout_seconds=self._request_timeout,
                         client_info=Implementation(
                             name=MCP_CLIENT_NAME,

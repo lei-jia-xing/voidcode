@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from mcp.types import Implementation, InitializeResult, ListToolsResult, ServerCapabilities, Tool
 
 from voidcode.mcp import (
     MCP_PROTOCOL_VERSION,
@@ -205,6 +206,81 @@ for raw_line in sys.stdin:
 
     assert manager.list_tools(workspace=tmp_path) == ()
     assert protocol_path.read_text(encoding="utf-8") == MCP_PROTOCOL_VERSION
+
+
+def test_mcp_manager_accepts_remote_http_transport_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import voidcode.runtime.mcp as runtime_mcp
+
+    class FakeTransportContext:
+        def __init__(self, url: str) -> None:
+            self.url = url
+            self.closed = False
+
+        async def __aenter__(self) -> tuple[object, object, object]:
+            return object(), object(), lambda: "session-123"
+
+        async def __aexit__(self, exc_type: object, exc: object, traceback: object) -> None:
+            _ = exc_type, exc, traceback
+            self.closed = True
+
+    class FakeClientSession:
+        def __init__(self, read_stream: object, write_stream: object, **kwargs: object) -> None:
+            self.read_stream = read_stream
+            self.write_stream = write_stream
+            self.kwargs = kwargs
+
+        async def __aenter__(self) -> FakeClientSession:
+            return self
+
+        async def __aexit__(self, exc_type: object, exc: object, traceback: object) -> None:
+            _ = exc_type, exc, traceback
+            return None
+
+        async def initialize(self) -> InitializeResult:
+            return InitializeResult(
+                protocolVersion="2025-11-25",
+                capabilities=ServerCapabilities(),
+                serverInfo=Implementation(name="remote", version="0.1.0"),
+            )
+
+        async def list_tools(self) -> ListToolsResult:
+            return ListToolsResult(
+                tools=[
+                    Tool(
+                        name="search",
+                        description="Search code",
+                        inputSchema={"type": "object", "properties": {}},
+                    )
+                ]
+            )
+
+    requested_urls: list[str] = []
+
+    def fake_streamable_http_client(url: str) -> FakeTransportContext:
+        requested_urls.append(url)
+        return FakeTransportContext(url)
+
+    monkeypatch.setattr(runtime_mcp, "ClientSession", FakeClientSession)
+    monkeypatch.setattr(runtime_mcp, "streamable_http_client", fake_streamable_http_client)
+    manager = build_mcp_manager(
+        RuntimeMcpConfig(
+            enabled=True,
+            servers={
+                "remote": RuntimeMcpServerConfig(
+                    transport="remote-http",
+                    url="https://mcp.example.test",
+                )
+            },
+        )
+    )
+
+    tools = manager.list_tools(workspace=tmp_path)
+
+    assert requested_urls == ["https://mcp.example.test"]
+    assert [tool.tool_name for tool in tools] == ["search"]
 
 
 def test_mcp_manager_gracefully_closes_server_stdin_on_shutdown(tmp_path: Path) -> None:
