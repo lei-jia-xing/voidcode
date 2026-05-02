@@ -71,6 +71,7 @@ def web(
     url = f"http://{host}:{port}"
     frontend_dist = _resolve_frontend_dist()
 
+    print("VoidCode")
     print(_BANNER)
     print(f"  Local server running at: {url}")
     print()
