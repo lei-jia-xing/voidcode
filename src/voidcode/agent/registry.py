@@ -244,13 +244,24 @@ def _parse_block_value(lines: list[str], *, field: str, path: Path) -> object:
     items: list[str] = []
     mapping: dict[str, object] = {}
     active_mapping_key: str | None = None
+    active_mapping_indent: int | None = None
     for raw_line in lines:
         stripped = raw_line.strip()
         if not stripped or stripped.startswith("#"):
             continue
+        indent = len(raw_line) - len(raw_line.lstrip(" \t"))
+        if (
+            active_mapping_key is not None
+            and active_mapping_indent is not None
+            and indent > active_mapping_indent
+            and stripped.startswith("-")
+        ):
+            cast(list[str], mapping[active_mapping_key]).append(_strip_quotes(stripped[1:].strip()))
+            continue
         if stripped.startswith("-"):
             items.append(_strip_quotes(stripped[1:].strip()))
             active_mapping_key = None
+            active_mapping_indent = None
             continue
         key, separator, value = stripped.partition(":")
         if separator == ":":
@@ -259,12 +270,11 @@ def _parse_block_value(lines: list[str], *, field: str, path: Path) -> object:
             if raw_value:
                 mapping[normalized_key] = _parse_inline_value(raw_value)
                 active_mapping_key = None
+                active_mapping_indent = None
             else:
                 mapping[normalized_key] = []
                 active_mapping_key = normalized_key
-            continue
-        if active_mapping_key is not None and stripped.startswith("-"):
-            cast(list[str], mapping[active_mapping_key]).append(_strip_quotes(stripped[1:].strip()))
+                active_mapping_indent = indent
             continue
         raise ValueError(f"frontmatter field '{field}' has unsupported block syntax in {path}")
     if items and mapping:

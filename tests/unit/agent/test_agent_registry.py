@@ -90,6 +90,33 @@ def test_manifest_from_markdown_file_parses_prompt_append_literal_block(
     )
 
 
+def test_manifest_from_markdown_file_parses_nested_block_mapping_lists(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "mcp-reviewer.md"
+    _write_agent(
+        path,
+        "\n".join(
+            (
+                "name: MCP Reviewer",
+                "description: Reviews with MCP context",
+                "mode: subagent",
+                "mcp_binding:",
+                "  profile: docs",
+                "  servers:",
+                "    - repo",
+                "    - context7",
+            )
+        ),
+    )
+
+    manifest = manifest_from_markdown_file(path, scope="project")
+
+    assert manifest.mcp_binding is not None
+    assert manifest.mcp_binding.profile == "docs"
+    assert manifest.mcp_binding.servers == ("repo", "context7")
+
+
 def test_manifest_from_markdown_file_rejects_missing_required_fields(tmp_path: Path) -> None:
     path = tmp_path / "bad.md"
     _write_agent(path, "name: Missing Mode\ndescription: nope")
