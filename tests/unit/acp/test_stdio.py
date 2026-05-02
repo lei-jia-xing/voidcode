@@ -251,9 +251,9 @@ def test_prompt_failure_emits_failure_notification_and_json_rpc_error() -> None:
     assert messages[1]["method"] == "session/update"
     assert messages[1]["params"]["update"] == {
         "sessionUpdate": "agent_message_chunk",
-        "content": {"type": "text", "text": "Runtime failed."},
+        "content": {"type": "text", "text": "runtime exploded"},
     }
-    assert messages[2]["error"] == {"code": -32603, "message": "runtime execution failed"}
+    assert messages[2]["error"] == {"code": -32603, "message": "runtime exploded"}
 
 
 def test_prompt_runtime_failed_event_returns_json_rpc_error() -> None:
@@ -293,9 +293,65 @@ def test_prompt_runtime_failed_event_returns_json_rpc_error() -> None:
     assert messages[-1] == {
         "jsonrpc": "2.0",
         "id": 2,
-        "error": {"code": -32603, "message": "runtime execution failed"},
+        "error": {"code": -32603, "message": "permission denied for tool: write_file"},
     }
     assert not any(message.get("result") == {"stopReason": "end_turn"} for message in messages)
+
+
+def test_prompt_runtime_failed_event_uses_error_summary_for_message_chunk() -> None:
+    runtime = _StubRuntime(
+        [
+            _StubChunk(
+                kind="event",
+                session=_StubSession(_StubSessionRef("runtime-1")),
+                event=_StubEvent(
+                    session_id="runtime-1",
+                    sequence=1,
+                    event_type="runtime.request_received",
+                    source="runtime",
+                    payload={"prompt": "hello"},
+                ),
+            ),
+            _StubChunk(
+                kind="event",
+                session=_StubSession(_StubSessionRef("runtime-1"), status="failed"),
+                event=_StubEvent(
+                    session_id="runtime-1",
+                    sequence=2,
+                    event_type="runtime.failed",
+                    source="runtime",
+                    payload={
+                        "error": "Runtime failed: provider fallback exhausted",
+                        "error_summary": "provider fallback exhausted",
+                    },
+                ),
+            ),
+        ]
+    )
+    with patch("voidcode.acp.stdio.uuid4", return_value=SimpleNamespace(hex="abc")):
+        messages, _ = _run_server(
+            runtime,
+            _request("session/new", 1),
+            _request("session/prompt", 2, {"sessionId": "acp-session-abc", "prompt": "hello"}),
+        )
+
+    assert messages[1]["method"] == "session/update"
+    assert messages[1]["params"]["update"] == {
+        "sessionUpdate": "agent_thought_chunk",
+        "content": {
+            "type": "text",
+            "text": (
+                '{"sessionId":"runtime-1","sequence":1,'
+                '"type":"runtime.request_received","source":"runtime",'
+                '"payload":{"prompt":"hello"}}'
+            ),
+        },
+    }
+    assert messages[2]["method"] == "session/update"
+    assert messages[2]["params"]["update"] == {
+        "sessionUpdate": "agent_message_chunk",
+        "content": {"type": "text", "text": "provider fallback exhausted"},
+    }
 
 
 def test_cancel_returns_limited_success_without_crashing() -> None:
