@@ -22,8 +22,9 @@ def _json_response(payload: Mapping[str, object]) -> httpx.Response:
 def test_websearch_tool_rejects_empty_query() -> None:
     tool = WebSearchTool()
     empty_query_error = (
-        r"web_search invalid arguments: query: Value error, "
+        r"web_search Validation error: query: Value error, "
         r"query must not be empty \(received str\)"
+        r"\. Please retry with corrected arguments that satisfy the tool schema\."
     )
 
     with pytest.raises(ValueError, match=empty_query_error):
@@ -36,8 +37,9 @@ def test_websearch_tool_rejects_empty_query() -> None:
 def test_websearch_tool_rejects_non_string_query() -> None:
     tool = WebSearchTool()
     query_type_error = (
-        r"web_search invalid arguments: query: "
+        r"web_search Validation error: query: "
         r"Input should be a valid string \(received int\)"
+        r"\. Please retry with corrected arguments that satisfy the tool schema\."
     )
 
     with pytest.raises(ValueError, match=query_type_error):
@@ -50,12 +52,14 @@ def test_websearch_tool_rejects_non_string_query() -> None:
 def test_websearch_tool_reports_missing_query_and_invalid_num_results() -> None:
     tool = WebSearchTool()
     missing_query_error = (
-        r"web_search invalid arguments: query: "
+        r"web_search Validation error: query: "
         r"Input should be a valid string \(received NoneType\)"
+        r"\. Please retry with corrected arguments that satisfy the tool schema\."
     )
     invalid_num_results_error = (
-        r"web_search invalid arguments: numResults: Value error, "
+        r"web_search Validation error: numResults: Value error, "
         r"numResults must be greater than or equal to 1 \(received int\)"
+        r"\. Please retry with corrected arguments that satisfy the tool schema\."
     )
 
     with pytest.raises(ValueError, match=missing_query_error):

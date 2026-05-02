@@ -567,7 +567,7 @@ def test_background_cancel_tool_reports_unknown_task_deterministically(tmp_path:
 def test_background_cancel_tool_rejects_all_true(tmp_path: Path) -> None:
     tool = BackgroundCancelTool(runtime=_StubBackgroundRuntime())
     all_true_error = (
-        r"background_cancel invalid arguments: all: Value error, "
+        r"background_cancel Validation error: all: Value error, "
         r"all=true is not supported in VoidCode yet \(received bool\)"
     )
 
@@ -581,8 +581,9 @@ def test_background_cancel_tool_rejects_all_true(tmp_path: Path) -> None:
 def test_background_cancel_tool_reports_task_id_validation_errors(tmp_path: Path) -> None:
     tool = BackgroundCancelTool(runtime=_StubBackgroundRuntime())
     task_id_type_error = (
-        r"background_cancel invalid arguments: taskId: "
+        r"background_cancel Validation error: taskId: "
         r"Input should be a valid string \(received int\)"
+        r"\. Please retry with corrected arguments that satisfy the tool schema\."
     )
 
     with pytest.raises(ValueError, match=task_id_type_error):
@@ -592,8 +593,9 @@ def test_background_cancel_tool_reports_task_id_validation_errors(tmp_path: Path
         )
 
     task_id_empty_error = (
-        r"background_cancel invalid arguments: taskId: Value error, "
+        r"background_cancel Validation error: taskId: Value error, "
         r"taskId must be a non-empty string when provided \(received str\)"
+        r"\. Please retry with corrected arguments that satisfy the tool schema\."
     )
     with pytest.raises(ValueError, match=task_id_empty_error):
         tool.invoke(
@@ -602,7 +604,7 @@ def test_background_cancel_tool_reports_task_id_validation_errors(tmp_path: Path
         )
 
     missing_task_id_error = (
-        r"background_cancel invalid arguments: taskId: Value error, "
+        r"background_cancel Validation error: taskId: Value error, "
         r"taskId is required when all is false \(received NoneType\)"
     )
     with pytest.raises(ValueError, match=missing_task_id_error):
@@ -615,11 +617,11 @@ def test_background_cancel_tool_reports_task_id_validation_errors(tmp_path: Path
 def test_background_cancel_tool_validates_coerced_boolean_inputs(tmp_path: Path) -> None:
     tool = BackgroundCancelTool(runtime=_StubBackgroundRuntime())
     all_true_error = (
-        r"background_cancel invalid arguments: all: Value error, "
+        r"background_cancel Validation error: all: Value error, "
         r"all=true is not supported in VoidCode yet \(received bool\)"
     )
     missing_task_id_error = (
-        r"background_cancel invalid arguments: taskId: Value error, "
+        r"background_cancel Validation error: taskId: Value error, "
         r"taskId is required when all is false \(received NoneType\)"
     )
 
