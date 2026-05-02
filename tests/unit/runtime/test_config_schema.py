@@ -16,6 +16,11 @@ from voidcode.runtime.config_schema import (
 from voidcode.runtime.task import supported_subagent_categories
 
 
+def _write_agent_manifest(path: Path, frontmatter: str, body: str = "Custom prompt.") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"---\n{frontmatter}\n---\n{body}\n", encoding="utf-8")
+
+
 def test_runtime_config_json_schema_exposes_core_fields() -> None:
     schema = runtime_config_json_schema()
 
@@ -319,6 +324,44 @@ def test_runtime_config_loads_workflow_preset_declarations(tmp_path: Path) -> No
     assert custom.default_agent == "leader"
     assert custom.force_load_skills == ("demo",)
     assert custom.mcp_binding_intents[0].servers == ("docs",)
+
+
+def test_runtime_config_validates_required_workflow_mcp_profile_from_agent_catalog(
+    tmp_path: Path,
+) -> None:
+    _write_agent_manifest(
+        tmp_path / ".voidcode" / "agents" / "docs-agent.md",
+        (
+            "name: Docs Agent\n"
+            "description: Reads documentation.\n"
+            "mode: primary\n"
+            "mcp_binding:\n"
+            "  profile: docs\n"
+        ),
+    )
+    config_path = tmp_path / ".voidcode.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "workflows": {
+                    "docs": {
+                        "id": "docs",
+                        "default_agent": "leader",
+                        "category": "research",
+                        "mcp_binding_intents": [{"profile": "docs", "required": True}],
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.workflows is not None
+    docs = config.workflows.get("docs")
+    assert docs is not None
+    assert docs.mcp_binding_intents[0].profile == "docs"
 
 
 def test_runtime_config_without_workflows_skips_skill_discovery(tmp_path: Path) -> None:

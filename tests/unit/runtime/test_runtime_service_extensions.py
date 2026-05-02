@@ -1309,6 +1309,8 @@ class _AdvisorTaskToolGraph:
         session: SessionState,
     ) -> _StubStep:
         _ = request, session
+        if session.session.parent_id is not None:
+            return _StubStep(output="advisor child done", is_finished=True)
         if not tool_results:
             return _StubStep(
                 tool_call=ToolCall(
@@ -9176,6 +9178,34 @@ def test_runtime_research_workflow_fresh_records_read_only_metadata_without_wide
     assert tool_snapshot["request_default"] is None
     assert request_workflow["read_only_default"] is True
     assert "arguments" not in workflow_snapshot
+
+
+def test_runtime_rejects_client_supplied_workflow_snapshot_on_fresh_request(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SkillCapturingStubGraph(),
+        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+    )
+
+    with pytest.raises(
+        RuntimeRequestError,
+        match="request metadata 'workflow' is internal runtime state",
+    ):
+        _ = runtime.run(
+            RuntimeRequest(
+                prompt="research this",
+                session_id="workflow-forged-fresh",
+                metadata={
+                    "workflow_preset": "research",
+                    "workflow": {
+                        "selected_preset": "git",
+                        "read_only_default": False,
+                    },
+                },
+            )
+        )
 
 
 def test_runtime_builtin_workflow_snapshots_expose_issue_405_capability_intents(
