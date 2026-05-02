@@ -7,7 +7,7 @@ import shlex
 import sys
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Protocol, TypeGuard, cast
 
 import click
 
@@ -196,6 +196,9 @@ def _handle_run_command(args: argparse.Namespace) -> int:
     workspace = cast(Path, args.workspace)
     request_text = cast(str, args.request)
     json_output = cast(bool, getattr(args, "json", False))
+    trace_output = cast(bool, getattr(args, "trace", False))
+    if json_output and trace_output:
+        raise _CliUsageError("--json and --trace cannot be used together")
     show_thinking = cast(bool, getattr(args, "show_thinking", False))
     cli_reasoning_effort = cast(str | None, getattr(args, "reasoning_effort", None))
     config = load_runtime_config(
@@ -214,8 +217,11 @@ def _handle_run_command(args: argparse.Namespace) -> int:
             metadata["max_steps"] = cast(int, args.max_steps)
         if cli_reasoning_effort is not None:
             metadata["reasoning_effort"] = cli_reasoning_effort
-        if getattr(args, "provider_stream", None) is not None:
+        provider_stream = getattr(args, "provider_stream", None)
+        if provider_stream is not None:
             metadata["provider_stream"] = cast(bool, args.provider_stream)
+        elif trace_output:
+            metadata["provider_stream"] = True
         request = RuntimeRequest(
             prompt=request_text,
             session_id=cast(str | None, args.session_id),
@@ -227,7 +233,8 @@ def _handle_run_command(args: argparse.Namespace) -> int:
                 runtime,
                 request,
                 interactive=interactive,
-                emit_events=interactive and not json_output,
+                emit_events=interactive and not json_output and not trace_output,
+                trace_events=trace_output,
                 show_thinking=show_thinking,
             )
         except KeyboardInterrupt:
@@ -246,6 +253,14 @@ def _handle_run_command(args: argparse.Namespace) -> int:
                 )
             )
             if not interactive and blocked_event is not None:
+                return _blocked_exit_code(blocked_event)
+            if result.session.status == "failed":
+                return EXIT_RUNTIME_ERROR
+        elif trace_output:
+            _print_trace_final(result)
+            _print_runtime_failure_footer(runtime, result, workspace=workspace)
+            if blocked_event is not None:
+                _print_trace_blocked(result, blocked_event, workspace=workspace)
                 return _blocked_exit_code(blocked_event)
             if result.session.status == "failed":
                 return EXIT_RUNTIME_ERROR
@@ -282,11 +297,14 @@ def _run_with_inline_approval(
     *,
     interactive: bool,
     emit_events: bool,
+    trace_events: bool = False,
     show_thinking: bool = False,
 ) -> RuntimeStreamResult:
+    trace_printer = _TracePrinter(show_thinking=show_thinking) if trace_events else None
     result = _consume_runtime_stream(
         runtime.run_stream(request),
         emit_events=emit_events,
+        trace_printer=trace_printer,
         show_thinking=show_thinking,
         on_interrupt=lambda session_id, run_id: runtime.cancel_session(
             session_id,
@@ -306,6 +324,7 @@ def _run_with_inline_approval(
                 approval_decision=_prompt_for_approval(approval_event),
             ),
             emit_events=emit_events,
+            trace_printer=trace_printer,
             show_thinking=show_thinking,
             on_interrupt=lambda session_id, run_id: runtime.cancel_session(
                 session_id,
@@ -319,7 +338,7 @@ def _run_with_inline_approval(
             events=(*result.events, *resumed_result.events),
         )
 
-    if interactive and not emit_events:
+    if interactive and (not emit_events or trace_events):
         return result
     if interactive:
         _print_runtime_output(result.output)
@@ -331,6 +350,7 @@ def _consume_runtime_stream(
     chunks: Iterator[RuntimeStreamChunk],
     *,
     emit_events: bool,
+    trace_printer: _TracePrinter | None = None,
     show_thinking: bool = False,
     on_interrupt: Callable[[str, str | None], object] | None = None,
 ) -> RuntimeStreamResult:
@@ -352,6 +372,8 @@ def _consume_runtime_stream(
                         ),
                         flush=True,
                     )
+                if trace_printer is not None:
+                    trace_printer.handle_event(chunk.event)
                 events.append(chunk.event)
             if chunk.kind == "output":
                 output = chunk.output
@@ -467,6 +489,199 @@ def _print_runtime_output(output: str | None) -> None:
     print(output or "", end="", flush=True)
     if output and not output.endswith("\n"):
         print(flush=True)
+
+
+class _TracePrinter:
+    def __init__(self, *, show_thinking: bool = False) -> None:
+        self._show_thinking = show_thinking
+        self._model_text_open = False
+
+    def handle_event(self, event: EventEnvelope) -> None:
+        payload = redact_reasoning_payload(
+            event.event_type,
+            event.payload,
+            show_thinking=self._show_thinking,
+        )
+        if event.event_type == "graph.model_turn":
+            self._close_model_text()
+            provider = _trace_string(payload.get("provider"))
+            model = _trace_string(payload.get("model"))
+            turn = payload.get("turn")
+            label = " · ".join(part for part in (provider, model) if part)
+            if label:
+                print(f"\n● Model turn {turn}: {label}", flush=True)
+            else:
+                print(f"\n● Model turn {turn}", flush=True)
+            return
+        if event.event_type == "graph.provider_stream":
+            if _trace_string(payload.get("channel")) == "text" and payload.get("kind") in {
+                "delta",
+                "content",
+            }:
+                text = _trace_string(payload.get("text"))
+                if text:
+                    print(text, end="", flush=True)
+                    self._model_text_open = True
+            return
+        if event.event_type == "graph.tool_request_created":
+            self._close_model_text()
+            _print_trace_tool_request(payload)
+            return
+        if event.event_type == "runtime.tool_started":
+            self._close_model_text()
+            _print_trace_tool_started(payload)
+            return
+        if event.event_type == "runtime.tool_progress":
+            self._close_model_text()
+            _print_trace_tool_progress(payload)
+            return
+        if event.event_type == "runtime.tool_completed":
+            self._close_model_text()
+            _print_trace_tool_completed(payload)
+            return
+        if event.event_type == "runtime.todo_updated":
+            self._close_model_text()
+            _print_trace_todos(payload)
+            return
+        if event.event_type == "runtime.approval_requested":
+            self._close_model_text()
+            tool = _trace_string(payload.get("tool")) or "tool"
+            target = _trace_string(payload.get("target_summary"))
+            suffix = f" for {target}" if target else ""
+            print(f"\n⚠ Approval required: {tool}{suffix}", flush=True)
+            return
+        if event.event_type == "runtime.question_requested":
+            self._close_model_text()
+            count = payload.get("question_count")
+            print(f"\n? Question required: {count or 1} prompt(s)", flush=True)
+            return
+        if event.event_type == "runtime.failed":
+            self._close_model_text()
+            error = _trace_string(payload.get("error")) or "runtime failed"
+            print(f"\n✖ Failed: {error}", flush=True)
+
+    def _close_model_text(self) -> None:
+        if self._model_text_open:
+            print(flush=True)
+            self._model_text_open = False
+
+
+def _print_trace_tool_request(payload: dict[str, object]) -> None:
+    tool = _trace_string(payload.get("tool")) or "tool"
+    arguments = payload.get("arguments")
+    print(f"\n▸ Tool call: {tool}", flush=True)
+    if tool == "shell_exec" and _is_string_keyed_mapping(arguments):
+        command = _trace_string(arguments.get("command"))
+        if command:
+            print(f"  $ {command}", flush=True)
+            return
+    summary = _trace_tool_summary(payload)
+    if summary:
+        print(f"  {summary}", flush=True)
+
+
+def _print_trace_tool_started(payload: dict[str, object]) -> None:
+    tool = _trace_string(payload.get("tool")) or "tool"
+    summary = _trace_tool_summary(payload)
+    if summary:
+        print(f"  started {tool}: {summary}", flush=True)
+    else:
+        print(f"  started {tool}", flush=True)
+
+
+def _print_trace_tool_progress(payload: dict[str, object]) -> None:
+    chunk = _trace_string(payload.get("chunk"))
+    if not chunk:
+        return
+    stream = _trace_string(payload.get("stream")) or "output"
+    for line in chunk.rstrip("\n").splitlines() or [""]:
+        prefix = "│" if stream == "stdout" else "┃"
+        print(f"  {prefix} {line}", flush=True)
+
+
+def _print_trace_tool_completed(payload: dict[str, object]) -> None:
+    tool = _trace_string(payload.get("tool")) or "tool"
+    status = _trace_string(payload.get("status")) or "done"
+    error = _trace_string(payload.get("error"))
+    marker = "✓" if status == "ok" and not error else "✖"
+    print(f"  {marker} {tool} {status}", flush=True)
+    if error:
+        print(f"    {error}", flush=True)
+
+
+def _print_trace_todos(payload: dict[str, object]) -> None:
+    todos = payload.get("todos")
+    if not isinstance(todos, list):
+        return
+    print("\nTODO", flush=True)
+    for todo in todos:
+        if not _is_string_keyed_mapping(todo):
+            continue
+        status = _trace_string(todo.get("status")) or "pending"
+        marker = "x" if status == "completed" else " "
+        content = _trace_string(todo.get("content")) or "(empty todo)"
+        print(f"  [{marker}] {content}", flush=True)
+
+
+def _print_trace_final(result: RuntimeStreamResult) -> None:
+    if result.output is None:
+        return
+    print("\nResult", flush=True)
+    print(result.output, end="", flush=True)
+    if not result.output.endswith("\n"):
+        print(flush=True)
+
+
+def _print_trace_blocked(
+    result: RuntimeStreamResult,
+    event: EventEnvelope,
+    *,
+    workspace: Path,
+) -> None:
+    workspace_arg = f"--workspace {shlex.quote(str(workspace))}"
+    if event.event_type == "runtime.approval_requested":
+        print(
+            "Resume approval: "
+            f"voidcode sessions resume {result.session.session.id} {workspace_arg} "
+            f"--approval-request-id {_approval_request_id(event)} --approval-decision allow",
+            flush=True,
+        )
+        return
+    request_id = _trace_string(event.payload.get("request_id")) or "<request-id>"
+    print(
+        "Answer question: "
+        f"voidcode sessions answer {result.session.session.id} {workspace_arg} "
+        f"--question-request-id {request_id} --response <answer>",
+        flush=True,
+    )
+
+
+def _trace_tool_summary(payload: dict[str, object]) -> str | None:
+    display = payload.get("display")
+    if _is_string_keyed_mapping(display):
+        summary = _trace_string(display.get("summary"))
+        if summary:
+            return summary
+    path = _trace_string(payload.get("path"))
+    if path:
+        return path
+    arguments = payload.get("arguments")
+    if _is_string_keyed_mapping(arguments):
+        for key in ("filePath", "path", "pattern", "query", "url", "description"):
+            value = _trace_string(arguments.get(key))
+            if value:
+                return value
+    return None
+
+
+def _is_string_keyed_mapping(value: object) -> TypeGuard[dict[str, object]]:
+    if not isinstance(value, dict):
+        return False
+    return all(isinstance(key, str) for key in value)
+
+
+def _trace_string(value: object) -> str | None:
+    return value if isinstance(value, str) and value else None
 
 
 def _print_plain_runtime_output(output: str | None) -> None:
@@ -2245,6 +2460,11 @@ def tui(workspace: Path, approval_mode: str | None) -> int:
 @_show_thinking_option("Show persisted reasoning/thinking text; hidden by default.")
 @_json_option("Output a structured JSON payload with session, events, and final output.")
 @click.option(
+    "--trace",
+    is_flag=True,
+    help="Stream model text, TODO updates, tool calls, and command output for manual QA.",
+)
+@click.option(
     "--provider-stream/--no-provider-stream",
     default=None,
     help="Enable or disable provider-level streaming for this run.",
@@ -2260,6 +2480,7 @@ def run(
     reasoning_effort: str | None,
     show_thinking: bool,
     json_output: bool,
+    trace: bool,
     provider_stream: bool | None,
 ) -> int:
     return _invoke_handler_from_click(
@@ -2276,6 +2497,7 @@ def run(
             reasoning_effort=reasoning_effort,
             show_thinking=show_thinking,
             json=json_output,
+            trace=trace,
             provider_stream=provider_stream,
         ),
     )

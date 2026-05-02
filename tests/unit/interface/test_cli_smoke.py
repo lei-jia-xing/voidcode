@@ -1080,6 +1080,139 @@ def test_run_json_reports_failed_status_and_returns_runtime_error(capsys: Any) -
     assert payload["session"]["status"] == "failed"
 
 
+def test_run_trace_streams_model_text_todos_and_tool_output(capsys: Any) -> None:
+    cli = importlib.import_module("voidcode.cli")
+    workspace = Path("/tmp/demo-workspace")
+    config = SimpleNamespace(approval_mode="allow")
+    chunks = (
+        _make_chunk(
+            session_id="trace-session",
+            status="running",
+            event=_runtime_event(
+                "graph.model_turn",
+                source="graph",
+                turn=1,
+                provider="opencode-go",
+                model="glm-5.1",
+            ),
+        ),
+        _make_chunk(
+            session_id="trace-session",
+            status="running",
+            event=_runtime_event(
+                "graph.provider_stream",
+                source="graph",
+                kind="delta",
+                channel="text",
+                text="I will create the file.\n",
+            ),
+        ),
+        _make_chunk(
+            session_id="trace-session",
+            status="running",
+            event=_runtime_event(
+                "runtime.todo_updated",
+                todos=[
+                    {"content": "Create sample file", "status": "completed", "priority": "high"},
+                    {"content": "Run tests", "status": "in_progress", "priority": "high"},
+                ],
+            ),
+        ),
+        _make_chunk(
+            session_id="trace-session",
+            status="running",
+            event=_runtime_event(
+                "graph.tool_request_created",
+                source="graph",
+                tool="shell_exec",
+                arguments={"command": "pytest tests/unit"},
+            ),
+        ),
+        _make_chunk(
+            session_id="trace-session",
+            status="running",
+            event=_runtime_event(
+                "runtime.tool_progress",
+                source="tool",
+                tool="shell_exec",
+                stream="stdout",
+                chunk="1 passed\n",
+            ),
+        ),
+        _make_chunk(
+            session_id="trace-session",
+            status="completed",
+            event=_runtime_event(
+                "runtime.tool_completed",
+                source="tool",
+                tool="shell_exec",
+                status="ok",
+            ),
+        ),
+        _make_chunk(session_id="trace-session", status="completed", output="done\n"),
+    )
+
+    with patch.object(cli, "load_runtime_config", autospec=True, return_value=config):
+        with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+            runtime_class.return_value.run_stream.return_value = iter(chunks)
+            result = cli.main(["run", "write sample", "--workspace", str(workspace), "--trace"])
+
+    captured = capsys.readouterr()
+    request = runtime_class.return_value.run_stream.call_args.args[0]
+
+    assert result == 0
+    assert request.metadata["provider_stream"] is True
+    assert "● Model turn 1: opencode-go · glm-5.1" in captured.out
+    assert "I will create the file." in captured.out
+    assert "TODO" in captured.out
+    assert "  [x] Create sample file" in captured.out
+    assert "  [ ] Run tests" in captured.out
+    assert "▸ Tool call: shell_exec" in captured.out
+    assert "  $ pytest tests/unit" in captured.out
+    assert "  │ 1 passed" in captured.out
+    assert "  ✓ shell_exec ok" in captured.out
+    assert "Result\ndone" in captured.out
+    assert "EVENT graph.provider_stream" not in captured.out
+    assert captured.err == ""
+
+
+def test_run_trace_respects_explicit_no_provider_stream() -> None:
+    cli = importlib.import_module("voidcode.cli")
+    workspace = Path("/tmp/demo-workspace")
+    config = SimpleNamespace(approval_mode="allow")
+    chunks = (_make_chunk(session_id="trace-session", status="completed", output="done\n"),)
+
+    with patch.object(cli, "load_runtime_config", autospec=True, return_value=config):
+        with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+            runtime_class.return_value.run_stream.return_value = iter(chunks)
+            result = cli.main(
+                [
+                    "run",
+                    "write sample",
+                    "--workspace",
+                    str(workspace),
+                    "--trace",
+                    "--no-provider-stream",
+                ]
+            )
+
+    request = runtime_class.return_value.run_stream.call_args.args[0]
+
+    assert result == 0
+    assert request.metadata["provider_stream"] is False
+
+
+def test_run_trace_conflicts_with_json(capsys: Any) -> None:
+    cli = importlib.import_module("voidcode.cli")
+
+    result = cli.main(["run", "go", "--workspace", "/tmp/demo-workspace", "--json", "--trace"])
+
+    captured = capsys.readouterr()
+    assert result == 2
+    assert captured.out == ""
+    assert "--json and --trace cannot be used together" in captured.err
+
+
 def test_run_command_forwards_reasoning_effort_flag_to_metadata_and_config() -> None:
     cli = importlib.import_module("voidcode.cli")
     workspace = Path("/tmp/demo-workspace")
