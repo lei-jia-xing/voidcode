@@ -66,11 +66,12 @@ _BUILTIN_MCP_DESCRIPTORS: dict[str, BuiltinMcpDescriptor] = {
     ),
     "grep_app": BuiltinMcpDescriptor(
         name="grep_app",
-        transport="configured-server-intent",
+        transport="remote-http",
+        url="https://mcp.grep.app",
         lifecycle="descriptor_only_config_gated",
         description=(
-            "Optional code search MCP intent; execution requires a "
-            "user-configured server named grep_app."
+            "Code search MCP via grep.app remote endpoint. "
+            "Requires mcp.enabled=true in .voidcode.json to connect."
         ),
         tags=("code-search", "research"),
     ),

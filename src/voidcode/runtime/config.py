@@ -164,7 +164,7 @@ _LSP_SERVER_CONFIG_KEYS = frozenset(
     {"preset", "command", "languages", "extensions", "root_markers", "settings", "init_options"}
 )
 _MCP_CONFIG_KEYS = frozenset({"enabled", "servers", "request_timeout_seconds"})
-_MCP_SERVER_CONFIG_KEYS = frozenset({"transport", "command", "env", "scope"})
+_MCP_SERVER_CONFIG_KEYS = frozenset({"transport", "command", "env", "scope", "url"})
 _TUI_CONFIG_KEYS = frozenset({"leader_key", "keymap", "preferences"})
 _TUI_PREFERENCES_CONFIG_KEYS = frozenset({"theme", "reading"})
 _TUI_THEME_CONFIG_KEYS = frozenset({"name", "mode"})
@@ -354,7 +354,7 @@ class RuntimeBackgroundTaskConfig:
     )
 
 
-type McpTransport = Literal["stdio"]
+type McpTransport = Literal["stdio", "remote-http"]
 type RuntimeMcpServerScope = Literal["runtime", "session"]
 
 
@@ -364,6 +364,7 @@ class RuntimeMcpServerConfig:
     command: tuple[str, ...] = ()
     env: dict[str, str] = field(default_factory=dict)
     scope: RuntimeMcpServerScope = "runtime"
+    url: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1713,6 +1714,7 @@ class _RuntimeMcpServerValidationModel(BaseModel):
     command: tuple[str, ...] = ()
     env: dict[str, str] = Field(default_factory=dict)
     scope: RuntimeMcpServerScope = "runtime"
+    url: str | None = None
 
     @field_validator("transport", mode="before")
     @classmethod
@@ -1720,19 +1722,19 @@ class _RuntimeMcpServerValidationModel(BaseModel):
         if value is None:
             return "stdio"
         field_path = _validation_context_field_path(info, default="mcp.servers")
-        if value != "stdio":
-            raise ValueError(f"runtime config field '{field_path}.transport' must be one of: stdio")
-        return "stdio"
+        if value not in ("stdio", "remote-http"):
+            raise ValueError(
+                f"runtime config field '{field_path}.transport' must be one of: stdio, remote-http"
+            )
+        return cast(McpTransport, value)
 
     @field_validator("command", mode="before")
     @classmethod
     def _validate_command(cls, value: object, info: ValidationInfo) -> tuple[str, ...]:
         field_path = _validation_context_field_path(info, default="mcp.servers")
+        if value is None:
+            return ()
         command = _parse_string_list(value, field_path=f"{field_path}.command")
-        if not command:
-            raise ValueError(
-                f"runtime config field '{field_path}.command' must contain at least one string"
-            )
         return command
 
     @field_validator("env", mode="before")
@@ -1760,12 +1762,35 @@ class _RuntimeMcpServerValidationModel(BaseModel):
         field_path = _validation_context_field_path(info, default="mcp.servers")
         return _parse_runtime_mcp_server_scope(value, field_path=field_path)
 
+    @field_validator("url", mode="before")
+    @classmethod
+    def _validate_url(cls, value: object, info: ValidationInfo) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str) or not value.strip():
+            field_path = _validation_context_field_path(info, default="mcp.servers")
+            raise ValueError(f"runtime config field '{field_path}.url' must be a non-empty string")
+        return value.strip()
+
+    def model_post_init(self, __context) -> None:
+        if self.transport == "stdio" and not self.command:
+            raise ValueError(
+                f"MCP server '{getattr(self, '_field_path', 'unknown')}' using stdio transport "
+                "requires a command"
+            )
+        if self.transport == "remote-http" and not self.url:
+            raise ValueError(
+                f"MCP server '{getattr(self, '_field_path', 'unknown')}' using remote-http transport "
+                "requires a url"
+            )
+
     def to_runtime_config(self) -> RuntimeMcpServerConfig:
         return RuntimeMcpServerConfig(
             transport=self.transport,
             command=self.command,
             env=self.env,
             scope=self.scope,
+            url=self.url,
         )
 
 

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 SUPPORTED_CAPABILITIES = {
     # Transport
-    "transport": ["stdio"],
+    "transport": ["stdio", "remote-http"],
     # Discovery
     "discovery": ["deferred"],  # Tool discovery happens on first list_tools call
     # Operations
@@ -39,7 +39,6 @@ NOT_SUPPORTED = {
     "resources": "MCP resources not supported",
     "prompts": "MCP prompts not supported",
     "sampling": "MCP sampling not supported",
-    "remote_transport": "Remote/non-stdio transports not supported",
     "untrusted_servers": "Untrusted MCP servers not supported",
 }
 
@@ -71,6 +70,8 @@ class McpErrorCode:
     TOOL_NOT_FOUND = "tool_not_found"
     INVALID_REQUEST = "invalid_request"
     PROTOCOL_NEGOTIATION_FAILED = "protocol_negotiation_failed"
+    REMOTE_CONNECTION_FAILED = "remote_connection_failed"
+    REMOTE_HTTP_ERROR = "remote_http_error"
 
 
 # =============================================================================
@@ -81,18 +82,22 @@ DIAGNOSTIC_CATEGORIES = {
     "startup": [
         "server_command_missing",
         "server_command_empty",
+        "server_url_missing",
         "stdio_pipe_failed",
         "env_config_invalid",
+        "remote_connection_failed",
     ],
     "communication": [
         "json_decode_failed",
         "response_id_mismatch",
         "unexpected_response_type",
         "protocol_negotiation_failed",
+        "remote_http_error",
     ],
     "timeout": [
         "request_timeout",
         "server_unresponsive",
+        "remote_timeout",
     ],
     "shutdown": [
         "graceful_shutdown_failed",

@@ -81,12 +81,16 @@ def diagnostic_message(
     messages: dict[str, str] = {
         "server_startup_failed": "MCP server failed to start",
         "server_command_missing": "MCP server command is missing",
+        "server_url_missing": "MCP server URL is missing for remote-http transport",
         "stdio_pipe_failed": "MCP server stdio pipe failed",
         "json_decode_failed": "MCP server returned invalid JSON",
         "request_timeout": "MCP server request timed out",
         "server_not_found": "MCP server not found in configuration",
         "tool_not_found": "MCP tool not found",
         "unexpected_response": "MCP server returned unexpected response",
+        "remote_connection_failed": "Failed to connect to remote MCP server",
+        "remote_http_error": "Remote MCP server returned HTTP error",
+        "remote_timeout": "Remote MCP server request timed out",
     }
     base = messages.get(code, f"MCP[{code}]")
     if server_name:

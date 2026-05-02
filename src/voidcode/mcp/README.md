@@ -3,7 +3,7 @@
 这里是 VoidCode 的 MCP 能力层，包含协议模型、配置 schema 和可观测性接口。
 
 > **状态**: 根据 Issue #107/#213，MCP 的静态类型、配置模型和边界约束已经提取到此目录。
-> runtime 实现仍保留在 `src/voidcode/runtime/mcp.py`，并基于官方 Python MCP SDK 提供受限、stdio-only、runtime-managed 的预发布集成。
+> runtime 实现保留在 `src/voidcode/runtime/mcp.py`，基于官方 Python MCP SDK 提供 stdio + remote-http (Streamable HTTP) 传输的 runtime-managed 集成。
 
 ## 定位
 
@@ -29,7 +29,7 @@
 
 参见 `contract.py` 中的 `SUPPORTED_CAPABILITIES`:
 
-- **Transport**: stdio-only
+- **Transport**: stdio + remote-http (Streamable HTTP)
 - **Discovery**: deferred (懒加载)
 - **Operations**: tools/list, tools/call
 - **Lifecycle**: runtime-owned
@@ -43,8 +43,31 @@
 
 - 完整 bidirectional MCP
 - MCP resources / prompts / sampling
-- Remote / non-stdio transports
 - Untrusted MCP servers
+
+### Builtin MCP 描述符说明
+
+`builtin.py` 定义了以下内置 MCP 描述符:
+
+| 名称 | 传输 | URL | 状态 |
+|------|------|-----|------|
+| `context7` | remote-http | `https://mcp.context7.com/mcp` | descriptor-only, config-gated |
+| `websearch` | remote-http | `https://mcp.exa.ai/mcp` | descriptor-only, config-gated |
+| `grep_app` | remote-http | `https://mcp.grep.app` | config-gated, 启用后可连接 |
+| `playwright` | stdio | N/A | skill-scoped, session scope |
+
+#### grep.app 端点说明
+
+grep.app 提供三个不同的端点，用途各不相同:
+
+- **Web 界面**: `https://grep.app` — 用于浏览器搜索的代码搜索网站
+- **公共 API**: `https://grep.app/api/search` — 用于程序化搜索的 REST API
+- **MCP 端点**: `https://mcp.grep.app` — MCP 协议端点（远程 HTTP 传输）
+
+内置 `grep_app` 描述符现在指向官方 MCP 端点 `https://mcp.grep.app`:
+- 需要在 `.voidcode.json` 中配置 `mcp.enabled: true` 才能启用
+- 启用后 runtime 会自动连接到远程 MCP 端点
+- 连接失败会作为 runtime MCP 诊断/状态输出，而不是模糊的工具错误
 
 ### 文件结构
 
