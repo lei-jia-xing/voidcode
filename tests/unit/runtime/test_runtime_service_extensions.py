@@ -216,10 +216,12 @@ def test_runtime_ignores_shell_executable_path_candidate() -> None:
 
 def test_runtime_shell_read_probe_external_path_stays_workspace_scoped(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(workspace=tmp_path)
+    shell_tool = ToolRegistry.with_defaults().resolve("shell_exec")
 
     runtime_private = cast(Any, runtime)
     context = runtime_private._permission_context_for_tool_call(
-        tool=ToolRegistry.with_defaults().resolve("shell_exec").definition,
+        tool=shell_tool.definition,
+        tool_instance=shell_tool,
         tool_call=ToolCall(
             tool_name="shell_exec",
             arguments={"command": "test -f /usr/include/vulkan/vulkan.h"},

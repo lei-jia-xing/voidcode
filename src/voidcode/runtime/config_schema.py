@@ -125,7 +125,7 @@ def runtime_config_json_schema() -> dict[str, object]:
                     },
                 },
             },
-            "tools": {"$ref": "#/$defs/toolsConfig"},
+            "tools": {"$ref": "#/$defs/runtimeToolsConfig"},
             "skills": {"$ref": "#/$defs/skillsConfig"},
             "context_window": {"$ref": "#/$defs/contextWindowConfig"},
             "lsp": {
@@ -314,7 +314,21 @@ def runtime_config_json_schema() -> dict[str, object]:
                     },
                 },
             },
-            "toolsConfig": {
+            "runtimeToolsConfig": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "builtin": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {"enabled": {"type": "boolean"}},
+                    },
+                    "local": {"$ref": "#/$defs/localToolsConfig"},
+                    "allowlist": {"type": "array", "items": {"type": "string"}},
+                    "default": {"type": "array", "items": {"type": "string"}},
+                },
+            },
+            "agentToolsConfig": {
                 "type": "object",
                 "additionalProperties": False,
                 "properties": {
@@ -404,6 +418,25 @@ def runtime_config_json_schema() -> dict[str, object]:
                     "paths": {"type": "array", "items": {"type": "string"}},
                 },
             },
+            "localToolsConfig": {
+                "type": "object",
+                "additionalProperties": False,
+                "description": (
+                    "Opt-in workspace-local custom tool manifest discovery. Runtime executes "
+                    "discovered command tools through the normal registry, allowlist, and "
+                    "permission path."
+                ),
+                "properties": {
+                    "enabled": {"type": "boolean"},
+                    "path": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": (
+                            "Workspace-relative directory containing *.json tool manifests."
+                        ),
+                    },
+                },
+            },
             "agentConfig": {
                 "type": "object",
                 "additionalProperties": False,
@@ -429,7 +462,7 @@ def runtime_config_json_schema() -> dict[str, object]:
                         "type": "string",
                         "enum": ["deterministic", "provider"],
                     },
-                    "tools": {"$ref": "#/$defs/toolsConfig"},
+                    "tools": {"$ref": "#/$defs/agentToolsConfig"},
                     "skills": {"$ref": "#/$defs/skillsConfig"},
                     "mcp_binding": {"$ref": "#/$defs/agentMcpBindingConfig"},
                     "provider_fallback": {

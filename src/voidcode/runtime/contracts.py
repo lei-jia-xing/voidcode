@@ -736,6 +736,11 @@ class RuntimeSessionDebugPendingApproval:
     owner_session_id: str | None = None
     owner_parent_session_id: str | None = None
     delegated_task_id: str | None = None
+    path_scope: str | None = None
+    operation_class: str | None = None
+    canonical_path: str | None = None
+    matched_rule: str | None = None
+    policy_surface: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
