@@ -355,7 +355,7 @@ class VoidCodeTUI(App[int]):
             decision = payload.get("decision", "unknown")
             text = Text(f"ℹ Approval {decision} for tool: {tool_name}", style="bold cyan")
         elif event.event_type == "runtime.failed":
-            error_msg = payload.get("error", "Unknown error")
+            error_msg = payload.get("error_summary", payload.get("error", "Unknown error"))
             formatted_error = self._format_runtime_error(error_msg)
             text = Text(f"✖ Failed: {formatted_error}", style="bold red")
         else:

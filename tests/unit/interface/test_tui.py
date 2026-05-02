@@ -239,6 +239,39 @@ async def test_tui_strips_runtime_failed_prefix_from_error_lines(app_class: Any)
 
 
 @pytest.mark.anyio
+async def test_tui_prefers_runtime_error_summary_when_present(app_class: Any) -> None:
+    VoidCodeTUI, StreamChunkReceived, StreamCompleted = app_class
+
+    with patch(
+        "voidcode.tui.app.load_runtime_config",
+        autospec=True,
+        return_value=_mock_runtime_config(),
+    ):
+        with patch("voidcode.tui.app.VoidCodeRuntime", autospec=True):
+            app = VoidCodeTUI(workspace=Path("."))
+
+            async with app.run_test() as pilot:
+                app.on_stream_chunk_received(
+                    StreamChunkReceived(
+                        _make_chunk(
+                            status="failed",
+                            event=_runtime_event(
+                                "runtime.failed",
+                                error="Runtime failed: provider fallback exhausted",
+                                error_summary="provider fallback exhausted",
+                            ),
+                        )
+                    )
+                )
+                app.on_stream_completed(StreamCompleted("failed"))
+                await pilot.pause()
+
+                log = app.query_one("#transcript-log")
+                plain_lines = ["".join(segment.text for segment in line) for line in log.lines]
+                assert any("✖ Failed: provider fallback exhausted" in line for line in plain_lines)
+
+
+@pytest.mark.anyio
 async def test_tui_sidebar_updates_on_mount(app_class: Any) -> None:
     VoidCodeTUI, _, _ = app_class
 
