@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Protocol
 
@@ -14,6 +15,7 @@ from ..runtime.contracts import (
     validate_runtime_request_metadata,
 )
 from ..runtime.task import BackgroundTaskState, StoredBackgroundTaskSummary
+from ._pydantic_args import format_validation_error
 from .contracts import ToolCall, ToolDefinition, ToolResult
 from .runtime_context import require_runtime_tool_context
 
@@ -49,6 +51,20 @@ class _TaskArgs(BaseModel):
         if not stripped:
             raise ValueError("prompt must be a non-empty string")
         return stripped
+
+    @field_validator("load_skills", mode="before")
+    @classmethod
+    def _parse_load_skills(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        stripped = value.strip()
+        if not stripped:
+            return []
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError:
+            return value
+        return parsed
 
     @field_validator("load_skills", mode="after")
     @classmethod
@@ -137,9 +153,7 @@ class TaskTool:
         try:
             args = _TaskArgs.model_validate(call.arguments)
         except ValidationError as exc:
-            raise ValueError(
-                "task requires prompt, run_in_background, load_skills, and exactly one of category or subagent_type"  # noqa: E501
-            ) from exc
+            raise ValueError(format_validation_error(self.definition.name, exc)) from exc
 
         context = require_runtime_tool_context(self.definition.name)
         delegation_metadata: dict[str, object] = dict(_delegation_metadata(args).items())

@@ -44,7 +44,7 @@ class _StubTaskRuntime:
                 prompt=request.prompt,
                 session_id=request.session_id,
                 parent_session_id=request.parent_session_id,
-                metadata=dict(request.metadata),
+                metadata={key: value for key, value in request.metadata.items()},
                 allocate_session_id=request.allocate_session_id,
             ),
         )
@@ -93,6 +93,68 @@ def test_task_tool_starts_background_task_with_parent_context(tmp_path: Path) ->
         "force_load_skills": ["demo"],
         "delegation": {"mode": "background", "category": "quick"},
     }
+
+
+def test_task_tool_accepts_json_string_load_skills_from_provider(tmp_path: Path) -> None:
+    runtime = _StubTaskRuntime()
+    tool = TaskTool(runtime=runtime)
+
+    with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="leader-session")):
+        result = tool.invoke(
+            ToolCall(
+                tool_name="task",
+                arguments={
+                    "prompt": "Inspect this workspace",
+                    "run_in_background": True,
+                    "load_skills": "[]",
+                    "subagent_type": "explore",
+                    "description": "Workspace inspection",
+                },
+            ),
+            workspace=tmp_path,
+        )
+
+    assert result.status == "ok"
+    assert result.data["task_id"] == "task-123"
+    assert result.data["delegation"] == {
+        "mode": "background",
+        "subagent_type": "explore",
+        "description": "Workspace inspection",
+    }
+    assert result.data["load_skills"] == []
+    assert runtime.requests[0].metadata == {
+        "force_load_skills": [],
+        "delegation": {
+            "mode": "background",
+            "subagent_type": "explore",
+            "description": "Workspace inspection",
+        },
+    }
+
+
+def test_task_tool_validation_error_names_bad_argument_field(tmp_path: Path) -> None:
+    runtime = _StubTaskRuntime()
+    tool = TaskTool(runtime=runtime)
+
+    with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="leader-session")):
+        with pytest.raises(ValueError) as exc_info:
+            tool.invoke(
+                ToolCall(
+                    tool_name="task",
+                    arguments={
+                        "prompt": "Inspect this workspace",
+                        "run_in_background": True,
+                        "load_skills": "not-json",
+                        "subagent_type": "explore",
+                    },
+                ),
+                workspace=tmp_path,
+            )
+
+    message = str(exc_info.value)
+    assert "task invalid arguments" in message
+    assert "load_skills" in message
+    assert "received str" in message
 
 
 def test_task_tool_runs_sync_child_session(tmp_path: Path) -> None:
