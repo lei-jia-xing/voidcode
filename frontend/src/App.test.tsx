@@ -86,7 +86,12 @@ describe("App", () => {
     backgroundTasks: [],
     backgroundTasksStatus: "idle",
     backgroundTasksError: null,
+    selectedBackgroundTaskOutputId: null,
+    backgroundTaskOutput: null,
+    backgroundTaskOutputStatus: "idle",
+    backgroundTaskOutputError: null,
     loadBackgroundTasks: vi.fn(),
+    loadBackgroundTaskOutput: vi.fn(),
     cancelBackgroundTask: vi.fn(),
     sessionDebug: null,
     sessionDebugStatus: "idle",
@@ -311,6 +316,81 @@ describe("App", () => {
     expect(
       screen.getByRole("button", { name: "Toggle code review" }),
     ).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("opens runtime ops and loads background task output from task selection", () => {
+    const loadBackgroundTaskOutput = vi.fn();
+    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      ...mockStore,
+      workspaces: {
+        current: {
+          path: "/workspace",
+          label: "workspace",
+          available: true,
+          current: true,
+          last_opened_at: 1,
+        },
+        recent: [],
+        candidates: [],
+      },
+      backgroundTasks: [
+        {
+          task: { id: "task-output-1" },
+          status: "completed",
+          prompt: "inspect repo",
+          session_id: "session-1",
+          error: null,
+          created_at: 1,
+          updated_at: 1,
+        },
+      ],
+      selectedBackgroundTaskOutputId: "task-output-1",
+      backgroundTaskOutputStatus: "success",
+      backgroundTaskOutput: {
+        task: {
+          task_id: "task-output-1",
+          status: "completed",
+          parent_session_id: "session-1",
+          requested_child_session_id: "requested-child-1",
+          child_session_id: "child-session-1",
+          approval_request_id: null,
+          question_request_id: null,
+          approval_blocked: false,
+          summary_output: "Task summary text",
+          error: null,
+          result_available: true,
+          cancellation_cause: null,
+          routing: { mode: "subagent", subagent_type: "explore" },
+        },
+        session_result: {
+          session: {
+            session: { id: "child-session-1" },
+            status: "completed" as const,
+            turn: 1,
+            metadata: {},
+          },
+          prompt: "inspect repo",
+          status: "completed",
+          summary: "Session summary text",
+          output: "Session output text",
+          error: null,
+          last_event_sequence: 1,
+          transcript: [],
+        },
+        output: "Raw output text",
+      },
+      loadBackgroundTaskOutput,
+    });
+
+    render(<App />);
+    fireEvent.click(screen.getByLabelText("Runtime Ops"));
+    fireEvent.click(screen.getByRole("button", { name: "View output" }));
+
+    expect(loadBackgroundTaskOutput).toHaveBeenCalledWith("task-output-1");
+    expect(screen.getByText("Task summary text")).toBeInTheDocument();
+    expect(screen.getByText("Raw output text")).toBeInTheDocument();
+    expect(screen.getByText("Session output text")).toBeInTheDocument();
+    expect(screen.getByText("child-session-1")).toBeInTheDocument();
   });
 
   it("renders project-picker-first empty state when no current workspace exists", () => {

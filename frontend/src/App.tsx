@@ -97,7 +97,12 @@ function App() {
     backgroundTasks,
     backgroundTasksStatus,
     backgroundTasksError,
+    selectedBackgroundTaskOutputId,
+    backgroundTaskOutput,
+    backgroundTaskOutputStatus,
+    backgroundTaskOutputError,
     loadBackgroundTasks,
+    loadBackgroundTaskOutput,
     cancelBackgroundTask,
     sessionDebug,
     sessionDebugStatus,
@@ -528,12 +533,19 @@ function App() {
         backgroundTasks={backgroundTasks}
         backgroundTasksStatus={backgroundTasksStatus}
         backgroundTasksError={backgroundTasksError}
+        selectedBackgroundTaskOutputId={selectedBackgroundTaskOutputId}
+        backgroundTaskOutput={backgroundTaskOutput}
+        backgroundTaskOutputStatus={backgroundTaskOutputStatus}
+        backgroundTaskOutputError={backgroundTaskOutputError}
         onClose={() => setShowRuntimeOps(false)}
         onRefreshNotifications={loadNotifications}
         onAcknowledgeNotification={(notificationId) => {
           void acknowledgeNotification(notificationId);
         }}
         onRefreshTasks={loadBackgroundTasks}
+        onLoadTaskOutput={(taskId) => {
+          void loadBackgroundTaskOutput(taskId);
+        }}
         onCancelTask={(taskId) => {
           void cancelBackgroundTask(taskId);
         }}
