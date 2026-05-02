@@ -2328,14 +2328,11 @@ def _resolve_agent_config(
     if manifest is not None:
         prompt_materialization = _resolve_agent_prompt_materialization(agent, manifest)
         provider_fallback = agent.provider_fallback
-        if (
-            provider_fallback is None
-            and manifest.model_preference is not None
-            and manifest.fallback_models
-        ):
+        model = agent.model or manifest.model_preference
+        if provider_fallback is None and model is not None and manifest.fallback_models:
             provider_fallback = parse_provider_fallback_payload(
                 {
-                    "preferred_model": agent.model or manifest.model_preference,
+                    "preferred_model": model,
                     "fallback_models": list(manifest.fallback_models),
                 },
                 source=f"agent manifest '{manifest.id}' fallback_models",
@@ -2368,7 +2365,7 @@ def _resolve_agent_config(
             manifest_skill_refs=agent.manifest_skill_refs or manifest.skill_refs,
             manifest_hook_refs=agent.manifest_hook_refs or manifest.preset_hook_refs,
             hook_refs=agent.hook_refs,
-            model=agent.model or manifest.model_preference,
+            model=model,
             execution_engine=agent.execution_engine or manifest.execution_engine,
             tools=agent.tools,
             skills=agent.skills,

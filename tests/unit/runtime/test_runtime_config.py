@@ -1410,6 +1410,36 @@ def test_runtime_config_allows_agents_key_for_discovered_custom_manifest(tmp_pat
     assert agent.model == "opencode/reviewer"
 
 
+def test_runtime_config_applies_manifest_fallback_models_to_configured_agent_model(
+    tmp_path: Path,
+) -> None:
+    _write_agent_manifest(
+        tmp_path / ".voidcode" / "agents" / "reviewer.md",
+        "\n".join(
+            (
+                "id: local-reviewer",
+                "name: Local Reviewer",
+                "description: review",
+                "mode: subagent",
+                "fallback_models: [opencode/reviewer-fallback]",
+            )
+        ),
+        body="Review from markdown.",
+    )
+    runtime_config_path(tmp_path).write_text(
+        json.dumps({"agents": {"local-reviewer": {"model": "opencode/reviewer"}}}),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.agents is not None
+    assert config.agents["local-reviewer"].provider_fallback == RuntimeProviderFallbackConfig(
+        preferred_model="opencode/reviewer",
+        fallback_models=("opencode/reviewer-fallback",),
+    )
+
+
 def test_runtime_agent_payload_round_trips_through_serialization() -> None:
     agent = parse_runtime_agent_payload(
         {
