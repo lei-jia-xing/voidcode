@@ -827,6 +827,36 @@ def test_local_custom_tool_provider_rejects_invalid_input_schema(tmp_path: Path)
         ).provide_tools()
 
 
+def test_local_custom_tool_provider_rejects_null_input_schema_type(tmp_path: Path) -> None:
+    manifest = _write_local_tool_manifest(tmp_path)
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    payload["input_schema"] = {"type": None}
+    manifest.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="input_schema.type must be 'object'"):
+        _ = LocalCustomToolProvider(
+            workspace=tmp_path,
+            config=RuntimeToolsLocalConfig(enabled=True, path=".voidcode/tools"),
+        ).provide_tools()
+
+
+def test_local_custom_tool_provider_normalizes_missing_input_schema_type(tmp_path: Path) -> None:
+    manifest = _write_local_tool_manifest(tmp_path)
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    payload["input_schema"] = {"properties": {"message": {"type": "string"}}}
+    manifest.write_text(json.dumps(payload), encoding="utf-8")
+
+    tool = LocalCustomToolProvider(
+        workspace=tmp_path,
+        config=RuntimeToolsLocalConfig(enabled=True, path=".voidcode/tools"),
+    ).provide_tools()[0]
+
+    assert tool.definition.input_schema == {
+        "type": "object",
+        "properties": {"message": {"type": "string"}},
+    }
+
+
 class _LocalToolGraph:
     def __init__(self) -> None:
         self._step_count = 0

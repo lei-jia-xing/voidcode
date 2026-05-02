@@ -2262,6 +2262,11 @@ def test_runtime_config_rejects_invalid_max_steps(
             id="agent-tools-local-unsupported",
         ),
         pytest.param(
+            {"agent": {"preset": "leader", "tools": {"local": None}}},
+            "runtime config field 'agent.tools.local' is not supported",
+            id="agent-tools-local-null-unsupported",
+        ),
+        pytest.param(
             {"agent": {"preset": "leader", "plan": {"provider": "custom"}}},
             "runtime config field 'agent.plan'",
             id="agent-plan-removed",

@@ -1961,7 +1961,7 @@ def _parse_tools_config(
             field_path=f"{field_path}.builtin",
         )
     raw_local = tools_payload.get("local")
-    if raw_local is not None and not allow_local:
+    if "local" in tools_payload and not allow_local:
         raise ValueError(f"runtime config field '{field_path}.local' is not supported")
     if isinstance(raw_local, dict):
         _reject_unknown_config_keys(
