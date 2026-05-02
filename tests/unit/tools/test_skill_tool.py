@@ -61,5 +61,11 @@ def test_skill_tool_rejects_missing_name(tmp_path: Path) -> None:
         list_skills=lambda: (), resolve_skill=lambda name: (_ for _ in ()).throw(ValueError(name))
     )
 
-    with pytest.raises(ValueError, match="non-empty string name"):
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"skill Validation error: name: Field required \(received dict\)\. "
+            r"Please retry with corrected arguments that satisfy the tool schema\."
+        ),
+    ):
         tool.invoke(ToolCall(tool_name="skill", arguments={}), workspace=tmp_path)

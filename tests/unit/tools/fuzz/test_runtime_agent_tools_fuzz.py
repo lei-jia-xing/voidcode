@@ -163,7 +163,13 @@ def test_question_tool_parse_prompts_trims_valid_payloads(
 def test_question_tool_parse_prompts_rejects_malformed_questions_payload(
     bad_questions: object,
 ) -> None:
-    with pytest.raises(ValueError, match="question requires a non-empty questions array"):
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"question Validation error: questions(?:\.0)?: .* "
+            r"Please retry with corrected arguments that satisfy the tool schema\."
+        ),
+    ):
         QuestionTool.parse_prompts({"questions": bad_questions})
 
 
@@ -190,7 +196,13 @@ def test_background_output_tool_rejects_invalid_task_id_values(task_id: object) 
     tool = BackgroundOutputTool(runtime=_RecordingBackgroundOutputRuntime())
 
     with TemporaryDirectory() as temp_dir:
-        with pytest.raises(ValueError, match="background_output requires a non-empty task_id"):
+        with pytest.raises(
+            ValueError,
+            match=(
+                r"background_output Validation error: task_id: .* "
+                r"Please retry with corrected arguments that satisfy the tool schema\."
+            ),
+        ):
             tool.invoke(
                 ToolCall(tool_name="background_output", arguments={"task_id": task_id}),
                 workspace=Path(temp_dir),
@@ -242,7 +254,13 @@ def test_skill_tool_rejects_invalid_name_values(name: object) -> None:
     )
 
     with TemporaryDirectory() as temp_dir:
-        with pytest.raises(ValueError, match="skill requires a non-empty string name"):
+        with pytest.raises(
+            ValueError,
+            match=(
+                r"skill Validation error: name: .* "
+                r"Please retry with corrected arguments that satisfy the tool schema\."
+            ),
+        ):
             tool.invoke(
                 ToolCall(tool_name="skill", arguments={"name": name}),
                 workspace=Path(temp_dir),
@@ -261,8 +279,8 @@ def test_task_tool_rejects_invalid_prompt_values(
         with pytest.raises(
             ValueError,
             match=(
-                "task requires prompt, run_in_background, load_skills, and exactly one "
-                "of category or subagent_type"
+                r"task Validation error: prompt: .* "
+                r"Please retry with corrected arguments that satisfy the tool schema\."
             ),
         ):
             tool.invoke(
@@ -291,8 +309,8 @@ def test_task_tool_rejects_invalid_load_skills_entries(
         with pytest.raises(
             ValueError,
             match=(
-                "task requires prompt, run_in_background, load_skills, and exactly one "
-                "of category or subagent_type"
+                r"task Validation error: load_skills(?:\.0)?: .* "
+                r"Please retry with corrected arguments that satisfy the tool schema\."
             ),
         ):
             tool.invoke(
@@ -311,10 +329,15 @@ def test_task_tool_rejects_invalid_load_skills_entries(
 
 def test_task_tool_rejects_ambiguous_or_missing_routing_arguments() -> None:
     tool = TaskTool(runtime=_UnusedTaskRuntime())
+    routing_error = (
+        r"task Validation error: arguments: Value error, "
+        r"provide exactly one of category or subagent_type \(received dict\)\. "
+        r"Please retry with corrected arguments that satisfy the tool schema\."
+    )
 
     with TemporaryDirectory() as temp_dir:
         workspace = Path(temp_dir)
-        with pytest.raises(ValueError, match="task requires prompt"):
+        with pytest.raises(ValueError, match=routing_error):
             tool.invoke(
                 ToolCall(
                     tool_name="task",
@@ -326,7 +349,7 @@ def test_task_tool_rejects_ambiguous_or_missing_routing_arguments() -> None:
                 ),
                 workspace=workspace,
             )
-        with pytest.raises(ValueError, match="task requires prompt"):
+        with pytest.raises(ValueError, match=routing_error):
             tool.invoke(
                 ToolCall(
                     tool_name="task",

@@ -152,9 +152,10 @@ def test_task_tool_validation_error_names_bad_argument_field(tmp_path: Path) -> 
             )
 
     message = str(exc_info.value)
-    assert "task invalid arguments" in message
+    assert "task Validation error" in message
     assert "load_skills" in message
     assert "received str" in message
+    assert "Please retry with corrected arguments" in message
 
 
 def test_task_tool_runs_sync_child_session(tmp_path: Path) -> None:
