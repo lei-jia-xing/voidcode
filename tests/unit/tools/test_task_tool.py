@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -60,6 +61,29 @@ class _StubTaskRuntime:
 
     def session_result(self, *, session_id: str):
         raise AssertionError(session_id)
+
+
+def test_task_tool_exposes_agent_friendly_json_schema_contract() -> None:
+    schema = TaskTool.definition.input_schema
+
+    assert schema["type"] == "object"
+    assert schema["additionalProperties"] is False
+    assert schema["required"] == ["prompt", "run_in_background", "load_skills"]
+
+    properties = cast(dict[str, object], schema["properties"])
+    run_in_background = cast(dict[str, object], properties["run_in_background"])
+    load_skills = cast(dict[str, object], properties["load_skills"])
+
+    assert run_in_background["type"] == "boolean"
+    assert "Required." in cast(str, run_in_background["description"])
+    assert load_skills["type"] == "array"
+    assert "Pass []" in cast(str, load_skills["description"])
+
+    one_of = cast(list[object], schema["oneOf"])
+    assert len(one_of) == 2
+    examples = cast(list[object], schema["examples"])
+    assert cast(dict[str, object], examples[0])["run_in_background"] is True
+    assert cast(dict[str, object], examples[1])["run_in_background"] is False
 
 
 def test_task_tool_starts_background_task_with_parent_context(tmp_path: Path) -> None:
@@ -156,6 +180,16 @@ def test_task_tool_validation_error_names_bad_argument_field(tmp_path: Path) -> 
     assert "load_skills" in message
     assert "received str" in message
     assert "Please retry with corrected arguments" in message
+
+
+def test_task_tool_guidance_frontloads_required_arguments() -> None:
+    from voidcode.tools.guidance import guidance_for_tool
+
+    guidance = guidance_for_tool("task")
+
+    assert "Always include `prompt`, `run_in_background`, and `load_skills`" in guidance
+    assert "Provide exactly one of `category` or `subagent_type`" in guidance
+    assert "Prefer `run_in_background=true`" in guidance
 
 
 def test_task_tool_runs_sync_child_session(tmp_path: Path) -> None:
