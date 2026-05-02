@@ -61,7 +61,12 @@ from ..provider.models import (
     ResolvedProviderConfig,
     ResolvedProviderModel,
 )
-from ..provider.protocol import ProviderAbortSignal, ProviderTokenUsage, ProviderTurnRequest
+from ..provider.protocol import (
+    ProviderAbortSignal,
+    ProviderErrorKind,
+    ProviderTokenUsage,
+    ProviderTurnRequest,
+)
 from ..provider.registry import ModelProviderRegistry
 from ..provider.resolution import resolve_provider_config
 from ..provider.snapshot import (
@@ -2600,6 +2605,7 @@ class VoidCodeRuntime:
             error=error,
         )
         failure_payload = {"error": error, **(payload or {})}
+        failure_payload = self._with_runtime_failure_details(failure_payload)
         return RuntimeStreamChunk(
             kind="event",
             session=failed_session,
@@ -2611,6 +2617,58 @@ class VoidCodeRuntime:
                 payload=failure_payload,
             ),
         )
+
+    @staticmethod
+    def _with_runtime_failure_details(payload: dict[str, object]) -> dict[str, object]:
+        normalized = dict(payload)
+        error = normalized.get("error")
+        if not isinstance(error, str) or not error:
+            return normalized
+        summary = normalized.get("error_summary")
+        if not isinstance(summary, str) or not summary:
+            summary = VoidCodeRuntime._format_runtime_error_summary(error)
+            normalized["error_summary"] = summary
+        guidance = normalized.get("retry_guidance")
+        if not isinstance(guidance, str) or not guidance:
+            retry_guidance = VoidCodeRuntime._retry_guidance_for_runtime_failure(normalized)
+            if retry_guidance is not None:
+                normalized["retry_guidance"] = retry_guidance
+        if "error_details" not in normalized:
+            details: dict[str, object] = {"message": error, "summary": summary}
+            if isinstance(normalized.get("provider_error_kind"), str):
+                details["provider_error_kind"] = normalized["provider_error_kind"]
+            if isinstance(normalized.get("provider_error_details"), dict):
+                details["provider_error_details"] = normalized["provider_error_details"]
+            if normalized.get("cancelled") is True:
+                details["cancelled"] = True
+            normalized["error_details"] = details
+        return normalized
+
+    @staticmethod
+    def _retry_guidance_for_runtime_failure(payload: dict[str, object]) -> str | None:
+        provider_error_kind = payload.get("provider_error_kind")
+        if isinstance(provider_error_kind, str) and provider_error_kind:
+            guidance = guidance_for_provider_error_kind(
+                cast(ProviderErrorKind, provider_error_kind)
+            )
+            if guidance:
+                return guidance
+        if payload.get("cancelled") is True:
+            return "Retry the request if you still want to continue this run."
+        if payload.get("kind") == "interrupted":
+            return "Retry the request if you want to resume execution after the interruption."
+        return None
+
+    @staticmethod
+    def _format_runtime_error_summary(error: str) -> str:
+        cleaned = error.removeprefix("Error: ").strip()
+        if not cleaned:
+            return error
+        for prefix in ("Runtime failed:", "runtime failed:"):
+            if cleaned.startswith(prefix):
+                cleaned = cleaned[len(prefix) :].strip()
+                break
+        return cleaned or error
 
     def _persist_response(self, *, request: RuntimeRequest, response: RuntimeResponse) -> None:
         if response.session.status == "waiting":
@@ -4911,7 +4969,10 @@ class VoidCodeRuntime:
             status = raw_status if isinstance(raw_status, str) and raw_status else "ok"
             if status not in {"ok", "error"}:
                 status = "error" if payload.get("error") is not None else "ok"
-            summary_source = payload.get("error") if status == "error" else payload.get("content")
+            if status == "error":
+                summary_source = payload.get("error_summary") or payload.get("error")
+            else:
+                summary_source = payload.get("content")
             summary = str(summary_source).strip() if summary_source is not None else tool_name
             if len(summary) > 160:
                 summary = summary[:157] + "..."
@@ -5062,6 +5123,26 @@ class VoidCodeRuntime:
                         if isinstance(event.payload.get("reference"), str)
                         else None
                     ),
+                    error_kind=(
+                        cast(str, event.payload.get("error_kind"))
+                        if isinstance(event.payload.get("error_kind"), str) and is_error
+                        else None
+                    ),
+                    error_summary=(
+                        cast(str, event.payload.get("error_summary"))
+                        if isinstance(event.payload.get("error_summary"), str) and is_error
+                        else None
+                    ),
+                    error_details=(
+                        cast(dict[str, object], event.payload.get("error_details"))
+                        if isinstance(event.payload.get("error_details"), dict) and is_error
+                        else None
+                    ),
+                    retry_guidance=(
+                        cast(str, event.payload.get("retry_guidance"))
+                        if isinstance(event.payload.get("retry_guidance"), str) and is_error
+                        else None
+                    ),
                 )
             )
         return prompt, tool_results
@@ -5072,6 +5153,9 @@ class VoidCodeRuntime:
             "content",
             "display",
             "error",
+            "error_details",
+            "error_summary",
+            "retry_guidance",
             "status",
             "tool",
             "tool_status",
