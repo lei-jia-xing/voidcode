@@ -135,8 +135,28 @@ def test_runtime_config_json_schema_exposes_core_fields() -> None:
     mcp_properties = cast(dict[str, object], mcp_schema["properties"])
     mcp_servers = cast(dict[str, object], mcp_properties["servers"])
     mcp_server_schema = cast(dict[str, object], mcp_servers["additionalProperties"])
-    assert mcp_server_schema["required"] == ["command"]
+    assert "required" not in mcp_server_schema
     mcp_server_properties = cast(dict[str, object], mcp_server_schema["properties"])
+    assert mcp_server_properties["transport"] == {
+        "type": "string",
+        "enum": ["stdio", "remote-http"],
+    }
+    assert mcp_server_properties["url"] == {
+        "type": "string",
+        "format": "uri",
+        "minLength": 1,
+        "description": ("Remote HTTP MCP endpoint URL. Required when transport is remote-http."),
+    }
+    assert mcp_server_schema["allOf"] == [
+        {
+            "if": {
+                "properties": {"transport": {"const": "remote-http"}},
+                "required": ["transport"],
+            },
+            "then": {"required": ["url"]},
+            "else": {"required": ["command"]},
+        }
+    ]
     assert mcp_server_properties["scope"] == {
         "type": "string",
         "enum": ["runtime", "session"],

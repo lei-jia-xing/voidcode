@@ -23,8 +23,8 @@ from typing import IO, Any, Literal, cast
 
 from anyio.from_thread import BlockingPortal, start_blocking_portal
 from mcp import ClientSession, StdioServerParameters
-from mcp.client.streamable_http import streamable_http_client
 from mcp.client.stdio import stdio_client
+from mcp.client.streamable_http import streamable_http_client
 from mcp.shared.exceptions import McpError
 from mcp.types import CallToolResult, Implementation, InitializeResult, ListToolsResult, Tool
 
@@ -46,7 +46,7 @@ from ..mcp import (
     create_diagnostic,
     redact_mcp_command,
 )
-from .config import RuntimeMcpConfig, RuntimeMcpServerConfig
+from .config import RuntimeMcpConfig
 from .events import (
     RUNTIME_MCP_SERVER_ACQUIRED,
     RUNTIME_MCP_SERVER_FAILED,

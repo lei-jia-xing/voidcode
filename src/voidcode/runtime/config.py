@@ -1734,6 +1734,8 @@ class _RuntimeMcpServerValidationModel(BaseModel):
         field_path = _validation_context_field_path(info, default="mcp.servers")
         if value is None:
             return ()
+        if isinstance(value, tuple) and all(isinstance(item, str) for item in value):
+            return cast(tuple[str, ...], value)
         command = _parse_string_list(value, field_path=f"{field_path}.command")
         return command
 
@@ -1773,15 +1775,12 @@ class _RuntimeMcpServerValidationModel(BaseModel):
         return value.strip()
 
     def model_post_init(self, __context) -> None:
+        field_path = getattr(self, "_field_path", "unknown")
         if self.transport == "stdio" and not self.command:
-            raise ValueError(
-                f"MCP server '{getattr(self, '_field_path', 'unknown')}' using stdio transport "
-                "requires a command"
-            )
+            raise ValueError(f"MCP server '{field_path}' using stdio transport requires a command")
         if self.transport == "remote-http" and not self.url:
             raise ValueError(
-                f"MCP server '{getattr(self, '_field_path', 'unknown')}' using remote-http transport "
-                "requires a url"
+                f"MCP server '{field_path}' using remote-http transport requires a url"
             )
 
     def to_runtime_config(self) -> RuntimeMcpServerConfig:
@@ -1828,6 +1827,19 @@ class _RuntimeMcpValidationModel(BaseModel):
                 allowed_keys=_MCP_SERVER_CONFIG_KEYS,
                 field_path=f"mcp.servers.{server_name}",
             )
+            transport = cast(dict[str, object], raw_server).get("transport")
+            if transport is None:
+                transport = "stdio"
+            if transport == "stdio" and "command" not in raw_server:
+                raise ValueError(
+                    f"runtime config field 'mcp.servers.{server_name}.command' is required "
+                    "when transport is stdio"
+                )
+            if transport == "remote-http" and "url" not in raw_server:
+                raise ValueError(
+                    f"runtime config field 'mcp.servers.{server_name}.url' is required "
+                    "when transport is remote-http"
+                )
             parsed_servers[server_name] = _validate_runtime_config_model(
                 _RuntimeMcpServerValidationModel,
                 cast(dict[str, object], raw_server),

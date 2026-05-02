@@ -150,13 +150,24 @@ def runtime_config_json_schema() -> dict[str, object]:
                         "additionalProperties": {
                             "type": "object",
                             "additionalProperties": False,
-                            "required": ["command"],
                             "properties": {
-                                "transport": {"type": "string", "enum": ["stdio"]},
+                                "transport": {
+                                    "type": "string",
+                                    "enum": ["stdio", "remote-http"],
+                                },
                                 "command": {
                                     "type": "array",
                                     "items": {"type": "string"},
                                     "minItems": 1,
+                                },
+                                "url": {
+                                    "type": "string",
+                                    "format": "uri",
+                                    "minLength": 1,
+                                    "description": (
+                                        "Remote HTTP MCP endpoint URL. Required when "
+                                        "transport is remote-http."
+                                    ),
                                 },
                                 "env": {
                                     "type": "object",
@@ -171,6 +182,16 @@ def runtime_config_json_schema() -> dict[str, object]:
                                     ),
                                 },
                             },
+                            "allOf": [
+                                {
+                                    "if": {
+                                        "properties": {"transport": {"const": "remote-http"}},
+                                        "required": ["transport"],
+                                    },
+                                    "then": {"required": ["url"]},
+                                    "else": {"required": ["command"]},
+                                }
+                            ],
                         },
                     },
                 },
