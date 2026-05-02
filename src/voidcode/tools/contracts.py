@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import ClassVar, Literal, Protocol, runtime_checkable
 
 type ToolResultStatus = Literal["ok", "error"]
+type ToolErrorDetails = dict[str, object]
 
 
 class RuntimeToolTimeoutError(TimeoutError):
@@ -45,12 +46,17 @@ class ToolResult:
     fallback_reason: str | None = None
     reference: str | None = None
     error_kind: str | None = None
+    error_summary: str | None = None
+    error_details: ToolErrorDetails | None = None
+    retry_guidance: str | None = None
 
     def __post_init__(self) -> None:
         if self.status == "error" and self.error is None:
             raise ValueError("error results must include an error message")
         if self.status == "ok" and self.error is not None:
             raise ValueError("successful results cannot include an error message")
+        if self.status == "ok" and self.error_summary is not None:
+            raise ValueError("successful results cannot include an error summary")
 
 
 @runtime_checkable

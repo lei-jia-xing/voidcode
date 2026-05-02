@@ -2845,6 +2845,24 @@ def test_runtime_tool_validation_error_includes_actionable_content(tmp_path: Pat
         "write_file Validation error: content: Value error, content must not be empty "
         "(received str). Please retry with corrected arguments that satisfy the tool schema."
     )
+    assert tool_completed.payload["error_summary"] == (
+        "write_file Validation error: content: Value error, content must not be empty "
+        "(received str). Please retry with corrected arguments that satisfy the tool schema."
+    )
+    assert tool_completed.payload["error_details"] == {
+        "tool_name": "write_file",
+        "message": (
+            "write_file Validation error: content: Value error, content must not be empty "
+            "(received str). Please retry with corrected arguments that satisfy the tool schema."
+        ),
+        "summary": (
+            "write_file Validation error: content: Value error, content must not be empty "
+            "(received str). Please retry with corrected arguments that satisfy the tool schema."
+        ),
+    }
+    assert tool_completed.payload["retry_guidance"] == (
+        "Retry with corrected arguments that satisfy the tool schema."
+    )
     assert tool_completed.payload["content"] == (
         "write_file failed: write_file Validation error: content: Value error, content must not "
         "be empty (received str). Please retry with corrected arguments that satisfy the tool "
@@ -2852,6 +2870,9 @@ def test_runtime_tool_validation_error_includes_actionable_content(tmp_path: Pat
     )
     failed_tool_result = created_providers[-1].requests[-1].tool_results[-1]
     assert failed_tool_result.content == tool_completed.payload["content"]
+    assert failed_tool_result.error_summary == tool_completed.payload["error_summary"]
+    assert failed_tool_result.error_details == tool_completed.payload["error_details"]
+    assert failed_tool_result.retry_guidance == tool_completed.payload["retry_guidance"]
 
 
 def test_runtime_session_debug_snapshot_reports_failure_classification_and_last_tool(
@@ -8429,9 +8450,14 @@ def test_runtime_run_fails_when_acp_handshake_fails(tmp_path: Path) -> None:
     assert event_types[0] == "runtime.request_received"
     assert "runtime.acp_failed" in event_types
     assert event_types[-1] == "runtime.failed"
-    assert response.events[-1].payload == {
-        "error": "ACP handshake rejected by memory transport",
-        "kind": "acp_startup_failed",
+    assert response.events[-1].payload["error"] == "ACP handshake rejected by memory transport"
+    assert response.events[-1].payload["kind"] == "acp_startup_failed"
+    assert response.events[-1].payload["error_summary"] == (
+        "ACP handshake rejected by memory transport"
+    )
+    assert response.events[-1].payload["error_details"] == {
+        "message": "ACP handshake rejected by memory transport",
+        "summary": "ACP handshake rejected by memory transport",
     }
     runtime_state_metadata = cast(dict[str, object], response.session.metadata["runtime_state"])
     assert runtime_state_metadata["acp"] == {
@@ -8606,9 +8632,14 @@ def test_runtime_resume_fails_when_acp_handshake_fails_after_restart(
     ]
     assert resumed_suffix[-1] == "runtime.failed"
     assert resumed_suffix.count("runtime.acp_failed") >= 1
-    assert resumed.events[-1].payload == {
-        "error": "ACP handshake rejected by memory transport",
-        "kind": "acp_startup_failed",
+    assert resumed.events[-1].payload["error"] == "ACP handshake rejected by memory transport"
+    assert resumed.events[-1].payload["kind"] == "acp_startup_failed"
+    assert resumed.events[-1].payload["error_summary"] == (
+        "ACP handshake rejected by memory transport"
+    )
+    assert resumed.events[-1].payload["error_details"] == {
+        "message": "ACP handshake rejected by memory transport",
+        "summary": "ACP handshake rejected by memory transport",
     }
 
 
@@ -8649,9 +8680,12 @@ def test_runtime_resume_stream_emits_terminal_failure_when_acp_handshake_fails(
     assert event_types.count("runtime.acp_failed") >= 1
     assert chunks[-1].session.status == "failed"
     assert chunks[-1].event is not None
-    assert chunks[-1].event.payload == {
-        "error": "ACP handshake rejected by memory transport",
-        "kind": "acp_startup_failed",
+    assert chunks[-1].event.payload["error"] == "ACP handshake rejected by memory transport"
+    assert chunks[-1].event.payload["kind"] == "acp_startup_failed"
+    assert chunks[-1].event.payload["error_summary"] == "ACP handshake rejected by memory transport"
+    assert chunks[-1].event.payload["error_details"] == {
+        "message": "ACP handshake rejected by memory transport",
+        "summary": "ACP handshake rejected by memory transport",
     }
 
 
@@ -11611,9 +11645,12 @@ def test_runtime_classifies_provider_context_limit_failures(tmp_path: Path) -> N
 
     assert response.session.status == "failed"
     assert response.events[-1].event_type == "runtime.failed"
-    assert response.events[-1].payload == {
-        "error": "provider context window exceeded",
-        "kind": "provider_context_limit",
+    assert response.events[-1].payload["error"] == "provider context window exceeded"
+    assert response.events[-1].payload["kind"] == "provider_context_limit"
+    assert response.events[-1].payload["error_summary"] == "provider context window exceeded"
+    assert response.events[-1].payload["error_details"] == {
+        "message": "provider context window exceeded",
+        "summary": "provider context window exceeded",
     }
 
 
@@ -17160,13 +17197,21 @@ def test_runtime_provider_stream_cancelled_maps_to_failed_without_fallback(
 
     assert response.session.status == "failed"
     assert response.events[-1].event_type == "runtime.failed"
-    assert response.events[-1].payload == {
-        "error": "cancelled by runtime",
+    assert response.events[-1].payload["error"] == "cancelled by runtime"
+    assert response.events[-1].payload["provider_error_kind"] == "cancelled"
+    assert response.events[-1].payload["provider"] == "opencode"
+    assert response.events[-1].payload["model"] == "gpt-5.4"
+    assert response.events[-1].payload["cancelled"] is True
+    assert response.events[-1].payload["error_summary"] == "cancelled by runtime"
+    assert response.events[-1].payload["error_details"] == {
+        "message": "cancelled by runtime",
+        "summary": "cancelled by runtime",
         "provider_error_kind": "cancelled",
-        "provider": "opencode",
-        "model": "gpt-5.4",
         "cancelled": True,
     }
+    assert response.events[-1].payload["retry_guidance"] == (
+        "The request was cancelled; rerun when ready."
+    )
 
 
 def test_runtime_fails_without_downgrade_on_context_limit(tmp_path: Path) -> None:
@@ -17202,12 +17247,19 @@ def test_runtime_fails_without_downgrade_on_context_limit(tmp_path: Path) -> Non
 
     assert response.session.status == "failed"
     assert response.events[-1].event_type == "runtime.failed"
-    assert response.events[-1].payload == {
-        "error": "context exceeded",
+    assert response.events[-1].payload["error"] == "context exceeded"
+    assert response.events[-1].payload["provider_error_kind"] == "context_limit"
+    assert response.events[-1].payload["provider"] == "opencode"
+    assert response.events[-1].payload["model"] == "gpt-5.4"
+    assert response.events[-1].payload["error_summary"] == "context exceeded"
+    assert response.events[-1].payload["error_details"] == {
+        "message": "context exceeded",
+        "summary": "context exceeded",
         "provider_error_kind": "context_limit",
-        "provider": "opencode",
-        "model": "gpt-5.4",
     }
+    assert response.events[-1].payload["retry_guidance"] == (
+        "Reduce prompt/tool-result context or switch to a model with a larger context window."
+    )
 
 
 def test_runtime_refresh_provider_models_returns_catalog_with_model_map_fallback(
@@ -17512,15 +17564,28 @@ def test_runtime_provider_fallback_exhaustion_after_three_targets_reports_termin
         "attempt": 2,
     }
     assert response.events[-1].event_type == "runtime.failed"
-    assert response.events[-1].payload == {
-        "error": (
+    assert response.events[-1].payload["error"] == (
+        "provider fallback exhausted after anthropic/claude-3-7-sonnet failed at attempt 3"
+    )
+    assert response.events[-1].payload["provider_error_kind"] == "invalid_model"
+    assert response.events[-1].payload["provider"] == "anthropic"
+    assert response.events[-1].payload["model"] == "claude-3-7-sonnet"
+    assert response.events[-1].payload["fallback_exhausted"] is True
+    assert response.events[-1].payload["error_summary"] == (
+        "provider fallback exhausted after anthropic/claude-3-7-sonnet failed at attempt 3"
+    )
+    assert response.events[-1].payload["error_details"] == {
+        "message": (
+            "provider fallback exhausted after anthropic/claude-3-7-sonnet failed at attempt 3"
+        ),
+        "summary": (
             "provider fallback exhausted after anthropic/claude-3-7-sonnet failed at attempt 3"
         ),
         "provider_error_kind": "invalid_model",
-        "provider": "anthropic",
-        "model": "claude-3-7-sonnet",
-        "fallback_exhausted": True,
     }
+    assert response.events[-1].payload["retry_guidance"] == (
+        "Check the configured provider/model name and model access permissions."
+    )
 
 
 def test_runtime_executes_session_start_and_end_hooks(tmp_path: Path) -> None:
