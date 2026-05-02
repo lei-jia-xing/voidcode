@@ -34,8 +34,8 @@ class RuntimeSessionRouting:
 def provider_model_required_message() -> str:
     return (
         "provider execution requires a configured provider/model. "
-        "Run 'voidcode config init --model provider/model' or set VOIDCODE_MODEL, "
-        "or explicitly use execution_engine='deterministic' for test/dev workflows."
+        "Run 'voidcode config init --model provider/model' or set VOIDCODE_MODEL. "
+        "For test/dev workflows without a provider, use the deterministic test harness env var."
     )
 
 

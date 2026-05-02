@@ -313,7 +313,11 @@ def create_doctor_for_config(
                     check_type=DoctorCheckType.PROVIDER_READINESS.value,
                     details={
                         "model": config.model,
-                        "execution_engine": config.execution_engine,
+                        "fallback_models": (
+                            list(config.provider_fallback.fallback_models)
+                            if config.provider_fallback is not None
+                            else []
+                        ),
                         "status": "invalid_config",
                     },
                     error_message=str(exc),

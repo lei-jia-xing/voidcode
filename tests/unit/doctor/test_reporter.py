@@ -138,7 +138,7 @@ class TestCreateReport:
         assert report.first_task_readiness.blockers == [
             "Configure a provider/model, for example model: 'openai/gpt-4o'."
         ]
-        assert "config init --execution-engine provider" in report.first_task_readiness.next_step
+        assert "config init --model provider/model" in report.first_task_readiness.next_step
 
     def test_create_report_marks_ready_provider_with_missing_tool_degraded(self) -> None:
         results = [
@@ -262,7 +262,6 @@ class TestFormatReport:
 
         assert "First task readiness:" in output
         assert "status: not_ready" in output
-        assert "execution_engine: provider" in output
         assert "workspace_config_valid: True" in output
         assert "provider: openai" in output
         assert "model: gpt-4o" in output

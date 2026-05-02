@@ -5,7 +5,7 @@ import logging
 import re
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     import litellm as litellm_module
@@ -40,11 +40,6 @@ from .protocol import (
 )
 
 _DEFAULT_COMPLETION_TIMEOUT_SECONDS = 300.0
-type ReasoningEffortMode = Literal["auto", "direct", "glm_thinking", "disabled"]
-_DIRECT_REASONING_EFFORT_PROVIDERS = frozenset(
-    {"openai", "anthropic", "google", "gemini", "vertex_ai", "litellm", "grok"}
-)
-_THINKING_DISABLED_EFFORTS = frozenset({"none", "off", "disable", "disabled"})
 _SYNTHETIC_TOOL_FEEDBACK_PREFIX = "Completed tool calls for current request:"
 _CONTINUITY_SUMMARY_PREFIX = "Runtime continuity summary:"
 
@@ -157,7 +152,6 @@ class LiteLLMBackendSingleAgentProvider:
     config: LiteLLMProviderConfig | None
     completion_kwargs: dict[str, object] | None = None
     use_raw_model_name: bool = False
-    reasoning_effort_mode: ReasoningEffortMode = "auto"
     tool_feedback_model_overrides: Mapping[str, ToolFeedbackMode] = field(
         default_factory=_empty_tool_feedback_model_overrides
     )
@@ -233,25 +227,7 @@ class LiteLLMBackendSingleAgentProvider:
         if not effort:
             return kwargs
 
-        mode = self.reasoning_effort_mode
-        provider_name = (request.provider_name or self.name).lower()
-        model_name = (request.model_name or "").lower()
-        if mode == "disabled":
-            return kwargs
-        if mode == "glm_thinking" or (
-            mode == "auto"
-            and (provider_name == "glm" or model_name.startswith(("glm-5", "glm-z1")))
-        ):
-            thinking_type = (
-                "disabled" if effort.lower() in _THINKING_DISABLED_EFFORTS else "enabled"
-            )
-            _merge_extra_body(kwargs, {"thinking": {"type": thinking_type}})
-            _allow_openai_param(kwargs, "extra_body")
-            return kwargs
-        if mode == "direct" or (
-            mode == "auto" and provider_name in _DIRECT_REASONING_EFFORT_PROVIDERS
-        ):
-            kwargs["reasoning_effort"] = request.reasoning_effort
+        kwargs["reasoning_effort"] = request.reasoning_effort
         return kwargs
 
     def _stream_completion_kwargs_for_request(

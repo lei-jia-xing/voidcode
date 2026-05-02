@@ -1380,12 +1380,12 @@ def test_provider_adapter_preserves_tool_call_id_and_arguments_in_tool_history(
     request = _build_turn_request(model_name="openai")
     tool_results = (
         ToolResult(
-            tool_name="list",
+            tool_name="glob",
             status="ok",
             content="./\n  CMakeLists.txt",
             data={
-                "tool_call_id": "call-list-1",
-                "arguments": {"path": "."},
+                "tool_call_id": "call-glob-1",
+                "arguments": {"pattern": "**/*"},
                 "path": "/workspace",
             },
         ),
@@ -1426,16 +1426,16 @@ def test_provider_adapter_preserves_tool_call_id_and_arguments_in_tool_history(
         "content": None,
         "tool_calls": [
             {
-                "id": "call-list-1",
+                "id": "call-glob-1",
                 "type": "function",
                 "function": {
-                    "name": "list",
-                    "arguments": '{"path": "."}',
+                    "name": "glob",
+                    "arguments": '{"pattern": "**/*"}',
                 },
             }
         ],
     }
-    assert messages[2]["tool_call_id"] == "call-list-1"
+    assert messages[2]["tool_call_id"] == "call-glob-1"
     tool_content = messages[2]["content"]
     assert isinstance(tool_content, str)
     assert '"path": "/workspace"' in tool_content
@@ -1449,10 +1449,10 @@ def test_opencode_go_openai_compatible_provider_uses_tool_call_pairing(
     request = _build_turn_request(model_name="opencode-go")
     tool_results = (
         ToolResult(
-            tool_name="list",
+            tool_name="glob",
             status="ok",
             content="./\n  .voidcode.json",
-            data={"tool_call_id": "list_0", "arguments": {"path": "."}},
+            data={"tool_call_id": "glob_0", "arguments": {"pattern": "**/*"}},
         ),
     )
     request = ProviderTurnRequest(
@@ -1493,14 +1493,14 @@ def test_opencode_go_openai_compatible_provider_uses_tool_call_pairing(
         "content": None,
         "tool_calls": [
             {
-                "id": "list_0",
+                "id": "glob_0",
                 "type": "function",
-                "function": {"name": "list", "arguments": '{"path": "."}'},
+                "function": {"name": "glob", "arguments": '{"pattern": "**/*"}'},
             }
         ],
     }
     assert messages[2]["role"] == "tool"
-    assert messages[2]["tool_call_id"] == "list_0"
+    assert messages[2]["tool_call_id"] == "glob_0"
     assert "Completed tool calls for current request:" not in str(messages)
 
 
@@ -1574,10 +1574,10 @@ def test_opencode_go_mimo_preserves_standard_tool_pairing_with_model_metadata(
     request = _build_turn_request(model_name="opencode-go")
     tool_results = (
         ToolResult(
-            tool_name="list",
+            tool_name="glob",
             status="ok",
             content="./\n  README.md",
-            data={"tool_call_id": "list_0", "arguments": {"path": "."}},
+            data={"tool_call_id": "glob_0", "arguments": {"pattern": "**/*"}},
         ),
     )
     request = ProviderTurnRequest(
@@ -1615,7 +1615,7 @@ def test_opencode_go_mimo_preserves_standard_tool_pairing_with_model_metadata(
     assert messages[1]["role"] == "assistant"
     assert "tool_calls" in messages[1]
     assert messages[2]["role"] == "tool"
-    assert messages[2]["tool_call_id"] == "list_0"
+    assert messages[2]["tool_call_id"] == "glob_0"
     assert "Completed tool calls for current request:" not in str(messages)
 
 
@@ -1629,10 +1629,10 @@ def test_provider_adapter_synthetic_tool_feedback_policy_is_provider_agnostic(
     request = _build_turn_request(model_name="custom")
     tool_results = (
         ToolResult(
-            tool_name="list",
+            tool_name="glob",
             status="ok",
             content="./\n  .voidcode.json",
-            data={"tool_call_id": "list_0", "arguments": {"path": "."}},
+            data={"tool_call_id": "glob_0", "arguments": {"pattern": "**/*"}},
         ),
     )
     request = ProviderTurnRequest(
@@ -1671,7 +1671,7 @@ def test_provider_adapter_synthetic_tool_feedback_policy_is_provider_agnostic(
     feedback = messages[1]["content"]
     assert isinstance(feedback, str)
     assert "Completed tool calls for current request:" in feedback
-    assert '"tool_name": "list"' in feedback
+    assert '"tool_name": "glob"' in feedback
     assert "tool_calls" not in messages[1]
 
 
@@ -1750,10 +1750,10 @@ def test_provider_adapter_infers_tool_feedback_when_metadata_omits_mode(
     request = _build_turn_request(model_name="opencode-go")
     tool_results = (
         ToolResult(
-            tool_name="list",
+            tool_name="glob",
             status="ok",
             content="./\n  .voidcode.json",
-            data={"tool_call_id": "list_0", "arguments": {"path": "."}},
+            data={"tool_call_id": "glob_0", "arguments": {"pattern": "**/*"}},
         ),
     )
     request = ProviderTurnRequest(
@@ -1806,10 +1806,10 @@ def test_provider_adapter_infers_tool_feedback_from_mapped_model_alias(
     request = _build_turn_request(model_name="opencode-go")
     tool_results = (
         ToolResult(
-            tool_name="list",
+            tool_name="glob",
             status="ok",
             content="./\n  .voidcode.json",
-            data={"tool_call_id": "list_0", "arguments": {"path": "."}},
+            data={"tool_call_id": "glob_0", "arguments": {"pattern": "**/*"}},
         ),
     )
     request = ProviderTurnRequest(
@@ -1859,10 +1859,10 @@ def test_opencode_go_non_openai_families_declare_synthetic_tool_feedback_policy(
     request = _build_turn_request(model_name="opencode-go")
     tool_results = (
         ToolResult(
-            tool_name="list",
+            tool_name="glob",
             status="ok",
             content="./\n  .voidcode.json",
-            data={"tool_call_id": "list_0", "arguments": {"path": "."}},
+            data={"tool_call_id": "glob_0", "arguments": {"pattern": "**/*"}},
         ),
     )
     request = ProviderTurnRequest(
@@ -1901,7 +1901,7 @@ def test_opencode_go_non_openai_families_declare_synthetic_tool_feedback_policy(
     feedback = messages[1]["content"]
     assert isinstance(feedback, str)
     assert "Completed tool calls for current request:" in feedback
-    assert '"tool_name": "list"' in feedback
+    assert '"tool_name": "glob"' in feedback
     assert "tool_calls" not in messages[1]
 
 
@@ -1914,10 +1914,10 @@ def test_provider_adapter_logs_bounded_request_diagnostics(
     request = _build_turn_request(model_name="opencode-go")
     tool_results = (
         ToolResult(
-            tool_name="list",
+            tool_name="glob",
             status="ok",
             content="./\n  .voidcode.json",
-            data={"tool_call_id": "list_0", "arguments": {"path": "."}},
+            data={"tool_call_id": "glob_0", "arguments": {"pattern": "**/*"}},
         ),
     )
     request = ProviderTurnRequest(
@@ -2186,7 +2186,7 @@ def test_provider_adapter_passes_reasoning_effort_for_direct_litellm_provider(
     assert payload["reasoning_effort"] == "high"
 
 
-def test_glm_provider_maps_reasoning_effort_to_thinking_extra_body(
+def test_glm_provider_passes_reasoning_effort_through_without_translation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     provider = GLMModelProvider(config=SimplifiedProviderConfig(api_key="glm-key")).turn_provider()
@@ -2202,69 +2202,7 @@ def test_glm_provider_maps_reasoning_effort_to_thinking_extra_body(
     payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
     assert isinstance(payload_obj, dict)
     payload = cast(dict[str, object], payload_obj)
-    assert payload.get("reasoning_effort") is None
-    assert payload["extra_body"] == {"thinking": {"type": "enabled"}}
-    assert payload["allowed_openai_params"] == ["extra_body"]
-
-
-def test_glm_provider_maps_disabled_reasoning_effort_to_disabled_thinking(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    provider = GLMModelProvider(config=SimplifiedProviderConfig(api_key="glm-key")).turn_provider()
-
-    _patch_litellm_completion(
-        monkeypatch,
-        mode="completion",
-        completion_content="ok",
-    )
-
-    _ = provider.propose_turn(_build_turn_request(model_name="glm", reasoning_effort="none"))
-
-    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
-    assert isinstance(payload_obj, dict)
-    payload = cast(dict[str, object], payload_obj)
-    assert payload["extra_body"] == {"thinking": {"type": "disabled"}}
-
-
-def test_litellm_backend_reasoning_effort_can_be_disabled_by_adapter(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    provider = LiteLLMBackendSingleAgentProvider(
-        name="custom",
-        config=LiteLLMProviderConfig(base_url="http://localhost:4000"),
-        reasoning_effort_mode="disabled",
-    )
-
-    _patch_litellm_completion(
-        monkeypatch,
-        mode="completion",
-        completion_content="ok",
-    )
-
-    _ = provider.propose_turn(
-        ProviderTurnRequest(
-            assembled_context=_assembled_from_legacy(
-                prompt="read sample.txt",
-                tool_results=(),
-                context_window=_StubContextWindow(prompt="read sample.txt", tool_results=()),
-                applied_skills=(),
-            ),
-            available_tools=(
-                ToolDefinition(name="read_file", description="read file", read_only=True),
-            ),
-            raw_model="custom/glm-5.1",
-            provider_name="custom",
-            model_name="glm-5.1",
-            reasoning_effort="high",
-            attempt=0,
-            abort_signal=None,
-        )
-    )
-
-    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
-    assert isinstance(payload_obj, dict)
-    payload = cast(dict[str, object], payload_obj)
-    assert "reasoning_effort" not in payload
+    assert payload["reasoning_effort"] == "high"
     assert "extra_body" not in payload
     assert "allowed_openai_params" not in payload
 
@@ -2332,7 +2270,7 @@ def test_opencode_go_provider_routes_model_families_to_required_sdk_adapter(
     assert payload["api_key"] == "opencode-go-key"
     assert payload["timeout"] == 300.0
     assert "thinking" not in payload
-    assert "reasoning_effort" not in payload
+    assert payload["reasoning_effort"] == "high"
     assert "extra_body" not in payload
     if model_name in {"minimax-m2.7", "minimax-m2.5"}:
         assert payload["extra_headers"] == {

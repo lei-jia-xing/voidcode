@@ -1932,7 +1932,6 @@ def test_runtime_background_task_concurrency_identity_uses_model_provider_defaul
             metadata={
                 "agent": {
                     "preset": "leader",
-                    "execution_engine": "provider",
                     "model": "openai/gpt-4o",
                 }
             },
@@ -1944,7 +1943,6 @@ def test_runtime_background_task_concurrency_identity_uses_model_provider_defaul
             metadata={
                 "agent": {
                     "preset": "leader",
-                    "execution_engine": "provider",
                     "model": "anthropic/claude-sonnet-4",
                 }
             },
@@ -3695,7 +3693,6 @@ def test_runtime_task_tool_starts_background_task_with_skill_metadata(tmp_path: 
             "preset": "worker",
             "prompt_profile": "worker",
             "prompt_materialization": _prompt_materialization_payload("worker"),
-            "execution_engine": "provider",
         },
     }
     assert task.request.prompt.startswith("Delegated runtime task.")
@@ -3853,7 +3850,6 @@ def test_runtime_constructs_with_builtin_agent_hook_refs(tmp_path: Path) -> None
         "prompt_ref": "researcher",
         "prompt_source": "builtin",
         "hook_refs": ["role_reminder"],
-        "execution_engine": "provider",
     }
     assert resolved_hook_presets["refs"] == ["role_reminder"]
     assert hook_event.payload == {
@@ -3994,7 +3990,6 @@ def test_runtime_category_routing_resolves_real_child_agent_and_persists_identit
             "preset": "worker",
             "prompt_profile": "worker",
             "prompt_materialization": _prompt_materialization_payload("worker"),
-            "execution_engine": "provider",
         },
     }
     runtime_config = cast(dict[str, object], child_response.session.metadata["runtime_config"])
@@ -4002,7 +3997,6 @@ def test_runtime_category_routing_resolves_real_child_agent_and_persists_identit
         "preset": "worker",
         "prompt_profile": "worker",
         "prompt_materialization": _prompt_materialization_payload("worker"),
-        "execution_engine": "provider",
     }
     assert result.routing is not None
     assert result.routing.category == "quick"
@@ -4034,7 +4028,6 @@ def test_runtime_subagent_type_routing_resolves_real_child_agent_and_persists_id
         "preset": "explore",
         "prompt_profile": "explore",
         "prompt_materialization": _prompt_materialization_payload("explore"),
-        "execution_engine": "provider",
     }
     assert response.session.metadata["delegation"] == {
         "mode": "sync",
@@ -4168,14 +4161,9 @@ def test_runtime_delegated_child_preserves_preset_fallback_chain_with_category_m
     )
 
     runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
-    provider_fallback = cast(dict[str, object], runtime_config["provider_fallback"])
     agent = cast(dict[str, object], runtime_config["agent"])
-    agent_provider_fallback = cast(dict[str, object], agent["provider_fallback"])
-    assert provider_fallback == {
-        "preferred_model": "openai/category-model",
-        "fallback_models": ["openai/worker-fallback", "custom/demo"],
-    }
-    assert agent_provider_fallback == provider_fallback
+    assert runtime_config["fallback_models"] == ["openai/worker-fallback", "custom/demo"]
+    assert agent["fallback_models"] == ["openai/worker-fallback", "custom/demo"]
     assert runtime.effective_runtime_config(
         session_id=response.session.session.id
     ).provider_fallback == RuntimeProviderFallbackConfig(
@@ -4517,7 +4505,6 @@ def test_runtime_background_delegation_executes_on_real_provider_child_path(
         "prompt_profile": "worker",
         "prompt_materialization": _prompt_materialization_payload("worker"),
         "model": "opencode/gpt-5.4",
-        "execution_engine": "provider",
     }
 
 
@@ -4526,10 +4513,10 @@ def test_runtime_rejects_mismatched_delegated_execution_engine_override(tmp_path
     _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
 
     with pytest.raises(
-        RuntimeRequestError,
+        ValueError,
         match=(
-            "request metadata 'agent.execution_engine' must match delegated child "
-            "execution engine 'provider'"
+            "request metadata 'agent': runtime config field "
+            "'agent.execution_engine' is not supported"
         ),
     ):
         _ = runtime.run(
@@ -10914,7 +10901,7 @@ def test_runtime_effective_runtime_config_recovers_persisted_max_steps(tmp_path:
         "tool_timeout_seconds": None,
         "model": "session/model",
         "permission": _DEFAULT_PERMISSION_METADATA,
-        "provider_fallback": None,
+        "fallback_models": [],
         "resolved_provider": {
             "active_target": {
                 "raw_model": "session/model",
@@ -11164,7 +11151,7 @@ def test_runtime_graph_selection_avoids_reusing_initial_provider_graph(
                 "approval_mode": "ask",
                 "execution_engine": "deterministic",
                 "max_steps": None,
-                "provider_fallback": None,
+                "fallback_models": [],
                 "resolved_provider": None,
             }
         }
@@ -11461,10 +11448,7 @@ def test_runtime_provider_fallback_seam_returns_next_graph_selection(tmp_path: P
                 "execution_engine": "provider",
                 "max_steps": None,
                 "tool_timeout_seconds": None,
-                "provider_fallback": {
-                    "preferred_model": "primary/model-a",
-                    "fallback_models": ["fallback/model-b"],
-                },
+                "fallback_models": ["fallback/model-b"],
                 "resolved_provider": {
                     "active_target": {
                         "provider": "primary",
@@ -11522,7 +11506,7 @@ def test_runtime_effective_runtime_config_uses_request_metadata_max_steps_for_ne
         "max_steps": 2,
         "tool_timeout_seconds": None,
         "permission": _DEFAULT_PERMISSION_METADATA,
-        "provider_fallback": None,
+        "fallback_models": [],
         "resolved_provider": None,
         "lsp": {"mode": "disabled", "configured_enabled": False, "servers": []},
         "mcp": {"mode": "disabled", "configured_enabled": False, "servers": []},
@@ -13001,7 +12985,6 @@ def test_runtime_agent_config_selects_provider_graph_and_persists_agent_metadata
         "prompt_profile": "leader",
         "prompt_materialization": _prompt_materialization_payload("leader"),
         "model": "opencode/gpt-5.4",
-        "execution_engine": "provider",
     }
     runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
     assert runtime_config["agent"] == {
@@ -13009,7 +12992,6 @@ def test_runtime_agent_config_selects_provider_graph_and_persists_agent_metadata
         "prompt_profile": "leader",
         "prompt_materialization": _prompt_materialization_payload("leader"),
         "model": "opencode/gpt-5.4",
-        "execution_engine": "provider",
     }
     assert effective.execution_engine == "provider"
     assert effective.model == "opencode/gpt-5.4"
@@ -13095,7 +13077,6 @@ def test_runtime_product_agent_config_is_top_level_selectable_and_persisted(
             "format": "text",
         },
         "model": "opencode/gpt-5.4",
-        "execution_engine": "provider",
     }
     runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
     assert runtime_config["agent"] == created_providers[0].requests[0].agent_preset
@@ -13150,7 +13131,6 @@ def test_runtime_request_metadata_agent_override_persists_and_restores_agent_con
         "prompt_profile": "leader",
         "prompt_materialization": _prompt_materialization_payload("leader"),
         "model": "opencode/gpt-5.4",
-        "execution_engine": "provider",
     }
     assert effective.execution_engine == "provider"
     assert effective.model == "opencode/gpt-5.4"
@@ -13337,7 +13317,6 @@ def test_runtime_prompt_command_agent_metadata_selects_agent_preset(tmp_path: Pa
         "prompt_profile": "product",
         "prompt_materialization": _prompt_materialization_payload("product"),
         "model": "opencode/gpt-5.4",
-        "execution_engine": "provider",
     }
     runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
     assert runtime_config["agent"] == created_providers[-1].requests[0].agent_preset
@@ -13393,11 +13372,7 @@ def test_runtime_partial_request_agent_override_preserves_inherited_agent_fields
         "prompt_profile": "leader",
         "prompt_materialization": _prompt_materialization_payload("leader"),
         "model": "opencode/gpt-5.4",
-        "execution_engine": "provider",
-        "provider_fallback": {
-            "preferred_model": "opencode/gpt-5.4",
-            "fallback_models": ["opencode/gpt-5.3"],
-        },
+        "fallback_models": ["opencode/gpt-5.3"],
     }
     runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
     assert runtime_config["agent"] == {
@@ -13405,11 +13380,7 @@ def test_runtime_partial_request_agent_override_preserves_inherited_agent_fields
         "prompt_profile": "leader",
         "prompt_materialization": _prompt_materialization_payload("leader"),
         "model": "opencode/gpt-5.4",
-        "execution_engine": "provider",
-        "provider_fallback": {
-            "preferred_model": "opencode/gpt-5.4",
-            "fallback_models": ["opencode/gpt-5.3"],
-        },
+        "fallback_models": ["opencode/gpt-5.3"],
     }
     assert effective.execution_engine == "provider"
     assert effective.model == "opencode/gpt-5.4"
@@ -13488,7 +13459,6 @@ def test_runtime_agent_tool_allowlist_limits_provider_visible_tools(tmp_path: Pa
         "prompt_profile": "leader",
         "prompt_materialization": _prompt_materialization_payload("leader"),
         "model": "opencode/gpt-5.4",
-        "execution_engine": "provider",
         "tools": {"allowlist": ["read_file"]},
     }
 
@@ -13632,7 +13602,6 @@ def test_runtime_agent_builtin_tools_disabled_exposes_no_builtin_tools(tmp_path:
         "prompt_profile": "leader",
         "prompt_materialization": _prompt_materialization_payload("leader"),
         "model": "opencode/gpt-5.4",
-        "execution_engine": "provider",
         "tools": {"builtin": {"enabled": False}},
     }
 
@@ -13787,7 +13756,6 @@ def test_runtime_agent_skills_config_loads_and_persists_runtime_skills(
         "preset": "leader",
         "prompt_profile": "leader",
         "prompt_materialization": _prompt_materialization_payload("leader"),
-        "execution_engine": "provider",
         "skills": {"enabled": True, "paths": ["agent-skills"]},
     }
     assert _SkillCapturingStubGraph.last_request is not None
@@ -14451,10 +14419,7 @@ def test_runtime_effective_runtime_config_rejects_malformed_persisted_provider_f
         assert isinstance(metadata, dict)
         metadata_dict = cast(dict[str, object], metadata)
         runtime_config = cast(dict[str, object], metadata_dict["runtime_config"])
-        runtime_config["provider_fallback"] = {
-            "preferred_model": "opencode/gpt-5.4",
-            "fallback_models": ["custom/demo", 7],
-        }
+        runtime_config["fallback_models"] = ["custom/demo", 7]
         _ = connection.execute(
             "UPDATE sessions SET metadata_json = ? WHERE session_id = ?",
             (json.dumps(metadata_dict, sort_keys=True), "malformed-provider-fallback"),
@@ -14516,12 +14481,8 @@ def test_runtime_resume_preserves_provider_attempt_and_target_across_pending_app
         "preset": "leader",
         "prompt_profile": "leader",
         "prompt_materialization": _prompt_materialization_payload("leader"),
-        "execution_engine": "provider",
     }
-    assert runtime_config["provider_fallback"] == {
-        "preferred_model": "opencode/gpt-5.4",
-        "fallback_models": ["custom/demo"],
-    }
+    assert runtime_config["fallback_models"] == ["custom/demo"]
     assert runtime_config["resolved_provider"] == {
         "active_target": {
             "raw_model": "opencode/gpt-5.4",
@@ -16425,10 +16386,7 @@ def test_runtime_provider_retry_uses_persisted_session_provider_config(
                 "max_steps": None,
                 "tool_timeout_seconds": None,
                 "model": "opencode/gpt-5.4",
-                "provider_fallback": {
-                    "preferred_model": "opencode/gpt-5.4",
-                    "fallback_models": ["custom/demo"],
-                },
+                "fallback_models": ["custom/demo"],
                 "providers": {
                     "opencode": {
                         "auth_scheme": "bearer",

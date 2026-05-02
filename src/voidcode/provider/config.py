@@ -116,7 +116,7 @@ def _prefer_primary[T](primary: T | None, fallback: T | None) -> T | None:
 
 
 class _ProviderPayloadModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
 
 class _ProviderTransientRetryConfigPayload(_ProviderPayloadModel):

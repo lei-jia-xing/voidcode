@@ -88,9 +88,9 @@ def _expected_category_models(
     return {
         category: {
             "model": configured_overrides.get(category),
+            "fallback_models": [],
             "effective_model": configured_overrides.get(category, global_model),
             "selected_preset": preset,
-            "selected_execution_engine": "provider",
         }
         for category, preset in presets.items()
     }
@@ -103,7 +103,6 @@ def _expected_agent_models(global_model: str | None) -> dict[str, dict[str, obje
             "fallback_models": [],
             "effective_model": global_model,
             "effective_fallback_models": [],
-            "selected_execution_engine": "provider",
         }
         for agent_id in ("leader", "worker", "advisor", "explore", "researcher", "product")
     }
@@ -2191,13 +2190,12 @@ def test_config_show_outputs_workspace_effective_config() -> None:
         "session_id": None,
         "approval_mode": "deny",
         "model": "repo/model",
-        "execution_engine": "deterministic",
+        "fallback_models": [],
         "max_steps": None,
         "reasoning_effort": "medium",
         "agent": None,
         "agents": _expected_agent_models("repo/model"),
         "categories": _expected_category_models("repo/model"),
-        "provider_fallback": None,
         "resolved_provider": {
             "active_target": {
                 "raw_model": "repo/model",
@@ -2228,11 +2226,9 @@ def test_config_show_outputs_workspace_effective_config() -> None:
             "reasoning_controls": {
                 "reasoning_effort_requested": True,
                 "reasoning_effort": "medium",
-                "status": "best_effort",
+                "status": "forwarded",
                 "forwarded": True,
-                "translated": False,
-                "ignored": False,
-                "reason": "provider_metadata_unknown",
+                "provider_parameter": "reasoning_effort",
             },
         },
         "context_budget": {"context_window": None, "max_output_tokens": None},
@@ -2317,7 +2313,7 @@ def test_config_show_uses_opencode_go_environment_without_leaking_key() -> None:
     payload = json.loads(result.stdout)
     assert result.returncode == 0
     assert payload["model"] == "opencode-go/glm-5"
-    assert payload["execution_engine"] == "provider"
+    assert payload["fallback_models"] == []
     assert payload["agent"]["preset"] == "leader"
     assert payload["agent"]["prompt_profile"] == "leader"
     assert payload["agents"] == _expected_agent_models("opencode-go/glm-5")
@@ -2352,10 +2348,7 @@ def test_config_show_outputs_resumed_session_effective_config() -> None:
                     "approval_mode": "deny",
                     "model": "repo/model",
                     "reasoning_effort": "high",
-                    "provider_fallback": {
-                        "preferred_model": "repo/model",
-                        "fallback_models": ["repo/session-fallback"],
-                    },
+                    "fallback_models": ["repo/session-fallback"],
                 }
             ),
             encoding="utf-8",
@@ -2380,10 +2373,7 @@ def test_config_show_outputs_resumed_session_effective_config() -> None:
                     "approval_mode": "deny",
                     "model": "changed/model",
                     "reasoning_effort": "medium",
-                    "provider_fallback": {
-                        "preferred_model": "changed/model",
-                        "fallback_models": ["changed/workspace-fallback"],
-                    },
+                    "fallback_models": ["changed/workspace-fallback"],
                     "categories": {"quick": {"model": "changed/category"}},
                     "agents": {"worker": {"model": "changed/worker"}},
                 }
@@ -2407,7 +2397,7 @@ def test_config_show_outputs_resumed_session_effective_config() -> None:
         "session_id": "config-session",
         "approval_mode": "allow",
         "model": "repo/model",
-        "execution_engine": "deterministic",
+        "fallback_models": ["repo/session-fallback"],
         "max_steps": None,
         "reasoning_effort": "high",
         "agent": None,
@@ -2417,7 +2407,6 @@ def test_config_show_outputs_resumed_session_effective_config() -> None:
                 "fallback_models": ["repo/session-fallback"],
                 "effective_model": "repo/model",
                 "effective_fallback_models": ["repo/session-fallback"],
-                "selected_execution_engine": "provider",
             }
             for agent_id in (
                 "leader",
@@ -2429,10 +2418,6 @@ def test_config_show_outputs_resumed_session_effective_config() -> None:
             )
         },
         "categories": _expected_category_models("repo/model"),
-        "provider_fallback": {
-            "preferred_model": "repo/model",
-            "fallback_models": ["repo/session-fallback"],
-        },
         "resolved_provider": {
             "active_target": {
                 "raw_model": "repo/model",
@@ -2468,11 +2453,9 @@ def test_config_show_outputs_resumed_session_effective_config() -> None:
             "reasoning_controls": {
                 "reasoning_effort_requested": True,
                 "reasoning_effort": "high",
-                "status": "best_effort",
+                "status": "forwarded",
                 "forwarded": True,
-                "translated": False,
-                "ignored": False,
-                "reason": "provider_metadata_unknown",
+                "provider_parameter": "reasoning_effort",
             },
         },
         "context_budget": {"context_window": None, "max_output_tokens": None},
@@ -2486,7 +2469,6 @@ def test_config_show_delegates_to_runtime_effective_config(capsys: Any) -> None:
     runtime_config = SimpleNamespace(
         approval_mode="allow",
         model="runtime/model",
-        execution_engine="deterministic",
         max_steps=9,
         reasoning_effort="high",
         provider_fallback=None,
@@ -2556,13 +2538,12 @@ def test_config_show_delegates_to_runtime_effective_config(capsys: Any) -> None:
         "session_id": "config-session",
         "approval_mode": "allow",
         "model": "runtime/model",
-        "execution_engine": "deterministic",
+        "fallback_models": [],
         "max_steps": 9,
         "reasoning_effort": "high",
         "agent": None,
         "agents": {},
         "categories": {},
-        "provider_fallback": None,
         "resolved_provider": {
             "active_target": {
                 "raw_model": "runtime/model",
@@ -2817,8 +2798,6 @@ def test_config_init_prints_starter_config_without_writing() -> None:
             "deny",
             "--model",
             "opencode-go/glm-5",
-            "--execution-engine",
-            "provider",
             "--max-steps",
             "8",
             "--with-examples",
@@ -2833,8 +2812,10 @@ def test_config_init_prints_starter_config_without_writing() -> None:
         "$schema": "https://voidcode.dev/schemas/runtime-config.schema.json",
         "approval_mode": "deny",
         "model": "opencode-go/glm-5",
-        "execution_engine": "provider",
         "max_steps": 8,
+        "formatter": {"enabled": True},
+        "lsp": {"enabled": True},
+        "mcp": {"enabled": True},
         "tools": {"builtin": {"enabled": True}},
         "skills": {"enabled": True},
     }
@@ -2865,7 +2846,7 @@ def test_config_init_writes_starter_config_and_refuses_overwrite() -> None:
     assert "already exists" in second.stderr
 
 
-def test_config_init_provider_requires_model_without_traceback() -> None:
+def test_config_init_rejects_unknown_execution_engine_flag_without_traceback() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         workspace = Path(tmp)
         result = _run_module_cli(
@@ -2880,7 +2861,7 @@ def test_config_init_provider_requires_model_without_traceback() -> None:
 
     assert result.returncode != 0
     assert result.stdout == ""
-    assert "requires model" in result.stderr
+    assert "--execution-engine" in result.stderr
     assert "Traceback" not in result.stderr
 
 
@@ -2903,7 +2884,7 @@ def test_doctor_json_reports_first_task_readiness_missing_model() -> None:
     assert payload["first_task_readiness"]["details"]["workspace_config_valid"] is True
     assert "local_tools" in payload["first_task_readiness"]["details"]
     assert payload["first_task_readiness"]["blockers"] == ["provider.readiness check is missing"]
-    assert "config init --execution-engine provider" in payload["first_task_readiness"]["next_step"]
+    assert "config init --model provider/model" in payload["first_task_readiness"]["next_step"]
     assert "api_key" not in result.stdout
     assert "Traceback" not in result.stderr
 
@@ -2934,7 +2915,7 @@ def test_doctor_human_reports_first_task_readiness_without_leaking_auth() -> Non
     with tempfile.TemporaryDirectory() as tmp:
         workspace = Path(tmp)
         (workspace / ".voidcode.json").write_text(
-            json.dumps({"model": "openai/gpt-4o", "execution_engine": "provider"}),
+            json.dumps({"model": "openai/gpt-4o"}),
             encoding="utf-8",
         )
         env = with_src_pythonpath(os.environ.copy())
