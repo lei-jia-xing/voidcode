@@ -5,7 +5,6 @@ from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Protocol
 
-from ..agent import get_builtin_agent_manifest
 from ..hook.config import RuntimeHooksConfig
 from ..skills.models import SkillMetadata
 from ..tools.contracts import Tool
@@ -73,9 +72,8 @@ def scoped_tool_registry_for_agent[ToolRegistryT: ScopedToolRegistry](
         return registry
 
     scoped_registry = registry
-    manifest = get_builtin_agent_manifest(agent.preset)
-    if manifest is not None and manifest.tool_allowlist:
-        scoped_registry = scoped_registry.filtered(manifest.tool_allowlist)
+    if agent.manifest_tool_allowlist:
+        scoped_registry = scoped_registry.filtered(agent.manifest_tool_allowlist)
 
     if agent.tools is not None:
         if agent.tools.builtin is not None and agent.tools.builtin.enabled is False:

@@ -365,7 +365,23 @@ def test_scoped_tool_registry_returns_original_registry_without_agent() -> None:
 def test_scoped_tool_registry_applies_manifest_allowlist() -> None:
     registry = ToolRegistry.from_tools(BuiltinToolProvider().provide_tools())
 
-    scoped = scoped_tool_registry_for_agent(registry, agent=RuntimeAgentConfig(preset="explore"))
+    scoped = scoped_tool_registry_for_agent(
+        registry,
+        agent=RuntimeAgentConfig(
+            preset="explore",
+            manifest_tool_allowlist=(
+                "read_file",
+                "list",
+                "glob",
+                "grep",
+                "ast_grep_search",
+                "lsp",
+                "question",
+                "skill",
+                "background_output",
+            ),
+        ),
+    )
 
     assert "read_file" in scoped.tools
     assert "grep" in scoped.tools
