@@ -13,11 +13,13 @@ type AgentManifestId = Literal[
     "researcher",
     "product",
 ]
+type AgentManifestKey = AgentManifestId | str
 type AgentMode = Literal["primary", "subagent", "all"]
 type AgentExecutionEngineName = Literal["deterministic", "provider"]
 type AgentManifestFieldSemantic = Literal["live_default", "intent"]
-type AgentPromptSource = Literal["builtin"]
-type AgentPromptFormat = Literal["text"]
+type AgentPromptSource = Literal["builtin", "custom_markdown"]
+type AgentPromptFormat = Literal["text", "markdown"]
+type AgentSourceScope = Literal["builtin", "project", "user"]
 
 
 _EMPTY_MODEL_FAMILY_OVERRIDES: Mapping[str, str] = MappingProxyType({})
@@ -73,6 +75,10 @@ class AgentPromptMaterialization:
     version: int = 1
     source: AgentPromptSource = "builtin"
     format: AgentPromptFormat = "text"
+    body: str | None = None
+    prompt_append: str | None = None
+    source_scope: AgentSourceScope | None = None
+    source_path: str | None = None
     model_family_overrides: Mapping[str, str] = field(
         default_factory=lambda: _EMPTY_MODEL_FAMILY_OVERRIDES,
     )
@@ -82,6 +88,25 @@ class AgentPromptMaterialization:
             raise ValueError("AgentPromptMaterialization.profile must be a non-empty string")
         if self.version < 1:
             raise ValueError("AgentPromptMaterialization.version must be >= 1")
+        if self.source == "custom_markdown":
+            if self.body is None or not self.body.strip():
+                raise ValueError(
+                    "AgentPromptMaterialization.body must be non-empty for custom_markdown"
+                )
+            if self.format != "markdown":
+                raise ValueError(
+                    "AgentPromptMaterialization.format must be markdown for custom_markdown"
+                )
+        if self.prompt_append is not None and not self.prompt_append.strip():
+            raise ValueError("AgentPromptMaterialization.prompt_append must be a non-empty string")
+        if self.source_scope is not None and self.source_scope not in {
+            "builtin",
+            "project",
+            "user",
+        }:
+            raise ValueError("AgentPromptMaterialization.source_scope is invalid")
+        if self.source_path is not None and not self.source_path.strip():
+            raise ValueError("AgentPromptMaterialization.source_path must be a non-empty string")
         for family, override_profile in self.model_family_overrides.items():
             if not family.strip():
                 raise ValueError(
@@ -117,18 +142,29 @@ class AgentPromptMaterialization:
         }
         if self.model_family_overrides:
             payload["model_family_overrides"] = dict(self.model_family_overrides)
+        if self.body is not None:
+            payload["body"] = self.body
+        if self.prompt_append is not None:
+            payload["prompt_append"] = self.prompt_append
+        if self.source_scope is not None:
+            payload["source_scope"] = self.source_scope
+        if self.source_path is not None:
+            payload["source_path"] = self.source_path
         return payload
 
 
 @dataclass(frozen=True, slots=True)
 class AgentManifest:
-    id: AgentManifestId
+    id: AgentManifestKey
     name: str
     mode: AgentMode
     description: str
+    source_scope: AgentSourceScope = "builtin"
+    source_path: str | None = None
     prompt_profile: str | None = None
     execution_engine: AgentExecutionEngineName | None = None
     model_preference: str | None = None
+    fallback_models: tuple[str, ...] = ()
     tool_allowlist: tuple[str, ...] = ()
     skill_refs: tuple[str, ...] = ()
     preset_hook_refs: tuple[str, ...] = ()
@@ -146,6 +182,8 @@ class AgentManifest:
             fields.append("execution_engine")
         if self.model_preference is not None:
             fields.append("model_preference")
+        if self.fallback_models:
+            fields.append("fallback_models")
         if self.tool_allowlist:
             fields.append("tool_allowlist")
         if self.preset_hook_refs:
