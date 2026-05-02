@@ -15,7 +15,7 @@ This is not a parity checklist. Each concern is deliberately classified as one o
 ### 1. Launcher
 
 - **OpenCode reference**: `https://github.com/anomalyco/opencode/blob/4877eccc0d06c747624bf61aaa6f3e65cea9cc8d/packages/opencode/src/cli/cmd/web.ts`
-- **Local seams**: `src/voidcode/cli.py`, `src/voidcode/server.py`
+- **Local seams**: `src/voidcode/cli/`, `src/voidcode/server.py`
 - **Decision**: **Adopt**
 - **Why**: OpenCode's split between a headless server command and a user-friendly web launcher is production-grade, intuitive, and matches the user's requested end state.
 - **VoidCode target**:
@@ -30,9 +30,9 @@ This is not a parity checklist. Each concern is deliberately classified as one o
 - **OpenCode references**:
   - `https://github.com/anomalyco/opencode/blob/4877eccc0d06c747624bf61aaa6f3e65cea9cc8d/packages/opencode/src/index.ts`
   - `https://github.com/anomalyco/opencode/blob/4877eccc0d06c747624bf61aaa6f3e65cea9cc8d/packages/opencode/src/cli/cmd/cmd.ts`
-- **Local seams**: `src/voidcode/cli.py`, `src/voidcode/__main__.py`
+- **Local seams**: `src/voidcode/cli/`, `src/voidcode/__main__.py`
 - **Decision**: **Adapt**
-- **Why**: OpenCode's per-command module pattern is cleaner than the current monolithic argparse assembly, but VoidCode should keep Python-native command wiring rather than mimic the TypeScript/yargs structure directly.
+- **Why**: OpenCode's per-command module pattern is cleaner than a monolithic command assembly. VoidCode now keeps Python-native Click command wiring under `src/voidcode/cli/` rather than mimicking the TypeScript/yargs structure directly.
 - **VoidCode target**:
   - Extract `serve` / `web` command handling into clearer command-owned units if needed
   - Preserve shared startup primitives rather than duplicating server logic

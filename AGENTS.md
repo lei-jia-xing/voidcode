@@ -24,7 +24,7 @@ voidcode/
 ## WHERE TO LOOK
 | Task | Location | Notes |
 |------|----------|-------|
-| CLI behavior | `src/voidcode/cli.py` | `voidcode run`, `sessions list`, `sessions resume` |
+| CLI behavior | `src/voidcode/cli/` | `voidcode run`, `sessions list`, `sessions resume`, `sessions answer` |
 | Python entrypoint | `src/voidcode/__main__.py` | `python -m voidcode` delegates to CLI |
 | Runtime orchestration boundary | `src/voidcode/runtime/service.py` | CLI calls runtime, not graph directly |
 | Runtime implementation work | `src/voidcode/runtime/AGENTS.md` | read before touching runtime control-plane code |
@@ -43,8 +43,8 @@ voidcode/
 ## CODE MAP
 | Symbol | Type | Location | Role |
 |--------|------|----------|------|
-| `main` | function | `src/voidcode/cli.py` | CLI process entry |
-| `build_parser` | function | `src/voidcode/cli.py` | command surface definition |
+| `main` | function | `src/voidcode/cli/app.py` | CLI process entry |
+| `build_parser` | function | `src/voidcode/cli/app.py` | command surface compatibility view |
 | `VoidCodeRuntime` | class | `src/voidcode/runtime/service.py` | runtime boundary for requests/sessions |
 | `ToolRegistry` | class | `src/voidcode/runtime/service.py` | current built-in tool registry |
 
