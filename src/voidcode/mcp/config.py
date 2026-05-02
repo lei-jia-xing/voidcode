@@ -20,12 +20,6 @@ class McpServerConfig:
     env: dict[str, str] = field(default_factory=dict)
     url: str | None = None
 
-    def __post_init__(self) -> None:
-        if self.transport == "remote-http" and not self.url:
-            raise ValueError("remote-http transport requires a url")
-        if self.transport == "stdio" and not self.command:
-            raise ValueError("stdio transport requires a command")
-
 
 @dataclass(frozen=True, slots=True)
 class McpConfig:
