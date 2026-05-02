@@ -272,6 +272,7 @@ from .tool_provider import (
     scoped_tool_registry_for_agent,
     tool_name_matches_patterns,
 )
+from .workflow import WorkflowPreset, load_builtin_workflow_preset_registry
 
 if TYPE_CHECKING:
     from ..tools.lsp import FormatTool
@@ -301,6 +302,7 @@ _PERSISTED_RUNTIME_CONFIG_KEYS = frozenset(
         "context_window",
         "lsp",
         "mcp",
+        "workflow",
     }
 )
 
@@ -1125,6 +1127,13 @@ class VoidCodeRuntime:
 
     def _runtime_config_for_request(self, request: RuntimeRequest) -> EffectiveRuntimeConfig:
         resolved = self._effective_runtime_config_from_metadata(None)
+        workflow_preset = request.metadata.get("workflow_preset")
+        if workflow_preset is not None:
+            assert isinstance(workflow_preset, str)
+            try:
+                resolved = self._config_with_workflow_preset(resolved, workflow_preset)
+            except ValueError as exc:
+                raise RuntimeRequestError(str(exc)) from exc
         request_agent = request.metadata.get("agent")
         if request_agent is not None:
             try:
@@ -1175,6 +1184,222 @@ class VoidCodeRuntime:
         except ValueError as exc:
             raise RuntimeRequestError(str(exc)) from exc
         return resolved
+
+    def _config_with_workflow_preset(
+        self,
+        resolved: EffectiveRuntimeConfig,
+        preset_id: str,
+    ) -> EffectiveRuntimeConfig:
+        preset = self._workflow_preset(preset_id)
+        if preset is None:
+            raise ValueError(
+                f"request metadata 'workflow_preset' references unknown preset: {preset_id}"
+            )
+        if preset.default_agent not in self._agent_registry.executable_primary_ids():
+            return resolved
+
+        raw_agent: dict[str, object] = {"preset": preset.default_agent}
+        if preset.prompt_append is not None:
+            raw_agent["prompt_append"] = preset.prompt_append
+        if preset.hook_preset_refs:
+            raw_agent["hook_refs"] = list(preset.hook_preset_refs)
+        return self._config_with_request_agent_override(
+            resolved,
+            raw_agent,
+        )
+
+    def _workflow_preset_snapshot(
+        self,
+        preset_id: object,
+    ) -> dict[str, object] | None:
+        if not isinstance(preset_id, str):
+            return None
+        preset = self._workflow_preset(preset_id)
+        if preset is None:
+            return None
+        executable_top_level = preset.default_agent in self._agent_registry.executable_primary_ids()
+        effective_agent = preset.default_agent if executable_top_level else None
+        payload: dict[str, object] = {
+            "snapshot_version": 1,
+            "selected_preset": preset.id,
+            "preset_source": (
+                "runtime_config"
+                if self._config.workflows is not None
+                and self._config.workflows.get(preset.id) is not None
+                else "builtin"
+            ),
+            "category": preset.category,
+            "default_agent": preset.default_agent,
+            "effective_agent": effective_agent,
+            "default_agent_executable_top_level": executable_top_level,
+            "read_only_default": preset.read_only_default,
+            "skill_refs": list(preset.skill_refs),
+            "force_load_skills": list(preset.force_load_skills),
+            "hook_preset_refs": list(preset.hook_preset_refs),
+            "mcp_binding_intents": self._workflow_mcp_binding_intent_snapshots(preset),
+            "materialization": "metadata_only",
+            "governance": (
+                "workflow presets narrow or augment runtime metadata only; tool, MCP, "
+                "permission, and approval policy remain runtime-governed"
+            ),
+        }
+        if preset.prompt_append is not None:
+            payload["prompt_append"] = preset.prompt_append
+        if preset.tool_policy_ref is not None:
+            payload["tool_policy_ref"] = preset.tool_policy_ref
+        if preset.permission_policy_ref is not None:
+            payload["permission_policy_ref"] = preset.permission_policy_ref
+        if preset.verification_guidance is not None:
+            payload["verification_guidance"] = preset.verification_guidance
+        return payload
+
+    def _workflow_mcp_binding_intent_snapshots(
+        self,
+        preset: WorkflowPreset,
+    ) -> list[dict[str, object]]:
+        mcp_state = self._mcp_manager.current_state()
+        configured_servers = set(mcp_state.configuration.servers)
+        snapshots: list[dict[str, object]] = []
+        for binding in preset.mcp_binding_intents:
+            binding_payload = binding.to_payload()
+            requested_servers = list(binding.servers)
+            missing_servers = [
+                server for server in requested_servers if server not in configured_servers
+            ]
+            binding_payload["availability"] = {
+                "mode": mcp_state.mode,
+                "configured_enabled": mcp_state.configuration.configured_enabled,
+                "servers_available": not missing_servers,
+                "available_servers": [
+                    server for server in requested_servers if server in configured_servers
+                ],
+                "missing_servers": missing_servers,
+                "profile_availability": "not_resolved",
+                "degraded": bool(missing_servers),
+            }
+            snapshots.append(binding_payload)
+        return snapshots
+
+    def _workflow_preset(self, preset_id: str) -> WorkflowPreset | None:
+        if self._config.workflows is not None:
+            configured = self._config.workflows.get(preset_id)
+            if configured is not None:
+                return configured
+        return load_builtin_workflow_preset_registry().get(preset_id)
+
+    def _request_metadata_with_workflow_defaults(
+        self,
+        metadata: dict[str, object],
+    ) -> dict[str, object]:
+        existing_workflow = metadata.get("workflow")
+        if isinstance(existing_workflow, dict):
+            return metadata
+        workflow_preset = metadata.get("workflow_preset")
+        if not isinstance(workflow_preset, str):
+            return metadata
+        preset = self._workflow_preset(workflow_preset)
+        if preset is None:
+            return metadata
+
+        merged = dict(metadata)
+        if preset.skill_refs and "skills" not in merged:
+            merged["skills"] = list(preset.skill_refs)
+        if preset.force_load_skills:
+            existing_force_load = merged.get("force_load_skills")
+            force_load_names = list(preset.force_load_skills)
+            if isinstance(existing_force_load, list):
+                for name in existing_force_load:
+                    if isinstance(name, str) and name not in force_load_names:
+                        force_load_names.append(name)
+            merged["force_load_skills"] = force_load_names
+        workflow_snapshot = self._workflow_preset_snapshot(workflow_preset)
+        if workflow_snapshot is not None:
+            merged["workflow"] = workflow_snapshot
+        return merged
+
+    @staticmethod
+    def _workflow_snapshot_from_metadata(
+        metadata: dict[str, object] | None,
+    ) -> dict[str, object] | None:
+        if metadata is None:
+            return None
+        raw_workflow = metadata.get("workflow")
+        if isinstance(raw_workflow, dict):
+            return dict(cast(dict[str, object], raw_workflow))
+        raw_runtime_config = metadata.get("runtime_config")
+        if isinstance(raw_runtime_config, dict):
+            runtime_config = cast(dict[str, object], raw_runtime_config)
+            runtime_workflow = runtime_config.get("workflow")
+            if isinstance(runtime_workflow, dict):
+                return dict(cast(dict[str, object], runtime_workflow))
+        raw_capability_snapshot = metadata.get("agent_capability_snapshot")
+        if isinstance(raw_capability_snapshot, dict):
+            capability_snapshot = cast(dict[str, object], raw_capability_snapshot)
+            capability_workflow = capability_snapshot.get("workflow")
+            if isinstance(capability_workflow, dict):
+                return dict(cast(dict[str, object], capability_workflow))
+        return None
+
+    @staticmethod
+    def _workflow_snapshot_selected_preset(snapshot: dict[str, object]) -> str | None:
+        selected_preset = snapshot.get("selected_preset")
+        return selected_preset if isinstance(selected_preset, str) and selected_preset else None
+
+    def _validate_delegated_workflow_snapshot(
+        self,
+        *,
+        snapshot: dict[str, object],
+        selected_child_preset: str,
+        source: str,
+    ) -> None:
+        workflow_selected_preset = self._workflow_snapshot_selected_preset(snapshot)
+        if workflow_selected_preset is None:
+            raise RuntimeRequestError(f"{source} must include selected_preset")
+        workflow_default_agent = snapshot.get("default_agent")
+        if workflow_default_agent != selected_child_preset:
+            raise RuntimeRequestError(
+                f"{source} default_agent '{workflow_default_agent}' is not allowed for "
+                f"delegated child preset '{selected_child_preset}'"
+            )
+
+    def _workflow_metadata_for_delegated_child(
+        self,
+        *,
+        metadata: dict[str, object],
+        selected_child_preset: str,
+        parent_session_id: str | None,
+    ) -> dict[str, object]:
+        child_workflow_preset = metadata.get("workflow_preset")
+        inherited_snapshot = self._workflow_snapshot_from_metadata(metadata)
+        if inherited_snapshot is None and parent_session_id is not None:
+            parent_response = self._load_existing_session_if_present(session_id=parent_session_id)
+            parent_metadata = (
+                parent_response.session.metadata
+                if parent_response is not None
+                else self._active_session_metadata(parent_session_id)
+            )
+            inherited_snapshot = self._workflow_snapshot_from_metadata(parent_metadata)
+        if isinstance(child_workflow_preset, str):
+            child_snapshot = self._workflow_preset_snapshot(child_workflow_preset)
+            if child_snapshot is None:
+                raise RuntimeRequestError(
+                    "request metadata 'workflow_preset' references unknown preset: "
+                    f"{child_workflow_preset}"
+                )
+            self._validate_delegated_workflow_snapshot(
+                snapshot=child_snapshot,
+                selected_child_preset=selected_child_preset,
+                source="request metadata 'workflow_preset'",
+            )
+            return child_snapshot
+        if inherited_snapshot is not None:
+            self._validate_delegated_workflow_snapshot(
+                snapshot=inherited_snapshot,
+                selected_child_preset=selected_child_preset,
+                source="inherited workflow snapshot",
+            )
+            return inherited_snapshot
+        return {}
 
     def _validate_reasoning_effort_capability(self, config: EffectiveRuntimeConfig) -> None:
         if config.reasoning_effort is None:
@@ -1827,7 +2052,21 @@ class VoidCodeRuntime:
         effective_config = self._runtime_config_for_request(request)
         if self._graph_override is None:
             self._validate_provider_execution_ready(effective_config)
-        request_metadata = self._fresh_request_metadata(request.metadata)
+        request_metadata = self._request_metadata_with_workflow_defaults(
+            self._fresh_request_metadata(request.metadata)
+        )
+        if run_id is not None:
+            _ACTIVE_SESSION_REGISTRY.remember_metadata(
+                workspace=self._workspace,
+                session_id=resolved_session_id,
+                run_id=run_id,
+                metadata={
+                    "prompt": request.prompt,
+                    "run_id": run_id,
+                    **request_metadata,
+                    "request_metadata": {key: value for key, value in request_metadata.items()},
+                },
+            )
         resolved_hook_presets = self._build_hook_preset_snapshot(effective_config.agent)
         session_request_metadata = dict(request_metadata)
         session_request_metadata.pop("background_rate_limit_retry", None)
@@ -1839,7 +2078,11 @@ class VoidCodeRuntime:
             metadata={
                 **session_request_metadata,
                 "workspace": str(self._workspace),
-                "runtime_config": self._runtime_config_metadata(effective_config),
+                "runtime_config": self._runtime_config_metadata(
+                    effective_config,
+                    workflow_preset=request_metadata.get("workflow_preset"),
+                    workflow_snapshot=request_metadata.get("workflow"),
+                ),
                 **(
                     {"resolved_hook_presets": resolved_hook_presets.to_payload()}
                     if resolved_hook_presets.presets
@@ -5737,6 +5980,7 @@ class VoidCodeRuntime:
         metadata = self._metadata_with_resolved_subagent_route(
             metadata,
             allow_internal_fields=allow_internal_metadata,
+            parent_session_id=governance_parent_session_id,
         )
         metadata = self._metadata_with_delegation_governance(
             metadata,
@@ -6793,6 +7037,14 @@ class VoidCodeRuntime:
                 "configured_servers": list(mcp_state.configuration.servers),
                 "governance": "runtime_session_scoped_config_gated",
             },
+            **(
+                {"workflow": workflow_snapshot}
+                if isinstance(
+                    workflow_snapshot := runtime_config_payload.get("workflow"),
+                    dict,
+                )
+                else {}
+            ),
             "runtime": {
                 "approval_mode": effective_config.approval_mode,
                 "max_steps": effective_config.max_steps,
@@ -7099,7 +7351,11 @@ class VoidCodeRuntime:
         return "\n".join(lines)
 
     def _runtime_config_metadata(
-        self, config: EffectiveRuntimeConfig | None = None
+        self,
+        config: EffectiveRuntimeConfig | None = None,
+        *,
+        workflow_preset: object | None = None,
+        workflow_snapshot: object | None = None,
     ) -> dict[str, object]:
         effective_config = config or self._effective_runtime_config_from_metadata(None)
         runtime_config_metadata: dict[str, object] = {
@@ -7153,6 +7409,12 @@ class VoidCodeRuntime:
             "configured_enabled": mcp_state.configuration.configured_enabled,
             "servers": list(mcp_state.configuration.servers),
         }
+        if isinstance(workflow_snapshot, dict):
+            runtime_config_metadata["workflow"] = dict(cast(dict[str, object], workflow_snapshot))
+        else:
+            resolved_workflow_snapshot = self._workflow_preset_snapshot(workflow_preset)
+            if resolved_workflow_snapshot is not None:
+                runtime_config_metadata["workflow"] = resolved_workflow_snapshot
         return runtime_config_metadata
 
     def _config_with_request_agent_override(
@@ -7162,6 +7424,15 @@ class VoidCodeRuntime:
         *,
         allow_subagent_presets: bool = False,
     ) -> EffectiveRuntimeConfig:
+        raw_agent_payload = raw_agent if isinstance(raw_agent, dict) else {}
+        explicit_prompt_materialization = "prompt_materialization" in raw_agent_payload
+        preserved_custom_prompt_materialization = (
+            resolved.agent.prompt_materialization
+            if resolved.agent is not None
+            and isinstance(resolved.agent.prompt_materialization, Mapping)
+            and resolved.agent.prompt_materialization.get("source") == "custom_markdown"
+            else None
+        )
         agent = parse_runtime_agent_payload(
             raw_agent,
             source="request metadata 'agent'",
@@ -7224,7 +7495,15 @@ class VoidCodeRuntime:
                 if resolved.agent is not None
                 else None
             ),
-            prompt_materialization=agent.prompt_materialization,
+            prompt_materialization=(
+                agent.prompt_materialization
+                if explicit_prompt_materialization and agent.prompt_materialization is not None
+                else preserved_custom_prompt_materialization
+                if preserved_custom_prompt_materialization is not None
+                else agent.prompt_materialization
+                if agent.prompt_materialization is not None
+                else None
+            ),
             manifest_source_scope=agent.manifest_source_scope,
             manifest_source_path=agent.manifest_source_path,
             manifest_tool_allowlist=agent.manifest_tool_allowlist,
@@ -7314,6 +7593,7 @@ class VoidCodeRuntime:
         metadata: RuntimeRequestMetadataPayload,
         *,
         allow_internal_fields: bool,
+        parent_session_id: str | None = None,
     ) -> RuntimeRequestMetadataPayload:
         resolved_route = runtime_subagent_route_from_metadata(
             metadata,
@@ -7331,6 +7611,11 @@ class VoidCodeRuntime:
         delegation_metadata = dict(cast(dict[str, object], raw_delegation_metadata))
         delegation_metadata["selected_preset"] = resolved_route.selected_preset
         delegation_metadata["selected_execution_engine"] = resolved_route.execution_engine
+        workflow_snapshot = self._workflow_metadata_for_delegated_child(
+            metadata=normalized_metadata,
+            selected_child_preset=resolved_route.selected_preset,
+            parent_session_id=parent_session_id,
+        )
 
         raw_agent = normalized_metadata.get("agent")
         if raw_agent is None:
@@ -7413,6 +7698,28 @@ class VoidCodeRuntime:
         assert serialized_agent is not None
         normalized_metadata["delegation"] = delegation_metadata
         normalized_metadata["agent"] = serialized_agent
+        if workflow_snapshot:
+            inherited_from_parent = "workflow_preset" not in normalized_metadata
+            snapshot_selected_preset = self._workflow_snapshot_selected_preset(workflow_snapshot)
+            if snapshot_selected_preset is None:
+                raise RuntimeRequestError(
+                    "delegated workflow snapshot must include selected_preset"
+                )
+            workflow_snapshot = {
+                **workflow_snapshot,
+                "delegated_child": {
+                    "inherited_from_parent": inherited_from_parent,
+                    "selected_child_preset": resolved_route.selected_preset,
+                    "override": not inherited_from_parent,
+                    "validation": "narrowed_to_selected_delegated_preset",
+                    "policy_enforcement": "audit_metadata_only",
+                },
+            }
+            normalized_metadata["workflow"] = workflow_snapshot
+            normalized_metadata.setdefault(
+                "workflow_preset",
+                snapshot_selected_preset,
+            )
         return validate_runtime_request_metadata(
             normalized_metadata,
             allow_internal_fields=allow_internal_fields,
