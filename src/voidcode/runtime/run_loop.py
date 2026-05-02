@@ -1534,6 +1534,7 @@ class RuntimeRunLoopCoordinator:
                         permission_chunks = runtime._resolve_permission(
                             session=session,
                             tool=tool.definition,
+                            tool_instance=tool,
                             tool_call=plan_tool_call,
                             sequence=sequence,
                             permission_policy=active_permission_policy,
@@ -1542,6 +1543,7 @@ class RuntimeRunLoopCoordinator:
                 permission_chunks = runtime._resolve_permission(
                     session=session,
                     tool=tool.definition,
+                    tool_instance=tool,
                     tool_call=plan_tool_call,
                     sequence=sequence,
                     permission_policy=active_permission_policy,

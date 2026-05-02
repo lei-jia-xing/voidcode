@@ -831,7 +831,7 @@ class VoidCodeRuntime:
         _ = self.shutdown_lsp()
 
     def _build_base_tool_registry(self) -> ToolRegistry:
-        builtin_tools = ToolRegistry.with_defaults(
+        return ToolRegistry.with_defaults(
             lsp_tool=self._build_lsp_tool(),
             format_tool=self._build_format_tool(),
             hooks_config=self._config.hooks or RuntimeHooksConfig(),
@@ -844,13 +844,19 @@ class VoidCodeRuntime:
             background_output_tool=BackgroundOutputTool(runtime=self),
             background_cancel_tool=BackgroundCancelTool(runtime=self),
         )
+
+    def _tool_registry_with_effective_local_tools(
+        self,
+        effective_config: EffectiveRuntimeConfig,
+    ) -> ToolRegistry:
+        local_config = effective_config.tools.local if effective_config.tools is not None else None
         local_tools = LocalCustomToolProvider(
             workspace=self._workspace,
-            config=self._config.tools.local if self._config.tools is not None else None,
+            config=local_config,
         ).provide_tools()
         if not local_tools:
-            return builtin_tools
-        return ToolRegistry.from_tools((*builtin_tools.tools.values(), *local_tools))
+            return self._tool_registry
+        return ToolRegistry.from_tools((*self._tool_registry.tools.values(), *local_tools))
 
     @staticmethod
     def _session_with_metadata(session: SessionState, metadata: dict[str, object]) -> SessionState:
@@ -1318,7 +1324,8 @@ class VoidCodeRuntime:
         self,
         effective_config: EffectiveRuntimeConfig,
     ) -> ToolRegistry:
-        return scoped_tool_registry_for_agent(self._tool_registry, agent=effective_config.agent)
+        registry = self._tool_registry_with_effective_local_tools(effective_config)
+        return scoped_tool_registry_for_agent(registry, agent=effective_config.agent)
 
     def _delegation_tool_policy_error(
         self,
@@ -2300,6 +2307,7 @@ class VoidCodeRuntime:
         *,
         session: SessionState,
         tool: ToolDefinition,
+        tool_instance: Tool,
         tool_call: ToolCall,
         sequence: int,
         permission_policy: PermissionPolicy,
@@ -2307,6 +2315,7 @@ class VoidCodeRuntime:
         path_scope, canonical_path, operation_class, external_paths = (
             self._permission_context_for_tool_call(
                 tool=tool,
+                tool_instance=tool_instance,
                 tool_call=tool_call,
             )
         )
@@ -2531,9 +2540,14 @@ class VoidCodeRuntime:
         self,
         *,
         tool: ToolDefinition,
+        tool_instance: Tool,
         tool_call: ToolCall,
     ) -> tuple[PathScope, str | None, OperationClass, tuple[str, ...]]:
-        operation_class = self._operation_class_for_tool(tool_call.tool_name, tool.read_only)
+        operation_class = self._operation_class_for_tool(
+            tool_call.tool_name,
+            tool.read_only,
+            tool_instance=tool_instance,
+        )
         candidate_paths = self._candidate_paths_for_tool_call(tool_call)
         workspace_root = self._workspace.resolve()
         external_paths: list[str] = []
@@ -2577,10 +2591,14 @@ class VoidCodeRuntime:
         command = tool_call.arguments.get("command")
         return command if isinstance(command, str) else None
 
-    def _operation_class_for_tool(self, tool_name: str, read_only: bool) -> OperationClass:
-        if tool_name == "shell_exec" or isinstance(
-            self._tool_registry.tools.get(tool_name), LocalCustomTool
-        ):
+    @staticmethod
+    def _operation_class_for_tool(
+        tool_name: str,
+        read_only: bool,
+        *,
+        tool_instance: Tool,
+    ) -> OperationClass:
+        if tool_name == "shell_exec" or isinstance(tool_instance, LocalCustomTool):
             return "execute"
         return "read" if read_only else "write"
 

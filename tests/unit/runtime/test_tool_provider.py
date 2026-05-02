@@ -424,6 +424,63 @@ def test_default_runtime_scopes_tools_to_leader_manifest(tmp_path: Path) -> None
     assert all(event.payload.get("tool") != "missing_tool" for event in response.events)
 
 
+def test_runtime_uses_session_local_tools_config_when_registry_was_disabled(
+    tmp_path: Path,
+) -> None:
+    _write_local_tool_manifest(tmp_path)
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_LocalToolGraph(),
+        config=RuntimeConfig(execution_engine="deterministic"),
+        permission_policy=PermissionPolicy(mode="allow"),
+    )
+    effective_config = runtime._effective_runtime_config_from_metadata(  # pyright: ignore[reportPrivateUsage]
+        {
+            "runtime_config": {
+                "execution_engine": "deterministic",
+                "tools": {"local": {"enabled": True, "path": ".voidcode/tools"}},
+            }
+        }
+    )
+
+    registry = runtime._tool_registry_for_effective_config(  # pyright: ignore[reportPrivateUsage]
+        effective_config
+    )
+
+    assert "local/echo" not in runtime._base_tool_registry.tools  # pyright: ignore[reportPrivateUsage]
+    assert "local/echo" in registry.tools
+
+
+def test_runtime_uses_session_local_tools_config_when_registry_was_enabled(
+    tmp_path: Path,
+) -> None:
+    _write_local_tool_manifest(tmp_path)
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_LocalToolGraph(),
+        config=RuntimeConfig(
+            execution_engine="deterministic",
+            tools=RuntimeToolsConfig(local=RuntimeToolsLocalConfig(enabled=True)),
+        ),
+        permission_policy=PermissionPolicy(mode="allow"),
+    )
+    effective_config = runtime._effective_runtime_config_from_metadata(  # pyright: ignore[reportPrivateUsage]
+        {
+            "runtime_config": {
+                "execution_engine": "deterministic",
+                "tools": {"local": {"enabled": False, "path": ".voidcode/tools"}},
+            }
+        }
+    )
+
+    registry = runtime._tool_registry_for_effective_config(  # pyright: ignore[reportPrivateUsage]
+        effective_config
+    )
+
+    assert "local/echo" not in runtime._base_tool_registry.tools  # pyright: ignore[reportPrivateUsage]
+    assert "local/echo" not in registry.tools
+
+
 def test_builtin_tool_definitions_include_sidecar_guidance() -> None:
     registry = ToolRegistry.from_tools(BuiltinToolProvider().provide_tools())
     definitions = {definition.name: definition for definition in registry.definitions()}
@@ -710,7 +767,12 @@ def test_runtime_includes_opted_in_local_custom_tools(tmp_path: Path) -> None:
         ),
     )
 
-    assert "local/echo" in runtime._base_tool_registry.tools  # pyright: ignore[reportPrivateUsage]
+    registry = runtime._tool_registry_for_effective_config(  # pyright: ignore[reportPrivateUsage]
+        runtime._initial_effective_config  # pyright: ignore[reportPrivateUsage]
+    )
+
+    assert "local/echo" not in runtime._base_tool_registry.tools  # pyright: ignore[reportPrivateUsage]
+    assert "local/echo" in registry.tools
 
 
 def test_runtime_persists_top_level_local_tools_config(tmp_path: Path) -> None:
@@ -737,15 +799,18 @@ def test_runtime_persists_top_level_local_tools_config(tmp_path: Path) -> None:
 
 def test_runtime_rejects_local_custom_tool_name_collisions(tmp_path: Path) -> None:
     _write_local_tool_manifest(tmp_path, name="grep")
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_StubGraph(),
+        config=RuntimeConfig(
+            execution_engine="deterministic",
+            tools=RuntimeToolsConfig(local=RuntimeToolsLocalConfig(enabled=True)),
+        ),
+    )
 
     with pytest.raises(ValueError, match="duplicate tool definition: grep"):
-        _ = VoidCodeRuntime(
-            workspace=tmp_path,
-            graph=_StubGraph(),
-            config=RuntimeConfig(
-                execution_engine="deterministic",
-                tools=RuntimeToolsConfig(local=RuntimeToolsLocalConfig(enabled=True)),
-            ),
+        _ = runtime._tool_registry_for_effective_config(  # pyright: ignore[reportPrivateUsage]
+            runtime._initial_effective_config  # pyright: ignore[reportPrivateUsage]
         )
 
 
@@ -774,12 +839,14 @@ class _LocalToolGraph:
         session: SessionState,
     ) -> GraphStep:
         _ = request, session
+        if tool_results:
+            return _StubStep(output=tool_results[-1].content or "done", is_finished=True)
         self._step_count += 1
         if self._step_count == 1:
             return _StubStep(
                 tool_call=ToolCall(tool_name="local/echo", arguments={"message": "hi"})
             )
-        return _StubStep(output=tool_results[-1].content or "done", is_finished=True)
+        return _StubStep(output="done", is_finished=True)
 
 
 def test_local_custom_tools_require_approval_even_when_manifest_claims_read_only(
@@ -803,6 +870,41 @@ def test_local_custom_tools_require_approval_even_when_manifest_claims_read_only
     assert snapshot.pending_approval is not None
     assert snapshot.pending_approval.tool_name == "local/echo"
     assert snapshot.pending_approval.operation_class == "execute"
+
+
+def test_runtime_resume_uses_persisted_local_tools_config(tmp_path: Path) -> None:
+    _write_local_tool_manifest(tmp_path, read_only=True)
+    initial_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_LocalToolGraph(),
+        config=RuntimeConfig(
+            execution_engine="deterministic",
+            tools=RuntimeToolsConfig(local=RuntimeToolsLocalConfig(enabled=True)),
+        ),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    waiting = initial_runtime.run(RuntimeRequest(prompt="go", session_id="local-resume"))
+    snapshot = initial_runtime.session_debug_snapshot(session_id="local-resume")
+    assert waiting.session.status == "waiting"
+    assert snapshot.pending_approval is not None
+
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_LocalToolGraph(),
+        config=RuntimeConfig(execution_engine="deterministic"),
+        permission_policy=PermissionPolicy(mode="allow"),
+    )
+
+    resumed = resumed_runtime.resume(
+        "local-resume",
+        approval_request_id=snapshot.pending_approval.request_id,
+        approval_decision="allow",
+    )
+
+    assert resumed.session.status == "completed"
+    assert resumed.output is not None
+    assert json.loads(resumed.output)["args"] == {"message": "hi"}
 
 
 def test_local_custom_tools_are_blocked_by_deny_policy(tmp_path: Path) -> None:
