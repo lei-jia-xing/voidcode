@@ -151,6 +151,7 @@ def test_builtin_skill_registry_provides_workflow_skill_catalog() -> None:
         "frontend-design",
         "playwright",
         "review-work",
+        "build-verification",
     }
     git_master_content = registry.resolve("git-master").content
     assert "name: git-master" in git_master_content
@@ -172,6 +173,9 @@ def test_builtin_skill_registry_provides_workflow_skill_catalog() -> None:
         in registry.resolve("review-work").content
     )
     assert "unsupported agents" in registry.resolve("review-work").content
+    assert "# Build Verification" in registry.resolve("build-verification").content
+    assert "CMake" in registry.resolve("build-verification").content
+    assert "target_add_dependencies" in registry.resolve("build-verification").content
     unsupported_review_role = "or" + "acle"
     assert unsupported_review_role not in registry.resolve("review-work").content.lower()
     removed_placeholder = "Catalog-visible builtin skill metadata only"

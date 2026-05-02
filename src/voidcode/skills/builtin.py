@@ -38,6 +38,13 @@ _REVIEW_WORK_DESCRIPTION = (
     "implementation', 'check my work', 'validate changes', "
     "'post-implementation review'."
 )
+_BUILD_VERIFICATION_DESCRIPTION = (
+    "Guidance for verifying generated build systems before reporting completion. "
+    "Use when creating or modifying CMake, Make, Meson, or similar build "
+    "configurations, or when the user asks to build, compile, or verify a "
+    "project. Covers configure/build checks, error diagnosis, and evidence "
+    "reporting without installing system packages."
+)
 
 
 def _load_builtin_skill_content(resource_filename: str) -> str:
@@ -82,6 +89,11 @@ _BUILTIN_SKILLS: tuple[SkillMetadata, ...] = (
         name="review-work",
         description=_REVIEW_WORK_DESCRIPTION,
         resource_filename="review-work.md",
+    ),
+    _builtin_skill(
+        name="build-verification",
+        description=_BUILD_VERIFICATION_DESCRIPTION,
+        resource_filename="build-verification.md",
     ),
 )
 
