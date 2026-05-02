@@ -2280,7 +2280,7 @@ class RuntimeTransportApp:
 
     @staticmethod
     def _serialize_agent_summary(summary: AgentSummary) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "id": summary.id,
             "label": summary.label,
             "description": summary.description,
@@ -2294,6 +2294,11 @@ class RuntimeTransportApp:
             "provider": summary.provider,
             "fallback_chain": list(summary.fallback_chain),
         }
+        if summary.source_scope is not None:
+            payload["source_scope"] = summary.source_scope
+        if summary.source_path is not None:
+            payload["source_path"] = summary.source_path
+        return payload
 
     @staticmethod
     def _serialize_git_status_snapshot(snapshot: GitStatusSnapshot) -> dict[str, object]:

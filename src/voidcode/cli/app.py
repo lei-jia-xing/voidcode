@@ -13,7 +13,6 @@ import click
 
 from .. import __version__
 from ..acp.stdio import StdioAcpServer
-from ..agent.builtin import list_top_level_selectable_agent_manifests
 from ..cli_support import (
     EXIT_APPROVAL_DENIED,
     EXIT_CONFIG_ERROR,
@@ -65,6 +64,7 @@ from ..runtime.config_schema import (
     write_runtime_config_payload,
 )
 from ..runtime.contracts import (
+    AgentSummary,
     BackgroundTaskResult,
     CapabilityStatusSnapshot,
     NoPendingQuestionError,
@@ -1595,6 +1595,66 @@ def _handle_config_show_command(args: argparse.Namespace) -> int:
     return EXIT_SUCCESS
 
 
+def _serialize_agent_summary(summary: AgentSummary) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "id": summary.id,
+        "label": summary.label,
+        "description": summary.description,
+        "mode": summary.mode,
+        "selectable": summary.selectable,
+        "configured": summary.configured,
+        "execution_engine": summary.execution_engine,
+        "model": summary.model,
+        "model_label": summary.model_label,
+        "model_source": summary.model_source,
+        "provider": summary.provider,
+        "fallback_chain": list(summary.fallback_chain),
+    }
+    if summary.source_scope is not None:
+        payload["source_scope"] = summary.source_scope
+    if summary.source_path is not None:
+        payload["source_path"] = summary.source_path
+    return payload
+
+
+def _handle_agents_list_command(args: argparse.Namespace) -> int:
+    workspace = cast(Path, args.workspace)
+    if not workspace.exists() or not workspace.is_dir():
+        raise SystemExit(f"error: workspace does not exist: {workspace}")
+
+    runtime = VoidCodeRuntime(workspace=workspace)
+    try:
+        summaries = runtime.list_agent_summaries()
+    finally:
+        _close_runtime(runtime)
+
+    payload = {
+        "workspace": str(workspace),
+        "agents": [_serialize_agent_summary(summary) for summary in summaries],
+    }
+    if cast(bool, args.json):
+        print_json(payload)
+        return EXIT_SUCCESS
+
+    for summary in summaries:
+        fields: list[tuple[str, object]] = [
+            ("id", summary.id),
+            ("label", summary.label),
+            ("mode", summary.mode),
+            ("selectable", summary.selectable),
+            ("configured", summary.configured),
+            ("execution_engine", summary.execution_engine),
+            ("model", summary.model),
+            ("provider", summary.provider),
+        ]
+        if summary.source_scope is not None:
+            fields.append(("source_scope", summary.source_scope))
+        if summary.source_path is not None:
+            fields.append(("source_path", summary.source_path))
+        print(_format_named_record("AGENT", fields))
+    return EXIT_SUCCESS
+
+
 def _mcp_status_payload(snapshot: CapabilityStatusSnapshot) -> dict[str, object]:
     state = snapshot.state
     error = snapshot.error
@@ -2046,9 +2106,6 @@ def _handle_cli_system_exit(exc: SystemExit) -> int:
     return EXIT_GENERAL_ERROR
 
 
-_SELECTABLE_AGENT_IDS = tuple(
-    manifest.id for manifest in list_top_level_selectable_agent_manifests()
-)
 _APPROVAL_MODES = ("allow", "deny", "ask")
 _APPROVAL_DECISIONS = ("allow", "deny")
 _EXECUTION_ENGINES = ("deterministic", "provider")
@@ -2177,8 +2234,7 @@ def tui(workspace: Path, approval_mode: str | None) -> int:
 )
 @click.option(
     "--agent",
-    type=click.Choice(_SELECTABLE_AGENT_IDS),
-    help="Select a top-level agent preset for this run.",
+    help="Select a top-level or local custom agent preset for this run.",
 )
 @click.option("--skills", multiple=True, help="Optional skill names applied for this run.")
 @click.option("--max-steps", type=int, help="Optional max graph steps override for this run.")
@@ -2861,6 +2917,26 @@ def commands_show(
             include_hidden=include_hidden,
             include_disabled=include_disabled,
             json=json_output,
+        ),
+    )
+
+
+@root_cli.group(help="Discover built-in and local custom agents available to runtime requests.")
+def agents() -> None:
+    pass
+
+
+@agents.command(
+    name="list",
+    help="List built-in and local custom agent manifests discovered for a workspace.",
+)
+@_workspace_option("Workspace root used to discover project-local agents.")
+@_json_option("Output discovered agents as JSON.")
+def agents_list(workspace: Path, json_output: bool) -> int:
+    return _invoke_handler_from_click(
+        _handle_agents_list_command,
+        _build_click_command_context(
+            command="agents", subcommand="list", workspace=workspace, json=json_output
         ),
     )
 
