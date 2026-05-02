@@ -35,6 +35,7 @@ from ..hook.presets import (
     hook_preset_snapshot_from_payload,
     resolve_hook_preset_refs,
 )
+from ..mcp.builtin import get_builtin_mcp_descriptor
 from ..mcp.redaction import redact_mcp_command
 from ..provider.auth import (
     ProviderAuthAuthorizeRequest,
@@ -67,7 +68,7 @@ from ..provider.snapshot import (
     parse_resolved_provider_snapshot,
     resolved_provider_snapshot,
 )
-from ..skills import SkillRegistry
+from ..skills import SkillRegistry, skill_registry_with_builtins
 from ..tools.background_cancel import BackgroundCancelTool
 from ..tools.background_output import BackgroundOutputTool
 from ..tools.contracts import (
@@ -1217,6 +1218,7 @@ class VoidCodeRuntime:
         preset = self._workflow_preset(preset_id)
         if preset is None:
             return None
+        self._validate_required_workflow_mcp_intents(preset)
         executable_top_level = preset.default_agent in self._agent_registry.executable_primary_ids()
         effective_agent = preset.default_agent if executable_top_level else None
         payload: dict[str, object] = {
@@ -1237,10 +1239,10 @@ class VoidCodeRuntime:
             "force_load_skills": list(preset.force_load_skills),
             "hook_preset_refs": list(preset.hook_preset_refs),
             "mcp_binding_intents": self._workflow_mcp_binding_intent_snapshots(preset),
-            "materialization": "metadata_only",
+            "materialization": "runtime_policy_enforced",
             "governance": (
-                "workflow presets narrow or augment runtime metadata only; tool, MCP, "
-                "permission, and approval policy remain runtime-governed"
+                "workflow presets materialize runtime-governed skill, MCP, tool, and "
+                "permission policy metadata; recognized policy refs are enforced by runtime"
             ),
         }
         if preset.prompt_append is not None:
@@ -1263,6 +1265,11 @@ class VoidCodeRuntime:
         for binding in preset.mcp_binding_intents:
             binding_payload = binding.to_payload()
             requested_servers = list(binding.servers)
+            descriptor_servers = [
+                server
+                for server in requested_servers
+                if get_builtin_mcp_descriptor(server) is not None
+            ]
             missing_servers = [
                 server for server in requested_servers if server not in configured_servers
             ]
@@ -1274,11 +1281,30 @@ class VoidCodeRuntime:
                     server for server in requested_servers if server in configured_servers
                 ],
                 "missing_servers": missing_servers,
+                "descriptor_servers": descriptor_servers,
+                "descriptor_available": bool(descriptor_servers),
+                "descriptors": [
+                    descriptor.to_payload()
+                    for server in requested_servers
+                    if (descriptor := get_builtin_mcp_descriptor(server)) is not None
+                ],
                 "profile_availability": "not_resolved",
                 "degraded": bool(missing_servers),
             }
             snapshots.append(binding_payload)
         return snapshots
+
+    def _validate_required_workflow_mcp_intents(self, preset: WorkflowPreset) -> None:
+        configured_servers = set(self._mcp_manager.current_state().configuration.servers)
+        for binding in preset.mcp_binding_intents:
+            if not binding.required:
+                continue
+            missing = [server for server in binding.servers if server not in configured_servers]
+            if missing:
+                joined = ", ".join(missing)
+                raise RuntimeRequestError(
+                    f"workflow preset '{preset.id}' requires unavailable MCP server(s): {joined}"
+                )
 
     def _workflow_preset(self, preset_id: str) -> WorkflowPreset | None:
         if self._config.workflows is not None:
@@ -1425,13 +1451,15 @@ class VoidCodeRuntime:
 
     def _build_skill_registry(self, skills_config: RuntimeSkillsConfig | None) -> SkillRegistry:
         if skills_config is None or skills_config.enabled is not True:
-            return SkillRegistry()
+            return skill_registry_with_builtins(())
         if skills_config.paths:
-            return SkillRegistry.discover(
+            discovered = SkillRegistry.discover(
                 workspace=self._workspace,
                 search_paths=skills_config.paths,
             )
-        return SkillRegistry.discover(workspace=self._workspace)
+        else:
+            discovered = SkillRegistry.discover(workspace=self._workspace)
+        return skill_registry_with_builtins(discovered.all())
 
     def _skills_config_for_effective_config(
         self,
@@ -1551,9 +1579,25 @@ class VoidCodeRuntime:
     def _tool_registry_for_effective_config(
         self,
         effective_config: EffectiveRuntimeConfig,
+        metadata: dict[str, object] | None = None,
     ) -> ToolRegistry:
         registry = self._tool_registry_with_effective_local_tools(effective_config)
-        return scoped_tool_registry_for_agent(registry, agent=effective_config.agent)
+        scoped = scoped_tool_registry_for_agent(registry, agent=effective_config.agent)
+        return self._tool_registry_with_workflow_policy(scoped, metadata)
+
+    @staticmethod
+    def _read_only_workflow_tool_names(registry: ToolRegistry) -> tuple[str, ...]:
+        return tuple(name for name, tool in registry.tools.items() if tool.definition.read_only)
+
+    def _tool_registry_with_workflow_policy(
+        self,
+        registry: ToolRegistry,
+        metadata: dict[str, object] | None,
+    ) -> ToolRegistry:
+        workflow = self._workflow_snapshot_from_metadata(metadata)
+        if workflow is None or workflow.get("read_only_default") is not True:
+            return registry
+        return registry.filtered(self._read_only_workflow_tool_names(registry))
 
     def _delegation_tool_policy_error(
         self,
@@ -1586,6 +1630,30 @@ class VoidCodeRuntime:
             "delegation policy denied tool "
             f"'{tool_name}' for child preset '{agent.preset}'; this preset may only call "
             "tools allowed by its manifest tool_allowlist"
+        )
+
+    def _workflow_tool_policy_error(
+        self,
+        *,
+        session: SessionState,
+        tool_name: str,
+    ) -> str | None:
+        workflow = self._workflow_snapshot_from_metadata(session.metadata)
+        if workflow is None or workflow.get("read_only_default") is not True:
+            return None
+        if (
+            tool_name
+            in self._tool_registry_with_workflow_policy(
+                self._base_tool_registry,
+                session.metadata,
+            ).tools
+        ):
+            return None
+        if tool_name not in self._base_tool_registry.tools:
+            return None
+        return (
+            "workflow read-only policy denied tool "
+            f"'{tool_name}' for preset '{workflow.get('selected_preset')}'"
         )
 
     def current_lsp_state(self) -> LspManagerState:
@@ -2186,7 +2254,10 @@ class VoidCodeRuntime:
             resolved_hook_presets=resolved_hook_presets,
         )
 
-        tool_registry = self._tool_registry_for_effective_config(effective_config)
+        tool_registry = self._tool_registry_for_effective_config(
+            effective_config,
+            session.metadata,
+        )
         skill_registry = self._skill_registry_for_effective_config(effective_config)
         skills_config = self._skills_config_for_effective_config(effective_config)
 
@@ -2646,6 +2717,7 @@ class VoidCodeRuntime:
                 else None
             ),
         )
+
         if path_scope == "workspace" and tool.read_only and operation_class == "read":
             return _PermissionOutcome(
                 chunks=(
@@ -6781,7 +6853,14 @@ class VoidCodeRuntime:
 
     @staticmethod
     def _loaded_skill_names(skill_registry: SkillRegistry) -> list[str]:
-        return sorted(skill_registry.skills)
+        # Builtin skills are catalog resources: they stay resolvable through the
+        # skill tool and selected workflow refs, but they are not workspace skills
+        # that were actively loaded for an ordinary run.
+        return sorted(
+            skill_name
+            for skill_name, skill in skill_registry.skills.items()
+            if skill.origin != "builtin"
+        )
 
     def _applied_skill_contexts(
         self,
@@ -7013,7 +7092,7 @@ class VoidCodeRuntime:
                 manifest,
                 runtime_config_payload,
             ),
-            "tools": self._agent_capability_tool_snapshot(agent, manifest),
+            "tools": self._agent_capability_tool_snapshot(agent, manifest, metadata),
             "skills": {
                 "manifest_refs": list(agent.manifest_skill_refs) if agent is not None else [],
                 "selected_names": list(selected_skills or ()),
@@ -7133,11 +7212,15 @@ class VoidCodeRuntime:
         self,
         agent: RuntimeAgentConfig | None,
         manifest: object | None,
+        metadata: dict[str, object] | None = None,
     ) -> dict[str, object]:
         _ = manifest
         manifest_allowlist = agent.manifest_tool_allowlist if agent is not None else ()
         effective_tool_names = sorted(
-            scoped_tool_registry_for_agent(self._tool_registry, agent=agent).tools
+            self._tool_registry_with_workflow_policy(
+                scoped_tool_registry_for_agent(self._tool_registry, agent=agent),
+                metadata,
+            ).tools
         )
         return {
             "manifest_allowlist": list(manifest_allowlist),

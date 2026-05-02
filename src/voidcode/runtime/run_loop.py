@@ -405,6 +405,21 @@ class RuntimeRunLoopCoordinator:
             return
 
         sequence = permission_chunks.last_sequence
+        workflow_policy_error = runtime._workflow_tool_policy_error(
+            session=session,
+            tool_name=tool_call.tool_name,
+        )
+        if workflow_policy_error is not None:
+            yield runtime._failed_chunk(
+                session=session,
+                sequence=sequence + 1,
+                error=workflow_policy_error,
+                payload={
+                    "kind": "workflow_tool_policy_denied",
+                    "tool": tool_call.tool_name,
+                },
+            )
+            raise ValueError(workflow_policy_error)
         try:
             tool = tool_registry.resolve(tool_call.tool_name)
         except Exception as exc:
@@ -1481,6 +1496,22 @@ class RuntimeRunLoopCoordinator:
                     },
                 )
                 raise ValueError(delegation_policy_error)
+
+            workflow_policy_error = runtime._workflow_tool_policy_error(
+                session=session,
+                tool_name=plan_tool_call.tool_name,
+            )
+            if workflow_policy_error is not None:
+                yield runtime._failed_chunk(
+                    session=session,
+                    sequence=sequence + 1,
+                    error=workflow_policy_error,
+                    payload={
+                        "kind": "workflow_tool_policy_denied",
+                        "tool": plan_tool_call.tool_name,
+                    },
+                )
+                raise ValueError(workflow_policy_error)
 
             try:
                 tool = tool_registry.resolve(plan_tool_call.tool_name)
