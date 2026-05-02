@@ -260,6 +260,7 @@ from .todos import (
     todo_state_payload,
 )
 from .tool_provider import (
+    BUILTIN_TOOL_NAMES,
     BuiltinToolProvider,
     scoped_tool_registry_for_agent,
     tool_name_matches_patterns,
@@ -362,6 +363,8 @@ _SKILL_BINDING_SCOPE_KEYS = (
     "lsp",
     "mcp",
 )
+
+_AGENT_CAPABILITY_SNAPSHOT_VERSION = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -1792,6 +1795,20 @@ class VoidCodeRuntime:
                     else {}
                 ),
                 "runtime_state": self._runtime_state_metadata(run_id=run_id),
+            },
+        )
+        session = SessionState(
+            session=session.session,
+            status=session.status,
+            turn=session.turn,
+            metadata={
+                **session.metadata,
+                "agent_capability_snapshot": self._agent_capability_snapshot(
+                    effective_config=effective_config,
+                    metadata=session.metadata,
+                    request_metadata=request_metadata,
+                    resolved_hook_presets=resolved_hook_presets,
+                ),
             },
         )
         sequence = 1
@@ -6496,6 +6513,12 @@ class VoidCodeRuntime:
         self,
         metadata: dict[str, object] | None,
     ) -> dict[str, object] | None:
+        if metadata is not None:
+            raw_capability_snapshot = metadata.get("agent_capability_snapshot")
+            if isinstance(raw_capability_snapshot, dict):
+                return self._skill_binding_snapshot_from_agent_capability_snapshot(
+                    cast(dict[str, object], raw_capability_snapshot)
+                )
         source_runtime_config = None
         if metadata is not None:
             raw_runtime_config = metadata.get("runtime_config")
@@ -6510,6 +6533,217 @@ class VoidCodeRuntime:
             if key in source_runtime_config:
                 snapshot[key] = source_runtime_config[key]
         return snapshot
+
+    @staticmethod
+    def _skill_binding_snapshot_from_agent_capability_snapshot(
+        capability_snapshot: dict[str, object],
+    ) -> dict[str, object]:
+        snapshot: dict[str, object] = {}
+        execution = capability_snapshot.get("execution")
+        if isinstance(execution, dict):
+            execution_payload = cast(dict[str, object], execution)
+            execution_key_map = {
+                "execution_engine": "execution_engine",
+                "model": "model",
+                "provider_fallback": "provider_fallback",
+                "resolved_provider": "resolved_provider",
+                "reasoning_effort": "reasoning_effort",
+            }
+            for source_key, target_key in execution_key_map.items():
+                if source_key in execution_payload:
+                    snapshot[target_key] = execution_payload[source_key]
+        agent = capability_snapshot.get("agent")
+        if isinstance(agent, dict):
+            snapshot["agent"] = cast(dict[str, object], agent)
+        runtime = capability_snapshot.get("runtime")
+        if isinstance(runtime, dict):
+            runtime_payload = cast(dict[str, object], runtime)
+            for key in (
+                "approval_mode",
+                "max_steps",
+                "tool_timeout_seconds",
+                "permission",
+            ):
+                if key in runtime_payload:
+                    snapshot[key] = runtime_payload[key]
+        mcp = capability_snapshot.get("mcp")
+        if isinstance(mcp, dict):
+            snapshot["mcp"] = cast(dict[str, object], mcp)
+        return snapshot
+
+    def _agent_capability_snapshot(
+        self,
+        *,
+        effective_config: EffectiveRuntimeConfig,
+        metadata: dict[str, object],
+        request_metadata: dict[str, object],
+        resolved_hook_presets: ResolvedHookPresetSnapshot,
+    ) -> dict[str, object]:
+        runtime_config = metadata.get("runtime_config")
+        runtime_config_payload = (
+            cast(dict[str, object], runtime_config) if isinstance(runtime_config, dict) else {}
+        )
+        agent = effective_config.agent
+        manifest = get_builtin_agent_manifest(agent.preset) if agent is not None else None
+        force_load_skills = self._request_skill_names_from_metadata(
+            request_metadata,
+            key="force_load_skills",
+        )
+        request_skill_names = self._request_skill_names_from_metadata(
+            request_metadata,
+            key="skills",
+        )
+        selected_skills = self._selected_skill_names_for_agent(
+            agent,
+            request_skill_names=request_skill_names,
+        )
+        mcp_state = self._mcp_manager.current_state()
+        return {
+            "snapshot_version": _AGENT_CAPABILITY_SNAPSHOT_VERSION,
+            "precedence": {
+                "order": [
+                    "builtin_manifest_defaults",
+                    "runtime_config_overrides",
+                    "request_metadata_overrides",
+                    "delegated_force_load_skills",
+                ],
+                "notes": {
+                    "skills": (
+                        "manifest skill_refs select catalog-visible defaults; request skills and "
+                        "force_load_skills apply only to this session"
+                    ),
+                    "hooks": (
+                        "hook preset refs materialize guidance snapshots only and do not "
+                        "execute lifecycle commands or expand permissions"
+                    ),
+                    "mcp": (
+                        "agent MCP binding is declarative intent; runtime/session-scoped MCP "
+                        "lifecycle and tool allowlists remain runtime-governed"
+                    ),
+                },
+            },
+            "agent": self._agent_capability_agent_snapshot(agent, manifest),
+            "prompt": self._agent_capability_prompt_snapshot(
+                agent,
+                manifest,
+                runtime_config_payload,
+            ),
+            "tools": self._agent_capability_tool_snapshot(agent, manifest),
+            "skills": {
+                "manifest_refs": list(manifest.skill_refs) if manifest is not None else [],
+                "selected_names": list(selected_skills or ()),
+                "force_loaded_names": list(
+                    dict.fromkeys(force_load_skills or ()).keys()
+                    if force_load_skills is not None
+                    else ()
+                ),
+                "scope": "target_session",
+            },
+            "hooks": {
+                "manifest_refs": list(manifest.preset_hook_refs) if manifest is not None else [],
+                "resolved_refs": list(resolved_hook_presets.refs),
+                "snapshot": resolved_hook_presets.to_payload(),
+                "materialization": "guidance_only",
+            },
+            "mcp": {
+                "binding_intent": self._agent_mcp_binding_payload(agent, manifest),
+                "configured_enabled": mcp_state.configuration.configured_enabled,
+                "mode": mcp_state.mode,
+                "configured_servers": list(mcp_state.configuration.servers),
+                "governance": "runtime_session_scoped_config_gated",
+            },
+            "runtime": {
+                "approval_mode": effective_config.approval_mode,
+                "max_steps": effective_config.max_steps,
+                "tool_timeout_seconds": effective_config.tool_timeout_seconds,
+                "permission": runtime_config_payload.get("permission"),
+            },
+            "execution": {
+                "execution_engine": effective_config.execution_engine,
+                "model": effective_config.model,
+                "resolved_provider": runtime_config_payload.get("resolved_provider"),
+                "provider_fallback": runtime_config_payload.get("provider_fallback"),
+                "reasoning_effort": effective_config.reasoning_effort,
+            },
+        }
+
+    @staticmethod
+    def _agent_capability_agent_snapshot(
+        agent: RuntimeAgentConfig | None,
+        manifest: object | None,
+    ) -> dict[str, object]:
+        if agent is None:
+            return {"preset": None}
+        manifest_id = getattr(manifest, "id", None)
+        return {
+            "preset": agent.preset,
+            "manifest_id": manifest_id if isinstance(manifest_id, str) else None,
+            "mode": getattr(manifest, "mode", None),
+            "source": "builtin_manifest" if manifest is not None else "runtime_config",
+        }
+
+    @staticmethod
+    def _agent_capability_prompt_snapshot(
+        agent: RuntimeAgentConfig | None,
+        manifest: object | None,
+        runtime_config_payload: dict[str, object],
+    ) -> dict[str, object]:
+        prompt: dict[str, object] = {
+            "profile": agent.prompt_profile if agent is not None else None,
+            "ref": agent.prompt_ref if agent is not None else None,
+            "source": agent.prompt_source if agent is not None else None,
+        }
+        raw_agent = runtime_config_payload.get("agent")
+        if isinstance(raw_agent, dict):
+            raw_prompt_materialization = cast(dict[str, object], raw_agent).get(
+                "prompt_materialization"
+            )
+            if isinstance(raw_prompt_materialization, dict):
+                prompt["materialization"] = cast(dict[str, object], raw_prompt_materialization)
+        if "materialization" not in prompt and manifest is not None:
+            materialization = getattr(manifest, "prompt_materialization", None)
+            if materialization is not None:
+                prompt["materialization"] = materialization.to_payload(
+                    profile=agent.prompt_profile if agent is not None else None
+                )
+        return {key: value for key, value in prompt.items() if value is not None}
+
+    def _agent_capability_tool_snapshot(
+        self,
+        agent: RuntimeAgentConfig | None,
+        manifest: object | None,
+    ) -> dict[str, object]:
+        manifest_allowlist = getattr(manifest, "tool_allowlist", ()) if manifest is not None else ()
+        effective_tool_names = sorted(
+            scoped_tool_registry_for_agent(self._tool_registry, agent=agent).tools
+        )
+        return {
+            "manifest_allowlist": list(manifest_allowlist),
+            "request_allowlist": list(agent.tools.allowlist)
+            if agent is not None and agent.tools is not None and agent.tools.allowlist is not None
+            else None,
+            "request_default": list(agent.tools.default)
+            if agent is not None and agent.tools is not None and agent.tools.default is not None
+            else None,
+            "builtin_tools_enabled": not (
+                agent is not None
+                and agent.tools is not None
+                and agent.tools.builtin is not None
+                and agent.tools.builtin.enabled is False
+            ),
+            "builtin_tool_names": sorted(BUILTIN_TOOL_NAMES),
+            "effective_names": effective_tool_names,
+        }
+
+    @staticmethod
+    def _agent_mcp_binding_payload(
+        agent: RuntimeAgentConfig | None,
+        manifest: object | None,
+    ) -> dict[str, object]:
+        binding = agent.mcp_binding if agent is not None else None
+        if binding is None and manifest is not None:
+            binding = getattr(manifest, "mcp_binding", None)
+        return binding.to_payload() if binding is not None else {}
 
     @staticmethod
     def _skill_binding_mismatch_payload(
@@ -6827,6 +7061,13 @@ class VoidCodeRuntime:
                 agent.skills
                 if agent.skills is not None
                 else resolved.agent.skills
+                if resolved.agent is not None
+                else None
+            ),
+            mcp_binding=(
+                agent.mcp_binding
+                if agent.mcp_binding is not None
+                else resolved.agent.mcp_binding
                 if resolved.agent is not None
                 else None
             ),
