@@ -45,22 +45,20 @@ class BackgroundCancelTool:
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
         _ = workspace
-        all_value = call.arguments.get("all", False)
-        if all_value is True:
-            raise ValueError(
-                "background_cancel invalid arguments: all: Value error, "
-                "all=true is not supported in VoidCode yet (received bool)"
-            )
-        if all_value is False and call.arguments.get("taskId") is None:
-            raise ValueError(
-                "background_cancel invalid arguments: taskId: Value error, "
-                "taskId is required when all is false (received NoneType)"
-            )
         try:
             args = _BackgroundCancelArgs.model_validate(call.arguments)
         except ValidationError as exc:
             raise ValueError(format_validation_error(self.definition.name, exc)) from exc
-        assert args.taskId is not None
+        if args.all:
+            raise ValueError(
+                "background_cancel invalid arguments: all: Value error, "
+                "all=true is not supported in VoidCode yet (received bool)"
+            )
+        if args.taskId is None:
+            raise ValueError(
+                "background_cancel invalid arguments: taskId: Value error, "
+                "taskId is required when all is false (received NoneType)"
+            )
         try:
             task = self._runtime.cancel_background_task(args.taskId)
         except ValueError as exc:
