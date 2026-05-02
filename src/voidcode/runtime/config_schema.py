@@ -479,6 +479,43 @@ def runtime_config_json_schema() -> dict[str, object]:
                 "properties": {
                     "external_directory_read": {"$ref": "#/$defs/permissionRules"},
                     "external_directory_write": {"$ref": "#/$defs/permissionRules"},
+                    "rules": {
+                        "type": "array",
+                        "description": (
+                            "Ordered runtime permission rules for tool/path/command matches. "
+                            "First matching rule applies after hard tool allowlist and "
+                            "external-directory gates."
+                        ),
+                        "items": {"$ref": "#/$defs/patternPermissionRule"},
+                    },
+                },
+            },
+            "patternPermissionRule": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["decision"],
+                "properties": {
+                    "tool": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": (
+                            "Tool name glob, for example read_file, grep, or shell_exec."
+                        ),
+                    },
+                    "path": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": (
+                            "Workspace-relative or canonical path glob for filesystem-related "
+                            "tool calls."
+                        ),
+                    },
+                    "command": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Shell command glob used by shell_exec rules.",
+                    },
+                    "decision": {"type": "string", "enum": ["allow", "deny", "ask"]},
                 },
             },
             "permissionRules": {

@@ -29,6 +29,7 @@ from ..provider import config as provider_config
 from .permission import (
     ExternalDirectoryPermissionConfig,
     ExternalDirectoryPolicy,
+    PatternPermissionRule,
     PermissionDecision,
 )
 from .task import supported_subagent_categories
@@ -147,7 +148,10 @@ _FORMATTER_PRESET_CONFIG_KEYS = frozenset(
 _TOOLS_CONFIG_KEYS = frozenset({"builtin", "allowlist", "default"})
 _TOOLS_BUILTIN_CONFIG_KEYS = frozenset({"enabled"})
 _SKILLS_CONFIG_KEYS = frozenset({"enabled", "paths"})
-_PERMISSION_CONFIG_KEYS = frozenset({"external_directory_read", "external_directory_write"})
+_PERMISSION_CONFIG_KEYS = frozenset(
+    {"external_directory_read", "external_directory_write", "rules"}
+)
+_PERMISSION_RULE_CONFIG_KEYS = frozenset({"tool", "path", "command", "decision"})
 _LSP_CONFIG_KEYS = frozenset({"enabled", "servers"})
 _LSP_SERVER_CONFIG_KEYS = frozenset(
     {"preset", "command", "languages", "extensions", "root_markers", "settings", "init_options"}
@@ -764,10 +768,60 @@ def _parse_permission_config(raw_permission: object) -> ExternalDirectoryPermiss
         field_path="permission.external_directory_write",
         default=(("*", "deny"),),
     )
+    pattern_rules = _parse_pattern_permission_rules(permission_payload.get("rules"))
     return ExternalDirectoryPermissionConfig(
         read=ExternalDirectoryPolicy(rules=read_rules),
         write=ExternalDirectoryPolicy(rules=write_rules),
+        rules=pattern_rules,
     )
+
+
+def _parse_pattern_permission_rules(raw_rules: object) -> tuple[PatternPermissionRule, ...]:
+    if raw_rules is None:
+        return ()
+    if not isinstance(raw_rules, list):
+        raise ValueError("runtime config field 'permission.rules' must be an array when provided")
+    parsed: list[PatternPermissionRule] = []
+    for index, raw_rule in enumerate(raw_rules):
+        field_path = f"permission.rules[{index}]"
+        if not isinstance(raw_rule, dict):
+            raise ValueError(f"runtime config field '{field_path}' must be an object")
+        rule_payload = cast(dict[str, object], raw_rule)
+        _reject_unknown_config_keys(
+            rule_payload,
+            allowed_keys=_PERMISSION_RULE_CONFIG_KEYS,
+            field_path=field_path,
+        )
+        raw_tool = rule_payload.get("tool", "*")
+        if not isinstance(raw_tool, str) or not raw_tool.strip():
+            raise ValueError(f"runtime config field '{field_path}.tool' must be a non-empty string")
+        raw_path = rule_payload.get("path")
+        if raw_path is not None and (not isinstance(raw_path, str) or not raw_path.strip()):
+            raise ValueError(f"runtime config field '{field_path}.path' must be a non-empty string")
+        raw_command = rule_payload.get("command")
+        if raw_command is not None and (
+            not isinstance(raw_command, str) or not raw_command.strip()
+        ):
+            raise ValueError(
+                f"runtime config field '{field_path}.command' must be a non-empty string"
+            )
+        if "decision" not in rule_payload:
+            raise ValueError(f"runtime config field '{field_path}.decision' is required")
+        decision = _parse_approval_mode(
+            rule_payload.get("decision"),
+            source=f"runtime config field '{field_path}.decision'",
+            allow_none=False,
+        )
+        assert decision is not None
+        parsed.append(
+            PatternPermissionRule(
+                tool=raw_tool,
+                path=raw_path,
+                command=raw_command,
+                decision=decision,
+            )
+        )
+    return tuple(parsed)
 
 
 def _parse_permission_rules(
