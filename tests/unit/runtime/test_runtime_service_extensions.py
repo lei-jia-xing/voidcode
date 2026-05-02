@@ -1543,7 +1543,12 @@ def test_runtime_initializes_empty_extension_state_by_default(tmp_path: Path) ->
         assert provider_model.selection.raw_model is None
         assert provider_model.provider is None
         assert runtime.provider_auth_resolver.methods("openai").default_method == "api_key"
-        assert skill_registry.skills == {}
+        assert set(skill_registry.skills) >= {
+            "git-master",
+            "frontend-design",
+            "playwright",
+            "review-work",
+        }
         assert lsp_manager.current_state().mode == "disabled"
         assert lsp_manager.configuration.configured_enabled is False
         assert acp_adapter.current_state().mode == "disabled"
@@ -7328,7 +7333,13 @@ def test_runtime_keeps_skill_registry_empty_when_skills_not_explicitly_enabled(
         ),
     )
 
-    assert _private_attr(runtime, "_skill_registry").skills == {}
+    assert set(_private_attr(runtime, "_skill_registry").skills) >= {
+        "git-master",
+        "frontend-design",
+        "playwright",
+        "review-work",
+    }
+    assert "demo" not in _private_attr(runtime, "_skill_registry").skills
 
 
 def test_runtime_retains_explicit_injected_extension_instances(tmp_path: Path) -> None:
@@ -8967,6 +8978,10 @@ def test_runtime_emits_skills_loaded_catalog_without_default_full_injection(tmp_
         isinstance(item, str) and "Always explain your reasoning." in item
         for item in system_segments
     )
+    skill_tool = runtime._skill_registry.resolve("git-master")  # pyright: ignore[reportPrivateUsage]
+    assert skill_tool.name == "git-master"
+    assert skill_tool.origin == "builtin"
+    assert skill_tool.entry_path.as_posix().startswith("/builtin/voidcode/skills/")
 
 
 def test_runtime_persists_explicit_empty_applied_skill_snapshot(tmp_path: Path) -> None:
@@ -9147,17 +9162,122 @@ def test_runtime_research_workflow_fresh_records_read_only_metadata_without_wide
     assert workflow_snapshot["selected_preset"] == "research"
     assert workflow_snapshot["category"] == "research"
     assert workflow_snapshot["read_only_default"] is True
+    assert workflow_snapshot["skill_refs"] == []
+    research_mcp_intents = cast(list[dict[str, object]], workflow_snapshot["mcp_binding_intents"])
+    assert research_mcp_intents[0]["servers"] == ["context7", "websearch", "grep_app"]
+    assert research_mcp_intents[0]["required"] is False
     assert workflow_snapshot["effective_agent"] is None
     assert workflow_snapshot["default_agent_executable_top_level"] is False
     assert capability_workflow["read_only_default"] is True
-    assert "write_file" in effective_tool_names
+    assert "write_file" not in effective_tool_names
+    assert "shell_exec" not in effective_tool_names
+    assert "read_file" in effective_tool_names
     assert tool_snapshot["request_allowlist"] is None
     assert tool_snapshot["request_default"] is None
     assert request_workflow["read_only_default"] is True
     assert "arguments" not in workflow_snapshot
 
 
-def test_runtime_git_workflow_fresh_records_safety_guidance_without_auto_approval(
+def test_runtime_builtin_workflow_snapshots_expose_issue_405_capability_intents(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SkillCapturingStubGraph(),
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            mcp=RuntimeMcpConfig(
+                enabled=True,
+                servers={
+                    "playwright": RuntimeMcpServerConfig(command=("playwright-mcp",)),
+                    "context7": RuntimeMcpServerConfig(command=("context7-mcp",)),
+                    "websearch": RuntimeMcpServerConfig(command=("websearch-mcp",)),
+                    "grep_app": RuntimeMcpServerConfig(command=("grep-app-mcp",)),
+                },
+            ),
+        ),
+    )
+
+    expected: dict[str, dict[str, list[str]]] = {
+        "git": {"skills": ["git-master"], "servers": []},
+        "implementation": {"skills": [], "servers": []},
+        "frontend": {"skills": ["frontend-design", "playwright"], "servers": ["playwright"]},
+        "review": {
+            "skills": ["review-work"],
+            "servers": ["context7", "websearch", "grep_app"],
+        },
+        "research": {
+            "skills": [],
+            "servers": ["context7", "websearch", "grep_app"],
+        },
+    }
+
+    for preset_id, expected_capabilities in expected.items():
+        response = runtime.run(
+            RuntimeRequest(
+                prompt=f"snapshot {preset_id}",
+                session_id=f"workflow-issue-405-{preset_id}",
+                metadata={"workflow_preset": preset_id},
+            )
+        )
+        runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
+        workflow_snapshot = cast(dict[str, object], runtime_config["workflow"])
+        capability_snapshot = cast(
+            dict[str, object], response.session.metadata["agent_capability_snapshot"]
+        )
+        capability_workflow = cast(dict[str, object], capability_snapshot["workflow"])
+        mcp_intents = cast(list[dict[str, object]], workflow_snapshot["mcp_binding_intents"])
+        servers = [
+            server
+            for intent in mcp_intents
+            for server in cast(list[str], intent.get("servers", []))
+        ]
+
+        assert workflow_snapshot == capability_workflow
+        assert workflow_snapshot["skill_refs"] == expected_capabilities["skills"]
+        assert servers == expected_capabilities["servers"]
+        assert all(intent["required"] is False for intent in mcp_intents)
+        for intent in mcp_intents:
+            availability = cast(dict[str, object], intent["availability"])
+            assert availability["missing_servers"] == []
+            assert availability["degraded"] is False
+            descriptors = cast(list[dict[str, object]], availability["descriptors"])
+            assert [descriptor["name"] for descriptor in descriptors] == expected_capabilities[
+                "servers"
+            ]
+
+
+def test_runtime_workflow_selected_builtin_skill_refs_are_catalog_visible_not_loaded(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SkillCapturingStubGraph(),
+        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+    )
+
+    response = runtime.run(
+        RuntimeRequest(
+            prompt="snapshot frontend workflow",
+            session_id="workflow-builtin-skill-catalog-visible",
+            metadata={"workflow_preset": "frontend"},
+        )
+    )
+
+    skills_loaded = next(
+        event for event in response.events if event.event_type == "runtime.skills_loaded"
+    )
+    assert skills_loaded.payload["skills"] == []
+    assert skills_loaded.payload["selected_skills"] == ["frontend-design", "playwright"]
+    assert cast(int, skills_loaded.payload["catalog_context_length"]) > 0
+    assert "applied_skills" not in response.session.metadata
+    assert "applied_skill_payloads" not in response.session.metadata
+    assert runtime._skill_registry.resolve("frontend-design").name == "frontend-design"  # pyright: ignore[reportPrivateUsage]
+    assert runtime._skill_registry.resolve("playwright").name == "playwright"  # pyright: ignore[reportPrivateUsage]
+
+
+def test_runtime_git_workflow_uses_generic_runtime_approval_without_bespoke_policy(
     tmp_path: Path,
 ) -> None:
     registry = ModelProviderRegistry(
@@ -9168,7 +9288,7 @@ def test_runtime_git_workflow_fresh_records_safety_guidance_without_auto_approva
                     ProviderTurnResult(
                         tool_call=ToolCall(
                             tool_name="shell_exec",
-                            arguments={"command": "git reset --hard HEAD~1"},
+                            arguments={"command": "pwd"},
                         )
                     ),
                     ProviderTurnResult(output="done"),
@@ -9207,13 +9327,16 @@ def test_runtime_git_workflow_fresh_records_safety_guidance_without_auto_approva
     assert workflow_snapshot["selected_preset"] == "git"
     assert workflow_snapshot["category"] == "git"
     assert workflow_snapshot["permission_policy_ref"] == "runtime_default"
+    assert workflow_snapshot.get("tool_policy_ref") is None
     assert workflow_snapshot["verification_guidance"] == (
         "Check git status before and after the requested operation, preserve hooks, and "
-        "keep destructive commands behind explicit user intent plus runtime approval."
+        "keep repository mutations behind explicit user intent plus runtime approval."
     )
     assert capability_workflow["permission_policy_ref"] == "runtime_default"
+    assert capability_workflow.get("tool_policy_ref") is None
     assert approval_event.payload["decision"] == "ask"
-    assert "git reset --hard" not in str(workflow_snapshot)
+    assert approval_event.payload.get("policy_surface") is None
+    assert approval_event.payload.get("matched_rule") is None
 
 
 def test_runtime_workflow_snapshot_persists_policy_refs_mcp_intent_and_safe_metadata(
@@ -9296,6 +9419,83 @@ def test_runtime_workflow_snapshot_persists_policy_refs_mcp_intent_and_safe_meta
         forbidden not in serialized
         for forbidden in ("arguments", "stdin", "env", "secret", "token", "password")
     )
+
+
+def test_runtime_required_workflow_mcp_intent_fails_fresh_run_when_missing(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SkillCapturingStubGraph(),
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            workflows=WorkflowPresetRegistry(
+                presets={
+                    "requires-docs": WorkflowPreset(
+                        id="requires-docs",
+                        default_agent="leader",
+                        category="research",
+                        mcp_binding_intents=(
+                            WorkflowMcpBindingIntent(servers=("docs",), required=True),
+                        ),
+                    )
+                }
+            ),
+        ),
+    )
+
+    with pytest.raises(
+        RuntimeRequestError,
+        match=r"workflow preset 'requires-docs' requires unavailable MCP server\(s\): docs",
+    ):
+        _ = runtime.run(
+            RuntimeRequest(
+                prompt="docs required",
+                metadata={"workflow_preset": "requires-docs"},
+            )
+        )
+
+
+def test_runtime_required_workflow_mcp_intent_passes_when_configured(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SkillCapturingStubGraph(),
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            mcp=RuntimeMcpConfig(
+                enabled=False,
+                servers={"docs": RuntimeMcpServerConfig(command=("docs-mcp",))},
+            ),
+            workflows=WorkflowPresetRegistry(
+                presets={
+                    "requires-docs": WorkflowPreset(
+                        id="requires-docs",
+                        default_agent="leader",
+                        category="research",
+                        mcp_binding_intents=(
+                            WorkflowMcpBindingIntent(servers=("docs",), required=True),
+                        ),
+                    )
+                }
+            ),
+        ),
+    )
+
+    response = runtime.run(
+        RuntimeRequest(
+            prompt="docs required",
+            metadata={"workflow_preset": "requires-docs"},
+        )
+    )
+
+    workflow = cast(dict[str, object], response.session.metadata["workflow"])
+    intents = cast(list[dict[str, object]], workflow["mcp_binding_intents"])
+    availability = cast(dict[str, object], intents[0]["availability"])
+    assert availability["missing_servers"] == []
 
 
 def test_runtime_workflow_resume_stable_debug_and_bundle_preserve_persisted_snapshot(
@@ -13507,7 +13707,9 @@ def test_runtime_agent_skills_config_loads_and_persists_runtime_skills(
 
     assert response.session.status == "completed"
     assert response.events[1].event_type == "runtime.skills_loaded"
-    assert response.events[1].payload["skills"] == ["demo"]
+    loaded_skills = cast(list[str], response.events[1].payload["skills"])
+    assert "demo" in loaded_skills
+    assert "git-master" not in loaded_skills
     assert response.events[1].payload["selected_skills"] == []
     assert response.session.metadata["applied_skills"] == []
     assert "applied_skill_payloads" not in response.session.metadata
