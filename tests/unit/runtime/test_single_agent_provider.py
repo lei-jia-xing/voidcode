@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 
 from voidcode.provider.registry import ModelProviderRegistry
 from voidcode.provider.resolution import resolve_provider_model
 from voidcode.runtime.context_window import (
+    ContextWindowPolicy,
     RuntimeAssembledContext,
     RuntimeContextSegment,
     RuntimeContextWindow,
+    assemble_provider_context,
 )
+from voidcode.runtime.provider_context import inspect_provider_context
 from voidcode.runtime.provider_protocol import (
     ProviderExecutionError,
     ProviderTurnRequest,
@@ -38,7 +43,9 @@ def _assembled_from_context_window(context_window: RuntimeContextWindow) -> Runt
             else f"voidcode_tool_{index}"
         )
         tool_arguments = result.data.get("arguments")
-        arguments_payload = tool_arguments if isinstance(tool_arguments, dict) else {}
+        arguments_payload = (
+            cast(dict[str, object], tool_arguments) if isinstance(tool_arguments, dict) else {}
+        )
         segments.append(
             RuntimeContextSegment(
                 role="assistant",
@@ -185,4 +192,56 @@ def test_stub_provider_protocol_uses_bounded_context_window_results_for_finalize
         )
     )
 
+    assert result.output == "new\n"
+
+
+def test_stub_provider_protocol_compact_projection_keeps_provider_invariants() -> None:
+    provider_model = resolve_provider_model(
+        "opencode/gpt-5.4",
+        registry=ModelProviderRegistry.with_defaults(),
+    )
+    assert provider_model.selection.provider is not None
+    assert provider_model.selection.model is not None
+    assembled = assemble_provider_context(
+        prompt="read sample.txt",
+        tool_results=(
+            ToolResult(
+                tool_name="read_file",
+                content="old\n",
+                status="ok",
+                data={"tool_call_id": "old-call", "path": "old.txt"},
+            ),
+            ToolResult(
+                tool_name="read_file",
+                content="new\n",
+                status="ok",
+                data={"tool_call_id": "new-call", "path": "sample.txt"},
+            ),
+        ),
+        session_metadata={},
+        policy=ContextWindowPolicy(max_tool_results=1),
+    )
+
+    snapshot = inspect_provider_context(
+        assembled_context=assembled,
+        provider=provider_model.selection.provider,
+        model=provider_model.selection.model,
+        execution_engine="provider",
+        available_tool_count=len(_tool_definitions()),
+    )
+    result = StubTurnProvider(name="opencode").propose_turn(
+        ProviderTurnRequest(
+            assembled_context=assembled,
+            available_tools=_tool_definitions(),
+            raw_model=provider_model.selection.raw_model,
+            provider_name=provider_model.selection.provider,
+            model_name=provider_model.selection.model,
+        )
+    )
+
+    diagnostic_codes = {diagnostic.code for diagnostic in snapshot.diagnostics}
+    assert "missing_tool_result" not in diagnostic_codes
+    assert "orphan_tool_result" not in diagnostic_codes
+    assert "duplicate_tool_call_id" not in diagnostic_codes
+    assert "compact_projection_wrong_role" not in diagnostic_codes
     assert result.output == "new\n"

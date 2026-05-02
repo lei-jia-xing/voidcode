@@ -10774,7 +10774,7 @@ def test_runtime_distillation_receives_abort_signal_in_provider_request(tmp_path
     assert provider.last_distill_abort_signal is not None
 
 
-def test_runtime_distillation_uses_importance_aware_projection_split(tmp_path: Path) -> None:
+def test_runtime_distillation_uses_recency_projection_split(tmp_path: Path) -> None:
     provider = _DistillAwareTurnProvider(
         name="opencode",
         distill_output='{"objective_current_goal":"Goal"}',
@@ -10832,10 +10832,10 @@ def test_runtime_distillation_uses_importance_aware_projection_split(tmp_path: P
         list[dict[str, object]],
         provider.last_distill_input["recent_tail_previews"],
     )
-    assert [cast(dict[str, object], item["data"])["index"] for item in dropped_results] == [1, 4]
+    assert [cast(dict[str, object], item["data"])["index"] for item in dropped_results] == [1, 2]
     assert [cast(dict[str, object], item["data"])["index"] for item in retained_results] == [
-        2,
         3,
+        4,
         5,
     ]
 
@@ -16303,3 +16303,223 @@ def test_runtime_executes_delegated_result_hook_for_completed_background_child(
         "delegated_result_available:leader-session:leader-session:"
         f"{delegated_session_id}::{started.task.id}:{delegated_session_id}"
     )
+
+
+# ── Context window projection contract tests ────────────────────────────────
+
+
+def test_runtime_context_window_projection_preserves_full_session_truth(
+    tmp_path: Path,
+) -> None:
+    """Session metadata must preserve complete context window information
+    (original counts, continuity state, compaction reason) even when the
+    provider only receives a bounded projection."""
+    runtime = VoidCodeRuntime(workspace=tmp_path)
+
+    context_window = runtime._prepare_provider_context_window(  # pyright: ignore[reportPrivateUsage]
+        prompt="verify build",
+        tool_results=(
+            ToolResult(tool_name="read_file", status="ok", content="a", data={"index": 1}),
+            ToolResult(tool_name="read_file", status="ok", content="b", data={"index": 2}),
+            ToolResult(tool_name="read_file", status="ok", content="c", data={"index": 3}),
+        ),
+        session_metadata={
+            "runtime_config": runtime._runtime_config_metadata(),  # pyright: ignore[reportPrivateUsage]
+        },
+        policy=ContextWindowPolicy(max_tool_results=1),
+    )
+    session = SessionState(
+        session=SessionRef("proj-preserve-session"),
+        status="running",
+        turn=1,
+        metadata={
+            "runtime_config": runtime._runtime_config_metadata(),  # pyright: ignore[reportPrivateUsage]
+        },
+    )
+    enriched = VoidCodeRuntime._session_with_context_window_metadata(session, context_window)
+
+    persisted_cw = cast(dict[str, object], enriched.metadata["context_window"])
+    assert persisted_cw["original_tool_result_count"] == 3
+    assert persisted_cw["max_tool_result_count"] == 1
+    assert persisted_cw["compacted"] is True
+    runtime_state = cast(dict[str, object], enriched.metadata.get("runtime_state", {}))
+    continuity_summary = runtime_state.get("continuity_summary")
+    assert isinstance(continuity_summary, dict)
+    assert "anchor" in continuity_summary
+    assert "source" in continuity_summary
+
+
+def test_runtime_context_window_resume_continuity_metadata_is_projection_only(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path)
+    prior_payload: dict[str, object] = {
+        "version": 2,
+        "summary_text": "Prior compact summary is projection metadata",
+        "objective": "ship resume-safe continuity",
+        "current_goal": "continue from raw events",
+        "dropped_tool_result_count": 2,
+        "retained_tool_result_count": 1,
+        "source": "tool_result_window",
+        "distillation_source": "deterministic",
+        "dropped_tool_results": [
+            {"tool_name": "read_file", "status": "ok", "index": 1},
+            {"tool_name": "grep", "status": "ok", "index": 2},
+        ],
+    }
+    session_metadata: dict[str, object] = {
+        "runtime_config": runtime._runtime_config_metadata(),  # pyright: ignore[reportPrivateUsage]
+        "runtime_state": {"continuity": prior_payload},
+    }
+
+    assembled = runtime._assemble_provider_context(  # pyright: ignore[reportPrivateUsage]
+        prompt="resume using raw events",
+        tool_results=(ToolResult(tool_name="read_file", status="ok", content="raw retained"),),
+        session_metadata=session_metadata,
+    )
+
+    assert assembled.continuity_state is not None
+    assert assembled.continuity_state.summary_text == "Prior compact summary is projection metadata"
+    continuity_metadata = cast(dict[str, object], assembled.metadata["continuity_state"])
+    assert continuity_metadata["version"] == 2
+    assert continuity_metadata["summary_text"] == "Prior compact summary is projection metadata"
+    assert continuity_metadata["dropped_tool_result_count"] == 2
+    assert assembled.metadata["summary_source"] == {"tool_result_start": 0, "tool_result_end": 2}
+    assert [segment.content for segment in assembled.segments if segment.role == "tool"] == [
+        "raw retained"
+    ]
+    assert any(
+        segment.metadata == {"source": "continuity_summary"}
+        and segment.content is not None
+        and "Prior compact summary is projection metadata" in segment.content
+        for segment in assembled.segments
+    )
+
+
+def test_runtime_context_window_malformed_resume_continuity_falls_back_safely(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path)
+    session_metadata: dict[str, object] = {
+        "runtime_config": runtime._runtime_config_metadata(),  # pyright: ignore[reportPrivateUsage]
+        "runtime_state": {
+            "continuity": {
+                "version": [],
+                "summary_text": "malformed summary must not block resume",
+                "dropped_tool_result_count": 1,
+                "retained_tool_result_count": 1,
+                "source": "tool_result_window",
+            }
+        },
+    }
+
+    assembled = runtime._assemble_provider_context(  # pyright: ignore[reportPrivateUsage]
+        prompt="resume despite malformed metadata",
+        tool_results=(ToolResult(tool_name="read_file", status="ok", content="raw retained"),),
+        session_metadata=session_metadata,
+    )
+
+    assert assembled.continuity_state is None
+    assert "continuity_state" not in assembled.metadata
+    assert [segment.content for segment in assembled.segments if segment.role == "tool"] == [
+        "raw retained"
+    ]
+    assert all(
+        segment.metadata is None or segment.metadata.get("source") != "continuity_summary"
+        for segment in assembled.segments
+    )
+
+
+def test_runtime_context_window_projection_no_command_name_scoring(
+    tmp_path: Path,
+) -> None:
+    """At the runtime level, two equivalent shell_exec results with different
+    command names must receive the same projection treatment. The context
+    window policy must not use command-name-specific heuristics."""
+    runtime = VoidCodeRuntime(workspace=tmp_path)
+
+    shell_a = ToolResult(
+        tool_name="shell_exec",
+        content="x" * 40,
+        status="ok",
+        data={"index": 1, "command": "pytest tests/ -q"},
+    )
+    shell_b = ToolResult(
+        tool_name="shell_exec",
+        content="x" * 40,
+        status="ok",
+        data={"index": 2, "command": "echo hello"},
+    )
+
+    meta: dict[str, object] = {
+        "runtime_config": runtime._runtime_config_metadata()  # pyright: ignore[reportPrivateUsage]
+    }
+    context_a = runtime._prepare_provider_context_window(  # pyright: ignore[reportPrivateUsage]
+        prompt="verify",
+        tool_results=(shell_a,),
+        session_metadata=meta,
+        policy=ContextWindowPolicy(max_tool_results=1),
+    )
+    context_b = runtime._prepare_provider_context_window(  # pyright: ignore[reportPrivateUsage]
+        prompt="verify",
+        tool_results=(shell_b,),
+        session_metadata=meta,
+        policy=ContextWindowPolicy(max_tool_results=1),
+    )
+
+    # Both are retained since there's only one result each
+    assert context_a.retained_tool_result_count == 1
+    assert context_b.retained_tool_result_count == 1
+    assert context_a.compacted == context_b.compacted
+
+
+def test_runtime_context_window_projection_bounded_output_within_limit(
+    tmp_path: Path,
+) -> None:
+    """The provider context is a bounded derived projection. With
+    max_tool_results=2 and 4 inputs, only 2 results should be retained."""
+    runtime = VoidCodeRuntime(workspace=tmp_path)
+
+    context = runtime._prepare_provider_context_window(  # pyright: ignore[reportPrivateUsage]
+        prompt="continue coding",
+        tool_results=(
+            ToolResult(tool_name="read_file", status="ok", content="a", data={"index": 1}),
+            ToolResult(tool_name="read_file", status="ok", content="b", data={"index": 2}),
+            ToolResult(tool_name="read_file", status="ok", content="c", data={"index": 3}),
+            ToolResult(tool_name="read_file", status="ok", content="d", data={"index": 4}),
+        ),
+        session_metadata={
+            "runtime_config": runtime._runtime_config_metadata(),  # pyright: ignore[reportPrivateUsage]
+        },
+        policy=ContextWindowPolicy(max_tool_results=2),
+    )
+
+    assert context.original_tool_result_count == 4
+    assert context.retained_tool_result_count == 2
+    assert context.compacted is True
+    assert context.compaction_reason == "tool_result_window"
+
+
+def test_runtime_context_window_projection_auto_compaction_disabled_preserves_all(
+    tmp_path: Path,
+) -> None:
+    """When auto_compaction is false, all results are preserved in the
+    projection (derived output matches complete truth for this case)."""
+    runtime = VoidCodeRuntime(workspace=tmp_path)
+
+    context = runtime._prepare_provider_context_window(  # pyright: ignore[reportPrivateUsage]
+        prompt="inspect",
+        tool_results=(
+            ToolResult(tool_name="read_file", status="ok", content="a", data={"index": 1}),
+            ToolResult(tool_name="read_file", status="ok", content="b", data={"index": 2}),
+            ToolResult(tool_name="read_file", status="ok", content="c", data={"index": 3}),
+        ),
+        session_metadata={
+            "runtime_config": runtime._runtime_config_metadata(),  # pyright: ignore[reportPrivateUsage]
+        },
+        policy=ContextWindowPolicy(auto_compaction=False, max_tool_results=1),
+    )
+
+    assert context.original_tool_result_count == 3
+    assert context.retained_tool_result_count == 3
+    assert context.compacted is False

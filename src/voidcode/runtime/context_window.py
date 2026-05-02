@@ -27,6 +27,11 @@ class DroppedToolResultDiagnostic:
     status: str
     index: int
     tool_call_id: str | None = None
+    artifact_id: str | None = None
+    artifact_status: str | None = None
+    artifact_byte_count: int | None = None
+    artifact_line_count: int | None = None
+    reference: str | None = None
     path: str | None = None
     command: str | None = None
     pattern: str | None = None
@@ -43,6 +48,16 @@ class DroppedToolResultDiagnostic:
         }
         if self.tool_call_id is not None:
             payload["tool_call_id"] = self.tool_call_id
+        if self.artifact_id is not None:
+            payload["artifact_id"] = self.artifact_id
+        if self.artifact_status is not None:
+            payload["artifact_status"] = self.artifact_status
+        if self.artifact_byte_count is not None:
+            payload["artifact_byte_count"] = self.artifact_byte_count
+        if self.artifact_line_count is not None:
+            payload["artifact_line_count"] = self.artifact_line_count
+        if self.reference is not None:
+            payload["reference"] = self.reference
         if self.path is not None:
             payload["path"] = self.path
         if self.command is not None:
@@ -111,7 +126,7 @@ class RuntimeContinuityState:
             "distillation_source": self.distillation_source,
             "fact_reference_count": self.fact_reference_count,
             "source_references": list(self.source_references),
-            "version": 2,
+            "version": self.version,
         }
         if self.distillation_error is not None:
             payload["distillation_error"] = self.distillation_error
@@ -153,7 +168,7 @@ class ContextWindowPolicy:
     continuity_distillation_enabled: bool = False
     continuity_distillation_max_input_items: int = 12
     continuity_distillation_max_input_chars: int = 4000
-    importance_retention: bool = True
+    importance_retention: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "per_tool_result_tokens", dict(self.per_tool_result_tokens))
@@ -323,6 +338,19 @@ class RuntimeContextSegment:
 
 def _tool_result_preview(result: ToolResult, *, max_preview_chars: int) -> str:
     parts = [result.tool_name, result.status]
+    artifact_id = _artifact_metadata_string(result, "artifact_id")
+    if artifact_id is not None:
+        parts.append(f"artifact_id={artifact_id}")
+        tool_call_id = _optional_tool_string(result, "tool_call_id")
+        if tool_call_id is not None:
+            parts.append(f"tool_call_id={tool_call_id}")
+        byte_count = _artifact_metadata_int(result, "byte_count")
+        if byte_count is not None:
+            parts.append(f"byte_count={byte_count}")
+        line_count = _artifact_metadata_int(result, "line_count")
+        if line_count is not None:
+            parts.append(f"line_count={line_count}")
+        return " ".join(parts)
     path = result.data.get("path")
     if isinstance(path, str) and path:
         parts.append(f"path={path}")
@@ -362,6 +390,11 @@ def _optional_entry_string(entry: Mapping[str, object], key: str) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def _optional_entry_int(entry: Mapping[str, object], key: str) -> int | None:
+    value = entry.get(key)
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
 def _dropped_tool_diagnostics_from_metadata_payload(
     payload: Mapping[str, object],
 ) -> tuple[DroppedToolResultDiagnostic, ...]:
@@ -390,6 +423,11 @@ def _dropped_tool_diagnostics_from_metadata_payload(
                 status=status,
                 index=index,
                 tool_call_id=_optional_entry_string(entry, "tool_call_id"),
+                artifact_id=_optional_entry_string(entry, "artifact_id"),
+                artifact_status=_optional_entry_string(entry, "artifact_status"),
+                artifact_byte_count=_optional_entry_int(entry, "artifact_byte_count"),
+                artifact_line_count=_optional_entry_int(entry, "artifact_line_count"),
+                reference=_optional_entry_string(entry, "reference"),
                 path=_optional_entry_string(entry, "path"),
                 command=_optional_entry_string(entry, "command"),
                 pattern=_optional_entry_string(entry, "pattern"),
@@ -409,6 +447,16 @@ def _dropped_tool_diagnostics_from_metadata_payload(
 def continuity_state_from_metadata_payload(
     payload: Mapping[str, object],
 ) -> RuntimeContinuityState | None:
+    version = payload.get("version")
+    if version is None:
+        resolved_version = 1
+    elif isinstance(version, int) and not isinstance(version, bool):
+        resolved_version = version
+    else:
+        return None
+    if resolved_version not in {1, 2}:
+        return None
+
     summary_text = payload.get("summary_text")
     if summary_text is not None and not isinstance(summary_text, str):
         return None
@@ -459,9 +507,6 @@ def continuity_state_from_metadata_payload(
     token_estimate_source = payload.get("token_estimate_source")
     if token_estimate_source is not None and not isinstance(token_estimate_source, str):
         return None
-    version = payload.get("version")
-    if version is not None and (not isinstance(version, int) or isinstance(version, bool)):
-        return None
     return RuntimeContinuityState(
         summary_text=summary_text,
         objective=objective,
@@ -490,7 +535,7 @@ def continuity_state_from_metadata_payload(
         token_budget=resolved_token_budget,
         token_estimate_source=token_estimate_source,
         dropped_tool_results=_dropped_tool_diagnostics_from_metadata_payload(payload),
-        version=version if version is not None else 1,
+        version=resolved_version,
     )
 
 
@@ -701,6 +746,30 @@ def _optional_tool_string(result: ToolResult, key: str) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def _optional_tool_int(result: ToolResult, key: str) -> int | None:
+    value = result.data.get(key)
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _artifact_metadata_value(result: ToolResult, key: str) -> object:
+    artifact = result.data.get("artifact")
+    if isinstance(artifact, Mapping):
+        value = cast(Mapping[str, object], artifact).get(key)
+        if value is not None:
+            return value
+    return result.data.get(key)
+
+
+def _artifact_metadata_string(result: ToolResult, key: str) -> str | None:
+    value = _artifact_metadata_value(result, key)
+    return value if isinstance(value, str) and value else None
+
+
+def _artifact_metadata_int(result: ToolResult, key: str) -> int | None:
+    value = _artifact_metadata_value(result, key)
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
 def _dropped_tool_diagnostics(
     results: tuple[ToolResult, ...],
     *,
@@ -716,6 +785,16 @@ def _dropped_tool_diagnostics(
                 status=result.status,
                 index=index,
                 tool_call_id=_optional_tool_string(result, "tool_call_id"),
+                artifact_id=_artifact_metadata_string(result, "artifact_id"),
+                artifact_status=_artifact_metadata_string(result, "status")
+                or _optional_tool_string(result, "artifact_status"),
+                artifact_byte_count=_artifact_metadata_int(result, "byte_count")
+                or _optional_tool_int(result, "original_byte_count")
+                or _optional_tool_int(result, "original_error_byte_count"),
+                artifact_line_count=_artifact_metadata_int(result, "line_count")
+                or _optional_tool_int(result, "original_line_count")
+                or _optional_tool_int(result, "original_error_line_count"),
+                reference=result.reference,
                 path=_optional_tool_string(result, "path"),
                 command=_optional_tool_string(result, "command"),
                 pattern=_optional_tool_string(result, "pattern"),
@@ -729,50 +808,6 @@ def _dropped_tool_diagnostics(
             )
         )
     return tuple(diagnostics)
-
-
-def _tool_result_importance_score(result: ToolResult) -> int:
-    score = 0
-    if result.status == "error":
-        score += 100
-    if result.error_kind is not None:
-        score += 20
-    if result.truncated or result.partial:
-        score += 10
-    if result.tool_name in {"todo_write", "task", "background_output"}:
-        score += 80
-    if result.tool_name in {"write_file", "edit", "multi_edit", "apply_patch"}:
-        score += 70
-    if result.tool_name == "shell_exec":
-        score += 30
-    if any(isinstance(result.data.get(key), str) for key in ("path", "filePath")):
-        score += 10
-    return score
-
-
-def _select_tool_result_indexes_by_importance(
-    results: tuple[ToolResult, ...],
-    *,
-    max_tool_results: int,
-    protected_recent_count: int,
-) -> tuple[int, ...]:
-    if not results:
-        return ()
-    protected_recent_count = min(protected_recent_count, len(results))
-    protected_start = len(results) - protected_recent_count
-    protected_indexes = set(range(protected_start, len(results)))
-    if max_tool_results == 0:
-        return tuple(sorted(protected_indexes))
-
-    count_limit = max(max_tool_results, protected_recent_count)
-    remaining_slots = max(0, count_limit - len(protected_indexes))
-    ranked_candidates = sorted(
-        range(0, protected_start),
-        key=lambda index: (_tool_result_importance_score(results[index]), index),
-        reverse=True,
-    )
-    selected = set(ranked_candidates[:remaining_slots]) | protected_indexes
-    return tuple(sorted(selected))
 
 
 def _select_recent_tool_result_indexes(
@@ -808,12 +843,10 @@ def _retain_indexes_within_token_budget(
         _tool_result_token_estimate(results[index], tokenizer_model=tokenizer_model).tokens
         for index in protected_indexes
     )
-    ranked_candidates = sorted(
+    for index in sorted(
         (index for index in candidate_indexes if index not in protected_indexes),
-        key=lambda index: (_tool_result_importance_score(results[index]), index),
         reverse=True,
-    )
-    for index in ranked_candidates:
+    ):
         estimate = _tool_result_token_estimate(
             results[index], tokenizer_model=tokenizer_model
         ).tokens
@@ -1465,6 +1498,66 @@ def continuity_summary_metadata(
     return summary_anchor, summary_source
 
 
+def _artifact_reference_segments(
+    continuity_state: RuntimeContinuityState | None,
+) -> tuple[RuntimeContextSegment, ...]:
+    if continuity_state is None:
+        return ()
+    segments: list[RuntimeContextSegment] = []
+    for diagnostic in continuity_state.dropped_tool_results:
+        if diagnostic.artifact_id is None:
+            continue
+        parts = [
+            "Runtime artifact reference for omitted tool output:",
+            f"artifact_id={diagnostic.artifact_id}",
+            f"tool_call_id={diagnostic.tool_call_id}" if diagnostic.tool_call_id else None,
+            f"tool_name={diagnostic.tool_name}",
+            f"status={diagnostic.status}",
+            (
+                f"artifact_status={diagnostic.artifact_status}"
+                if diagnostic.artifact_status
+                else None
+            ),
+            (
+                f"byte_count={diagnostic.artifact_byte_count}"
+                if diagnostic.artifact_byte_count is not None
+                else None
+            ),
+            (
+                f"line_count={diagnostic.artifact_line_count}"
+                if diagnostic.artifact_line_count is not None
+                else None
+            ),
+            f"reference={diagnostic.reference}" if diagnostic.reference else None,
+        ]
+        content = "\n".join(part for part in parts if part is not None)
+        metadata: dict[str, object] = {
+            "source": "runtime_context_artifact_reference",
+            "artifact_id": diagnostic.artifact_id,
+            "tool_name": diagnostic.tool_name,
+            "status": diagnostic.status,
+            "dropped_tool_result_index": diagnostic.index,
+        }
+        if diagnostic.tool_call_id is not None:
+            metadata["tool_call_id"] = diagnostic.tool_call_id
+        if diagnostic.artifact_status is not None:
+            metadata["artifact_status"] = diagnostic.artifact_status
+        if diagnostic.artifact_byte_count is not None:
+            metadata["byte_count"] = diagnostic.artifact_byte_count
+        if diagnostic.artifact_line_count is not None:
+            metadata["line_count"] = diagnostic.artifact_line_count
+        if diagnostic.reference is not None:
+            metadata["reference"] = diagnostic.reference
+        segments.append(
+            RuntimeContextSegment(
+                role="system",
+                content=content,
+                metadata=metadata,
+            )
+        )
+    return tuple(segments)
+
+
 def project_tool_results_for_context_window(
     *,
     tool_results: tuple[ToolResult, ...],
@@ -1495,18 +1588,10 @@ def project_tool_results_for_context_window(
             truncated_count += 1
     prepared_results = tuple(truncated_results)
 
-    count_limited_indexes = (
-        _select_tool_result_indexes_by_importance(
-            prepared_results,
-            max_tool_results=policy.max_tool_results,
-            protected_recent_count=protected_recent_count,
-        )
-        if policy.importance_retention
-        else _select_recent_tool_result_indexes(
-            prepared_results,
-            max_tool_results=policy.max_tool_results,
-            protected_recent_count=protected_recent_count,
-        )
+    count_limited_indexes = _select_recent_tool_result_indexes(
+        prepared_results,
+        max_tool_results=policy.max_tool_results,
+        protected_recent_count=protected_recent_count,
     )
     retained_indexes = (
         _retain_indexes_within_token_budget(
@@ -1725,10 +1810,20 @@ def assemble_provider_context(
     todo_prompt_context = render_provider_todo_state(session_metadata)
     if todo_prompt_context is not None:
         _append_system_segment(todo_prompt_context, source="runtime_todo_state")
-    continuity_state = preserved_continuity_state or context_window.continuity_state
+    continuity_state = (
+        preserved_continuity_state
+        or context_window.continuity_state
+        or _previous_continuity_state(session_metadata)
+    )
     metadata_payload = context_window.metadata_payload()
     if continuity_state is not None and "continuity_state" not in metadata_payload:
         metadata_payload["continuity_state"] = continuity_state.metadata_payload()
+    if continuity_state is not None and "summary_anchor" not in metadata_payload:
+        summary_anchor, summary_source = continuity_summary_metadata(continuity_state)
+        if summary_anchor is not None:
+            metadata_payload["summary_anchor"] = summary_anchor
+        if summary_source is not None:
+            metadata_payload["summary_source"] = summary_source
     if continuity_state is not None:
         summary_text = continuity_state.summary_text
         if isinstance(summary_text, str) and summary_text.strip():
@@ -1736,6 +1831,7 @@ def assemble_provider_context(
                 f"Runtime continuity summary:\n{summary_text.strip()}",
                 source="continuity_summary",
             )
+        segments.extend(_artifact_reference_segments(continuity_state))
     segments.append(
         RuntimeContextSegment(
             role="user",

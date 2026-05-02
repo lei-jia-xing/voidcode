@@ -110,6 +110,40 @@ def test_tool_output_artifact_retrieval_supports_offsets_and_search(tmp_path: Pa
     assert matches[0] == {"line_number": 2, "line": "beta"}
 
 
+def test_tool_output_artifact_reference_metadata_is_bounded_and_safe(tmp_path: Path) -> None:
+    raw_content = "".join(f"artifact-line-{index}\n" for index in range(40))
+    result = ToolResult(tool_name="shell_exec", status="ok", content=raw_content)
+
+    capped = cap_tool_result_output(
+        result,
+        workspace=tmp_path,
+        session_id="session-1",
+        tool_call_id="call-1",
+        max_lines=2,
+        max_bytes=80,
+    )
+
+    assert capped.content is not None
+    assert "artifact-line-0" in capped.content
+    assert "artifact-line-10" not in capped.content
+    assert capped.reference == f"artifact:{capped.data['artifact_id']}"
+    assert "Use artifact retrieval by artifact_id or tool_call_id" in capped.content
+    raw_artifact = capped.data["artifact"]
+    assert isinstance(raw_artifact, dict)
+    artifact = cast(dict[str, object], raw_artifact)
+    assert artifact["artifact_id"] == capped.data["artifact_id"]
+    assert artifact["tool_call_id"] == "call-1"
+    assert artifact["byte_count"] == len(raw_content.encode("utf-8"))
+    assert artifact["line_count"] == 40
+    assert capped.data["output_path"] == artifact["path"]
+    assert str(tmp_path) not in cast(str, artifact["path"])
+
+    retrieved = read_tool_output_artifact(artifact, limit=10)
+    assert retrieved["artifact_missing"] is False
+    assert retrieved["content"] == "".join(f"artifact-line-{index}\n" for index in range(10))
+    assert retrieved["next_offset"] == 10
+
+
 def test_tool_output_artifact_resolves_from_events_by_id_or_tool_call(tmp_path: Path) -> None:
     result = ToolResult(tool_name="sample", status="ok", content="one\ntwo\nthree\n")
     capped = cap_tool_result_output(
@@ -217,6 +251,29 @@ def test_tool_output_artifact_rejects_untrusted_paths(tmp_path: Path) -> None:
     assert resolved is None
 
 
+def test_tool_output_artifact_rejects_traversal_reference(tmp_path: Path) -> None:
+    outside_file = tmp_path / "secret.txt"
+    outside_file.write_text("must not read", encoding="utf-8")
+    forged_artifact: dict[str, object] = {
+        "producer": "voidcode.tool_output.v1",
+        "artifact_id": "artifact_000000000000000000000000",
+        "path": str(outside_file.parent / ".." / outside_file.name),
+        "tool_call_id": "call-1",
+    }
+
+    read_result = read_tool_output_artifact(forged_artifact)
+    search_result = search_tool_output_artifact(forged_artifact, pattern="must")
+    resolved = resolve_tool_output_artifact(
+        [{"payload": {"artifact": forged_artifact}}],
+        tool_call_id="call-1",
+    )
+
+    assert read_result["status"] == "invalid"
+    assert "content" not in read_result
+    assert search_result["status"] == "invalid"
+    assert resolved is None
+
+
 def test_tool_output_artifact_rejects_short_id_for_another_artifact_path(
     tmp_path: Path,
 ) -> None:
@@ -278,6 +335,21 @@ def test_tool_output_artifact_retrieval_reports_missing(tmp_path: Path) -> None:
 
     assert missing["status"] == "missing"
     assert missing["artifact_missing"] is True
+
+
+def test_tool_output_artifact_search_reports_missing(tmp_path: Path) -> None:
+    result = ToolResult(tool_name="sample", status="ok", content="one\ntwo\nthree\n")
+    capped = cap_tool_result_output(result, workspace=tmp_path, max_lines=1, max_bytes=10_000)
+    raw_artifact = capped.data["artifact"]
+    assert isinstance(raw_artifact, dict)
+    artifact = cast(dict[str, object], raw_artifact)
+    Path(cast(str, artifact["path"])).unlink()
+
+    missing = search_tool_output_artifact(artifact, pattern="two")
+
+    assert missing["status"] == "missing"
+    assert missing["artifact_missing"] is True
+    assert "matches" not in missing
 
 
 def test_cap_tool_result_output_caps_by_utf8_byte_count_safely(tmp_path: Path) -> None:
@@ -346,11 +418,12 @@ def test_sanitize_tool_arguments_preserves_preview_for_oversized_benign_text() -
 
     query = sanitized["query"]
     assert isinstance(query, dict)
-    assert query["omitted"] is True
-    assert query["byte_count"] == len(large_query.encode("utf-8"))
-    assert query["line_count"] == 1
-    assert query["preview"] == large_query[:4000]
-    assert query["omitted_chars"] == len(large_query) - 4000
+    query_summary = cast(dict[str, object], query)
+    assert query_summary["omitted"] is True
+    assert query_summary["byte_count"] == len(large_query.encode("utf-8"))
+    assert query_summary["line_count"] == 1
+    assert query_summary["preview"] == large_query[:4000]
+    assert query_summary["omitted_chars"] == len(large_query) - 4000
 
 
 def test_sanitize_tool_result_data_strips_inline_blobs_and_nested_arguments() -> None:
@@ -369,8 +442,9 @@ def test_sanitize_tool_result_data_strips_inline_blobs_and_nested_arguments() ->
     }
     attachment = sanitized["attachment"]
     assert isinstance(attachment, dict)
-    assert attachment["mime"] == "image/png"
-    assert attachment["data_uri"] == {
+    attachment_payload = cast(dict[str, object], attachment)
+    assert attachment_payload["mime"] == "image/png"
+    assert attachment_payload["data_uri"] == {
         "omitted": True,
         "byte_count": len(data_uri.encode("utf-8")),
         "line_count": 1,
