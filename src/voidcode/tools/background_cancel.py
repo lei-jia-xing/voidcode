@@ -3,9 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Protocol
 
-from pydantic import BaseModel, ValidationError, model_validator
+from pydantic import BaseModel, ValidationError, field_validator
 
 from ..runtime.task import BackgroundTaskState, is_background_task_terminal
+from ._pydantic_args import format_validation_error
 from .contracts import ToolCall, ToolDefinition, ToolResult
 
 
@@ -17,14 +18,15 @@ class _BackgroundCancelArgs(BaseModel):
     taskId: str | None = None
     all: bool = False
 
-    @model_validator(mode="after")
-    def _validate_args(self) -> _BackgroundCancelArgs:
-        if self.all:
-            raise ValueError("background_cancel(all=true) is not supported in VoidCode yet")
-        if self.taskId is None or not self.taskId.strip():
-            raise ValueError("background_cancel requires taskId when all is false")
-        self.taskId = self.taskId.strip()
-        return self
+    @field_validator("taskId", mode="after")
+    @classmethod
+    def _validate_task_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("taskId must be a non-empty string when provided")
+        return stripped
 
 
 class BackgroundCancelTool:
@@ -43,10 +45,21 @@ class BackgroundCancelTool:
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
         _ = workspace
+        all_value = call.arguments.get("all", False)
+        if all_value is True:
+            raise ValueError(
+                "background_cancel invalid arguments: all: Value error, "
+                "all=true is not supported in VoidCode yet (received bool)"
+            )
+        if all_value is False and call.arguments.get("taskId") is None:
+            raise ValueError(
+                "background_cancel invalid arguments: taskId: Value error, "
+                "taskId is required when all is false (received NoneType)"
+            )
         try:
             args = _BackgroundCancelArgs.model_validate(call.arguments)
         except ValidationError as exc:
-            raise ValueError(str(exc.errors()[0]["msg"])) from exc
+            raise ValueError(format_validation_error(self.definition.name, exc)) from exc
         assert args.taskId is not None
         try:
             task = self._runtime.cancel_background_task(args.taskId)
