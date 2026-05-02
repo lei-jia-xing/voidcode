@@ -25,12 +25,13 @@ import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
 
-from voidcode.runtime.task import is_background_task_terminal
+from voidcode.runtime.task import BackgroundTaskStatus, is_background_task_terminal
+from voidcode.tools import ToolCall
 
 from .._paths import with_src_pythonpath
 
@@ -75,11 +76,36 @@ def _wait_for_background_task(
 
 
 def _is_terminal_background_task(task: Any) -> bool:
-    return is_background_task_terminal(getattr(task, "status", None))
+    return is_background_task_terminal(cast(BackgroundTaskStatus, task.status))
 
 
 def _is_waiting_approval_background_task(task: Any) -> bool:
     return getattr(task, "approval_request_id", None) is not None
+
+
+class _QuestionThenDoneGraph:
+    def step(self, request: Any, tool_results: tuple[object, ...], *, session: Any) -> Any:
+        _ = request, session
+        if not tool_results:
+            return SimpleNamespace(
+                tool_call=ToolCall(
+                    tool_name="question",
+                    arguments={
+                        "questions": [
+                            {
+                                "question": "Which runtime path should we use?",
+                                "header": "Runtime path",
+                                "options": [{"label": "Reuse existing", "description": ""}],
+                                "multiple": False,
+                            }
+                        ]
+                    },
+                ),
+                output=None,
+                events=(),
+                is_finished=False,
+            )
+        return SimpleNamespace(tool_call=None, output="done", events=(), is_finished=True)
 
 
 # ---------------------------------------------------------------------------
@@ -107,6 +133,20 @@ def test_cli_parser_has_sessions_resume_subcommand() -> None:
     assert sessions_parser is not None
     sub_actions = {a.dest for a in sessions_parser._subparsers._group_actions[0]._choices_actions}
     assert "resume" in sub_actions
+
+
+def test_cli_parser_has_sessions_answer_subcommand() -> None:
+    """``voidcode sessions answer`` must exist for pending-question waits."""
+    cli = importlib.import_module("voidcode.cli")
+    parser = cli.build_parser()
+    sessions_parser = None
+    for action in parser._subparsers._group_actions:
+        if hasattr(action, "_parser_class") and "sessions" in (action.choices or {}):
+            sessions_parser = action.choices["sessions"]
+            break
+    assert sessions_parser is not None
+    sub_actions = {a.dest for a in sessions_parser._subparsers._group_actions[0]._choices_actions}
+    assert "answer" in sub_actions
 
 
 def test_cli_parser_has_run_subcommand() -> None:
@@ -295,6 +335,136 @@ def test_cli_sessions_resume_resolves_approval_deny() -> None:
 
     assert result == 0
     assert runtime_class.return_value.resume.call_args.kwargs["approval_decision"] == "deny"
+
+
+def test_cli_sessions_answer_resolves_pending_question() -> None:
+    """``voidcode sessions answer`` must call the runtime-owned question path."""
+    cli = importlib.import_module("voidcode.cli")
+    workspace = Path("/tmp/demo-workspace")
+    response = SimpleNamespace(
+        session=SimpleNamespace(
+            session=SimpleNamespace(id="question-session"),
+            status="completed",
+            turn=1,
+            metadata={"workspace": str(workspace)},
+        ),
+        events=(
+            SimpleNamespace(
+                session_id="question-session",
+                sequence=3,
+                event_type="runtime.question_answered",
+                source="runtime",
+                payload={"request_id": "question-1"},
+            ),
+        ),
+        output="answered\n",
+    )
+
+    with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+        runtime_class.return_value.answer_question.return_value = response
+        result = cli.main(
+            [
+                "sessions",
+                "answer",
+                "question-session",
+                "--workspace",
+                str(workspace),
+                "--question-request-id",
+                "question-1",
+                "--response",
+                "yes",
+            ]
+        )
+
+    assert result == 0
+    runtime_class.return_value.answer_question.assert_called_once()
+    call = runtime_class.return_value.answer_question.call_args
+    assert call.args == ("question-session",)
+    assert call.kwargs["question_request_id"] == "question-1"
+    responses = call.kwargs["responses"]
+    assert len(responses) == 1
+    assert responses[0].header == "response"
+    assert responses[0].answers == ("yes",)
+
+
+def test_cli_sessions_answer_accepts_json_responses() -> None:
+    cli = importlib.import_module("voidcode.cli")
+    workspace = Path("/tmp/demo-workspace")
+    response = SimpleNamespace(
+        session=SimpleNamespace(
+            session=SimpleNamespace(id="question-session"),
+            status="completed",
+            turn=1,
+            metadata={"workspace": str(workspace)},
+        ),
+        events=(),
+        output=None,
+    )
+
+    with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+        runtime_class.return_value.answer_question.return_value = response
+        result = cli.main(
+            [
+                "sessions",
+                "answer",
+                "question-session",
+                "--workspace",
+                str(workspace),
+                "--question-request-id",
+                "question-1",
+                "--response-json",
+                '[{"header":"Confirm","answers":["yes","ship it"]}]',
+            ]
+        )
+
+    assert result == 0
+    responses = runtime_class.return_value.answer_question.call_args.kwargs["responses"]
+    assert responses[0].header == "Confirm"
+    assert responses[0].answers == ("yes", "ship it")
+
+
+def test_cli_sessions_answer_completes_real_question_wait(tmp_path: Path) -> None:
+    cli = importlib.import_module("voidcode.cli")
+    runtime_module = importlib.import_module("voidcode.runtime")
+    config_module = importlib.import_module("voidcode.runtime.config")
+
+    runtime = runtime_module.VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_QuestionThenDoneGraph(),
+        config=config_module.RuntimeConfig(approval_mode="ask"),
+    )
+    waiting = runtime.run(
+        runtime_module.RuntimeRequest(prompt="ask", session_id="question-session")
+    )
+    question_request_id = waiting.events[-1].payload["request_id"]
+    runtime.__exit__(None, None, None)
+
+    def _runtime_factory(*, workspace: Path) -> Any:
+        return runtime_module.VoidCodeRuntime(
+            workspace=workspace,
+            graph=_QuestionThenDoneGraph(),
+            config=config_module.RuntimeConfig(approval_mode="ask"),
+        )
+
+    with patch.object(cli, "VoidCodeRuntime", side_effect=_runtime_factory):
+        result = cli.main(
+            [
+                "sessions",
+                "answer",
+                "question-session",
+                "--workspace",
+                str(tmp_path),
+                "--question-request-id",
+                str(question_request_id),
+                "--response-json",
+                '[{"header":"Runtime path","answers":["Reuse existing"]}]',
+            ]
+        )
+
+    resumed = runtime_module.VoidCodeRuntime(workspace=tmp_path).resume("question-session")
+    assert result == 0
+    assert resumed.session.status == "completed"
+    assert resumed.output == "done"
 
 
 # ---------------------------------------------------------------------------
