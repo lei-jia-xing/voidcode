@@ -42,6 +42,15 @@ const DEFAULT_SESSION_SIDEBAR_WIDTH = 344;
 const MIN_SESSION_SIDEBAR_WIDTH = 244;
 const MAX_SESSION_SIDEBAR_WIDTH = 520;
 const SIDEBAR_KEYBOARD_RESIZE_STEP = 16;
+const MIN_REASONABLE_EPOCH_MS = Date.UTC(2000, 0, 1);
+
+type SessionUpdatedToken =
+  | {
+      kind: "relative";
+      unit: "just-now" | "minutes" | "hours" | "days";
+      value?: number;
+    }
+  | { kind: "revision"; value: number };
 
 function getViewportWidth(): number {
   return typeof window === "undefined" ? 1024 : window.innerWidth;
@@ -67,24 +76,48 @@ function clampSessionSidebarWidth(
   return Math.min(maxWidth, Math.max(MIN_SESSION_SIDEBAR_WIDTH, safeWidth));
 }
 
-function formatSessionUpdatedAt(updatedAt: number, now = Date.now()): string {
+function sessionUpdatedTimestamp(
+  updatedAt: number,
+  now = Date.now(),
+): number | null {
+  if (!Number.isFinite(updatedAt) || updatedAt <= 0) {
+    return null;
+  }
   const timestamp =
     updatedAt < 1_000_000_000_000 ? updatedAt * 1000 : updatedAt;
+  const maxReasonableFutureMs = now + 7 * 86_400_000;
+  if (
+    timestamp < MIN_REASONABLE_EPOCH_MS ||
+    timestamp > maxReasonableFutureMs
+  ) {
+    return null;
+  }
+  return timestamp;
+}
+
+function formatSessionUpdatedAt(
+  updatedAt: number,
+  now = Date.now(),
+): SessionUpdatedToken {
+  const timestamp = sessionUpdatedTimestamp(updatedAt, now);
+  if (timestamp === null) {
+    return { kind: "revision", value: updatedAt };
+  }
   const diffMs = Math.max(0, now - timestamp);
   const diffMinutes = Math.floor(diffMs / 60_000);
   const diffHours = Math.floor(diffMs / 3_600_000);
   const diffDays = Math.floor(diffMs / 86_400_000);
 
   if (diffMinutes < 1) {
-    return "just-now";
+    return { kind: "relative", unit: "just-now" };
   }
   if (diffMinutes < 60) {
-    return `minutes:${diffMinutes}`;
+    return { kind: "relative", unit: "minutes", value: diffMinutes };
   }
   if (diffHours < 24) {
-    return `hours:${diffHours}`;
+    return { kind: "relative", unit: "hours", value: diffHours };
   }
-  return `days:${Math.max(1, diffDays)}`;
+  return { kind: "relative", unit: "days", value: Math.max(1, diffDays) };
 }
 
 export function SessionSidebar({
@@ -135,17 +168,19 @@ export function SessionSidebar({
 
   const formatSessionUpdatedLabel = (updatedAt: number) => {
     const token = formatSessionUpdatedAt(updatedAt);
-    if (token === "just-now") {
+    if (token.kind === "revision") {
+      return t("session.updatedAtRevision", { count: token.value });
+    }
+    if (token.unit === "just-now") {
       return t("session.updatedAtJustNow");
     }
-    const [unit, value] = token.split(":");
-    if (unit === "minutes") {
-      return t("session.updatedAtMinutesAgo", { count: Number(value) });
+    if (token.unit === "minutes") {
+      return t("session.updatedAtMinutesAgo", { count: token.value });
     }
-    if (unit === "hours") {
-      return t("session.updatedAtHoursAgo", { count: Number(value) });
+    if (token.unit === "hours") {
+      return t("session.updatedAtHoursAgo", { count: token.value });
     }
-    return t("session.updatedAtDaysAgo", { count: Number(value) });
+    return t("session.updatedAtDaysAgo", { count: token.value });
   };
 
   const sortedSessions = useMemo(

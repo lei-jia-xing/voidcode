@@ -17,6 +17,14 @@ import {
   AlertCircle,
   Copy,
   Check,
+  Bot,
+  FileText,
+  FolderTree,
+  ListTodo,
+  Pencil,
+  Search,
+  Terminal,
+  Wrench,
 } from "lucide-react";
 import { ChatMessage } from "../lib/runtime/event-parser";
 import type { QuestionAnswer } from "../lib/runtime/types";
@@ -116,15 +124,6 @@ function resultData(tool: ChatTool) {
   return nestedRecord(tool.result, "data") ?? tool.result;
 }
 
-const CONTEXT_TOOL_NAMES = new Set([
-  "read",
-  "read_file",
-  "glob",
-  "grep",
-  "code_search",
-  "ast_grep_search",
-]);
-
 const SENSITIVE_ARG_KEYS = new Set([
   "content",
   "oldString",
@@ -136,10 +135,6 @@ const SENSITIVE_ARG_KEYS = new Set([
   "internalState",
   "internalData",
 ]);
-
-function isContextTool(tool: ChatTool) {
-  return CONTEXT_TOOL_NAMES.has(tool.name);
-}
 
 function toolDisplayTitle(tool: ChatTool, fallback: string) {
   return (
@@ -191,6 +186,53 @@ function copyableValue(tool: ChatTool, key: string) {
   return toolValue(copyable?.[key]);
 }
 
+function numericToolValue(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? value
+    : null;
+}
+
+function lineDeltaFromDiff(diff: string | null): { additions: number; deletions: number } | null {
+  if (!diff) return null;
+  let additions = 0;
+  let deletions = 0;
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("+++") || line.startsWith("---")) continue;
+    if (line.startsWith("+")) additions += 1;
+    if (line.startsWith("-")) deletions += 1;
+  }
+  return additions > 0 || deletions > 0 ? { additions, deletions } : null;
+}
+
+function lineDelta(tool: ChatTool): { additions: number; deletions: number } | null {
+  const data = resultData(tool);
+  const additions =
+    numericToolValue(data?.additions) ??
+    numericToolValue(data?.added) ??
+    numericToolValue(tool.result?.additions);
+  const deletions =
+    numericToolValue(data?.deletions) ??
+    numericToolValue(data?.deleted) ??
+    numericToolValue(tool.result?.deletions);
+  if (
+    additions !== null &&
+    deletions !== null &&
+    (additions > 0 || deletions > 0)
+  ) {
+    return { additions, deletions };
+  }
+
+  return lineDeltaFromDiff(
+    toolValue(data?.diff) ??
+      toolValue(tool.result?.diff) ??
+      toolValue(tool.arguments?.patch),
+  );
+}
+
+function formatLineDelta(delta: { additions: number; deletions: number } | null) {
+  return delta ? `+${delta.additions}/-${delta.deletions}` : null;
+}
+
 function CopyButton({ value, label }: { value: string; label: string }) {
   const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
@@ -231,20 +273,34 @@ function ToolDetailBlock({
   label,
   value,
   copyValue,
+  tone = "normal",
 }: {
   label: string;
   value: string | null;
   copyValue?: string | null;
+  tone?: "normal" | "error";
 }) {
   if (!value) return null;
   const preview = value.length > 4000 ? `${value.slice(0, 4000)}\n…` : value;
   return (
     <div className="mt-2 text-xs text-[var(--vc-text-muted)]">
-      <div className="mb-1 flex items-center justify-between gap-2 text-[11px] text-[var(--vc-text-subtle)]">
+      <div
+        className={`mb-1 flex items-center justify-between gap-2 text-[11px] ${
+          tone === "error"
+            ? "text-[var(--vc-danger-text)]"
+            : "text-[var(--vc-text-subtle)]"
+        }`}
+      >
         <span>{label}</span>
         {copyValue && <CopyButton value={copyValue} label={label} />}
       </div>
-      <pre className="max-h-72 overflow-auto rounded-[var(--vc-radius-control)] border border-[color:var(--vc-border-subtle)] bg-[var(--vc-bg)] p-3 text-xs leading-relaxed text-[var(--vc-text-primary)] whitespace-pre-wrap">
+      <pre
+        className={`max-h-72 overflow-auto border-l bg-transparent py-2 pl-3 pr-2 text-xs leading-relaxed whitespace-pre-wrap ${
+          tone === "error"
+            ? "border-l-[color:var(--vc-danger-border)] text-[var(--vc-danger-text)]"
+            : "border-l-[color:var(--vc-border-subtle)] text-[var(--vc-text-primary)]"
+        }`}
+      >
         {preview}
       </pre>
     </div>
@@ -256,6 +312,8 @@ function ToolDisclosureRow({
   title,
   subtitle,
   args = [],
+  icon,
+  delta,
   defaultExpanded = false,
   children,
 }: {
@@ -263,6 +321,8 @@ function ToolDisclosureRow({
   title: string;
   subtitle?: string;
   args?: string[];
+  icon: ReactNode;
+  delta?: string | null;
   defaultExpanded?: boolean;
   children?: ReactNode;
 }) {
@@ -272,11 +332,11 @@ function ToolDisclosureRow({
   const canExpand = Boolean(children);
   const statusLabel =
     tool.status === "completed" ? null : t(`tool.status.${tool.status}`);
-  const trailing = [statusLabel, ...args].filter(Boolean).join(" · ");
+  const trailing = [delta, statusLabel, ...args].filter(Boolean).join(" · ");
 
   const summary = (
     <span className="flex min-w-0 flex-1 items-baseline gap-2 text-left">
-      <span className="shrink-0 text-xs font-medium text-[var(--vc-text-primary)]">
+      <span className="shrink-0 text-sm font-semibold text-[var(--vc-text-primary)]">
         {title}
       </span>
       {subtitle && (
@@ -293,12 +353,19 @@ function ToolDisclosureRow({
   );
 
   return (
-    <div className="text-xs" data-tool-row={tool.name}>
+    <div
+      className={`text-xs ${
+        tool.status === "failed"
+          ? "border-l-2 border-l-[color:var(--vc-danger-border)] pl-2"
+          : ""
+      }`}
+      data-tool-row={tool.name}
+    >
       {canExpand ? (
         <button
           type="button"
           onClick={() => setExpanded((value) => !value)}
-          className="group flex w-full items-center gap-1.5 px-1 py-1 text-left transition-colors hover:text-[var(--vc-text-primary)] focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--vc-focus-ring)]"
+          className="group flex w-full items-center gap-2 py-1.5 text-left transition-colors hover:text-[var(--vc-text-primary)] focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--vc-focus-ring)]"
           aria-expanded={expanded}
           aria-controls={panelId}
           aria-label={t(
@@ -313,18 +380,24 @@ function ToolDisclosureRow({
           ) : (
             <ChevronRight className="h-3 w-3 shrink-0 text-[var(--vc-text-subtle)]" />
           )}
+          <span className="flex h-5 w-5 shrink-0 items-center justify-center text-[var(--vc-text-subtle)]">
+            {icon}
+          </span>
           {summary}
         </button>
       ) : (
-        <div className="flex items-center gap-1.5 px-1 py-1">
+        <div className="flex items-center gap-2 py-1.5">
           <span className="h-3 w-3 shrink-0" />
+          <span className="flex h-5 w-5 shrink-0 items-center justify-center text-[var(--vc-text-subtle)]">
+            {icon}
+          </span>
           {summary}
         </div>
       )}
       {canExpand && expanded && (
         <div
           id={panelId}
-          className="ml-4 pb-2 pt-1 text-[var(--vc-text-muted)]"
+          className="ml-8 pb-2 text-[var(--vc-text-muted)]"
         >
           {children}
         </div>
@@ -333,19 +406,86 @@ function ToolDisclosureRow({
   );
 }
 
+function toolIcon(tool: ChatTool) {
+  const className = "h-3.5 w-3.5";
+  if (tool.name === "read_file" || tool.name === "read") {
+    return <FileText className={className} />;
+  }
+  if (tool.name === "list" || tool.name === "glob") {
+    return <FolderTree className={className} />;
+  }
+  if (
+    tool.name === "grep" ||
+    tool.name === "code_search" ||
+    tool.name === "ast_grep_search"
+  ) {
+    return <Search className={className} />;
+  }
+  if (
+    tool.name === "write_file" ||
+    tool.name === "write" ||
+    tool.name === "edit" ||
+    tool.name === "multi_edit" ||
+    tool.name === "apply_patch"
+  ) {
+    return <Pencil className={className} />;
+  }
+  if (tool.name === "shell_exec" || tool.name === "bash") {
+    return <Terminal className={className} />;
+  }
+  if (tool.name === "task") {
+    return <Bot className={className} />;
+  }
+  if (tool.name === "todo_write") {
+    return <ListTodo className={className} />;
+  }
+  return <Wrench className={className} />;
+}
+
+function toolOutputSummary(tool: ChatTool): string | null {
+  const data = resultData(tool);
+  return (
+    tool.content ??
+    toolValue(data?.output) ??
+    toolValue(data?.content) ??
+    toolValue(data?.summary) ??
+    toolValue(data?.preview) ??
+    null
+  );
+}
+
 function ReadToolActivity({ tool }: { tool: ChatTool }) {
   const path = primaryPath(tool) ?? toolDisplayTitle(tool, tool.name);
+  const output = toolOutputSummary(tool);
   return (
     <ToolDisclosureRow
       tool={tool}
       title={toolDisplayTitle(tool, "Read")}
       subtitle={path}
-      args={curatedArgs(tool, { omit: ["path", "filePath"] })}
-    />
+      args={primitiveArgs(tool.arguments, ["path", "filePath"])}
+      icon={toolIcon(tool)}
+    >
+      {tool.error ? (
+        <ToolDetailBlock
+          label="Error"
+          value={tool.error}
+          copyValue={tool.error}
+          tone="error"
+        />
+      ) : (
+        <ToolDetailBlock label="Output" value={output} copyValue={output} />
+      )}
+    </ToolDisclosureRow>
   );
 }
 
-function WriteToolActivity({ tool }: { tool: ChatTool }) {
+function WriteToolActivity({
+  tool,
+  forceCollapsed = false,
+}: {
+  tool: ChatTool;
+  forceCollapsed?: boolean;
+}) {
   const data = resultData(tool);
   const path = primaryPath(tool) ?? toolDisplayTitle(tool, tool.name);
   const diff = toolValue(data?.diff);
@@ -356,28 +496,40 @@ function WriteToolActivity({ tool }: { tool: ChatTool }) {
       title={toolDisplayTitle(tool, "Write")}
       subtitle={bytes ? `${path} · ${bytes} bytes` : path}
       args={curatedArgs(tool, { omit: ["path", "filePath"] })}
-      defaultExpanded
+      icon={toolIcon(tool)}
+      delta={formatLineDelta(lineDelta(tool))}
+      defaultExpanded={!forceCollapsed}
     >
-      <ToolDetailBlock label="Diff" value={diff} copyValue={diff} />
-      {!diff && tool.content && (
-        <ToolDetailBlock
-          label="Result"
-          value={tool.content}
-          copyValue={tool.content}
-        />
-      )}
-      {tool.error && (
+      {tool.error ? (
         <ToolDetailBlock
           label="Error"
           value={tool.error}
           copyValue={tool.error}
+          tone="error"
         />
+      ) : (
+        <>
+          <ToolDetailBlock label="Diff" value={diff} copyValue={diff} />
+          {!diff && tool.content && (
+            <ToolDetailBlock
+              label="Output"
+              value={tool.content}
+              copyValue={tool.content}
+            />
+          )}
+        </>
       )}
     </ToolDisclosureRow>
   );
 }
 
-function ShellToolActivity({ tool }: { tool: ChatTool }) {
+function ShellToolActivity({
+  tool,
+  forceCollapsed = false,
+}: {
+  tool: ChatTool;
+  forceCollapsed?: boolean;
+}) {
   const { t } = useTranslation();
   const data = resultData(tool);
   const command =
@@ -393,10 +545,11 @@ function ShellToolActivity({ tool }: { tool: ChatTool }) {
     toolValue(data?.exitCode) ??
     toolValue(data?.code);
   const error = tool.error ?? toolValue(data?.error);
+  const failed = tool.status === "failed" || (exitCode !== null && exitCode !== "0");
   const title = t("tool.shell.title");
   const summary = toolDisplayTitle(tool, command);
   const subtitle =
-    exitCode && exitCode !== "0"
+    failed && exitCode
       ? `${summary} · ${t("tool.shell.failedSubtitle", { code: exitCode })}`
       : summary;
   return (
@@ -405,14 +558,16 @@ function ShellToolActivity({ tool }: { tool: ChatTool }) {
       title={title}
       subtitle={subtitle}
       args={[]}
-      defaultExpanded={tool.status === "running"}
+      icon={toolIcon(tool)}
+      defaultExpanded={!forceCollapsed && tool.status === "running"}
     >
       <ShellTerminalBlock
         command={command}
-        stdout={stdout ?? null}
-        stderr={stderr}
-        error={error}
+        stdout={failed ? null : (stdout ?? null)}
+        stderr={failed ? null : stderr}
+        error={failed ? (error ?? stderr ?? stdout ?? null) : null}
         exitCode={exitCode}
+        tone={failed ? "error" : "normal"}
         copyCommand={copyableValue(tool, "command") ?? command}
         copyOutput={
           copyableValue(tool, "output") ?? stdout ?? stderr ?? error ?? null
@@ -428,6 +583,7 @@ function ShellTerminalBlock({
   stderr,
   error,
   exitCode,
+  tone,
   copyCommand,
   copyOutput,
 }: {
@@ -436,6 +592,7 @@ function ShellTerminalBlock({
   stderr: string | null;
   error: string | null;
   exitCode: string | null;
+  tone: "normal" | "error";
   copyCommand: string;
   copyOutput: string | null;
 }) {
@@ -452,11 +609,27 @@ function ShellTerminalBlock({
 
   return (
     <div
-      className="rounded-[var(--vc-radius-control)] border border-[color:var(--vc-border-subtle)] bg-[var(--vc-bg)]"
+      className={`rounded-[var(--vc-radius-control)] border bg-[var(--vc-bg)] ${
+        tone === "error"
+          ? "border-[color:var(--vc-danger-border)]"
+          : "border-[color:var(--vc-border-subtle)]"
+      }`}
       data-terminal-block="shell"
     >
-      <div className="flex items-center justify-between border-b border-[color:var(--vc-border-subtle)] px-2 py-1">
-        <span className="text-[10px] uppercase tracking-wide text-[var(--vc-text-subtle)]">
+      <div
+        className={`flex items-center justify-between border-b px-2 py-1 ${
+          tone === "error"
+            ? "border-[color:var(--vc-danger-border)]"
+            : "border-[color:var(--vc-border-subtle)]"
+        }`}
+      >
+        <span
+          className={`text-[10px] uppercase tracking-wide ${
+            tone === "error"
+              ? "text-[var(--vc-danger-text)]"
+              : "text-[var(--vc-text-subtle)]"
+          }`}
+        >
           {t("tool.shell.terminal")}
         </span>
         <span className="flex items-center gap-1">
@@ -466,14 +639,26 @@ function ShellTerminalBlock({
           )}
         </span>
       </div>
-      <pre className="max-h-72 overflow-auto p-3 font-mono text-xs leading-relaxed text-[var(--vc-text-primary)] whitespace-pre-wrap">
+      <pre
+        className={`max-h-72 overflow-auto p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap ${
+          tone === "error"
+            ? "text-[var(--vc-danger-text)]"
+            : "text-[var(--vc-text-primary)]"
+        }`}
+      >
         {transcript}
       </pre>
     </div>
   );
 }
 
-function SkillToolActivity({ tool }: { tool: ChatTool }) {
+function SkillToolActivity({
+  tool,
+  forceCollapsed = false,
+}: {
+  tool: ChatTool;
+  forceCollapsed?: boolean;
+}) {
   const { t } = useTranslation();
   const data = resultData(tool);
   const skill = nestedRecord(data, "skill");
@@ -493,29 +678,34 @@ function SkillToolActivity({ tool }: { tool: ChatTool }) {
       title={toolDisplayTitle(tool, "Loaded skill")}
       subtitle={name}
       args={curatedArgs(tool, { omit: ["name", "user_message"] })}
-      defaultExpanded
+      icon={toolIcon(tool)}
+      defaultExpanded={!forceCollapsed}
     >
-      {description && (
-        <div className="mt-2 text-[var(--vc-text-muted)]">{description}</div>
-      )}
-      {sourcePath && (
-        <div className="mt-2 text-[11px] text-[var(--vc-text-subtle)]">
-          Source: <code>{sourcePath}</code>
-        </div>
-      )}
-      {userMessage && (
-        <ToolDetailBlock
-          label={t("tool.skill.userRequest")}
-          value={userMessage}
-          copyValue={userMessage}
-        />
-      )}
-      {tool.error && (
+      {tool.error ? (
         <ToolDetailBlock
           label="Error"
           value={tool.error}
           copyValue={tool.error}
+          tone="error"
         />
+      ) : (
+        <>
+          {description && (
+            <div className="mt-2 text-[var(--vc-text-muted)]">{description}</div>
+          )}
+          {sourcePath && (
+            <div className="mt-2 text-[11px] text-[var(--vc-text-subtle)]">
+              Source: <code>{sourcePath}</code>
+            </div>
+          )}
+          {userMessage && (
+            <ToolDetailBlock
+              label={t("tool.skill.userRequest")}
+              value={userMessage}
+              copyValue={userMessage}
+            />
+          )}
+        </>
       )}
     </ToolDisclosureRow>
   );
@@ -527,7 +717,13 @@ function formatList(value: unknown): string | null {
   return value.map((item) => String(item)).join(", ");
 }
 
-function TaskToolActivity({ tool }: { tool: ChatTool }) {
+function TaskToolActivity({
+  tool,
+  forceCollapsed = false,
+}: {
+  tool: ChatTool;
+  forceCollapsed?: boolean;
+}) {
   const data = resultData(tool);
   const route =
     toolValue(tool.arguments?.category) ??
@@ -552,41 +748,46 @@ function TaskToolActivity({ tool }: { tool: ChatTool }) {
       args={curatedArgs(tool, {
         omit: ["category", "subagent_type", "description"],
       })}
-      defaultExpanded
+      icon={toolIcon(tool)}
+      defaultExpanded={!forceCollapsed}
     >
       {description && (
         <div className="mt-2 text-[var(--vc-text-muted)]">{description}</div>
       )}
-      <div className="mt-2 grid gap-1 text-[11px] text-[var(--vc-text-subtle)]">
-        {taskId && (
-          <div>
-            Task ID: <code>{taskId}</code>
-          </div>
-        )}
-        {sessionId && (
-          <div>
-            Session: <code>{sessionId}</code>
-          </div>
-        )}
-        {skills && (
-          <div>
-            Skills: <code>{skills}</code>
-          </div>
-        )}
-      </div>
-      {tool.content && (
-        <ToolDetailBlock
-          label="Output"
-          value={tool.content}
-          copyValue={tool.content}
-        />
-      )}
-      {tool.error && (
+      {tool.error ? (
         <ToolDetailBlock
           label="Error"
           value={tool.error}
           copyValue={tool.error}
+          tone="error"
         />
+      ) : (
+        <>
+          <div className="mt-2 grid gap-1 text-[11px] text-[var(--vc-text-subtle)]">
+            {taskId && (
+              <div>
+                Task ID: <code>{taskId}</code>
+              </div>
+            )}
+            {sessionId && (
+              <div>
+                Session: <code>{sessionId}</code>
+              </div>
+            )}
+            {skills && (
+              <div>
+                Skills: <code>{skills}</code>
+              </div>
+            )}
+          </div>
+          {tool.content && (
+            <ToolDetailBlock
+              label="Output"
+              value={tool.content}
+              copyValue={tool.content}
+            />
+          )}
+        </>
       )}
     </ToolDisclosureRow>
   );
@@ -636,116 +837,223 @@ function TodoToolActivity({ tool }: { tool: ChatTool }) {
       tool={tool}
       title={toolDisplayTitle(tool, "Updated todos")}
       subtitle={summaryText}
+      icon={toolIcon(tool)}
       defaultExpanded={false}
     >
-      <div className="mt-2 space-y-1">
-        {items.map((item, index) => (
-          <div
-            key={`${item.content}-${index}`}
-            className="flex items-start gap-2 text-[var(--vc-text-muted)]"
-          >
-            <span className="mt-px text-[var(--vc-text-subtle)]">
-              {todoStatusSymbol(item.status)}
-            </span>
-            <span className="flex-1">{item.content}</span>
-            <span className="rounded-[var(--vc-radius-control)] border border-[color:var(--vc-border-subtle)] px-1.5 py-0.5 text-[10px] uppercase text-[var(--vc-text-subtle)]">
-              {item.status} · {item.priority}
-            </span>
-          </div>
-        ))}
-      </div>
-      {tool.error && (
+      {tool.error ? (
         <ToolDetailBlock
           label="Error"
           value={tool.error}
           copyValue={tool.error}
+          tone="error"
         />
+      ) : (
+        <div className="mt-2 space-y-1">
+          {items.map((item, index) => (
+            <div
+              key={`${item.content}-${index}`}
+              className="flex items-start gap-2 text-[var(--vc-text-muted)]"
+            >
+              <span className="mt-px text-[var(--vc-text-subtle)]">
+                {todoStatusSymbol(item.status)}
+              </span>
+              <span className="flex-1">{item.content}</span>
+              <span className="rounded-[var(--vc-radius-control)] border border-[color:var(--vc-border-subtle)] px-1.5 py-0.5 text-[10px] uppercase text-[var(--vc-text-subtle)]">
+                {item.status} · {item.priority}
+              </span>
+            </div>
+          ))}
+        </div>
       )}
     </ToolDisclosureRow>
   );
 }
 
+type ToolGroupKind =
+  | "read"
+  | "lookup"
+  | "edit"
+  | "command"
+  | "subagent"
+  | "skill"
+  | "todo"
+  | "other";
+
+function toolGroupKind(tool: ChatTool): ToolGroupKind {
+  if (tool.name === "read_file" || tool.name === "read") return "read";
+  if (
+    tool.name === "list" ||
+    tool.name === "glob" ||
+    tool.name === "grep" ||
+    tool.name === "code_search" ||
+    tool.name === "ast_grep_search"
+  ) {
+    return "lookup";
+  }
+  if (tool.name === "shell_exec" || tool.name === "bash") return "command";
+  if (
+    tool.name === "write_file" ||
+    tool.name === "write" ||
+    tool.name === "edit" ||
+    tool.name === "multi_edit" ||
+    tool.name === "apply_patch"
+  ) {
+    return "edit";
+  }
+  if (tool.name === "task") return "subagent";
+  if (tool.name === "skill") return "skill";
+  if (tool.name === "todo_write") return "todo";
+  return "other";
+}
+
+function toolGroupIcon(tools: ChatTool[]) {
+  if (tools.some((tool) => toolGroupKind(tool) === "command")) {
+    return <Terminal className="h-3.5 w-3.5" />;
+  }
+  if (tools.some((tool) => toolGroupKind(tool) === "edit")) {
+    return <Pencil className="h-3.5 w-3.5" />;
+  }
+  if (tools.some((tool) => toolGroupKind(tool) === "read")) {
+    return <FileText className="h-3.5 w-3.5" />;
+  }
+  return <Wrench className="h-3.5 w-3.5" />;
+}
+
+function uniqueCount(values: (string | null)[]) {
+  return new Set(values.filter((value): value is string => Boolean(value))).size;
+}
+
+function editedPathCount(tools: ChatTool[]) {
+  const paths = new Set<string>();
+  for (const tool of tools) {
+    const data = resultData(tool);
+    const directPath = primaryPath(tool);
+    if (directPath) paths.add(directPath);
+    const changes = data?.changes;
+    if (Array.isArray(changes)) {
+      for (const change of changes) {
+        if (!change || typeof change !== "object") continue;
+        const path = toolValue((change as Record<string, unknown>).path);
+        if (path) paths.add(path);
+      }
+    }
+  }
+  return paths.size || tools.length;
+}
+
+function toolGroupSummary(tools: ChatTool[], t: ReturnType<typeof useTranslation>["t"]) {
+  const parts: string[] = [];
+  const reads = tools.filter((tool) => toolGroupKind(tool) === "read");
+  const lookups = tools.filter((tool) => toolGroupKind(tool) === "lookup");
+  const edits = tools.filter((tool) => toolGroupKind(tool) === "edit");
+  const commands = tools.filter((tool) => toolGroupKind(tool) === "command");
+  const subagents = tools.filter((tool) => toolGroupKind(tool) === "subagent");
+  const skills = tools.filter((tool) => toolGroupKind(tool) === "skill");
+  const todos = tools.filter((tool) => toolGroupKind(tool) === "todo");
+  const others = tools.filter((tool) => toolGroupKind(tool) === "other");
+
+  if (reads.length > 0) {
+    parts.push(
+      t("tool.group.read", {
+        count: uniqueCount(reads.map(primaryPath)) || reads.length,
+      }),
+    );
+  }
+  if (lookups.length > 0) {
+    parts.push(t("tool.group.lookup", { count: lookups.length }));
+  }
+  if (edits.length > 0) {
+    parts.push(t("tool.group.edit", { count: editedPathCount(edits) }));
+  }
+  if (commands.length > 0) {
+    parts.push(t("tool.group.command", { count: commands.length }));
+  }
+  if (subagents.length > 0) {
+    parts.push(t("tool.group.subagent", { count: subagents.length }));
+  }
+  if (skills.length > 0) {
+    parts.push(t("tool.group.skill", { count: skills.length }));
+  }
+  if (todos.length > 0) {
+    parts.push(t("tool.group.todo", { count: todos.length }));
+  }
+  if (others.length > 0) {
+    parts.push(t("tool.group.other", { count: others.length }));
+  }
+
+  return parts.join(t("tool.group.separator"));
+}
+
+function ToolGroupActivity({ tools }: { tools: ChatTool[] }) {
+  const { t } = useTranslation();
+  const panelId = useId();
+  const [expanded, setExpanded] = useState(false);
+  const summary = toolGroupSummary(tools, t);
+
+  return (
+    <div className="text-xs" data-tool-row="tool-group">
+      <button
+        type="button"
+        onClick={() => setExpanded((value) => !value)}
+        className="group flex w-full items-center gap-2 py-1.5 text-left transition-colors hover:text-[var(--vc-text-primary)] focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--vc-focus-ring)]"
+        aria-expanded={expanded}
+        aria-controls={panelId}
+        aria-label={t(expanded ? "tool.group.hide" : "tool.group.show")}
+      >
+        {expanded ? (
+          <ChevronDown className="h-3 w-3 shrink-0 text-[var(--vc-text-subtle)]" />
+        ) : (
+          <ChevronRight className="h-3 w-3 shrink-0 text-[var(--vc-text-subtle)]" />
+        )}
+        <span className="flex h-5 w-5 shrink-0 items-center justify-center text-[var(--vc-text-subtle)]">
+          {toolGroupIcon(tools)}
+        </span>
+        <span
+          className="min-w-0 flex-1 truncate text-sm font-semibold text-[var(--vc-text-muted)]"
+        >
+          {summary}
+        </span>
+      </button>
+      {expanded && (
+        <div
+          id={panelId}
+          className="ml-5 space-y-1.5 pb-1 pt-1"
+        >
+          {tools.map((tool, idx) => (
+            <ToolActivity
+              key={tool.id ?? `${tool.name}-${idx}`}
+              tool={tool}
+              forceCollapsed
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function GenericToolActivity({ tool }: { tool: ChatTool }) {
+  const output = toolOutputSummary(tool);
   return (
     <ToolDisclosureRow
       tool={tool}
       title={toolDisplayTitle(tool, tool.display?.title ?? tool.name)}
       subtitle={toolDisplaySubtitle(tool, tool.summary)}
       args={curatedArgs(tool)}
-    />
-  );
-}
-
-function ContextToolGroup({ tools }: { tools: ChatTool[] }) {
-  const { t } = useTranslation();
-  const panelId = useId();
-  const [expanded, setExpanded] = useState(false);
-
-  return (
-    <div className="text-xs" data-tool-row="context-group">
-      <button
-        type="button"
-        onClick={() => setExpanded((value) => !value)}
-        className="flex w-full items-baseline gap-1.5 px-1 py-1 text-left transition-colors hover:text-[var(--vc-text-primary)] focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--vc-focus-ring)]"
-        aria-expanded={expanded}
-        aria-controls={panelId}
-        aria-label={t(
-          expanded ? "tool.hideDetailsFor" : "tool.showDetailsFor",
-          {
-            title: t("tool.context.title"),
-          },
-        )}
-      >
-        {expanded ? (
-          <ChevronDown className="h-3 w-3 shrink-0 self-center text-[var(--vc-text-subtle)]" />
-        ) : (
-          <ChevronRight className="h-3 w-3 shrink-0 self-center text-[var(--vc-text-subtle)]" />
-        )}
-        <span className="shrink-0 text-xs font-medium text-[var(--vc-text-primary)]">
-          {t("tool.context.title")}
-        </span>
-        <span className="min-w-0 truncate text-xs text-[var(--vc-text-muted)]">
-          {t("tool.context.summary", { count: tools.length })}
-        </span>
-      </button>
-      {expanded && (
-        <div id={panelId} className="ml-4 space-y-1 py-1">
-          {tools.map((tool, index) => {
-            const path = primaryPath(tool);
-            const title = toolDisplayTitle(
-              tool,
-              tool.display?.title ?? tool.name,
-            );
-            const args = curatedArgs(tool, { omit: ["path", "filePath"] });
-            return (
-              <div
-                key={tool.id ?? `${tool.name}-${index}`}
-                className="flex items-baseline gap-2 px-1 py-0.5"
-              >
-                <span className="min-w-0 flex flex-1 items-baseline gap-2">
-                  <span className="shrink-0 text-[11px] font-medium text-[var(--vc-text-primary)]">
-                    {title}
-                  </span>
-                  {path && (
-                    <span className="truncate font-mono text-[10px] text-[var(--vc-text-subtle)]">
-                      {path}
-                    </span>
-                  )}
-                </span>
-                {args.slice(0, 2).map((arg) => (
-                  <span
-                    key={arg}
-                    className="hidden max-w-[9rem] truncate font-mono text-[10px] text-[var(--vc-text-muted)] md:inline"
-                  >
-                    {arg}
-                  </span>
-                ))}
-              </div>
-            );
-          })}
-        </div>
+      icon={toolIcon(tool)}
+      delta={formatLineDelta(lineDelta(tool))}
+    >
+      {tool.error ? (
+        <ToolDetailBlock
+          label="Error"
+          value={tool.error}
+          copyValue={tool.error}
+          tone="error"
+        />
+      ) : (
+        <ToolDetailBlock label="Output" value={output} copyValue={output} />
       )}
-    </div>
+    </ToolDisclosureRow>
   );
 }
 
@@ -879,45 +1187,46 @@ function QuestionCard({
 
 function ToolActivities({ tools }: { tools: ChatTool[] }) {
   if (tools.length === 0) return null;
-
-  const contextTools = tools.filter(isContextTool);
-  const shouldGroupContext = contextTools.length > 1;
-  const renderedItems: ReactNode[] = [];
-  let didRenderContextGroup = false;
-
-  tools.forEach((tool, idx) => {
-    if (shouldGroupContext && isContextTool(tool)) {
-      if (!didRenderContextGroup) {
-        renderedItems.push(
-          <ContextToolGroup key="context-tool-group" tools={contextTools} />,
-        );
-        didRenderContextGroup = true;
-      }
-      return;
-    }
-
-    renderedItems.push(
-      <ToolActivity key={tool.id ?? `${tool.name}-${idx}`} tool={tool} />,
+  if (tools.length > 1) {
+    return (
+      <div className="mb-3">
+        <ToolGroupActivity tools={tools} />
+      </div>
     );
-  });
-
-  return <div className="mb-3 space-y-2">{renderedItems}</div>;
+  }
+  return (
+    <div className="mb-3 space-y-2">
+      {tools.map((tool, idx) => (
+        <ToolActivity key={tool.id ?? `${tool.name}-${idx}`} tool={tool} />
+      ))}
+    </div>
+  );
 }
 
-function ToolActivity({ tool }: { tool: ChatTool }) {
+function ToolActivity({
+  tool,
+  forceCollapsed = false,
+}: {
+  tool: ChatTool;
+  forceCollapsed?: boolean;
+}) {
   if (tool.name === "read_file" || tool.name === "read")
     return <ReadToolActivity tool={tool} />;
   if (
     tool.name === "write_file" ||
     tool.name === "write" ||
-    tool.name === "edit"
+    tool.name === "edit" ||
+    tool.name === "multi_edit" ||
+    tool.name === "apply_patch"
   ) {
-    return <WriteToolActivity tool={tool} />;
+    return <WriteToolActivity tool={tool} forceCollapsed={forceCollapsed} />;
   }
   if (tool.name === "shell_exec" || tool.name === "bash")
-    return <ShellToolActivity tool={tool} />;
-  if (tool.name === "skill") return <SkillToolActivity tool={tool} />;
-  if (tool.name === "task") return <TaskToolActivity tool={tool} />;
+    return <ShellToolActivity tool={tool} forceCollapsed={forceCollapsed} />;
+  if (tool.name === "skill")
+    return <SkillToolActivity tool={tool} forceCollapsed={forceCollapsed} />;
+  if (tool.name === "task")
+    return <TaskToolActivity tool={tool} forceCollapsed={forceCollapsed} />;
   if (tool.name === "todo_write") return <TodoToolActivity tool={tool} />;
   return <GenericToolActivity tool={tool} />;
 }

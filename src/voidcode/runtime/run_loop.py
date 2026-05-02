@@ -931,18 +931,23 @@ class RuntimeRunLoopCoordinator:
                 preserved_system_segments.append(segment.content)
                 if segment.content.startswith("Runtime-managed skills are active for this turn."):
                     skill_prompt_context = segment.content
+            assembled_context = runtime._assemble_provider_context(
+                prompt=current_prompt,
+                tool_results=context_window.tool_results,
+                session_metadata=session.metadata,
+                skill_prompt_context=skill_prompt_context,
+                preserved_system_segments=tuple(preserved_system_segments),
+            )
+            session = runtime._session_with_context_window_payload_metadata(
+                session,
+                assembled_context.metadata,
+            )
             active_graph_request = GraphRunRequest(
                 session=session,
                 prompt=current_prompt,
                 available_tools=current_available_tools,
                 context_window=context_window,
-                assembled_context=runtime._assemble_provider_context(
-                    prompt=current_prompt,
-                    tool_results=context_window.tool_results,
-                    session_metadata=session.metadata,
-                    skill_prompt_context=skill_prompt_context,
-                    preserved_system_segments=tuple(preserved_system_segments),
-                ),
+                assembled_context=assembled_context,
                 metadata=current_metadata,
                 abort_signal=current_abort_signal,
             )

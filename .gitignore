@@ -25,6 +25,8 @@ htmlcov/
 .sisyphus/
 .test_venv/
 /agent/
+/app/
+/workplace/
 .omx/
 .codex
 .voidcode.json

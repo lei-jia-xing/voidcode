@@ -370,12 +370,23 @@ describe("ChatThread", () => {
       />,
     );
 
+    expect(
+      screen.getByText("read 1 file(s), edited 1 file(s), ran 1 command(s)"),
+    ).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: /show tool calls/i }),
+    );
     expect(screen.getByText("Read")).toBeInTheDocument();
     expect(screen.getByText("src/app.ts")).toBeInTheDocument();
     expect(screen.getByText(/offset=10/)).toBeInTheDocument();
     expect(screen.getByText(/limit=20/)).toBeInTheDocument();
     expect(screen.getByText("Write")).toBeInTheDocument();
     expect(screen.getByText("src/app.ts · 3 bytes")).toBeInTheDocument();
+    expect(screen.getByText("+1/-0")).toBeInTheDocument();
+    expect(screen.queryByText(/\+new/)).not.toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: /show details for write/i }),
+    );
     expect(screen.getByText(/\+new/)).toBeInTheDocument();
     expect(screen.getByText("Shell")).toBeInTheDocument();
     expect(screen.getByText("pytest tests/unit")).toBeInTheDocument();
@@ -749,7 +760,7 @@ describe("Tool Card Display Contract", () => {
     expect(toggle).toBeVisible();
     expect(screen.getByText("Shell")).toBeInTheDocument();
     expect(screen.getByText("Run lint")).toBeInTheDocument();
-    expect(toggle.closest('[class*="border"]')).toBeNull();
+    expect(toggle.closest('[data-tool-row="shell_exec"]')).not.toBeNull();
     expect(screen.queryByText("All checks passed!")).not.toBeInTheDocument();
     expect(
       container.querySelectorAll('[data-terminal-block="shell"]'),
@@ -808,7 +819,7 @@ describe("Tool Card Display Contract", () => {
     await waitFor(() => expect(writeText).toHaveBeenCalledWith("2 passed"));
   });
 
-  it("shows failed shell status with expandable stderr, error, and exit code", () => {
+  it("shows failed shell status with expandable error and exit code", () => {
     render(
       <ChatThread
         {...baseProps}
@@ -845,8 +856,46 @@ describe("Tool Card Display Contract", () => {
       }),
     );
     expect(screen.getAllByText(/exit 2/).length).toBeGreaterThan(0);
-    expect(screen.getByText(/stderr boom/)).toBeInTheDocument();
+    expect(screen.queryByText(/stderr boom/)).not.toBeInTheDocument();
     expect(screen.getByText(/process failed/)).toBeInTheDocument();
+  });
+
+  it("shows only error details for failed task tools", () => {
+    render(
+      <ChatThread
+        {...baseProps}
+        messages={[
+          {
+            id: "msg-1",
+            role: "assistant",
+            content: "",
+            thinking: [],
+            tools: [
+              {
+                id: "task-1",
+                name: "task",
+                status: "failed",
+                arguments: {
+                  category: "worker",
+                  run_in_background: true,
+                  load_skills: [],
+                },
+                content: "task failed: bad arguments",
+                error: "bad arguments",
+              },
+            ],
+            approval: null,
+            status: "completed",
+            sequence: 1,
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText("Error")).toBeInTheDocument();
+    expect(screen.getByText("bad arguments")).toBeInTheDocument();
+    expect(screen.queryByText("Output")).not.toBeInTheDocument();
+    expect(screen.queryByText(/task failed:/)).not.toBeInTheDocument();
   });
 
   it("uses legacy fallback labels without exposing raw payloads", () => {
@@ -889,7 +938,7 @@ describe("Tool Card Display Contract", () => {
     expect(screen.queryByText(/hidden/)).not.toBeInTheDocument();
   });
 
-  it("groups multiple project lookup tools into one compact disclosure", () => {
+  it("aggregates multiple project lookup tools into an expandable group", () => {
     const { container } = render(
       <ChatThread
         {...baseProps}
@@ -936,16 +985,15 @@ describe("Tool Card Display Contract", () => {
       />,
     );
 
-    expect(screen.getByText("Project lookups")).toBeInTheDocument();
-    expect(screen.getByText("2 lookups")).toBeInTheDocument();
     expect(
-      container.querySelector('[data-tool-row="context-group"] button')
-        ?.className,
-    ).not.toContain("border");
-    expect(screen.queryByText("Read src/app.ts")).not.toBeInTheDocument();
+      container.querySelector('[data-tool-row="context-group"]'),
+    ).toBeNull();
+    expect(screen.getByText("read 1 file(s), searched 1 time(s)")).toBeInTheDocument();
     fireEvent.click(
-      screen.getByRole("button", { name: /show details for project lookups/i }),
+      screen.getByRole("button", { name: /show tool calls/i }),
     );
+    expect(container.querySelector('[data-tool-row="read_file"]')).not.toBeNull();
+    expect(container.querySelector('[data-tool-row="grep"]')).not.toBeNull();
     expect(screen.getByText("Read src/app.ts")).toBeInTheDocument();
     expect(screen.getByText("Search TODO")).toBeInTheDocument();
     expect(screen.queryByText(/secret/)).not.toBeInTheDocument();
@@ -1124,10 +1172,11 @@ describe("Tool Card Display Contract", () => {
       <ChatThread {...baseProps} messages={messages} />,
     );
 
-    expect(screen.getByText("Project lookups")).toBeInTheDocument();
-    expect(screen.getByText("2 lookups")).toBeInTheDocument();
+    expect(
+      screen.getByText("read 1 file(s), searched 1 time(s), ran 1 command(s), used 2 tool(s)"),
+    ).toBeInTheDocument();
     fireEvent.click(
-      screen.getByRole("button", { name: /show details for project lookups/i }),
+      screen.getByRole("button", { name: /show tool calls/i }),
     );
     expect(screen.getByText("Read README.md")).toBeInTheDocument();
     expect(screen.getByText("Search TODO")).toBeInTheDocument();
@@ -1144,7 +1193,7 @@ describe("Tool Card Display Contract", () => {
       container.querySelectorAll('[data-terminal-block="shell"]'),
     ).toHaveLength(1);
     expect(screen.getByText(/\$ npm test/)).toBeInTheDocument();
-    expect(screen.getByText(/stderr boom/)).toBeInTheDocument();
+    expect(screen.queryByText(/stderr boom/)).not.toBeInTheDocument();
     expect(screen.getByText(/process failed/)).toBeInTheDocument();
 
     expect(screen.getByText("Inspect custom MCP tool")).toBeInTheDocument();

@@ -126,12 +126,13 @@ interface AppState {
       };
     },
   ) => Promise<void>;
+  cancelCurrentRun: () => Promise<void>;
   resolveApproval: (decision: ApprovalDecision) => Promise<void>;
   answerQuestion: (answers: QuestionAnswer[]) => Promise<void>;
   loadNotifications: () => Promise<void>;
   acknowledgeNotification: (notificationId: string) => Promise<void>;
   loadBackgroundTasks: () => Promise<void>;
-  loadBackgroundTaskOutput: (taskId: string) => Promise<void>;
+  loadBackgroundTaskOutput: (taskId: string | null) => Promise<void>;
   cancelBackgroundTask: (taskId: string) => Promise<void>;
   loadSessionDebug: (sessionId?: string | null) => Promise<void>;
   loadSettings: () => Promise<void>;
@@ -215,6 +216,38 @@ function delay(ms: number): Promise<void> {
 
 function runStatusForReplay(session: SessionState): AppState["runStatus"] {
   return session.status === "running" ? "running" : "idle";
+}
+
+function runtimeFailureMessage(event: EventEnvelope): string | null {
+  if (event.event_type !== "runtime.failed") {
+    return null;
+  }
+  if (isRuntimeCancellationEvent(event)) {
+    return null;
+  }
+  const details = event.payload.provider_error_details;
+  if (details && typeof details === "object" && !Array.isArray(details)) {
+    const exceptionMessage = (details as Record<string, unknown>)
+      .exception_message;
+    if (typeof exceptionMessage === "string" && exceptionMessage.trim()) {
+      return exceptionMessage.trim();
+    }
+  }
+  const error = event.payload.error;
+  return typeof error === "string" && error.trim()
+    ? error.trim()
+    : "runtime failed";
+}
+
+function isRuntimeCancellationEvent(event: EventEnvelope): boolean {
+  if (event.event_type !== "runtime.failed") {
+    return false;
+  }
+  return (
+    event.payload.cancelled === true ||
+    event.payload.kind === "interrupted" ||
+    event.payload.kind === "cancelled"
+  );
 }
 
 function getPendingQuestionRequestId(events: EventEnvelope[]): string | null {
@@ -940,7 +973,15 @@ export const useAppStore = create<AppState>()(
             metadata: metadata,
           });
 
+          let streamFailureMessage: string | null = null;
+          let streamInterrupted = false;
           for await (const chunk of stream) {
+            if (chunk.event) {
+              streamInterrupted =
+                isRuntimeCancellationEvent(chunk.event) || streamInterrupted;
+              streamFailureMessage =
+                runtimeFailureMessage(chunk.event) ?? streamFailureMessage;
+            }
             set((state) => {
               const newEvents = chunk.event
                 ? [...state.currentSessionEvents, chunk.event]
@@ -959,7 +1000,16 @@ export const useAppStore = create<AppState>()(
             });
           }
 
-          set({ runStatus: "success" });
+          const failed =
+            !streamInterrupted &&
+            (streamFailureMessage !== null ||
+              get().currentSessionState?.status === "failed");
+          set({
+            runStatus: streamInterrupted ? "idle" : failed ? "error" : "success",
+            runError: failed
+              ? (streamFailureMessage ?? "runtime session failed")
+              : null,
+          });
           const currentSessionId = get().currentSessionId;
           await Promise.all([
             get().loadSessions(),
@@ -973,6 +1023,32 @@ export const useAppStore = create<AppState>()(
           ]);
         } catch (err) {
           set({ runStatus: "error", runError: (err as Error).message });
+        }
+      },
+
+      cancelCurrentRun: async () => {
+        const { currentSessionId, runStatus } = get();
+        if (runStatus !== "running") {
+          return;
+        }
+
+        const currentSessionState = get().currentSessionState;
+        set({
+          runStatus: "idle",
+          runError: null,
+          currentSessionState: currentSessionState
+            ? { ...currentSessionState, status: "idle" }
+            : currentSessionState,
+        });
+
+        if (!currentSessionId) {
+          return;
+        }
+
+        try {
+          await RuntimeClient.cancelSession(currentSessionId);
+        } catch (err) {
+          set({ runError: (err as Error).message });
         }
       },
 

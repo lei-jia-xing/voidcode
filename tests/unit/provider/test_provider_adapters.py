@@ -735,6 +735,10 @@ def test_provider_adapter_stream_turn_returns_final_token_usage(
 
     events = list(provider.stream_turn(_build_turn_request(model_name="openai")))
 
+    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+    assert isinstance(payload_obj, dict)
+    payload = cast(dict[str, object], payload_obj)
+    assert payload["stream_options"] == {"include_usage": True}
     assert events == [
         ProviderStreamEvent(
             kind="done",

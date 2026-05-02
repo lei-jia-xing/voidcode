@@ -6,6 +6,7 @@ import {
   RuntimeRequest,
   StoredSessionSummary,
   RuntimeResponse,
+  RuntimeInterruptResult,
   RuntimeStreamChunk,
   ApprovalDecision,
   QuestionAnswer,
@@ -170,6 +171,22 @@ export class RuntimeClient {
       `/api/sessions/${encodeURIComponent(sessionId)}/debug`,
     );
     await expectOk(res, "Failed to load session debug");
+    return res.json();
+  }
+
+  static async cancelSession(
+    sessionId: string,
+    reason = "web user interrupt",
+  ): Promise<RuntimeInterruptResult> {
+    const res = await fetch(
+      `/api/sessions/${encodeURIComponent(sessionId)}/cancel`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason }),
+      },
+    );
+    await expectOk(res, "Failed to interrupt session");
     return res.json();
   }
 

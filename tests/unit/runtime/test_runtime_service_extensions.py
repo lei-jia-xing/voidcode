@@ -17990,6 +17990,44 @@ def test_runtime_context_window_projection_preserves_full_session_truth(
     assert "source" in continuity_summary
 
 
+def test_runtime_persists_assembled_context_token_estimate(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        tool_registry=ToolRegistry.from_tools(()),
+        context_window_policy=ContextWindowPolicy(model_context_window_tokens=1000),
+    )
+    session_metadata = {
+        "runtime_config": runtime._runtime_config_metadata(),  # pyright: ignore[reportPrivateUsage]
+    }
+    assembled = runtime._assemble_provider_context(  # pyright: ignore[reportPrivateUsage]
+        prompt="检查构建输出",
+        tool_results=(
+            ToolResult(tool_name="read_file", status="ok", content="hello world", data={}),
+        ),
+        session_metadata=session_metadata,
+        preserved_system_segments=("Follow project instructions.",),
+    )
+    session = SessionState(
+        session=SessionRef("assembled-context-session"),
+        status="running",
+        turn=1,
+        metadata=session_metadata,
+    )
+
+    enriched = VoidCodeRuntime._session_with_context_window_payload_metadata(
+        session,
+        assembled.metadata,
+    )
+
+    context_window = cast(dict[str, object], enriched.metadata["context_window"])
+    assert context_window["model_context_window_tokens"] == 1000
+    assert context_window["estimated_context_token_source"] == "unicode_aware_chars"
+    assert isinstance(context_window["estimated_context_tokens"], int)
+    assert context_window["estimated_context_tokens"] > 0
+
+
 def test_runtime_context_window_resume_continuity_metadata_is_projection_only(
     tmp_path: Path,
 ) -> None:

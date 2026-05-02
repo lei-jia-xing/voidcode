@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { useTranslation } from "react-i18next";
-import { Send, Loader2 } from "lucide-react";
+import { Send, Square } from "lucide-react";
 import type {
   AgentSummary,
   ProviderModelsResult,
@@ -16,16 +16,25 @@ interface ComposerProps {
   agentPresets?: AgentSummary[];
   providers?: ProviderSummary[];
   providerModels?: Record<string, ProviderModelsResult>;
+  sessionContextUsage?: SessionContextUsage;
   onAgentPresetChange?: (preset: string) => void;
   onProviderModelChange?: (model: string) => void;
   onReasoningEffortChange?: (effort: string) => void;
   placeholder?: string;
   onSubmit: (message: string) => void;
+  onCancel?: () => void;
 }
 
 type ProviderModelMetadata = NonNullable<
   ProviderModelsResult["model_metadata"]
 >[string];
+
+export interface SessionContextUsage {
+  usedTokens: number | null;
+  contextWindow: number | null;
+  totalTokens: number | null;
+  estimated: boolean;
+}
 
 export function Composer({
   disabled,
@@ -36,11 +45,13 @@ export function Composer({
   agentPresets,
   providers,
   providerModels,
+  sessionContextUsage,
   onAgentPresetChange,
   onProviderModelChange,
   onReasoningEffortChange,
   placeholder,
   onSubmit,
+  onCancel,
 }: ComposerProps) {
   const { t } = useTranslation();
   const [input, setInput] = useState("");
@@ -83,7 +94,7 @@ export function Composer({
     reasoningEffort ||
     selectedModelMetadata?.default_reasoning_effort ||
     "medium";
-  const contextLabel = formatModelContext(selectedModelMetadata);
+  const contextUsageLabel = formatSessionContextUsage(sessionContextUsage, t);
   const selectableAgentPresets = useMemo(() => {
     return (agentPresets ?? []).filter((agent) => agent.selectable !== false);
   }, [agentPresets]);
@@ -141,6 +152,14 @@ export function Composer({
     if (el) el.style.height = "auto";
   };
 
+  const handleAction = () => {
+    if (isRunning) {
+      onCancel?.();
+      return;
+    }
+    handleSubmit();
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -170,7 +189,7 @@ export function Composer({
   return (
     <div className="border-t border-[color:var(--vc-border-subtle)] bg-[var(--vc-bg)] px-4 py-3">
       <div className="max-w-3xl mx-auto">
-        <div className="relative flex flex-col bg-[var(--vc-surface-1)] border border-[color:var(--vc-border-strong)] rounded-xl focus-within:border-[color:var(--vc-focus-ring)] focus-within:ring-1 focus-within:ring-[color:var(--vc-focus-ring)] transition-colors overflow-hidden">
+        <div className="relative flex flex-col bg-[var(--vc-surface-1)] border border-[color:var(--vc-border-strong)] rounded-xl focus-within:border-[color:var(--vc-focus-ring)] focus-within:ring-1 focus-within:ring-[color:var(--vc-focus-ring)] transition-colors">
           <div className="flex items-end gap-2 px-3 py-2 bg-transparent">
             <textarea
               ref={textareaRef}
@@ -184,12 +203,12 @@ export function Composer({
             />
             <button
               type="button"
-              onClick={handleSubmit}
-              disabled={disabled || !input.trim()}
-              className="flex-shrink-0 w-8 h-8 flex items-center justify-center rounded-lg border border-[color:var(--vc-text-primary)] bg-[var(--vc-text-primary)] text-[var(--vc-bg)] hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed transition-opacity mb-0.5 focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--vc-focus-ring)]"
+              aria-label={isRunning ? t("chat.stop") : t("chat.send")}
+              onClick={handleAction}
+              className="flex-shrink-0 w-8 h-8 flex cursor-pointer items-center justify-center rounded-lg border border-[color:var(--vc-text-primary)] bg-[var(--vc-text-primary)] text-[var(--vc-bg)] hover:opacity-90 transition-opacity mb-0.5 focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--vc-focus-ring)]"
             >
               {isRunning ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
+                <Square className="w-3.5 h-3.5 fill-current" />
               ) : (
                 <Send className="w-4 h-4" />
               )}
@@ -215,7 +234,7 @@ export function Composer({
                 </button>
 
                 {showAgentMenu && (
-                  <div className="absolute bottom-full left-0 z-20 mb-2 min-w-[180px] rounded border border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] py-1 shadow-xl">
+                  <div className="absolute bottom-full left-0 z-[100] mb-2 min-w-[180px] rounded border border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] py-1 shadow-xl">
                     {selectableAgentPresets.map((agent) => {
                       const active = agent.id === (agentPreset ?? "leader");
                       return (
@@ -261,7 +280,7 @@ export function Composer({
                   </button>
 
                   {showModelMenu && (
-                    <div className="absolute bottom-full left-0 z-20 mb-2 max-h-72 min-w-[260px] max-w-[360px] overflow-y-auto rounded border border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] py-1 shadow-xl">
+                    <div className="absolute bottom-full left-0 z-[100] mb-2 max-h-72 min-w-[260px] max-w-[360px] overflow-y-auto rounded border border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] py-1 shadow-xl">
                       {availableModelGroups.map(({ provider, models }) => (
                         <div key={provider.name} className="py-1">
                           <div className="px-3 py-1 text-[11px] text-[var(--vc-text-subtle)]">
@@ -304,9 +323,9 @@ export function Composer({
                   )}
                 </div>
               )}
-              {selectedModelAvailable && contextLabel && (
+              {selectedModelAvailable && (
                 <span className="px-1.5 py-1 text-[var(--vc-text-subtle)]">
-                  {contextLabel}
+                  {contextUsageLabel}
                 </span>
               )}
               {selectedModelAvailable && supportsReasoningEffort && (
@@ -368,6 +387,64 @@ function formatModelContext(
     parts.push("reasoning");
   }
   return parts.join(" · ");
+}
+
+function formatSessionContextUsage(
+  usage: SessionContextUsage | undefined,
+  t: (key: string, options?: Record<string, unknown>) => string,
+): string {
+  const total = formatTotalUsage(usage, t);
+  if (!usage || typeof usage.usedTokens !== "number") {
+    if (
+      usage &&
+      typeof usage.contextWindow === "number" &&
+      usage.contextWindow > 0
+    ) {
+      return t("chat.contextUsageUnknownTokens", {
+        context: formatTokenCount(usage.contextWindow),
+        total,
+      });
+    }
+    return t("chat.contextUsageUnavailable", { total });
+  }
+  const tokens = `${usage.estimated ? "≈" : ""}${formatTokenCount(usage.usedTokens)}`;
+  if (
+    typeof usage.contextWindow !== "number" ||
+    usage.contextWindow <= 0 ||
+    usage.usedTokens < 0
+  ) {
+    return t("chat.contextUsageNoWindow", { tokens, total });
+  }
+  const percent = Math.min(
+    999,
+    Math.max(0, (usage.usedTokens / usage.contextWindow) * 100),
+  );
+  return t("chat.contextUsage", {
+    tokens,
+    percent: formatContextPercent(percent),
+    total,
+  });
+}
+
+function formatTotalUsage(
+  usage: SessionContextUsage | undefined,
+  t: (key: string, options?: Record<string, unknown>) => string,
+): string {
+  if (
+    !usage ||
+    typeof usage.totalTokens !== "number" ||
+    usage.totalTokens <= 0
+  ) {
+    return t("chat.totalUsageUnavailable");
+  }
+  return t("chat.totalUsage", { total: formatTokenCount(usage.totalTokens) });
+}
+
+function formatContextPercent(value: number): string {
+  if (value >= 10) return String(Math.round(value));
+  if (value >= 1) return String(Math.round(value * 10) / 10);
+  if (value > 0) return "<1";
+  return "0";
 }
 
 function formatTokenCount(value: number): string {
