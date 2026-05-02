@@ -357,3 +357,55 @@ def test_runtime_config_rejects_workflow_missing_forced_skill(tmp_path: Path) ->
 
     with pytest.raises(ValueError, match="force_load_skills references missing skill: missing"):
         _ = load_runtime_config(tmp_path, env={})
+
+
+def test_runtime_config_accepts_builtin_workflow_skill_refs_without_workspace_skills(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / ".voidcode.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "workflows": {
+                    "custom": {
+                        "id": "custom",
+                        "default_agent": "leader",
+                        "category": "implementation",
+                        "skill_refs": ["git-master"],
+                        "force_load_skills": ["review-work"],
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.workflows is not None
+    custom = config.workflows.get("custom")
+    assert custom is not None
+    assert custom.skill_refs == ("git-master",)
+    assert custom.force_load_skills == ("review-work",)
+
+
+def test_runtime_config_rejects_workflow_missing_skill_ref(tmp_path: Path) -> None:
+    config_path = tmp_path / ".voidcode.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "workflows": {
+                    "custom": {
+                        "id": "custom",
+                        "default_agent": "leader",
+                        "category": "implementation",
+                        "skill_refs": ["missing"],
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="skill_refs references missing skill: missing"):
+        _ = load_runtime_config(tmp_path, env={})

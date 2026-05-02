@@ -29,7 +29,7 @@ from ..hook.presets import validate_hook_preset_refs
 from ..lsp import LspServerConfigOverride as RuntimeLspServerConfig
 from ..lsp import derive_workspace_lsp_defaults, has_builtin_lsp_server_preset
 from ..provider import config as provider_config
-from ..skills import SkillRegistry
+from ..skills import SkillRegistry, list_builtin_skills
 from .permission import (
     ExternalDirectoryPermissionConfig,
     ExternalDirectoryPolicy,
@@ -665,13 +665,14 @@ def _discover_runtime_skill_names(
     workspace: Path,
     skills: RuntimeSkillsConfig | None,
 ) -> tuple[str, ...]:
+    builtin_names = tuple(skill.name for skill in list_builtin_skills())
     search_paths = skills.paths if skills is not None and skills.paths else None
     registry = (
         SkillRegistry.discover(workspace=workspace, search_paths=search_paths)
         if search_paths is not None
         else SkillRegistry.discover(workspace=workspace)
     )
-    return tuple(registry.skills)
+    return tuple(dict.fromkeys((*builtin_names, *registry.skills)))
 
 
 def _load_repo_local_config(

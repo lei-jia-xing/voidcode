@@ -335,25 +335,49 @@ def test_builtin_workflow_presets_cover_mvp_registry_foundation() -> None:
     assert git.read_only_default is False
 
 
+def test_builtin_workflow_presets_expose_issue_405_named_capability_intents() -> None:
+    registry = load_builtin_workflow_preset_registry()
+
+    git = registry.get("git")
+    frontend = registry.get("frontend")
+    research = registry.get("research")
+    review = registry.get("review")
+    assert git is not None
+    assert frontend is not None
+    assert research is not None
+    assert review is not None
+
+    assert "git-master" in git.skill_refs
+    assert "frontend-design" in frontend.skill_refs
+    assert "review-work" in review.skill_refs
+    assert _workflow_mcp_servers(frontend) == {"playwright"}
+    assert _workflow_mcp_servers(research) == {"context7", "websearch", "grep_app"}
+    assert _workflow_mcp_servers(review) == {"context7", "websearch", "grep_app"}
+    assert all(binding.required is False for binding in frontend.mcp_binding_intents)
+    assert all(binding.required is False for binding in research.mcp_binding_intents)
+    assert all(binding.required is False for binding in review.mcp_binding_intents)
+
+
 def test_builtin_git_workflow_preset_declares_strict_safety_guidance() -> None:
     git = load_builtin_workflow_preset_registry().get("git")
 
     assert git is not None
     assert git.default_agent == "leader"
-    assert git.tool_policy_ref == "git_safety"
+    assert git.tool_policy_ref is None
     assert git.permission_policy_ref == "runtime_default"
     assert git.read_only_default is False
     git_guidance = f"{git.prompt_append} {git.verification_guidance}".lower()
     assert "status" in git_guidance
     assert "diff" in git_guidance
-    assert "destructive" in git_guidance
-    assert "hard reset" in git_guidance
-    assert "force push" in git_guidance
-    assert "history rewrite" in git_guidance
-    assert "explicitly asks" in git_guidance
+    assert "runtime approval" in git_guidance
+    assert "generic" in git_guidance
     assert "approval" in git_guidance
-    assert "bypass hooks" in git_guidance
+    assert "preserve hooks" in git_guidance
     assert "auto-approval" not in git_guidance
+
+
+def _workflow_mcp_servers(preset: WorkflowPreset) -> set[str]:
+    return {server for binding in preset.mcp_binding_intents for server in binding.servers}
 
 
 def test_builtin_workflow_presets_validate_with_empty_capability_catalogs() -> None:
@@ -407,7 +431,7 @@ def test_validate_workflow_presets_rejects_missing_force_loaded_skill() -> None:
                     id="custom",
                     default_agent="leader",
                     category="implementation",
-                    force_load_skills=("frontend-ui-ux",),
+                    force_load_skills=("missing-skill",),
                 ),
             ),
             available_skill_names=("git-master",),

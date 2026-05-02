@@ -8,6 +8,7 @@ from typing import Literal, cast
 
 from ..agent.builtin import get_builtin_agent_manifest
 from ..hook.presets import validate_hook_preset_refs
+from ..skills.builtin import list_builtin_skills
 
 type WorkflowPresetId = Literal["research", "implementation", "frontend", "review", "git"]
 type WorkflowPresetKey = WorkflowPresetId | str
@@ -177,7 +178,9 @@ def validate_workflow_presets(
     available_mcp_profiles: Iterable[str] = (),
     available_mcp_servers: Iterable[str] = (),
 ) -> tuple[WorkflowPreset, ...]:
-    available_skills = frozenset(available_skill_names)
+    available_skills = frozenset(
+        (*tuple(skill.name for skill in list_builtin_skills()), *tuple(available_skill_names))
+    )
     available_profiles = frozenset(available_mcp_profiles)
     available_servers = frozenset(available_mcp_servers)
     seen_ids: set[str] = set()
@@ -195,6 +198,12 @@ def validate_workflow_presets(
             if skill_name not in available_skills:
                 raise ValueError(
                     f"workflow preset '{preset.id}' force_load_skills references missing skill: "
+                    f"{skill_name}"
+                )
+        for skill_name in preset.skill_refs:
+            if skill_name not in available_skills:
+                raise ValueError(
+                    f"workflow preset '{preset.id}' skill_refs references missing skill: "
                     f"{skill_name}"
                 )
         for binding in preset.mcp_binding_intents:
@@ -404,9 +413,17 @@ _VALIDATED_BUILTIN_WORKFLOW_PRESETS = validate_workflow_presets(
             category="research",
             prompt_append=(
                 "Use public documentation and examples only; distinguish official sources "
-                "from incidental commentary."
+                "from incidental commentary. Prefer Context7-style documentation lookup, "
+                "websearch-style public research, and grep_app-style code search when those "
+                "configured capabilities are available."
             ),
             hook_preset_refs=("role_reminder", "background_output_quality_guidance"),
+            mcp_binding_intents=(
+                WorkflowMcpBindingIntent(
+                    servers=("context7", "websearch", "grep_app"),
+                    required=False,
+                ),
+            ),
             read_only_default=True,
             verification_guidance="Cite the evidence source and summarize confidence limits.",
         ),
@@ -423,8 +440,16 @@ _VALIDATED_BUILTIN_WORKFLOW_PRESETS = validate_workflow_presets(
             id="frontend",
             default_agent="leader",
             category="frontend",
-            prompt_append="Respect frontend project guidance and verify UI-facing changes.",
+            prompt_append=(
+                "Respect frontend project guidance, apply frontend-design implementation "
+                "guidance, and use Playwright/browser verification when a configured browser "
+                "capability is available."
+            ),
+            skill_refs=("frontend-design", "playwright"),
             hook_preset_refs=("role_reminder", "todo_continuation_guidance"),
+            mcp_binding_intents=(
+                WorkflowMcpBindingIntent(servers=("playwright",), required=False),
+            ),
             permission_policy_ref="runtime_default",
             verification_guidance="Run targeted frontend type, lint, test, or build checks.",
         ),
@@ -432,8 +457,19 @@ _VALIDATED_BUILTIN_WORKFLOW_PRESETS = validate_workflow_presets(
             id="review",
             default_agent="advisor",
             category="review",
-            prompt_append="Review the requested scope without mutating the workspace.",
+            prompt_append=(
+                "Review the requested scope without mutating the workspace. Apply "
+                "review-work result-quality guidance, read-only analysis, and configured "
+                "documentation or code search capabilities when useful."
+            ),
+            skill_refs=("review-work",),
             hook_preset_refs=("role_reminder",),
+            mcp_binding_intents=(
+                WorkflowMcpBindingIntent(
+                    servers=("context7", "websearch", "grep_app"),
+                    required=False,
+                ),
+            ),
             read_only_default=True,
             verification_guidance="Report findings with severity and concrete file references.",
         ),
@@ -442,17 +478,17 @@ _VALIDATED_BUILTIN_WORKFLOW_PRESETS = validate_workflow_presets(
             default_agent="leader",
             category="git",
             prompt_append=(
-                "Keep git operations narrow, auditable, and user-requested. Inspect status and "
-                "diff before changing repository state. Do not run destructive operations such "
-                "as hard reset, force push, or history rewrite unless the user explicitly asks "
-                "for that exact operation. Never bypass hooks or widen approvals."
+                "Apply git-master-style safety guidance. Keep git operations narrow, "
+                "auditable, and user-requested. Inspect status and diff before changing "
+                "repository state. Preserve hooks, avoid widening approvals, and rely on "
+                "generic runtime approval and tool boundaries."
             ),
+            skill_refs=("git-master",),
             hook_preset_refs=("role_reminder",),
-            tool_policy_ref="git_safety",
             permission_policy_ref="runtime_default",
             verification_guidance=(
                 "Check git status before and after the requested operation, preserve hooks, "
-                "and keep destructive commands behind explicit user intent plus runtime approval."
+                "and keep repository mutations behind explicit user intent plus runtime approval."
             ),
         ),
     )
