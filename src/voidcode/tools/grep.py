@@ -152,7 +152,9 @@ class GrepTool:
             pattern = re.compile(args.pattern if args.regex else re.escape(args.pattern))
         except re.error as exc:
             raise ValueError(
-                f"grep invalid arguments: pattern: invalid regex pattern ({exc.msg}) (received str)"
+                "grep Validation error: pattern: invalid regex pattern "
+                f"({exc.msg}) (received str). "
+                "Please retry with corrected arguments that satisfy the tool schema."
             ) from exc
         targets = self._collect_targets(
             candidate,

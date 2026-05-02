@@ -208,8 +208,9 @@ def test_grep_tool_rejects_invalid_arguments_and_non_utf8_files(tmp_path: Path) 
     _ = binary_file.write_bytes(b"\xff\xfe\x00x")
     tool = GrepTool()
     pattern_type_error = (
-        r"grep invalid arguments: pattern: "
+        r"grep Validation error: pattern: "
         r"Input should be a valid string \(received int\)"
+        r"\. Please retry with corrected arguments that satisfy the tool schema\."
     )
 
     with pytest.raises(ValueError, match=pattern_type_error):
@@ -219,8 +220,9 @@ def test_grep_tool_rejects_invalid_arguments_and_non_utf8_files(tmp_path: Path) 
         )
 
     path_type_error = (
-        r"grep invalid arguments: path: "
+        r"grep Validation error: path: "
         r"Input should be a valid string \(received int\)"
+        r"\. Please retry with corrected arguments that satisfy the tool schema\."
     )
     with pytest.raises(ValueError, match=path_type_error):
         tool.invoke(
@@ -229,8 +231,9 @@ def test_grep_tool_rejects_invalid_arguments_and_non_utf8_files(tmp_path: Path) 
         )
 
     empty_pattern_error = (
-        r"grep invalid arguments: pattern: Value error, "
+        r"grep Validation error: pattern: Value error, "
         r"pattern must not be empty \(received str\)"
+        r"\. Please retry with corrected arguments that satisfy the tool schema\."
     )
     with pytest.raises(ValueError, match=empty_pattern_error):
         tool.invoke(
@@ -258,12 +261,14 @@ def test_grep_tool_rejects_invalid_arguments_and_non_utf8_files(tmp_path: Path) 
 def test_grep_tool_reports_missing_required_args_and_invalid_regex(tmp_path: Path) -> None:
     tool = GrepTool()
     missing_pattern_error = (
-        r"grep invalid arguments: pattern: "
+        r"grep Validation error: pattern: "
         r"Input should be a valid string \(received NoneType\)"
+        r"\. Please retry with corrected arguments that satisfy the tool schema\."
     )
     missing_path_error = (
-        r"grep invalid arguments: path: "
+        r"grep Validation error: path: "
         r"Input should be a valid string \(received NoneType\)"
+        r"\. Please retry with corrected arguments that satisfy the tool schema\."
     )
 
     with pytest.raises(ValueError, match=missing_pattern_error):
@@ -277,7 +282,7 @@ def test_grep_tool_reports_missing_required_args_and_invalid_regex(tmp_path: Pat
 
     with pytest.raises(
         ValueError,
-        match=r"grep invalid arguments: pattern: invalid regex pattern .* \(received str\)",
+        match=r"grep Validation error: pattern: invalid regex pattern .* \(received str\)",
     ):
         tool.invoke(
             ToolCall(

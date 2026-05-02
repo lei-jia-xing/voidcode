@@ -51,13 +51,15 @@ class BackgroundCancelTool:
             raise ValueError(format_validation_error(self.definition.name, exc)) from exc
         if args.all:
             raise ValueError(
-                "background_cancel invalid arguments: all: Value error, "
-                "all=true is not supported in VoidCode yet (received bool)"
+                "background_cancel Validation error: all: Value error, "
+                "all=true is not supported in VoidCode yet (received bool). "
+                "Please retry with corrected arguments that satisfy the tool schema."
             )
         if args.taskId is None:
             raise ValueError(
-                "background_cancel invalid arguments: taskId: Value error, "
-                "taskId is required when all is false (received NoneType)"
+                "background_cancel Validation error: taskId: Value error, "
+                "taskId is required when all is false (received NoneType). "
+                "Please retry with corrected arguments that satisfy the tool schema."
             )
         try:
             task = self._runtime.cancel_background_task(args.taskId)
