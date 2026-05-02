@@ -772,6 +772,9 @@ def _runtime_failed_error(result: RuntimeStreamResult) -> str | None:
     )
     if failed_event is None:
         return None
+    summary = failed_event.payload.get("error_summary")
+    if isinstance(summary, str) and summary:
+        return _format_runtime_error_summary(summary)
     error = failed_event.payload.get("error")
     if not isinstance(error, str) or not error:
         return None
