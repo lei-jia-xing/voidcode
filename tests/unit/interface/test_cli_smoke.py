@@ -468,6 +468,52 @@ def test_sessions_resume_surfaces_approval_resolution_errors_cleanly() -> None:
     assert "Traceback" not in resume_result.stderr
 
 
+def test_sessions_answer_requires_response_text() -> None:
+    result = _run_module_cli(
+        "sessions",
+        "answer",
+        "question-session",
+        "--question-request-id",
+        "question-1",
+    )
+
+    assert result.returncode == 2
+    assert "at least one --response or --response-json must be provided" in result.stderr
+
+
+def test_sessions_answer_surfaces_missing_pending_question_cleanly() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        _ = (workspace / "sample.txt").write_text("sample\n", encoding="utf-8")
+        env = with_src_pythonpath(os.environ.copy())
+        setup_result = _run_module_cli(
+            "run",
+            "read sample.txt",
+            "--workspace",
+            str(workspace),
+            "--session-id",
+            "question-session",
+            env=env,
+        )
+        answer_result = _run_module_cli(
+            "sessions",
+            "answer",
+            "question-session",
+            "--workspace",
+            str(workspace),
+            "--question-request-id",
+            "question-1",
+            "--response",
+            "yes",
+            env=env,
+        )
+
+    assert setup_result.returncode == 0
+    assert answer_result.returncode == 16
+    assert "no pending question" in answer_result.stderr
+    assert "Traceback" not in answer_result.stderr
+
+
 def test_sessions_debug_outputs_json_snapshot() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         workspace = Path(tmp)

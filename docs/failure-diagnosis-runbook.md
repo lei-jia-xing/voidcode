@@ -6,7 +6,7 @@
 
 本手册仅涉及当前 MVP 已实现的运行时表面：
 
-- CLI：`voidcode run`、`voidcode sessions list`、`voidcode sessions resume`、`voidcode serve`、`voidcode tasks` 子命令、`voidcode config show`、`voidcode doctor`
+- CLI：`voidcode run`、`voidcode sessions list`、`voidcode sessions resume`、`voidcode sessions answer`、`voidcode serve`、`voidcode tasks` 子命令、`voidcode config show`、`voidcode doctor`
 - HTTP 传输：`voidcode serve` 暴露的 `/api/sessions`、`/api/tasks`、`/api/runtime/run/stream` 等端点
 - SQLite 持久化：`.voidcode/sessions.sqlite3` 中面向操作员排障最重要的 `sessions`、`session_events`、`background_tasks`、`session_notifications` 表（另有用于事件投递去重的 `session_event_deliveries` 表）
 - 会话状态字面量：`idle`、`running`、`waiting`、`completed`、`failed`
@@ -72,7 +72,14 @@
       --approval-decision allow
     ```
     其中 `<request-id>` 可从 `runtime.approval_requested` 事件的 `request_id` payload 中获取，或从 SQLite 的 `pending_approval_json` 中解析。
-  - 如果等待原因是 `question_wait`，当前 CLI 没有与 `--approval-request-id` / `--approval-decision` 对等的“提交问题回答”子命令。CLI 能做的是先用 `uv run voidcode sessions resume <session-id> --workspace .` 重放上下文，然后改走 HTTP 端点提交回答，或在确认原因后重新发起新会话。
+  - 如果等待原因是 `question_wait`，使用 `sessions answer` 提交回答并恢复会话：
+    ```bash
+    uv run voidcode sessions answer <session-id> \
+      --workspace . \
+      --question-request-id <request-id> \
+      --response "answer text"
+    ```
+    单问题文本回答可重复传入 `--response` 形成同一问题的多个答案；多问题或精确 header 绑定场景使用 `--response-json '[{"header":"Confirm","answers":["yes"]}]'`。其中 `<request-id>` 可从 `runtime.question_requested` 事件的 `request_id` payload 中获取，或从 SQLite 的 `pending_question_json` 中解析。
 - **恢复（HTTP）**：
   - 提交审批决策：
     ```bash
@@ -81,11 +88,11 @@
       -d '{"request_id": "<request-id>", "decision": "allow"}'
     ```
   - 决策值为 `"allow"` 或 `"deny"`。响应为 `RuntimeResponse` JSON，包含恢复后的事件和当前输出；会话可能继续运行、再次进入 `waiting`，也可能到达 `completed` / `failed`。
-  - 如果是问题等待（question_wait），使用 `/api/sessions/{session-id}/question` 端点，payload 包含 `question_request_id` 和 `responses` 数组，例如：
+  - 如果是问题等待（question_wait），也可以使用 `/api/sessions/{session-id}/question` 端点，payload 包含 `question_request_id` 和 `responses` 数组，例如：
     ```bash
     curl -X POST http://127.0.0.1:8000/api/sessions/{session-id}/question \
       -H 'Content-Type: application/json' \
-      -d '{"question_request_id": "<request-id>", "responses": ["answer text"]}'
+      -d '{"question_request_id": "<request-id>", "responses": [{"header": "Confirm", "answers": ["answer text"]}]}'
     ```
 
 ### 2.4 `completed`

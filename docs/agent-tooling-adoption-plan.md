@@ -123,7 +123,7 @@ mise run lint
 **仓库中的实际落点：**
 
 - `src/voidcode/doctor/`
-- `src/voidcode/cli.py`
+- `src/voidcode/cli/`
 - 相关测试：`tests/unit/doctor/test_doctor.py`
 
 **当前实现说明：**

@@ -61,7 +61,7 @@
 - `src/voidcode/hook/presets.py`
 - `src/voidcode/graph/contracts.py`
 - `src/voidcode/tools/contracts.py`
-- `src/voidcode/cli.py`
+- `src/voidcode/cli/`
 
 ## 所有权规则
 

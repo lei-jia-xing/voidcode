@@ -1718,6 +1718,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "beautifulsoup4" },
+    { name = "click" },
     { name = "httpx" },
     { name = "langchain-core" },
     { name = "langgraph" },
@@ -1747,6 +1748,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "beautifulsoup4" },
+    { name = "click", specifier = ">=8.1.8" },
     { name = "httpx" },
     { name = "hypothesis", marker = "extra == 'dev'" },
     { name = "langchain-core" },
