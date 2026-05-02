@@ -28,6 +28,7 @@ from .events import (
     RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL,
     RUNTIME_FAILED,
     RUNTIME_PROVIDER_FALLBACK,
+    RUNTIME_TOOL_COMPLETED,
     EventEnvelope,
 )
 from .session import SessionState
@@ -850,6 +851,8 @@ class RuntimeBackgroundTaskSupervisor:
         except ValueError as exc:
             routing = None
             routing_error = str(exc)
+        duration_seconds = self._duration_seconds(task=task)
+        tool_call_count = self._tool_call_count(child_result=child_result)
         return BackgroundTaskResult(
             task_id=task.task.id,
             parent_session_id=task.parent_session_id,
@@ -864,8 +867,34 @@ class RuntimeBackgroundTaskSupervisor:
             error=error or routing_error,
             result_available=result_available,
             cancellation_cause=task.cancellation_cause,
+            duration_seconds=duration_seconds,
+            tool_call_count=tool_call_count,
             observability=self.task_observability(task),
         )
+
+    @staticmethod
+    def _duration_seconds(*, task: BackgroundTaskState) -> float | None:
+        started = task.started_at_unix_ms or task.created_at_unix_ms
+        finished = task.finished_at_unix_ms
+        if started is None or finished is None:
+            return None
+        return round(max(finished - started, 0) / 1000, 3)
+
+    @staticmethod
+    def _tool_call_count(*, child_result: RuntimeSessionResult | None) -> int:
+        if child_result is None:
+            return 0
+        tool_call_ids: set[str] = set()
+        anonymous_count = 0
+        for event in child_result.transcript:
+            if event.event_type != RUNTIME_TOOL_COMPLETED:
+                continue
+            tool_call_id = event.payload.get("tool_call_id")
+            if isinstance(tool_call_id, str) and tool_call_id:
+                tool_call_ids.add(tool_call_id)
+            else:
+                anonymous_count += 1
+        return len(tool_call_ids) + anonymous_count
 
     @staticmethod
     def _leader_safe_child_summary(

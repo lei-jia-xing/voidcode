@@ -728,6 +728,7 @@ def test_http_background_task_list_endpoints_expose_global_and_parent_scoped_vie
             "session_id": "child-session",
             "error": None,
             "created_at": 2,
+            "created_at_unix_ms": None,
             "updated_at": 3,
             "observability": None,
         }

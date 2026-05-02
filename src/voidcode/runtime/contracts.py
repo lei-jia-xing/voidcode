@@ -929,6 +929,8 @@ class BackgroundTaskResult:
     error: str | None = None
     result_available: bool = False
     cancellation_cause: str | None = None
+    duration_seconds: float | None = None
+    tool_call_count: int = 0
     observability: BackgroundTaskObservability | None = None
 
     @property
