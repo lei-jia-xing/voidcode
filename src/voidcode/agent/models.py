@@ -24,6 +24,36 @@ _EMPTY_MODEL_FAMILY_OVERRIDES: Mapping[str, str] = MappingProxyType({})
 
 
 @dataclass(frozen=True, slots=True)
+class AgentMcpBindingIntent:
+    """Declarative MCP binding intent for an agent preset.
+
+    This is deliberately not an execution authority. Agent declarations can ask
+    runtime to bind configured MCP profiles/servers, but runtime remains the
+    source of truth for server lifecycle, approval, and tool allowlist checks.
+    """
+
+    profile: str | None = None
+    servers: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.profile is not None and not self.profile.strip():
+            raise ValueError("AgentMcpBindingIntent.profile must be a non-empty string")
+        if len(self.servers) != len(set(self.servers)):
+            raise ValueError("AgentMcpBindingIntent.servers must not contain duplicates")
+        for server_name in self.servers:
+            if not server_name.strip():
+                raise ValueError("AgentMcpBindingIntent.servers entries must be non-empty strings")
+
+    def to_payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {}
+        if self.profile is not None:
+            payload["profile"] = self.profile
+        if self.servers:
+            payload["servers"] = list(self.servers)
+        return payload
+
+
+@dataclass(frozen=True, slots=True)
 class AgentPromptMaterialization:
     """Stable, audit-friendly description of how a manifest's prompt is rendered.
 
@@ -102,6 +132,7 @@ class AgentManifest:
     tool_allowlist: tuple[str, ...] = ()
     skill_refs: tuple[str, ...] = ()
     preset_hook_refs: tuple[str, ...] = ()
+    mcp_binding: AgentMcpBindingIntent | None = None
     routing_hints: dict[str, object] = field(default_factory=dict)
     top_level_selectable: bool = False
     prompt_materialization: AgentPromptMaterialization | None = None
@@ -119,6 +150,8 @@ class AgentManifest:
             fields.append("tool_allowlist")
         if self.preset_hook_refs:
             fields.append("preset_hook_refs")
+        if self.mcp_binding is not None:
+            fields.append("mcp_binding")
         fields.append("top_level_selectable")
         if self.prompt_materialization is not None:
             fields.append("prompt_materialization")
