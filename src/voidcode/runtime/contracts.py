@@ -451,6 +451,10 @@ def validate_runtime_request_metadata(
         )
 
     if "workflow" in metadata:
+        if not allow_internal_fields:
+            raise RuntimeRequestError(
+                "request metadata 'workflow' is internal runtime state and cannot be supplied"
+            )
         workflow = metadata["workflow"]
         if not isinstance(workflow, dict):
             raise RuntimeRequestError("request metadata 'workflow' must be an object when provided")

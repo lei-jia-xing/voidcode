@@ -675,6 +675,21 @@ def _discover_runtime_skill_names(
     return tuple(dict.fromkeys((*builtin_names, *registry.skills)))
 
 
+def _available_agent_mcp_profiles(
+    workspace: Path,
+    *,
+    env: Mapping[str, str],
+    agent_registry: AgentManifestRegistry | None,
+) -> tuple[str, ...]:
+    registry = agent_registry or load_agent_manifest_registry(workspace, env=env)
+    profiles = (
+        manifest.mcp_binding.profile
+        for manifest in registry.list_manifests()
+        if manifest.mcp_binding is not None and manifest.mcp_binding.profile is not None
+    )
+    return tuple(dict.fromkeys(profiles))
+
+
 def _load_repo_local_config(
     workspace: Path,
     *,
@@ -770,6 +785,15 @@ def _load_repo_local_config(
         raw_workflows,
         field_path="runtime config field 'workflows'",
         available_skill_names=available_skill_names,
+        available_mcp_profiles=(
+            _available_agent_mcp_profiles(
+                workspace,
+                env=env,
+                agent_registry=agent_registry,
+            )
+            if raw_workflows is not None
+            else ()
+        ),
         available_mcp_servers=mcp.servers.keys()
         if mcp is not None and mcp.servers is not None
         else (),
