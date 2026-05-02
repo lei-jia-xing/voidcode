@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-# Transport type - currently only stdio is supported
-McpTransport = Literal["stdio"]
+# Transport types supported by the runtime
+McpTransport = Literal["stdio", "remote-http"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,6 +18,7 @@ class McpServerConfig:
     transport: McpTransport = "stdio"
     command: tuple[str, ...] = ()
     env: dict[str, str] = field(default_factory=dict)
+    url: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,16 +37,18 @@ DEFAULT_MCP_TRANSPORT: McpTransport = "stdio"
 
 
 def create_mcp_server_config(
-    command: tuple[str, ...],
+    command: tuple[str, ...] = (),
     *,
     transport: McpTransport = "stdio",
     env: dict[str, str] | None = None,
+    url: str | None = None,
 ) -> McpServerConfig:
     """Factory function to create an McpServerConfig."""
     return McpServerConfig(
         transport=transport,
         command=command,
         env=env or {},
+        url=url,
     )
 
 

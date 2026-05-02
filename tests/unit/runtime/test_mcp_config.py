@@ -183,12 +183,12 @@ def test_builtin_mcp_descriptors_model_issue_405_capabilities() -> None:
     assert set(descriptors) == {"context7", "websearch", "grep_app", "playwright"}
     assert descriptors["context7"].transport == "remote-http"
     assert descriptors["websearch"].transport == "remote-http"
-    assert descriptors["grep_app"].transport == "configured-server-intent"
-    assert descriptors["grep_app"].url is None
+    assert descriptors["grep_app"].transport == "remote-http"
+    assert descriptors["grep_app"].url == "https://mcp.grep.app"
     assert descriptors["grep_app"].command == ()
     assert descriptors["grep_app"].lifecycle == "descriptor_only_config_gated"
     grep_app_payload = descriptors["grep_app"].to_payload()
-    assert "url" not in grep_app_payload
+    assert grep_app_payload["url"] == "https://mcp.grep.app"
     assert "command" not in grep_app_payload
     playwright = get_builtin_mcp_descriptor("playwright")
     assert playwright is not None
@@ -198,14 +198,66 @@ def test_builtin_mcp_descriptors_model_issue_405_capabilities() -> None:
     assert playwright.skill_name == "playwright"
 
 
-def test_builtin_grep_app_descriptor_is_not_configured_runtime_server() -> None:
+def test_builtin_grep_app_descriptor_has_remote_http_endpoint() -> None:
     descriptor = get_builtin_mcp_descriptor("grep_app")
 
     assert descriptor is not None
     assert descriptor.name == "grep_app"
-    assert descriptor.url is None
-    assert descriptor.command == ()
+    assert descriptor.transport == "remote-http"
+    assert descriptor.url == "https://mcp.grep.app"
 
     config = RuntimeMcpConfig(enabled=True)
 
     assert config.servers is None
+
+
+def test_runtime_config_parses_mcp_remote_http_servers(tmp_path: Path) -> None:
+    (tmp_path / ".voidcode.json").write_text(
+        json.dumps(
+            {
+                "mcp": {
+                    "enabled": True,
+                    "servers": {
+                        "grep_app": {
+                            "transport": "remote-http",
+                            "url": "https://mcp.grep.app",
+                        }
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.mcp == RuntimeMcpConfig(
+        enabled=True,
+        servers={
+            "grep_app": RuntimeMcpServerConfig(
+                transport="remote-http",
+                url="https://mcp.grep.app",
+            )
+        },
+    )
+
+
+def test_runtime_config_rejects_missing_mcp_url_for_remote_http(tmp_path: Path) -> None:
+    (tmp_path / ".voidcode.json").write_text(
+        json.dumps(
+            {
+                "mcp": {
+                    "enabled": True,
+                    "servers": {
+                        "grep_app": {
+                            "transport": "remote-http",
+                        }
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="mcp.servers.grep_app"):
+        load_runtime_config(tmp_path, env={})

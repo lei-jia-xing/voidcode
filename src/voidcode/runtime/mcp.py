@@ -24,6 +24,7 @@ from typing import IO, Any, Literal, cast
 from anyio.from_thread import BlockingPortal, start_blocking_portal
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from mcp.client.streamable_http import streamable_http_client
 from mcp.shared.exceptions import McpError
 from mcp.types import CallToolResult, Implementation, InitializeResult, ListToolsResult, Tool
 
@@ -87,6 +88,12 @@ def _validate_input_schema(raw_schema: object) -> dict[str, object]:
     if properties is not None and not isinstance(properties, dict):
         raise ValueError("inputSchema properties must be an object")
     return schema
+
+
+def _read_write_streams(transport_streams: tuple[object, ...]) -> tuple[object, object]:
+    if len(transport_streams) < 2:
+        raise ValueError("MCP transport context must provide read and write streams")
+    return transport_streams[0], transport_streams[1]
 
 
 def _validate_call_arguments_against_schema(
@@ -195,19 +202,21 @@ class _RunningMcpServer:
 
     scope: Literal["runtime", "session"]
     owner_session_id: str | None
+    transport: Literal["stdio", "remote-http"]
 
     def __init__(
         self,
         *,
         server_name: str,
         workspace_root: Path,
-        transport_context: AbstractContextManager[tuple[object, object]],
+        transport_context: AbstractContextManager[tuple[object, ...]],
         session_context: AbstractContextManager[ClientSession],
         session: ClientSession,
-        stderr_log: IO[str],
+        stderr_log: IO[str] | None,
         initialize_result: InitializeResult,
         scope: Literal["runtime", "session"],
         owner_session_id: str | None,
+        transport: Literal["stdio", "remote-http"] = "stdio",
     ) -> None:
         self.server_name = server_name
         self.workspace_root = workspace_root
@@ -218,6 +227,7 @@ class _RunningMcpServer:
         self.initialize_result = initialize_result
         self.scope = scope
         self.owner_session_id = owner_session_id
+        self.transport = transport
         self.references = 0
         self.last_used_at = time.monotonic()
         # The Python SDK ClientSession is shared per configured server process.
@@ -257,6 +267,7 @@ class ManagedMcpManager:
                 server_name=name,
                 status="stopped",
                 command=list(server.command),
+                url=getattr(server, "url", None),
                 scope=getattr(server, "scope", "runtime"),
             )
             for name, server in self._configuration.servers.items()
@@ -465,6 +476,7 @@ class ManagedMcpManager:
             )
             raise ValueError(message)
 
+        transport = getattr(server_config, "transport", "stdio")
         scope = getattr(server_config, "scope", "runtime")
         key = self._server_key(
             server_name=server_name,
@@ -479,7 +491,7 @@ class ManagedMcpManager:
                 self._record_server_acquired(key=key, workspace_root=running.workspace_root)
                 return running
 
-        if not server_config.command:
+        if transport == "stdio" and not getattr(server_config, "command", None):
             diagnostic = create_diagnostic(
                 severity=McpDiagnosticSeverity.ERROR,
                 category="startup",
@@ -500,9 +512,30 @@ class ManagedMcpManager:
             )
             raise ValueError(message)
 
+        if transport == "remote-http" and not getattr(server_config, "url", None):
+            diagnostic = create_diagnostic(
+                severity=McpDiagnosticSeverity.ERROR,
+                category="startup",
+                code="server_url_missing",
+                server_name=server_name,
+            )
+            self._record_diagnostic(diagnostic)
+            message = (
+                f"MCP[{server_name}]: url is empty. "
+                "Please configure mcp.servers.{server_name}.url in .voidcode.json"
+            )
+            self._record_failure_event(
+                key=key,
+                workspace_root=workspace.resolve(),
+                stage="startup",
+                error=message,
+                diagnostic=diagnostic,
+            )
+            raise ValueError(message)
+
         workspace_root = workspace.resolve()
         stderr_log: IO[str] | None = None
-        transport_context: AbstractContextManager[tuple[object, object]] | None = None
+        transport_context: AbstractContextManager[tuple[object, ...]] | None = None
         session_context: AbstractContextManager[ClientSession] | None = None
 
         with self._state_lock:
@@ -515,26 +548,38 @@ class ManagedMcpManager:
 
             try:
                 portal = self._ensure_portal()
-                stderr_log = open(
-                    os.devnull,
-                    "w",
-                    encoding="utf-8",
-                )  # noqa: SIM115 - closed in shutdown
-                params = StdioServerParameters(
-                    command=server_config.command[0],
-                    args=list(server_config.command[1:]),
-                    env={**os.environ, **server_config.env},
-                    cwd=workspace_root,
-                )
-                pending_transport_context = portal.wrap_async_context_manager(
-                    cast(Any, stdio_client(params, errlog=stderr_log))
-                )
-                read_stream, write_stream = pending_transport_context.__enter__()
-                transport_context = pending_transport_context
+                if transport == "remote-http":
+                    url = server_config.url
+                    pending_transport_context = portal.wrap_async_context_manager(
+                        cast(Any, streamable_http_client(url))
+                    )
+                    read_stream, write_stream = _read_write_streams(
+                        pending_transport_context.__enter__()
+                    )
+                    transport_context = pending_transport_context
+                else:
+                    stderr_log = open(
+                        os.devnull,
+                        "w",
+                        encoding="utf-8",
+                    )  # noqa: SIM115 - closed in shutdown
+                    params = StdioServerParameters(
+                        command=server_config.command[0],
+                        args=list(server_config.command[1:]),
+                        env={**os.environ, **server_config.env},
+                        cwd=workspace_root,
+                    )
+                    pending_transport_context = portal.wrap_async_context_manager(
+                        cast(Any, stdio_client(params, errlog=stderr_log))
+                    )
+                    read_stream, write_stream = _read_write_streams(
+                        pending_transport_context.__enter__()
+                    )
+                    transport_context = pending_transport_context
                 pending_session_context = portal.wrap_async_context_manager(
                     ClientSession(
-                        read_stream,
-                        write_stream,
+                        cast(Any, read_stream),
+                        cast(Any, write_stream),
                         read_timeout_seconds=self._request_timeout,
                         client_info=Implementation(
                             name=MCP_CLIENT_NAME,
@@ -544,11 +589,19 @@ class ManagedMcpManager:
                 )
                 session = pending_session_context.__enter__()
                 session_context = pending_session_context
-                self._record_server_started(
-                    key=key,
-                    workspace_root=workspace_root,
-                    command=list(server_config.command),
-                )
+                if transport == "stdio":
+                    self._record_server_started(
+                        key=key,
+                        workspace_root=workspace_root,
+                        command=list(server_config.command),
+                    )
+                else:
+                    self._record_server_started(
+                        key=key,
+                        workspace_root=workspace_root,
+                        command=[],
+                        url=server_config.url,
+                    )
                 initialize_result = cast(
                     InitializeResult,
                     self._call_sdk_session(
@@ -571,20 +624,23 @@ class ManagedMcpManager:
                     category="startup",
                     code="server_startup_failed",
                     server_name=server_name,
-                    command=server_config.command[0],
+                    command=server_config.command[0] if transport == "stdio" else None,
                 )
                 self._record_diagnostic(diagnostic)
-                message = (
-                    f"MCP[{server_name}]: failed to start server - cmd not found "
-                    f"(command not found): "
-                    f"{server_config.command[0]}"
-                )
+                if transport == "stdio":
+                    message = (
+                        f"MCP[{server_name}]: failed to start server - cmd not found "
+                        f"(command not found): "
+                        f"{server_config.command[0]}"
+                    )
+                else:
+                    message = f"MCP[{server_name}]: failed to connect to remote server"
                 self._record_failure_event(
                     key=key,
                     workspace_root=workspace_root,
                     stage="startup",
                     error=message,
-                    command=list(server_config.command),
+                    command=list(server_config.command) if transport == "stdio" else None,
                     diagnostic=diagnostic,
                 )
                 raise ValueError(message) from exc
@@ -611,7 +667,7 @@ class ManagedMcpManager:
                     stage="startup",
                     error=message,
                     method="initialize",
-                    command=list(server_config.command),
+                    command=list(server_config.command) if transport == "stdio" else None,
                     diagnostic=diagnostic,
                 )
                 if transport_context is not None:
@@ -632,6 +688,7 @@ class ManagedMcpManager:
                 initialize_result=initialize_result,
                 scope=key.scope,
                 owner_session_id=key.owner_session_id,
+                transport=transport,
             )
             self._running_servers[key] = running
             self._record_server_acquired(key=key, workspace_root=running.workspace_root)
@@ -902,19 +959,19 @@ class ManagedMcpManager:
         key: _McpServerKey,
         workspace_root: Path,
         command: list[str] | None = None,
+        url: str | None = None,
     ) -> None:
         server_name = key.server_name
         with self._state_lock:
+            existing = self._server_states.get(
+                server_name, McpServerRuntimeState(server_name=server_name)
+            )
             self._server_states[server_name] = McpServerRuntimeState(
                 server_name=server_name,
                 status="running",
                 workspace_root=str(workspace_root),
-                command=list(
-                    command
-                    or self._server_states.get(
-                        server_name, McpServerRuntimeState(server_name=server_name)
-                    ).command
-                ),
+                command=list(command or existing.command),
+                url=url or existing.url,
                 scope=key.scope,
                 retry_available=False,
             )
@@ -932,6 +989,7 @@ class ManagedMcpManager:
                         "workspace_root": str(workspace_root),
                         "state": "starting",
                         "client_foundation": "python-mcp-sdk",
+                        **({"url": url} if url else {}),
                     },
                 )
             )
@@ -1150,7 +1208,8 @@ class ManagedMcpManager:
     def _terminate_running_server(running: _RunningMcpServer) -> None:
         running.session_context.__exit__(None, None, None)
         running.transport_context.__exit__(None, None, None)
-        running.stderr_log.close()
+        if running.stderr_log is not None:
+            running.stderr_log.close()
 
     def _record_event(self, event: McpRuntimeEvent) -> None:
         with self._state_lock:
