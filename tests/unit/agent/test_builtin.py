@@ -16,7 +16,7 @@ from voidcode.agent import (
 )
 from voidcode.agent import prompts as prompt_module
 from voidcode.agent.builtin import validate_builtin_agent_manifests
-from voidcode.agent.models import AgentManifest, AgentPromptMaterialization
+from voidcode.agent.models import AgentManifest, AgentMcpBindingIntent, AgentPromptMaterialization
 from voidcode.hook.presets import is_builtin_hook_preset_ref, list_builtin_hook_presets
 from voidcode.runtime import service as runtime_service_module
 from voidcode.runtime.task import SubagentRoutingIdentity, resolve_subagent_route
@@ -412,6 +412,7 @@ def test_agent_manifest_exposes_live_default_vs_intent_field_semantics() -> None
         tool_allowlist=("read_file",),
         skill_refs=("demo",),
         preset_hook_refs=("role_reminder",),
+        mcp_binding=AgentMcpBindingIntent(servers=("docs",)),
         routing_hints={"tier": "primary"},
         top_level_selectable=True,
         prompt_materialization=AgentPromptMaterialization(profile="leader"),
@@ -423,6 +424,7 @@ def test_agent_manifest_exposes_live_default_vs_intent_field_semantics() -> None
         "model_preference",
         "tool_allowlist",
         "preset_hook_refs",
+        "mcp_binding",
         "top_level_selectable",
         "prompt_materialization",
     )
@@ -430,6 +432,7 @@ def test_agent_manifest_exposes_live_default_vs_intent_field_semantics() -> None
     assert manifest.field_semantic("prompt_profile") == "live_default"
     assert manifest.field_semantic("top_level_selectable") == "live_default"
     assert manifest.field_semantic("prompt_materialization") == "live_default"
+    assert manifest.field_semantic("mcp_binding") == "live_default"
     assert manifest.field_semantic("routing_hints") == "intent"
 
 
@@ -462,6 +465,34 @@ def test_validate_builtin_agent_manifests_rejects_unknown_preset_hook_ref() -> N
                 ),
             )
         )
+
+
+def test_validate_builtin_agent_manifests_rejects_duplicate_mcp_server_refs() -> None:
+    with pytest.raises(ValueError, match="must not contain duplicates"):
+        _ = AgentMcpBindingIntent(servers=("docs", "docs"))
+
+
+def test_validate_builtin_agent_manifests_accepts_mcp_binding_intent() -> None:
+    manifests = validate_builtin_agent_manifests(
+        (
+            AgentManifest(
+                id="leader",
+                name="Leader",
+                mode="primary",
+                description="Primary preset",
+                prompt_profile="leader",
+                execution_engine="provider",
+                mcp_binding=AgentMcpBindingIntent(profile="docs", servers=("context7",)),
+                top_level_selectable=True,
+                prompt_materialization=AgentPromptMaterialization(profile="leader"),
+            ),
+        )
+    )
+
+    assert manifests[0].mcp_binding == AgentMcpBindingIntent(
+        profile="docs",
+        servers=("context7",),
+    )
 
 
 def test_validate_builtin_agent_manifests_rejects_unknown_prompt_profile() -> None:

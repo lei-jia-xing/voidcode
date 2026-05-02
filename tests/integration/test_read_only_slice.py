@@ -3628,6 +3628,7 @@ def test_provider_runtime_executes_read_path_and_persists_config(tmp_path: Path)
         "workspace",
         "runtime_config",
         "resolved_hook_presets",
+        "agent_capability_snapshot",
         "runtime_state",
         "context_window",
     }
@@ -4597,6 +4598,7 @@ def test_runtime_resume_uses_persisted_runtime_config_over_fresh_resume_override
     assert set(replay.session.metadata) == {
         "workspace",
         "runtime_config",
+        "agent_capability_snapshot",
         "runtime_state",
         "context_window",
     }
