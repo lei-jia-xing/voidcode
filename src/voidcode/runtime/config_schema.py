@@ -125,7 +125,7 @@ def runtime_config_json_schema() -> dict[str, object]:
                     },
                 },
             },
-            "tools": {"$ref": "#/$defs/toolsConfig"},
+            "tools": {"$ref": "#/$defs/runtimeToolsConfig"},
             "skills": {"$ref": "#/$defs/skillsConfig"},
             "context_window": {"$ref": "#/$defs/contextWindowConfig"},
             "lsp": {
@@ -314,7 +314,7 @@ def runtime_config_json_schema() -> dict[str, object]:
                     },
                 },
             },
-            "toolsConfig": {
+            "runtimeToolsConfig": {
                 "type": "object",
                 "additionalProperties": False,
                 "properties": {
@@ -324,6 +324,19 @@ def runtime_config_json_schema() -> dict[str, object]:
                         "properties": {"enabled": {"type": "boolean"}},
                     },
                     "local": {"$ref": "#/$defs/localToolsConfig"},
+                    "allowlist": {"type": "array", "items": {"type": "string"}},
+                    "default": {"type": "array", "items": {"type": "string"}},
+                },
+            },
+            "agentToolsConfig": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "builtin": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {"enabled": {"type": "boolean"}},
+                    },
                     "allowlist": {"type": "array", "items": {"type": "string"}},
                     "default": {"type": "array", "items": {"type": "string"}},
                 },
@@ -449,7 +462,7 @@ def runtime_config_json_schema() -> dict[str, object]:
                         "type": "string",
                         "enum": ["deterministic", "provider"],
                     },
-                    "tools": {"$ref": "#/$defs/toolsConfig"},
+                    "tools": {"$ref": "#/$defs/agentToolsConfig"},
                     "skills": {"$ref": "#/$defs/skillsConfig"},
                     "mcp_binding": {"$ref": "#/$defs/agentMcpBindingConfig"},
                     "provider_fallback": {

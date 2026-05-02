@@ -1409,6 +1409,22 @@ def test_runtime_agent_payload_round_trips_explicit_empty_tool_boundaries() -> N
     }
 
 
+def test_runtime_agent_serialization_excludes_unsupported_local_tools() -> None:
+    agent = RuntimeAgentConfig(
+        preset="leader",
+        tools=RuntimeToolsConfig(
+            local=RuntimeToolsLocalConfig(enabled=True, path=".voidcode/tools"),
+            allowlist=("read_file",),
+        ),
+    )
+
+    assert serialize_runtime_agent_config(agent) == {
+        "preset": "leader",
+        "prompt_materialization": _prompt_materialization_payload("leader"),
+        "tools": {"allowlist": ["read_file"]},
+    }
+
+
 def test_runtime_agent_payload_resolves_through_builtin_agent_manifest() -> None:
     manifest = get_builtin_agent_manifest("leader")
 

@@ -19,7 +19,7 @@ def test_runtime_config_json_schema_exposes_core_fields() -> None:
 
     assert schema["$id"] == RUNTIME_CONFIG_SCHEMA_ID
     assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
-    properties = schema["properties"]
+    properties = cast(dict[str, object], schema["properties"])
     assert isinstance(properties, dict)
     assert schema["additionalProperties"] is False
     assert "plan" not in properties
@@ -38,7 +38,7 @@ def test_runtime_config_json_schema_exposes_core_fields() -> None:
     categories = cast(dict[str, object], properties["categories"])
     category_names = cast(dict[str, object], categories["propertyNames"])
     assert category_names["enum"] == list(supported_subagent_categories())
-    defs = schema["$defs"]
+    defs = cast(dict[str, object], schema["$defs"])
     assert isinstance(defs, dict)
     agent_config = cast(dict[str, object], defs["agentConfig"])
     assert agent_config["additionalProperties"] is False
@@ -146,11 +146,18 @@ def test_runtime_config_json_schema_exposes_core_fields() -> None:
         dict[str, object], context_window_properties["provider_context_oversized_feedback_chars"]
     )
     assert provider_context_threshold["minimum"] == 1
-    tools_config = cast(dict[str, object], defs["toolsConfig"])
+    tools_config = cast(dict[str, object], defs["runtimeToolsConfig"])
     assert tools_config["additionalProperties"] is False
     tools_properties = cast(dict[str, object], tools_config["properties"])
     assert "paths" not in tools_properties
     assert tools_properties["local"] == {"$ref": "#/$defs/localToolsConfig"}
+    assert properties["tools"] == {"$ref": "#/$defs/runtimeToolsConfig"}
+    assert agent_properties["tools"] == {"$ref": "#/$defs/agentToolsConfig"}
+    agent_tools_config = cast(dict[str, object], defs["agentToolsConfig"])
+    assert agent_tools_config["additionalProperties"] is False
+    agent_tools_properties = cast(dict[str, object], agent_tools_config["properties"])
+    assert set(agent_tools_properties) == {"builtin", "allowlist", "default"}
+    assert "local" not in agent_tools_properties
     local_tools_config = cast(dict[str, object], defs["localToolsConfig"])
     assert local_tools_config["additionalProperties"] is False
     local_tools_properties = cast(dict[str, object], local_tools_config["properties"])

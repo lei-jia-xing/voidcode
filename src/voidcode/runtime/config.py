@@ -2554,6 +2554,16 @@ def serialize_runtime_tools_config(config: RuntimeToolsConfig | None) -> dict[st
     return {key: value for key, value in payload.items() if value is not None}
 
 
+def _serialize_runtime_agent_tools_config(
+    config: RuntimeToolsConfig | None,
+) -> dict[str, object] | None:
+    payload = serialize_runtime_tools_config(config)
+    if payload is None:
+        return None
+    payload.pop("local", None)
+    return payload
+
+
 def serialize_runtime_agent_config(agent: RuntimeAgentConfig | None) -> dict[str, object] | None:
     if agent is None:
         return None
@@ -2579,7 +2589,7 @@ def serialize_runtime_agent_config(agent: RuntimeAgentConfig | None) -> dict[str
     if agent.execution_engine is not None:
         payload["execution_engine"] = agent.execution_engine
     if agent.tools is not None:
-        payload["tools"] = serialize_runtime_tools_config(agent.tools)
+        payload["tools"] = _serialize_runtime_agent_tools_config(agent.tools)
     if agent.skills is not None:
         payload["skills"] = {
             "enabled": agent.skills.enabled,
