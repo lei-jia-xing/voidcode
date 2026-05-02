@@ -1,3 +1,8 @@
+from .builtin import (
+    list_builtin_skills,
+    load_builtin_skill_registry,
+    skill_registry_with_builtins,
+)
 from .discovery import (
     DEFAULT_SKILL_SEARCH_PATHS,
     SKILL_ENTRY_FILE_NAME,
@@ -28,8 +33,11 @@ __all__ = [
     "SUPPORTED_FRONTMATTER_KEYS",
     "SkillMetadata",
     "SkillRegistry",
+    "list_builtin_skills",
+    "load_builtin_skill_registry",
     "parse_skill_body",
     "parse_skill_frontmatter",
     "parse_skill_manifest",
     "resolve_workspace_relative_path",
+    "skill_registry_with_builtins",
 ]
