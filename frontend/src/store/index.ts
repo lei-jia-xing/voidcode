@@ -5,6 +5,7 @@ import {
   AgentSummary,
   ApprovalDecision,
   AsyncStatus,
+  BackgroundTaskOutput,
   BackgroundTaskSummary,
   StoredSessionSummary,
   SessionState,
@@ -84,6 +85,10 @@ interface AppState {
   backgroundTasks: BackgroundTaskSummary[];
   backgroundTasksStatus: AsyncStatus;
   backgroundTasksError: string | null;
+  selectedBackgroundTaskOutputId: string | null;
+  backgroundTaskOutput: BackgroundTaskOutput | null;
+  backgroundTaskOutputStatus: AsyncStatus;
+  backgroundTaskOutputError: string | null;
   sessionDebug: RuntimeSessionDebugSnapshot | null;
   sessionDebugStatus: AsyncStatus;
   sessionDebugError: string | null;
@@ -126,6 +131,7 @@ interface AppState {
   loadNotifications: () => Promise<void>;
   acknowledgeNotification: (notificationId: string) => Promise<void>;
   loadBackgroundTasks: () => Promise<void>;
+  loadBackgroundTaskOutput: (taskId: string) => Promise<void>;
   cancelBackgroundTask: (taskId: string) => Promise<void>;
   loadSessionDebug: (sessionId?: string | null) => Promise<void>;
   loadSettings: () => Promise<void>;
@@ -364,6 +370,10 @@ export const useAppStore = create<AppState>()(
       backgroundTasks: [],
       backgroundTasksStatus: "idle",
       backgroundTasksError: null,
+      selectedBackgroundTaskOutputId: null,
+      backgroundTaskOutput: null,
+      backgroundTaskOutputStatus: "idle",
+      backgroundTaskOutputError: null,
       sessionDebug: null,
       sessionDebugStatus: "idle",
       sessionDebugError: null,
@@ -463,6 +473,10 @@ export const useAppStore = create<AppState>()(
             backgroundTasks: [],
             backgroundTasksStatus: "idle",
             backgroundTasksError: null,
+            selectedBackgroundTaskOutputId: null,
+            backgroundTaskOutput: null,
+            backgroundTaskOutputStatus: "idle",
+            backgroundTaskOutputError: null,
             sessionDebug: null,
             sessionDebugStatus: "idle",
             sessionDebugError: null,
@@ -766,6 +780,10 @@ export const useAppStore = create<AppState>()(
             sessionDebug: null,
             sessionDebugStatus: "idle",
             sessionDebugError: null,
+            selectedBackgroundTaskOutputId: null,
+            backgroundTaskOutput: null,
+            backgroundTaskOutputStatus: "idle",
+            backgroundTaskOutputError: null,
           });
           await get().loadBackgroundTasks();
           return;
@@ -789,6 +807,10 @@ export const useAppStore = create<AppState>()(
           sessionDebug: null,
           sessionDebugStatus: "idle",
           sessionDebugError: null,
+          selectedBackgroundTaskOutputId: null,
+          backgroundTaskOutput: null,
+          backgroundTaskOutputStatus: "idle",
+          backgroundTaskOutputError: null,
         });
 
         try {
@@ -1231,10 +1253,63 @@ export const useAppStore = create<AppState>()(
             backgroundTasksStatus: "success",
             backgroundTasksError: null,
           });
+          if (
+            get().selectedBackgroundTaskOutputId &&
+            !backgroundTasks.some(
+              (task) => task.task.id === get().selectedBackgroundTaskOutputId,
+            )
+          ) {
+            set({
+              selectedBackgroundTaskOutputId: null,
+              backgroundTaskOutput: null,
+              backgroundTaskOutputStatus: "idle",
+              backgroundTaskOutputError: null,
+            });
+          }
         } catch (err) {
           set({
             backgroundTasksStatus: "error",
             backgroundTasksError: (err as Error).message,
+          });
+        }
+      },
+
+      loadBackgroundTaskOutput: async (taskId) => {
+        if (!taskId) {
+          set({
+            selectedBackgroundTaskOutputId: null,
+            backgroundTaskOutput: null,
+            backgroundTaskOutputStatus: "idle",
+            backgroundTaskOutputError: null,
+          });
+          return;
+        }
+
+        set({
+          selectedBackgroundTaskOutputId: taskId,
+          backgroundTaskOutput: null,
+          backgroundTaskOutputStatus: "loading",
+          backgroundTaskOutputError: null,
+        });
+        try {
+          const backgroundTaskOutput =
+            await RuntimeClient.getBackgroundTaskOutput(taskId);
+          if (get().selectedBackgroundTaskOutputId !== taskId) {
+            return;
+          }
+          set({
+            backgroundTaskOutput,
+            backgroundTaskOutputStatus: "success",
+            backgroundTaskOutputError: null,
+          });
+        } catch (err) {
+          if (get().selectedBackgroundTaskOutputId !== taskId) {
+            return;
+          }
+          set({
+            backgroundTaskOutput: null,
+            backgroundTaskOutputStatus: "error",
+            backgroundTaskOutputError: (err as Error).message,
           });
         }
       },

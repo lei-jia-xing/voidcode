@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type {
   ApprovalDecision,
+  BackgroundTaskOutput,
   BackgroundTaskSummary,
   EventEnvelope,
   QuestionAnswer,
@@ -202,6 +203,8 @@ const runtimeClientMocks = vi.hoisted(() => ({
   listSessionBackgroundTasksMock:
     vi.fn<(sessionId: string) => Promise<BackgroundTaskSummary[]>>(),
   cancelBackgroundTaskMock: vi.fn<(taskId: string) => Promise<unknown>>(),
+  getBackgroundTaskOutputMock:
+    vi.fn<(taskId: string) => Promise<BackgroundTaskOutput>>(),
   getSessionDebugMock:
     vi.fn<(sessionId: string) => Promise<RuntimeSessionDebugSnapshot>>(),
   getSettingsMock: vi.fn<() => Promise<RuntimeSettings>>(),
@@ -246,6 +249,7 @@ vi.mock("./lib/runtime/client", () => ({
     listSessionBackgroundTasks:
       runtimeClientMocks.listSessionBackgroundTasksMock,
     cancelBackgroundTask: runtimeClientMocks.cancelBackgroundTaskMock,
+    getBackgroundTaskOutput: runtimeClientMocks.getBackgroundTaskOutputMock,
     getSessionDebug: runtimeClientMocks.getSessionDebugMock,
     getSettings: runtimeClientMocks.getSettingsMock,
     updateSettings: runtimeClientMocks.updateSettingsMock,
@@ -302,6 +306,10 @@ describe("useAppStore integration flow", () => {
       backgroundTasks: [],
       backgroundTasksStatus: "idle",
       backgroundTasksError: null,
+      selectedBackgroundTaskOutputId: null,
+      backgroundTaskOutput: null,
+      backgroundTaskOutputStatus: "idle",
+      backgroundTaskOutputError: null,
       sessionDebug: null,
       sessionDebugStatus: "idle",
       sessionDebugError: null,
@@ -358,6 +366,25 @@ describe("useAppStore integration flow", () => {
     runtimeClientMocks.listBackgroundTasksMock.mockResolvedValue([]);
     runtimeClientMocks.listSessionBackgroundTasksMock.mockResolvedValue([]);
     runtimeClientMocks.cancelBackgroundTaskMock.mockResolvedValue({});
+    runtimeClientMocks.getBackgroundTaskOutputMock.mockResolvedValue({
+      task: {
+        task_id: "task-1",
+        status: "completed",
+        parent_session_id: "session-1",
+        requested_child_session_id: null,
+        child_session_id: "child-session-1",
+        approval_request_id: null,
+        question_request_id: null,
+        approval_blocked: false,
+        summary_output: "summary",
+        error: null,
+        result_available: true,
+        cancellation_cause: null,
+        routing: { mode: "subagent", subagent_type: "explore" },
+      },
+      session_result: null,
+      output: "output",
+    });
     runtimeClientMocks.getSessionDebugMock.mockResolvedValue({
       session: makeSessionState("session-1", "completed"),
       prompt: "read README.md",
@@ -1215,6 +1242,73 @@ describe("useAppStore integration flow", () => {
       runtimeClientMocks.listSessionBackgroundTasksMock,
     ).toHaveBeenNthCalledWith(2, "session-2");
     expect(state.backgroundTasks).toEqual([currentTask]);
+  });
+
+  it("loads and guards selected background task output", async () => {
+    const slowOutput = createDeferred<BackgroundTaskOutput>();
+    const fastOutput: BackgroundTaskOutput = {
+      task: {
+        task_id: "task-fast",
+        status: "completed",
+        parent_session_id: "session-1",
+        requested_child_session_id: "requested-child",
+        child_session_id: "child-session",
+        approval_request_id: null,
+        question_request_id: null,
+        approval_blocked: false,
+        summary_output: "fast summary",
+        error: null,
+        result_available: true,
+        cancellation_cause: null,
+        routing: { mode: "subagent", subagent_type: "explore" },
+      },
+      session_result: {
+        session: makeSessionState("child-session", "completed"),
+        prompt: "inspect output",
+        status: "completed",
+        summary: "session summary",
+        output: "session output",
+        error: null,
+        last_event_sequence: 2,
+        transcript: [],
+      },
+      output: "fast output",
+    };
+    runtimeClientMocks.getBackgroundTaskOutputMock.mockReturnValueOnce(
+      slowOutput.promise,
+    );
+
+    const slowLoad = useAppStore
+      .getState()
+      .loadBackgroundTaskOutput("task-slow");
+    expect(useAppStore.getState().selectedBackgroundTaskOutputId).toBe(
+      "task-slow",
+    );
+    expect(useAppStore.getState().backgroundTaskOutputStatus).toBe("loading");
+
+    runtimeClientMocks.getBackgroundTaskOutputMock.mockResolvedValueOnce(
+      fastOutput,
+    );
+    await useAppStore.getState().loadBackgroundTaskOutput("task-fast");
+
+    slowOutput.resolve({
+      ...fastOutput,
+      task: { ...fastOutput.task, task_id: "task-slow" },
+      output: "stale output",
+    });
+    await slowLoad;
+
+    const state = useAppStore.getState();
+    expect(runtimeClientMocks.getBackgroundTaskOutputMock).toHaveBeenCalledWith(
+      "task-slow",
+    );
+    expect(runtimeClientMocks.getBackgroundTaskOutputMock).toHaveBeenCalledWith(
+      "task-fast",
+    );
+    expect(state.selectedBackgroundTaskOutputId).toBe("task-fast");
+    expect(state.backgroundTaskOutputStatus).toBe("success");
+    expect(state.backgroundTaskOutput).toEqual(fastOutput);
+    expect(state.backgroundTaskOutputError).toBeNull();
   });
 
   it("surfaces approval lookup failure when no pending request exists", async () => {
