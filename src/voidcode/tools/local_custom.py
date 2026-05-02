@@ -283,6 +283,7 @@ class LocalCustomTool:
         context = current_runtime_tool_context()
         abort_signal = context.abort_signal if context is not None else None
         deadline = time.monotonic() + timeout_seconds if timeout_seconds is not None else None
+        pending_input: str | None = input_text
         while True:
             if abort_signal is not None and abort_signal.cancelled:
                 _kill_local_custom_process(process)
@@ -300,8 +301,9 @@ class LocalCustomTool:
                 timeout = (
                     0.05 if deadline is None else max(0.01, min(0.05, deadline - time.monotonic()))
                 )
-                stdout, stderr = process.communicate(input=input_text, timeout=timeout)
+                stdout, stderr = process.communicate(input=pending_input, timeout=timeout)
             except subprocess.TimeoutExpired:
+                pending_input = None
                 continue
             return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 

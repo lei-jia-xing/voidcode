@@ -50,6 +50,7 @@ from voidcode.tools import (
     GlobTool,
     GrepTool,
     ListTool,
+    LocalCustomTool,
     McpTool,
     MultiEditTool,
     QuestionTool,
@@ -657,6 +658,44 @@ def test_local_custom_tool_invokes_command_with_runtime_context(tmp_path: Path) 
     assert payload["args"] == {"message": "hi"}
     assert payload["workspace"] == str(tmp_path.resolve())
     assert payload["session"] == "ses_local"
+
+
+def test_local_custom_tool_timeout_polling_does_not_resend_stdin(tmp_path: Path) -> None:
+    manifest = _write_local_tool_manifest(tmp_path)
+    tools_dir = manifest.parent
+    script = tools_dir / "slow_echo.py"
+    script.write_text(
+        textwrap.dedent(
+            """
+            import json
+            import sys
+            import time
+
+            args = json.loads(sys.stdin.read() or "{}")
+            time.sleep(0.12)
+            print(json.dumps({"args": args}, sort_keys=True))
+            """
+        ),
+        encoding="utf-8",
+    )
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    payload["command"] = [sys.executable, "${manifest_dir}/slow_echo.py"]
+    manifest.write_text(json.dumps(payload), encoding="utf-8")
+    tool = LocalCustomToolProvider(
+        workspace=tmp_path,
+        config=RuntimeToolsLocalConfig(enabled=True, path=".voidcode/tools"),
+    ).provide_tools()[0]
+    assert isinstance(tool, LocalCustomTool)
+
+    result = tool.invoke_with_runtime_timeout(
+        ToolCall(tool_name="local/echo", arguments={"message": "hi"}),
+        workspace=tmp_path,
+        timeout_seconds=1,
+    )
+
+    assert result.status == "ok"
+    assert result.content is not None
+    assert json.loads(result.content)["args"] == {"message": "hi"}
 
 
 def test_runtime_includes_opted_in_local_custom_tools(tmp_path: Path) -> None:
