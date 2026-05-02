@@ -1,8 +1,0 @@
-List files and directories from the local workspace.
-
-Usage:
-- Use the path parameter for a workspace-relative directory. If omitted, the workspace root is listed.
-- Use the ignore parameter for additional ignore globs.
-- Directory output is for shape discovery, not file contents.
-- Prefer this tool over shell_exec when you need to inspect directory structure.
-- Results are capped, so narrow the path if you need a more focused listing.
