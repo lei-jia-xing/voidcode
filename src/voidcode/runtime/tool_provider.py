@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from fnmatch import fnmatchcase
+from pathlib import Path
 from typing import Protocol
 
 from ..agent import get_builtin_agent_manifest
@@ -12,12 +13,13 @@ from ..tools.edit import EditTool
 from ..tools.glob import GlobTool
 from ..tools.grep import GrepTool
 from ..tools.list_dir import ListTool
+from ..tools.local_custom import discover_local_custom_tools
 from ..tools.read_file import ReadFileTool
 from ..tools.shell_exec import ShellExecTool
 from ..tools.web_fetch import WebFetchTool
 from ..tools.web_search import WebSearchTool
 from ..tools.write_file import WriteFileTool
-from .config import RuntimeAgentConfig
+from .config import RuntimeAgentConfig, RuntimeToolsLocalConfig
 
 BUILTIN_TOOL_NAMES = frozenset(
     {
@@ -164,6 +166,28 @@ else:
 
 class ToolProvider(Protocol):
     def provide_tools(self) -> tuple[Tool, ...]: ...
+
+
+class LocalCustomToolProvider:
+    def __init__(self, *, workspace: Path, config: RuntimeToolsLocalConfig | None) -> None:
+        self._workspace = workspace
+        self._config = config
+
+    def provide_tools(self) -> tuple[Tool, ...]:
+        if self._config is None:
+            return ()
+        if not self._config.path:
+            raise ValueError("local custom tools path must not be empty")
+        relative_path = Path(self._config.path)
+        if relative_path.is_absolute():
+            raise ValueError("local custom tools path must be workspace-relative")
+        if ".." in relative_path.parts:
+            raise ValueError("local custom tools path must not contain '..'")
+        return discover_local_custom_tools(
+            self._workspace,
+            enabled=self._config.enabled,
+            relative_path=str(relative_path),
+        )
 
 
 class BuiltinToolProvider:

@@ -77,6 +77,7 @@ from ..tools.contracts import (
     ToolResult,
 )
 from ..tools.guidance import definition_with_guidance
+from ..tools.local_custom import LocalCustomTool
 from ..tools.output import (
     read_tool_output_artifact,
     sanitize_tool_result_data,
@@ -112,6 +113,7 @@ from .config import (
     RuntimeProviderFallbackConfig,
     RuntimeProvidersConfig,
     RuntimeSkillsConfig,
+    RuntimeToolsConfig,
     RuntimeWebSettings,
     load_global_web_settings,
     load_runtime_config,
@@ -121,6 +123,7 @@ from .config import (
     parse_runtime_agents_payload,
     parse_runtime_categories_payload,
     parse_runtime_context_window_payload,
+    parse_runtime_tools_payload,
     save_global_web_settings,
     serialize_provider_configs,
     serialize_provider_fallback_config,
@@ -128,6 +131,7 @@ from .config import (
     serialize_runtime_agents_config,
     serialize_runtime_categories_config,
     serialize_runtime_context_window_config,
+    serialize_runtime_tools_config,
 )
 from .context_window import (
     ContextWindowPolicy,
@@ -264,6 +268,7 @@ from .todos import (
 from .tool_provider import (
     BUILTIN_TOOL_NAMES,
     BuiltinToolProvider,
+    LocalCustomToolProvider,
     scoped_tool_registry_for_agent,
     tool_name_matches_patterns,
 )
@@ -289,6 +294,7 @@ _PERSISTED_RUNTIME_CONFIG_KEYS = frozenset(
         "provider_fallback",
         "resolved_provider",
         "resolved_hook_presets",
+        "tools",
         "agent",
         "agents",
         "categories",
@@ -611,7 +617,13 @@ class ToolRegistry:
 
     @classmethod
     def from_tools(cls, tools: Iterable[Tool]) -> ToolRegistry:
-        return cls(tools={tool.definition.name: tool for tool in tools})
+        registry: dict[str, Tool] = {}
+        for tool in tools:
+            name = tool.definition.name
+            if name in registry:
+                raise ValueError(f"duplicate tool definition: {name}")
+            registry[name] = tool
+        return cls(tools=registry)
 
     @classmethod
     def with_defaults(
@@ -766,19 +778,7 @@ class VoidCodeRuntime:
         self._mcp_manager = mcp_manager or build_mcp_manager(self._config.mcp)
         self._skill_registry_is_injected = skill_registry is not None
         self._skill_registry = skill_registry or self._build_skill_registry(self._config.skills)
-        self._base_tool_registry = tool_registry or ToolRegistry.with_defaults(
-            lsp_tool=self._build_lsp_tool(),
-            format_tool=self._build_format_tool(),
-            hooks_config=self._config.hooks or RuntimeHooksConfig(),
-            skill_tool=SkillTool(
-                list_skills=self._skill_registry.all,
-                resolve_skill=self._skill_registry.resolve,
-            ),
-            task_tool=TaskTool(runtime=self),
-            question_tool=QuestionTool(),
-            background_output_tool=BackgroundOutputTool(runtime=self),
-            background_cancel_tool=BackgroundCancelTool(runtime=self),
-        )
+        self._base_tool_registry = tool_registry or self._build_base_tool_registry()
         self._tool_registry = self._base_tool_registry
         self._graph_override = graph
         self._graph_cache = {}
@@ -798,6 +798,7 @@ class VoidCodeRuntime:
             resolved_provider=self._resolved_provider_config,
             agent=initial_agent,
             context_window=initial_context_window,
+            tools=self._config.tools,
         )
         if graph is not None:
             self._graph = graph
@@ -828,6 +829,28 @@ class VoidCodeRuntime:
         _ = self.disconnect_acp()
         _ = self.shutdown_mcp()
         _ = self.shutdown_lsp()
+
+    def _build_base_tool_registry(self) -> ToolRegistry:
+        builtin_tools = ToolRegistry.with_defaults(
+            lsp_tool=self._build_lsp_tool(),
+            format_tool=self._build_format_tool(),
+            hooks_config=self._config.hooks or RuntimeHooksConfig(),
+            skill_tool=SkillTool(
+                list_skills=self._skill_registry.all,
+                resolve_skill=self._skill_registry.resolve,
+            ),
+            task_tool=TaskTool(runtime=self),
+            question_tool=QuestionTool(),
+            background_output_tool=BackgroundOutputTool(runtime=self),
+            background_cancel_tool=BackgroundCancelTool(runtime=self),
+        )
+        local_tools = LocalCustomToolProvider(
+            workspace=self._workspace,
+            config=self._config.tools.local if self._config.tools is not None else None,
+        ).provide_tools()
+        if not local_tools:
+            return builtin_tools
+        return ToolRegistry.from_tools((*builtin_tools.tools.values(), *local_tools))
 
     @staticmethod
     def _session_with_metadata(session: SessionState, metadata: dict[str, object]) -> SessionState:
@@ -1120,6 +1143,7 @@ class VoidCodeRuntime:
                 resolved_provider=resolved.resolved_provider,
                 agent=resolved.agent,
                 context_window=resolved.context_window,
+                tools=resolved.tools,
             )
         if isinstance(request_reasoning_effort, str) and request_reasoning_effort:
             resolved = EffectiveRuntimeConfig(
@@ -1135,6 +1159,7 @@ class VoidCodeRuntime:
                 resolved_provider=resolved.resolved_provider,
                 agent=resolved.agent,
                 context_window=resolved.context_window,
+                tools=resolved.tools,
             )
         try:
             self._validate_reasoning_effort_capability(resolved)
@@ -2352,7 +2377,7 @@ class VoidCodeRuntime:
                 else None
             ),
         )
-        if path_scope == "workspace" and tool.read_only:
+        if path_scope == "workspace" and tool.read_only and operation_class == "read":
             return _PermissionOutcome(
                 chunks=(
                     RuntimeStreamChunk(
@@ -2405,11 +2430,16 @@ class VoidCodeRuntime:
             "owner_parent_session_id": pending.owner_parent_session_id,
             "delegated_task_id": pending.delegated_task_id,
         }
-        if pending.policy_surface in {
-            "external_directory_read",
-            "external_directory_write",
-            "permission.rules",
-        }:
+        if (
+            pending.policy_surface
+            in {
+                "external_directory_read",
+                "external_directory_write",
+                "permission.rules",
+            }
+            or pending.path_scope is not None
+            or pending.operation_class is not None
+        ):
             request_payload.update(
                 {
                     "path_scope": pending.path_scope,
@@ -2447,11 +2477,16 @@ class VoidCodeRuntime:
             "request_id": pending.request_id,
             "decision": decision,
         }
-        if pending.policy_surface in {
-            "external_directory_read",
-            "external_directory_write",
-            "permission.rules",
-        }:
+        if (
+            pending.policy_surface
+            in {
+                "external_directory_read",
+                "external_directory_write",
+                "permission.rules",
+            }
+            or pending.path_scope is not None
+            or pending.operation_class is not None
+        ):
             resolution_payload.update(
                 {
                     "path_scope": pending.path_scope,
@@ -2542,9 +2577,10 @@ class VoidCodeRuntime:
         command = tool_call.arguments.get("command")
         return command if isinstance(command, str) else None
 
-    @staticmethod
-    def _operation_class_for_tool(tool_name: str, read_only: bool) -> OperationClass:
-        if tool_name == "shell_exec":
+    def _operation_class_for_tool(self, tool_name: str, read_only: bool) -> OperationClass:
+        if tool_name == "shell_exec" or isinstance(
+            self._tool_registry.tools.get(tool_name), LocalCustomTool
+        ):
             return "execute"
         return "read" if read_only else "write"
 
@@ -2987,6 +3023,11 @@ class VoidCodeRuntime:
                     owner_session_id=pending_approval.owner_session_id,
                     owner_parent_session_id=pending_approval.owner_parent_session_id,
                     delegated_task_id=pending_approval.delegated_task_id,
+                    path_scope=pending_approval.path_scope,
+                    operation_class=pending_approval.operation_class,
+                    canonical_path=pending_approval.canonical_path,
+                    matched_rule=pending_approval.matched_rule,
+                    policy_surface=pending_approval.policy_surface,
                 )
                 if pending_approval is not None
                 else None
@@ -4375,6 +4416,7 @@ class VoidCodeRuntime:
             resolved_provider=self._resolved_provider_config,
             agent=initial_agent,
             context_window=self._config.context_window,
+            tools=self._config.tools,
         )
         self._graph_cache = {}
         if self._graph_override is not None:
@@ -7038,6 +7080,9 @@ class VoidCodeRuntime:
             runtime_config_metadata["model"] = effective_config.model
         if effective_config.reasoning_effort is not None:
             runtime_config_metadata["reasoning_effort"] = effective_config.reasoning_effort
+        serialized_tools = serialize_runtime_tools_config(effective_config.tools)
+        if serialized_tools is not None:
+            runtime_config_metadata["tools"] = serialized_tools
         serialized_agent = serialize_runtime_agent_config(effective_config.agent)
         if serialized_agent is not None:
             runtime_config_metadata["agent"] = serialized_agent
@@ -7168,6 +7213,7 @@ class VoidCodeRuntime:
             resolved_provider=resolved_provider,
             agent=merged_agent,
             context_window=resolved.context_window,
+            tools=resolved.tools,
         )
 
     @staticmethod
@@ -7857,6 +7903,7 @@ class VoidCodeRuntime:
                 resolved_provider=resolved_provider,
                 agent=agent,
                 context_window=context_window,
+                tools=self._config.tools,
             )
 
         persisted_runtime_config = metadata.get("runtime_config")
@@ -7942,6 +7989,9 @@ class VoidCodeRuntime:
                         str(exc),
                     )
                 ) from exc
+        tools = self._config.tools
+        if "tools" in runtime_config:
+            tools = _parse_persisted_runtime_tools_config(runtime_config.get("tools"))
         if "agent" in runtime_config:
             agent = parse_runtime_agent_payload(
                 runtime_config.get("agent"),
@@ -8002,6 +8052,7 @@ class VoidCodeRuntime:
             resolved_provider=resolved_provider,
             agent=agent,
             context_window=context_window,
+            tools=tools,
         )
 
     def _provider_chain_for_session_metadata(
@@ -8187,6 +8238,15 @@ def _parse_persisted_external_permission_config(
     )
 
 
+def _parse_persisted_runtime_tools_config(raw_value: object) -> RuntimeToolsConfig | None:
+    try:
+        return parse_runtime_tools_payload(raw_value, source="persisted runtime_config.tools")
+    except ValueError as exc:
+        raise ValueError(
+            format_invalid_provider_config_error("persisted runtime_config.tools", str(exc))
+        ) from exc
+
+
 def _parse_persisted_external_permission_rules(
     raw_rules: object,
     *,
@@ -8300,6 +8360,7 @@ class EffectiveRuntimeConfig:
     resolved_provider: ResolvedProviderConfig = field(default_factory=ResolvedProviderConfig)
     agent: RuntimeAgentConfig | None = None
     context_window: RuntimeContextWindowConfig | None = None
+    tools: RuntimeToolsConfig | None = None
 
 
 @dataclass(frozen=True, slots=True)

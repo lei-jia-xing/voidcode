@@ -150,6 +150,16 @@ def test_runtime_config_json_schema_exposes_core_fields() -> None:
     assert tools_config["additionalProperties"] is False
     tools_properties = cast(dict[str, object], tools_config["properties"])
     assert "paths" not in tools_properties
+    assert tools_properties["local"] == {"$ref": "#/$defs/localToolsConfig"}
+    local_tools_config = cast(dict[str, object], defs["localToolsConfig"])
+    assert local_tools_config["additionalProperties"] is False
+    local_tools_properties = cast(dict[str, object], local_tools_config["properties"])
+    assert local_tools_properties["enabled"] == {"type": "boolean"}
+    assert local_tools_properties["path"] == {
+        "type": "string",
+        "minLength": 1,
+        "description": "Workspace-relative directory containing *.json tool manifests.",
+    }
     permission_config = cast(dict[str, object], defs["permissionConfig"])
     permission_properties = cast(dict[str, object], permission_config["properties"])
     assert permission_properties["external_directory_read"] == {"$ref": "#/$defs/permissionRules"}

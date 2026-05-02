@@ -323,6 +323,7 @@ def runtime_config_json_schema() -> dict[str, object]:
                         "additionalProperties": False,
                         "properties": {"enabled": {"type": "boolean"}},
                     },
+                    "local": {"$ref": "#/$defs/localToolsConfig"},
                     "allowlist": {"type": "array", "items": {"type": "string"}},
                     "default": {"type": "array", "items": {"type": "string"}},
                 },
@@ -402,6 +403,25 @@ def runtime_config_json_schema() -> dict[str, object]:
                 "properties": {
                     "enabled": {"type": "boolean"},
                     "paths": {"type": "array", "items": {"type": "string"}},
+                },
+            },
+            "localToolsConfig": {
+                "type": "object",
+                "additionalProperties": False,
+                "description": (
+                    "Opt-in workspace-local custom tool manifest discovery. Runtime executes "
+                    "discovered command tools through the normal registry, allowlist, and "
+                    "permission path."
+                ),
+                "properties": {
+                    "enabled": {"type": "boolean"},
+                    "path": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": (
+                            "Workspace-relative directory containing *.json tool manifests."
+                        ),
+                    },
                 },
             },
             "agentConfig": {

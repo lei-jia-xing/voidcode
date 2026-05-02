@@ -40,6 +40,7 @@ from voidcode.runtime.config import (
     RuntimeSkillsConfig,
     RuntimeToolsBuiltinConfig,
     RuntimeToolsConfig,
+    RuntimeToolsLocalConfig,
     RuntimeTuiConfig,
     RuntimeTuiPreferences,
     RuntimeTuiReadingPreferences,
@@ -831,6 +832,7 @@ def test_runtime_config_parses_extension_domains(tmp_path: Path) -> None:
                 "max_steps": 6,
                 "tools": {
                     "builtin": {"enabled": True},
+                    "local": {"enabled": True, "path": ".voidcode/tools"},
                 },
                 "skills": {
                     "enabled": True,
@@ -904,6 +906,7 @@ def test_runtime_config_parses_extension_domains(tmp_path: Path) -> None:
     assert config.max_steps == 6
     assert config.tools == RuntimeToolsConfig(
         builtin=RuntimeToolsBuiltinConfig(enabled=True),
+        local=RuntimeToolsLocalConfig(enabled=True, path=".voidcode/tools"),
     )
     assert config.skills == RuntimeSkillsConfig(
         enabled=True,
@@ -2060,6 +2063,26 @@ def test_runtime_config_rejects_invalid_max_steps(
             id="tools-paths-removed",
         ),
         pytest.param(
+            {"tools": {"local": []}},
+            "runtime config field 'tools.local'",
+            id="tools-local-shape",
+        ),
+        pytest.param(
+            {"tools": {"local": {"enabled": "yes"}}},
+            "runtime config field 'tools.local.enabled'",
+            id="tools-local-enabled-type",
+        ),
+        pytest.param(
+            {"tools": {"local": {"path": "/tmp/tools"}}},
+            "runtime config field 'tools.local.path' must be workspace-relative",
+            id="tools-local-path-absolute",
+        ),
+        pytest.param(
+            {"tools": {"local": {"path": "../tools"}}},
+            "runtime config field 'tools.local.path' must not contain '..'",
+            id="tools-local-path-parent",
+        ),
+        pytest.param(
             {"tools": {"builtin": {"enabled": "yes"}}},
             "runtime config field 'tools.builtin.enabled'",
             id="tools-builtin-enabled-type",
@@ -2216,6 +2239,11 @@ def test_runtime_config_rejects_invalid_max_steps(
             {"agent": {"preset": "leader", "tools": {"paths": [".voidcode/tools"]}}},
             "runtime config field 'agent.tools.paths'",
             id="agent-tools-paths-removed",
+        ),
+        pytest.param(
+            {"agent": {"preset": "leader", "tools": {"local": {"enabled": True}}}},
+            "runtime config field 'agent.tools.local' is not supported",
+            id="agent-tools-local-unsupported",
         ),
         pytest.param(
             {"agent": {"preset": "leader", "plan": {"provider": "custom"}}},
@@ -2834,12 +2862,14 @@ def test_parse_simple_extension_configs_preserve_public_dataclasses() -> None:
     assert _parse_tools_config(
         {
             "builtin": {"enabled": True},
+            "local": {"enabled": True, "path": ".voidcode/tools"},
             "allowlist": ["read_file", "grep"],
             "default": ["read_file"],
         }
     ) == (
         RuntimeToolsConfig(
             builtin=RuntimeToolsBuiltinConfig(enabled=True),
+            local=RuntimeToolsLocalConfig(enabled=True, path=".voidcode/tools"),
             allowlist=("read_file", "grep"),
             default=("read_file",),
         )

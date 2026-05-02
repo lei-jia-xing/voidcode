@@ -145,8 +145,9 @@ _CONTEXT_WINDOW_CONFIG_KEYS = frozenset(
 _FORMATTER_PRESET_CONFIG_KEYS = frozenset(
     {"command", "extensions", "root_markers", "fallback_commands", "cwd_policy"}
 )
-_TOOLS_CONFIG_KEYS = frozenset({"builtin", "allowlist", "default"})
+_TOOLS_CONFIG_KEYS = frozenset({"builtin", "allowlist", "default", "local"})
 _TOOLS_BUILTIN_CONFIG_KEYS = frozenset({"enabled"})
+_TOOLS_LOCAL_CONFIG_KEYS = frozenset({"enabled", "path"})
 _SKILLS_CONFIG_KEYS = frozenset({"enabled", "paths"})
 _PERMISSION_CONFIG_KEYS = frozenset(
     {"external_directory_read", "external_directory_write", "rules"}
@@ -261,8 +262,15 @@ class RuntimeToolsBuiltinConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class RuntimeToolsLocalConfig:
+    enabled: bool | None = None
+    path: str = ".voidcode/tools"
+
+
+@dataclass(frozen=True, slots=True)
 class RuntimeToolsConfig:
     builtin: RuntimeToolsBuiltinConfig | None = None
+    local: RuntimeToolsLocalConfig | None = None
     allowlist: tuple[str, ...] | None = None
     default: tuple[str, ...] | None = None
 
@@ -1176,10 +1184,43 @@ class _RuntimeToolsBuiltinValidationModel(BaseModel):
         return RuntimeToolsBuiltinConfig(enabled=self.enabled)
 
 
+class _RuntimeToolsLocalValidationModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool | None = None
+    path: str = ".voidcode/tools"
+
+    @field_validator("enabled", mode="before")
+    @classmethod
+    def _validate_enabled(cls, value: object, info: ValidationInfo) -> bool | None:
+        field_path = _validation_context_field_path(info, default="tools.local")
+        return _parse_optional_bool(value, field_path=f"{field_path}.enabled")
+
+    @field_validator("path", mode="before")
+    @classmethod
+    def _validate_path(cls, value: object, info: ValidationInfo) -> str:
+        field_path = _validation_context_field_path(info, default="tools.local")
+        if value is None:
+            return ".voidcode/tools"
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(
+                f"runtime config field '{field_path}.path' must be a non-empty string when provided"
+            )
+        if Path(value).is_absolute():
+            raise ValueError(f"runtime config field '{field_path}.path' must be workspace-relative")
+        if ".." in Path(value).parts:
+            raise ValueError(f"runtime config field '{field_path}.path' must not contain '..'")
+        return value.strip()
+
+    def to_runtime_config(self) -> RuntimeToolsLocalConfig:
+        return RuntimeToolsLocalConfig(enabled=self.enabled, path=self.path)
+
+
 class _RuntimeToolsValidationModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     builtin: _RuntimeToolsBuiltinValidationModel | None = None
+    local: _RuntimeToolsLocalValidationModel | None = None
     allowlist: tuple[str, ...] | None = None
     default: tuple[str, ...] | None = None
 
@@ -1193,6 +1234,24 @@ class _RuntimeToolsValidationModel(BaseModel):
         if not isinstance(value, dict):
             raise ValueError("runtime config field 'tools.builtin' must be an object when provided")
         return cast(dict[str, object], value)
+
+    @field_validator("local", mode="before")
+    @classmethod
+    def _validate_local_shape(
+        cls, value: object, info: ValidationInfo
+    ) -> dict[str, object] | _RuntimeToolsLocalValidationModel | None:
+        if value is None:
+            return None
+        field_path = _validation_context_field_path(info, default="tools")
+        if not isinstance(value, dict):
+            raise ValueError(
+                f"runtime config field '{field_path}.local' must be an object when provided"
+            )
+        return _validate_runtime_config_model(
+            _RuntimeToolsLocalValidationModel,
+            cast(dict[str, object], value),
+            context={"field_path": f"{field_path}.local"},
+        )
 
     @field_validator("allowlist", mode="before")
     @classmethod
@@ -1211,6 +1270,7 @@ class _RuntimeToolsValidationModel(BaseModel):
     def to_runtime_config(self) -> RuntimeToolsConfig:
         return RuntimeToolsConfig(
             builtin=self.builtin.to_runtime_config() if self.builtin is not None else None,
+            local=self.local.to_runtime_config() if self.local is not None else None,
             allowlist=self.allowlist,
             default=self.default,
         )
@@ -1880,6 +1940,7 @@ def _parse_tools_config(
     raw_tools: object,
     *,
     field_path: str = "tools",
+    allow_local: bool = True,
 ) -> RuntimeToolsConfig | None:
     if raw_tools is None:
         return None
@@ -1898,6 +1959,15 @@ def _parse_tools_config(
             cast(dict[str, object], raw_builtin),
             allowed_keys=_TOOLS_BUILTIN_CONFIG_KEYS,
             field_path=f"{field_path}.builtin",
+        )
+    raw_local = tools_payload.get("local")
+    if raw_local is not None and not allow_local:
+        raise ValueError(f"runtime config field '{field_path}.local' is not supported")
+    if isinstance(raw_local, dict):
+        _reject_unknown_config_keys(
+            cast(dict[str, object], raw_local),
+            allowed_keys=_TOOLS_LOCAL_CONFIG_KEYS,
+            field_path=f"{field_path}.local",
         )
     return cast(
         RuntimeToolsConfig | None,
@@ -2147,7 +2217,11 @@ def _parse_agent_config(
         hook_refs=hook_refs,
         model=model.strip() if isinstance(model, str) else None,
         execution_engine=execution_engine,
-        tools=_parse_tools_config(payload.get("tools"), field_path="agent.tools"),
+        tools=_parse_tools_config(
+            payload.get("tools"),
+            field_path="agent.tools",
+            allow_local=False,
+        ),
         skills=_parse_skills_config(payload.get("skills")),
         mcp_binding=_parse_agent_mcp_binding(
             payload.get("mcp_binding"),
@@ -2400,6 +2474,13 @@ def parse_runtime_context_window_payload(
         raise ValueError(f"{source}: {exc}") from exc
 
 
+def parse_runtime_tools_payload(raw_tools: object, *, source: str) -> RuntimeToolsConfig | None:
+    try:
+        return _parse_tools_config(raw_tools)
+    except ValueError as exc:
+        raise ValueError(f"{source}: {exc}") from exc
+
+
 def serialize_runtime_context_window_config(
     context_window: RuntimeContextWindowConfig | None,
 ) -> dict[str, object] | None:
@@ -2459,6 +2540,20 @@ def serialize_runtime_background_task_config(
     return payload
 
 
+def serialize_runtime_tools_config(config: RuntimeToolsConfig | None) -> dict[str, object] | None:
+    if config is None:
+        return None
+    payload: dict[str, object | None] = {
+        "builtin": None if config.builtin is None else {"enabled": config.builtin.enabled},
+        "local": None
+        if config.local is None
+        else {"enabled": config.local.enabled, "path": config.local.path},
+        "allowlist": list(config.allowlist) if config.allowlist is not None else None,
+        "default": list(config.default) if config.default is not None else None,
+    }
+    return {key: value for key, value in payload.items() if value is not None}
+
+
 def serialize_runtime_agent_config(agent: RuntimeAgentConfig | None) -> dict[str, object] | None:
     if agent is None:
         return None
@@ -2484,16 +2579,7 @@ def serialize_runtime_agent_config(agent: RuntimeAgentConfig | None) -> dict[str
     if agent.execution_engine is not None:
         payload["execution_engine"] = agent.execution_engine
     if agent.tools is not None:
-        tools_payload: dict[str, object | None] = {
-            "builtin": None
-            if agent.tools.builtin is None
-            else {"enabled": agent.tools.builtin.enabled},
-            "allowlist": (
-                list(agent.tools.allowlist) if agent.tools.allowlist is not None else None
-            ),
-            "default": list(agent.tools.default) if agent.tools.default is not None else None,
-        }
-        payload["tools"] = {key: value for key, value in tools_payload.items() if value is not None}
+        payload["tools"] = serialize_runtime_tools_config(agent.tools)
     if agent.skills is not None:
         payload["skills"] = {
             "enabled": agent.skills.enabled,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import textwrap
 from dataclasses import dataclass
@@ -17,6 +18,7 @@ from voidcode.runtime.config import (
     RuntimeConfig,
     RuntimeToolsBuiltinConfig,
     RuntimeToolsConfig,
+    RuntimeToolsLocalConfig,
 )
 from voidcode.runtime.mcp import (
     McpConfigState,
@@ -32,7 +34,11 @@ from voidcode.runtime.service import (
     ToolRegistry,
     VoidCodeRuntime,
 )
-from voidcode.runtime.tool_provider import BuiltinToolProvider, scoped_tool_registry_for_agent
+from voidcode.runtime.tool_provider import (
+    BuiltinToolProvider,
+    LocalCustomToolProvider,
+    scoped_tool_registry_for_agent,
+)
 from voidcode.tools import (
     AstGrepPreviewTool,
     AstGrepReplaceTool,
@@ -59,6 +65,7 @@ from voidcode.tools import (
 )
 from voidcode.tools.contracts import ToolDefinition, ToolResult
 from voidcode.tools.guidance import guidance_filename_for_tool, guidance_for_tool
+from voidcode.tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
 
 pytestmark = pytest.mark.usefixtures("_force_deterministic_engine_default")
 
@@ -165,6 +172,49 @@ class _FormatTestTool:
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
         _ = call, workspace
         return ToolResult(tool_name="format_file", status="ok", content="formatted")
+
+
+def _write_local_tool_manifest(
+    workspace: Path,
+    *,
+    name: str = "local/echo",
+    read_only: bool = True,
+    command: list[str] | None = None,
+) -> Path:
+    tools_dir = workspace / ".voidcode" / "tools"
+    tools_dir.mkdir(parents=True, exist_ok=True)
+    script = tools_dir / "echo.py"
+    script.write_text(
+        textwrap.dedent(
+            """
+            import json
+            import os
+            import sys
+
+            args = json.loads(sys.stdin.read() or "{}")
+            print(json.dumps({
+                "args": args,
+                "workspace": os.environ.get("VOIDCODE_WORKSPACE"),
+                "session": os.environ.get("VOIDCODE_SESSION_ID"),
+            }, sort_keys=True))
+            """
+        ),
+        encoding="utf-8",
+    )
+    manifest = tools_dir / f"{name.replace('/', '_')}.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "name": name,
+                "description": "Echo arguments from a local manifest",
+                "input_schema": {"type": "object", "properties": {"message": {"type": "string"}}},
+                "command": command or [sys.executable, "${manifest_dir}/echo.py"],
+                "read_only": read_only,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return manifest
 
 
 def test_builtin_tool_provider_returns_expected_builtin_tools() -> None:
@@ -361,10 +411,12 @@ def test_default_runtime_scopes_tools_to_leader_manifest(tmp_path: Path) -> None
     )
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
     response = runtime.run(RuntimeRequest(prompt="go"))
-    runtime_config = response.session.metadata["runtime_config"]
-    assert isinstance(runtime_config, dict)
-    agent = cast(dict[str, object], runtime_config["agent"])
-    assert isinstance(agent, dict)
+    runtime_config_raw = dict(response.session.metadata)["runtime_config"]
+    assert isinstance(runtime_config_raw, dict)
+    runtime_config = cast(dict[str, object], runtime_config_raw)
+    agent_raw = runtime_config["agent"]
+    assert isinstance(agent_raw, dict)
+    agent = cast(dict[str, object], agent_raw)
 
     assert agent["preset"] == "leader"
     assert any(event.event_type == "runtime.tool_lookup_succeeded" for event in response.events)
@@ -544,6 +596,202 @@ def test_tool_registry_with_defaults_passes_format_tool_to_builtin_provider() ->
     provider = provide_tools_mock.call_args.args[0]
     assert isinstance(provider, BuiltinToolProvider)
     assert registry.resolve("format_file") is format_tool
+
+
+def test_tool_registry_rejects_duplicate_tool_names() -> None:
+    with pytest.raises(ValueError, match="duplicate tool definition: injected_tool"):
+        _ = ToolRegistry.from_tools((_InjectedTool(), _InjectedTool()))
+
+
+def test_local_custom_tool_provider_discovers_opted_in_manifests(tmp_path: Path) -> None:
+    _write_local_tool_manifest(tmp_path, read_only=False)
+
+    tools = LocalCustomToolProvider(
+        workspace=tmp_path,
+        config=RuntimeToolsLocalConfig(enabled=True, path=".voidcode/tools"),
+    ).provide_tools()
+
+    assert len(tools) == 1
+    tool = tools[0]
+    assert tool.definition == ToolDefinition(
+        name="local/echo",
+        description="Echo arguments from a local manifest",
+        input_schema={"type": "object", "properties": {"message": {"type": "string"}}},
+        read_only=False,
+    )
+
+
+def test_local_custom_tool_provider_requires_opt_in(tmp_path: Path) -> None:
+    _write_local_tool_manifest(tmp_path)
+
+    assert LocalCustomToolProvider(workspace=tmp_path, config=None).provide_tools() == ()
+    assert (
+        LocalCustomToolProvider(
+            workspace=tmp_path,
+            config=RuntimeToolsLocalConfig(enabled=False, path=".voidcode/tools"),
+        ).provide_tools()
+        == ()
+    )
+
+
+def test_local_custom_tool_invokes_command_with_runtime_context(tmp_path: Path) -> None:
+    _write_local_tool_manifest(tmp_path)
+    tool = LocalCustomToolProvider(
+        workspace=tmp_path,
+        config=RuntimeToolsLocalConfig(enabled=True, path=".voidcode/tools"),
+    ).provide_tools()[0]
+
+    with bind_runtime_tool_context(
+        RuntimeToolInvocationContext(
+            session_id="ses_local",
+        )
+    ):
+        result = tool.invoke(
+            ToolCall(tool_name="local/echo", arguments={"message": "hi"}), workspace=tmp_path
+        )
+
+    assert result.status == "ok"
+    assert result.source == "local_custom_tool"
+    assert result.content is not None
+    payload = json.loads(result.content)
+    assert payload["args"] == {"message": "hi"}
+    assert payload["workspace"] == str(tmp_path.resolve())
+    assert payload["session"] == "ses_local"
+
+
+def test_runtime_includes_opted_in_local_custom_tools(tmp_path: Path) -> None:
+    _write_local_tool_manifest(tmp_path)
+
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_StubGraph(),
+        config=RuntimeConfig(
+            execution_engine="deterministic",
+            tools=RuntimeToolsConfig(local=RuntimeToolsLocalConfig(enabled=True)),
+        ),
+    )
+
+    assert "local/echo" in runtime._base_tool_registry.tools  # pyright: ignore[reportPrivateUsage]
+
+
+def test_runtime_persists_top_level_local_tools_config(tmp_path: Path) -> None:
+    _write_local_tool_manifest(tmp_path)
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_StubGraph(),
+        config=RuntimeConfig(
+            execution_engine="deterministic",
+            tools=RuntimeToolsConfig(local=RuntimeToolsLocalConfig(enabled=True)),
+        ),
+    )
+
+    metadata = runtime._runtime_config_metadata()  # pyright: ignore[reportPrivateUsage]
+
+    assert metadata["tools"] == {"local": {"enabled": True, "path": ".voidcode/tools"}}
+    effective = runtime._effective_runtime_config_from_metadata(  # pyright: ignore[reportPrivateUsage]
+        {"runtime_config": metadata}
+    )
+    assert effective.tools == RuntimeToolsConfig(
+        local=RuntimeToolsLocalConfig(enabled=True, path=".voidcode/tools")
+    )
+
+
+def test_runtime_rejects_local_custom_tool_name_collisions(tmp_path: Path) -> None:
+    _write_local_tool_manifest(tmp_path, name="grep")
+
+    with pytest.raises(ValueError, match="duplicate tool definition: grep"):
+        _ = VoidCodeRuntime(
+            workspace=tmp_path,
+            graph=_StubGraph(),
+            config=RuntimeConfig(
+                execution_engine="deterministic",
+                tools=RuntimeToolsConfig(local=RuntimeToolsLocalConfig(enabled=True)),
+            ),
+        )
+
+
+def test_local_custom_tool_provider_rejects_invalid_input_schema(tmp_path: Path) -> None:
+    manifest = _write_local_tool_manifest(tmp_path)
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    payload["input_schema"] = {"type": "string"}
+    manifest.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="input_schema.type must be 'object'"):
+        _ = LocalCustomToolProvider(
+            workspace=tmp_path,
+            config=RuntimeToolsLocalConfig(enabled=True, path=".voidcode/tools"),
+        ).provide_tools()
+
+
+class _LocalToolGraph:
+    def __init__(self) -> None:
+        self._step_count = 0
+
+    def step(
+        self,
+        request: GraphRunRequest,
+        tool_results: tuple[ToolResult, ...],
+        *,
+        session: SessionState,
+    ) -> GraphStep:
+        _ = request, session
+        self._step_count += 1
+        if self._step_count == 1:
+            return _StubStep(
+                tool_call=ToolCall(tool_name="local/echo", arguments={"message": "hi"})
+            )
+        return _StubStep(output=tool_results[-1].content or "done", is_finished=True)
+
+
+def test_local_custom_tools_require_approval_even_when_manifest_claims_read_only(
+    tmp_path: Path,
+) -> None:
+    _write_local_tool_manifest(tmp_path, read_only=True)
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_LocalToolGraph(),
+        config=RuntimeConfig(
+            execution_engine="deterministic",
+            tools=RuntimeToolsConfig(local=RuntimeToolsLocalConfig(enabled=True)),
+        ),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="go", session_id="local-approval"))
+    snapshot = runtime.session_debug_snapshot(session_id="local-approval")
+
+    assert response.session.status == "waiting"
+    assert snapshot.pending_approval is not None
+    assert snapshot.pending_approval.tool_name == "local/echo"
+    assert snapshot.pending_approval.operation_class == "execute"
+
+
+def test_local_custom_tools_are_blocked_by_deny_policy(tmp_path: Path) -> None:
+    _write_local_tool_manifest(tmp_path, read_only=True)
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_LocalToolGraph(),
+        config=RuntimeConfig(
+            execution_engine="deterministic",
+            tools=RuntimeToolsConfig(local=RuntimeToolsLocalConfig(enabled=True)),
+        ),
+        permission_policy=PermissionPolicy(mode="deny"),
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="go"))
+
+    assert response.session.status == "running"
+    assert any(
+        event.event_type == "runtime.approval_resolved" and event.payload.get("decision") == "deny"
+        for event in response.events
+    )
+    denied_event = next(
+        event for event in response.events if event.event_type == "runtime.tool_completed"
+    )
+    assert denied_event.payload["tool"] == "local/echo"
+    assert denied_event.payload["status"] == "error"
+    assert denied_event.payload["permission_denied"] is True
+    assert denied_event.payload["operation_class"] == "execute"
 
 
 def test_runtime_registry_includes_discovered_mcp_tools(tmp_path: Path) -> None:
