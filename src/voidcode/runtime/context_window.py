@@ -959,6 +959,9 @@ def _truncate_tool_result_content(
             fallback_reason=result.fallback_reason,
             reference=result.reference,
             error_kind=result.error_kind,
+            error_summary=result.error_summary,
+            error_details=result.error_details,
+            retry_guidance=result.retry_guidance,
         ),
         True,
     )
