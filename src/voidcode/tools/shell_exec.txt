@@ -6,5 +6,5 @@ Usage:
 - Commands run from the workspace root.
 - Commands are executed by a non-interactive shell, so normal shell operators such as pipes, redirects, wildcard expansion, and command chaining are available.
 - Use this tool for tests, builds, diagnostics, and local commands that cannot be expressed through narrower tools.
-- Prefer dedicated file/search tools for file reads, file writes, text search, and directory listing when they fit the task.
+- Prefer dedicated file/search tools for file reads, file writes, and text/path search when they fit the task.
 - Treat exit_code, stdout, stderr, timeout, and truncated as the source of truth.

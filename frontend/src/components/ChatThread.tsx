@@ -119,7 +119,6 @@ function resultData(tool: ChatTool) {
 const CONTEXT_TOOL_NAMES = new Set([
   "read",
   "read_file",
-  "list",
   "glob",
   "grep",
   "code_search",

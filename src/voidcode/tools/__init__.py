@@ -7,7 +7,6 @@ from .contracts import ToolCall, ToolDefinition, ToolResult, ToolResultStatus
 from .edit import EditTool
 from .glob import GlobTool
 from .grep import GrepTool
-from .list_dir import ListTool
 from .local_custom import LocalCustomTool
 from .lsp import FormatTool, LspTool
 from .mcp import McpTool
@@ -44,7 +43,6 @@ __all__ = [
     "FormatTool",
     "GlobTool",
     "GrepTool",
-    "ListTool",
     "LocalCustomTool",
     "ReadFileTool",
     "QuestionTool",
