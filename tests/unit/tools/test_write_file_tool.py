@@ -51,13 +51,26 @@ def test_write_file_tool_returns_diff_for_rewrite(tmp_path: Path) -> None:
 def test_write_file_tool_rejects_non_string_arguments(tmp_path: Path) -> None:
     tool = WriteFileTool()
 
-    with pytest.raises(ValueError, match="string path"):
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"write_file Validation error: path: Input should be a valid string \(received int\)\. "
+            r"Please retry with corrected arguments that satisfy the tool schema\."
+        ),
+    ):
         tool.invoke(
             ToolCall(tool_name="write_file", arguments={"path": 123, "content": "x"}),
             workspace=tmp_path,
         )
 
-    with pytest.raises(ValueError, match="string content"):
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"write_file Validation error: content: Input should be a valid string "
+            r"\(received int\)\. "
+            r"Please retry with corrected arguments that satisfy the tool schema\."
+        ),
+    ):
         tool.invoke(
             ToolCall(tool_name="write_file", arguments={"path": "out.txt", "content": 123}),
             workspace=tmp_path,
@@ -67,7 +80,14 @@ def test_write_file_tool_rejects_non_string_arguments(tmp_path: Path) -> None:
 def test_write_file_tool_rejects_empty_content(tmp_path: Path) -> None:
     tool = WriteFileTool()
 
-    with pytest.raises(ValueError, match="non-empty string content"):
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"write_file Validation error: content: Value error, content must not be empty "
+            r"\(received str\)\. "
+            r"Please retry with corrected arguments that satisfy the tool schema\."
+        ),
+    ):
         tool.invoke(
             ToolCall(tool_name="write_file", arguments={"path": "shader.frag", "content": ""}),
             workspace=tmp_path,

@@ -2842,11 +2842,13 @@ def test_runtime_tool_validation_error_includes_actionable_content(tmp_path: Pat
     )
     assert tool_completed.payload["status"] == "error"
     assert tool_completed.payload["error"] == (
-        "write_file requires a non-empty string content argument"
+        "write_file Validation error: content: Value error, content must not be empty "
+        "(received str). Please retry with corrected arguments that satisfy the tool schema."
     )
     assert tool_completed.payload["content"] == (
-        "write_file failed: write_file requires a non-empty string content argument. "
-        "Please correct the tool arguments and retry."
+        "write_file failed: write_file Validation error: content: Value error, content must not "
+        "be empty (received str). Please retry with corrected arguments that satisfy the tool "
+        "schema.. Please correct the tool arguments and retry."
     )
     failed_tool_result = created_providers[-1].requests[-1].tool_results[-1]
     assert failed_tool_result.content == tool_completed.payload["content"]
