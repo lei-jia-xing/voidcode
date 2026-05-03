@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -123,6 +124,18 @@ def test_manifest_from_markdown_file_rejects_missing_required_fields(tmp_path: P
 
     with pytest.raises(ValueError, match="bad.md.*missing required.*mode"):
         _ = manifest_from_markdown_file(path, scope="project")
+
+
+def test_user_agent_manifest_dir_uses_windows_appdata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from voidcode.agent import user_agent_manifest_dir
+
+    monkeypatch.setattr(sys, "platform", "win32")
+
+    assert user_agent_manifest_dir(env={"APPDATA": str(tmp_path / "Roaming")}) == (
+        tmp_path / "Roaming" / "voidcode" / "agents"
+    )
 
 
 def test_registry_project_scope_overrides_user_scope(tmp_path: Path) -> None:

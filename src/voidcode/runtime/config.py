@@ -4,6 +4,7 @@ import json
 import math
 import os
 import re
+import sys
 from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -50,6 +51,12 @@ serialize_provider_fallback_config = provider_config.serialize_provider_fallback
 serialize_provider_configs = provider_config.serialize_provider_configs
 
 RUNTIME_CONFIG_FILE_NAME = ".voidcode.json"
+
+
+def _running_on_windows() -> bool:
+    return sys.platform == "win32"
+
+
 APPROVAL_MODE_ENV_VAR = "VOIDCODE_APPROVAL_MODE"
 MODEL_ENV_VAR = "VOIDCODE_MODEL"
 EXECUTION_ENGINE_ENV_VAR = "VOIDCODE_EXECUTION_ENGINE"
@@ -537,10 +544,7 @@ def runtime_config_path(workspace: Path) -> Path:
 
 
 def user_runtime_config_path() -> Path:
-    config_home = os.environ.get("XDG_CONFIG_HOME")
-    if config_home:
-        return Path(config_home).expanduser() / "voidcode" / "config.json"
-    return Path.home() / ".config" / "voidcode" / "config.json"
+    return _user_runtime_config_path_from_env(os.environ)
 
 
 def load_global_tui_preferences(
@@ -978,6 +982,15 @@ def _load_user_config(env: Mapping[str, str]) -> RuntimeConfigOverrides:
 
 
 def _user_runtime_config_path_from_env(env: Mapping[str, str]) -> Path:
+    if _running_on_windows():
+        config_home = env.get("APPDATA") or os.environ.get("APPDATA")
+        if config_home:
+            return Path(config_home).expanduser() / "voidcode" / "config.json"
+        local_config_home = env.get("LOCALAPPDATA") or os.environ.get("LOCALAPPDATA")
+        if local_config_home:
+            return Path(local_config_home).expanduser() / "voidcode" / "config.json"
+        return Path.home() / "AppData" / "Roaming" / "voidcode" / "config.json"
+
     config_home = env.get("XDG_CONFIG_HOME") or os.environ.get("XDG_CONFIG_HOME")
     if config_home:
         return Path(config_home).expanduser() / "voidcode" / "config.json"
