@@ -32,9 +32,8 @@ function sseBody(chunks: JsonValue[]) {
 }
 
 function uvExecutable() {
-  return process.platform === "win32" ? "uv.cmd" : "uv";
+  return "uv";
 }
-
 async function installMockRuntime(page: Page) {
   const workspaceSnapshot = {
     current: {
