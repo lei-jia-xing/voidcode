@@ -31,6 +31,7 @@ interface RuntimeOpsPanelProps {
   onLoadTaskOutput: (taskId: string) => void;
   onCancelTask: (taskId: string) => void;
   onRefreshDebug: () => void;
+  onSelectSession?: (sessionId: string) => void;
 }
 
 function ErrorLine({ message }: { message: string | null }) {
@@ -38,16 +39,49 @@ function ErrorLine({ message }: { message: string | null }) {
   return <div className="text-xs text-[var(--vc-danger-text)]">{message}</div>;
 }
 
-function FieldRow({ label, value }: { label: string; value?: string | null }) {
+function FieldRow({
+  label,
+  value,
+  onClick,
+}: {
+  label: string;
+  value?: string | null;
+  onClick?: (() => void) | undefined;
+}) {
   if (!value) return null;
   return (
     <div className="flex items-start justify-between gap-2">
       <span className="text-[var(--vc-text-subtle)]">{label}</span>
-      <span className="min-w-0 flex-1 text-right font-mono text-[11px] text-[var(--vc-text-muted)] break-words">
-        {value}
-      </span>
+      {onClick ? (
+        <button
+          type="button"
+          onClick={onClick}
+          className="min-w-0 flex-1 break-words text-right font-mono text-[11px] text-[var(--vc-text-primary)] underline underline-offset-2 hover:text-[var(--vc-focus-ring)]"
+        >
+          {value}
+        </button>
+      ) : (
+        <span className="min-w-0 flex-1 text-right font-mono text-[11px] text-[var(--vc-text-muted)] break-words">
+          {value}
+        </span>
+      )}
     </div>
   );
+}
+
+function formatDurationSeconds(
+  value: number | null | undefined,
+): string | null {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    return null;
+  }
+  if (value >= 60) {
+    const minutes = Math.floor(value / 60);
+    const seconds = value - minutes * 60;
+    return `${minutes}m ${seconds.toFixed(seconds >= 10 ? 0 : 1)}s`;
+  }
+  if (value >= 10) return `${value.toFixed(1)}s`;
+  return `${value.toFixed(2)}s`;
 }
 
 function TextBlock({ label, value }: { label: string; value?: string | null }) {
@@ -87,6 +121,7 @@ export function RuntimeOpsPanel({
   onLoadTaskOutput,
   onCancelTask,
   onRefreshDebug,
+  onSelectSession,
 }: RuntimeOpsPanelProps) {
   const { t } = useTranslation();
 
@@ -318,6 +353,16 @@ export function RuntimeOpsPanel({
                   value={backgroundTaskOutput.task.status}
                 />
                 <FieldRow
+                  label={t("runtimeOps.toolCalls")}
+                  value={String(backgroundTaskOutput.task.tool_call_count ?? 0)}
+                />
+                <FieldRow
+                  label={t("runtimeOps.duration")}
+                  value={formatDurationSeconds(
+                    backgroundTaskOutput.task.duration_seconds,
+                  )}
+                />
+                <FieldRow
                   label={t("runtimeOps.routing")}
                   value={backgroundTaskOutput.task.routing?.mode}
                 />
@@ -328,14 +373,44 @@ export function RuntimeOpsPanel({
                 <FieldRow
                   label={t("runtimeOps.parentSession")}
                   value={backgroundTaskOutput.task.parent_session_id}
+                  onClick={
+                    backgroundTaskOutput.task.parent_session_id &&
+                    onSelectSession
+                      ? () =>
+                          onSelectSession(
+                            backgroundTaskOutput.task
+                              .parent_session_id as string,
+                          )
+                      : undefined
+                  }
                 />
                 <FieldRow
                   label={t("runtimeOps.childSession")}
                   value={backgroundTaskOutput.task.child_session_id}
+                  onClick={
+                    backgroundTaskOutput.task.child_session_id &&
+                    onSelectSession
+                      ? () =>
+                          onSelectSession(
+                            backgroundTaskOutput.task
+                              .child_session_id as string,
+                          )
+                      : undefined
+                  }
                 />
                 <FieldRow
                   label={t("runtimeOps.requestedChildSession")}
                   value={backgroundTaskOutput.task.requested_child_session_id}
+                  onClick={
+                    backgroundTaskOutput.task.requested_child_session_id &&
+                    onSelectSession
+                      ? () =>
+                          onSelectSession(
+                            backgroundTaskOutput.task
+                              .requested_child_session_id as string,
+                          )
+                      : undefined
+                  }
                 />
                 <FieldRow
                   label={t("runtimeOps.approvalRequest")}
