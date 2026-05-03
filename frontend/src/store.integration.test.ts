@@ -1688,7 +1688,6 @@ describe("useAppStore integration flow", () => {
         max_steps: 5,
         provider_stream: true,
         agent: {
-          execution_engine: "provider",
           custom_flag: "kept",
         },
       },
@@ -1796,7 +1795,6 @@ describe("useAppStore integration flow", () => {
         agent: {
           preset: "leader",
           model: "glm/glm-5",
-          execution_engine: "provider",
         },
       },
     });
@@ -1858,7 +1856,6 @@ describe("useAppStore integration flow", () => {
         agent: {
           preset: "leader",
           model: "deepseek/deepseek-v4-pro",
-          execution_engine: "provider",
         },
       },
     });
@@ -1921,7 +1918,6 @@ describe("useAppStore integration flow", () => {
         agent: {
           preset: "leader",
           model: "opencode-go/kimi-k2.6",
-          execution_engine: "provider",
         },
       },
     });
@@ -1980,7 +1976,6 @@ describe("useAppStore integration flow", () => {
         agent: {
           preset: "leader",
           model: "kimi/kimi-k2.6",
-          execution_engine: "provider",
         },
       },
     });
@@ -2039,7 +2034,6 @@ describe("useAppStore integration flow", () => {
         agent: {
           preset: "leader",
           model: "kimi/kimi-k2.6",
-          execution_engine: "provider",
         },
       },
     });
@@ -2104,7 +2098,6 @@ describe("useAppStore integration flow", () => {
         agent: {
           preset: "leader",
           model: "kimi-k2.6",
-          execution_engine: "provider",
         },
       },
     });
@@ -2163,7 +2156,6 @@ describe("useAppStore integration flow", () => {
         agent: {
           preset: "leader",
           model: "mystery-model",
-          execution_engine: "provider",
         },
       },
     });
@@ -2241,7 +2233,6 @@ describe("useAppStore integration flow", () => {
         agent: {
           preset: "leader",
           model: "deepseek/deepseek-v4-pro",
-          execution_engine: "provider",
         },
       },
     });
@@ -2281,7 +2272,6 @@ describe("useAppStore integration flow", () => {
         agent: {
           preset: "leader",
           model: "deepseek/deepseek-v4-pro",
-          execution_engine: "provider",
         },
       },
     });
@@ -2364,7 +2354,6 @@ describe("useAppStore integration flow", () => {
         agent: {
           preset: "leader",
           model: "opencode-go/kimi-k2.6",
-          execution_engine: "provider",
         },
       },
     });
@@ -2417,7 +2406,6 @@ describe("useAppStore integration flow", () => {
         agent: {
           preset: "leader",
           model: "opencode-go/kimi-k2.6",
-          execution_engine: "provider",
         },
       },
     });
