@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from fnmatch import fnmatchcase
 from pathlib import Path
@@ -46,7 +47,7 @@ class PatternPermissionRule:
 class ExternalDirectoryPermissionConfig:
     read: ExternalDirectoryPolicy = field(default_factory=ExternalDirectoryPolicy)
     write: ExternalDirectoryPolicy = field(
-        default_factory=lambda: ExternalDirectoryPolicy(rules=(("*", "deny"),))
+        default_factory=lambda: ExternalDirectoryPolicy(rules=(("*", "ask"),))
     )
     rules: tuple[PatternPermissionRule, ...] = ()
 
@@ -230,7 +231,25 @@ def _tool_matches_rule(*, tool_name: str, pattern: str) -> bool:
 def _command_matches_rule(*, command: str | None, pattern: str) -> bool:
     if command is None:
         return False
-    return fnmatchcase(command, pattern)
+    if fnmatchcase(command, pattern):
+        return True
+    for candidate in _command_match_candidates(command):
+        if fnmatchcase(candidate, pattern):
+            return True
+    return False
+
+
+def _command_match_candidates(command: str) -> tuple[str, ...]:
+    candidates: list[str] = []
+    for segment in re.split(r"[;&|]+", command):
+        stripped = segment.strip()
+        if not stripped:
+            continue
+        candidates.append(stripped)
+        first_token = stripped.split(None, 1)[0].strip()
+        if first_token:
+            candidates.append(first_token)
+    return tuple(dict.fromkeys(candidates))
 
 
 def _path_candidates_match_rule(*, path_candidates: tuple[str, ...], pattern: str) -> bool:

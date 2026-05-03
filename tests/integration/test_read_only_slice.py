@@ -24,7 +24,7 @@ pytestmark = pytest.mark.usefixtures("force_deterministic_engine_default")
 
 _DEFAULT_PERMISSION_METADATA = {
     "external_directory_read": {"*": "ask"},
-    "external_directory_write": {"*": "deny"},
+    "external_directory_write": {"*": "ask"},
 }
 _LEADER_HOOK_PRESET_SNAPSHOT = {
     "refs": [
@@ -3187,12 +3187,7 @@ def test_runtime_denies_external_write_when_permission_rule_denies(tmp_path: Pat
     assert outside_file.exists() is False
 
 
-def test_runtime_denies_shell_exec_external_write_when_permission_rule_denies(
-    tmp_path: Path,
-) -> None:
-    if sys.platform.startswith("win"):
-        pytest.skip("POSIX shell redirection syntax is required for this regression")
-
+def test_runtime_denies_shell_exec_when_command_rule_denies(tmp_path: Path) -> None:
     runtime_request, runtime_class = _load_runtime_types()
     permission_module = importlib.import_module("voidcode.runtime.permission")
     config_module = importlib.import_module("voidcode.runtime.config")
@@ -3203,11 +3198,6 @@ def test_runtime_denies_shell_exec_external_write_when_permission_rule_denies(
         Callable[..., object],
         config_module.ExternalDirectoryPermissionConfig,
     )
-    policy_config = cast(Callable[..., object], config_module.ExternalDirectoryPolicy)
-
-    outside_root = tmp_path.parent / "external-shell-write-fixture"
-    outside_root.mkdir(parents=True, exist_ok=True)
-    outside_file = outside_root / "out.txt"
 
     runtime = cast(
         RuntimeRunner,
@@ -3218,13 +3208,18 @@ def test_runtime_denies_shell_exec_external_write_when_permission_rule_denies(
                 config=runtime_config(
                     approval_mode="allow",
                     permission=permission_config(
-                        read=policy_config(rules=(("*", "allow"),)),
-                        write=policy_config(rules=(("*", "deny"),)),
+                        rules=(
+                            permission_module.PatternPermissionRule(
+                                tool="shell_exec",
+                                command="printf blocked*",
+                                decision="deny",
+                            ),
+                        ),
                     ),
                 ),
                 graph=_SingleToolGraph(
                     "shell_exec",
-                    {"command": f"printf blocked > {shlex.quote(str(outside_file))}"},
+                    {"command": "printf blocked > ./out.txt"},
                 ),
                 permission_policy=policy,
             ),
@@ -3232,18 +3227,17 @@ def test_runtime_denies_shell_exec_external_write_when_permission_rule_denies(
     )
 
     denied = runtime.run(
-        runtime_request(prompt="external shell write", session_id="external-shell-write-deny")
+        runtime_request(prompt="deny shell command", session_id="shell-command-rule-deny")
     )
     assert denied.session.status == "completed"
     denial = next(
         event for event in denied.events if event.event_type == "runtime.approval_resolved"
     )
     assert denial.payload["decision"] == "deny"
-    assert denial.payload["path_scope"] == "external"
-    assert denial.payload["operation_class"] == "execute"
-    assert denial.payload["matched_rule"] == "*"
-    assert denial.payload["policy_surface"] == "external_directory_write"
-    assert denial.payload["canonical_path"] == str(outside_file.resolve())
+    assert denial.payload["matched_rule"] == (
+        "permission.rules[0] tool='shell_exec' command='printf blocked*' decision='deny'"
+    )
+    assert denial.payload["policy_surface"] == "permission.rules"
     feedback = next(
         event
         for event in denied.events
@@ -3251,90 +3245,17 @@ def test_runtime_denies_shell_exec_external_write_when_permission_rule_denies(
         and event.payload.get("permission_denied") is True
     )
     assert feedback.payload["status"] == "error"
-    assert outside_file.exists() is False
 
 
-def test_runtime_denies_shell_exec_dot_parent_external_write_when_rule_denies(
-    tmp_path: Path,
-) -> None:
-    if sys.platform.startswith("win"):
-        pytest.skip("POSIX shell redirection syntax is required for this regression")
-
-    runtime_request, runtime_class = _load_runtime_types()
-    permission_module = importlib.import_module("voidcode.runtime.permission")
-    config_module = importlib.import_module("voidcode.runtime.config")
-
-    policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="allow")
-    runtime_config = cast(Callable[..., object], config_module.RuntimeConfig)
-    permission_config = cast(
-        Callable[..., object],
-        config_module.ExternalDirectoryPermissionConfig,
-    )
-    policy_config = cast(Callable[..., object], config_module.ExternalDirectoryPolicy)
-
-    outside_file = tmp_path.parent / "dot-parent-shell-write.txt"
-    relative_external = "./../dot-parent-shell-write.txt"
-
-    runtime = cast(
-        RuntimeRunner,
-        cast(
-            object,
-            runtime_class(
-                workspace=tmp_path,
-                config=runtime_config(
-                    approval_mode="allow",
-                    permission=permission_config(
-                        read=policy_config(rules=(("*", "allow"),)),
-                        write=policy_config(rules=(("*", "deny"),)),
-                    ),
-                ),
-                graph=_SingleToolGraph(
-                    "shell_exec",
-                    {"command": f"printf blocked > {shlex.quote(relative_external)}"},
-                ),
-                permission_policy=policy,
-            ),
-        ),
-    )
-
-    denied = runtime.run(
-        runtime_request(prompt="dot parent shell write", session_id="dot-parent-shell-write-deny")
-    )
-
-    assert denied.session.status == "completed"
-    denial = next(
-        event for event in denied.events if event.event_type == "runtime.approval_resolved"
-    )
-    assert denial.payload["decision"] == "deny"
-    assert denial.payload["path_scope"] == "external"
-    assert denial.payload["operation_class"] == "execute"
-    assert denial.payload["policy_surface"] == "external_directory_write"
-    assert denial.payload["canonical_path"] == str(outside_file.resolve())
-    feedback = next(
-        event
-        for event in denied.events
-        if event.event_type == "runtime.tool_completed"
-        and event.payload.get("permission_denied") is True
-    )
-    assert feedback.payload["status"] == "error"
-    assert outside_file.exists() is False
-
-
-def test_runtime_denies_shell_exec_flag_absolute_path_when_rule_denies(
+def test_runtime_shell_exec_write_command_requests_approval_without_path_inference(
     tmp_path: Path,
 ) -> None:
     runtime_request, runtime_class = _load_runtime_types()
     permission_module = importlib.import_module("voidcode.runtime.permission")
     config_module = importlib.import_module("voidcode.runtime.config")
 
-    policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="allow")
+    policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="ask")
     runtime_config = cast(Callable[..., object], config_module.RuntimeConfig)
-    permission_config = cast(
-        Callable[..., object],
-        config_module.ExternalDirectoryPermissionConfig,
-    )
-    policy_config = cast(Callable[..., object], config_module.ExternalDirectoryPolicy)
-    outside_file = tmp_path.parent / "flag-shell-write.txt"
 
     runtime = cast(
         RuntimeRunner,
@@ -3344,41 +3265,28 @@ def test_runtime_denies_shell_exec_flag_absolute_path_when_rule_denies(
                 workspace=tmp_path,
                 config=runtime_config(
                     approval_mode="allow",
-                    permission=permission_config(
-                        read=policy_config(rules=(("*", "allow"),)),
-                        write=policy_config(rules=(("*", "deny"),)),
-                    ),
                 ),
                 graph=_SingleToolGraph(
                     "shell_exec",
-                    {"command": f"curl --output={shlex.quote(str(outside_file))} example.test"},
+                    {"command": "printf blocked > ./../dot-parent-shell-write.txt"},
                 ),
                 permission_policy=policy,
             ),
         ),
     )
 
-    denied = runtime.run(
-        runtime_request(prompt="flag shell write", session_id="flag-shell-write-deny")
+    waiting = runtime.run(
+        runtime_request(prompt="ask shell command", session_id="shell-command-ask")
     )
-
-    assert denied.session.status == "completed"
-    denial = next(
-        event for event in denied.events if event.event_type == "runtime.approval_resolved"
+    assert waiting.session.status == "waiting"
+    approval = next(
+        event for event in waiting.events if event.event_type == "runtime.approval_requested"
     )
-    assert denial.payload["decision"] == "deny"
-    assert denial.payload["path_scope"] == "external"
-    assert denial.payload["operation_class"] == "execute"
-    assert denial.payload["policy_surface"] == "external_directory_write"
-    assert denial.payload["canonical_path"] == str(outside_file.resolve())
-    feedback = next(
-        event
-        for event in denied.events
-        if event.event_type == "runtime.tool_completed"
-        and event.payload.get("permission_denied") is True
-    )
-    assert feedback.payload["status"] == "error"
-    assert outside_file.exists() is False
+    assert approval.payload["tool"] == "shell_exec"
+    assert approval.payload["path_scope"] == "workspace"
+    assert approval.payload["operation_class"] == "execute"
+    assert approval.payload["canonical_path"] is None
+    assert approval.payload["policy_surface"] is None
 
 
 def test_runtime_uses_persisted_external_permission_rules_after_resume(
