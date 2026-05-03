@@ -193,6 +193,20 @@ def _reasoning_content_from_tool_data(segment: object) -> str | None:
     return None
 
 
+def _model_requires_reasoning_content_with_tool_calls(
+    *,
+    provider_name: str,
+    model_name: str,
+    raw_model: str | None,
+) -> bool:
+    if provider_name in _PROVIDERS_REQUIRING_REASONING_CONTENT_WITH_TOOL_CALLS:
+        return True
+    candidates = [model_name]
+    if raw_model is not None:
+        candidates.append(raw_model)
+    return any(candidate.strip().lower().startswith("deepseek-") for candidate in candidates)
+
+
 @dataclass(frozen=True, slots=True)
 class _StreamedToolCallAccumulator:
     tool_call_id: str | None = None
@@ -393,8 +407,11 @@ class LiteLLMBackendSingleAgentProvider:
     def _build_messages(self, request: ProviderTurnRequest) -> list[dict[str, object]]:
         assembled_context = request.assembled_context
         original_to_provider, _provider_to_original = self._provider_tool_name_maps(request)
-        requires_reasoning_content = (request.provider_name or self.name) in (
-            _PROVIDERS_REQUIRING_REASONING_CONTENT_WITH_TOOL_CALLS
+        mapped_model_name = self._mapped_model_name_for_request(request)
+        requires_reasoning_content = _model_requires_reasoning_content_with_tool_calls(
+            provider_name=request.provider_name or self.name,
+            model_name=mapped_model_name,
+            raw_model=request.raw_model,
         )
         reasoning_content_by_tool_call_id: dict[str, str] = {}
         if requires_reasoning_content:

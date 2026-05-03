@@ -1623,6 +1623,61 @@ def test_opencode_go_mimo_preserves_standard_tool_pairing_with_model_metadata(
     assert "Completed tool calls for current request:" not in str(messages)
 
 
+def test_opencode_go_deepseek_reinjects_reasoning_content_for_tool_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = OpenCodeGoModelProvider().turn_provider()
+    request = _build_turn_request(model_name="opencode-go")
+    tool_results = (
+        ToolResult(
+            tool_name="glob",
+            status="ok",
+            content="./\n  .voidcode.json",
+            data={
+                "tool_call_id": "glob_0",
+                "arguments": {"pattern": "**/*"},
+                "reasoning_content": "looked at the file tree",
+            },
+        ),
+    )
+    request = ProviderTurnRequest(
+        assembled_context=_assembled_from_legacy(
+            prompt=request.prompt,
+            tool_results=tool_results,
+            context_window=_StubContextWindow(
+                prompt=request.context_window.prompt,
+                tool_results=tool_results,
+            ),
+            applied_skills=request.applied_skills,
+        ),
+        available_tools=request.available_tools,
+        raw_model="opencode-go/deepseek-v4-pro",
+        provider_name="opencode-go",
+        model_name="deepseek-v4-pro",
+        model_metadata=infer_model_metadata("opencode-go", "deepseek-v4-pro"),
+        attempt=request.attempt,
+        abort_signal=request.abort_signal,
+    )
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        completion_content="done",
+    )
+
+    _ = provider.propose_turn(request)
+
+    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+    assert isinstance(payload_obj, dict)
+    payload = cast(dict[str, object], payload_obj)
+    messages_obj = payload.get("messages")
+    assert isinstance(messages_obj, list)
+    messages = cast(list[dict[str, object]], messages_obj)
+    assistant_call = messages[1]
+    assert assistant_call["role"] == "assistant"
+    assert assistant_call["reasoning_content"] == "looked at the file tree"
+    assert messages[2]["tool_call_id"] == "glob_0"
+
+
 def test_provider_adapter_synthetic_tool_feedback_policy_is_provider_agnostic(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
