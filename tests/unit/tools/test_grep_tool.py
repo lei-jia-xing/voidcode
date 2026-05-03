@@ -52,7 +52,6 @@ def test_grep_tool_searches_utf8_file_inside_workspace(tmp_path: Path) -> None:
                 "after": [],
             },
         ],
-        "diagnostics": [],
     }
 
 
@@ -196,10 +195,10 @@ def test_grep_tool_truncated_results_include_agent_guidance(tmp_path: Path) -> N
     assert result.truncated is True
     assert "[TRUNCATED]" in (result.content or "")
     assert result.data["match_count"] == MAX_MATCHES
-    diagnostics = result.data["diagnostics"]
-    assert isinstance(diagnostics, list)
+    diagnostics = cast(list[dict[str, object]], result.data["diagnostics"])
     assert diagnostics[-1]["reason"] == "results_truncated"
-    assert "Refine path" in diagnostics[-1]["retry_guidance"]
+    retry_guidance = cast(str, diagnostics[-1]["retry_guidance"])
+    assert "Refine path" in retry_guidance
 
 
 def test_grep_tool_returns_zero_matches_summary(tmp_path: Path) -> None:

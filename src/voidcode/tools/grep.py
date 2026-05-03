@@ -249,31 +249,34 @@ class GrepTool:
                 }
             )
 
+        data: dict[str, object] = {
+            "path": path_display,
+            "pattern": args.pattern,
+            "regex": args.regex,
+            "context": args.context,
+            "match_count": total_occurrences,
+            "truncated": truncated,
+            "partial": truncated,
+            "matches": [
+                {
+                    "file": match.file,
+                    "line": match.line,
+                    "text": match.text,
+                    "columns": match.columns,
+                    "before": match.before,
+                    "after": match.after,
+                }
+                for match in matches
+            ],
+        }
+        if diagnostics:
+            data["diagnostics"] = diagnostics
+
         return ToolResult(
             tool_name=self.definition.name,
             status="ok",
             content=summary,
-            data={
-                "path": path_display,
-                "pattern": args.pattern,
-                "regex": args.regex,
-                "context": args.context,
-                "match_count": total_occurrences,
-                "truncated": truncated,
-                "partial": truncated,
-                "matches": [
-                    {
-                        "file": match.file,
-                        "line": match.line,
-                        "text": match.text,
-                        "columns": match.columns,
-                        "before": match.before,
-                        "after": match.after,
-                    }
-                    for match in matches
-                ],
-                "diagnostics": diagnostics,
-            },
+            data=data,
             truncated=truncated,
             partial=truncated,
         )
