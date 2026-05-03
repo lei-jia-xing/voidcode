@@ -3,11 +3,14 @@ import { useTranslation } from "react-i18next";
 import { useAppStore } from "./store";
 import { SessionSidebar } from "./components/SessionSidebar";
 import { ChatThread } from "./components/ChatThread";
-import { Composer } from "./components/Composer";
+import { Composer, type SessionContextUsage } from "./components/Composer";
+import { ChildSessionSidebar } from "./components/ChildSessionSidebar";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { OpenProjectModal } from "./components/OpenProjectModal";
 import { ReviewPanel } from "./components/ReviewPanel";
 import { RuntimeOpsPanel } from "./components/RuntimeOpsPanel";
+import { TodoPanel } from "./components/TodoPanel";
+import { deriveLatestTodoSnapshot } from "./components/todoPanelModel";
 import { ControlButton } from "./components/ui";
 import { deriveChatMessages } from "./lib/runtime/event-parser";
 import { RuntimeClient } from "./lib/runtime/client";
@@ -79,6 +82,7 @@ function App() {
     sessionsError,
     selectSession,
     runTask,
+    cancelCurrentRun,
     resolveApproval,
     replayStatus,
     replayError,
@@ -130,7 +134,7 @@ function App() {
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const lastMessageCountRef = useRef(0);
 
-  const isRunning = runStatus === "running";
+  const isRunning = runStatus === "running" || runStatus === "cancelling";
   const isReplayLoading = replayStatus === "loading";
   const isApprovalSubmitting = approvalStatus === "submitting";
   const isWaitingApproval = currentSessionState?.status === "waiting";
@@ -155,6 +159,32 @@ function App() {
       ),
     [currentSessionEvents, currentSessionId, currentSessionOutput],
   );
+  const childSessionMessages = useMemo(() => {
+    const childResult = backgroundTaskOutput?.session_result;
+    if (!selectedBackgroundTaskOutputId || !childResult) {
+      return null;
+    }
+    return deriveChatMessages(
+      childResult.transcript,
+      childResult.output ?? backgroundTaskOutput.output,
+      childResult.session.session.id,
+    );
+  }, [backgroundTaskOutput, selectedBackgroundTaskOutputId]);
+  const displayedMessages = childSessionMessages ?? chatMessages;
+  const displayedIsChildSession = childSessionMessages !== null;
+  const activeTodoSnapshot = useMemo(
+    () => deriveLatestTodoSnapshot(displayedMessages),
+    [displayedMessages],
+  );
+  const composerContextUsage = useMemo(
+    () =>
+      sessionContextUsageFromMetadata(
+        currentSessionState?.metadata,
+        providerModel,
+        providerModels,
+      ),
+    [currentSessionState?.metadata, providerModel, providerModels],
+  );
 
   useEffect(() => {
     i18n.changeLanguage(language);
@@ -165,24 +195,40 @@ function App() {
   }, [loadSessions]);
 
   useEffect(() => {
+    if (!currentSessionId) return;
+    const hasActiveChildTask = backgroundTasks.some(
+      (task) => task.status === "queued" || task.status === "running",
+    );
+    if (!isRunning && !hasActiveChildTask) return;
+    const timer = window.setInterval(() => {
+      void loadBackgroundTasks();
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [backgroundTasks, currentSessionId, isRunning, loadBackgroundTasks]);
+
+  useEffect(() => {
     void loadWorkspaces?.();
     void loadProviders?.();
     void loadAgents?.();
     void loadSettings?.();
     void loadStatus?.();
-    void loadReview?.();
     void loadNotifications?.();
     void loadBackgroundTasks?.();
   }, [
     loadAgents,
     loadProviders,
-    loadReview,
     loadBackgroundTasks,
     loadSettings,
     loadStatus,
     loadWorkspaces,
     loadNotifications,
   ]);
+
+  useEffect(() => {
+    if (!showFileTree && !showCodeReview) return;
+    if (reviewStatus !== "idle") return;
+    void loadReview();
+  }, [loadReview, reviewStatus, showCodeReview, showFileTree]);
 
   useEffect(() => {
     if (hydratedInitialSessionRef.current || sessionsStatus !== "success") {
@@ -196,7 +242,7 @@ function App() {
   }, [currentSessionId, isRunning, selectSession, sessionsStatus]);
 
   useEffect(() => {
-    const nextLength = chatMessages.length;
+    const nextLength = displayedMessages.length;
     if (nextLength > lastMessageCountRef.current) {
       lastMessageCountRef.current = nextLength;
       const el = chatScrollRef.current;
@@ -204,7 +250,7 @@ function App() {
         el.scrollTop = el.scrollHeight;
       }
     }
-  }, [chatMessages.length]);
+  }, [displayedMessages.length]);
 
   const handleSendMessage = async (message: string) => {
     await runTask(message);
@@ -320,21 +366,6 @@ function App() {
               </div>
 
               <div className="flex items-center gap-2 flex-shrink-0">
-                <span
-                  className={`px-2.5 py-1 rounded-full text-[11px] font-medium flex items-center border ${
-                    isRunning
-                      ? "bg-[var(--vc-surface-2)] text-[var(--vc-text-muted)] border-[color:var(--vc-border-subtle)]"
-                      : "bg-[var(--vc-surface-1)] text-[var(--vc-text-primary)] border-[color:var(--vc-border-strong)]"
-                  }`}
-                >
-                  <span
-                    className={`w-1.5 h-1.5 rounded-full mr-1.5 ${isRunning ? "bg-[var(--vc-text-subtle)] animate-pulse" : "bg-[var(--vc-text-muted)]"}`}
-                  />
-                  {isRunning ? t("session.agentBusy") : t("session.agentIdle")}
-                </span>
-
-                <div className="w-px h-4 bg-[var(--vc-border-subtle)] mx-1" />
-
                 <StatusBar
                   snapshot={statusSnapshot}
                   status={statusStatus}
@@ -401,6 +432,15 @@ function App() {
                 </ControlButton>
               </div>
             </header>
+            {isRunning && (
+              <div
+                role="status"
+                aria-label={t("session.modelWorking")}
+                className="relative h-0.5 flex-shrink-0 overflow-hidden bg-transparent"
+              >
+                <div className="vc-model-working-bar" />
+              </div>
+            )}
 
             {replayError && (
               <div className="flex-shrink-0 bg-[var(--vc-surface-1)] border-b border-[color:var(--vc-border-subtle)] px-4 py-2 text-xs text-[var(--vc-text-muted)]">
@@ -413,31 +453,67 @@ function App() {
               </div>
             )}
 
-            <div ref={chatScrollRef} className="flex-1 overflow-y-auto min-h-0">
-              <ChatThread
-                messages={chatMessages}
-                isRunning={isRunning}
-                isWaitingApproval={isWaitingApproval}
-                isApprovalSubmitting={isApprovalSubmitting}
-                approvalError={approvalError}
-                onResolveApproval={handleResolveApproval}
-                isWaitingQuestion={isWaitingQuestion}
-                isQuestionSubmitting={isQuestionSubmitting}
-                questionError={questionError}
-                onAnswerQuestion={answerQuestion}
+            <div className="flex min-h-0 flex-1">
+              <div
+                ref={chatScrollRef}
+                className="min-h-0 min-w-0 flex-1 overflow-y-auto"
+              >
+                <ChatThread
+                  messages={displayedMessages}
+                  isRunning={!displayedIsChildSession && isRunning}
+                  isWaitingApproval={
+                    !displayedIsChildSession && isWaitingApproval
+                  }
+                  isApprovalSubmitting={
+                    !displayedIsChildSession && isApprovalSubmitting
+                  }
+                  approvalError={displayedIsChildSession ? null : approvalError}
+                  onResolveApproval={handleResolveApproval}
+                  isWaitingQuestion={
+                    !displayedIsChildSession && isWaitingQuestion
+                  }
+                  isQuestionSubmitting={
+                    !displayedIsChildSession && isQuestionSubmitting
+                  }
+                  questionError={displayedIsChildSession ? null : questionError}
+                  onAnswerQuestion={answerQuestion}
+                />
+              </div>
+              <ChildSessionSidebar
+                parentSessionId={currentSessionId}
+                tasks={backgroundTasks}
+                status={backgroundTasksStatus}
+                error={backgroundTasksError}
+                selectedTaskId={selectedBackgroundTaskOutputId}
+                taskOutput={backgroundTaskOutput}
+                taskOutputStatus={backgroundTaskOutputStatus}
+                taskOutputError={backgroundTaskOutputError}
+                onSelectParent={() => {
+                  void loadBackgroundTaskOutput(null);
+                }}
+                onSelectTask={(taskId) => {
+                  void loadBackgroundTaskOutput(taskId);
+                }}
+                onRefresh={() => {
+                  void loadBackgroundTasks();
+                }}
               />
             </div>
+
+            <TodoPanel snapshot={activeTodoSnapshot} />
 
             <Composer
               disabled={composerDisabled}
               isRunning={isRunning}
               agentPreset={agentPreset}
               onSubmit={handleSendMessage}
+              onCancel={cancelCurrentRun}
               onAgentPresetChange={setAgentPreset}
               providerModel={providerModel}
               reasoningEffort={reasoningEffort}
               providers={providers}
               providerModels={providerModels}
+              sessionContextUsage={composerContextUsage}
               agentPresets={agentPresets}
               onProviderModelChange={setProviderModel}
               onReasoningEffortChange={setReasoningEffort}
@@ -587,6 +663,127 @@ function App() {
       />
     </div>
   );
+}
+
+function sessionContextUsageFromMetadata(
+  metadata: Record<string, unknown> | undefined,
+  providerModel: string,
+  providerModels: Record<
+    string,
+    { model_metadata?: Record<string, { context_window?: number | null }> }
+  >,
+): SessionContextUsage {
+  const providerTokens = providerContextTokens(metadata);
+  const estimatedTokens = contextWindowEstimatedTokens(metadata);
+  return {
+    usedTokens: providerTokens ?? estimatedTokens,
+    totalTokens: providerTotalTokens(metadata),
+    estimated: providerTokens === null && estimatedTokens !== null,
+    contextWindow:
+      selectedModelContextWindow(providerModel, providerModels) ??
+      modelContextWindowFromMetadata(metadata) ??
+      contextWindowBudget(metadata),
+  };
+}
+
+function providerContextTokens(
+  metadata: Record<string, unknown> | undefined,
+): number | null {
+  const providerUsage = objectValue(metadata, "provider_usage");
+  const latest = objectValue(providerUsage, "latest");
+  if (!latest) {
+    return null;
+  }
+  const total =
+    numericValue(latest, "input_tokens") +
+    numericValue(latest, "cache_creation_tokens") +
+    numericValue(latest, "cache_read_tokens");
+  return total > 0 ? total : null;
+}
+
+function providerTotalTokens(
+  metadata: Record<string, unknown> | undefined,
+): number | null {
+  const providerUsage = objectValue(metadata, "provider_usage");
+  const cumulative = objectValue(providerUsage, "cumulative");
+  if (!cumulative) {
+    return null;
+  }
+  const total =
+    numericValue(cumulative, "input_tokens") +
+    numericValue(cumulative, "output_tokens") +
+    numericValue(cumulative, "cache_creation_tokens") +
+    numericValue(cumulative, "cache_read_tokens");
+  return total > 0 ? total : null;
+}
+
+function contextWindowEstimatedTokens(
+  metadata: Record<string, unknown> | undefined,
+): number | null {
+  const contextWindow = objectValue(metadata, "context_window");
+  return positiveNumericValue(contextWindow, "estimated_context_tokens");
+}
+
+function modelContextWindowFromMetadata(
+  metadata: Record<string, unknown> | undefined,
+): number | null {
+  const contextWindow = objectValue(metadata, "context_window");
+  return positiveNumericValue(contextWindow, "model_context_window_tokens");
+}
+
+function contextWindowBudget(
+  metadata: Record<string, unknown> | undefined,
+): number | null {
+  const contextWindow = objectValue(metadata, "context_window");
+  return positiveNumericValue(contextWindow, "token_budget");
+}
+
+function selectedModelContextWindow(
+  providerModel: string,
+  providerModels: Record<
+    string,
+    { model_metadata?: Record<string, { context_window?: number | null }> }
+  >,
+): number | null {
+  const [providerName, ...modelParts] = providerModel.trim().split("/");
+  const modelName = modelParts.join("/");
+  if (!providerName || !modelName) {
+    return null;
+  }
+  const metadata = providerModels[providerName]?.model_metadata ?? {};
+  const candidate = metadata[modelName] ?? metadata[providerModel];
+  const contextWindow = candidate?.context_window;
+  return typeof contextWindow === "number" && contextWindow > 0
+    ? contextWindow
+    : null;
+}
+
+function objectValue(
+  source: Record<string, unknown> | undefined,
+  key: string,
+): Record<string, unknown> | undefined {
+  const value = source?.[key];
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function numericValue(
+  source: Record<string, unknown> | undefined,
+  key: string,
+): number {
+  const value = source?.[key];
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? value
+    : 0;
+}
+
+function positiveNumericValue(
+  source: Record<string, unknown> | undefined,
+  key: string,
+): number | null {
+  const value = numericValue(source, key);
+  return value > 0 ? value : null;
 }
 
 export default App;

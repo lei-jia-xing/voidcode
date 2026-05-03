@@ -175,4 +175,45 @@ describe("SessionSidebar resizing", () => {
       screen.queryByText(/请你作为 leader agent，在当前仓库中/),
     ).not.toBeInTheDocument();
   });
+
+  it("does not render runtime sequence counters as ancient relative dates", () => {
+    renderSidebar({
+      sessions: [
+        {
+          session: { id: "session-sequence-1" },
+          status: "completed",
+          turn: 1,
+          prompt: "sequence-backed session",
+          updated_at: 1000,
+        },
+      ],
+    });
+
+    expect(screen.getByText("update #1000")).toBeInTheDocument();
+    expect(screen.queryByText(/d ago/)).not.toBeInTheDocument();
+  });
+
+  it("keeps real epoch seconds as relative session times", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-16T06:00:00Z"));
+    try {
+      renderSidebar({
+        sessions: [
+          {
+            session: { id: "session-epoch-1" },
+            status: "completed",
+            turn: 1,
+            prompt: "epoch-backed session",
+            updated_at: Math.floor(
+              new Date("2026-04-16T05:58:00Z").getTime() / 1000,
+            ),
+          },
+        ],
+      });
+
+      expect(screen.getByText("2m ago")).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

@@ -79,6 +79,29 @@ body {
   background: var(--vc-text-subtle);
 }
 
+.vc-model-working-bar {
+  position: absolute;
+  inset-block: 0;
+  left: -40%;
+  width: 40%;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--vc-text-primary),
+    transparent
+  );
+  animation: vc-model-working-slide 1.2s ease-in-out infinite;
+}
+
+@keyframes vc-model-working-slide {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(350%);
+  }
+}
+
 .vc-control {
   display: inline-flex;
   min-height: var(--vc-control-height);
@@ -191,6 +214,63 @@ body {
 
 .markdown-body > :last-child {
   margin-bottom: 0;
+}
+
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3,
+.markdown-body h4,
+.markdown-body h5,
+.markdown-body h6 {
+  color: var(--vc-text-primary);
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.markdown-body h1 {
+  margin-top: 1.75rem;
+  margin-bottom: 0.875rem;
+  padding-bottom: 0.35rem;
+  border-bottom: 1px solid var(--vc-border-subtle);
+  font-size: 1.5rem;
+  letter-spacing: -0.02em;
+}
+
+.markdown-body h2 {
+  margin-top: 1.5rem;
+  margin-bottom: 0.75rem;
+  padding-bottom: 0.25rem;
+  border-bottom: 1px solid var(--vc-border-subtle);
+  font-size: 1.25rem;
+  letter-spacing: -0.015em;
+}
+
+.markdown-body h3 {
+  margin-top: 1.25rem;
+  margin-bottom: 0.625rem;
+  font-size: 1.1rem;
+}
+
+.markdown-body h4 {
+  margin-top: 1rem;
+  margin-bottom: 0.5rem;
+  font-size: 1rem;
+}
+
+.markdown-body h5 {
+  margin-top: 0.875rem;
+  margin-bottom: 0.45rem;
+  color: var(--vc-text-muted);
+  font-size: 0.925rem;
+}
+
+.markdown-body h6 {
+  margin-top: 0.75rem;
+  margin-bottom: 0.4rem;
+  color: var(--vc-text-subtle);
+  font-size: 0.8rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .markdown-body p {

@@ -73,7 +73,7 @@ interface AppState {
   sessionsError: string | null;
   replayStatus: "idle" | "loading" | "success" | "error";
   replayError: string | null;
-  runStatus: "idle" | "running" | "success" | "error";
+  runStatus: "idle" | "running" | "cancelling" | "success" | "error";
   runError: string | null;
   approvalStatus: "idle" | "submitting" | "success" | "error";
   approvalError: string | null;
@@ -126,12 +126,13 @@ interface AppState {
       };
     },
   ) => Promise<void>;
+  cancelCurrentRun: () => Promise<void>;
   resolveApproval: (decision: ApprovalDecision) => Promise<void>;
   answerQuestion: (answers: QuestionAnswer[]) => Promise<void>;
   loadNotifications: () => Promise<void>;
   acknowledgeNotification: (notificationId: string) => Promise<void>;
   loadBackgroundTasks: () => Promise<void>;
-  loadBackgroundTaskOutput: (taskId: string) => Promise<void>;
+  loadBackgroundTaskOutput: (taskId: string | null) => Promise<void>;
   cancelBackgroundTask: (taskId: string) => Promise<void>;
   loadSessionDebug: (sessionId?: string | null) => Promise<void>;
   loadSettings: () => Promise<void>;
@@ -215,6 +216,42 @@ function delay(ms: number): Promise<void> {
 
 function runStatusForReplay(session: SessionState): AppState["runStatus"] {
   return session.status === "running" ? "running" : "idle";
+}
+
+function isRunLocked(runStatus: AppState["runStatus"]): boolean {
+  return runStatus === "running" || runStatus === "cancelling";
+}
+
+function runtimeFailureMessage(event: EventEnvelope): string | null {
+  if (event.event_type !== "runtime.failed") {
+    return null;
+  }
+  if (isRuntimeCancellationEvent(event)) {
+    return null;
+  }
+  const details = event.payload.provider_error_details;
+  if (details && typeof details === "object" && !Array.isArray(details)) {
+    const exceptionMessage = (details as Record<string, unknown>)
+      .exception_message;
+    if (typeof exceptionMessage === "string" && exceptionMessage.trim()) {
+      return exceptionMessage.trim();
+    }
+  }
+  const error = event.payload.error;
+  return typeof error === "string" && error.trim()
+    ? error.trim()
+    : "runtime failed";
+}
+
+function isRuntimeCancellationEvent(event: EventEnvelope): boolean {
+  if (event.event_type !== "runtime.failed") {
+    return false;
+  }
+  return (
+    event.payload.cancelled === true ||
+    event.payload.kind === "interrupted" ||
+    event.payload.kind === "cancelled"
+  );
 }
 
 function getPendingQuestionRequestId(events: EventEnvelope[]): string | null {
@@ -759,7 +796,7 @@ export const useAppStore = create<AppState>()(
       },
 
       selectSession: async (sessionId: string) => {
-        if (get().runStatus === "running") {
+        if (isRunLocked(get().runStatus)) {
           return;
         }
 
@@ -849,7 +886,7 @@ export const useAppStore = create<AppState>()(
       },
 
       runTask: async (prompt: string, options) => {
-        if (get().replayStatus === "loading") {
+        if (get().replayStatus === "loading" || isRunLocked(get().runStatus)) {
           return;
         }
 
@@ -940,7 +977,15 @@ export const useAppStore = create<AppState>()(
             metadata: metadata,
           });
 
+          let streamFailureMessage: string | null = null;
+          let streamInterrupted = false;
           for await (const chunk of stream) {
+            if (chunk.event) {
+              streamInterrupted =
+                isRuntimeCancellationEvent(chunk.event) || streamInterrupted;
+              streamFailureMessage =
+                runtimeFailureMessage(chunk.event) ?? streamFailureMessage;
+            }
             set((state) => {
               const newEvents = chunk.event
                 ? [...state.currentSessionEvents, chunk.event]
@@ -959,7 +1004,23 @@ export const useAppStore = create<AppState>()(
             });
           }
 
-          set({ runStatus: "success" });
+          const failed =
+            !streamInterrupted &&
+            (streamFailureMessage !== null ||
+              get().currentSessionState?.status === "failed");
+          const wasCancelling = get().runStatus === "cancelling";
+          set({
+            runStatus:
+              streamInterrupted || wasCancelling
+                ? "idle"
+                : failed
+                  ? "error"
+                  : "success",
+            runError:
+              failed && !wasCancelling
+                ? (streamFailureMessage ?? "runtime session failed")
+                : null,
+          });
           const currentSessionId = get().currentSessionId;
           await Promise.all([
             get().loadSessions(),
@@ -972,7 +1033,39 @@ export const useAppStore = create<AppState>()(
               : Promise.resolve(),
           ]);
         } catch (err) {
-          set({ runStatus: "error", runError: (err as Error).message });
+          const wasCancelling = get().runStatus === "cancelling";
+          set({
+            runStatus: wasCancelling ? "idle" : "error",
+            runError: wasCancelling ? null : (err as Error).message,
+          });
+        }
+      },
+
+      cancelCurrentRun: async () => {
+        const { currentSessionId, runStatus } = get();
+        if (!isRunLocked(runStatus)) {
+          return;
+        }
+
+        const currentSessionState = get().currentSessionState;
+        set({
+          runStatus: "cancelling",
+          runError: null,
+          currentSessionState: currentSessionState
+            ? { ...currentSessionState, status: "running" }
+            : currentSessionState,
+        });
+
+        if (!currentSessionId) {
+          return;
+        }
+
+        try {
+          await RuntimeClient.cancelSession(currentSessionId);
+        } catch (err) {
+          if (get().runStatus === "cancelling") {
+            set({ runStatus: "running", runError: (err as Error).message });
+          }
         }
       },
 
@@ -992,7 +1085,7 @@ export const useAppStore = create<AppState>()(
         if (
           !currentSessionId ||
           replayStatus === "loading" ||
-          runStatus === "running" ||
+          isRunLocked(runStatus) ||
           approvalStatus === "submitting"
         ) {
           return;
@@ -1154,7 +1247,7 @@ export const useAppStore = create<AppState>()(
         if (
           !currentSessionId ||
           replayStatus === "loading" ||
-          runStatus === "running" ||
+          isRunLocked(runStatus) ||
           questionStatus === "submitting"
         ) {
           return;

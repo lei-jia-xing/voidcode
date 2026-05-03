@@ -233,7 +233,16 @@ class LiteLLMBackendSingleAgentProvider:
     def _stream_completion_kwargs_for_request(
         self, request: ProviderTurnRequest
     ) -> dict[str, object]:
-        return self._completion_kwargs_for_request(request)
+        kwargs = self._completion_kwargs_for_request(request)
+        raw_stream_options = kwargs.get("stream_options")
+        stream_options = (
+            dict(cast(dict[str, object], raw_stream_options))
+            if isinstance(raw_stream_options, dict)
+            else {}
+        )
+        stream_options.setdefault("include_usage", True)
+        kwargs["stream_options"] = stream_options
+        return kwargs
 
     def _apply_ssl_verify_payload(self, payload: dict[str, object]) -> None:
         configured_ssl_verify = self.config.ssl_verify if self.config is not None else None

@@ -288,6 +288,8 @@ class RuntimeContextWindow:
             payload["token_budget"] = self.token_budget
         if self.token_estimate_source is not None:
             payload["token_estimate_source"] = self.token_estimate_source
+        if self.model_context_window_tokens is not None:
+            payload["model_context_window_tokens"] = self.model_context_window_tokens
         if self.reserved_output_tokens is not None:
             payload["reserved_output_tokens"] = self.reserved_output_tokens
         if self.truncated_tool_result_count:
@@ -334,6 +336,31 @@ class RuntimeContextSegment:
     tool_name: str | None = None
     tool_arguments: dict[str, object] | None = None
     metadata: dict[str, object] | None = None
+
+
+def estimate_provider_context_tokens(
+    segments: tuple[RuntimeContextSegment, ...], *, tokenizer_model: str | None = None
+) -> TokenCount:
+    payload: list[dict[str, object]] = []
+    for segment in segments:
+        entry: dict[str, object] = {"role": segment.role}
+        if segment.content is not None:
+            entry["content"] = segment.content
+        if segment.tool_call_id is not None:
+            entry["tool_call_id"] = segment.tool_call_id
+        if segment.tool_name is not None:
+            entry["tool_name"] = segment.tool_name
+        if segment.tool_arguments is not None:
+            entry["tool_arguments"] = segment.tool_arguments
+        payload.append(entry)
+    serialized = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+        ensure_ascii=False,
+    )
+    return count_text_tokens(serialized, tokenizer_model=tokenizer_model)
 
 
 def _tool_result_preview(result: ToolResult, *, max_preview_chars: int) -> str:
@@ -1882,6 +1909,12 @@ def assemble_provider_context(
                 },
             )
         )
+    context_token_count = estimate_provider_context_tokens(
+        tuple(segments), tokenizer_model=policy.tokenizer_model if policy is not None else None
+    )
+    metadata_payload["estimated_context_tokens"] = context_token_count.tokens
+    metadata_payload["estimated_context_token_source"] = context_token_count.source
+    metadata_payload["estimated_context_token_exact"] = context_token_count.exact
     return RuntimeAssembledContext(
         prompt=prompt,
         tool_results=context_window.tool_results,

@@ -202,6 +202,7 @@ const runtimeClientMocks = vi.hoisted(() => ({
   listBackgroundTasksMock: vi.fn<() => Promise<BackgroundTaskSummary[]>>(),
   listSessionBackgroundTasksMock:
     vi.fn<(sessionId: string) => Promise<BackgroundTaskSummary[]>>(),
+  cancelSessionMock: vi.fn<(sessionId: string) => Promise<unknown>>(),
   cancelBackgroundTaskMock: vi.fn<(taskId: string) => Promise<unknown>>(),
   getBackgroundTaskOutputMock:
     vi.fn<(taskId: string) => Promise<BackgroundTaskOutput>>(),
@@ -248,6 +249,7 @@ vi.mock("./lib/runtime/client", () => ({
     listBackgroundTasks: runtimeClientMocks.listBackgroundTasksMock,
     listSessionBackgroundTasks:
       runtimeClientMocks.listSessionBackgroundTasksMock,
+    cancelSession: runtimeClientMocks.cancelSessionMock,
     cancelBackgroundTask: runtimeClientMocks.cancelBackgroundTaskMock,
     getBackgroundTaskOutput: runtimeClientMocks.getBackgroundTaskOutputMock,
     getSessionDebug: runtimeClientMocks.getSessionDebugMock,
@@ -365,6 +367,14 @@ describe("useAppStore integration flow", () => {
     runtimeClientMocks.listNotificationsMock.mockResolvedValue([]);
     runtimeClientMocks.listBackgroundTasksMock.mockResolvedValue([]);
     runtimeClientMocks.listSessionBackgroundTasksMock.mockResolvedValue([]);
+    runtimeClientMocks.cancelSessionMock.mockResolvedValue({
+      session_id: "session-1",
+      status: "interrupted",
+      interrupted: true,
+      cancelled: true,
+      run_id: "run-1",
+      reason: "web user interrupt",
+    });
     runtimeClientMocks.cancelBackgroundTaskMock.mockResolvedValue({});
     runtimeClientMocks.getBackgroundTaskOutputMock.mockResolvedValue({
       task: {
@@ -1367,6 +1377,212 @@ describe("useAppStore integration flow", () => {
     await runPromise;
 
     expect(useAppStore.getState().runStatus).toBe("success");
+  });
+
+  it("interrupts the active current session run", async () => {
+    const gate = createDeferred<void>();
+    const sessionId = "interrupt-session";
+    const requestReceived = makeEvent(
+      1,
+      "runtime.request_received",
+      { prompt: "read slow.txt" },
+      "runtime",
+      sessionId,
+    );
+
+    async function* stream() {
+      yield makeStreamChunk(sessionId, "running", requestReceived);
+      await gate.promise;
+    }
+
+    runtimeClientMocks.runStreamMock.mockReturnValue(stream());
+
+    const runPromise = useAppStore.getState().runTask("read slow.txt");
+    await Promise.resolve();
+    await Promise.resolve();
+
+    await useAppStore.getState().cancelCurrentRun();
+
+    expect(runtimeClientMocks.cancelSessionMock).toHaveBeenCalledWith(
+      sessionId,
+    );
+    expect(useAppStore.getState().runStatus).toBe("cancelling");
+
+    await useAppStore.getState().runTask("read second.txt");
+
+    expect(runtimeClientMocks.runStreamMock).toHaveBeenCalledTimes(1);
+
+    gate.resolve();
+    await runPromise;
+
+    expect(useAppStore.getState().runStatus).toBe("idle");
+  });
+
+  it("keeps the run locked when interrupting before a session id is available", async () => {
+    const gate = createDeferred<void>();
+    const pendingSessionId = "pending-session-id";
+    const requestReceived = makeEvent(
+      1,
+      "runtime.request_received",
+      { prompt: "read before session id" },
+      "runtime",
+      pendingSessionId,
+    );
+
+    async function* stream() {
+      yield makeStreamChunk(pendingSessionId, "running", requestReceived);
+      await gate.promise;
+    }
+
+    runtimeClientMocks.runStreamMock.mockReturnValue(stream());
+
+    const runPromise = useAppStore.getState().runTask("read before session id");
+    await Promise.resolve();
+    useAppStore.setState({ currentSessionId: null, currentSessionState: null });
+
+    await useAppStore.getState().cancelCurrentRun();
+
+    expect(runtimeClientMocks.cancelSessionMock).not.toHaveBeenCalled();
+    expect(useAppStore.getState().runStatus).toBe("cancelling");
+
+    await useAppStore.getState().runTask("read second.txt");
+
+    expect(runtimeClientMocks.runStreamMock).toHaveBeenCalledTimes(1);
+
+    gate.resolve();
+    await runPromise;
+
+    expect(useAppStore.getState().runStatus).toBe("idle");
+  });
+
+  it("keeps the run locked until the stream settles when runtime says the run is no longer active", async () => {
+    const gate = createDeferred<void>();
+    const sessionId = "stale-session";
+    const requestReceived = makeEvent(
+      1,
+      "runtime.request_received",
+      { prompt: "read stale.txt" },
+      "runtime",
+      sessionId,
+    );
+
+    async function* stream() {
+      yield makeStreamChunk(sessionId, "running", requestReceived);
+      await gate.promise;
+    }
+
+    runtimeClientMocks.runStreamMock.mockReturnValue(stream());
+    runtimeClientMocks.cancelSessionMock.mockResolvedValueOnce({
+      session_id: sessionId,
+      status: "not_active",
+      interrupted: false,
+      cancelled: false,
+      run_id: null,
+      reason: null,
+    });
+
+    const runPromise = useAppStore.getState().runTask("read stale.txt");
+    await Promise.resolve();
+    await Promise.resolve();
+
+    await useAppStore.getState().cancelCurrentRun();
+
+    expect(runtimeClientMocks.cancelSessionMock).toHaveBeenCalledWith(
+      sessionId,
+    );
+    expect(useAppStore.getState().runStatus).toBe("cancelling");
+
+    await useAppStore.getState().runTask("read second.txt");
+
+    expect(runtimeClientMocks.runStreamMock).toHaveBeenCalledTimes(1);
+
+    gate.resolve();
+    await runPromise;
+
+    expect(useAppStore.getState().runStatus).toBe("idle");
+  });
+
+  it("preserves idle state when cancel request fails after the stream already exits", async () => {
+    const gate = createDeferred<void>();
+    const cancelGate = createDeferred<void>();
+    const sessionId = "cancel-race-session";
+    const requestReceived = makeEvent(
+      1,
+      "runtime.request_received",
+      { prompt: "read race.txt" },
+      "runtime",
+      sessionId,
+    );
+
+    async function* stream() {
+      yield makeStreamChunk(sessionId, "running", requestReceived);
+      await gate.promise;
+    }
+
+    runtimeClientMocks.runStreamMock.mockReturnValue(stream());
+    runtimeClientMocks.cancelSessionMock.mockImplementationOnce(
+      () => cancelGate.promise,
+    );
+
+    const runPromise = useAppStore.getState().runTask("read race.txt");
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const cancelPromise = useAppStore.getState().cancelCurrentRun();
+    await Promise.resolve();
+
+    expect(useAppStore.getState().runStatus).toBe("cancelling");
+
+    gate.resolve();
+    await runPromise;
+
+    expect(useAppStore.getState().runStatus).toBe("idle");
+
+    cancelGate.reject(new Error("cancel timed out"));
+    await cancelPromise;
+
+    expect(useAppStore.getState().runStatus).toBe("idle");
+    expect(useAppStore.getState().runError).toBeNull();
+  });
+
+  it("surfaces runtime failed stream details as run errors", async () => {
+    const sessionId = "failed-provider-session";
+    const requestReceived = makeEvent(
+      1,
+      "runtime.request_received",
+      { prompt: "say ok" },
+      "runtime",
+      sessionId,
+    );
+    const failedEvent = makeEvent(
+      2,
+      "runtime.failed",
+      {
+        error: "provider retry exhausted",
+        provider_error_details: {
+          exception_message:
+            "litellm.AuthenticationError: Insufficient balance.",
+          exception_type: "AuthenticationError",
+        },
+      },
+      "runtime",
+      sessionId,
+    );
+
+    async function* stream() {
+      yield makeStreamChunk(sessionId, "running", requestReceived);
+      yield makeStreamChunk(sessionId, "failed", failedEvent);
+    }
+
+    runtimeClientMocks.runStreamMock.mockReturnValue(stream());
+
+    await useAppStore.getState().runTask("say ok");
+
+    const state = useAppStore.getState();
+    expect(state.runStatus).toBe("error");
+    expect(state.runError).toBe(
+      "litellm.AuthenticationError: Insufficient balance.",
+    );
   });
 
   it("passes runtime metadata through runTask options including store config defaults", async () => {

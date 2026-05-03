@@ -1,7 +1,7 @@
 /// <reference types="vitest" />
 import { defineConfig } from 'vite'
 import { configDefaults } from 'vitest/config'
-import react from '@vitejs/plugin-react-swc'
+import react from '@vitejs/plugin-react'
 import path from 'path'
 
 export default defineConfig({
@@ -27,6 +27,7 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     sourcemap: true,
+    chunkSizeWarningLimit: 650,
   },
   test: {
     environment: 'jsdom',

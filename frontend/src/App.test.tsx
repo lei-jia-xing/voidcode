@@ -68,6 +68,7 @@ describe("App", () => {
     sessionsError: null,
     selectSession: vi.fn(),
     runTask: vi.fn(),
+    cancelCurrentRun: vi.fn(),
     resolveApproval: vi.fn(),
     replayStatus: "idle",
     replayError: null,
@@ -195,6 +196,57 @@ describe("App", () => {
     expect(screen.getAllByText("MCP").length).toBeGreaterThanOrEqual(1);
     expect(screen.queryByText("Git")).not.toBeInTheDocument();
     expect(screen.getByText(/last request: handshake/)).toBeInTheDocument();
+  });
+
+  it("uses a working bar instead of the old agent idle header badge", () => {
+    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      ...mockStore,
+      workspaces: {
+        current: {
+          path: "/workspace",
+          label: "workspace",
+          available: true,
+          current: true,
+          last_opened_at: 1,
+        },
+        recent: [],
+        candidates: [],
+      },
+      runStatus: "running",
+    });
+
+    render(<App />);
+
+    expect(
+      screen.getByRole("status", { name: "Model working" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Agent Idle")).not.toBeInTheDocument();
+    expect(screen.queryByText("Agent Busy")).not.toBeInTheDocument();
+  });
+
+  it("wires the running composer stop button to cancel the current run", () => {
+    const cancelCurrentRun = vi.fn();
+    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      ...mockStore,
+      cancelCurrentRun,
+      workspaces: {
+        current: {
+          path: "/workspace",
+          label: "workspace",
+          available: true,
+          current: true,
+          last_opened_at: 1,
+        },
+        recent: [],
+        candidates: [],
+      },
+      runStatus: "running",
+    });
+
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Stop generation" }));
+
+    expect(cancelCurrentRun).toHaveBeenCalledTimes(1);
   });
 
   it("renders independent sessions, file tree, and code review toggles in the workspace header", () => {
@@ -967,7 +1019,9 @@ describe("App", () => {
 
     const promptElements = screen.getAllByText("test prompt subtitle");
     expect(promptElements.length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText("session-123456789")).toBeInTheDocument();
+    expect(
+      screen.getAllByText("session-123456789").length,
+    ).toBeGreaterThanOrEqual(1);
   });
 
   it("renders concise deterministic titles for long session prompts in header and sidebar", () => {

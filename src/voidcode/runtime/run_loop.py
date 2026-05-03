@@ -931,18 +931,34 @@ class RuntimeRunLoopCoordinator:
                 preserved_system_segments.append(segment.content)
                 if segment.content.startswith("Runtime-managed skills are active for this turn."):
                     skill_prompt_context = segment.content
+            assembled_context = runtime._assemble_provider_context(
+                prompt=current_prompt,
+                tool_results=context_window.tool_results,
+                session_metadata=session.metadata,
+                skill_prompt_context=skill_prompt_context,
+                preserved_system_segments=tuple(preserved_system_segments),
+            )
+            context_window_payload = {
+                **assembled_context.metadata,
+                **context_window.metadata_payload(),
+            }
+            for estimate_key in (
+                "estimated_context_tokens",
+                "estimated_context_token_source",
+                "estimated_context_token_exact",
+            ):
+                if estimate_key in assembled_context.metadata:
+                    context_window_payload[estimate_key] = assembled_context.metadata[estimate_key]
+            session = runtime._session_with_context_window_payload_metadata(
+                session,
+                context_window_payload,
+            )
             active_graph_request = GraphRunRequest(
                 session=session,
                 prompt=current_prompt,
                 available_tools=current_available_tools,
                 context_window=context_window,
-                assembled_context=runtime._assemble_provider_context(
-                    prompt=current_prompt,
-                    tool_results=context_window.tool_results,
-                    session_metadata=session.metadata,
-                    skill_prompt_context=skill_prompt_context,
-                    preserved_system_segments=tuple(preserved_system_segments),
-                ),
+                assembled_context=assembled_context,
                 metadata=current_metadata,
                 abort_signal=current_abort_signal,
             )

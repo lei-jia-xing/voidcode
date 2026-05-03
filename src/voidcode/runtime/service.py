@@ -6684,6 +6684,14 @@ class VoidCodeRuntime:
     def _session_with_context_window_metadata(
         session: SessionState, context_window: RuntimeContextWindow
     ) -> SessionState:
+        return VoidCodeRuntime._session_with_context_window_payload_metadata(
+            session, context_window.metadata_payload()
+        )
+
+    @staticmethod
+    def _session_with_context_window_payload_metadata(
+        session: SessionState, context_window_payload: dict[str, object]
+    ) -> SessionState:
         # Referenced via extracted run-loop collaborator.
         raw_runtime_state = session.metadata.get("runtime_state")
         runtime_state = (
@@ -6691,22 +6699,25 @@ class VoidCodeRuntime:
             if isinstance(raw_runtime_state, dict)
             else {}
         )
+        continuity_payload_raw = context_window_payload.get("continuity_state")
         continuity_payload = (
-            context_window.continuity_state.metadata_payload()
-            if context_window.continuity_state is not None
+            cast(dict[str, object], continuity_payload_raw)
+            if isinstance(continuity_payload_raw, dict)
             else None
         )
+        summary_anchor = context_window_payload.get("summary_anchor")
+        summary_source = context_window_payload.get("summary_source")
         continuity_summary_payload = (
             {
-                "anchor": context_window.summary_anchor,
-                "source": context_window.summary_source,
+                "anchor": summary_anchor,
+                "source": summary_source,
                 "distillation_source": (
-                    context_window.continuity_state.distillation_source
-                    if context_window.continuity_state is not None
+                    continuity_payload.get("distillation_source", "deterministic")
+                    if continuity_payload is not None
                     else "deterministic"
                 ),
             }
-            if context_window.summary_anchor is not None
+            if isinstance(summary_anchor, str)
             else None
         )
         return SessionState(
@@ -6715,7 +6726,7 @@ class VoidCodeRuntime:
             turn=session.turn,
             metadata={
                 **session.metadata,
-                "context_window": context_window.metadata_payload(),
+                "context_window": context_window_payload,
                 "runtime_state": {
                     **runtime_state,
                     **(

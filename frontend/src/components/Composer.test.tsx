@@ -78,12 +78,28 @@ describe("Composer", () => {
     expect(onProviderModelChange).toHaveBeenCalledWith("opencode-go/glm-5.2");
   });
 
+  it("keeps selector menus above the composer shell", () => {
+    render(<Composer {...baseProps} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Model" }));
+
+    expect(screen.getByText("OpenCode").closest(".absolute")).toHaveClass(
+      "z-[100]",
+    );
+  });
+
   it("shows model context and reasoning effort controls from metadata", () => {
     const onReasoningEffortChange = vi.fn();
     render(
       <Composer
         {...baseProps}
         reasoningEffort="high"
+        sessionContextUsage={{
+          usedTokens: 12_400,
+          contextWindow: 198_000,
+          totalTokens: 18_900,
+          estimated: false,
+        }}
         onReasoningEffortChange={onReasoningEffortChange}
         providerModels={{
           "opencode-go": {
@@ -103,7 +119,7 @@ describe("Composer", () => {
     );
 
     expect(
-      screen.getByText("198K ctx · 128K out · effort medium"),
+      screen.getByText("12.4K ctx · 6.3% · 18.9K total"),
     ).toBeInTheDocument();
 
     const effortSelect = screen.getByRole("combobox", {
@@ -135,10 +151,66 @@ describe("Composer", () => {
       />,
     );
 
-    expect(screen.getByText("198K ctx · reasoning")).toBeInTheDocument();
+    expect(
+      screen.getByText("Context unavailable · total unavailable"),
+    ).toBeInTheDocument();
     expect(
       screen.queryByRole("combobox", { name: "Reasoning effort" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("falls back when token usage has no context window denominator", () => {
+    render(
+      <Composer
+        {...baseProps}
+        sessionContextUsage={{
+          usedTokens: 2048,
+          contextWindow: null,
+          totalTokens: 4096,
+          estimated: false,
+        }}
+      />,
+    );
+
+    expect(
+      screen.getByText("2K ctx · window unavailable · 4.1K total"),
+    ).toBeInTheDocument();
+  });
+
+  it("shows known context window when token usage is unavailable", () => {
+    render(
+      <Composer
+        {...baseProps}
+        sessionContextUsage={{
+          usedTokens: null,
+          contextWindow: 1_000_000,
+          totalTokens: 6200,
+          estimated: false,
+        }}
+      />,
+    );
+
+    expect(
+      screen.getByText("Context unavailable · 1M window · 6.2K total"),
+    ).toBeInTheDocument();
+  });
+
+  it("marks estimated context token usage", () => {
+    render(
+      <Composer
+        {...baseProps}
+        sessionContextUsage={{
+          usedTokens: 12_400,
+          contextWindow: 1_000_000,
+          totalTokens: 30_000,
+          estimated: true,
+        }}
+      />,
+    );
+
+    expect(
+      screen.getByText("≈12.4K ctx · 1.2% · 30K total"),
+    ).toBeInTheDocument();
   });
 
   it("canonicalizes bare grouped model aliases before storing selection", () => {
@@ -300,6 +372,18 @@ describe("Composer", () => {
     expect(onSubmit).toHaveBeenCalledWith("hello");
   });
 
+  it("keeps the send action enabled while treating empty input as a no-op", () => {
+    const onSubmit = vi.fn();
+    render(<Composer {...baseProps} onSubmit={onSubmit} />);
+
+    const sendButton = screen.getByRole("button", { name: "Send message" });
+    expect(sendButton).toBeEnabled();
+
+    fireEvent.click(sendButton);
+
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
   it("does not submit on Shift+Enter", () => {
     const onSubmit = vi.fn();
     render(<Composer {...baseProps} onSubmit={onSubmit} />);
@@ -321,6 +405,18 @@ describe("Composer", () => {
     expect(
       screen.getByPlaceholderText("Ask VoidCode to do something..."),
     ).toBeDisabled();
+  });
+
+  it("shows a stop action while running and calls onCancel", () => {
+    const onCancel = vi.fn();
+    render(<Composer {...baseProps} disabled isRunning onCancel={onCancel} />);
+
+    const stopButton = screen.getByRole("button", { name: "Stop generation" });
+    expect(stopButton).toBeEnabled();
+
+    fireEvent.click(stopButton);
+
+    expect(onCancel).toHaveBeenCalledTimes(1);
   });
 
   it("groups models from multiple configured providers", () => {

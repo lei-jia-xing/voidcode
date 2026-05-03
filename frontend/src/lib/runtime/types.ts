@@ -207,6 +207,15 @@ export interface RuntimeResponse {
   output: string | null;
 }
 
+export interface RuntimeInterruptResult {
+  session_id: string;
+  status: "interrupted" | "not_active" | "stale";
+  interrupted: boolean;
+  cancelled: boolean;
+  run_id?: string | null;
+  reason?: string | null;
+}
+
 export interface ApiErrorPayload {
   error?: string;
   code?: string;
