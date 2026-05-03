@@ -506,6 +506,7 @@ function App() {
               disabled={composerDisabled}
               isRunning={isRunning}
               agentPreset={agentPreset}
+              sessionMetadata={currentSessionState?.metadata}
               onSubmit={handleSendMessage}
               onCancel={cancelCurrentRun}
               onAgentPresetChange={setAgentPreset}
