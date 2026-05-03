@@ -921,6 +921,46 @@ class _EmptyWriteThenResultAwareModelProvider:
         return provider
 
 
+class _InvalidRegexGrepThenResultAwareTurnProvider:
+    def __init__(self, *, name: str) -> None:
+        self.name = name
+        self.requests: list[ProviderTurnRequest] = []
+
+    def propose_turn(self, request: object) -> ProviderTurnResult:
+        turn_request = cast(ProviderTurnRequest, request)
+        self.requests.append(turn_request)
+        if not turn_request.tool_results:
+            return ProviderTurnResult(
+                tool_call=ToolCall(
+                    tool_name="grep",
+                    arguments={"pattern": "[unclosed", "path": ".", "regex": True},
+                )
+            )
+        return ProviderTurnResult(output="recovered from diagnostic error")
+
+    def stream_turn(self, request: object):
+        result = self.propose_turn(request)
+        if result.output is not None:
+            return iter(
+                (
+                    ProviderStreamEvent(kind="delta", channel="text", text=result.output),
+                    ProviderStreamEvent(kind="done", done_reason="completed"),
+                )
+            )
+        return iter((ProviderStreamEvent(kind="done", done_reason="completed"),))
+
+
+@dataclass(frozen=True, slots=True)
+class _InvalidRegexGrepThenResultAwareModelProvider:
+    name: str
+    created_providers: list[_InvalidRegexGrepThenResultAwareTurnProvider]
+
+    def turn_provider(self) -> _InvalidRegexGrepThenResultAwareTurnProvider:
+        provider = _InvalidRegexGrepThenResultAwareTurnProvider(name=self.name)
+        self.created_providers.append(provider)
+        return provider
+
+
 @dataclass(frozen=True, slots=True)
 class _DeniedWriteThenReadModelProvider:
     name: str
@@ -2873,6 +2913,48 @@ def test_runtime_tool_validation_error_includes_actionable_content(tmp_path: Pat
     assert failed_tool_result.retry_guidance == tool_completed.payload["retry_guidance"]
 
 
+def test_runtime_tool_diagnostic_error_propagates_structured_payload(tmp_path: Path) -> None:
+    created_providers: list[_InvalidRegexGrepThenResultAwareTurnProvider] = []
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+        model_provider_registry=ModelProviderRegistry(
+            providers={
+                "opencode": _InvalidRegexGrepThenResultAwareModelProvider(
+                    name="opencode",
+                    created_providers=created_providers,
+                )
+            }
+        ),
+        permission_policy=PermissionPolicy(mode="allow"),
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="invalid regex grep", session_id="invalid-regex"))
+
+    assert response.session.status == "completed"
+    assert response.output == "recovered from diagnostic error"
+    tool_completed = next(
+        event for event in response.events if event.event_type == "runtime.tool_completed"
+    )
+    assert tool_completed.payload["tool"] == "grep"
+    assert tool_completed.payload["status"] == "error"
+    assert tool_completed.payload["error_kind"] == "tool_input_validation"
+    assert "invalid regex pattern" in str(tool_completed.payload["error"])
+    assert "regex=false" in str(tool_completed.payload["retry_guidance"])
+    assert "Please correct the tool arguments and retry." in str(tool_completed.payload["content"])
+    error_details = cast(dict[str, object], tool_completed.payload["error_details"])
+    assert error_details["tool_name"] == "grep"
+    assert error_details["error_kind"] == "tool_input_validation"
+    assert error_details["reason"] == "invalid_regex"
+
+    failed_tool_result = created_providers[-1].requests[-1].tool_results[-1]
+    assert isinstance(failed_tool_result.error, str)
+    assert failed_tool_result.error_kind == tool_completed.payload["error_kind"]
+    assert failed_tool_result.error_summary == tool_completed.payload["error_summary"]
+    assert failed_tool_result.error_details == error_details
+    assert failed_tool_result.retry_guidance == tool_completed.payload["retry_guidance"]
+
+
 def test_runtime_session_debug_snapshot_reports_failure_classification_and_last_tool(
     tmp_path: Path,
 ) -> None:
@@ -3351,6 +3433,12 @@ def test_runtime_cancel_after_tool_started_emits_terminal_tool_completed(
     assert failed_events[-1].payload["cancelled"] is True
     assert failed_events[-1].payload["run_id"] == run_id
     assert failed_events[-1].payload["reason"] == "stop before invoke"
+    assert "wait for the user's next instruction" in str(
+        failed_events[-1].payload["retry_guidance"]
+    )
+    diagnostics = failed_events[-1].payload["diagnostics"]
+    assert isinstance(diagnostics, list)
+    assert diagnostics[-1]["reason"] == "user_interrupted"
 
 
 def test_runtime_cancel_session_preserves_older_overlapping_run_after_newer_run_finishes(
@@ -3380,6 +3468,9 @@ def test_runtime_cancel_session_preserves_older_overlapping_run_after_newer_run_
     assert first_failed_events
     assert first_failed_events[-1].payload["kind"] == "interrupted"
     assert first_failed_events[-1].payload["reason"] == "cancel older run"
+    assert "wait for the user's next instruction" in str(
+        first_failed_events[-1].payload["retry_guidance"]
+    )
 
 
 def test_runtime_cancel_session_rejects_stale_run_id(tmp_path: Path) -> None:
@@ -3453,6 +3544,9 @@ def test_runtime_cancel_session_interrupts_active_approval_resume_run(tmp_path: 
     assert failed_events[-1].payload["cancelled"] is True
     assert failed_events[-1].payload["run_id"] == run_id
     assert failed_events[-1].payload["reason"] == "resume cancellation"
+    assert "wait for the user's next instruction" in str(
+        failed_events[-1].payload["retry_guidance"]
+    )
     assert any(state.get("run_id") == run_id for state in resumed_runtime_states)
 
 
