@@ -4,7 +4,7 @@ import os
 import subprocess
 from importlib import import_module
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from urllib.request import url2pathname
 
 import pytest
@@ -87,6 +87,29 @@ def test_lsp_config_state_wraps_runtime_lsp_config_servers() -> None:
     assert state.resolve("missing") is None
 
 
+def test_lsp_config_state_enables_explicit_servers_when_enabled_omitted() -> None:
+    state = LspConfigState.from_runtime_config(
+        RuntimeLspConfig(
+            servers={"pyright": RuntimeLspServerConfig(command=("pyright-langserver", "--stdio"))}
+        )
+    )
+
+    assert state.configured_enabled is True
+    assert tuple(state.servers) == ("pyright",)
+
+
+def test_lsp_config_state_preserves_explicit_disable_with_servers() -> None:
+    state = LspConfigState.from_runtime_config(
+        RuntimeLspConfig(
+            enabled=False,
+            servers={"pyright": RuntimeLspServerConfig(command=("pyright-langserver", "--stdio"))},
+        )
+    )
+
+    assert state.configured_enabled is False
+    assert tuple(state.servers) == ("pyright",)
+
+
 def test_disabled_lsp_manager_reports_configured_servers_without_runtime_availability() -> None:
     manager = DisabledLspManager(
         RuntimeLspConfig(
@@ -165,6 +188,35 @@ def test_build_lsp_manager_returns_managed_manager_when_enabled_and_configured()
     assert isinstance(manager, ManagedLspManager)
     assert state.mode == "managed"
     assert state.servers["pyright"].status == "stopped"
+
+
+def test_build_lsp_manager_enables_when_servers_configured_without_explicit_flag() -> None:
+    manager = build_lsp_manager(
+        RuntimeLspConfig(
+            servers={"pyright": RuntimeLspServerConfig(command=("pyright-langserver", "--stdio"))}
+        )
+    )
+
+    state = manager.current_state()
+
+    assert isinstance(manager, ManagedLspManager)
+    assert state.mode == "managed"
+    assert state.configuration.configured_enabled is True
+
+
+def test_build_lsp_manager_respects_explicit_disable_even_with_servers() -> None:
+    manager = build_lsp_manager(
+        RuntimeLspConfig(
+            enabled=False,
+            servers={"pyright": RuntimeLspServerConfig(command=("pyright-langserver", "--stdio"))},
+        )
+    )
+
+    state = manager.current_state()
+
+    assert isinstance(manager, DisabledLspManager)
+    assert state.mode == "disabled"
+    assert state.configuration.configured_enabled is False
 
 
 def test_build_lsp_manager_accepts_builtin_preset_without_explicit_command() -> None:
@@ -299,7 +351,7 @@ def test_send_request_matches_generated_request_id(monkeypatch: pytest.MonkeyPat
     assert server_config is not None
     running_server = running_server_cls(
         config=server_config,
-        process=fake_process,
+        process=cast(subprocess.Popen[bytes], fake_process),
         workspace_root=Path("."),
     )
 
@@ -341,7 +393,9 @@ def test_send_request_matches_generated_request_id(monkeypatch: pytest.MonkeyPat
     assert second["result"] == {"value": "second"}
 
 
-def test_managed_lsp_manager_terminates_process_when_initialize_fails(tmp_path: Path) -> None:
+def test_managed_lsp_manager_terminates_process_when_initialize_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     manager = ManagedLspManager(
         RuntimeLspConfig(
             enabled=True,
@@ -393,20 +447,16 @@ def test_managed_lsp_manager_terminates_process_when_initialize_fails(tmp_path: 
 
     manager._send_request = _fail_initialize
     manager._send_notification = _ignore_notification
-    original_popen = module.subprocess.Popen
-    module.subprocess.Popen = _fake_popen
-    try:
-        request = LspRequest(
-            server_name="pyright",
-            method="textDocument/definition",
-            params={"textDocument": {"uri": (tmp_path / "sample.py").as_uri()}},
-            workspace=tmp_path,
-        )
+    monkeypatch.setattr(module.subprocess, "Popen", _fake_popen)
+    request = LspRequest(
+        server_name="pyright",
+        method="textDocument/definition",
+        params={"textDocument": {"uri": (tmp_path / "sample.py").as_uri()}},
+        workspace=tmp_path,
+    )
 
-        with pytest.raises(ValueError, match="No response from LSP server pyright for initialize"):
-            _ = manager.request(request)
-    finally:
-        module.subprocess.Popen = original_popen
+    with pytest.raises(ValueError, match="No response from LSP server pyright for initialize"):
+        _ = manager.request(request)
 
     state = manager.current_state().servers["pyright"]
     assert state.status == "failed"
@@ -456,7 +506,7 @@ def test_stop_running_server_cleans_up_after_shutdown_timeout(tmp_path: Path) ->
     assert server_config is not None
     manager._running_servers["pyright"] = running_server_cls(
         config=server_config,
-        process=fake_process,
+        process=cast(subprocess.Popen[bytes], fake_process),
         workspace_root=tmp_path,
         initialized=True,
     )
@@ -466,7 +516,7 @@ def test_stop_running_server_cleans_up_after_shutdown_timeout(tmp_path: Path) ->
         server=manager._running_servers["pyright"], generation=1, ref_count=1
     )
 
-    def _raise_timeout(*args: object, **kwargs: object) -> object:
+    def _raise_timeout(*_args: object, **_kwargs: object) -> object:
         raise TimeoutError("shutdown timed out")
 
     manager._send_request = _raise_timeout
@@ -788,13 +838,13 @@ def test_stale_shared_server_release_does_not_stop_replacement_process(
     assert replacement_lease.key == first_lease.key
     assert replacement_lease.generation == 2
     assert replacement_entry.generation == 2
-    assert replacement_entry.server.process.terminated is False
+    assert replacement_entry.server.process.poll() is None
     assert [event.event_type for event in manager_three.drain_events()] == [
         "runtime.lsp_server_started"
     ]
 
     assert manager_one.shutdown() == ()
-    assert replacement_entry.server.process.terminated is False
+    assert replacement_entry.server.process.poll() is None
     assert registry._entries[replacement_lease.key].generation == 2
 
     shutdown_events = manager_three.shutdown()
