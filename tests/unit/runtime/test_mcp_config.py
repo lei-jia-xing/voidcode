@@ -302,6 +302,20 @@ def test_runtime_config_expands_builtin_mcp_server_shorthand(tmp_path: Path) -> 
     )
 
 
+def test_runtime_config_derives_default_grep_app_mcp_when_unconfigured(tmp_path: Path) -> None:
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.mcp == RuntimeMcpConfig(
+        enabled=True,
+        servers={
+            "grep_app": RuntimeMcpServerConfig(
+                transport="remote-http",
+                url="https://mcp.grep.app",
+            )
+        },
+    )
+
+
 def test_runtime_config_rejects_missing_mcp_url_for_remote_http(tmp_path: Path) -> None:
     (tmp_path / ".voidcode.json").write_text(
         json.dumps(

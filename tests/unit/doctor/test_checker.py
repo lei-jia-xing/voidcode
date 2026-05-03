@@ -206,3 +206,19 @@ class TestMcpServerChecker:
 
         assert result.status == CapabilityCheckStatus.NOT_CONFIGURED
         assert result.error_message is not None
+
+    def test_check_with_remote_http_server(self) -> None:
+        """Remote HTTP MCP descriptors should not require a local executable."""
+        from voidcode.mcp.config import McpServerConfig
+
+        config = McpServerConfig(
+            command=(),
+            transport="remote-http",
+            url="https://mcp.grep.app",
+        )
+        checker = McpServerChecker("grep_app", config)
+        result = checker.check()
+
+        assert result.status == CapabilityCheckStatus.READY
+        assert result.details["transport"] == "remote-http"
+        assert result.details["url"] == "https://mcp.grep.app"

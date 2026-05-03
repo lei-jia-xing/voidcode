@@ -610,6 +610,7 @@ def load_runtime_config(
     )
     resolved_tui = _resolve_tui_config(global_config.tui, repo_local.tui)
     resolved_lsp = repo_local.lsp or _derive_workspace_lsp_config(resolved_workspace)
+    resolved_mcp = repo_local.mcp or _derive_workspace_mcp_config()
     resolved_agent = _resolve_agent_config(repo_local.agent, agent_registry=agent_registry)
 
     env_providers = provider_configs_from_env(environment)
@@ -658,7 +659,7 @@ def load_runtime_config(
         context_window=repo_local.context_window,
         lsp=resolved_lsp,
         background_task=repo_local.background_task or RuntimeBackgroundTaskConfig(),
-        mcp=repo_local.mcp,
+        mcp=resolved_mcp,
         tui=resolved_tui,
         provider_fallback=repo_local.provider_fallback,
         providers=resolved_providers,
@@ -674,6 +675,21 @@ def _derive_workspace_lsp_config(workspace: Path) -> RuntimeLspConfig | None:
     if not derived_servers:
         return None
     return RuntimeLspConfig(enabled=True, servers=derived_servers)
+
+
+def _derive_workspace_mcp_config() -> RuntimeMcpConfig | None:
+    descriptor = get_builtin_mcp_descriptor("grep_app")
+    if descriptor is None or descriptor.url is None:
+        return None
+    return RuntimeMcpConfig(
+        enabled=True,
+        servers={
+            "grep_app": RuntimeMcpServerConfig(
+                transport="remote-http",
+                url=descriptor.url,
+            )
+        },
+    )
 
 
 def _discover_runtime_skill_names(

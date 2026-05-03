@@ -105,6 +105,26 @@ class TestCreateDoctorForConfig:
         assert mcp_result.status == CapabilityCheckStatus.NOT_CONFIGURED
         assert mcp_result.details["configured_enabled"] is False
 
+    def test_reports_remote_http_mcp_server_as_ready(self) -> None:
+        config = RuntimeConfig(
+            mcp=RuntimeMcpConfig(
+                enabled=True,
+                servers={
+                    "grep_app": RuntimeMcpServerConfig(
+                        transport="remote-http",
+                        url="https://mcp.grep.app",
+                    )
+                },
+            )
+        )
+
+        doctor = create_doctor_for_config(Path("/tmp"), config)
+
+        mcp_result = next(result for result in doctor.results if result.name == "mcp:grep_app")
+        assert mcp_result.status == CapabilityCheckStatus.READY
+        assert mcp_result.details["transport"] == "remote-http"
+        assert mcp_result.details["url"] == "https://mcp.grep.app"
+
     def test_reports_disabled_mcp_configuration(self) -> None:
         config = RuntimeConfig(
             mcp=RuntimeMcpConfig(

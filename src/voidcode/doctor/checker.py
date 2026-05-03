@@ -296,6 +296,18 @@ class McpServerChecker:
     def check(self) -> CapabilityCheckResult:
         """Check if the MCP server command is available."""
         command = self._config.command
+        if self._config.transport == "remote-http":
+            return CapabilityCheckResult(
+                status=CapabilityCheckStatus.READY,
+                name=f"mcp:{self._server_name}",
+                check_type=DoctorCheckType.MCP_SERVER.value,
+                details={
+                    "server_name": self._server_name,
+                    "transport": self._config.transport,
+                    "scope": getattr(self._config, "scope", "runtime"),
+                    "url": getattr(self._config, "url", None),
+                },
+            )
         if not command:
             return CapabilityCheckResult(
                 status=CapabilityCheckStatus.NOT_CONFIGURED,
