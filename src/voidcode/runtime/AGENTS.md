@@ -45,10 +45,91 @@ runtime/
 - Manifest `skill_refs` are catalog/default selection metadata. `force_load_skills` and delegated `load_skills` force full skill-body injection for that request or child session without leaking parent-only skill bodies.
 - MCP servers are managed at runtime or session scope through `runtime/mcp.py`; do not document or implement workspace-scoped MCP lifecycle without a separate explicit task.
 
+## ERROR HANDLING GUIDANCE
+When adding or modifying code in `service.py` or its extracted collaborators, follow these patterns:
+
+### Provider Errors
+```python
+try:
+    result = provider.propose_turn(request)
+except ProviderExecutionError as exc:
+    # Use fallback_graph_for_provider_error for retryable failures
+    fallback = fallback_graph_for_provider_error(
+        error=exc,
+        provider_chain=...,
+        config=...,
+        provider_attempt=...,
+    )
+    if fallback is None:
+        raise RuntimeRequestError(str(exc)) from exc
+    # Swap to fallback graph and continue
+```
+
+### Workflow Preset Validation
+```python
+try:
+    preset = self._workflow_preset(preset_id)
+    if preset is None:
+        raise ValueError(f"Unknown workflow preset: {preset_id}")
+    self._validate_required_workflow_mcp_intents(preset)
+except ValueError as exc:
+    raise RuntimeRequestError(str(exc)) from exc
+```
+
+### ACP Connectivity Errors
+```python
+try:
+    acp_events = self._acp_adapter.connect()
+except Exception as exc:
+    # Emit failed chunk and continue without ACP
+    return self._emit_acp_failure_chunk(session, sequence, error=str(exc))
+```
+
+### Tool Execution Errors
+- Tool errors should surface as `ToolResult` with `feedback` field, not raise exceptions that break the execution loop.
+- Permission denials are not terminal; return denial feedback so the model can adapt.
+
+### Session/Storage Errors
+- Use `RuntimeRequestError` for request-level validation failures.
+- Storage errors during append should be caught and logged; prefer fail-fast for schema violations.
+
 ## HOTSPOTS
 - `service.py` is the central monolith. Read the surrounding methods before changing `_build_graph_for_engine_from_config`, `_tool_registry_for_effective_config`, `_execute_graph_loop`, `start_background_task`, or resume helpers.
 - `config.py` is dense because it resolves many nested config sections. Prefer extending existing parse/serialize helpers over inventing a parallel path.
 - `storage.py` owns schema evolution and terminal-state bookkeeping. Runtime SQLite persistence is still pre-MVP and does not guarantee backward compatibility across schema changes; prefer explicit schema updates and fail-fast behavior unless a task explicitly requires migration support.
+
+## DECOMPOSITION PLAN (P1: Safe Extraction of `service.py` Hotspots)
+*Documents extraction boundaries for `src/voidcode/runtime/service.py` to reduce monolith risk without changing runtime semantics. Aligned with acceptance criteria for safe, test-backed extractions.*
+
+### Current Hotspots Requiring Extraction
+| Hotspot | Location in `service.py` | Current State |
+|---------|---------------------------|---------------|
+| Tool Registry & Scoping | `ToolRegistry` class, `_tool_registry_for_effective_config` | `ToolRegistry` co-located with `VoidCodeRuntime`; tool scoping logic mixed with runtime config |
+| Workflow Preset Runtime Logic | `_workflow_preset`, `_workflow_preset_snapshot`, `_request_metadata_with_workflow_defaults` | Preset definitions in `workflow.py`, but runtime consumption logic in `service.py` |
+| ACP Runtime Integration | `_start_run_acp`, `_finalize_run_acp`, `_emit_acp_events` | ACP adapter in `acp.py`, but event emission/state merging in `service.py` |
+| Session Metadata Helpers | `_plan_state_from_metadata`, `_runtime_state_metadata_with_acp_state` | Metadata merging logic mixed with core runtime state |
+| Provider Auth/Resolution | `_hydrate_provider_model_catalog_cache`, `_provider_model` management | Provider resolution in `provider/` modules, but runtime caching in `service.py` |
+
+### Proposed Extraction Order (Test-Backed)
+Extractions must preserve `VoidCodeRuntime` public method signatures, delegate to extracted collaborators, and include behavior-parity tests. Each extraction must pass `mise run check` before merge:
+
+| Order | Component | Target Module | Test Plan |
+|-------|-----------|---------------|-----------|
+| 1 | `ToolRegistry` class | `tool_provider.py` | Verify `filtered`, `excluding`, `resolve` behavior via `tests/unit/runtime/test_tool_registry.py` |
+| 2 | Workflow preset runtime helpers | `workflow.py` | Validate preset snapshot, metadata merging, required MCP checks via `tests/unit/runtime/test_workflow_integration.py` |
+| 3 | ACP runtime integration helpers | `acp.py` | Test connect/disconnect, event emission, error handling via `tests/unit/runtime/test_acp_runtime.py` |
+| 4 | Session metadata helpers | `session.py` | Verify plan state, ACP state, workflow state merging via `tests/unit/runtime/test_session_metadata.py` |
+| 5 | Provider caching/resolution helpers | `provider_context.py` | Test model catalog caching, provider chain management via `tests/unit/runtime/test_provider_runtime.py` |
+
+### Extraction Constraints
+- No changes to runtime ownership boundaries (graph/client governance remains runtime-owned).
+- No arbitrary multi-agent topology changes; delegated child execution remains runtime-scoped.
+- All extractions must preserve existing test coverage and add new tests for extracted components.
+
+### Relevant Documentation
+- [Architecture Overview](../../docs/architecture.md)
+- [Background Task Delegation Contract](../../docs/contracts/background-task-delegation.md)
+- [Runtime Boundary Contracts](./contracts.py)
 
 ## ANTI-PATTERNS
 - Do not move product governance into `graph/`; runtime chooses and configures graphs.
