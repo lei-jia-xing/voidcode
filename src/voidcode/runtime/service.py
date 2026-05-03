@@ -82,7 +82,6 @@ from ..tools.contracts import (
     ToolResult,
 )
 from ..tools.guidance import definition_with_guidance
-from ..tools.local_custom import LocalCustomTool
 from ..tools.output import (
     read_tool_output_artifact,
     sanitize_tool_result_data,
@@ -241,6 +240,7 @@ from .permission import (
     evaluate_pattern_permission_rules,
     resolve_permission,
 )
+from .permission_context import RuntimePermissionContextResolver, extract_shell_path_candidates
 from .provider_context import inspect_provider_context
 from .provider_protocol import ProviderExecutionError
 from .question import PendingQuestion, QuestionResponse
@@ -353,16 +353,6 @@ _ACP_CONNECTIVITY_ERRORS = frozenset(
         "ACP transport is not connected",
     }
 )
-_EXTERNAL_PATH_PRECHECK_KEYS: Mapping[str, tuple[str, ...]] = {
-    "edit": ("path",),
-    "glob": ("path",),
-    "grep": ("path",),
-    "list": ("path",),
-    "multi_edit": ("path", "filePath"),
-    "read_file": ("filePath", "path"),
-    "write_file": ("path",),
-}
-
 _SKILL_BINDING_SCOPE_KEYS = (
     "approval_mode",
     "execution_engine",
@@ -735,6 +725,9 @@ class VoidCodeRuntime:
         context_window_policy: ContextWindowPolicy | None = None,
     ) -> None:
         self._workspace = workspace.resolve()
+        self._permission_context_resolver = RuntimePermissionContextResolver(
+            workspace=self._workspace
+        )
         self._agent_registry = self._runtime_agent_registry()
         self._config = config or load_runtime_config(self._workspace)
         self._model_provider_registry = (
@@ -2365,8 +2358,6 @@ class VoidCodeRuntime:
                 ),
             )
 
-        active_agent = effective_config.agent
-
         graph_request = GraphRunRequest(
             session=session,
             prompt=request.prompt,
@@ -2473,7 +2464,6 @@ class VoidCodeRuntime:
             start_sequence=release_sequence + 1,
             mcp_events=release_events,
         ):
-            release_sequence = event.sequence
             yield RuntimeStreamChunk(kind="event", session=finalized_session, event=event)
 
     def _execute_graph_loop(
@@ -2929,46 +2919,23 @@ class VoidCodeRuntime:
         tool_instance: Tool,
         tool_call: ToolCall,
     ) -> tuple[PathScope, str | None, OperationClass, tuple[str, ...]]:
-        operation_class = self._operation_class_for_tool(
-            tool_call.tool_name,
-            tool.read_only,
+        return self._permission_context_resolver.permission_context_for_tool_call(
+            tool=tool,
             tool_instance=tool_instance,
+            tool_call=tool_call,
+            patch_path_extractor=self._extract_paths_from_patch,
         )
-        candidate_paths = self._candidate_paths_for_tool_call(tool_call)
-        workspace_root = self._workspace.resolve()
-        external_paths: list[str] = []
-        for raw_path in candidate_paths:
-            canonical = self._canonicalize_candidate_path(raw_path)
-            if canonical is None:
-                continue
-            if canonical.is_relative_to(workspace_root):
-                continue
-            external_paths.append(str(canonical))
-        if external_paths:
-            return "external", external_paths[0], operation_class, tuple(external_paths)
-        return "workspace", None, operation_class, ()
 
     def _normalized_permission_path_candidates(
         self,
         tool_call: ToolCall,
         external_paths: tuple[str, ...],
     ) -> tuple[str, ...]:
-        normalized: list[str] = []
-        for external_path in external_paths:
-            normalized.append(Path(external_path).as_posix())
-        for raw_path in self._candidate_paths_for_tool_call(tool_call):
-            canonical = self._canonicalize_candidate_path(raw_path)
-            if canonical is not None:
-                normalized.append(canonical.as_posix())
-            text = raw_path.strip().replace("\\", "/")
-            if text:
-                normalized.append(text)
-        workspace_prefix = f"{self._workspace.as_posix().rstrip('/')}/"
-        relative: list[str] = []
-        for path in normalized:
-            if path.startswith(workspace_prefix):
-                relative.append(path.removeprefix(workspace_prefix))
-        return tuple(dict.fromkeys((*relative, *normalized)))
+        return self._permission_context_resolver.normalized_permission_path_candidates(
+            tool_call,
+            external_paths,
+            patch_path_extractor=self._extract_paths_from_patch,
+        )
 
     @staticmethod
     def _shell_command_for_tool_call(tool_call: ToolCall) -> str | None:
@@ -2984,38 +2951,24 @@ class VoidCodeRuntime:
         *,
         tool_instance: Tool,
     ) -> OperationClass:
-        if tool_name == "shell_exec" or isinstance(tool_instance, LocalCustomTool):
-            return "execute"
-        return "read" if read_only else "write"
+        from .permission_context import operation_class_for_tool
+
+        return operation_class_for_tool(
+            tool_name,
+            read_only,
+            tool_instance=tool_instance,
+        )
 
     @staticmethod
     def _candidate_paths_for_tool_call(tool_call: ToolCall) -> tuple[str, ...]:
-        arguments = tool_call.arguments
-        candidates: list[str] = []
-        for key in _EXTERNAL_PATH_PRECHECK_KEYS.get(tool_call.tool_name, ()):
-            value = arguments.get(key)
-            if isinstance(value, str) and value.strip():
-                candidates.append(value)
-        if tool_call.tool_name == "apply_patch":
-            patch_text = arguments.get("patch")
-            if isinstance(patch_text, str) and patch_text:
-                candidates.extend(VoidCodeRuntime._extract_paths_from_patch(patch_text))
-        return tuple(candidates)
+        resolver = RuntimePermissionContextResolver(workspace=Path.cwd())
+        return resolver.candidate_paths_for_tool_call(
+            tool_call,
+            patch_path_extractor=VoidCodeRuntime._extract_paths_from_patch,
+        )
 
     def _canonicalize_candidate_path(self, raw_path: str) -> Path | None:
-        text = raw_path.strip()
-        if not text:
-            return None
-        try:
-            candidate = Path(text).expanduser()
-        except RuntimeError:
-            candidate = Path(text)
-        if not candidate.is_absolute():
-            candidate = self._workspace / candidate
-        try:
-            return candidate.resolve(strict=False)
-        except OSError:
-            return None
+        return self._permission_context_resolver.canonicalize_candidate_path(raw_path)
 
     @staticmethod
     def _extract_paths_from_patch(patch_text: str) -> tuple[str, ...]:
@@ -3030,6 +2983,10 @@ class VoidCodeRuntime:
             elif line.startswith("*** Move to: "):
                 paths.append(line.removeprefix("*** Move to: ").strip())
         return tuple(path for path in paths if path)
+
+    @staticmethod
+    def _extract_shell_path_candidates(command: str) -> tuple[str, ...]:
+        return extract_shell_path_candidates(command)
 
     def list_sessions(self) -> tuple[StoredSessionSummary, ...]:
         return self._session_store.list_sessions(workspace=self._workspace)
@@ -5230,12 +5187,10 @@ class VoidCodeRuntime:
                     checkpoint=checkpoint,
                     finalize_background_task=True,
                 )
-            response = self._load_stored_response(session_id=session_id)
             self._background_task_supervisor.reconcile_parent_background_task_events_for_session(
                 parent_session_id=session_id
             )
-            response = self._load_stored_response(session_id=session_id)
-            return response
+            return self._load_stored_response(session_id=session_id)
         if approval_request_id is None or approval_decision is None:
             raise ValueError("approval resume requires request id and decision")
         self._validate_resume_targets_owned_request(
@@ -5287,7 +5242,6 @@ class VoidCodeRuntime:
                 finally:
                     self._unregister_active_session_id(session_id, run_id=run_id)
                 return
-            response = self._load_stored_response(session_id=session_id)
             self._background_task_supervisor.reconcile_parent_background_task_events_for_session(
                 parent_session_id=session_id
             )
@@ -6225,7 +6179,6 @@ class VoidCodeRuntime:
         providers = self._effective_runtime_config_from_metadata(session_metadata).providers
         if providers is None:
             return DEFAULT_PROVIDER_TRANSIENT_RETRY_CONFIG
-        provider_config = None
         if provider_name == "opencode-go":
             provider_config = providers.opencode_go
         elif provider_name == "openai":
