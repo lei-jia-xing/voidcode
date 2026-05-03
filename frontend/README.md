@@ -81,10 +81,10 @@ frontend/
 
 **注意：** 当前前端已经具备可工作的运行时传输客户端和本地后端路径，能够消费会话列表、重放数据、流式运行事件、审批/question 处理结果、review tree / diff、workspace registry、runtime status 和设置投影。它仍然不是一个完整产品化的 runtime-driven Web 客户端，但已经不只是概念验证或纯静态壳层。
 
-默认 Web 提交会使用 `leader` 单 agent 路径和 `opencode-go/glm-5.1` 模型；除非调用方显式传入正整数预算，否则前端不会向运行时发送 `max_steps`。API Key 不会进入浏览器状态或请求体；启动后端时通过环境变量提供：
+默认 Web 提交会使用 `leader` 单 agent 路径和 `deepseek/deepseek-v4-pro` 模型；除非调用方显式传入正整数预算，否则前端不会向运行时发送 `max_steps`。API Key 不会进入浏览器状态或请求体；启动后端时通过环境变量提供：
 
 ```bash
-OPENCODE_API_KEY=<your-key> uv run voidcode serve --workspace . --port 8000
+DEEPSEEK_API_KEY=<your-key> uv run voidcode serve --workspace . --port 8000
 ```
 
 如果需要启动完整 Web launcher，则先构建前端资源，然后运行：
