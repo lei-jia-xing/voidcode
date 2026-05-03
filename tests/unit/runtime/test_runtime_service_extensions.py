@@ -2711,7 +2711,10 @@ def test_runtime_materializes_leader_hook_preset_guidance_into_provider_context(
                 "source": "builtin",
                 "guidance": (
                     "When reading background task output, request only the detail needed for the "
-                    "current decision and summarize results before acting on them."
+                    "current decision, do not poll immediately after starting a background task "
+                    "unless you need a real status check, prefer waiting for the runtime "
+                    "completion "
+                    "reminder, and summarize results before acting on them."
                 ),
             },
             {
@@ -9235,6 +9238,11 @@ def test_runtime_research_workflow_fresh_records_read_only_metadata_without_wide
     assert workflow_snapshot["selected_preset"] == "research"
     assert workflow_snapshot["category"] == "research"
     assert workflow_snapshot["read_only_default"] is True
+    assert workflow_snapshot["hook_preset_refs"] == [
+        "role_reminder",
+        "delegated_task_timing_guidance",
+        "background_output_quality_guidance",
+    ]
     assert workflow_snapshot["skill_refs"] == []
     research_mcp_intents = cast(list[dict[str, object]], workflow_snapshot["mcp_binding_intents"])
     assert research_mcp_intents[0]["servers"] == ["context7", "websearch", "grep_app"]

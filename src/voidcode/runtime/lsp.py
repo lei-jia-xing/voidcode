@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import platform
 import select
 import subprocess
 import threading
@@ -52,9 +53,11 @@ class LspConfigState:
     def from_runtime_config(cls, config: RuntimeLspConfig | None) -> LspConfigState:
         if config is None:
             return cls()
+        resolved_servers = resolve_lsp_server_configs(config.servers)
         return cls(
-            configured_enabled=bool(config.enabled),
-            servers=resolve_lsp_server_configs(config.servers),
+            configured_enabled=(config.enabled is True)
+            or (config.enabled is None and bool(resolved_servers)),
+            servers=resolved_servers,
         )
 
     def resolve(self, server_name: str) -> ResolvedLspServerConfig | None:
@@ -744,7 +747,7 @@ class ManagedLspManager:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError(error_message)
-            if os.name == "nt":
+            if platform.system() == "Windows":
                 if not ManagedLspManager._wait_for_windows_pipe(fd=fd, timeout=remaining):
                     raise TimeoutError(error_message)
                 return

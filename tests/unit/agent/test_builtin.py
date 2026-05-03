@@ -390,6 +390,22 @@ def test_builtin_workflow_presets_validate_with_empty_capability_catalogs() -> N
         "review",
         "git",
     )
+    workflow_by_id = {preset.id: preset for preset in presets}
+    assert workflow_by_id["research"].hook_preset_refs == (
+        "role_reminder",
+        "delegated_task_timing_guidance",
+        "background_output_quality_guidance",
+    )
+    assert workflow_by_id["implementation"].hook_preset_refs == (
+        "role_reminder",
+        "delegated_task_timing_guidance",
+        "todo_continuation_guidance",
+    )
+    assert workflow_by_id["frontend"].hook_preset_refs == (
+        "role_reminder",
+        "delegated_task_timing_guidance",
+        "todo_continuation_guidance",
+    )
 
 
 def test_workflow_preset_payload_parser_rejects_unknown_fields() -> None:

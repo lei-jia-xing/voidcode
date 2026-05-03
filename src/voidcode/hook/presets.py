@@ -9,6 +9,7 @@ type HookPresetRef = Literal[
     "role_reminder",
     "delegation_guard",
     "background_output_quality_guidance",
+    "delegated_task_timing_guidance",
     "todo_continuation_guidance",
 ]
 
@@ -97,7 +98,23 @@ _BUILTIN_HOOK_PRESETS: Mapping[HookPresetRef, HookPreset] = MappingProxyType(
             description="Encourage bounded, useful background task result retrieval.",
             guidance=(
                 "When reading background task output, request only the detail needed for the "
-                "current decision and summarize results before acting on them."
+                "current decision, do not poll immediately after starting a background task unless "
+                "you need a real status check, prefer waiting for the runtime completion reminder, "
+                "and summarize results before acting on them."
+            ),
+        ),
+        "delegated_task_timing_guidance": HookPreset(
+            ref="delegated_task_timing_guidance",
+            kind="guidance",
+            description=(
+                "Keep delegated background work asynchronous unless waiting is intentional."
+            ),
+            guidance=(
+                "After starting delegated background work, continue other safe work first. "
+                "Treat task ids as references, not immediate prompts to poll. "
+                "Check status only when it changes the next decision, prefer waiting for "
+                "runtime completion or failure reminders, and use blocking result reads "
+                "only when you intentionally want to wait in the current turn."
             ),
         ),
         "todo_continuation_guidance": HookPreset(
@@ -135,6 +152,8 @@ def _parse_builtin_hook_preset_ref(ref: str) -> HookPresetRef | None:
         return "delegation_guard"
     if ref == "background_output_quality_guidance":
         return "background_output_quality_guidance"
+    if ref == "delegated_task_timing_guidance":
+        return "delegated_task_timing_guidance"
     if ref == "todo_continuation_guidance":
         return "todo_continuation_guidance"
     return None

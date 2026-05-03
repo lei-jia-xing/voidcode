@@ -255,10 +255,21 @@ class TaskTool:
 
         if args.run_in_background:
             task = self._runtime.start_background_task(request)
+            retry_guidance = (
+                "Continue other safe work now. Do not call background_output immediately "
+                "unless you need a real status check; prefer waiting for a completion "
+                "reminder, or use background_output(block=true) when you intentionally "
+                "want to wait in the current turn."
+            )
             return ToolResult(
                 tool_name=self.definition.name,
                 status="ok",
-                content=f"Started background task {task.task.id}",
+                content=(
+                    f"Started background task {task.task.id}. Continue other work now; "
+                    "do not call background_output immediately unless you truly need a "
+                    "status check. Wait for a completion reminder, or use "
+                    "background_output(block=true) when you intentionally need to wait."
+                ),
                 data={
                     "task_id": task.task.id,
                     "status": task.status,
@@ -270,6 +281,7 @@ class TaskTool:
                     "requested_subagent_type": args.subagent_type,
                     "load_skills": list(args.load_skills),
                 },
+                retry_guidance=retry_guidance,
             )
 
         response = self._runtime.run(request)

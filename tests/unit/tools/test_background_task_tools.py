@@ -5,7 +5,11 @@ from typing import cast
 
 import pytest
 
-from voidcode.runtime.contracts import BackgroundTaskResult, RuntimeSessionResult
+from voidcode.runtime.contracts import (
+    BackgroundTaskResult,
+    RuntimeSessionResult,
+    UnknownSessionError,
+)
 from voidcode.runtime.events import RUNTIME_TOOL_COMPLETED, EventEnvelope
 from voidcode.runtime.session import SessionRef, SessionState
 from voidcode.runtime.task import (
@@ -269,6 +273,12 @@ class _EmptyOutputBackgroundRuntime(_StubBackgroundRuntime):
         )
 
 
+class _MissingChildSessionBackgroundRuntime(_StubBackgroundRuntime):
+    def session_result(self, *, session_id: str) -> RuntimeSessionResult:
+        assert session_id == "child-session"
+        raise UnknownSessionError("unknown session: child-session")
+
+
 class _CompletedCancelRuntime(_StubBackgroundRuntime):
     def cancel_background_task(self, task_id: str) -> BackgroundTaskState:
         assert task_id == "task-1"
@@ -479,6 +489,8 @@ def test_background_output_block_timeout_returns_current_state(tmp_path: Path) -
     assert result.data["status"] == "running"
     assert result.data["block_timed_out"] is True
     assert "Timed out waiting" in str(result.data["guidance"])
+    assert result.retry_guidance is not None
+    assert "do not loop indefinitely" in result.retry_guidance
 
 
 def test_background_output_block_omits_timeout_guidance_when_final_read_is_terminal(
@@ -545,6 +557,8 @@ def test_background_output_tool_guides_unavailable_result_without_looping(tmp_pa
     assert result.content is not None
     assert "do not loop indefinitely" in result.content
     assert result.data["result_available"] is False
+    assert result.retry_guidance is not None
+    assert "do not loop indefinitely" in result.retry_guidance
 
 
 def test_background_output_tool_guides_empty_child_output(tmp_path: Path) -> None:
@@ -562,6 +576,31 @@ def test_background_output_tool_guides_empty_child_output(tmp_path: Path) -> Non
     assert result.content is not None
     assert "completed with empty output" in result.content
     assert "completed with empty output" in str(result.data["guidance"])
+
+
+def test_background_output_full_session_falls_back_when_child_session_unavailable(
+    tmp_path: Path,
+) -> None:
+    tool = BackgroundOutputTool(runtime=_MissingChildSessionBackgroundRuntime())
+
+    result = tool.invoke(
+        ToolCall(
+            tool_name="background_output",
+            arguments={"task_id": "task-1", "full_session": True},
+        ),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert result.content == (
+        "Completed child session child-session; full output is preserved outside active context."
+    )
+    assert result.reference == "session:child-session"
+    assert result.data["child_session_id"] == "child-session"
+    assert result.data["summary_output"] == (
+        "Completed child session child-session; full output is preserved outside active context."
+    )
+    assert "session" not in result.data
 
 
 def test_background_cancel_tool_cancels_single_task(tmp_path: Path) -> None:
