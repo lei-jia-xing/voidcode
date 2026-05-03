@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from .config import GoogleProviderConfig, LiteLLMProviderConfig
 from .litellm_backend import LiteLLMBackendSingleAgentProvider
+from .litellm_config import google_provider_config
 from .protocol import TurnProvider
 
 
@@ -11,6 +12,9 @@ from .protocol import TurnProvider
 class GoogleModelProvider:
     name: str = "google"
     config: GoogleProviderConfig | None = None
+
+    def provider_config(self) -> LiteLLMProviderConfig:
+        return google_provider_config(self.config)
 
     def turn_provider(self) -> TurnProvider:
         api_key = None

@@ -14,6 +14,9 @@ class GrokModelProvider:
     name: str = "grok"
     config: SimplifiedProviderConfig | None = None
 
+    def provider_config(self):
+        return simplified_config_to_litellm(self.name, self.config)
+
     def turn_provider(self) -> TurnProvider:
         adapted_config = simplified_config_to_litellm(self.name, self.config)
         return LiteLLMBackendSingleAgentProvider(name=self.name, config=adapted_config)

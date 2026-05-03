@@ -388,6 +388,7 @@ _SIMPLIFIED_DEFAULTS: dict[str, tuple[str, str | None, dict[str, str]]] = {
 
 
 _SIMPLIFIED_PROVIDER_NAMES = frozenset(_SIMPLIFIED_DEFAULTS)
+_SIMPLIFIED_PROVIDERS_USING_BASE_URL_DISCOVERY = frozenset({"deepseek"})
 
 
 def simplified_defaults(provider_name: str) -> tuple[str, dict[str, str]]:
@@ -412,11 +413,19 @@ def simplified_config_to_litellm(
         raise ValueError(f"Unknown simplified provider: {provider_name!r}")
     default_base_url, default_model_map = simplified_defaults(provider_name)
     default_discovery_base_url = simplified_discovery_base_url(provider_name)
-    discovery_base_url = (
-        config.discovery_base_url
-        if config.discovery_base_url is not None
-        else default_discovery_base_url
-    )
+    if config.discovery_base_url is not None:
+        discovery_base_url = config.discovery_base_url
+    elif config.base_url is not None and default_discovery_base_url == "":
+        discovery_base_url = ""
+    elif (
+        config.base_url is not None
+        and provider_name in _SIMPLIFIED_PROVIDERS_USING_BASE_URL_DISCOVERY
+    ):
+        discovery_base_url = None
+    elif config.base_url is not None:
+        discovery_base_url = default_discovery_base_url
+    else:
+        discovery_base_url = default_discovery_base_url
     return LiteLLMProviderConfig(
         api_key=config.api_key,
         base_url=config.base_url if config.base_url else default_base_url,

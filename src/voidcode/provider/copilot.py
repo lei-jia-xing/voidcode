@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from .config import CopilotProviderConfig, LiteLLMProviderConfig
 from .litellm_backend import LiteLLMBackendSingleAgentProvider
+from .litellm_config import copilot_provider_config
 from .protocol import TurnProvider
 
 
@@ -11,6 +12,9 @@ from .protocol import TurnProvider
 class CopilotModelProvider:
     name: str = "copilot"
     config: CopilotProviderConfig | None = None
+
+    def provider_config(self) -> LiteLLMProviderConfig:
+        return copilot_provider_config(self.config)
 
     def turn_provider(self) -> TurnProvider:
         token = None

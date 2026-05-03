@@ -337,6 +337,23 @@ def test_registry_registers_deepseek_provider() -> None:
     assert "deepseek-v4-pro" in config.model_map.values()
 
 
+def test_registry_deepseek_custom_base_url_uses_configured_base_url_discovery() -> None:
+    registry = ModelProviderRegistry.with_defaults(
+        provider_configs=ProviderConfigs(
+            deepseek=SimplifiedProviderConfig(
+                api_key="deepseek-key",
+                base_url="https://deepseek-proxy.example.test/v1",
+            )
+        )
+    )
+
+    config = registry.provider_config("deepseek")
+
+    assert config is not None
+    assert config.base_url == "https://deepseek-proxy.example.test/v1"
+    assert config.discovery_base_url is None
+
+
 def test_registry_registers_grok_provider() -> None:
     registry = ModelProviderRegistry.with_defaults(
         provider_configs=ProviderConfigs(grok=SimplifiedProviderConfig(api_key="grok-key"))
@@ -413,6 +430,23 @@ def test_registry_registers_opencode_go_provider() -> None:
     assert "qwen-flash" not in config.model_map
     assert "qwen3.5-flash" in config.model_map
     assert "qwen3.6-plus" in config.model_map
+
+
+def test_registry_opencode_go_custom_base_url_keeps_discovery_disabled() -> None:
+    registry = ModelProviderRegistry.with_defaults(
+        provider_configs=ProviderConfigs(
+            opencode_go=SimplifiedProviderConfig(
+                api_key="opencode-go-key",
+                base_url="https://opencode-go-proxy.example.test/zen/go",
+            )
+        )
+    )
+
+    config = registry.provider_config("opencode-go")
+
+    assert config is not None
+    assert config.base_url == "https://opencode-go-proxy.example.test/zen/go"
+    assert config.discovery_base_url == ""
 
 
 def test_registry_registers_qwen_provider() -> None:
