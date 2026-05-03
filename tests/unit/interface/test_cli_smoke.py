@@ -916,7 +916,7 @@ def test_run_command_ctrl_c_cancels_active_runtime_session(capsys: Any) -> None:
     assert "Interrupted current run." in capsys.readouterr().err
 
 
-def test_run_command_accepts_agent_skills_max_steps_and_provider_stream_flags() -> None:
+def test_run_command_accepts_agent_skills_model_max_steps_and_provider_stream_flags() -> None:
     cli = importlib.import_module("voidcode.cli")
     workspace = Path("/tmp/demo-workspace")
     config = SimpleNamespace(approval_mode="allow")
@@ -929,7 +929,9 @@ def test_run_command_accepts_agent_skills_max_steps_and_provider_stream_flags() 
         _make_chunk(session_id="demo-session", status="completed", output="done\n"),
     )
 
-    with patch.object(cli, "load_runtime_config", autospec=True, return_value=config):
+    with patch.object(
+        cli, "load_runtime_config", autospec=True, return_value=config
+    ) as load_config:
         with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
             runtime_class.return_value.run_stream.return_value = iter(chunks)
             result = cli.main(
@@ -940,6 +942,8 @@ def test_run_command_accepts_agent_skills_max_steps_and_provider_stream_flags() 
                     str(workspace),
                     "--agent",
                     "product",
+                    "--model",
+                    "deepseek/deepseek-v4-pro",
                     "--skills",
                     "demo",
                     "review",
@@ -950,6 +954,12 @@ def test_run_command_accepts_agent_skills_max_steps_and_provider_stream_flags() 
             )
 
     assert result == 0
+    load_config.assert_called_once_with(
+        workspace,
+        approval_mode=None,
+        model="deepseek/deepseek-v4-pro",
+        reasoning_effort=None,
+    )
     runtime_class.return_value.run_stream.assert_called_once()
     request = runtime_class.return_value.run_stream.call_args.args[0]
     assert request.prompt == "read README.md"
@@ -1103,6 +1113,28 @@ def test_run_trace_streams_model_text_todos_and_tool_output(capsys: Any) -> None
                 "graph.provider_stream",
                 source="graph",
                 kind="delta",
+                channel="reasoning",
+                text="Need to confirm ",
+            ),
+        ),
+        _make_chunk(
+            session_id="trace-session",
+            status="running",
+            event=_runtime_event(
+                "graph.provider_stream",
+                source="graph",
+                kind="delta",
+                channel="reasoning",
+                text="the environment first.",
+            ),
+        ),
+        _make_chunk(
+            session_id="trace-session",
+            status="running",
+            event=_runtime_event(
+                "graph.provider_stream",
+                source="graph",
+                kind="delta",
                 channel="text",
                 text="I will create the file.\n",
             ),
@@ -1155,7 +1187,9 @@ def test_run_trace_streams_model_text_todos_and_tool_output(capsys: Any) -> None
     with patch.object(cli, "load_runtime_config", autospec=True, return_value=config):
         with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
             runtime_class.return_value.run_stream.return_value = iter(chunks)
-            result = cli.main(["run", "write sample", "--workspace", str(workspace), "--trace"])
+            result = cli.main(
+                ["run", "write sample", "--workspace", str(workspace), "--trace", "--show-thinking"]
+            )
 
     captured = capsys.readouterr()
     request = runtime_class.return_value.run_stream.call_args.args[0]
@@ -1163,6 +1197,7 @@ def test_run_trace_streams_model_text_todos_and_tool_output(capsys: Any) -> None
     assert result == 0
     assert request.metadata["provider_stream"] is True
     assert "● Model turn 1: opencode-go · glm-5.1" in captured.out
+    assert "[thinking] Need to confirm the environment first." in captured.out
     assert "I will create the file." in captured.out
     assert "TODO" in captured.out
     assert "  [x] Create sample file" in captured.out
@@ -1174,6 +1209,100 @@ def test_run_trace_streams_model_text_todos_and_tool_output(capsys: Any) -> None
     assert "Result\ndone" in captured.out
     assert "EVENT graph.provider_stream" not in captured.out
     assert captured.err == ""
+
+
+def test_run_trace_hides_reasoning_without_show_thinking(capsys: Any) -> None:
+    cli = importlib.import_module("voidcode.cli")
+    workspace = Path("/tmp/demo-workspace")
+    config = SimpleNamespace(approval_mode="allow")
+    chunks = (
+        _make_chunk(
+            session_id="trace-session",
+            status="running",
+            event=_runtime_event(
+                "graph.model_turn",
+                source="graph",
+                turn=1,
+                provider="deepseek",
+                model="deepseek-v4-pro",
+            ),
+        ),
+        _make_chunk(
+            session_id="trace-session",
+            status="running",
+            event=_StubEvent(
+                sequence=1,
+                event_type="runtime.reasoning_part",
+                source="runtime",
+                payload={"type": "reasoning", "text_omitted": True, "visibility": "hidden"},
+            ),
+        ),
+        _make_chunk(session_id="trace-session", status="completed", output="done\n"),
+    )
+
+    with patch.object(cli, "load_runtime_config", autospec=True, return_value=config):
+        with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+            runtime_class.return_value.run_stream.return_value = iter(chunks)
+            result = cli.main(["run", "think", "--workspace", str(workspace), "--trace"])
+
+    captured = capsys.readouterr()
+
+    assert result == 0
+    assert "[thinking]" not in captured.out
+    assert "text_omitted" not in captured.out
+
+
+def test_run_trace_shows_reasoning_with_show_thinking(capsys: Any) -> None:
+    cli = importlib.import_module("voidcode.cli")
+    workspace = Path("/tmp/demo-workspace")
+    config = SimpleNamespace(approval_mode="allow")
+    chunks = (
+        _make_chunk(
+            session_id="trace-session",
+            status="running",
+            event=_runtime_event(
+                "graph.model_turn",
+                source="graph",
+                turn=1,
+                provider="deepseek",
+                model="deepseek-v4-pro",
+            ),
+        ),
+        _make_chunk(
+            session_id="trace-session",
+            status="running",
+            event=_StubEvent(
+                sequence=1,
+                event_type="runtime.reasoning_part",
+                source="runtime",
+                payload=runtime_reasoning_part_payload(text="Check SDL3 and "),
+            ),
+        ),
+        _make_chunk(
+            session_id="trace-session",
+            status="running",
+            event=_StubEvent(
+                sequence=2,
+                event_type="runtime.reasoning_part",
+                source="runtime",
+                payload=runtime_reasoning_part_payload(text="Vulkan availability."),
+            ),
+        ),
+        _make_chunk(session_id="trace-session", status="completed", output="done\n"),
+    )
+
+    with patch.object(cli, "load_runtime_config", autospec=True, return_value=config):
+        with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+            runtime_class.return_value.run_stream.return_value = iter(chunks)
+            result = cli.main(
+                ["run", "think", "--workspace", str(workspace), "--trace", "--show-thinking"]
+            )
+
+    captured = capsys.readouterr()
+
+    assert result == 0
+    assert "[thinking] Check SDL3 and Vulkan availability." in captured.out
+    assert "[thinking] Check SDL3 and \n" not in captured.out
 
 
 def test_run_trace_respects_explicit_no_provider_stream() -> None:

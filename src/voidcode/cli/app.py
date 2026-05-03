@@ -200,9 +200,11 @@ def _handle_run_command(args: argparse.Namespace) -> int:
         raise _CliUsageError("--json and --trace cannot be used together")
     show_thinking = cast(bool, getattr(args, "show_thinking", False))
     cli_reasoning_effort = cast(str | None, getattr(args, "reasoning_effort", None))
+    cli_model = cast(str | None, getattr(args, "model", None))
     config = load_runtime_config(
         workspace,
         approval_mode=cast(PermissionDecision | None, getattr(args, "approval_mode", None)),
+        model=cli_model,
         reasoning_effort=cli_reasoning_effort,
     )
     runtime = VoidCodeRuntime(workspace=workspace, config=config)
@@ -494,6 +496,7 @@ class _TracePrinter:
     def __init__(self, *, show_thinking: bool = False) -> None:
         self._show_thinking = show_thinking
         self._model_text_open = False
+        self._reasoning_open = False
 
     def handle_event(self, event: EventEnvelope) -> None:
         payload = redact_reasoning_payload(
@@ -502,7 +505,7 @@ class _TracePrinter:
             show_thinking=self._show_thinking,
         )
         if event.event_type == "graph.model_turn":
-            self._close_model_text()
+            self._close_open_streams()
             provider = _trace_string(payload.get("provider"))
             model = _trace_string(payload.get("model"))
             turn = payload.get("turn")
@@ -513,56 +516,83 @@ class _TracePrinter:
                 print(f"\n● Model turn {turn}", flush=True)
             return
         if event.event_type == "graph.provider_stream":
-            if _trace_string(payload.get("channel")) == "text" and payload.get("kind") in {
+            channel = _trace_string(payload.get("channel"))
+            if channel == "text" and payload.get("kind") in {
                 "delta",
                 "content",
             }:
                 text = _trace_string(payload.get("text"))
                 if text:
+                    self._close_reasoning_text()
                     print(text, end="", flush=True)
                     self._model_text_open = True
+            elif channel == "reasoning" and payload.get("kind") in {"delta", "content"}:
+                text = _trace_string(payload.get("text"))
+                if text:
+                    self._print_reasoning_text(text)
+            return
+        if event.event_type == "runtime.reasoning_part":
+            text = _trace_string(payload.get("text"))
+            if text:
+                self._print_reasoning_text(text)
             return
         if event.event_type == "graph.tool_request_created":
-            self._close_model_text()
+            self._close_open_streams()
             _print_trace_tool_request(payload)
             return
         if event.event_type == "runtime.tool_started":
-            self._close_model_text()
+            self._close_open_streams()
             _print_trace_tool_started(payload)
             return
         if event.event_type == "runtime.tool_progress":
-            self._close_model_text()
+            self._close_open_streams()
             _print_trace_tool_progress(payload)
             return
         if event.event_type == "runtime.tool_completed":
-            self._close_model_text()
+            self._close_open_streams()
             _print_trace_tool_completed(payload)
             return
         if event.event_type == "runtime.todo_updated":
-            self._close_model_text()
+            self._close_open_streams()
             _print_trace_todos(payload)
             return
         if event.event_type == "runtime.approval_requested":
-            self._close_model_text()
+            self._close_open_streams()
             tool = _trace_string(payload.get("tool")) or "tool"
             target = _trace_string(payload.get("target_summary"))
             suffix = f" for {target}" if target else ""
             print(f"\n⚠ Approval required: {tool}{suffix}", flush=True)
             return
         if event.event_type == "runtime.question_requested":
-            self._close_model_text()
+            self._close_open_streams()
             count = payload.get("question_count")
             print(f"\n? Question required: {count or 1} prompt(s)", flush=True)
             return
         if event.event_type == "runtime.failed":
-            self._close_model_text()
+            self._close_open_streams()
             error = _trace_string(payload.get("error")) or "runtime failed"
             print(f"\n✖ Failed: {error}", flush=True)
+
+    def _close_open_streams(self) -> None:
+        self._close_model_text()
+        self._close_reasoning_text()
 
     def _close_model_text(self) -> None:
         if self._model_text_open:
             print(flush=True)
             self._model_text_open = False
+
+    def _close_reasoning_text(self) -> None:
+        if self._reasoning_open:
+            print(flush=True)
+            self._reasoning_open = False
+
+    def _print_reasoning_text(self, text: str) -> None:
+        self._close_model_text()
+        if not self._reasoning_open:
+            print("[thinking] ", end="", flush=True)
+            self._reasoning_open = True
+        print(text, end="", flush=True)
 
 
 def _print_trace_tool_request(payload: dict[str, object]) -> None:
@@ -2463,6 +2493,7 @@ def tui(workspace: Path, approval_mode: str | None) -> int:
     "--agent",
     help="Select a top-level or local custom agent preset for this run.",
 )
+@click.option("--model", help="Override the provider/model for this run.")
 @click.option("--skills", multiple=True, help="Optional skill names applied for this run.")
 @click.option("--max-steps", type=int, help="Optional max graph steps override for this run.")
 @click.option(
@@ -2487,6 +2518,7 @@ def run(
     session_id: str | None,
     approval_mode: str | None,
     agent: str | None,
+    model: str | None,
     skills: tuple[str, ...],
     max_steps: int | None,
     reasoning_effort: str | None,
@@ -2504,6 +2536,7 @@ def run(
             session_id=session_id,
             approval_mode=approval_mode,
             agent=agent,
+            model=model,
             skills=list(skills),
             max_steps=max_steps,
             reasoning_effort=reasoning_effort,

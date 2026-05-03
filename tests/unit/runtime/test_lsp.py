@@ -1001,3 +1001,131 @@ def test_lsp_tool_builds_same_text_document_position_wire_shape(tmp_path: Path) 
         "textDocument": {"uri": sample_file.resolve().as_uri()},
         "position": {"line": 1, "character": 2},
     }
+
+
+def test_lsp_tool_accepts_opencode_style_operation_aliases(tmp_path: Path) -> None:
+    sample_file = tmp_path / "sample.py"
+    sample_file.write_text("x = 1\n", encoding="utf-8")
+
+    class _StubResponse:
+        def __init__(self, response: dict[str, object]) -> None:
+            self.response = response
+
+    captured: dict[str, object] = {}
+
+    def _requester(
+        *,
+        server_name: str | None,
+        method: str,
+        params: dict[str, object],
+        workspace: Path,
+    ) -> _StubResponse:
+        captured["server_name"] = server_name
+        captured["method"] = method
+        captured["params"] = params
+        captured["workspace"] = workspace
+        return _StubResponse({"result": {"ok": True}})
+
+    tool_module = import_module("voidcode.tools.lsp")
+    tool = tool_module.LspTool(requester=_requester)
+
+    result = tool.invoke(
+        ToolCall(
+            tool_name="lsp",
+            arguments={
+                "operation": "goToDefinition",
+                "filePath": "sample.py",
+                "line": 1,
+                "character": 1,
+            },
+        ),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert captured["method"] == "textDocument/definition"
+
+
+def test_lsp_tool_accepts_workspace_symbol_query_without_position(tmp_path: Path) -> None:
+    sample_file = tmp_path / "sample.py"
+    sample_file.write_text("x = 1\n", encoding="utf-8")
+
+    class _StubResponse:
+        def __init__(self, response: dict[str, object]) -> None:
+            self.response = response
+
+    captured: dict[str, object] = {}
+
+    def _requester(
+        *,
+        server_name: str | None,
+        method: str,
+        params: dict[str, object],
+        workspace: Path,
+    ) -> _StubResponse:
+        captured["method"] = method
+        captured["params"] = params
+        captured["workspace"] = workspace
+        return _StubResponse({"result": {"ok": True}})
+
+    tool_module = import_module("voidcode.tools.lsp")
+    tool = tool_module.LspTool(requester=_requester)
+
+    result = tool.invoke(
+        ToolCall(
+            tool_name="lsp",
+            arguments={
+                "operation": "workspaceSymbol",
+                "filePath": "sample.py",
+                "query": "Sample",
+            },
+        ),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert captured["method"] == "workspace/symbol"
+    assert captured["workspace"] == tmp_path.resolve()
+    assert captured["params"] == {"query": "Sample"}
+
+
+def test_lsp_tool_accepts_document_symbol_without_position(tmp_path: Path) -> None:
+    sample_file = tmp_path / "sample.py"
+    sample_file.write_text("x = 1\n", encoding="utf-8")
+
+    class _StubResponse:
+        def __init__(self, response: dict[str, object]) -> None:
+            self.response = response
+
+    captured: dict[str, object] = {}
+
+    def _requester(
+        *,
+        server_name: str | None,
+        method: str,
+        params: dict[str, object],
+        workspace: Path,
+    ) -> _StubResponse:
+        captured["method"] = method
+        captured["params"] = params
+        return _StubResponse({"result": {"ok": True}})
+
+    tool_module = import_module("voidcode.tools.lsp")
+    tool = tool_module.LspTool(requester=_requester)
+
+    result = tool.invoke(
+        ToolCall(
+            tool_name="lsp",
+            arguments={
+                "operation": "documentSymbol",
+                "filePath": "sample.py",
+            },
+        ),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert captured["method"] == "textDocument/documentSymbol"
+    assert captured["params"] == {
+        "textDocument": {"uri": sample_file.resolve().as_uri()},
+    }
