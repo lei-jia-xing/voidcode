@@ -71,7 +71,7 @@ pytestmark = pytest.mark.usefixtures("_force_deterministic_engine_default")
 
 
 @pytest.fixture
-def _force_deterministic_engine_default(  # pyright: ignore[reportUnusedFunction]
+def _force_deterministic_engine_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("VOIDCODE_EXECUTION_ENGINE", "deterministic")
@@ -93,6 +93,7 @@ class _StubGraph:
         *,
         session: SessionState,
     ) -> GraphStep:
+        _ = session
         if not tool_results:
             return _StubStep(
                 tool_call=ToolCall(
@@ -467,7 +468,7 @@ def test_runtime_uses_session_local_tools_config_when_registry_was_disabled(
         config=RuntimeConfig(execution_engine="deterministic"),
         permission_policy=PermissionPolicy(mode="allow"),
     )
-    effective_config = runtime._effective_runtime_config_from_metadata(  # pyright: ignore[reportPrivateUsage]
+    effective_config = runtime._effective_runtime_config_from_metadata(
         {
             "runtime_config": {
                 "execution_engine": "deterministic",
@@ -476,11 +477,9 @@ def test_runtime_uses_session_local_tools_config_when_registry_was_disabled(
         }
     )
 
-    registry = runtime._tool_registry_for_effective_config(  # pyright: ignore[reportPrivateUsage]
-        effective_config
-    )
+    registry = runtime._tool_registry_for_effective_config(effective_config)
 
-    assert "local/echo" not in runtime._base_tool_registry.tools  # pyright: ignore[reportPrivateUsage]
+    assert "local/echo" not in runtime._base_tool_registry.tools
     assert "local/echo" in registry.tools
 
 
@@ -497,7 +496,7 @@ def test_runtime_uses_session_local_tools_config_when_registry_was_enabled(
         ),
         permission_policy=PermissionPolicy(mode="allow"),
     )
-    effective_config = runtime._effective_runtime_config_from_metadata(  # pyright: ignore[reportPrivateUsage]
+    effective_config = runtime._effective_runtime_config_from_metadata(
         {
             "runtime_config": {
                 "execution_engine": "deterministic",
@@ -506,11 +505,9 @@ def test_runtime_uses_session_local_tools_config_when_registry_was_enabled(
         }
     )
 
-    registry = runtime._tool_registry_for_effective_config(  # pyright: ignore[reportPrivateUsage]
-        effective_config
-    )
+    registry = runtime._tool_registry_for_effective_config(effective_config)
 
-    assert "local/echo" not in runtime._base_tool_registry.tools  # pyright: ignore[reportPrivateUsage]
+    assert "local/echo" not in runtime._base_tool_registry.tools
     assert "local/echo" not in registry.tools
 
 
@@ -945,11 +942,9 @@ def test_runtime_includes_opted_in_local_custom_tools(tmp_path: Path) -> None:
         ),
     )
 
-    registry = runtime._tool_registry_for_effective_config(  # pyright: ignore[reportPrivateUsage]
-        runtime._initial_effective_config  # pyright: ignore[reportPrivateUsage]
-    )
+    registry = runtime._tool_registry_for_effective_config(runtime._initial_effective_config)
 
-    assert "local/echo" not in runtime._base_tool_registry.tools  # pyright: ignore[reportPrivateUsage]
+    assert "local/echo" not in runtime._base_tool_registry.tools
     assert "local/echo" in registry.tools
 
 
@@ -964,12 +959,10 @@ def test_runtime_persists_top_level_local_tools_config(tmp_path: Path) -> None:
         ),
     )
 
-    metadata = runtime._runtime_config_metadata()  # pyright: ignore[reportPrivateUsage]
+    metadata = runtime._runtime_config_metadata()
 
     assert metadata["tools"] == {"local": {"enabled": True, "path": ".voidcode/tools"}}
-    effective = runtime._effective_runtime_config_from_metadata(  # pyright: ignore[reportPrivateUsage]
-        {"runtime_config": metadata}
-    )
+    effective = runtime._effective_runtime_config_from_metadata({"runtime_config": metadata})
     assert effective.tools == RuntimeToolsConfig(
         local=RuntimeToolsLocalConfig(enabled=True, path=".voidcode/tools")
     )
@@ -987,9 +980,7 @@ def test_runtime_rejects_local_custom_tool_name_collisions(tmp_path: Path) -> No
     )
 
     with pytest.raises(ValueError, match="duplicate tool definition: grep"):
-        _ = runtime._tool_registry_for_effective_config(  # pyright: ignore[reportPrivateUsage]
-            runtime._initial_effective_config  # pyright: ignore[reportPrivateUsage]
-        )
+        _ = runtime._tool_registry_for_effective_config(runtime._initial_effective_config)
 
 
 def test_local_custom_tool_provider_rejects_invalid_input_schema(tmp_path: Path) -> None:
@@ -1294,7 +1285,7 @@ def test_runtime_default_registry_behavior_remains_unchanged(tmp_path: Path) -> 
     sample_file = tmp_path / "sample.txt"
     _ = sample_file.write_text("alpha beta\n", encoding="utf-8")
     runtime = VoidCodeRuntime(workspace=tmp_path, graph=_StubGraph())
-    base_registry = runtime._base_tool_registry  # pyright: ignore[reportPrivateUsage]
+    base_registry = runtime._base_tool_registry
 
     assert "format_file" in base_registry.tools
 
@@ -1315,7 +1306,7 @@ def test_runtime_default_registry_behavior_remains_unchanged(tmp_path: Path) -> 
 
 def test_runtime_default_registry_includes_runtime_backed_agent_tools(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(workspace=tmp_path, graph=_StubGraph())
-    base_registry = runtime._base_tool_registry  # pyright: ignore[reportPrivateUsage]
+    base_registry = runtime._base_tool_registry
 
     assert isinstance(base_registry.resolve("skill"), SkillTool)
     assert isinstance(base_registry.resolve("task"), TaskTool)

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-# pyright: reportUnusedFunction=false
 import asyncio
 import importlib
 import json
@@ -12,10 +11,13 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Protocol, cast
+from typing import Any, Protocol, cast
 from unittest.mock import patch
 
 import pytest
+
+from voidcode.runtime.contracts import RuntimeNotification
+from voidcode.runtime.task import StoredBackgroundTaskSummary
 
 pytestmark = pytest.mark.usefixtures("_force_deterministic_engine_default")
 
@@ -51,13 +53,13 @@ class EventLike(Protocol):
 class StreamChunkLike(Protocol):
     kind: str
     session: SessionLike
-    event: EventLike | None
+    event: object | None
     output: str | None
 
 
 class RuntimeResponseLike(Protocol):
     session: SessionLike
-    events: tuple[EventLike, ...]
+    events: tuple[object, ...]
     output: str | None
 
 
@@ -308,6 +310,11 @@ def test_transport_agents_endpoint_serializes_stable_summary_fields() -> None:
     RuntimeTransportApp = runtime_http.RuntimeTransportApp
 
     class AgentSummaryRuntime:
+        def acknowledge_notification(self, *, notification_id: str) -> RuntimeNotification:
+            raise AssertionError(
+                f"acknowledge_notification should not be called: {notification_id}"
+            )
+
         def list_agent_summaries(self) -> tuple[object, ...]:
             return (
                 AgentSummary(
@@ -326,7 +333,7 @@ def test_transport_agents_endpoint_serializes_stable_summary_fields() -> None:
                 ),
             )
 
-    app = RuntimeTransportApp(runtime_factory=AgentSummaryRuntime)
+    app = RuntimeTransportApp(runtime_factory=cast(Any, AgentSummaryRuntime))
 
     response = _run_app(app, method="GET", path="/api/agents")
 
@@ -356,6 +363,11 @@ def test_transport_session_cancel_endpoint_calls_runtime_cancel_session() -> Non
     class SessionCancelRuntime:
         calls: list[tuple[str, str | None, str | None]] = []
 
+        def acknowledge_notification(self, *, notification_id: str) -> RuntimeNotification:
+            raise AssertionError(
+                f"acknowledge_notification should not be called: {notification_id}"
+            )
+
         def cancel_session(
             self,
             session_id: str,
@@ -371,7 +383,7 @@ def test_transport_session_cancel_endpoint_calls_runtime_cancel_session() -> Non
                 reason=reason,
             )
 
-    app = RuntimeTransportApp(runtime_factory=SessionCancelRuntime)
+    app = RuntimeTransportApp(runtime_factory=cast(Any, SessionCancelRuntime))
 
     response = _run_app(
         app,
@@ -397,9 +409,12 @@ def test_transport_session_cancel_endpoint_rejects_non_post() -> None:
     RuntimeTransportApp = runtime_http.RuntimeTransportApp
 
     class SessionCancelRuntime:
-        pass
+        def acknowledge_notification(self, *, notification_id: str) -> RuntimeNotification:
+            raise AssertionError(
+                f"acknowledge_notification should not be called: {notification_id}"
+            )
 
-    app = RuntimeTransportApp(runtime_factory=SessionCancelRuntime)
+    app = RuntimeTransportApp(runtime_factory=cast(Any, SessionCancelRuntime))
 
     response = _run_app(app, method="GET", path="/api/sessions/session-cancel/cancel")
 
@@ -730,7 +745,7 @@ def test_create_runtime_app_forwards_config_to_default_runtime_factory(tmp_path:
             raise AssertionError(f"resume should not be called: {session_id}")
 
     with patch.object(runtime_module, "VoidCodeRuntime", StubRuntime):
-        app = runtime_module.create_runtime_app(workspace=tmp_path, config=config)
+        app = runtime_module.create_runtime_app(workspace=tmp_path, config=cast(Any, config))
         _ = app._runtime_factory()
 
     assert captured == [(tmp_path, config)]
@@ -771,7 +786,7 @@ def test_transport_closes_request_scoped_runtime_after_list_sessions(tmp_path: P
         def list_notifications(self) -> tuple[object, ...]:
             raise AssertionError("list_notifications should not be called")
 
-        def acknowledge_notification(self, *, notification_id: str) -> object:
+        def acknowledge_notification(self, *, notification_id: str) -> RuntimeNotification:
             raise AssertionError(
                 f"acknowledge_notification should not be called: {notification_id}"
             )
@@ -922,10 +937,10 @@ def test_transport_reads_session_result_with_transcript(tmp_path: Path) -> None:
     assert payload["summary"] == "Completed: result payload"
     assert payload["output"] == "result payload"
     assert payload["error"] is None
-    assert payload["last_event_sequence"] == stored.events[-1].sequence
+    assert payload["last_event_sequence"] == cast(Any, stored.events[-1]).sequence
     assert [
         event["event_type"] for event in cast(list[dict[str, object]], payload["transcript"])
-    ] == [event.event_type for event in stored.events]
+    ] == [cast(Any, event).event_type for event in stored.events]
 
 
 def test_transport_session_result_redacts_reasoning_until_query_opt_in() -> None:
@@ -961,10 +976,15 @@ def test_transport_session_result_redacts_reasoning_until_query_opt_in() -> None
             assert session_id == "reasoning-session"
             return result
 
-        def __exit__(self, *args: object) -> None:
+        def acknowledge_notification(self, *, notification_id: str) -> RuntimeNotification:
+            raise AssertionError(
+                f"acknowledge_notification should not be called: {notification_id}"
+            )
+
+        def __exit__(self, *_: object) -> None:
             return None
 
-    app = runtime_http.RuntimeTransportApp(runtime_factory=ReasoningResultRuntime)
+    app = runtime_http.RuntimeTransportApp(runtime_factory=cast(Any, ReasoningResultRuntime))
 
     redacted_response = _run_app(
         app,
@@ -1020,10 +1040,15 @@ def test_transport_resume_response_redacts_reasoning_until_query_opt_in() -> Non
             assert session_id == "reasoning-session"
             return response
 
-        def __exit__(self, *args: object) -> None:
+        def acknowledge_notification(self, *, notification_id: str) -> RuntimeNotification:
+            raise AssertionError(
+                f"acknowledge_notification should not be called: {notification_id}"
+            )
+
+        def __exit__(self, *_: object) -> None:
             return None
 
-    app = runtime_http.RuntimeTransportApp(runtime_factory=ReasoningResumeRuntime)
+    app = runtime_http.RuntimeTransportApp(runtime_factory=cast(Any, ReasoningResumeRuntime))
 
     redacted_response = _run_app(
         app,
@@ -1083,10 +1108,15 @@ def test_transport_run_stream_ignores_show_thinking_request_metadata() -> None:
                 output="answer",
             )
 
-        def __exit__(self, *args: object) -> None:
+        def acknowledge_notification(self, *, notification_id: str) -> RuntimeNotification:
+            raise AssertionError(
+                f"acknowledge_notification should not be called: {notification_id}"
+            )
+
+        def __exit__(self, *_: object) -> None:
             return None
 
-    app = runtime_http.RuntimeTransportApp(runtime_factory=ReasoningRunRuntime)
+    app = runtime_http.RuntimeTransportApp(runtime_factory=cast(Any, ReasoningRunRuntime))
     body = json.dumps(
         {
             "prompt": "think",
@@ -1166,10 +1196,15 @@ def test_transport_background_task_output_redacts_reasoning_until_query_opt_in()
             assert session_id == "child-session"
             return session_result
 
-        def __exit__(self, *args: object) -> None:
+        def acknowledge_notification(self, *, notification_id: str) -> RuntimeNotification:
+            raise AssertionError(
+                f"acknowledge_notification should not be called: {notification_id}"
+            )
+
+        def __exit__(self, *_: object) -> None:
             return None
 
-    app = runtime_http.RuntimeTransportApp(runtime_factory=ReasoningTaskRuntime)
+    app = runtime_http.RuntimeTransportApp(runtime_factory=cast(Any, ReasoningTaskRuntime))
 
     redacted_response = _run_app(
         app,
@@ -1222,7 +1257,7 @@ def test_transport_reads_session_debug_snapshot(tmp_path: Path) -> None:
     assert payload["resume_checkpoint_kind"] == "terminal"
     assert payload["pending_approval"] is None
     assert payload["pending_question"] is None
-    assert payload["last_event_sequence"] == stored.events[-1].sequence
+    assert payload["last_event_sequence"] == cast(Any, stored.events[-1]).sequence
     assert (
         cast(dict[str, object], payload["last_relevant_event"])["event_type"]
         == "graph.response_ready"
@@ -1263,7 +1298,7 @@ def test_transport_resolves_pending_approval_allow_over_http(tmp_path: Path) -> 
     waiting = runtime.run(
         runtime_request(prompt="write danger.txt approved later", session_id="approval-session")
     )
-    approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
+    approval_request_id = cast(str, cast(Any, waiting.events[-1]).payload["request_id"])
 
     app = create_runtime_app(
         workspace=tmp_path,
@@ -1376,18 +1411,21 @@ def test_transport_round_trips_parent_session_lineage(tmp_path: Path) -> None:
         def run_stream(self, request: RuntimeRequestLike) -> Iterator[StreamChunkLike]:
             assert request.prompt == "child task"
             assert getattr(request, "parent_session_id", None) == "leader-session"
-            yield runtime_module.RuntimeStreamChunk(
-                kind="output",
-                session=runtime_module.SessionState(
-                    session=runtime_module.SessionRef(
-                        id="child-session",
-                        parent_id="leader-session",
+            yield cast(
+                StreamChunkLike,
+                runtime_module.RuntimeStreamChunk(
+                    kind="output",
+                    session=runtime_module.SessionState(
+                        session=runtime_module.SessionRef(
+                            id="child-session",
+                            parent_id="leader-session",
+                        ),
+                        status="completed",
+                        turn=1,
+                        metadata={},
                     ),
-                    status="completed",
-                    turn=1,
-                    metadata={},
+                    output="done",
                 ),
-                output="done",
             )
 
         def list_sessions(self) -> tuple[StoredSessionSummaryLike, ...]:
@@ -1701,7 +1739,7 @@ def test_transport_resolves_pending_approval_deny_over_http(tmp_path: Path) -> N
     waiting = runtime.run(
         runtime_request(prompt="write danger.txt denied later", session_id="deny-session")
     )
-    approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
+    approval_request_id = cast(str, cast(Any, waiting.events[-1]).payload["request_id"])
 
     app = create_runtime_app(
         workspace=tmp_path,
@@ -2126,7 +2164,7 @@ def test_transport_answers_pending_question_over_http(tmp_path: Path) -> None:
         def list_notifications(self) -> tuple[object, ...]:
             raise AssertionError("list_notifications should not be called")
 
-        def acknowledge_notification(self, *, notification_id: str) -> object:
+        def acknowledge_notification(self, *, notification_id: str) -> RuntimeNotification:
             raise AssertionError(
                 f"acknowledge_notification should not be called: {notification_id}"
             )
@@ -2147,23 +2185,26 @@ def test_transport_answers_pending_question_over_http(tmp_path: Path) -> None:
             response = cast(QuestionResponseLike, responses[0])
             assert response.header == "Runtime path"
             assert response.answers == ("Reuse existing",)
-            return runtime_module.RuntimeResponse(
-                session=runtime_module.SessionState(
-                    session=runtime_module.SessionRef(id="question-session"),
-                    status="completed",
-                    turn=1,
-                    metadata={"workspace": str(tmp_path)},
-                ),
-                events=(
-                    runtime_module.EventEnvelope(
-                        session_id="question-session",
-                        sequence=1,
-                        event_type="runtime.question_answered",
-                        source="runtime",
-                        payload={"request_id": "question-1"},
+            return cast(
+                RuntimeResponseLike,
+                runtime_module.RuntimeResponse(
+                    session=runtime_module.SessionState(
+                        session=runtime_module.SessionRef(id="question-session"),
+                        status="completed",
+                        turn=1,
+                        metadata={"workspace": str(tmp_path)},
                     ),
+                    events=(
+                        runtime_module.EventEnvelope(
+                            session_id="question-session",
+                            sequence=1,
+                            event_type="runtime.question_answered",
+                            source="runtime",
+                            payload={"request_id": "question-1"},
+                        ),
+                    ),
+                    output="done",
                 ),
-                output="done",
             )
 
     app = create_runtime_app(workspace=tmp_path, runtime_factory=lambda: StubRuntime())
@@ -2211,7 +2252,7 @@ def test_transport_returns_not_found_for_missing_pending_question(tmp_path: Path
         def list_notifications(self) -> tuple[object, ...]:
             raise AssertionError("list_notifications should not be called")
 
-        def acknowledge_notification(self, *, notification_id: str) -> object:
+        def acknowledge_notification(self, *, notification_id: str) -> RuntimeNotification:
             raise AssertionError(
                 f"acknowledge_notification should not be called: {notification_id}"
             )
@@ -2997,7 +3038,7 @@ def test_transport_retries_mcp_and_returns_status_snapshot(tmp_path: Path) -> No
         def load_background_task_result(self, task_id: str) -> object:
             raise AssertionError(f"load_background_task_result should not be called: {task_id}")
 
-        def list_background_tasks(self) -> tuple[object, ...]:
+        def list_background_tasks(self) -> tuple[StoredBackgroundTaskSummary, ...]:
             return ()
 
         def list_background_tasks_by_parent_session(
@@ -3026,13 +3067,13 @@ def test_transport_retries_mcp_and_returns_status_snapshot(tmp_path: Path) -> No
             _ = provider, provider_api_key, model
             return {}
 
-        def list_provider_summaries(self) -> tuple[object, ...]:
+        def list_provider_summaries(self) -> tuple[StoredBackgroundTaskSummary, ...]:
             return ()
 
         def provider_models_result(self, provider_name: str) -> object:
             raise AssertionError(f"provider_models_result should not be called: {provider_name}")
 
-        def list_agent_summaries(self) -> tuple[object, ...]:
+        def list_agent_summaries(self) -> tuple[StoredBackgroundTaskSummary, ...]:
             return ()
 
         def current_status(self) -> object:
@@ -3084,10 +3125,10 @@ def test_transport_retries_mcp_and_returns_status_snapshot(tmp_path: Path) -> No
         def session_result(self, *, session_id: str) -> object:
             raise AssertionError(f"session_result should not be called: {session_id}")
 
-        def list_notifications(self) -> tuple[object, ...]:
+        def list_notifications(self) -> tuple[StoredBackgroundTaskSummary, ...]:
             return ()
 
-        def acknowledge_notification(self, *, notification_id: str) -> object:
+        def acknowledge_notification(self, *, notification_id: str) -> RuntimeNotification:
             raise AssertionError(
                 f"acknowledge_notification should not be called: {notification_id}"
             )
@@ -3192,7 +3233,7 @@ def test_transport_retry_mcp_value_error_returns_http_400_and_closes_runtime_onc
         def load_background_task_result(self, task_id: str) -> object:
             raise AssertionError(f"load_background_task_result should not be called: {task_id}")
 
-        def list_background_tasks(self) -> tuple[object, ...]:
+        def list_background_tasks(self) -> tuple[StoredBackgroundTaskSummary, ...]:
             return ()
 
         def list_background_tasks_by_parent_session(
@@ -3221,13 +3262,13 @@ def test_transport_retry_mcp_value_error_returns_http_400_and_closes_runtime_onc
             _ = provider, provider_api_key, model
             return {}
 
-        def list_provider_summaries(self) -> tuple[object, ...]:
+        def list_provider_summaries(self) -> tuple[StoredBackgroundTaskSummary, ...]:
             return ()
 
         def provider_models_result(self, provider_name: str) -> object:
             raise AssertionError(f"provider_models_result should not be called: {provider_name}")
 
-        def list_agent_summaries(self) -> tuple[object, ...]:
+        def list_agent_summaries(self) -> tuple[StoredBackgroundTaskSummary, ...]:
             return ()
 
         def current_status(self) -> object:
@@ -3242,10 +3283,10 @@ def test_transport_retry_mcp_value_error_returns_http_400_and_closes_runtime_onc
         def session_result(self, *, session_id: str) -> object:
             raise AssertionError(f"session_result should not be called: {session_id}")
 
-        def list_notifications(self) -> tuple[object, ...]:
+        def list_notifications(self) -> tuple[StoredBackgroundTaskSummary, ...]:
             return ()
 
-        def acknowledge_notification(self, *, notification_id: str) -> object:
+        def acknowledge_notification(self, *, notification_id: str) -> RuntimeNotification:
             raise AssertionError(
                 f"acknowledge_notification should not be called: {notification_id}"
             )
@@ -3305,10 +3346,10 @@ def test_transport_marks_review_request_active_for_workspace_switch_conflict(
                 git=GitStatusSnapshot(state="not_git_repo"),
             )
 
-        def list_sessions(self) -> tuple[object, ...]:
+        def list_sessions(self) -> tuple[StoredSessionSummaryLike, ...]:
             return ()
 
-        def list_background_tasks(self) -> tuple[object, ...]:
+        def list_background_tasks(self) -> tuple[StoredBackgroundTaskSummary, ...]:
             return ()
 
     release_open = threading.Event()
@@ -3319,7 +3360,7 @@ def test_transport_marks_review_request_active_for_workspace_switch_conflict(
 
     coordinator = SingleWorkspaceRuntimeCoordinator(
         initial_workspace=tmp_path,
-        runtime_factory=_runtime_factory,
+        runtime_factory=cast(Any, _runtime_factory),
     )
     app = RuntimeTransportApp(
         runtime_factory=lambda: coordinator.runtime(),
@@ -3409,7 +3450,7 @@ def test_transport_run_stream_continues_after_mcp_startup_failure_and_status_sta
         def current_state(self) -> object:
             return mcp_module.McpManagerState(
                 mode="managed",
-                configuration=self.configuration,
+                configuration=cast(Any, self.configuration),
                 servers={
                     "context7": mcp_module.McpServerRuntimeState(
                         server_name="context7",
@@ -3436,7 +3477,7 @@ def test_transport_run_stream_continues_after_mcp_startup_failure_and_status_sta
             _ = server_name, tool_name, arguments, workspace
             raise AssertionError("call_tool should not be used")
 
-        def shutdown(self) -> tuple[object, ...]:
+        def shutdown(self) -> tuple[StoredBackgroundTaskSummary, ...]:
             return ()
 
         def drain_events(self) -> tuple[object, ...]:
@@ -3562,7 +3603,7 @@ def test_transport_status_preserves_mcp_failed_state_across_fresh_requests(
             },
         ),
     )
-    app = create_runtime_app(workspace=tmp_path, config=config)
+    app = create_runtime_app(workspace=tmp_path, config=cast(Any, config))
 
     run_response = _run_app(
         app,

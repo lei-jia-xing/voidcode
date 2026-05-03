@@ -17,8 +17,6 @@ Day-1 delegated lifecycle surfaces covered:
 - notification lifecycle (GET/POST /api/notifications)
 """
 
-# pyright: reportUnusedFunction=false
-
 from __future__ import annotations
 
 import asyncio
@@ -71,7 +69,7 @@ class StreamChunkLike(Protocol):
 
 class RuntimeResponseLike(Protocol):
     session: SessionLike
-    events: tuple[EventLike, ...]
+    events: tuple[object, ...]
     output: str | None
 
 
@@ -429,7 +427,7 @@ def test_http_approval_resolution_resumes_waiting_child_session(tmp_path: Path) 
             parent_session_id="leader-session",
         )
     )
-    approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
+    approval_request_id = cast(str, cast(Any, waiting.events[-1]).payload["request_id"])
 
     app = create_runtime_app(
         workspace=tmp_path,
@@ -1281,23 +1279,26 @@ def test_http_question_resolution_resumes_waiting_session(tmp_path: Path) -> Non
             assert session_id == "question-session"
             assert question_request_id == "q-1"
             assert len(responses) == 1
-            return runtime_module.RuntimeResponse(
-                session=runtime_module.SessionState(
-                    session=runtime_module.SessionRef(id="question-session"),
-                    status="completed",
-                    turn=1,
-                    metadata={},
-                ),
-                events=(
-                    runtime_module.EventEnvelope(
-                        session_id="question-session",
-                        sequence=1,
-                        event_type="runtime.question_answered",
-                        source="runtime",
-                        payload={"request_id": "q-1"},
+            return cast(
+                RuntimeResponseLike,
+                runtime_module.RuntimeResponse(
+                    session=runtime_module.SessionState(
+                        session=runtime_module.SessionRef(id="question-session"),
+                        status="completed",
+                        turn=1,
+                        metadata={},
                     ),
+                    events=(
+                        runtime_module.EventEnvelope(
+                            session_id="question-session",
+                            sequence=1,
+                            event_type="runtime.question_answered",
+                            source="runtime",
+                            payload={"request_id": "q-1"},
+                        ),
+                    ),
+                    output="answered",
                 ),
-                output="answered",
             )
 
     app = create_runtime_app(workspace=tmp_path, runtime_factory=lambda: StubRuntime())
@@ -1324,7 +1325,7 @@ def test_http_settings_update_and_read(tmp_path: Path) -> None:
     create_runtime_app = _load_transport_app_factory()
     app = create_runtime_app(workspace=tmp_path)
 
-    status, _headers, body = _run_app(
+    status, _headers, _body = _run_app(
         app,
         method="POST",
         path="/api/settings",
