@@ -325,7 +325,10 @@ def runtime_config_json_schema() -> dict[str, object]:
         "$defs": {
             "commandList": {
                 "type": "array",
-                "description": "Array of commands; each command is a non-empty array of strings.",
+                "description": (
+                    "Array of commands; each command is a non-empty argv array of strings. "
+                    "Commands are executed directly without an implicit shell."
+                ),
                 "items": {
                     "type": "array",
                     "items": {"type": "string"},
