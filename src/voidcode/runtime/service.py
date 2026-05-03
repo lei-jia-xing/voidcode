@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import shlex
 import subprocess
 import threading
 from collections.abc import Callable, Iterable, Iterator, Mapping
@@ -3001,10 +3000,6 @@ class VoidCodeRuntime:
             patch_text = arguments.get("patch")
             if isinstance(patch_text, str) and patch_text:
                 candidates.extend(VoidCodeRuntime._extract_paths_from_patch(patch_text))
-        if tool_call.tool_name == "shell_exec":
-            command = arguments.get("command")
-            if isinstance(command, str):
-                candidates.extend(VoidCodeRuntime._extract_shell_path_candidates(command))
         return tuple(candidates)
 
     def _canonicalize_candidate_path(self, raw_path: str) -> Path | None:
@@ -3035,91 +3030,6 @@ class VoidCodeRuntime:
             elif line.startswith("*** Move to: "):
                 paths.append(line.removeprefix("*** Move to: ").strip())
         return tuple(path for path in paths if path)
-
-    @staticmethod
-    def _extract_shell_path_candidates(command: str) -> tuple[str, ...]:
-        try:
-            lexer = shlex.shlex(command, posix=False)
-            lexer.whitespace_split = True
-            tokens = list(lexer)
-        except ValueError:
-            tokens = command.split()
-        candidates: list[str] = []
-        for index, token in enumerate(tokens):
-            value = VoidCodeRuntime._normalize_shell_path_token(token)
-            if not value:
-                continue
-            if index == 0 and VoidCodeRuntime._looks_like_shell_executable(value):
-                continue
-            if VoidCodeRuntime._is_shell_explicit_output_path_candidate(tokens, index, value):
-                candidates.append(value)
-        return tuple(candidates)
-
-    @staticmethod
-    def _is_shell_explicit_output_path_candidate(tokens: list[str], index: int, value: str) -> bool:
-        if not VoidCodeRuntime._looks_like_shell_path_candidate(value):
-            return False
-        token = tokens[index].strip()
-        if VoidCodeRuntime._has_shell_output_redirection(token):
-            return True
-        option, has_inline_value = VoidCodeRuntime._shell_option_name(token)
-        output_options = {"--output", "--output-document", "--out", "--outfile"}
-        if option in output_options:
-            return True
-        previous = tokens[index - 1].strip() if index > 0 else ""
-        if VoidCodeRuntime._has_shell_output_redirection(previous):
-            return True
-        if previous in output_options or previous == "-o":
-            return True
-        if has_inline_value:
-            return False
-        return False
-
-    @staticmethod
-    def _has_shell_output_redirection(token: str) -> bool:
-        stripped = token.strip().lstrip("0123456789")
-        return stripped.startswith(">")
-
-    @staticmethod
-    def _shell_option_name(token: str) -> tuple[str | None, bool]:
-        stripped = token.strip().strip("\"'`")
-        if not stripped.startswith("-"):
-            return None, False
-        if "=" in stripped:
-            option, _value = stripped.split("=", 1)
-            return option, True
-        return stripped, False
-
-    @staticmethod
-    def _normalize_shell_path_token(token: str) -> str:
-        value = token.strip().strip("\"'`")
-        redirection_index = 0
-        while redirection_index < len(value) and value[redirection_index].isdigit():
-            redirection_index += 1
-        if redirection_index < len(value) and value[redirection_index] in ("<", ">"):
-            value = value[redirection_index:]
-        value = value.lstrip("<>")
-        if "=" in value:
-            _, assignment_value = value.split("=", 1)
-            assignment_value = assignment_value.strip().strip("\"'`")
-            if VoidCodeRuntime._looks_like_shell_path_candidate(assignment_value):
-                return assignment_value
-        return value
-
-    @staticmethod
-    def _looks_like_shell_path_candidate(value: str) -> bool:
-        normalized = value
-        while normalized.startswith("./") or normalized.startswith(".\\"):
-            normalized = normalized[2:]
-        if normalized.startswith(("~/", "../", "..\\", "/")):
-            return True
-        return len(normalized) >= 3 and normalized[1] == ":" and normalized[2] in ("\\", "/")
-
-    @staticmethod
-    def _looks_like_shell_executable(value: str) -> bool:
-        if value.startswith(("/", "~/")):
-            return True
-        return len(value) >= 3 and value[1] == ":" and value[2] in ("\\", "/")
 
     def list_sessions(self) -> tuple[StoredSessionSummary, ...]:
         return self._session_store.list_sessions(workspace=self._workspace)
@@ -8818,7 +8728,7 @@ def _parse_persisted_external_permission_config(
             rules=_parse_persisted_external_permission_rules(
                 payload.get("external_directory_write"),
                 field_path="permission.external_directory_write",
-                default=(("*", "deny"),),
+                default=(("*", "ask"),),
             )
         ),
         rules=_parse_persisted_pattern_permission_rules(payload.get("rules")),

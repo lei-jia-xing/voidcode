@@ -7,21 +7,21 @@ const baseProps = {
   disabled: false,
   isRunning: false,
   agentPreset: "leader" as const,
-  providerModel: "opencode-go/glm-5.1",
+  providerModel: "deepseek/deepseek-v4-pro",
   agentPresets: [{ id: "leader", label: "Leader", description: null }],
   providers: [
     {
-      name: "opencode-go",
-      label: "OpenCode",
+      name: "deepseek",
+      label: "DeepSeek",
       configured: true,
       current: true,
     },
   ],
   providerModels: {
-    "opencode-go": {
-      provider: "opencode-go",
+    deepseek: {
+      provider: "deepseek",
       configured: true,
-      models: ["opencode-go/glm-5.1", "opencode-go/glm-5.2"],
+      models: ["deepseek-v4-pro", "deepseek-v4-flash"],
       source: null,
       last_refresh_status: null,
       last_error: null,
@@ -47,7 +47,7 @@ describe("Composer", () => {
 
     const modelTrigger = screen.getByRole("button", { name: "Model" });
     expect(modelTrigger).toBeInTheDocument();
-    expect(modelTrigger).toHaveTextContent("OpenCode / glm-5.1");
+    expect(modelTrigger).toHaveTextContent("DeepSeek / deepseek-v4-pro");
   });
 
   it("keeps composer selectors accessible while rendering them as flat footer controls", () => {
@@ -73,9 +73,11 @@ describe("Composer", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Model" }));
-    fireEvent.click(screen.getByRole("button", { name: "glm-5.2" }));
+    fireEvent.click(screen.getByRole("button", { name: "deepseek-v4-flash" }));
 
-    expect(onProviderModelChange).toHaveBeenCalledWith("opencode-go/glm-5.2");
+    expect(onProviderModelChange).toHaveBeenCalledWith(
+      "deepseek/deepseek-v4-flash",
+    );
   });
 
   it("keeps selector menus above the composer shell", () => {
@@ -83,7 +85,7 @@ describe("Composer", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Model" }));
 
-    expect(screen.getByText("OpenCode").closest(".absolute")).toHaveClass(
+    expect(screen.getByText("DeepSeek").closest(".absolute")).toHaveClass(
       "z-[100]",
     );
   });
@@ -102,10 +104,10 @@ describe("Composer", () => {
         }}
         onReasoningEffortChange={onReasoningEffortChange}
         providerModels={{
-          "opencode-go": {
-            ...baseProps.providerModels["opencode-go"],
+          deepseek: {
+            ...baseProps.providerModels.deepseek,
             model_metadata: {
-              "opencode-go/glm-5.1": {
+              "deepseek-v4-pro": {
                 context_window: 198_000,
                 max_output_tokens: 128_000,
                 supports_reasoning: true,
@@ -140,10 +142,10 @@ describe("Composer", () => {
           context_window: { model_context_window_tokens: 512_000 },
         }}
         providerModels={{
-          "opencode-go": {
-            ...baseProps.providerModels["opencode-go"],
+          deepseek: {
+            ...baseProps.providerModels.deepseek,
             model_metadata: {
-              "opencode-go/glm-5.1": {
+              "deepseek-v4-pro": {
                 context_window: 198_000,
                 max_output_tokens: 128_000,
               },
@@ -162,10 +164,10 @@ describe("Composer", () => {
       <Composer
         {...baseProps}
         providerModels={{
-          "opencode-go": {
-            ...baseProps.providerModels["opencode-go"],
+          deepseek: {
+            ...baseProps.providerModels.deepseek,
             model_metadata: {
-              "opencode-go/glm-5.1": {
+              "deepseek-v4-pro": {
                 context_window: 198_000,
                 supports_reasoning: true,
                 supports_reasoning_effort: false,
@@ -243,10 +245,10 @@ describe("Composer", () => {
         {...baseProps}
         providerModel=""
         providerModels={{
-          "opencode-go": {
-            provider: "opencode-go",
+          deepseek: {
+            provider: "deepseek",
             configured: true,
-            models: ["glm-5.1"],
+            models: ["deepseek-v4-pro"],
             source: null,
             last_refresh_status: null,
             last_error: null,
@@ -258,9 +260,11 @@ describe("Composer", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Model" }));
-    fireEvent.click(screen.getByRole("button", { name: "glm-5.1" }));
+    fireEvent.click(screen.getByRole("button", { name: "deepseek-v4-pro" }));
 
-    expect(onProviderModelChange).toHaveBeenCalledWith("opencode-go/glm-5.1");
+    expect(onProviderModelChange).toHaveBeenCalledWith(
+      "deepseek/deepseek-v4-pro",
+    );
   });
 
   it("calls onAgentPresetChange when agent is changed", () => {
@@ -357,8 +361,8 @@ describe("Composer", () => {
         {...baseProps}
         providerModel=""
         providerModels={{
-          "opencode-go": {
-            provider: "opencode-go",
+          deepseek: {
+            provider: "deepseek",
             configured: true,
             models: [],
             source: null,
@@ -380,10 +384,10 @@ describe("Composer", () => {
     render(
       <Composer
         {...baseProps}
-        providerModel="opencode-go/kimi-k2.6"
+        providerModel="deepseek/deepseek-v4-pro"
         providerModels={{
-          "opencode-go": {
-            provider: "opencode-go",
+          deepseek: {
+            provider: "deepseek",
             configured: true,
             models: [],
             source: null,
@@ -395,7 +399,9 @@ describe("Composer", () => {
       />,
     );
 
-    expect(screen.queryByText("OpenCode / kimi-k2.6")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("DeepSeek / deepseek-v4-pro"),
+    ).not.toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "Model" }),
     ).not.toBeInTheDocument();
@@ -470,8 +476,8 @@ describe("Composer", () => {
         {...baseProps}
         providers={[
           {
-            name: "opencode-go",
-            label: "OpenCode",
+            name: "deepseek",
+            label: "DeepSeek",
             configured: true,
             current: true,
           },
@@ -483,10 +489,10 @@ describe("Composer", () => {
           },
         ]}
         providerModels={{
-          "opencode-go": {
-            provider: "opencode-go",
+          deepseek: {
+            provider: "deepseek",
             configured: true,
-            models: ["opencode-go/glm-5.1"],
+            models: ["deepseek-v4-pro"],
             source: null,
             last_refresh_status: null,
             last_error: null,
@@ -507,7 +513,7 @@ describe("Composer", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Model" }));
 
-    expect(screen.getByText("glm-5.1")).toBeInTheDocument();
+    expect(screen.getByText("deepseek-v4-pro")).toBeInTheDocument();
     expect(screen.getByText("glm-5")).toBeInTheDocument();
   });
 });

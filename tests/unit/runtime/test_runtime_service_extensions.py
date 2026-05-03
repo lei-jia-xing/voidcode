@@ -103,6 +103,7 @@ from voidcode.runtime.permission import (
     PatternPermissionRule,
     PendingApproval,
     PermissionPolicy,
+    evaluate_pattern_permission_rules,
 )
 from voidcode.runtime.provider_protocol import (
     ProviderExecutionError,
@@ -143,7 +144,7 @@ from voidcode.tools.runtime_context import current_runtime_tool_context
 
 _DEFAULT_PERMISSION_METADATA = {
     "external_directory_read": {"*": "ask"},
-    "external_directory_write": {"*": "deny"},
+    "external_directory_write": {"*": "ask"},
 }
 
 
@@ -180,55 +181,6 @@ def _private_attr(instance: object, name: str) -> Any:
     return getattr(instance, name)
 
 
-@pytest.mark.parametrize(
-    ("command", "expected"),
-    [
-        ("ls /etc", ()),
-        ("du -sh /var", ()),
-        ("test -f /usr/include/vulkan/vulkan.h", ()),
-        ("cat /usr/include/vulkan/vulkan.h", ()),
-        ("echo hi > /tmp/out.txt", ("/tmp/out.txt",)),
-        ("echo hi > /tmp/out.txt && cat /tmp/out.txt", ("/tmp/out.txt",)),
-        ("echo hi 2>/tmp/err.log", ("/tmp/err.log",)),
-        ("echo hi > ./../out.txt", ("./../out.txt",)),
-        ("echo hi > ././../out.txt", ("././../out.txt",)),
-        ("curl --output=/tmp/out.txt https://example.com", ("/tmp/out.txt",)),
-        ("curl -o /tmp/out.txt https://example.com", ("/tmp/out.txt",)),
-        ("curl --write-out=/tmp/format.txt https://example.com", ()),
-        ("tool --output=././../out.txt", ("././../out.txt",)),
-        ("tool --config=/etc/app.conf", ()),
-        ("tool --file=2024/report.txt", ()),
-        (r"type C:\temp\out.log", ()),
-        (
-            r"type C:\Windows\System32\drivers\etc\hosts",
-            (),
-        ),
-        ("touch /tmp/out.txt", ()),
-        ("mkdir /tmp/generated", ()),
-        ("rm /tmp/out.txt", ()),
-        ("cp /etc/input.conf /tmp/output.conf", ()),
-        ("mv /tmp/source.txt /tmp/output.txt", ()),
-        ("sudo cp /etc/input.conf /tmp/output.conf", ()),
-        ("git mv /tmp/source.txt /tmp/output.txt", ()),
-        ("cp /etc/input.conf /tmp/output.conf > /tmp/copy.log", ("/tmp/copy.log",)),
-        ("cat 2024/report.txt", ()),
-    ],
-)
-def test_runtime_extracts_shell_external_path_candidates(
-    command: str,
-    expected: tuple[str, ...],
-) -> None:
-    runtime_type = cast(Any, VoidCodeRuntime)
-    assert runtime_type._extract_shell_path_candidates(command) == expected
-
-
-def test_runtime_ignores_shell_executable_path_candidate() -> None:
-    command = f'"{sys.executable}" -c "print(1)"'
-
-    runtime_type = cast(Any, VoidCodeRuntime)
-    assert runtime_type._extract_shell_path_candidates(command) == ()
-
-
 def test_runtime_shell_read_probe_external_path_stays_workspace_scoped(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(workspace=tmp_path)
     shell_tool = ToolRegistry.with_defaults().resolve("shell_exec")
@@ -244,6 +196,44 @@ def test_runtime_shell_read_probe_external_path_stays_workspace_scoped(tmp_path:
     )
 
     assert context == ("workspace", None, "execute", ())
+
+
+def test_pattern_permission_rule_matches_shell_exec_command_segments() -> None:
+    matched = evaluate_pattern_permission_rules(
+        rules=(
+            PatternPermissionRule(
+                tool="shell_exec",
+                command="cmake*",
+                decision="allow",
+            ),
+        ),
+        tool_name="shell_exec",
+        command="which cmake ninja 2>/dev/null; cmake --version",
+    )
+
+    assert matched == (
+        "allow",
+        "permission.rules[0] tool='shell_exec' command='cmake*' decision='allow'",
+    )
+
+
+def test_pattern_permission_rule_matches_shell_exec_first_token_of_segment() -> None:
+    matched = evaluate_pattern_permission_rules(
+        rules=(
+            PatternPermissionRule(
+                tool="shell_exec",
+                command="pkg-config*",
+                decision="allow",
+            ),
+        ),
+        tool_name="shell_exec",
+        command="echo ready && pkg-config --cflags --libs sdl3",
+    )
+
+    assert matched == (
+        "allow",
+        "permission.rules[0] tool='shell_exec' command='pkg-config*' decision='allow'",
+    )
 
 
 def test_runtime_canonicalize_candidate_path_handles_unknown_user_tilde(
@@ -11106,6 +11096,57 @@ def test_runtime_effective_runtime_config_recovers_persisted_max_steps(tmp_path:
     assert effective.model == "session/model"
     assert effective.execution_engine == "deterministic"
     assert effective.max_steps == 7
+
+
+def test_runtime_effective_runtime_config_defaults_missing_persisted_external_write_to_ask(
+    tmp_path: Path,
+) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("config session\n", encoding="utf-8")
+
+    initial_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            approval_mode="allow",
+            execution_engine="deterministic",
+            model="session/model",
+        ),
+    )
+    response = initial_runtime.run(
+        RuntimeRequest(prompt="read sample.txt", session_id="persisted-missing-external-write")
+    )
+    runtime_config_metadata = cast(dict[str, object], response.session.metadata["runtime_config"])
+    permission_metadata = cast(dict[str, object], runtime_config_metadata["permission"])
+    del permission_metadata["external_directory_write"]
+
+    store = _private_attr(initial_runtime, "_session_store")
+    stored = store.load_session(
+        workspace=tmp_path,
+        session_id="persisted-missing-external-write",
+    )
+    session_metadata = dict(stored.session.metadata)
+    session_runtime_config = cast(dict[str, object], session_metadata["runtime_config"])
+    session_permission = cast(dict[str, object], session_runtime_config["permission"])
+    del session_permission["external_directory_write"]
+    store.save_run(
+        workspace=tmp_path,
+        request=RuntimeRequest(
+            prompt="read sample.txt",
+            session_id="persisted-missing-external-write",
+        ),
+        response=RuntimeResponse(
+            session=replace(stored.session, metadata=session_metadata),
+            output=stored.output,
+            events=stored.events,
+        ),
+        clear_pending_approval=False,
+    )
+
+    effective = VoidCodeRuntime(workspace=tmp_path).effective_runtime_config(
+        session_id="persisted-missing-external-write"
+    )
+
+    assert effective.permission.write.rules == (("*", "ask"),)
 
 
 def test_runtime_effective_runtime_config_recovers_persisted_tool_timeout(tmp_path: Path) -> None:

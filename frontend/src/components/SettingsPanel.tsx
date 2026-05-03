@@ -105,11 +105,6 @@ export function SettingsPanel({
     });
   };
 
-  const handleSubmit = (event: { preventDefault: () => void }) => {
-    event.preventDefault();
-    handleSave();
-  };
-
   if (!isOpen) return null;
 
   const isLoading = settingsStatus === "loading";
@@ -152,7 +147,10 @@ export function SettingsPanel({
       />
       <form
         className="relative w-full max-w-lg bg-[var(--vc-bg)] border border-[color:var(--vc-border-subtle)] rounded-2xl flex flex-col shadow-2xl max-h-[90vh]"
-        onSubmit={handleSubmit}
+        onSubmit={(event) => {
+          event.preventDefault();
+          handleSave();
+        }}
       >
         <div className="flex items-center justify-between px-6 h-14 border-b border-[color:var(--vc-border-subtle)]">
           <h2 className="text-base font-semibold text-[var(--vc-text-primary)]">
@@ -356,11 +354,12 @@ export function SettingsPanel({
             <input
               id="settings-api-key"
               type="password"
-              autoComplete="new-password"
+              autoComplete="off"
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
               placeholder={t("settings.apiKeyPlaceholder")}
               disabled={isLoading}
+              spellCheck={false}
               className="w-full bg-[var(--vc-surface-1)] border border-[color:var(--vc-border-subtle)] rounded-lg px-3 py-2.5 text-sm text-[var(--vc-text-primary)] placeholder:text-[var(--vc-text-subtle)] focus:outline-none focus:border-[color:var(--vc-border-strong)] focus:ring-1 focus:ring-[color:var(--vc-border-strong)] transition-colors disabled:opacity-50"
             />
             <p className="text-xs text-[var(--vc-text-subtle)]">

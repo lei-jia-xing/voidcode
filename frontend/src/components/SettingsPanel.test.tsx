@@ -229,6 +229,14 @@ describe("SettingsPanel", () => {
     });
   });
 
+  it("renders the API key with native password semantics", () => {
+    render(<SettingsPanel {...baseProps} />);
+
+    const apiKeyField = screen.getByLabelText("API Key");
+    expect(apiKeyField).toHaveAttribute("type", "password");
+    expect(apiKeyField).toHaveAttribute("autocomplete", "off");
+  });
+
   it("preserves existing settings provider and model on save", () => {
     const onSave = vi.fn();
     render(

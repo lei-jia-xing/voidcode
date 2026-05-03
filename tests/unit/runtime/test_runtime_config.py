@@ -227,7 +227,7 @@ def test_runtime_config_defaults_to_ask_without_file_or_env(tmp_path: Path) -> N
     assert config.background_task == RuntimeBackgroundTaskConfig()
     assert config.hooks is None
     assert config.permission.read.rules == (("*", "ask"),)
-    assert config.permission.write.rules == (("*", "deny"),)
+    assert config.permission.write.rules == (("*", "ask"),)
 
 
 def test_runtime_config_loads_external_directory_permission_rules(tmp_path: Path) -> None:
@@ -239,7 +239,7 @@ def test_runtime_config_loads_external_directory_permission_rules(tmp_path: Path
                         "~/.config/voidcode/skills/**": "allow",
                         "*": "ask",
                     },
-                    "external_directory_write": {"*": "deny"},
+                    "external_directory_write": {"*": "ask"},
                 }
             }
         ),
@@ -252,7 +252,21 @@ def test_runtime_config_loads_external_directory_permission_rules(tmp_path: Path
         ("~/.config/voidcode/skills/**", "allow"),
         ("*", "ask"),
     )
-    assert config.permission.write.rules == (("*", "deny"),)
+    assert config.permission.write.rules == (("*", "ask"),)
+
+
+def test_runtime_config_defaults_missing_external_write_rule_to_ask(tmp_path: Path) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps(
+            {"permission": {"external_directory_read": {"~/.config/voidcode/skills/**": "allow"}}}
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.permission.read.rules == (("~/.config/voidcode/skills/**", "allow"),)
+    assert config.permission.write.rules == (("*", "ask"),)
 
 
 def test_runtime_config_loads_pattern_permission_rules(tmp_path: Path) -> None:

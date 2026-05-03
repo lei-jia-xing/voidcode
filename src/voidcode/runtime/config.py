@@ -28,6 +28,7 @@ from ..hook.config import FormatterCwdPolicy, RuntimeFormatterPresetConfig, Runt
 from ..hook.presets import validate_hook_preset_refs
 from ..lsp import LspServerConfigOverride as RuntimeLspServerConfig
 from ..lsp import derive_workspace_lsp_defaults, has_builtin_lsp_server_preset
+from ..mcp.builtin import get_builtin_mcp_descriptor
 from ..provider import config as provider_config
 from ..skills import SkillRegistry, list_builtin_skills
 from .permission import (
@@ -870,7 +871,7 @@ def _parse_permission_config(raw_permission: object) -> ExternalDirectoryPermiss
     write_rules = _parse_permission_rules(
         permission_payload.get("external_directory_write"),
         field_path="permission.external_directory_write",
-        default=(("*", "deny"),),
+        default=(("*", "ask"),),
     )
     pattern_rules = _parse_pattern_permission_rules(permission_payload.get("rules"))
     return ExternalDirectoryPermissionConfig(
@@ -1777,6 +1778,25 @@ def _validation_context_field_path(info: ValidationInfo, *, default: str) -> str
     return default
 
 
+def _merge_builtin_mcp_server_defaults(
+    server_name: str,
+    raw_server: dict[str, object],
+) -> dict[str, object]:
+    descriptor = get_builtin_mcp_descriptor(server_name)
+    if descriptor is None:
+        return dict(raw_server)
+    merged = dict(raw_server)
+    if "transport" not in merged:
+        merged["transport"] = "stdio" if "command" in merged else descriptor.transport
+    if descriptor.command and merged.get("transport") == "stdio":
+        merged.setdefault("command", list(descriptor.command))
+    if descriptor.url is not None and merged.get("transport") == "remote-http":
+        merged.setdefault("url", descriptor.url)
+    if descriptor.scope:
+        merged.setdefault("scope", descriptor.scope)
+    return merged
+
+
 class _RuntimeMcpServerValidationModel(BaseModel):
     model_config = ConfigDict(extra="forbid", validate_default=True)
 
@@ -1892,27 +1912,31 @@ class _RuntimeMcpValidationModel(BaseModel):
                 raise ValueError(
                     f"runtime config field 'mcp.servers.{server_name}' must be an object"
                 )
-            _reject_unknown_config_keys(
+            server_payload = _merge_builtin_mcp_server_defaults(
+                server_name,
                 cast(dict[str, object], raw_server),
+            )
+            _reject_unknown_config_keys(
+                server_payload,
                 allowed_keys=_MCP_SERVER_CONFIG_KEYS,
                 field_path=f"mcp.servers.{server_name}",
             )
-            transport = cast(dict[str, object], raw_server).get("transport")
+            transport = server_payload.get("transport")
             if transport is None:
                 transport = "stdio"
-            if transport == "stdio" and "command" not in raw_server:
+            if transport == "stdio" and "command" not in server_payload:
                 raise ValueError(
                     f"runtime config field 'mcp.servers.{server_name}.command' is required "
                     "when transport is stdio"
                 )
-            if transport == "remote-http" and "url" not in raw_server:
+            if transport == "remote-http" and "url" not in server_payload:
                 raise ValueError(
                     f"runtime config field 'mcp.servers.{server_name}.url' is required "
                     "when transport is remote-http"
                 )
             parsed_servers[server_name] = _validate_runtime_config_model(
                 _RuntimeMcpServerValidationModel,
-                cast(dict[str, object], raw_server),
+                server_payload,
                 context={"field_path": f"mcp.servers.{server_name}"},
             )
         return parsed_servers

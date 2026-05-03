@@ -353,7 +353,7 @@ export const useAppStore = create<AppState>()(
     (set, get) => ({
       language: "en",
       agentPreset: "leader",
-      providerModel: "opencode-go/glm-5.1",
+      providerModel: "deepseek/deepseek-v4-pro",
       reasoningEffort: "",
       workspaces: null,
       workspacesStatus: "idle",
@@ -934,7 +934,9 @@ export const useAppStore = create<AppState>()(
           ),
         );
         const forwardAgentMetadata = Object.fromEntries(
-          Object.entries(rawAgentMetadata),
+          Object.entries(rawAgentMetadata).filter(
+            ([key]) => key !== "execution_engine",
+          ),
         );
 
         const modelMetadata = selectedModelMetadata(
@@ -966,7 +968,6 @@ export const useAppStore = create<AppState>()(
               get().providerModels,
             ),
             ...forwardAgentMetadata,
-            execution_engine: "provider",
           },
         };
 

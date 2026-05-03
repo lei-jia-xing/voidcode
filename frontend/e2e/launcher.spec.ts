@@ -267,28 +267,34 @@ async function installMockRuntime(page: Page) {
     route.fulfill(
       jsonResponse([
         {
-          name: "opencode-go",
-          label: "OpenCode Go",
+          name: "deepseek",
+          label: "DeepSeek",
           configured: true,
           current: true,
         },
       ]),
     ),
   );
-  await page.route("**/api/providers/opencode-go/models", async (route) =>
+  await page.route("**/api/providers/deepseek/models", async (route) =>
     route.fulfill(
       jsonResponse({
-        provider: "opencode-go",
+        provider: "deepseek",
         configured: true,
-        models: ["glm-5.1"],
+        models: ["deepseek-v4-pro", "deepseek-v4-flash"],
         source: null,
         last_refresh_status: "ok",
         last_error: null,
         discovery_mode: "configured_endpoint",
         model_metadata: {
-          "glm-5.1": {
-            context_window: 128000,
-            max_output_tokens: 8192,
+          "deepseek-v4-pro": {
+            context_window: 1000000,
+            max_output_tokens: 384000,
+            supports_reasoning_effort: true,
+            default_reasoning_effort: "medium",
+          },
+          "deepseek-v4-flash": {
+            context_window: 1000000,
+            max_output_tokens: 384000,
             supports_reasoning_effort: true,
             default_reasoning_effort: "medium",
           },
@@ -296,10 +302,10 @@ async function installMockRuntime(page: Page) {
       }),
     ),
   );
-  await page.route("**/api/providers/opencode-go/validate", async (route) =>
+  await page.route("**/api/providers/deepseek/validate", async (route) =>
     route.fulfill(
       jsonResponse({
-        provider: "opencode-go",
+        provider: "deepseek",
         configured: true,
         ok: true,
         status: "ok",
@@ -338,8 +344,8 @@ async function installMockRuntime(page: Page) {
   await page.route("**/api/settings", async (route) =>
     route.fulfill(
       jsonResponse({
-        provider: "opencode-go",
-        model: "opencode-go/glm-5.1",
+        provider: "deepseek",
+        model: "deepseek/deepseek-v4-pro",
         provider_api_key_present: true,
       }),
     ),
@@ -496,12 +502,12 @@ test.describe("VoidCode Web Launcher", () => {
     });
   });
 
-  test("should run a task using env-backed key without browser-side API key entry", async ({
+  test("should run a task using env-backed DeepSeek key without browser-side API key entry", async ({
     page,
   }) => {
     test.skip(
-      !process.env.OPENCODE_API_KEY,
-      "Skipping live smoke test because OPENCODE_API_KEY is not set in environment.",
+      !process.env.DEEPSEEK_API_KEY,
+      "Skipping live smoke test because DEEPSEEK_API_KEY is not set in environment.",
     );
 
     await page.goto(launcherUrl);
@@ -514,6 +520,9 @@ test.describe("VoidCode Web Launcher", () => {
     await expect(input).toBeVisible({ timeout: 20000 });
     await input.fill("read README.md");
     await input.press("Enter");
+
+    await expect(page.getByText("Agent Busy")).toBeVisible({ timeout: 10000 });
+    await expect(page.getByText("Agent Idle")).toBeVisible({ timeout: 60000 });
 
     await expect(page.getByText(/^Error:/)).not.toBeVisible();
 
@@ -712,7 +721,7 @@ test.describe("VoidCode Web Launcher", () => {
 
     await page.goto(launcherUrl);
     await expect(page.getByRole("button", { name: "Model" })).toHaveText(
-      /OpenCode Go/,
+      /DeepSeek/,
     );
     await expect(page.getByText("workspace", { exact: true })).toBeVisible();
 
