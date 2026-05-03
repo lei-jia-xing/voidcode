@@ -619,6 +619,48 @@ describe("ChatThread", () => {
     expect(screen.queryByText("Output")).not.toBeInTheDocument();
   });
 
+  it("navigates to the child session when the subagent session link is clicked", () => {
+    const onSelectSession = vi.fn();
+    render(
+      <ChatThread
+        {...baseProps}
+        onSelectSession={onSelectSession}
+        messages={[
+          {
+            id: "msg-1",
+            role: "assistant",
+            content: "",
+            thinking: [],
+            tools: [
+              {
+                id: "task-1",
+                name: "task",
+                status: "completed",
+                arguments: {
+                  subagent_type: "explore",
+                  run_in_background: true,
+                  load_skills: [],
+                },
+                result: {
+                  task_id: "bg_123",
+                  child_session_id: "ses_child",
+                  status: "completed",
+                },
+              },
+            ],
+            approval: null,
+            status: "completed",
+            sequence: 1,
+          },
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "ses_child" }));
+
+    expect(onSelectSession).toHaveBeenCalledWith("ses_child");
+  });
+
   it("renders todo updates as a progress list", () => {
     render(
       <ChatThread

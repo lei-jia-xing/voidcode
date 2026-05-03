@@ -43,6 +43,7 @@ interface ChatThreadProps {
   isApprovalSubmitting: boolean;
   approvalError: string | null;
   onResolveApproval: (decision: "allow" | "deny") => void;
+  onSelectSession?: (sessionId: string) => void;
   isWaitingQuestion?: boolean;
   isQuestionSubmitting?: boolean;
   questionError?: string | null;
@@ -330,7 +331,7 @@ function DiffDetailBlock({
         <CopyButton value={diff} label={label} />
       </div>
       <div className="max-h-72 overflow-auto rounded-[var(--vc-radius-control)] border border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] font-mono text-xs leading-relaxed">
-        {lines.map((line, index) => {
+        {lines.map((line) => {
           const isFileHeader =
             line.startsWith("+++") ||
             line.startsWith("---") ||
@@ -383,7 +384,7 @@ function DiffDetailBlock({
 
           return (
             <div
-              key={`${line}-${index}`}
+              key={`${marker}-${line}`}
               className={rowClassName}
               data-diff-line={
                 isAddition
@@ -835,12 +836,45 @@ function formatList(value: unknown): string | null {
   return value.map((item) => String(item)).join(", ");
 }
 
+function SessionLinkRow({
+  label,
+  sessionId,
+  onSelectSession,
+}: {
+  label: string;
+  sessionId: string;
+  onSelectSession?: (sessionId: string) => void;
+}) {
+  if (!onSelectSession) {
+    return (
+      <div>
+        {label}: <code>{sessionId}</code>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      {label}:{" "}
+      <button
+        type="button"
+        onClick={() => onSelectSession(sessionId)}
+        className="font-mono text-[var(--vc-text-primary)] underline underline-offset-2 hover:text-[var(--vc-focus-ring)]"
+      >
+        {sessionId}
+      </button>
+    </div>
+  );
+}
+
 function TaskToolActivity({
   tool,
   forceCollapsed = false,
+  onSelectSession,
 }: {
   tool: ChatTool;
   forceCollapsed?: boolean;
+  onSelectSession?: (sessionId: string) => void;
 }) {
   const data = resultData(tool);
   const route =
@@ -883,18 +917,20 @@ function TaskToolActivity({
         <>
           <div className="mt-2 grid gap-1 text-[11px] text-[var(--vc-text-subtle)]">
             {taskId && (
-              <div>
-                Task ID: <code>{taskId}</code>
-              </div>
-            )}
-            {sessionId && (
-              <div>
-                Session: <code>{sessionId}</code>
-              </div>
-            )}
-            {skills && (
-              <div>
-                Skills: <code>{skills}</code>
+          <div>
+            Task ID: <code>{taskId}</code>
+          </div>
+        )}
+        {sessionId && (
+          <SessionLinkRow
+            label="Session"
+            sessionId={sessionId}
+            onSelectSession={onSelectSession}
+          />
+        )}
+        {skills && (
+          <div>
+            Skills: <code>{skills}</code>
               </div>
             )}
           </div>
@@ -1140,12 +1176,22 @@ function QuestionCard({
   );
 }
 
-function ToolActivities({ tools }: { tools: ChatTool[] }) {
+function ToolActivities({
+  tools,
+  onSelectSession,
+}: {
+  tools: ChatTool[];
+  onSelectSession?: (sessionId: string) => void;
+}) {
   if (tools.length === 0) return null;
   return (
     <div className="mb-3 space-y-2">
       {tools.map((tool, idx) => (
-        <ToolActivity key={tool.id ?? `${tool.name}-${idx}`} tool={tool} />
+        <ToolActivity
+          key={tool.id ?? `${tool.name}-${idx}`}
+          tool={tool}
+          onSelectSession={onSelectSession}
+        />
       ))}
     </div>
   );
@@ -1154,9 +1200,11 @@ function ToolActivities({ tools }: { tools: ChatTool[] }) {
 function ToolActivity({
   tool,
   forceCollapsed = false,
+  onSelectSession,
 }: {
   tool: ChatTool;
   forceCollapsed?: boolean;
+  onSelectSession?: (sessionId: string) => void;
 }) {
   if (isReadonlyTool(tool)) return <ReadToolActivity tool={tool} />;
   if (
@@ -1173,7 +1221,13 @@ function ToolActivity({
   if (tool.name === "skill")
     return <SkillToolActivity tool={tool} forceCollapsed={forceCollapsed} />;
   if (tool.name === "task")
-    return <TaskToolActivity tool={tool} forceCollapsed={forceCollapsed} />;
+    return (
+      <TaskToolActivity
+        tool={tool}
+        forceCollapsed={forceCollapsed}
+        onSelectSession={onSelectSession}
+      />
+    );
   if (tool.name === "todo_write") return <TodoToolActivity tool={tool} />;
   return <GenericToolActivity tool={tool} />;
 }
@@ -1294,6 +1348,7 @@ export function ChatThread({
   isApprovalSubmitting,
   approvalError,
   onResolveApproval,
+  onSelectSession,
   isWaitingQuestion = false,
   isQuestionSubmitting = false,
   questionError = null,
@@ -1346,7 +1401,10 @@ export function ChatThread({
                   <StatusIndicator status={message.status} />
                 </div>
                 <div className="space-y-3">
-                  <ToolActivities tools={message.tools} />
+                  <ToolActivities
+                    tools={message.tools}
+                    onSelectSession={onSelectSession}
+                  />
                   {assistantContent && (
                     <StreamingMarkdown
                       content={assistantContent}
