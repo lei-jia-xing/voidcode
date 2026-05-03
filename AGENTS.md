@@ -38,6 +38,7 @@ voidcode/
 | Integration tests | `tests/integration/test_read_only_slice.py` | full deterministic slice + session persistence |
 | Dev workflow | `mise.toml` | canonical task runner |
 | Repo standards | `docs/coding-standards.md` | coding + commit rules |
+| First-task acceptance flow | `docs/first-task-acceptance-flow.md` | canonical pre-MVP smoke path (doctor → run → approval → web → debug) |
 | Frontend work | `frontend/AGENTS.md` | read for any `frontend/` change |
 
 ## CODE MAP

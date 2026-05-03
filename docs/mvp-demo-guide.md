@@ -2,6 +2,8 @@
 
 本文档定义了 VoidCode 的规范 MVP 演示场景和端到端验证清单。它基于目前已实现的稳定确定性运行时循环、会话持久化和 CLI 内联审批行为。
 
+关于首次任务成功的规范验收流程（环境检查 → 运行 → 审批 → 恢复 → Web 路径 → 失败诊断），请参阅 [First-Task Success E2E Acceptance Flow](./first-task-acceptance-flow.md)。该文档是 pre-MVP 的权威冒烟路径。
+
 ## 前置条件
 
 - 由 `uv` 管理的 Python 3.13 环境。
