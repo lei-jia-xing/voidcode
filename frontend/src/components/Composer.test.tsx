@@ -176,9 +176,7 @@ describe("Composer", () => {
       />,
     );
 
-    expect(
-      screen.getByText("Context unavailable · total unavailable"),
-    ).toBeInTheDocument();
+    expect(screen.getByText("198K ctx · reasoning")).toBeInTheDocument();
     expect(
       screen.queryByRole("combobox", { name: "Reasoning effort" }),
     ).not.toBeInTheDocument();

@@ -344,7 +344,8 @@ export function Composer({
                   {contextUsageLabel}
                 </span>
               ) : (
-                (selectedModelAvailable || sessionContextWindow !== undefined) &&
+                (selectedModelAvailable ||
+                  sessionContextWindow !== undefined) &&
                 contextLabel && (
                   <span className="px-1.5 py-1 text-[var(--vc-text-subtle)]">
                     {contextLabel}

@@ -629,6 +629,9 @@ function App() {
           void cancelBackgroundTask(taskId);
         }}
         onRefreshDebug={handleLoadSessionDebug}
+        onSelectSession={(sessionId) => {
+          void selectSession(sessionId);
+        }}
       />
 
       <SettingsPanel

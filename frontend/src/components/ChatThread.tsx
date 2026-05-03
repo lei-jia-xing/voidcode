@@ -917,20 +917,20 @@ function TaskToolActivity({
         <>
           <div className="mt-2 grid gap-1 text-[11px] text-[var(--vc-text-subtle)]">
             {taskId && (
-          <div>
-            Task ID: <code>{taskId}</code>
-          </div>
-        )}
-        {sessionId && (
-          <SessionLinkRow
-            label="Session"
-            sessionId={sessionId}
-            onSelectSession={onSelectSession}
-          />
-        )}
-        {skills && (
-          <div>
-            Skills: <code>{skills}</code>
+              <div>
+                Task ID: <code>{taskId}</code>
+              </div>
+            )}
+            {sessionId && (
+              <SessionLinkRow
+                label="Session"
+                sessionId={sessionId}
+                onSelectSession={onSelectSession}
+              />
+            )}
+            {skills && (
+              <div>
+                Skills: <code>{skills}</code>
               </div>
             )}
           </div>
