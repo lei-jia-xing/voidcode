@@ -227,8 +227,39 @@ def test_edit_tool_reports_near_match_context_when_old_string_is_stale(
     assert "BlockAnchorReplacer" in message
     assert "L1" in message
     assert "message = 'hello'" in message
+    assert "Diff (- oldString, + current):" in message
+    assert "-    message = 'hullo'" in message
+    assert "+    message = 'hello'" in message
+    assert " def greet():" in message
+    assert "+    return message" in message
     assert "first block anchor is close" in message
     assert "retry with exact current text" in message
+
+
+def test_edit_tool_warns_when_old_string_includes_read_line_prefixes(
+    tmp_path: Path,
+) -> None:
+    file_path = tmp_path / "test.py"
+    file_path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+
+    tool = EditTool()
+
+    with pytest.raises(ValueError, match="line prefixes") as exc_info:
+        tool.invoke(
+            ToolCall(
+                tool_name="edit",
+                arguments={
+                    "path": "test.py",
+                    "oldString": "1: alpha\n2: beta",
+                    "newString": "alpha\nupdated",
+                },
+            ),
+            workspace=tmp_path,
+        )
+
+    message = str(exc_info.value)
+    assert "oldString appears to include read output line prefixes" in message
+    assert "remove those prefixes" in message
 
 
 def test_edit_tool_preserves_line_endings(tmp_path: Path) -> None:

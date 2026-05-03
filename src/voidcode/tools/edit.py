@@ -53,6 +53,35 @@ def _bounded_block_preview(lines: list[str], start: int, length: int) -> str:
     return "\n".join(preview_lines)
 
 
+def _bounded_candidate_diff(old_string: str, candidate: str, *, max_lines: int = 14) -> str:
+    diff_lines = list(
+        difflib.unified_diff(
+            old_string.splitlines(),
+            candidate.splitlines(),
+            fromfile="oldString",
+            tofile="current",
+            lineterm="",
+            n=1,
+        )
+    )
+    if not diff_lines:
+        return ""
+
+    if len(diff_lines) > max_lines:
+        diff_lines = [*diff_lines[: max_lines - 1], "... diff truncated ..."]
+
+    return "\n".join(f"    {line}" for line in diff_lines)
+
+
+def _looks_line_number_prefixed(text: str) -> bool:
+    non_empty_lines = [line for line in text.split("\n") if line.strip()]
+    if not non_empty_lines:
+        return False
+
+    prefixed_count = sum(1 for line in non_empty_lines if re.match(r"^\s*\d+\s*[:|]\s?", line))
+    return prefixed_count >= max(1, len(non_empty_lines) // 2)
+
+
 def _near_match_hints(content: str, old_string: str, *, limit: int = 2) -> list[str]:
     old_lines = old_string.split("\n")
     if old_lines and old_lines[-1] == "":
@@ -65,7 +94,7 @@ def _near_match_hints(content: str, old_string: str, *, limit: int = 2) -> list[
     if window_size == 0:
         return []
 
-    candidates: list[tuple[float, int, str]] = []
+    candidates: list[tuple[float, int, str, str]] = []
     normalized_old = WhitespaceNormalizedReplacer.normalize(old_string)
     dedented_old = IndentationFlexibleReplacer.remove_indentation(old_string)
 
@@ -94,14 +123,16 @@ def _near_match_hints(content: str, old_string: str, *, limit: int = 2) -> list[
         if not notes:
             notes.append("near text match")
 
-        candidates.append((ratio, start, ", ".join(notes)))
+        candidates.append((ratio, start, ", ".join(notes), block))
 
     candidates.sort(key=lambda item: item[0], reverse=True)
     hints: list[str] = []
-    for ratio, start, note in candidates[:limit]:
+    for ratio, start, note, block in candidates[:limit]:
         hints.append(
             f"  - L{start + 1} ({round(ratio * 100)}% similar; {note})\n"
-            f"{_bounded_block_preview(lines, start, window_size)}"
+            f"{_bounded_block_preview(lines, start, window_size)}\n"
+            "    Diff (- oldString, + current):\n"
+            f"{_bounded_candidate_diff(old_string, block)}"
         )
     return hints
 
@@ -130,6 +161,12 @@ def _edit_mismatch_message(
         )
     else:
         lines.append("No nearby text match found; re-read the file before retrying the edit.")
+
+    if _looks_line_number_prefixed(old_string):
+        lines.append(
+            "oldString appears to include read output line prefixes like '42: '; "
+            "remove those prefixes and retry with only file text."
+        )
 
     return "\n".join(lines)
 
