@@ -67,6 +67,36 @@ runtime/
 - **Background tasks:** `start_background_task()` persists queued state, spawns worker thread, then `_run_background_task_worker()` finalizes lifecycle hooks and notifications. `background_output` reads bounded results/full-session slices; `background_cancel` returns deterministic status payloads for unknown, running, and terminal tasks.
 - **Provider fallback:** `_execute_graph_loop()` increments `provider_attempt`, swaps active target, and rebuilds the graph when retryable provider failures occur.
 
+## PERSISTENCE / RESUME / REPLAY INVARIANTS
+
+Session truth is the core product asset. All persistence and resume paths must satisfy these invariants:
+
+- **SQLite is the single source of truth.** In-memory state must never be the authoritative record for sessions, approvals, questions, or background tasks. If the process restarts, the database must contain enough information to reconstruct runtime behavior.
+- **Resume checkpoints are validated on load.** `load_resume_checkpoint()` rejects malformed JSON, invalid kinds, and version mismatches. Do not bypass `_decode_resume_checkpoint_payload()` or `validated_resume_checkpoint_envelope()`.
+- **Schema mismatches fail fast with actionable diagnostics.** `_assert_canonical_schema()` raises `RuntimeError` with a reset command. Do not silently ignore schema drift or attempt implicit migrations unless a task explicitly requires it.
+- **Notification deduplication is storage-enforced.** `session_notifications` uses `UNIQUE(workspace, dedupe_key)` and `INSERT OR IGNORE`. Do not rely on in-memory dedupe sets for restart survival.
+- **Background task state transitions are guarded.** `is_background_task_transition_allowed()` enforces the terminal/running/queued state machine. `mark_background_task_terminal()` and `request_background_task_cancel()` check transitions before writing.
+- **Cross-process resume must restore pending state.** A session waiting on approval or question must have `pending_approval_json` or `pending_question_json` persisted. `save_pending_approval()` and `save_pending_question()` write both the session snapshot and the resume checkpoint atomically.
+- **Event sequences are monotonic per session.** `append_session_event()` uses `RETURNING last_event_sequence` with `+1` allocation. Deduped events roll back the sequence counter to preserve monotonicity.
+
+### Error handling expectations
+
+| Scenario | Behavior | Location |
+|----------|----------|----------|
+| Unknown session ID | `UnknownSessionError` with session ID | `storage.py` load methods |
+| Corrupt resume checkpoint JSON | `ValueError` with "persisted resume checkpoint JSON is malformed" | `storage.py:_decode_resume_checkpoint_payload` |
+| Invalid checkpoint kind | `ValueError` with kind value | `storage.py:_decode_resume_checkpoint_payload` |
+| Schema mismatch | `RuntimeError` with missing columns/tables and reset command | `storage.py:_raise_schema_mismatch` |
+| Invalid background task transition | Returns current state without writing | `storage.py:mark_background_task_terminal` |
+| Unknown notification ID | `ValueError` with notification ID | `storage.py:acknowledge_notification` |
+| Missing sequence scope | `RuntimeError` with scope name | `storage.py:_next_sequence_value` |
+
+### Testing guidance
+
+- Unit tests in `tests/unit/runtime/test_session_storage.py` cover schema bootstrap, revert markers, deduplication, pruning, and pending state persistence.
+- Integration tests in `tests/integration/test_read_only_slice.py` cover live→persisted→replay parity for provider contexts and tool results.
+- When adding new persistence paths, include at least one test that simulates a process boundary: write state, create a fresh store instance pointing to the same database, and verify the read surface matches.
+
 ## NOTES
 - Top-level execution is limited to `leader` and explicit `product`; supported delegated child presets are `advisor`, `explore`, `product`, `researcher`, and `worker`.
 - LSP and MCP tooling are constructed by runtime and refreshed from managed capability state rather than treated as static builtins.
