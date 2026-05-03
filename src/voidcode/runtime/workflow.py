@@ -417,7 +417,11 @@ _VALIDATED_BUILTIN_WORKFLOW_PRESETS = validate_workflow_presets(
                 "websearch-style public research, and grep_app-style code search when those "
                 "configured capabilities are available."
             ),
-            hook_preset_refs=("role_reminder", "background_output_quality_guidance"),
+            hook_preset_refs=(
+                "role_reminder",
+                "delegated_task_timing_guidance",
+                "background_output_quality_guidance",
+            ),
             mcp_binding_intents=(
                 WorkflowMcpBindingIntent(
                     servers=("context7", "websearch", "grep_app"),
@@ -432,7 +436,11 @@ _VALIDATED_BUILTIN_WORKFLOW_PRESETS = validate_workflow_presets(
             default_agent="leader",
             category="implementation",
             prompt_append="Implement the requested change through runtime tools and verify it.",
-            hook_preset_refs=("role_reminder", "todo_continuation_guidance"),
+            hook_preset_refs=(
+                "role_reminder",
+                "delegated_task_timing_guidance",
+                "todo_continuation_guidance",
+            ),
             permission_policy_ref="runtime_default",
             verification_guidance="Run focused tests or checks that cover the changed behavior.",
         ),
@@ -446,7 +454,11 @@ _VALIDATED_BUILTIN_WORKFLOW_PRESETS = validate_workflow_presets(
                 "capability is available."
             ),
             skill_refs=("frontend-design", "playwright"),
-            hook_preset_refs=("role_reminder", "todo_continuation_guidance"),
+            hook_preset_refs=(
+                "role_reminder",
+                "delegated_task_timing_guidance",
+                "todo_continuation_guidance",
+            ),
             mcp_binding_intents=(
                 WorkflowMcpBindingIntent(servers=("playwright",), required=False),
             ),
