@@ -884,17 +884,9 @@ class RuntimeBackgroundTaskSupervisor:
     def _tool_call_count(*, child_result: RuntimeSessionResult | None) -> int:
         if child_result is None:
             return 0
-        tool_call_ids: set[str] = set()
-        anonymous_count = 0
-        for event in child_result.transcript:
-            if event.event_type != RUNTIME_TOOL_COMPLETED:
-                continue
-            tool_call_id = event.payload.get("tool_call_id")
-            if isinstance(tool_call_id, str) and tool_call_id:
-                tool_call_ids.add(tool_call_id)
-            else:
-                anonymous_count += 1
-        return len(tool_call_ids) + anonymous_count
+        return sum(
+            1 for event in child_result.transcript if event.event_type == RUNTIME_TOOL_COMPLETED
+        )
 
     @staticmethod
     def _leader_safe_child_summary(

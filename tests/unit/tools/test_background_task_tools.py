@@ -6,7 +6,7 @@ from typing import cast
 import pytest
 
 from voidcode.runtime.contracts import BackgroundTaskResult, RuntimeSessionResult
-from voidcode.runtime.events import EventEnvelope
+from voidcode.runtime.events import RUNTIME_TOOL_COMPLETED, EventEnvelope
 from voidcode.runtime.session import SessionRef, SessionState
 from voidcode.runtime.task import (
     BackgroundTaskRef,
@@ -331,6 +331,74 @@ def test_background_output_tool_returns_task_summary(tmp_path: Path) -> None:
     assert session_payload["full_output_preserved"] is True
     assert session_payload["full_session_reference"] == "session:child-session"
     assert "output" not in session_payload
+
+
+class _RepeatedToolCompletionBackgroundRuntime(_StubBackgroundRuntime):
+    def load_background_task_result(
+        self,
+        task_id: str,
+        *,
+        emit_result_read_hook: bool = True,
+    ) -> BackgroundTaskResult:
+        _ = emit_result_read_hook
+        assert task_id == "task-1"
+        return BackgroundTaskResult(
+            task_id="task-1",
+            parent_session_id="leader-session",
+            child_session_id="child-session",
+            status="completed",
+            summary_output="Completed: delegated work",
+            result_available=True,
+            tool_call_count=2,
+        )
+
+    def session_result(self, *, session_id: str) -> RuntimeSessionResult:
+        assert session_id == "child-session"
+        return RuntimeSessionResult(
+            session=SessionState(
+                session=SessionRef(id="child-session", parent_id="leader-session"),
+                status="completed",
+                turn=2,
+            ),
+            prompt="delegated",
+            status="completed",
+            summary="Completed: delegated work",
+            output="done",
+            transcript=(
+                EventEnvelope(
+                    session_id="child-session",
+                    sequence=1,
+                    event_type=RUNTIME_TOOL_COMPLETED,
+                    source="runtime",
+                    payload={"tool_call_id": "tool-1", "tool": "read_file"},
+                ),
+                EventEnvelope(
+                    session_id="child-session",
+                    sequence=2,
+                    event_type=RUNTIME_TOOL_COMPLETED,
+                    source="runtime",
+                    payload={"tool_call_id": "tool-1", "tool": "grep"},
+                ),
+            ),
+            last_event_sequence=2,
+        )
+
+
+def test_background_output_reports_repeated_tool_completed_events_in_tool_call_count(
+    tmp_path: Path,
+) -> None:
+    tool = BackgroundOutputTool(runtime=_RepeatedToolCompletionBackgroundRuntime())
+
+    result = tool.invoke(
+        ToolCall(
+            tool_name="background_output",
+            arguments={"task_id": "task-1", "full_session": True},
+        ),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert result.data["tool_call_count"] == 2
 
 
 def test_background_output_default_returns_safe_summary_reference(tmp_path: Path) -> None:
