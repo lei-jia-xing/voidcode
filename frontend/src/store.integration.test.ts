@@ -1687,6 +1687,10 @@ describe("useAppStore integration flow", () => {
         skills: ["demo"],
         max_steps: 5,
         provider_stream: true,
+        agent: {
+          execution_engine: "provider",
+          custom_flag: "kept",
+        },
       },
     });
 
@@ -1700,7 +1704,7 @@ describe("useAppStore integration flow", () => {
         agent: {
           preset: "leader",
           model: "deepseek/deepseek-v4-pro",
-          execution_engine: "provider",
+          custom_flag: "kept",
         },
       },
     });
@@ -1737,7 +1741,6 @@ describe("useAppStore integration flow", () => {
         agent: {
           preset: "leader",
           model: "deepseek/deepseek-v4-pro",
-          execution_engine: "provider",
         },
       },
     });
