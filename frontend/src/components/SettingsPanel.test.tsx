@@ -229,11 +229,11 @@ describe("SettingsPanel", () => {
     });
   });
 
-  it("renders the API key as a masked text field without password semantics", () => {
+  it("renders the API key with native password semantics", () => {
     render(<SettingsPanel {...baseProps} />);
 
     const apiKeyField = screen.getByLabelText("API Key");
-    expect(apiKeyField).toHaveAttribute("type", "text");
+    expect(apiKeyField).toHaveAttribute("type", "password");
     expect(apiKeyField).toHaveAttribute("autocomplete", "off");
   });
 

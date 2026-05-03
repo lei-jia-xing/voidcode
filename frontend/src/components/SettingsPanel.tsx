@@ -353,14 +353,14 @@ export function SettingsPanel({
             </label>
             <input
               id="settings-api-key"
-              type="text"
+              type="password"
               autoComplete="off"
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
               placeholder={t("settings.apiKeyPlaceholder")}
               disabled={isLoading}
               spellCheck={false}
-              className="w-full bg-[var(--vc-surface-1)] border border-[color:var(--vc-border-subtle)] rounded-lg px-3 py-2.5 text-sm text-[var(--vc-text-primary)] placeholder:text-[var(--vc-text-subtle)] focus:outline-none focus:border-[color:var(--vc-border-strong)] focus:ring-1 focus:ring-[color:var(--vc-border-strong)] transition-colors disabled:opacity-50 [-webkit-text-security:disc]"
+              className="w-full bg-[var(--vc-surface-1)] border border-[color:var(--vc-border-subtle)] rounded-lg px-3 py-2.5 text-sm text-[var(--vc-text-primary)] placeholder:text-[var(--vc-text-subtle)] focus:outline-none focus:border-[color:var(--vc-border-strong)] focus:ring-1 focus:ring-[color:var(--vc-border-strong)] transition-colors disabled:opacity-50"
             />
             <p className="text-xs text-[var(--vc-text-subtle)]">
               {t("settings.apiKeyHint")}
