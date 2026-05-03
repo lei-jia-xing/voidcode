@@ -988,7 +988,10 @@ class _EmptyWriteThenResultAwareTurnProvider:
                     arguments={"path": "shader.frag", "content": ""},
                 )
             )
-        return ProviderTurnResult(output="recovered from validation error")
+        last_result = turn_request.tool_results[-1]
+        if last_result.status == "ok" and last_result.data.get("byte_count") == 0:
+            return ProviderTurnResult(output="empty write succeeded")
+        return ProviderTurnResult(output="unexpected result")
 
     def stream_turn(self, request: object):
         result = self.propose_turn(request)
@@ -2936,7 +2939,9 @@ def test_runtime_does_not_wait_on_failed_question_tool_result(
     assert tool_completed.payload["error"] == "question requires a non-empty questions array"
 
 
-def test_runtime_tool_validation_error_includes_actionable_content(tmp_path: Path) -> None:
+def test_runtime_write_file_allows_empty_content_and_returns_success_payload(
+    tmp_path: Path,
+) -> None:
     created_providers: list[_EmptyWriteThenResultAwareTurnProvider] = []
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
@@ -2955,44 +2960,20 @@ def test_runtime_tool_validation_error_includes_actionable_content(tmp_path: Pat
     response = runtime.run(RuntimeRequest(prompt="empty write", session_id="empty-write"))
 
     assert response.session.status == "completed"
-    assert response.output == "recovered from validation error"
-    assert (tmp_path / "shader.frag").exists() is False
+    assert response.output == "empty write succeeded"
+    assert (tmp_path / "shader.frag").read_text(encoding="utf-8") == ""
     tool_completed = next(
         event for event in response.events if event.event_type == "runtime.tool_completed"
     )
-    assert tool_completed.payload["status"] == "error"
-    assert tool_completed.payload["error"] == (
-        "write_file Validation error: content: Value error, content must not be empty "
-        "(received str). Please retry with corrected arguments that satisfy the tool schema."
-    )
-    assert tool_completed.payload["error_summary"] == (
-        "write_file Validation error: content: Value error, content must not be empty "
-        "(received str). Please retry with corrected arguments that satisfy the tool schema."
-    )
-    assert tool_completed.payload["error_details"] == {
-        "tool_name": "write_file",
-        "message": (
-            "write_file Validation error: content: Value error, content must not be empty "
-            "(received str). Please retry with corrected arguments that satisfy the tool schema."
-        ),
-        "summary": (
-            "write_file Validation error: content: Value error, content must not be empty "
-            "(received str). Please retry with corrected arguments that satisfy the tool schema."
-        ),
-    }
-    assert tool_completed.payload["retry_guidance"] == (
-        "Retry with corrected arguments that satisfy the tool schema."
-    )
-    assert tool_completed.payload["content"] == (
-        "write_file failed: write_file Validation error: content: Value error, content must not "
-        "be empty (received str). Please retry with corrected arguments that satisfy the tool "
-        "schema.. Please correct the tool arguments and retry."
-    )
-    failed_tool_result = created_providers[-1].requests[-1].tool_results[-1]
-    assert failed_tool_result.content == tool_completed.payload["content"]
-    assert failed_tool_result.error_summary == tool_completed.payload["error_summary"]
-    assert failed_tool_result.error_details == tool_completed.payload["error_details"]
-    assert failed_tool_result.retry_guidance == tool_completed.payload["retry_guidance"]
+    assert tool_completed.payload["status"] == "ok"
+    assert tool_completed.payload["tool"] == "write_file"
+    assert tool_completed.payload["path"] == "shader.frag"
+    assert tool_completed.payload["content"] == "Wrote file successfully: shader.frag"
+    successful_tool_result = created_providers[-1].requests[-1].tool_results[-1]
+    assert successful_tool_result.content == tool_completed.payload["content"]
+    assert successful_tool_result.data["path"] == "shader.frag"
+    assert successful_tool_result.data["byte_count"] == 0
+    assert successful_tool_result.data["diff"] == ""
 
 
 def test_runtime_tool_diagnostic_error_propagates_structured_payload(tmp_path: Path) -> None:

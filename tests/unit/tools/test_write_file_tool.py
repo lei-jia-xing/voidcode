@@ -77,23 +77,35 @@ def test_write_file_tool_rejects_non_string_arguments(tmp_path: Path) -> None:
         )
 
 
-def test_write_file_tool_rejects_empty_content(tmp_path: Path) -> None:
+def test_write_file_tool_allows_empty_content_for_new_file(tmp_path: Path) -> None:
     tool = WriteFileTool()
 
-    with pytest.raises(
-        ValueError,
-        match=(
-            r"write_file Validation error: content: Value error, content must not be empty "
-            r"\(received str\)\. "
-            r"Please retry with corrected arguments that satisfy the tool schema\."
-        ),
-    ):
-        tool.invoke(
-            ToolCall(tool_name="write_file", arguments={"path": "shader.frag", "content": ""}),
-            workspace=tmp_path,
-        )
+    result = tool.invoke(
+        ToolCall(tool_name="write_file", arguments={"path": "shader.frag", "content": ""}),
+        workspace=tmp_path,
+    )
 
-    assert (tmp_path / "shader.frag").exists() is False
+    assert (tmp_path / "shader.frag").read_text(encoding="utf-8") == ""
+    assert result.status == "ok"
+    assert result.content == "Wrote file successfully: shader.frag"
+    assert result.data == {"path": "shader.frag", "byte_count": 0, "diff": ""}
+
+
+def test_write_file_tool_allows_empty_content_for_existing_file(tmp_path: Path) -> None:
+    (tmp_path / "shader.frag").write_text("void main() {}\n", encoding="utf-8")
+    tool = WriteFileTool()
+
+    result = tool.invoke(
+        ToolCall(tool_name="write_file", arguments={"path": "shader.frag", "content": ""}),
+        workspace=tmp_path,
+    )
+
+    assert (tmp_path / "shader.frag").read_text(encoding="utf-8") == ""
+    assert result.status == "ok"
+    assert result.data["byte_count"] == 0
+    assert result.data["diff"] == (
+        "--- a/shader.frag\n+++ b/shader.frag\n@@ -1 +0,0 @@\n-void main() {}\n"
+    )
 
 
 def test_write_file_tool_allows_absolute_paths_outside_workspace(tmp_path: Path) -> None:

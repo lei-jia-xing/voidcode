@@ -67,13 +67,6 @@ class WriteFileArgs(BaseModel):
     path: str
     content: str
 
-    @field_validator("content", mode="after")
-    @classmethod
-    def _validate_content(cls, value: str) -> str:
-        if value == "":
-            raise ValueError("content must not be empty")
-        return value
-
 
 class GrepArgs(BaseModel):
     pattern: str
