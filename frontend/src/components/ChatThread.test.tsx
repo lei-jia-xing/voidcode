@@ -633,6 +633,14 @@ describe("ChatThread", () => {
       " ",
       "-bar",
       "-bar",
+      "--- a/src/other.ts",
+      "+++ b/src/other.ts",
+      "@@ -1,3 +1,4 @@",
+      " ",
+      "+foo",
+      "+foo",
+      "-bar",
+      "-bar",
     ].join("\n");
 
     const props = {
@@ -667,10 +675,10 @@ describe("ChatThread", () => {
 
     expect(
       container.querySelectorAll('[data-diff-line="addition"]'),
-    ).toHaveLength(2);
+    ).toHaveLength(4);
     expect(
       container.querySelectorAll('[data-diff-line="deletion"]'),
-    ).toHaveLength(2);
+    ).toHaveLength(4);
     expect(
       duplicateKeySpy.mock.calls.some(([message]) =>
         String(message).includes("Encountered two children with the same key"),

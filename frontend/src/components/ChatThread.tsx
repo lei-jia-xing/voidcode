@@ -363,15 +363,15 @@ function buildDiffRows(diff: string): DiffRow[] {
       key = `hunk-${hunkCount}-${oldLineNumber}-${newLineNumber}`;
       type = "hunk";
     } else if (isAddition && newLineNumber !== null) {
-      key = `add-${newLineNumber}`;
+      key = `add-${hunkCount}-${newLineNumber}`;
       newLineNumber += 1;
       type = "addition";
     } else if (isDeletion && oldLineNumber !== null) {
-      key = `del-${oldLineNumber}`;
+      key = `del-${hunkCount}-${oldLineNumber}`;
       oldLineNumber += 1;
       type = "deletion";
     } else if (oldLineNumber !== null && newLineNumber !== null) {
-      key = `ctx-${oldLineNumber}-${newLineNumber}`;
+      key = `ctx-${hunkCount}-${oldLineNumber}-${newLineNumber}`;
       oldLineNumber += 1;
       newLineNumber += 1;
       type = "context";
