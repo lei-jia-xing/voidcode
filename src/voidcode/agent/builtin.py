@@ -185,7 +185,11 @@ PRODUCT_AGENT_MANIFEST = AgentManifest(
     prompt_profile="product",
     execution_engine="provider",
     tool_allowlist=_PRODUCT_TOOL_ALLOWLIST,
-    preset_hook_refs=("role_reminder", "background_output_quality_guidance"),
+    preset_hook_refs=(
+        "role_reminder",
+        "delegated_task_timing_guidance",
+        "background_output_quality_guidance",
+    ),
     top_level_selectable=True,
     prompt_materialization=AgentPromptMaterialization(
         profile="product",
