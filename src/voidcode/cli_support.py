@@ -46,7 +46,9 @@ def format_event(
 
 
 def serialize_event(event: EventEnvelope, *, show_thinking: bool = False) -> dict[str, object]:
-    return {
+    payload: dict[str, object] = {
+        "session_id": event.session_id,
+        "sequence": event.sequence,
         "event_type": event.event_type,
         "source": event.source,
         "payload": redact_reasoning_payload(
@@ -55,6 +57,10 @@ def serialize_event(event: EventEnvelope, *, show_thinking: bool = False) -> dic
             show_thinking=show_thinking,
         ),
     }
+    delegated = event.delegated_lifecycle
+    if delegated is not None:
+        payload["delegated_lifecycle"] = delegated.as_payload()
+    return payload
 
 
 def serialize_session_state(session: SessionState) -> dict[str, object]:
@@ -71,13 +77,16 @@ def serialize_session_state(session: SessionState) -> dict[str, object]:
 
 
 def serialize_stored_session_summary(session: StoredSessionSummary) -> dict[str, object]:
+    session_ref: dict[str, object] = {"id": session.session.id}
+    parent_id = getattr(session.session, "parent_id", None)
+    if parent_id is not None:
+        session_ref["parent_id"] = parent_id
     return {
-        "id": session.session.id,
-        "parent_id": getattr(session.session, "parent_id", None),
+        "session": session_ref,
         "status": session.status,
         "turn": session.turn,
-        "updated_at": session.updated_at,
         "prompt": session.prompt,
+        "updated_at": session.updated_at,
     }
 
 

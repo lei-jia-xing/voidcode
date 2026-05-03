@@ -685,12 +685,6 @@ export function deriveChatMessages(
         if (output) currentAssistant.content = output;
         currentAssistant.status = "completed";
       }
-    } else if (event.event_type === "runtime.completed") {
-      if (currentAssistant) {
-        const output = responseTextFromPayload(event.payload);
-        if (output) currentAssistant.content = output;
-        currentAssistant.status = "completed";
-      }
     } else if (event.event_type === "runtime.failed") {
       if (currentAssistant) {
         currentAssistant.status = "failed";

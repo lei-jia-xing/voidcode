@@ -81,6 +81,8 @@ export interface ProviderValidationResult {
   source?: string | null;
   last_error?: string | null;
   discovery_mode?: string | null;
+  failure_kind?: string | null;
+  guidance?: string | null;
 }
 
 export interface AgentSummary {
@@ -95,6 +97,9 @@ export interface AgentSummary {
   model_label?: string | null;
   model_source?: string | null;
   provider?: string | null;
+  fallback_chain?: string[];
+  source_scope?: string | null;
+  source_path?: string | null;
 }
 
 export interface GitStatusSnapshot {
@@ -119,11 +124,23 @@ export interface McpServerStatusDetail {
   retry_available?: boolean;
 }
 
+export interface RuntimeBackgroundTaskStatusSnapshot {
+  active_worker_slots: number;
+  queued_count: number;
+  running_count: number;
+  terminal_count: number;
+  default_concurrency: number;
+  provider_concurrency?: Record<string, number>;
+  model_concurrency?: Record<string, number>;
+  status_counts?: Record<string, number>;
+}
+
 export interface RuntimeStatusSnapshot {
   git: GitStatusSnapshot;
   lsp: CapabilityStatusSnapshot;
   mcp: CapabilityStatusSnapshot;
   acp?: CapabilityStatusSnapshot;
+  background_tasks: RuntimeBackgroundTaskStatusSnapshot;
 }
 
 export interface ReviewChangedFile {
@@ -249,7 +266,7 @@ export interface RuntimeNotification {
     | "question_blocked";
   status: "unread" | "acknowledged";
   summary: string;
-  event_sequence?: number | null;
+  event_sequence: number;
   created_at: number;
   acknowledged_at?: number | null;
   payload: Record<string, unknown>;
@@ -260,6 +277,19 @@ export interface BackgroundTaskRequestSnapshot {
   session_id?: string | null;
   parent_session_id?: string | null;
   metadata: Record<string, unknown>;
+  allocate_session_id?: boolean;
+}
+
+export interface RuntimeRequest {
+  prompt: string;
+  session_id?: string | null;
+  parent_session_id?: string | null;
+  metadata?: {
+    skills?: string[];
+    provider_stream?: boolean;
+    reasoning_effort?: string;
+    [key: string]: unknown;
+  };
   allocate_session_id?: boolean;
 }
 
@@ -279,6 +309,8 @@ export interface BackgroundTaskSummary {
   error?: string | null;
   created_at: number;
   updated_at: number;
+  created_at_unix_ms?: number | null;
+  observability?: Record<string, unknown> | null;
 }
 
 export interface BackgroundTaskState {
@@ -299,6 +331,10 @@ export interface BackgroundTaskState {
   finished_at?: number | null;
   cancel_requested_at?: number | null;
   routing?: BackgroundTaskRouting | null;
+  created_at_unix_ms?: number | null;
+  started_at_unix_ms?: number | null;
+  finished_at_unix_ms?: number | null;
+  observability?: Record<string, unknown> | null;
 }
 
 export interface BackgroundTaskResultPayload {
@@ -317,6 +353,9 @@ export interface BackgroundTaskResultPayload {
   routing?: BackgroundTaskRouting | null;
   delegation?: Record<string, unknown>;
   message?: Record<string, unknown>;
+  duration_seconds?: number | null;
+  tool_call_count?: number;
+  observability?: Record<string, unknown> | null;
 }
 
 export interface BackgroundTaskOutput {
@@ -325,15 +364,21 @@ export interface BackgroundTaskOutput {
   output: string | null;
 }
 
+export interface RuntimeSessionRevertMarker {
+  sequence: number;
+  active: boolean;
+}
+
 export interface RuntimeSessionResult {
   session: SessionState;
   prompt: string;
   status: string;
-  summary?: string | null;
+  summary: string;
   output?: string | null;
   error?: string | null;
   last_event_sequence?: number | null;
   transcript: EventEnvelope[];
+  revert_marker?: RuntimeSessionRevertMarker | null;
 }
 
 export interface RuntimeSessionDebugEvent {
@@ -341,6 +386,38 @@ export interface RuntimeSessionDebugEvent {
   event_type: string;
   source: EventSource | string;
   payload: Record<string, unknown>;
+}
+
+export interface RuntimeHookPresetSnapshot {
+  refs: string[];
+  kinds: string[];
+  source: string;
+  count: number;
+}
+
+export interface RuntimeProviderContextSegment {
+  index: number;
+  role: string;
+  source: string;
+  content?: string | null;
+  content_truncated?: boolean;
+  tool_call_id?: string | null;
+  tool_name?: string | null;
+  tool_arguments?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+}
+
+export interface RuntimeProviderContextSnapshot {
+  provider: string;
+  model: string;
+  execution_engine: string;
+  segment_count: number;
+  message_count: number;
+  context_window?: Record<string, unknown>;
+  segments?: RuntimeProviderContextSegment[];
+  provider_messages?: Record<string, unknown>[];
+  diagnostics?: Record<string, unknown>[];
+  policy_decision?: Record<string, unknown> | null;
 }
 
 export interface RuntimeSessionDebugSnapshot {
@@ -363,6 +440,11 @@ export interface RuntimeSessionDebugSnapshot {
     owner_session_id?: string | null;
     owner_parent_session_id?: string | null;
     delegated_task_id?: string | null;
+    path_scope?: string | null;
+    operation_class?: string | null;
+    canonical_path?: string | null;
+    matched_rule?: string | null;
+    policy_surface?: string | null;
   } | null;
   pending_question?: {
     request_id: string;
@@ -370,6 +452,7 @@ export interface RuntimeSessionDebugSnapshot {
     question_count: number;
     headers: string[];
   } | null;
+  revert_marker?: RuntimeSessionRevertMarker | null;
   last_event_sequence?: number | null;
   last_relevant_event?: RuntimeSessionDebugEvent | null;
   last_failure_event?: RuntimeSessionDebugEvent | null;
@@ -379,8 +462,11 @@ export interface RuntimeSessionDebugSnapshot {
     status: string;
     summary: string;
     arguments: Record<string, unknown>;
+    artifact?: Record<string, unknown>;
     sequence?: number | null;
   } | null;
+  provider_context?: RuntimeProviderContextSnapshot | null;
+  hook_presets?: RuntimeHookPresetSnapshot | null;
   suggested_operator_action?: string | null;
   operator_guidance?: string | null;
 }

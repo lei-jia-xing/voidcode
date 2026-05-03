@@ -37,6 +37,7 @@
 - [`runtime-lifecycle-hooks.md`](./runtime-lifecycle-hooks.md) — richer lifecycle hook phases 的 runtime-owned 执行契约
 - [`background-task-delegation.md`](./background-task-delegation.md) — delegated/background task parent/child linkage、结果读取、retry/cancel 与 fake-provider/fake-MCP 验证立场
 - [`stream-transport.md`](./stream-transport.md) — 运行时流的交付与重放预期
+- [`cli-http-web-parity.md`](./cli-http-web-parity.md) — CLI/HTTP/Web 契约一致性规范与字段对齐规则
 
 ## 相关 Issue
 
@@ -52,6 +53,7 @@
 - #170 richer runtime lifecycle hook execution
 - #289 delegated child execution E2E baseline
 - #379 builtin hook preset catalog
+- CLI/Web/runtime contract parity (P0: contract drift prevention)
 
 ## 相关代码
 
