@@ -242,6 +242,34 @@ def test_runtime_config_parses_mcp_remote_http_servers(tmp_path: Path) -> None:
     )
 
 
+def test_runtime_config_expands_builtin_mcp_server_shorthand(tmp_path: Path) -> None:
+    (tmp_path / ".voidcode.json").write_text(
+        json.dumps(
+            {
+                "mcp": {
+                    "enabled": True,
+                    "servers": {
+                        "grep_app": {},
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.mcp == RuntimeMcpConfig(
+        enabled=True,
+        servers={
+            "grep_app": RuntimeMcpServerConfig(
+                transport="remote-http",
+                url="https://mcp.grep.app",
+            )
+        },
+    )
+
+
 def test_runtime_config_rejects_missing_mcp_url_for_remote_http(tmp_path: Path) -> None:
     (tmp_path / ".voidcode.json").write_text(
         json.dumps(
@@ -249,7 +277,7 @@ def test_runtime_config_rejects_missing_mcp_url_for_remote_http(tmp_path: Path) 
                 "mcp": {
                     "enabled": True,
                     "servers": {
-                        "grep_app": {
+                        "custom_remote": {
                             "transport": "remote-http",
                         }
                     },
@@ -259,5 +287,5 @@ def test_runtime_config_rejects_missing_mcp_url_for_remote_http(tmp_path: Path) 
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="mcp.servers.grep_app"):
+    with pytest.raises(ValueError, match="mcp.servers.custom_remote"):
         load_runtime_config(tmp_path, env={})
