@@ -127,12 +127,12 @@ def kill_timed_out_process(process: subprocess.Popen[Any]) -> None:
 
 
 def _taskkill_command() -> str | None:
+    if not _is_windows_platform():
+        return None
     taskkill = shutil.which("taskkill")
     if taskkill is not None:
         return taskkill
-    if _is_windows_platform():
-        return "taskkill"
-    return None
+    return "taskkill"
 
 
 def _is_windows_platform() -> bool:
