@@ -1346,6 +1346,27 @@ def test_transport_lists_and_acknowledges_notifications(tmp_path: Path) -> None:
     assert ack_payload["status"] == "acknowledged"
     assert ack_payload["acknowledged_at"] is not None
 
+    restarted_app = create_runtime_app(
+        workspace=tmp_path,
+        runtime_factory=lambda: runtime_class(
+            workspace=tmp_path,
+            permission_policy=permission_policy,
+        ),
+    )
+    restarted_list_response = _run_app(
+        restarted_app,
+        method="GET",
+        path="/api/notifications",
+    )
+    restarted_notifications = cast(list[dict[str, object]], restarted_list_response.json())
+
+    assert restarted_list_response.status == 200
+    assert len(restarted_notifications) == 1
+    assert restarted_notifications[0]["id"] == notification_id
+    assert restarted_notifications[0]["kind"] == "approval_blocked"
+    assert restarted_notifications[0]["status"] == "acknowledged"
+    assert restarted_notifications[0]["acknowledged_at"] == ack_payload["acknowledged_at"]
+
 
 def test_transport_round_trips_parent_session_lineage(tmp_path: Path) -> None:
     create_runtime_app = _load_transport_app_factory()
