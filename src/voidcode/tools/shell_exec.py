@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import signal
 import subprocess
 import threading
@@ -88,11 +89,12 @@ def _read_pipe_incrementally(
 
 
 def kill_timed_out_process(process: subprocess.Popen[Any]) -> None:
-    if os.name == "nt":
+    taskkill = _taskkill_command()
+    if taskkill is not None:
         taskkill_succeeded = False
         try:
             completed = subprocess.run(
-                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                [taskkill, "/PID", str(process.pid), "/T", "/F"],
                 capture_output=True,
                 check=False,
             )
@@ -106,8 +108,15 @@ def kill_timed_out_process(process: subprocess.Popen[Any]) -> None:
         except ProcessLookupError:
             pass
         return
+    killpg = getattr(os, "killpg", None)
+    if killpg is None:
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
+        return
     try:
-        os.killpg(process.pid, signal.SIGKILL)
+        killpg(process.pid, signal.SIGKILL)
     except AttributeError:
         try:
             process.kill()
@@ -115,6 +124,19 @@ def kill_timed_out_process(process: subprocess.Popen[Any]) -> None:
             pass
     except ProcessLookupError:
         pass
+
+
+def _taskkill_command() -> str | None:
+    taskkill = shutil.which("taskkill")
+    if taskkill is not None:
+        return taskkill
+    if _is_windows_platform():
+        return "taskkill"
+    return None
+
+
+def _is_windows_platform() -> bool:
+    return os.name == "nt"
 
 
 @final
@@ -126,7 +148,7 @@ class ShellExecTool:
             "command": {"type": "string"},
             "timeout": {
                 "type": "integer",
-                "description": "Timeout in seconds (max 120)",
+                "description": "Timeout in seconds (max 600)",
             },
             "description": {
                 "type": "string",
@@ -177,9 +199,6 @@ class ShellExecTool:
         runtime_timeout_selected = policy.runtime_timeout_selected
 
         try:
-            creationflags = 0
-            if os.name == "nt":
-                creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
             command_text = command_text.encode("utf-8", errors="replace").decode("utf-8")
             process = subprocess.Popen(
                 command_text,
@@ -188,7 +207,7 @@ class ShellExecTool:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 start_new_session=True,
-                creationflags=creationflags,
+                creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
             )
         except OSError as exc:
             raise ValueError(f"shell_exec failed to execute command: {exc}") from exc

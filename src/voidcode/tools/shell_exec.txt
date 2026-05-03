@@ -2,7 +2,7 @@ Execute a command inside the local workspace.
 
 Usage:
 - The command parameter is required.
-- The timeout parameter is optional and is expressed in seconds. The maximum timeout is 120 seconds.
+- The timeout parameter is optional and is expressed in seconds. The default timeout is 120 seconds and the maximum timeout is 600 seconds.
 - Commands run from the workspace root.
 - Commands are executed by a non-interactive shell, so normal shell operators such as pipes, redirects, wildcard expansion, and command chaining are available.
 - Use this tool for tests, builds, diagnostics, and local commands that cannot be expressed through narrower tools.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -38,7 +39,7 @@ def test_shell_exec_tool_runs_command_in_workspace(tmp_path: Path) -> None:
     assert isinstance(stdout, str)
     assert stdout.strip() == str(tmp_path.resolve())
     assert result.data.get("stderr") == ""
-    assert result.data.get("timeout") == 30
+    assert result.data.get("timeout") == 120
     assert result.data.get("truncated") is False
     assert result.data.get("stdout_truncated") is False
     assert result.data.get("stderr_truncated") is False
@@ -47,7 +48,7 @@ def test_shell_exec_tool_runs_command_in_workspace(tmp_path: Path) -> None:
 def test_shell_exec_tool_supports_shell_operators(tmp_path: Path) -> None:
     tool = ShellExecTool()
     command = "printf 'alpha\\n' > sample.txt && cat sample.txt"
-    if sys.platform.startswith("win"):
+    if shutil.which("cmd.exe") is not None:
         command = "echo alpha>sample.txt && type sample.txt"
 
     result = tool.invoke(
@@ -138,6 +139,21 @@ def test_shell_exec_tool_respects_timeout(tmp_path: Path) -> None:
             ),
             workspace=tmp_path,
         )
+
+
+def test_shell_exec_tool_caps_explicit_timeout_at_production_max(tmp_path: Path) -> None:
+    tool = ShellExecTool()
+
+    result = tool.invoke(
+        ToolCall(
+            tool_name="shell_exec",
+            arguments={"command": _cwd_command(), "timeout": 9999},
+        ),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert result.data.get("timeout") == 600
 
 
 def test_shell_exec_timeout_cleanup_falls_back_without_killpg(
