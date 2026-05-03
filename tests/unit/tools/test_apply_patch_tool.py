@@ -417,6 +417,34 @@ def test_apply_patch_structured_insert_only_update_uses_matched_context(
     assert result.data["changes"] == [{"path": "sample.txt", "status": "M"}]
 
 
+def test_apply_patch_structured_update_failure_reports_repair_context(tmp_path: Path) -> None:
+    target = tmp_path / "sample.txt"
+    target.write_text("before\ncurrent beta\nafter\n", encoding="utf-8")
+    patch_text = "\n".join(
+        [
+            "*** Begin Patch",
+            "*** Update File: sample.txt",
+            "@@",
+            "-curent beta",
+            "+updated beta",
+            "*** End Patch",
+        ]
+    )
+
+    with pytest.raises(ValueError, match="Retry guidance") as exc_info:
+        ApplyPatchTool().invoke(
+            ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
+            workspace=tmp_path,
+        )
+
+    message = str(exc_info.value)
+    assert "Failed to find expected lines" in message
+    assert "Nearest current file context" in message
+    assert "Diff (- expected, + current):" in message
+    assert "current beta" in message
+    assert target.read_text(encoding="utf-8") == "before\ncurrent beta\nafter\n"
+
+
 def test_apply_patch_reports_context_for_corrupt_unified_diff(tmp_path: Path) -> None:
     _init_git_repo(tmp_path)
     patch_text = "\n".join(

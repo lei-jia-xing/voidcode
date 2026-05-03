@@ -79,6 +79,35 @@ def test_multi_edit_rejects_empty_edits(tmp_path: Path) -> None:
         )
 
 
+def test_multi_edit_reports_failing_edit_index_with_underlying_diagnostic(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "sample.txt"
+    target.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+    tool = MultiEditTool()
+
+    with pytest.raises(ValueError, match="failed at edit #2") as exc_info:
+        tool.invoke(
+            ToolCall(
+                tool_name="multi_edit",
+                arguments={
+                    "path": "sample.txt",
+                    "edits": [
+                        {"oldString": "alpha", "newString": "ALPHA"},
+                        {"oldString": "2: beta", "newString": "BETA"},
+                    ],
+                },
+            ),
+            workspace=tmp_path,
+        )
+
+    message = str(exc_info.value)
+    assert "Applied edits before failure: 1" in message
+    assert "Underlying edit diagnostic" in message
+    assert "oldString appears to include read output line prefixes" in message
+    assert target.read_text(encoding="utf-8") == "ALPHA\nbeta\ngamma\n"
+
+
 def test_multi_edit_formats_once_after_all_edits(tmp_path: Path) -> None:
     target = tmp_path / "sample.py"
     target.write_text("value = 'a'\nother = 'b'\n", encoding="utf-8")

@@ -14,6 +14,7 @@ from ._formatter import (
     formatter_payload,
 )
 from ._pydantic_args import MultiEditArgs
+from ._repair import ToolDiagnosticError
 from .contracts import ToolCall, ToolDefinition, ToolResult
 from .edit import (
     EditTool,
@@ -99,18 +100,51 @@ class MultiEditTool:
         applied = 0
         details: list[dict[str, object]] = []
         for idx, item in enumerate(args.edits, start=1):
-            result = self._edit_tool.invoke(
-                ToolCall(
-                    tool_name="edit",
-                    arguments={
+            try:
+                result = self._edit_tool.invoke(
+                    ToolCall(
+                        tool_name="edit",
+                        arguments={
+                            "path": relative_target,
+                            "oldString": item.oldString,
+                            "newString": item.newString,
+                            "replaceAll": item.replaceAll,
+                        },
+                    ),
+                    workspace=workspace,
+                )
+            except ValueError as exc:
+                message = (
+                    "multi_edit failed at edit "
+                    f"#{idx} of {len(args.edits)} for {relative_target}.\n"
+                    f"Applied edits before failure: {applied}.\n"
+                    "Retry guidance: re-read the file, keep the successful earlier edits in mind, "
+                    "and retry from this failing edit with current file text.\n"
+                    f"Underlying edit diagnostic:\n{exc}"
+                )
+                cause_details: dict[str, object] = {}
+                if isinstance(exc, ToolDiagnosticError):
+                    cause_details = {
+                        "error_kind": exc.error_kind,
+                        "error_details": exc.error_details,
+                        "retry_guidance": exc.retry_guidance,
+                    }
+                raise ToolDiagnosticError(
+                    message=message,
+                    error_kind="tool_input_mismatch",
+                    retry_guidance=(
+                        "Re-read the file after the successfully applied edits, then retry "
+                        "multi_edit with only the remaining corrected edits."
+                    ),
+                    error_details={
+                        "reason": "edit_failed",
                         "path": relative_target,
-                        "oldString": item.oldString,
-                        "newString": item.newString,
-                        "replaceAll": item.replaceAll,
+                        "failed_edit_index": idx,
+                        "applied_edits": applied,
+                        "remaining_edits": len(args.edits) - idx + 1,
+                        "cause": cause_details,
                     },
-                ),
-                workspace=workspace,
-            )
+                ) from exc
             applied += 1
             details.append({"index": idx, "result": result.data})
 
