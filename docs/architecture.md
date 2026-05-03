@@ -67,6 +67,8 @@ VoidCode 使用 LangGraph 作为编排引擎，而不是整个产品运行时。
 
 运行时服务构成系统中心。该领域目前承载会话管理、权限检查、钩子、传输、持久化以及无头运行时入口点。
 
+`src/voidcode/runtime/service.py` 仍是这一控制面的主要热点。未来拆分应遵循 [`runtime/service.py` 安全拆分计划](./runtime-service-decomposition-plan.md)，先围绕已有测试保护的 background task lifecycle、provider fallback、approval resume、tool registry scoping 与 persisted runtime config replay 边界推进，并保持治理语义继续由 runtime 持有。
+
 ### `graph/`
 
 graph 是执行引擎和编排层，当前包含两条并行路径：
