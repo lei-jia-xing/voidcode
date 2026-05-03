@@ -51,6 +51,11 @@ function displayModelName(model: string, providerName: string): string {
     : model;
 }
 
+function modelBelongsToProvider(model: string, providerName: string): boolean {
+  if (!model) return false;
+  return model.startsWith(`${providerName}/`);
+}
+
 export function SettingsPanel({
   isOpen,
   settings,
@@ -100,7 +105,7 @@ export function SettingsPanel({
     });
   };
 
-  const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
+  const handleSubmit = (event: { preventDefault: () => void }) => {
     event.preventDefault();
     handleSave();
   };
@@ -110,6 +115,9 @@ export function SettingsPanel({
   const isLoading = settingsStatus === "loading";
   const configuredProviders = providers.filter((item) => item.configured);
   const unconfiguredProviders = providers.filter((item) => !item.configured);
+  const selectedProvider = provider
+    ? providers.find((item) => item.name === provider)
+    : undefined;
   const providerGroups = [
     {
       label: t("settings.configuredProviders"),
@@ -123,6 +131,7 @@ export function SettingsPanel({
   const selectedProviderModels = provider
     ? providerModels[provider]
     : undefined;
+  const selectedModels = selectedProviderModels?.models ?? [];
   const validationStatus = provider
     ? providerValidationStatus[provider]
     : undefined;
@@ -205,7 +214,14 @@ export function SettingsPanel({
                           <button
                             type="button"
                             key={p.name}
-                            onClick={() => setProvider(p.name)}
+                            onClick={() => {
+                              setProvider(p.name);
+                              setModel((current) =>
+                                modelBelongsToProvider(current, p.name)
+                                  ? current
+                                  : "",
+                              );
+                            }}
                             aria-pressed={provider === p.name}
                             className={`flex flex-col items-start justify-center rounded-xl border p-3 text-left transition-colors ${
                               provider === p.name
@@ -257,28 +273,26 @@ export function SettingsPanel({
               id="settings-model"
               value={model}
               onChange={(event) => setModel(event.target.value)}
-              disabled={isLoading || configuredProviders.length === 0}
+              disabled={isLoading || !provider || selectedModels.length === 0}
               className="w-full bg-[var(--vc-surface-1)] border border-[color:var(--vc-border-subtle)] rounded-lg px-3 py-2.5 text-sm text-[var(--vc-text-primary)] focus:outline-none focus:border-[color:var(--vc-border-strong)] focus:ring-1 focus:ring-[color:var(--vc-border-strong)] transition-colors disabled:opacity-50"
             >
               <option value="">{t("settings.modelPlaceholder")}</option>
-              {configuredProviders.map((item) => {
-                const models = providerModels[item.name]?.models ?? [];
-                return models.length > 0 ? (
-                  <optgroup key={item.name} label={item.label}>
-                    {models.map((modelId) => {
-                      const value = canonicalModelReference(item.name, modelId);
-                      return (
-                        <option key={`${item.name}:${modelId}`} value={value}>
-                          {displayModelName(modelId, item.name)}
-                        </option>
-                      );
-                    })}
-                  </optgroup>
-                ) : null;
+              {selectedModels.map((modelId) => {
+                const value = canonicalModelReference(provider, modelId);
+                return (
+                  <option key={`${provider}:${modelId}`} value={value}>
+                    {displayModelName(modelId, provider)}
+                  </option>
+                );
               })}
             </select>
             <p className="text-xs text-[var(--vc-text-subtle)]">
-              {t("settings.modelHint")}
+              {selectedProvider
+                ? t("settings.modelHintForProvider", {
+                    provider: selectedProvider.label,
+                    count: selectedModels.length,
+                  })
+                : t("settings.modelHint")}
             </p>
           </div>
 

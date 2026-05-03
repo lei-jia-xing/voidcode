@@ -372,6 +372,7 @@ describe("App", () => {
 
   it("opens runtime ops and loads background task output from task selection", () => {
     const loadBackgroundTaskOutput = vi.fn();
+    const selectSession = vi.fn();
     (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
       ...mockStore,
       workspaces: {
@@ -412,6 +413,8 @@ describe("App", () => {
           error: null,
           result_available: true,
           cancellation_cause: null,
+          duration_seconds: 12.5,
+          tool_call_count: 3,
           routing: { mode: "subagent", subagent_type: "explore" },
         },
         session_result: {
@@ -432,6 +435,7 @@ describe("App", () => {
         output: "Raw output text",
       },
       loadBackgroundTaskOutput,
+      selectSession,
     });
 
     render(<App />);
@@ -443,6 +447,34 @@ describe("App", () => {
     expect(screen.getByText("Raw output text")).toBeInTheDocument();
     expect(screen.getByText("Session output text")).toBeInTheDocument();
     expect(screen.getByText("child-session-1")).toBeInTheDocument();
+    expect(screen.getByText("3")).toBeInTheDocument();
+    expect(screen.getByText("12.5s")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "child-session-1" }));
+    expect(selectSession).toHaveBeenCalledWith("child-session-1");
+  });
+
+  it("does not show the agent status badge in the workspace header", () => {
+    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      ...mockStore,
+      workspaces: {
+        current: {
+          path: "/workspace",
+          label: "workspace",
+          available: true,
+          current: true,
+          last_opened_at: 1,
+        },
+        recent: [],
+        candidates: [],
+      },
+      runStatus: "idle",
+    });
+
+    render(<App />);
+
+    expect(screen.queryByText("Agent Busy")).not.toBeInTheDocument();
+    expect(screen.queryByText("Agent Idle")).not.toBeInTheDocument();
   });
 
   it("renders project-picker-first empty state when no current workspace exists", () => {

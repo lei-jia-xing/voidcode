@@ -13,6 +13,7 @@ interface ComposerProps {
   agentPreset?: string;
   providerModel?: string;
   reasoningEffort?: string;
+  sessionMetadata?: Record<string, unknown>;
   agentPresets?: AgentSummary[];
   providers?: ProviderSummary[];
   providerModels?: Record<string, ProviderModelsResult>;
@@ -42,6 +43,7 @@ export function Composer({
   agentPreset,
   providerModel,
   reasoningEffort = "",
+  sessionMetadata,
   agentPresets,
   providers,
   providerModels,
@@ -98,15 +100,29 @@ export function Composer({
   const selectableAgentPresets = useMemo(() => {
     return (agentPresets ?? []).filter((agent) => agent.selectable !== false);
   }, [agentPresets]);
+  const selectedAgentId = useMemo(() => {
+    const normalizedAgentPreset = agentPreset?.trim();
+    if (normalizedAgentPreset) return normalizedAgentPreset;
+    return selectableAgentPresets[0]?.id;
+  }, [agentPreset, selectableAgentPresets]);
+  const sessionContextWindow = useMemo(
+    () => sessionContextWindowFromMetadata(sessionMetadata),
+    [sessionMetadata],
+  );
+  const displayModelMetadata = useMemo(
+    () => withSessionContextWindow(selectedModelMetadata, sessionContextWindow),
+    [selectedModelMetadata, sessionContextWindow],
+  );
+  const contextLabel = formatModelContext(displayModelMetadata);
 
   const selectedAgentLabel = useMemo(() => {
     return (
-      agentPresets?.find((agent) => agent.id === (agentPreset ?? "leader"))
+      selectableAgentPresets.find((agent) => agent.id === selectedAgentId)
         ?.label ??
-      agentPreset ??
-      "leader"
+      selectedAgentId ??
+      ""
     );
-  }, [agentPreset, agentPresets]);
+  }, [selectableAgentPresets, selectedAgentId]);
 
   const selectedModelLabel = useMemo(() => {
     for (const { provider, models } of availableModelGroups) {
@@ -236,7 +252,7 @@ export function Composer({
                 {showAgentMenu && (
                   <div className="absolute bottom-full left-0 z-[100] mb-2 min-w-[180px] rounded border border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] py-1 shadow-xl">
                     {selectableAgentPresets.map((agent) => {
-                      const active = agent.id === (agentPreset ?? "leader");
+                      const active = agent.id === selectedAgentId;
                       return (
                         <button
                           key={agent.id}
@@ -323,10 +339,18 @@ export function Composer({
                   )}
                 </div>
               )}
-              {selectedModelAvailable && (
+              {sessionContextUsage ? (
                 <span className="px-1.5 py-1 text-[var(--vc-text-subtle)]">
                   {contextUsageLabel}
                 </span>
+              ) : (
+                (selectedModelAvailable ||
+                  sessionContextWindow !== undefined) &&
+                contextLabel && (
+                  <span className="px-1.5 py-1 text-[var(--vc-text-subtle)]">
+                    {contextLabel}
+                  </span>
+                )
               )}
               {selectedModelAvailable && supportsReasoningEffort && (
                 <label className="inline-flex items-center gap-1 text-[var(--vc-text-subtle)]">
@@ -368,6 +392,33 @@ function canonicalModelReference(providerName: string, model: string): string {
   return model.startsWith(`${providerName}/`)
     ? model
     : `${providerName}/${model}`;
+}
+
+function sessionContextWindowFromMetadata(
+  sessionMetadata: Record<string, unknown> | undefined,
+): number | undefined {
+  const rawContextWindow = sessionMetadata?.context_window;
+  if (!rawContextWindow || typeof rawContextWindow !== "object") {
+    return undefined;
+  }
+  const modelContextWindowTokens = (rawContextWindow as Record<string, unknown>)
+    .model_context_window_tokens;
+  return typeof modelContextWindowTokens === "number"
+    ? modelContextWindowTokens
+    : undefined;
+}
+
+function withSessionContextWindow(
+  metadata: ProviderModelMetadata | undefined,
+  sessionContextWindow: number | undefined,
+): ProviderModelMetadata | undefined {
+  if (sessionContextWindow === undefined) {
+    return metadata;
+  }
+  return {
+    ...(metadata ?? {}),
+    context_window: sessionContextWindow,
+  };
 }
 
 function formatModelContext(

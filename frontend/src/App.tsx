@@ -433,13 +433,12 @@ function App() {
               </div>
             </header>
             {isRunning && (
-              <div
-                role="status"
+              <output
                 aria-label={t("session.modelWorking")}
                 className="relative h-0.5 flex-shrink-0 overflow-hidden bg-transparent"
               >
                 <div className="vc-model-working-bar" />
-              </div>
+              </output>
             )}
 
             {replayError && (
@@ -477,6 +476,9 @@ function App() {
                   }
                   questionError={displayedIsChildSession ? null : questionError}
                   onAnswerQuestion={answerQuestion}
+                  onSelectSession={(sessionId) => {
+                    void selectSession(sessionId);
+                  }}
                 />
               </div>
               <ChildSessionSidebar
@@ -506,6 +508,7 @@ function App() {
               disabled={composerDisabled}
               isRunning={isRunning}
               agentPreset={agentPreset}
+              sessionMetadata={currentSessionState?.metadata}
               onSubmit={handleSendMessage}
               onCancel={cancelCurrentRun}
               onAgentPresetChange={setAgentPreset}
@@ -626,6 +629,9 @@ function App() {
           void cancelBackgroundTask(taskId);
         }}
         onRefreshDebug={handleLoadSessionDebug}
+        onSelectSession={(sessionId) => {
+          void selectSession(sessionId);
+        }}
       />
 
       <SettingsPanel

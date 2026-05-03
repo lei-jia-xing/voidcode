@@ -43,6 +43,7 @@ interface ChatThreadProps {
   isApprovalSubmitting: boolean;
   approvalError: string | null;
   onResolveApproval: (decision: "allow" | "deny") => void;
+  onSelectSession?: (sessionId: string) => void;
   isWaitingQuestion?: boolean;
   isQuestionSubmitting?: boolean;
   questionError?: string | null;
@@ -313,6 +314,79 @@ function ToolDetailBlock({
   );
 }
 
+type DiffRow = {
+  key: string;
+  line: string;
+  marker: string;
+  type: "addition" | "deletion" | "hunk" | "header" | "context";
+};
+
+function buildDiffRows(diff: string): DiffRow[] {
+  const lines = diff.split("\n");
+  const rows: DiffRow[] = [];
+  let fileHeaderCount = 0;
+  let hunkCount = 0;
+  let miscCount = 0;
+  let oldLineNumber: number | null = null;
+  let newLineNumber: number | null = null;
+
+  for (const line of lines) {
+    const isFileHeader =
+      line.startsWith("+++") ||
+      line.startsWith("---") ||
+      line.startsWith("diff --git") ||
+      line.startsWith("index ");
+    const isHunk = line.startsWith("@@");
+    const isAddition = line.startsWith("+") && !line.startsWith("+++");
+    const isDeletion = line.startsWith("-") && !line.startsWith("---");
+    const marker = isAddition
+      ? "+"
+      : isDeletion
+        ? "-"
+        : isHunk
+          ? "@@"
+          : isFileHeader
+            ? "#"
+            : " ";
+    const hunkMatch = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+    let key: string;
+    let type: DiffRow["type"];
+
+    if (isFileHeader) {
+      fileHeaderCount += 1;
+      key = `header-${fileHeaderCount}-${line}`;
+      type = "header";
+    } else if (hunkMatch) {
+      hunkCount += 1;
+      oldLineNumber = Number.parseInt(hunkMatch[1] ?? "0", 10);
+      newLineNumber = Number.parseInt(hunkMatch[2] ?? "0", 10);
+      key = `hunk-${hunkCount}-${oldLineNumber}-${newLineNumber}`;
+      type = "hunk";
+    } else if (isAddition && newLineNumber !== null) {
+      key = `add-${hunkCount}-${newLineNumber}`;
+      newLineNumber += 1;
+      type = "addition";
+    } else if (isDeletion && oldLineNumber !== null) {
+      key = `del-${hunkCount}-${oldLineNumber}`;
+      oldLineNumber += 1;
+      type = "deletion";
+    } else if (oldLineNumber !== null && newLineNumber !== null) {
+      key = `ctx-${hunkCount}-${oldLineNumber}-${newLineNumber}`;
+      oldLineNumber += 1;
+      newLineNumber += 1;
+      type = "context";
+    } else {
+      miscCount += 1;
+      key = `misc-${miscCount}-${marker}`;
+      type = "context";
+    }
+
+    rows.push({ key, line, marker, type });
+  }
+
+  return rows;
+}
+
 function DiffDetailBlock({
   label,
   diff,
@@ -321,7 +395,7 @@ function DiffDetailBlock({
   diff: string | null;
 }) {
   if (!diff) return null;
-  const lines = diff.split("\n");
+  const rows = buildDiffRows(diff);
 
   return (
     <div className="mt-2 text-xs text-[var(--vc-text-muted)]">
@@ -330,26 +404,11 @@ function DiffDetailBlock({
         <CopyButton value={diff} label={label} />
       </div>
       <div className="max-h-72 overflow-auto rounded-[var(--vc-radius-control)] border border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] font-mono text-xs leading-relaxed">
-        {lines.map((line, index) => {
-          const isFileHeader =
-            line.startsWith("+++") ||
-            line.startsWith("---") ||
-            line.startsWith("diff --git") ||
-            line.startsWith("index ");
-          const isHunk = line.startsWith("@@");
-          const isAddition = line.startsWith("+") && !line.startsWith("+++");
-          const isDeletion = line.startsWith("-") && !line.startsWith("---");
-
-          const marker = isAddition
-            ? "+"
-            : isDeletion
-              ? "-"
-              : isHunk
-                ? "@@"
-                : isFileHeader
-                  ? "#"
-                  : " ";
-
+        {rows.map(({ key, line, marker, type }) => {
+          const isFileHeader = type === "header";
+          const isHunk = type === "hunk";
+          const isAddition = type === "addition";
+          const isDeletion = type === "deletion";
           let rowClassName =
             "grid grid-cols-[2rem_minmax(0,1fr)] items-stretch text-[var(--vc-text-primary)]";
           let markerClassName =
@@ -383,7 +442,7 @@ function DiffDetailBlock({
 
           return (
             <div
-              key={`${line}-${index}`}
+              key={key}
               className={rowClassName}
               data-diff-line={
                 isAddition
@@ -835,12 +894,45 @@ function formatList(value: unknown): string | null {
   return value.map((item) => String(item)).join(", ");
 }
 
+function SessionLinkRow({
+  label,
+  sessionId,
+  onSelectSession,
+}: {
+  label: string;
+  sessionId: string;
+  onSelectSession?: (sessionId: string) => void;
+}) {
+  if (!onSelectSession) {
+    return (
+      <div>
+        {label}: <code>{sessionId}</code>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      {label}:{" "}
+      <button
+        type="button"
+        onClick={() => onSelectSession(sessionId)}
+        className="font-mono text-[var(--vc-text-primary)] underline underline-offset-2 hover:text-[var(--vc-focus-ring)]"
+      >
+        {sessionId}
+      </button>
+    </div>
+  );
+}
+
 function TaskToolActivity({
   tool,
   forceCollapsed = false,
+  onSelectSession,
 }: {
   tool: ChatTool;
   forceCollapsed?: boolean;
+  onSelectSession?: (sessionId: string) => void;
 }) {
   const data = resultData(tool);
   const route =
@@ -888,9 +980,11 @@ function TaskToolActivity({
               </div>
             )}
             {sessionId && (
-              <div>
-                Session: <code>{sessionId}</code>
-              </div>
+              <SessionLinkRow
+                label="Session"
+                sessionId={sessionId}
+                onSelectSession={onSelectSession}
+              />
             )}
             {skills && (
               <div>
@@ -1140,12 +1234,22 @@ function QuestionCard({
   );
 }
 
-function ToolActivities({ tools }: { tools: ChatTool[] }) {
+function ToolActivities({
+  tools,
+  onSelectSession,
+}: {
+  tools: ChatTool[];
+  onSelectSession?: (sessionId: string) => void;
+}) {
   if (tools.length === 0) return null;
   return (
     <div className="mb-3 space-y-2">
       {tools.map((tool, idx) => (
-        <ToolActivity key={tool.id ?? `${tool.name}-${idx}`} tool={tool} />
+        <ToolActivity
+          key={tool.id ?? `${tool.name}-${idx}`}
+          tool={tool}
+          onSelectSession={onSelectSession}
+        />
       ))}
     </div>
   );
@@ -1154,9 +1258,11 @@ function ToolActivities({ tools }: { tools: ChatTool[] }) {
 function ToolActivity({
   tool,
   forceCollapsed = false,
+  onSelectSession,
 }: {
   tool: ChatTool;
   forceCollapsed?: boolean;
+  onSelectSession?: (sessionId: string) => void;
 }) {
   if (isReadonlyTool(tool)) return <ReadToolActivity tool={tool} />;
   if (
@@ -1173,7 +1279,13 @@ function ToolActivity({
   if (tool.name === "skill")
     return <SkillToolActivity tool={tool} forceCollapsed={forceCollapsed} />;
   if (tool.name === "task")
-    return <TaskToolActivity tool={tool} forceCollapsed={forceCollapsed} />;
+    return (
+      <TaskToolActivity
+        tool={tool}
+        forceCollapsed={forceCollapsed}
+        onSelectSession={onSelectSession}
+      />
+    );
   if (tool.name === "todo_write") return <TodoToolActivity tool={tool} />;
   return <GenericToolActivity tool={tool} />;
 }
@@ -1294,6 +1406,7 @@ export function ChatThread({
   isApprovalSubmitting,
   approvalError,
   onResolveApproval,
+  onSelectSession,
   isWaitingQuestion = false,
   isQuestionSubmitting = false,
   questionError = null,
@@ -1346,7 +1459,10 @@ export function ChatThread({
                   <StatusIndicator status={message.status} />
                 </div>
                 <div className="space-y-3">
-                  <ToolActivities tools={message.tools} />
+                  <ToolActivities
+                    tools={message.tools}
+                    onSelectSession={onSelectSession}
+                  />
                   {assistantContent && (
                     <StreamingMarkdown
                       content={assistantContent}

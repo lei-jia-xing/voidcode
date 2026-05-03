@@ -314,6 +314,8 @@ export interface BackgroundTaskResultPayload {
   error?: string | null;
   result_available: boolean;
   cancellation_cause?: string | null;
+  duration_seconds?: number | null;
+  tool_call_count?: number;
   routing?: BackgroundTaskRouting | null;
   delegation?: Record<string, unknown>;
   message?: Record<string, unknown>;

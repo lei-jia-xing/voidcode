@@ -89,6 +89,81 @@ describe("SettingsPanel", () => {
     });
   });
 
+  it("shows backend-discovered models for the selected configured provider", () => {
+    render(
+      <SettingsPanel
+        {...baseProps}
+        settings={{ provider: "deepseek", model: "" }}
+        providers={[
+          { name: "glm", label: "GLM", configured: true, current: false },
+          {
+            name: "deepseek",
+            label: "DeepSeek",
+            configured: true,
+            current: true,
+          },
+        ]}
+        providerModels={{
+          glm: {
+            provider: "glm",
+            configured: true,
+            models: ["glm-5"],
+          },
+          deepseek: {
+            provider: "deepseek",
+            configured: true,
+            models: ["deepseek-chat", "deepseek-reasoner"],
+          },
+        }}
+      />,
+    );
+
+    expect(
+      screen.getByText("DeepSeek exposes 2 model(s) from the runtime."),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("option", { name: "deepseek-chat" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("option", { name: "deepseek-reasoner" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("option", { name: "glm-5" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("clears the selected model when switching providers", () => {
+    const onSave = vi.fn();
+    render(
+      <SettingsPanel
+        {...baseProps}
+        settings={{ provider: "glm", model: "glm/glm-5" }}
+        providerModels={{
+          glm: {
+            provider: "glm",
+            configured: true,
+            models: ["glm-5"],
+          },
+          openai: {
+            provider: "openai",
+            configured: false,
+            models: ["gpt-5"],
+          },
+        }}
+        onSave={onSave}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /OpenAI/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Save Settings" }));
+
+    expect(onSave).toHaveBeenCalledWith({
+      provider: "openai",
+      provider_api_key: undefined,
+      model: undefined,
+    });
+  });
+
   it("tests selected provider credentials and shows validation result", () => {
     const onValidateProvider = vi.fn();
     render(
