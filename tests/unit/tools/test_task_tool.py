@@ -111,6 +111,11 @@ def test_task_tool_starts_background_task_with_parent_context(tmp_path: Path) ->
     assert result.data["child_session_id"] is None
     assert result.data["status"] == "queued"
     assert result.data["result_available"] is False
+    assert result.content is not None
+    assert "do not call background_output immediately" in result.content
+    assert "background_output(block=true)" in result.content
+    assert result.retry_guidance is not None
+    assert "Continue other safe work now" in result.retry_guidance
     assert result.data["delegation"] == {"mode": "background", "category": "quick"}
     assert runtime.requests[0].parent_session_id == "leader-session"
     assert runtime.requests[0].metadata == {
@@ -190,6 +195,8 @@ def test_task_tool_guidance_frontloads_required_arguments() -> None:
     assert "Always include `prompt`, `run_in_background`, and `load_skills`" in guidance
     assert "Provide exactly one of `category` or `subagent_type`" in guidance
     assert "Prefer `run_in_background=true`" in guidance
+    assert "Do not call `background_output` immediately" in guidance
+    assert "background_output(block=true)" in guidance
 
 
 def test_task_tool_runs_sync_child_session(tmp_path: Path) -> None:
