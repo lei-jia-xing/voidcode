@@ -619,6 +619,67 @@ describe("ChatThread", () => {
     expect(screen.queryByText("Output")).not.toBeInTheDocument();
   });
 
+  it("keeps diff rows stable when repeated lines rerender", () => {
+    const duplicateKeySpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    const duplicatedDiff = [
+      "--- a/src/app.ts",
+      "+++ b/src/app.ts",
+      "@@ -1,4 +1,5 @@",
+      " ",
+      "+foo",
+      "+foo",
+      " ",
+      "-bar",
+      "-bar",
+    ].join("\n");
+
+    const props = {
+      ...baseProps,
+      messages: [
+        {
+          id: "msg-1",
+          role: "assistant" as const,
+          content: "",
+          thinking: [],
+          tools: [
+            {
+              id: "patch-1",
+              name: "apply_patch",
+              status: "completed" as const,
+              arguments: {
+                patch:
+                  "*** Begin Patch\n*** Update File: src/app.ts\n@@\n-old\n+new\n*** End Patch",
+              },
+              result: { diff: duplicatedDiff },
+            },
+          ],
+          approval: null,
+          status: "completed" as const,
+          sequence: 1,
+        },
+      ],
+    };
+
+    const { rerender, container } = render(<ChatThread {...props} />);
+    rerender(<ChatThread {...props} />);
+
+    expect(
+      container.querySelectorAll('[data-diff-line="addition"]'),
+    ).toHaveLength(2);
+    expect(
+      container.querySelectorAll('[data-diff-line="deletion"]'),
+    ).toHaveLength(2);
+    expect(
+      duplicateKeySpy.mock.calls.some(([message]) =>
+        String(message).includes("Encountered two children with the same key"),
+      ),
+    ).toBe(false);
+
+    duplicateKeySpy.mockRestore();
+  });
+
   it("navigates to the child session when the subagent session link is clicked", () => {
     const onSelectSession = vi.fn();
     render(

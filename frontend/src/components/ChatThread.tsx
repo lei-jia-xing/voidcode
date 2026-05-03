@@ -314,6 +314,79 @@ function ToolDetailBlock({
   );
 }
 
+type DiffRow = {
+  key: string;
+  line: string;
+  marker: string;
+  type: "addition" | "deletion" | "hunk" | "header" | "context";
+};
+
+function buildDiffRows(diff: string): DiffRow[] {
+  const lines = diff.split("\n");
+  const rows: DiffRow[] = [];
+  let fileHeaderCount = 0;
+  let hunkCount = 0;
+  let miscCount = 0;
+  let oldLineNumber: number | null = null;
+  let newLineNumber: number | null = null;
+
+  for (const line of lines) {
+    const isFileHeader =
+      line.startsWith("+++") ||
+      line.startsWith("---") ||
+      line.startsWith("diff --git") ||
+      line.startsWith("index ");
+    const isHunk = line.startsWith("@@");
+    const isAddition = line.startsWith("+") && !line.startsWith("+++");
+    const isDeletion = line.startsWith("-") && !line.startsWith("---");
+    const marker = isAddition
+      ? "+"
+      : isDeletion
+        ? "-"
+        : isHunk
+          ? "@@"
+          : isFileHeader
+            ? "#"
+            : " ";
+    const hunkMatch = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+    let key: string;
+    let type: DiffRow["type"];
+
+    if (isFileHeader) {
+      fileHeaderCount += 1;
+      key = `header-${fileHeaderCount}-${line}`;
+      type = "header";
+    } else if (hunkMatch) {
+      hunkCount += 1;
+      oldLineNumber = Number.parseInt(hunkMatch[1] ?? "0", 10);
+      newLineNumber = Number.parseInt(hunkMatch[2] ?? "0", 10);
+      key = `hunk-${hunkCount}-${oldLineNumber}-${newLineNumber}`;
+      type = "hunk";
+    } else if (isAddition && newLineNumber !== null) {
+      key = `add-${newLineNumber}`;
+      newLineNumber += 1;
+      type = "addition";
+    } else if (isDeletion && oldLineNumber !== null) {
+      key = `del-${oldLineNumber}`;
+      oldLineNumber += 1;
+      type = "deletion";
+    } else if (oldLineNumber !== null && newLineNumber !== null) {
+      key = `ctx-${oldLineNumber}-${newLineNumber}`;
+      oldLineNumber += 1;
+      newLineNumber += 1;
+      type = "context";
+    } else {
+      miscCount += 1;
+      key = `misc-${miscCount}-${marker}`;
+      type = "context";
+    }
+
+    rows.push({ key, line, marker, type });
+  }
+
+  return rows;
+}
+
 function DiffDetailBlock({
   label,
   diff,
@@ -322,7 +395,7 @@ function DiffDetailBlock({
   diff: string | null;
 }) {
   if (!diff) return null;
-  const lines = diff.split("\n");
+  const rows = buildDiffRows(diff);
 
   return (
     <div className="mt-2 text-xs text-[var(--vc-text-muted)]">
@@ -331,26 +404,11 @@ function DiffDetailBlock({
         <CopyButton value={diff} label={label} />
       </div>
       <div className="max-h-72 overflow-auto rounded-[var(--vc-radius-control)] border border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] font-mono text-xs leading-relaxed">
-        {lines.map((line) => {
-          const isFileHeader =
-            line.startsWith("+++") ||
-            line.startsWith("---") ||
-            line.startsWith("diff --git") ||
-            line.startsWith("index ");
-          const isHunk = line.startsWith("@@");
-          const isAddition = line.startsWith("+") && !line.startsWith("+++");
-          const isDeletion = line.startsWith("-") && !line.startsWith("---");
-
-          const marker = isAddition
-            ? "+"
-            : isDeletion
-              ? "-"
-              : isHunk
-                ? "@@"
-                : isFileHeader
-                  ? "#"
-                  : " ";
-
+        {rows.map(({ key, line, marker, type }) => {
+          const isFileHeader = type === "header";
+          const isHunk = type === "hunk";
+          const isAddition = type === "addition";
+          const isDeletion = type === "deletion";
           let rowClassName =
             "grid grid-cols-[2rem_minmax(0,1fr)] items-stretch text-[var(--vc-text-primary)]";
           let markerClassName =
@@ -384,7 +442,7 @@ function DiffDetailBlock({
 
           return (
             <div
-              key={`${marker}-${line}`}
+              key={key}
               className={rowClassName}
               data-diff-line={
                 isAddition
