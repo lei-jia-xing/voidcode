@@ -1063,7 +1063,9 @@ export const useAppStore = create<AppState>()(
         try {
           await RuntimeClient.cancelSession(currentSessionId);
         } catch (err) {
-          set({ runStatus: "running", runError: (err as Error).message });
+          if (get().runStatus === "cancelling") {
+            set({ runStatus: "running", runError: (err as Error).message });
+          }
         }
       },
 

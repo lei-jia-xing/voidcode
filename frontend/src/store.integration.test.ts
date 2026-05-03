@@ -1502,6 +1502,49 @@ describe("useAppStore integration flow", () => {
     expect(useAppStore.getState().runStatus).toBe("idle");
   });
 
+  it("preserves idle state when cancel request fails after the stream already exits", async () => {
+    const gate = createDeferred<void>();
+    const cancelGate = createDeferred<void>();
+    const sessionId = "cancel-race-session";
+    const requestReceived = makeEvent(
+      1,
+      "runtime.request_received",
+      { prompt: "read race.txt" },
+      "runtime",
+      sessionId,
+    );
+
+    async function* stream() {
+      yield makeStreamChunk(sessionId, "running", requestReceived);
+      await gate.promise;
+    }
+
+    runtimeClientMocks.runStreamMock.mockReturnValue(stream());
+    runtimeClientMocks.cancelSessionMock.mockImplementationOnce(
+      () => cancelGate.promise,
+    );
+
+    const runPromise = useAppStore.getState().runTask("read race.txt");
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const cancelPromise = useAppStore.getState().cancelCurrentRun();
+    await Promise.resolve();
+
+    expect(useAppStore.getState().runStatus).toBe("cancelling");
+
+    gate.resolve();
+    await runPromise;
+
+    expect(useAppStore.getState().runStatus).toBe("idle");
+
+    cancelGate.reject(new Error("cancel timed out"));
+    await cancelPromise;
+
+    expect(useAppStore.getState().runStatus).toBe("idle");
+    expect(useAppStore.getState().runError).toBeNull();
+  });
+
   it("surfaces runtime failed stream details as run errors", async () => {
     const sessionId = "failed-provider-session";
     const requestReceived = makeEvent(
