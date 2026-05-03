@@ -61,6 +61,16 @@ const emptyStatusSnapshot: RuntimeStatusSnapshot = {
   lsp: { state: "stopped", error: null, details: {} },
   mcp: { state: "stopped", error: null, details: {} },
   acp: { state: "unconfigured", error: null, details: {} },
+  background_tasks: {
+    active_worker_slots: 0,
+    queued_count: 0,
+    running_count: 0,
+    terminal_count: 0,
+    default_concurrency: 1,
+    provider_concurrency: {},
+    model_concurrency: {},
+    status_counts: {},
+  },
 };
 
 function makeSessionState(
@@ -2108,6 +2118,16 @@ describe("useAppStore integration flow", () => {
             },
           ],
         },
+      },
+      background_tasks: {
+        active_worker_slots: 1,
+        queued_count: 2,
+        running_count: 1,
+        terminal_count: 4,
+        default_concurrency: 3,
+        provider_concurrency: { "opencode-go": 2 },
+        model_concurrency: { "opencode-go/glm-5.1": 1 },
+        status_counts: { queued: 2, running: 1, completed: 4 },
       },
     };
     runtimeClientMocks.retryMcpConnectionsMock.mockResolvedValue(retrySnapshot);
