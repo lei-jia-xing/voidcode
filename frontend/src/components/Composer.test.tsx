@@ -142,10 +142,10 @@ describe("Composer", () => {
           context_window: { model_context_window_tokens: 512_000 },
         }}
         providerModels={{
-          "opencode-go": {
-            ...baseProps.providerModels["opencode-go"],
+          deepseek: {
+            ...baseProps.providerModels.deepseek,
             model_metadata: {
-              "opencode-go/glm-5.1": {
+              "deepseek-v4-pro": {
                 context_window: 198_000,
                 max_output_tokens: 128_000,
               },
