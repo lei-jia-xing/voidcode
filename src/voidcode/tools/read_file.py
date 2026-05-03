@@ -189,6 +189,10 @@ def _render_file(candidate: Path, *, relative_path: str, offset: int, limit: int
             "truncated": content_truncated,
             "partial": content_truncated,
             "byte_count": bytes_used,
+            "copy_guidance": (
+                "Displayed lines include '<line>: ' prefixes for navigation. "
+                "When passing text to edit oldString, omit those prefixes and use only file text."
+            ),
         },
     )
 
