@@ -34,7 +34,10 @@ run = "bun run test:run"
 dir = "frontend"
 
 [tasks."frontend:e2e"]
-run = "bun run build && bun run test:e2e"
+depends = ["frontend:build", "frontend:test:e2e:run"]
+
+[tasks."frontend:test:e2e:run"]
+run = "bun run test:e2e"
 dir = "frontend"
 
 [tasks."frontend:coverage"]
@@ -42,10 +45,10 @@ run = "bun run test:coverage"
 dir = "frontend"
 
 [tasks."frontend:check"]
-run = "mise run frontend:lint && mise run frontend:typecheck && mise run frontend:test"
+depends = ["frontend:lint", "frontend:typecheck", "frontend:test"]
 
 [tasks."frontend:check:e2e"]
-run = "mise run frontend:check && mise run frontend:e2e"
+depends = ["frontend:check", "frontend:e2e"]
 
 [tasks.lint]
 run = "uv run ruff check ."
@@ -72,10 +75,10 @@ run = "uv run python -X utf8 -m pytest -n auto --cov=voidcode --cov-report=term-
 run = "uv build"
 
 [tasks.check]
-run = "mise run lint && mise run typecheck && mise run test && mise run frontend:check"
+depends = ["lint", "typecheck", "test", "frontend:check"]
 
 [tasks.ci]
-run = "mise run lint && mise run typecheck && mise run test:coverage && mise run build && mise run frontend:check && mise run frontend:build"
+depends = ["lint", "typecheck", "test:coverage", "build", "frontend:check", "frontend:build"]
 
 [tasks.pre-commit]
 run = "uv run pre-commit run --all-files"
