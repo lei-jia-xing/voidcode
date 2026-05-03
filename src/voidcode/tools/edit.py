@@ -34,6 +34,106 @@ def _convert_line_endings(text: str, ending: str) -> str:
     return text.replace("\n", "\r\n")
 
 
+def _preview_line(text: str, *, max_length: int = 96) -> str:
+    line = text.replace("\t", "\\t")
+    if len(line) <= max_length:
+        return line
+    return f"{line[: max_length - 3]}..."
+
+
+def _bounded_block_preview(lines: list[str], start: int, length: int) -> str:
+    context_before = 1
+    context_after = 1
+    first = max(0, start - context_before)
+    last = min(len(lines), start + length + context_after)
+    preview_lines: list[str] = []
+    for index in range(first, last):
+        marker = ">" if start <= index < start + length else " "
+        preview_lines.append(f"    {marker} L{index + 1}: {_preview_line(lines[index])}")
+    return "\n".join(preview_lines)
+
+
+def _near_match_hints(content: str, old_string: str, *, limit: int = 2) -> list[str]:
+    old_lines = old_string.split("\n")
+    if old_lines and old_lines[-1] == "":
+        old_lines = old_lines[:-1]
+    if not old_lines:
+        return []
+
+    lines = content.split("\n")
+    window_size = min(len(old_lines), len(lines))
+    if window_size == 0:
+        return []
+
+    candidates: list[tuple[float, int, str]] = []
+    normalized_old = WhitespaceNormalizedReplacer.normalize(old_string)
+    dedented_old = IndentationFlexibleReplacer.remove_indentation(old_string)
+
+    for start in range(len(lines) - window_size + 1):
+        block = "\n".join(lines[start : start + window_size])
+        ratio = difflib.SequenceMatcher(None, old_string.strip(), block.strip()).ratio()
+        if ratio < 0.58:
+            continue
+
+        notes: list[str] = []
+        if WhitespaceNormalizedReplacer.normalize(block) == normalized_old:
+            notes.append("whitespace-only mismatch")
+        if IndentationFlexibleReplacer.remove_indentation(block) == dedented_old:
+            notes.append("indentation-only mismatch")
+        if len(old_lines) >= 3:
+            first_close = BlockAnchorReplacer._similar(lines[start].strip(), old_lines[0].strip())
+            last_close = BlockAnchorReplacer._similar(
+                lines[start + window_size - 1].strip(), old_lines[-1].strip()
+            )
+            if first_close and last_close:
+                notes.append("block anchors are close")
+            elif first_close:
+                notes.append("first block anchor is close; check the ending line")
+            elif last_close:
+                notes.append("last block anchor is close; check the starting line")
+        if not notes:
+            notes.append("near text match")
+
+        candidates.append((ratio, start, ", ".join(notes)))
+
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    hints: list[str] = []
+    for ratio, start, note in candidates[:limit]:
+        hints.append(
+            f"  - L{start + 1} ({round(ratio * 100)}% similar; {note})\n"
+            f"{_bounded_block_preview(lines, start, window_size)}"
+        )
+    return hints
+
+
+def _edit_mismatch_message(
+    *,
+    content: str,
+    old_string: str,
+    attempted_replacers: list[str],
+) -> str:
+    lines = [
+        "Could not find oldString in the file.",
+        "Replacers attempted:",
+        *(f"  - {name}" for name in attempted_replacers),
+    ]
+
+    hints = _near_match_hints(content, old_string)
+    if hints:
+        lines.extend(
+            [
+                "Near-match hints:",
+                *hints,
+                "Tip: re-read the shown lines and retry with exact current text, "
+                "including indentation.",
+            ]
+        )
+    else:
+        lines.append("No nearby text match found; re-read the file before retrying the edit.")
+
+    return "\n".join(lines)
+
+
 def _trim_diff(diff: str) -> str:
     lines = diff.split("\n")
     content_lines = [
@@ -308,12 +408,13 @@ def _replace(
     current = content
 
     # Try each replacer in order until we find at least one match
+    attempted_replacers: list[str] = []
     for replacer in replacers:
-        matches = []
+        attempted_replacers.append(replacer.__name__)
         try:
             matches = replacer.find(current, old_string)
         except Exception:
-            matches = []
+            continue
         if not matches:
             continue
 
@@ -342,7 +443,13 @@ def _replace(
             return current, total_replacements
 
     # If we reach here, no replacer found any match
-    raise ValueError("Could not find oldString in the file using replacers.")
+    raise ValueError(
+        _edit_mismatch_message(
+            content=current,
+            old_string=old_string,
+            attempted_replacers=attempted_replacers,
+        )
+    )
 
 
 class EscapeNormalizedReplacer:

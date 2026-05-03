@@ -182,7 +182,7 @@ def test_edit_tool_rejects_when_old_string_not_found(tmp_path: Path) -> None:
 
     tool = EditTool()
 
-    with pytest.raises(ValueError, match="Could not find oldString"):
+    with pytest.raises(ValueError, match="Could not find oldString") as exc_info:
         tool.invoke(
             ToolCall(
                 tool_name="edit",
@@ -190,6 +190,45 @@ def test_edit_tool_rejects_when_old_string_not_found(tmp_path: Path) -> None:
             ),
             workspace=tmp_path,
         )
+
+    message = str(exc_info.value)
+    assert "Replacers attempted:" in message
+    assert "SimpleReplacer" in message
+    assert "ContextAwareReplacer" in message
+    assert "No nearby text match found" in message
+
+
+def test_edit_tool_reports_near_match_context_when_old_string_is_stale(
+    tmp_path: Path,
+) -> None:
+    file_path = tmp_path / "test.py"
+    file_path.write_text(
+        "def greet():\n    message = 'hello'\n    return message\n",
+        encoding="utf-8",
+    )
+
+    tool = EditTool()
+
+    with pytest.raises(ValueError, match="Near-match hints") as exc_info:
+        tool.invoke(
+            ToolCall(
+                tool_name="edit",
+                arguments={
+                    "path": "test.py",
+                    "oldString": "def greet():\n    message = 'hullo'\n    return value",
+                    "newString": "def greet():\n    message = 'hi'\n    return message",
+                },
+            ),
+            workspace=tmp_path,
+        )
+
+    message = str(exc_info.value)
+    assert "Replacers attempted:" in message
+    assert "BlockAnchorReplacer" in message
+    assert "L1" in message
+    assert "message = 'hello'" in message
+    assert "first block anchor is close" in message
+    assert "retry with exact current text" in message
 
 
 def test_edit_tool_preserves_line_endings(tmp_path: Path) -> None:
