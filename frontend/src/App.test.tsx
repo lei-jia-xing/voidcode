@@ -17,7 +17,7 @@ describe("App", () => {
     language: "en",
     setLanguage: vi.fn(),
     agentPreset: "leader",
-    providerModel: "opencode-go/glm-5.1",
+    providerModel: "deepseek/deepseek-v4-pro",
     setAgentPreset: vi.fn(),
     setProviderModel: vi.fn(),
     workspaces: null,
@@ -475,6 +475,120 @@ describe("App", () => {
 
     expect(screen.queryByText("Agent Busy")).not.toBeInTheDocument();
     expect(screen.queryByText("Agent Idle")).not.toBeInTheDocument();
+  });
+
+  it("shows delegated child session transcript and switches back to the parent session", () => {
+    const loadBackgroundTaskOutput = vi.fn();
+    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      ...mockStore,
+      workspaces: {
+        current: {
+          path: "/workspace",
+          label: "workspace",
+          available: true,
+          current: true,
+          last_opened_at: 1,
+        },
+        recent: [],
+        candidates: [],
+      },
+      currentSessionId: "parent-session",
+      currentSessionState: {
+        session: { id: "parent-session" },
+        status: "completed",
+        turn: 1,
+        metadata: {},
+      },
+      currentSessionEvents: [
+        {
+          session_id: "parent-session",
+          sequence: 1,
+          event_type: "runtime.request_received",
+          source: "runtime",
+          payload: { prompt: "parent prompt" },
+        },
+        {
+          session_id: "parent-session",
+          sequence: 2,
+          event_type: "graph.response_ready",
+          source: "graph",
+          payload: { output: "parent output" },
+        },
+      ],
+      currentSessionOutput: "parent output",
+      backgroundTasks: [
+        {
+          task: { id: "task-child-1" },
+          status: "completed",
+          prompt: "delegate child",
+          session_id: "child-session-1",
+          error: null,
+          created_at: 1,
+          updated_at: 1,
+        },
+      ],
+      selectedBackgroundTaskOutputId: "task-child-1",
+      backgroundTaskOutputStatus: "success",
+      backgroundTaskOutput: {
+        task: {
+          task_id: "task-child-1",
+          status: "completed",
+          parent_session_id: "parent-session",
+          requested_child_session_id: "requested-child-1",
+          child_session_id: "child-session-1",
+          approval_request_id: null,
+          question_request_id: null,
+          approval_blocked: false,
+          summary_output: "child summary",
+          error: null,
+          result_available: true,
+          cancellation_cause: null,
+          routing: { mode: "subagent", subagent_type: "explore" },
+        },
+        session_result: {
+          session: {
+            session: { id: "child-session-1", parent_id: "parent-session" },
+            status: "completed" as const,
+            turn: 1,
+            metadata: {},
+          },
+          prompt: "child prompt",
+          status: "completed",
+          summary: "child summary",
+          output: "child output",
+          error: null,
+          last_event_sequence: 2,
+          transcript: [
+            {
+              session_id: "child-session-1",
+              sequence: 1,
+              event_type: "runtime.request_received",
+              source: "runtime",
+              payload: { prompt: "child prompt" },
+            },
+            {
+              session_id: "child-session-1",
+              sequence: 2,
+              event_type: "graph.response_ready",
+              source: "graph",
+              payload: { output: "child output" },
+            },
+          ],
+        },
+        output: "child output",
+      },
+      loadBackgroundTaskOutput,
+    });
+
+    render(<App />);
+
+    expect(screen.getByText("child prompt")).toBeInTheDocument();
+    expect(screen.getByText("child output")).toBeInTheDocument();
+    expect(screen.queryByText("parent output")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("Parent session"));
+
+    expect(loadBackgroundTaskOutput).toHaveBeenCalledWith(null);
   });
 
   it("renders project-picker-first empty state when no current workspace exists", () => {
@@ -1220,17 +1334,17 @@ describe("App", () => {
       agentPresets: [{ id: "leader", label: "Leader", description: null }],
       providers: [
         {
-          name: "opencode-go",
-          label: "OpenCode Go",
+          name: "deepseek",
+          label: "DeepSeek",
           configured: true,
           current: true,
         },
       ],
       providerModels: {
-        "opencode-go": {
-          provider: "opencode-go",
+        deepseek: {
+          provider: "deepseek",
           configured: true,
-          models: ["opencode-go/glm-5.1", "new-model/v1"],
+          models: ["deepseek-v4-pro", "deepseek-v4-flash"],
           source: null,
           last_refresh_status: null,
           last_error: null,
@@ -1242,12 +1356,12 @@ describe("App", () => {
     render(<App />);
 
     const modelInput = screen.getByRole("button", { name: "Model" });
-    expect(modelInput).toHaveTextContent("OpenCode Go / glm-5.1");
+    expect(modelInput).toHaveTextContent("DeepSeek / deepseek-v4-pro");
 
     fireEvent.click(modelInput);
-    fireEvent.click(screen.getByRole("button", { name: "new-model/v1" }));
+    fireEvent.click(screen.getByRole("button", { name: "deepseek-v4-flash" }));
     expect(mockStore.setProviderModel).toHaveBeenCalledWith(
-      "opencode-go/new-model/v1",
+      "deepseek/deepseek-v4-flash",
     );
   });
 
