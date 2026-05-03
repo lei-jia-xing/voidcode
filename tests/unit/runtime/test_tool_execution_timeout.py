@@ -474,6 +474,13 @@ def test_runtime_caps_large_tool_output_before_feedback(tmp_path: Path) -> None:
     artifact_root = tool_output_artifact_temp_root().resolve()
     assert artifact_root in output_path.parents
     assert payload["artifact_missing"] is False
+    assert payload["retry_guidance"] == (
+        "Use background_output with full_session=true, or artifact retrieval by "
+        "artifact_id/tool_call_id, to inspect the full output before retrying."
+    )
+    diagnostics = payload["diagnostics"]
+    assert isinstance(diagnostics, list)
+    assert diagnostics[-1]["reason"] == "tool_output_truncated"
     assert isinstance(payload["artifact_id"], str)
     artifact = payload["artifact"]
     assert isinstance(artifact, dict)

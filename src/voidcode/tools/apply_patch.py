@@ -14,6 +14,7 @@ from unidiff.errors import UnidiffParseError
 from ..hook.config import RuntimeHooksConfig
 from ..security.path_policy import resolve_workspace_path
 from ._formatter import FormatterExecutor, formatter_diagnostics, formatter_payload
+from ._repair import format_text_repair_hints, raise_tool_diagnostic
 from .contracts import ToolCall, ToolDefinition, ToolResult
 
 
@@ -282,7 +283,31 @@ def _derive_marker_update_content_from_text(
             found = _seek_sequence(original_lines, pattern, line_index, eof=chunk.is_end_of_file)
         if found == -1:
             expected = "\n".join(chunk.old_lines)
-            raise ValueError(f"Failed to find expected lines in {file_path}:\n{expected}")
+            lines = [
+                f"Failed to find expected lines in {file_path}:",
+                expected,
+                "Retry guidance: re-read this file and rebuild the patch hunk from current text.",
+            ]
+            hints = format_text_repair_hints(
+                content="\n".join(original_lines),
+                expected=expected,
+                label="Nearest current file context",
+            )
+            if hints:
+                lines.extend(hints)
+            raise_tool_diagnostic(
+                message="\n".join(lines),
+                error_kind="tool_input_mismatch",
+                reason="expected_lines_not_found",
+                retry_guidance=(
+                    "Re-read the target file and rebuild this patch hunk from current content."
+                ),
+                details={
+                    "path": str(file_path),
+                    "expected_preview": expected[:500],
+                    "has_candidate_matches": bool(hints),
+                },
+            )
         replacements.append((found, len(pattern), new_slice))
         line_index = found + len(pattern)
 

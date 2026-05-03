@@ -170,6 +170,15 @@ def _safe_artifact_segment(value: str | None, *, fallback: str) -> str:
     return safe[:96] or fallback
 
 
+def _diagnostics_with(
+    existing_data: dict[str, object], diagnostic: dict[str, object]
+) -> list[object]:
+    current = existing_data.get("diagnostics")
+    if isinstance(current, list):
+        return [*cast(list[object], current), diagnostic]
+    return [diagnostic]
+
+
 def _user_cache_root() -> Path:
     if sys.platform == "win32":
         cache_home = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
@@ -471,7 +480,8 @@ def cap_tool_result_output(
         hint = (
             "\n\n[Tool error truncated: "
             f"artifact_id={artifact['artifact_id']}. "
-            "Use artifact retrieval by artifact_id or tool_call_id to read/search the full error.]"
+            "Use background_output with full_session=true, or artifact retrieval by artifact_id "
+            "or tool_call_id, to read/search the full error.]"
         )
         return replace(
             result,
@@ -479,6 +489,24 @@ def cap_tool_result_output(
             data={
                 **result.data,
                 "truncated": True,
+                "diagnostics": _diagnostics_with(
+                    result.data,
+                    {
+                        "source": "tool_output",
+                        "severity": "warning",
+                        "reason": "tool_error_truncated",
+                        "message": "Tool error was truncated before being sent to the model.",
+                        "retry_guidance": (
+                            "Use background_output with full_session=true, or artifact retrieval "
+                            "by artifact_id/tool_call_id, to inspect the full error before "
+                            "retrying."
+                        ),
+                    },
+                ),
+                "retry_guidance": (
+                    "Use background_output with full_session=true, or artifact retrieval by "
+                    "artifact_id/tool_call_id, to inspect the full error before retrying."
+                ),
                 "artifact": artifact,
                 "artifact_id": artifact["artifact_id"],
                 "artifact_status": "available",
@@ -516,7 +544,8 @@ def cap_tool_result_output(
         "\n\n[Tool output truncated: "
         f"omitted {omitted_bytes} bytes and {omitted_lines} lines. "
         f"artifact_id={artifact['artifact_id']}. "
-        "Use artifact retrieval by artifact_id or tool_call_id to read/search the full output.]"
+        "Use background_output with full_session=true, or artifact retrieval by artifact_id "
+        "or tool_call_id, to read/search the full output.]"
     )
 
     return replace(
@@ -525,6 +554,23 @@ def cap_tool_result_output(
         data={
             **result.data,
             "truncated": True,
+            "diagnostics": _diagnostics_with(
+                result.data,
+                {
+                    "source": "tool_output",
+                    "severity": "warning",
+                    "reason": "tool_output_truncated",
+                    "message": "Tool output was truncated before being sent to the model.",
+                    "retry_guidance": (
+                        "Use background_output with full_session=true, or artifact retrieval by "
+                        "artifact_id/tool_call_id, to inspect the full output before retrying."
+                    ),
+                },
+            ),
+            "retry_guidance": (
+                "Use background_output with full_session=true, or artifact retrieval by "
+                "artifact_id/tool_call_id, to inspect the full output before retrying."
+            ),
             "artifact": artifact,
             "artifact_id": artifact["artifact_id"],
             "artifact_status": "available",

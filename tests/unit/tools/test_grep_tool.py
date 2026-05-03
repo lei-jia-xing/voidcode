@@ -7,6 +7,8 @@ import pytest
 
 from voidcode.runtime.service import ToolRegistry
 from voidcode.tools import GrepTool, ToolCall
+from voidcode.tools._repair import ToolDiagnosticError
+from voidcode.tools.grep import MAX_MATCHES
 
 
 def test_grep_tool_searches_utf8_file_inside_workspace(tmp_path: Path) -> None:
@@ -180,6 +182,25 @@ def test_grep_tool_ignores_common_directories_by_default(tmp_path: Path) -> None
     assert "node_modules/ignored.py" not in (result.content or "")
 
 
+def test_grep_tool_truncated_results_include_agent_guidance(tmp_path: Path) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("".join("needle\n" for _ in range(MAX_MATCHES + 3)), encoding="utf-8")
+    tool = GrepTool()
+
+    result = tool.invoke(
+        ToolCall(tool_name="grep", arguments={"pattern": "needle", "path": "sample.txt"}),
+        workspace=tmp_path,
+    )
+
+    assert result.truncated is True
+    assert "[TRUNCATED]" in (result.content or "")
+    assert result.data["match_count"] == MAX_MATCHES
+    diagnostics = cast(list[dict[str, object]], result.data["diagnostics"])
+    assert diagnostics[-1]["reason"] == "results_truncated"
+    retry_guidance = cast(str, diagnostics[-1]["retry_guidance"])
+    assert "Refine path" in retry_guidance
+
+
 def test_grep_tool_returns_zero_matches_summary(tmp_path: Path) -> None:
     sample_file = tmp_path / "sample.txt"
     _ = sample_file.write_text("alpha beta\n", encoding="utf-8")
@@ -200,6 +221,17 @@ def test_grep_tool_returns_zero_matches_summary(tmp_path: Path) -> None:
         "truncated": False,
         "partial": False,
         "matches": [],
+        "diagnostics": [
+            {
+                "source": "grep",
+                "severity": "info",
+                "reason": "no_matches",
+                "message": (
+                    "No matches found. Broaden the path/include filter, verify the search "
+                    "text with read_file, or retry with regex=false for literal text."
+                ),
+            }
+        ],
     }
 
 
@@ -283,7 +315,7 @@ def test_grep_tool_reports_missing_required_args_and_invalid_regex(tmp_path: Pat
     with pytest.raises(
         ValueError,
         match=r"grep Validation error: pattern: invalid regex pattern .* \(received str\)",
-    ):
+    ) as exc_info:
         tool.invoke(
             ToolCall(
                 tool_name="grep",
@@ -291,6 +323,12 @@ def test_grep_tool_reports_missing_required_args_and_invalid_regex(tmp_path: Pat
             ),
             workspace=tmp_path,
         )
+
+    assert isinstance(exc_info.value, ToolDiagnosticError)
+    assert exc_info.value.error_kind == "tool_input_validation"
+    assert exc_info.value.error_details["reason"] == "invalid_regex"
+    assert exc_info.value.retry_guidance is not None
+    assert "regex=false" in exc_info.value.retry_guidance
 
 
 def test_tools_package_and_default_registry_export_grep_tool() -> None:

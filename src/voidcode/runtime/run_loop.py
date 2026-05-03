@@ -24,6 +24,7 @@ from ..provider.protocol import (
     ProviderAssembledContext,
     ProviderContextSegmentLike,
 )
+from ..tools._repair import ToolDiagnosticError
 from ..tools.contracts import (
     RuntimeTimeoutAwareTool,
     RuntimeToolTimeoutError,
@@ -148,6 +149,47 @@ def _tool_error_payload(
     if retry_guidance is not None:
         payload["retry_guidance"] = retry_guidance
     return payload
+
+
+def _tool_diagnostic_payload(
+    *,
+    tool_name: str,
+    error: ToolDiagnosticError,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "error_kind": error.error_kind,
+        "error_summary": _tool_error_summary(str(error)),
+        "error_details": _tool_error_details(
+            tool_name=tool_name,
+            error=str(error),
+            error_kind=error.error_kind,
+            extra=error.error_details,
+        ),
+    }
+    if error.retry_guidance is not None:
+        payload["retry_guidance"] = error.retry_guidance
+    return payload
+
+
+def _user_interrupted_payload(*, run_id: str | None, reason: str | None) -> dict[str, object]:
+    return {
+        "kind": "interrupted",
+        "cancelled": True,
+        "run_id": run_id,
+        "reason": reason,
+        "retry_guidance": (
+            "User interrupted the run. Stop autonomous continuation, preserve current state, "
+            "and wait for the user's next instruction before retrying."
+        ),
+        "diagnostics": [
+            {
+                "source": "runtime",
+                "severity": "info",
+                "reason": "user_interrupted",
+                "message": "The current run was interrupted by the user.",
+            }
+        ],
+    }
 
 
 def _metadata_without_provider_attempt(metadata: Mapping[str, object]) -> dict[str, object]:
@@ -301,12 +343,10 @@ class RuntimeRunLoopCoordinator:
             session=session,
             sequence=sequence + 2,
             error="run interrupted",
-            payload={
-                "kind": "interrupted",
-                "cancelled": True,
-                "run_id": runtime._run_id_from_session_metadata(session.metadata),
-                "reason": _abort_signal_reason(abort_signal),
-            },
+            payload=_user_interrupted_payload(
+                run_id=runtime._run_id_from_session_metadata(session.metadata),
+                reason=_abort_signal_reason(abort_signal),
+            ),
         )
         return completed_chunk, failed_chunk
 
@@ -708,6 +748,20 @@ class RuntimeRunLoopCoordinator:
                 )
                 yield runtime._failed_chunk(session=session, sequence=sequence + 1, error=str(exc))
                 raise
+            error_summary = _tool_error_summary(str(exc))
+            error_details = _tool_error_details(tool_name=tool_call.tool_name, error=str(exc))
+            retry_guidance = _tool_error_retry_guidance(str(exc))
+            error_kind: str | None = None
+            if isinstance(exc, ToolDiagnosticError):
+                error_kind = exc.error_kind
+                error_details = _tool_error_details(
+                    tool_name=tool_call.tool_name,
+                    error=str(exc),
+                    error_kind=exc.error_kind,
+                    extra=exc.error_details,
+                )
+                retry_guidance = exc.retry_guidance
+
             tool_result = ToolResult(
                 tool_name=tool_call.tool_name,
                 status="error",
@@ -717,9 +771,10 @@ class RuntimeRunLoopCoordinator:
                     "tool_call_id": tool_call_id,
                     "arguments": dict(tool_call.arguments),
                 },
-                error_summary=_tool_error_summary(str(exc)),
-                error_details=_tool_error_details(tool_name=tool_call.tool_name, error=str(exc)),
-                retry_guidance=_tool_error_retry_guidance(str(exc)),
+                error_kind=error_kind,
+                error_summary=error_summary,
+                error_details=error_details,
+                retry_guidance=retry_guidance,
             )
 
         sanitized_arguments = sanitize_tool_arguments(dict(tool_call.arguments))
@@ -791,12 +846,10 @@ class RuntimeRunLoopCoordinator:
                 session=session,
                 sequence=sequence + 1,
                 error="run interrupted",
-                payload={
-                    "kind": "interrupted",
-                    "cancelled": True,
-                    "run_id": runtime._run_id_from_session_metadata(session.metadata),
-                    "reason": _abort_signal_reason(abort_signal),
-                },
+                payload=_user_interrupted_payload(
+                    run_id=runtime._run_id_from_session_metadata(session.metadata),
+                    reason=_abort_signal_reason(abort_signal),
+                ),
             )
             return
 
@@ -1120,12 +1173,10 @@ class RuntimeRunLoopCoordinator:
                         session=session,
                         sequence=sequence + 1,
                         error="run interrupted",
-                        payload={
-                            "kind": "interrupted",
-                            "cancelled": True,
-                            "run_id": runtime._run_id_from_session_metadata(session.metadata),
-                            "reason": _abort_reason(active_graph_request),
-                        },
+                        payload=_user_interrupted_payload(
+                            run_id=runtime._run_id_from_session_metadata(session.metadata),
+                            reason=_abort_reason(active_graph_request),
+                        ),
                     )
                     return
                 graph_step = graph.step(
@@ -1423,12 +1474,10 @@ class RuntimeRunLoopCoordinator:
                     session=session,
                     sequence=sequence + 1,
                     error="run interrupted",
-                    payload={
-                        "kind": "interrupted",
-                        "cancelled": True,
-                        "run_id": runtime._run_id_from_session_metadata(session.metadata),
-                        "reason": _abort_reason(active_graph_request),
-                    },
+                    payload=_user_interrupted_payload(
+                        run_id=runtime._run_id_from_session_metadata(session.metadata),
+                        reason=_abort_reason(active_graph_request),
+                    ),
                 )
                 return
             session = runtime._session_with_provider_usage_metadata(
@@ -1939,6 +1988,23 @@ class RuntimeRunLoopCoordinator:
                         session=session, sequence=sequence + 1, error=str(exc)
                     )
                     raise
+                error_summary = _tool_error_summary(str(exc))
+                error_details = _tool_error_details(
+                    tool_name=plan_tool_call.tool_name,
+                    error=str(exc),
+                )
+                retry_guidance = _tool_error_retry_guidance(str(exc))
+                error_kind: str | None = None
+                if isinstance(exc, ToolDiagnosticError):
+                    error_kind = exc.error_kind
+                    error_details = _tool_error_details(
+                        tool_name=plan_tool_call.tool_name,
+                        error=str(exc),
+                        error_kind=exc.error_kind,
+                        extra=exc.error_details,
+                    )
+                    retry_guidance = exc.retry_guidance
+
                 tool_result = ToolResult(
                     tool_name=plan_tool_call.tool_name,
                     status="error",
@@ -1948,12 +2014,10 @@ class RuntimeRunLoopCoordinator:
                         "tool_call_id": tool_call_id,
                         "arguments": dict(plan_tool_call.arguments),
                     },
-                    error_summary=_tool_error_summary(str(exc)),
-                    error_details=_tool_error_details(
-                        tool_name=plan_tool_call.tool_name,
-                        error=str(exc),
-                    ),
-                    retry_guidance=_tool_error_retry_guidance(str(exc)),
+                    error_kind=error_kind,
+                    error_summary=error_summary,
+                    error_details=error_details,
+                    retry_guidance=retry_guidance,
                 )
 
             runtime_tool_result_data = dict(tool_result.data)
@@ -2127,12 +2191,10 @@ class RuntimeRunLoopCoordinator:
                     session=session,
                     sequence=sequence + 1,
                     error="run interrupted",
-                    payload={
-                        "kind": "interrupted",
-                        "cancelled": True,
-                        "run_id": runtime._run_id_from_session_metadata(session.metadata),
-                        "reason": _abort_reason(active_graph_request),
-                    },
+                    payload=_user_interrupted_payload(
+                        run_id=runtime._run_id_from_session_metadata(session.metadata),
+                        reason=_abort_reason(active_graph_request),
+                    ),
                 )
                 return
 

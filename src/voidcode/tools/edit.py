@@ -15,6 +15,13 @@ from ._formatter import (
     formatter_diagnostics,
     formatter_payload,
 )
+from ._repair import (
+    bounded_block_preview,
+    bounded_candidate_diff,
+    line_prefix_retry_guidance,
+    looks_line_number_prefixed,
+    raise_tool_diagnostic,
+)
 from .contracts import ToolCall, ToolDefinition, ToolResult
 
 
@@ -32,6 +39,92 @@ def _convert_line_endings(text: str, ending: str) -> str:
     if ending == "\n":
         return _normalize_line_endings(text)
     return text.replace("\n", "\r\n")
+
+
+def _near_match_hints(content: str, old_string: str, *, limit: int = 2) -> list[str]:
+    old_lines = old_string.split("\n")
+    if old_lines and old_lines[-1] == "":
+        old_lines = old_lines[:-1]
+    if not old_lines:
+        return []
+
+    lines = content.split("\n")
+    window_size = min(len(old_lines), len(lines))
+    if window_size == 0:
+        return []
+
+    candidates: list[tuple[float, int, str, str]] = []
+    normalized_old = WhitespaceNormalizedReplacer.normalize(old_string)
+    dedented_old = IndentationFlexibleReplacer.remove_indentation(old_string)
+
+    for start in range(len(lines) - window_size + 1):
+        block = "\n".join(lines[start : start + window_size])
+        ratio = difflib.SequenceMatcher(None, old_string.strip(), block.strip()).ratio()
+        if ratio < 0.58:
+            continue
+
+        notes: list[str] = []
+        if WhitespaceNormalizedReplacer.normalize(block) == normalized_old:
+            notes.append("whitespace-only mismatch")
+        if IndentationFlexibleReplacer.remove_indentation(block) == dedented_old:
+            notes.append("indentation-only mismatch")
+        if len(old_lines) >= 3:
+            first_close = BlockAnchorReplacer._similar(lines[start].strip(), old_lines[0].strip())
+            last_close = BlockAnchorReplacer._similar(
+                lines[start + window_size - 1].strip(), old_lines[-1].strip()
+            )
+            if first_close and last_close:
+                notes.append("block anchors are close")
+            elif first_close:
+                notes.append("first block anchor is close; check the ending line")
+            elif last_close:
+                notes.append("last block anchor is close; check the starting line")
+        if not notes:
+            notes.append("near text match")
+
+        candidates.append((ratio, start, ", ".join(notes), block))
+
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    hints: list[str] = []
+    for ratio, start, note, block in candidates[:limit]:
+        hints.append(
+            f"  - L{start + 1} ({round(ratio * 100)}% similar; {note})\n"
+            f"{bounded_block_preview(lines, start, window_size)}\n"
+            "    Diff (- oldString, + current):\n"
+            f"{bounded_candidate_diff(old_string, block).replace('expected', 'oldString')}"
+        )
+    return hints
+
+
+def _edit_mismatch_message(
+    *,
+    content: str,
+    old_string: str,
+    attempted_replacers: list[str],
+) -> str:
+    lines = [
+        "Could not find oldString in the file.",
+        "Replacers attempted:",
+        *(f"  - {name}" for name in attempted_replacers),
+    ]
+
+    hints = _near_match_hints(content, old_string)
+    if hints:
+        lines.extend(
+            [
+                "Near-match hints:",
+                *hints,
+                "Tip: re-read the shown lines and retry with exact current text, "
+                "including indentation.",
+            ]
+        )
+    else:
+        lines.append("No nearby text match found; re-read the file before retrying the edit.")
+
+    if looks_line_number_prefixed(old_string):
+        lines.append(line_prefix_retry_guidance())
+
+    return "\n".join(lines)
 
 
 def _trim_diff(diff: str) -> str:
@@ -240,6 +333,9 @@ class IndentationFlexibleReplacer:
             if match and match.group(1):
                 min_indent = min(min_indent, len(match.group(1)))
 
+        if min_indent == float("inf"):
+            return text
+
         dedented = [line[min_indent:] if len(line) >= min_indent else line for line in lines]
         return "\n".join(dedented)
 
@@ -308,12 +404,13 @@ def _replace(
     current = content
 
     # Try each replacer in order until we find at least one match
+    attempted_replacers: list[str] = []
     for replacer in replacers:
-        matches = []
+        attempted_replacers.append(replacer.__name__)
         try:
             matches = replacer.find(current, old_string)
         except Exception:
-            matches = []
+            continue
         if not matches:
             continue
 
@@ -342,7 +439,22 @@ def _replace(
             return current, total_replacements
 
     # If we reach here, no replacer found any match
-    raise ValueError("Could not find oldString in the file using replacers.")
+    raise_tool_diagnostic(
+        message=_edit_mismatch_message(
+            content=current, old_string=old_string, attempted_replacers=attempted_replacers
+        ),
+        error_kind="tool_input_mismatch",
+        reason="old_string_not_found",
+        retry_guidance=(
+            "Use read_file on the target path, copy exact current file text without line-number "
+            "prefixes, then retry edit with that exact oldString."
+        ),
+        details={
+            "attempted_replacers": attempted_replacers,
+            "old_string_line_count": len(old_string.splitlines()),
+            "line_number_prefix_suspected": looks_line_number_prefixed(old_string),
+        },
+    )
 
 
 class EscapeNormalizedReplacer:

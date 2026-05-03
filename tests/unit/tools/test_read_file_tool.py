@@ -32,6 +32,7 @@ def test_read_file_tool_reads_text_file_with_offset_and_limit(tmp_path: Path) ->
     assert result.data["offset"] == 2
     assert result.data["limit"] == 2
     assert result.data["next_offset"] == 4
+    assert "omit those prefixes" in str(result.data["copy_guidance"])
 
 
 def test_read_file_tool_rejects_directories_with_suggestions(tmp_path: Path) -> None:
