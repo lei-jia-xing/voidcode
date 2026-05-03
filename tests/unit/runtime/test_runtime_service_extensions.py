@@ -4425,6 +4425,32 @@ def test_runtime_allows_reasoning_effort_on_unsupported_model_for_deterministic_
     assert runtime_config_metadata["reasoning_effort"] == "high"
 
 
+def test_runtime_fails_fast_when_opencode_go_reasoning_effort_is_unsupported(
+    tmp_path: Path,
+) -> None:
+    registry = ModelProviderRegistry.with_defaults()
+    registry.model_catalog = {
+        "opencode-go": ProviderModelCatalog(
+            provider="opencode-go",
+            models=("glm-5",),
+            refreshed=True,
+            model_metadata={"glm-5": ProviderModelMetadata(supports_reasoning_effort=False)},
+        )
+    }
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode-go/glm-5",
+            reasoning_effort="high",
+        ),
+        model_provider_registry=registry,
+    )
+
+    with pytest.raises(RuntimeRequestError, match="does not support reasoning effort"):
+        _ = runtime.run(RuntimeRequest(prompt="leader"))
+
+
 def test_runtime_allows_reasoning_effort_when_metadata_unknown(tmp_path: Path) -> None:
     registry = ModelProviderRegistry.with_defaults()
     registry.model_catalog = {

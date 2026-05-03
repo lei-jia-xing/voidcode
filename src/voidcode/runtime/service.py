@@ -1441,8 +1441,6 @@ class VoidCodeRuntime:
         model_name = active_target.model
         if provider_name is None or model_name is None:
             return
-        if provider_name.strip().lower() == "opencode-go":
-            return
         metadata = self._metadata_for_provider_model(provider_name, model_name)
         if metadata is None:
             return
