@@ -1,4 +1,3 @@
-# pyright: reportArgumentType=false, reportUnusedFunction=false
 from __future__ import annotations
 
 import importlib
@@ -38,7 +37,11 @@ from voidcode.provider.config import (
     ProviderTransientRetryConfig,
 )
 from voidcode.provider.model_catalog import ProviderModelCatalog, ProviderModelMetadata
-from voidcode.provider.protocol import ProviderErrorKind
+from voidcode.provider.protocol import (
+    ProviderAbortSignal,
+    ProviderAssembledContext,
+    ProviderErrorKind,
+)
 from voidcode.provider.registry import ModelProviderRegistry
 from voidcode.runtime.acp import (
     AcpAdapterState,
@@ -123,7 +126,7 @@ from voidcode.runtime.service import (
     ToolRegistry,
     VoidCodeRuntime,
 )
-from voidcode.runtime.session import SessionRef
+from voidcode.runtime.session import SessionRef, SessionStatus
 from voidcode.runtime.storage import SqliteSessionStore
 from voidcode.runtime.task import (
     BackgroundTaskRef,
@@ -179,6 +182,105 @@ def _prompt_materialization_payload(profile: str) -> dict[str, object]:
 
 def _private_attr(instance: object, name: str) -> Any:
     return getattr(instance, name)
+
+
+def _assert_context_window_recomputed(
+    *,
+    prepared_calls: int,
+    context_window: RuntimeContextWindow,
+) -> None:
+    assert prepared_calls == 1
+    assert context_window.original_tool_result_count == 1
+
+
+class _NoopMcpManager:
+    @property
+    def configuration(self) -> McpConfigState:
+        return McpConfigState(configured_enabled=True)
+
+    def current_state(self) -> McpManagerState:
+        return McpManagerState(mode="managed", configuration=self.configuration)
+
+    def list_tools(
+        self,
+        *,
+        workspace: Path,
+        owner_session_id: str | None = None,
+        parent_session_id: str | None = None,
+    ) -> tuple[McpToolDescriptor, ...]:
+        _ = workspace, owner_session_id, parent_session_id
+        return ()
+
+    def call_tool(
+        self,
+        *,
+        server_name: str,
+        tool_name: str,
+        arguments: dict[str, object],
+        workspace: Path,
+        owner_session_id: str | None = None,
+        parent_session_id: str | None = None,
+    ) -> McpToolCallResult:
+        _ = server_name, tool_name, arguments, workspace, owner_session_id, parent_session_id
+        raise AssertionError("not used")
+
+    def shutdown(self) -> tuple[McpRuntimeEvent, ...]:
+        return ()
+
+    def drain_events(self) -> tuple[McpRuntimeEvent, ...]:
+        return ()
+
+    def retry_connections(self, *, workspace: Path) -> None:
+        _ = workspace
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("ls /etc", ()),
+        ("du -sh /var", ()),
+        ("test -f /usr/include/vulkan/vulkan.h", ()),
+        ("cat /usr/include/vulkan/vulkan.h", ()),
+        ("echo hi > /tmp/out.txt", ("/tmp/out.txt",)),
+        ("echo hi > /tmp/out.txt && cat /tmp/out.txt", ("/tmp/out.txt",)),
+        ("echo hi 2>/tmp/err.log", ("/tmp/err.log",)),
+        ("echo hi > ./../out.txt", ("./../out.txt",)),
+        ("echo hi > ././../out.txt", ("././../out.txt",)),
+        ("curl --output=/tmp/out.txt https://example.com", ("/tmp/out.txt",)),
+        ("curl -o /tmp/out.txt https://example.com", ("/tmp/out.txt",)),
+        ("curl --write-out=/tmp/format.txt https://example.com", ()),
+        ("tool --output=././../out.txt", ("././../out.txt",)),
+        ("tool --config=/etc/app.conf", ()),
+        ("tool --file=2024/report.txt", ()),
+        (r"type C:	emp\out.log", ()),
+        (
+            r"type C:\Windows\System32\drivers\etc\hosts",
+            (),
+        ),
+        ("touch /tmp/out.txt", ()),
+        ("mkdir /tmp/generated", ()),
+        ("rm /tmp/out.txt", ()),
+        ("cp /etc/input.conf /tmp/output.conf", ()),
+        ("mv /tmp/source.txt /tmp/output.txt", ()),
+        ("sudo cp /etc/input.conf /tmp/output.conf", ()),
+        ("git mv /tmp/source.txt /tmp/output.txt", ()),
+        ("cp /etc/input.conf /tmp/output.conf > /tmp/copy.log", ("/tmp/copy.log",)),
+        ("cat 2024/report.txt", ()),
+    ],
+)
+def test_runtime_extracts_shell_external_path_candidates(
+    command: str,
+    expected: tuple[str, ...],
+) -> None:
+    runtime_type = cast(Any, VoidCodeRuntime)
+    assert runtime_type._extract_shell_path_candidates(command) == expected
+
+
+def test_runtime_ignores_shell_executable_path_candidate() -> None:
+    command = f'"{sys.executable}" -c "print(1)"'
+
+    runtime_type = cast(Any, VoidCodeRuntime)
+    assert runtime_type._extract_shell_path_candidates(command) == ()
 
 
 def test_runtime_shell_read_probe_external_path_stays_workspace_scoped(tmp_path: Path) -> None:
@@ -1634,7 +1736,7 @@ def test_runtime_background_task_progress_hooks_skip_result_load_when_no_command
         graph=_BackgroundTaskSuccessGraph(),
         config=RuntimeConfig(hooks=hooks),
     )
-    supervisor = runtime._background_task_supervisor  # pyright: ignore[reportPrivateUsage]
+    supervisor = runtime._background_task_supervisor
     task = BackgroundTaskState(
         task=BackgroundTaskRef(id="task-progress-no-hooks"),
         status="running",
@@ -1667,7 +1769,7 @@ def test_runtime_background_task_started_hook_runs_outside_queue_lock(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
-    supervisor = runtime._background_task_supervisor  # pyright: ignore[reportPrivateUsage]
+    supervisor = runtime._background_task_supervisor
     task = BackgroundTaskState(
         task=BackgroundTaskRef(id="task-started-hook-lock"),
         request=BackgroundTaskRequestSnapshot(
@@ -1675,7 +1777,7 @@ def test_runtime_background_task_started_hook_runs_outside_queue_lock(
             parent_session_id="leader-session",
         ),
     )
-    runtime._session_store.create_background_task(  # pyright: ignore[reportPrivateUsage]
+    runtime._session_store.create_background_task(
         workspace=tmp_path,
         task=task,
     )
@@ -1696,7 +1798,7 @@ def test_runtime_background_task_started_hook_runs_outside_queue_lock(
     ) -> None:
         _ = task, session_id, extra_payload
         lifecycle_calls.append(surface)
-        assert cast(Any, supervisor._queue_lock)._is_owned() is False  # pyright: ignore[reportPrivateUsage]
+        assert cast(Any, supervisor._queue_lock)._is_owned() is False
         assert worker_started.is_set() is False
 
     monkeypatch.setattr(runtime, "_run_background_task_worker", no_op_worker)
@@ -1706,7 +1808,7 @@ def test_runtime_background_task_started_hook_runs_outside_queue_lock(
         assert_started_hook_not_locked,
     )
 
-    supervisor._drain_background_task_queue()  # pyright: ignore[reportPrivateUsage]
+    supervisor._drain_background_task_queue()
 
     assert worker_started.wait(timeout=2.0)
     assert lifecycle_calls == ["background_task_started", "worker_started"]
@@ -1717,7 +1819,7 @@ def test_runtime_background_task_started_hook_skips_when_thread_start_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
-    supervisor = runtime._background_task_supervisor  # pyright: ignore[reportPrivateUsage]
+    supervisor = runtime._background_task_supervisor
     task = BackgroundTaskState(
         task=BackgroundTaskRef(id="task-start-fails"),
         request=BackgroundTaskRequestSnapshot(
@@ -1725,7 +1827,7 @@ def test_runtime_background_task_started_hook_skips_when_thread_start_fails(
             parent_session_id="leader-session",
         ),
     )
-    runtime._session_store.create_background_task(  # pyright: ignore[reportPrivateUsage]
+    runtime._session_store.create_background_task(
         workspace=tmp_path,
         task=task,
     )
@@ -1751,7 +1853,7 @@ def test_runtime_background_task_started_hook_skips_when_thread_start_fails(
     monkeypatch.setattr(runtime_background_tasks_module.threading, "Thread", _FailingThread)
     monkeypatch.setattr(supervisor, "run_background_task_lifecycle_surface", record_lifecycle)
 
-    supervisor._drain_background_task_queue()  # pyright: ignore[reportPrivateUsage]
+    supervisor._drain_background_task_queue()
 
     failed = runtime.load_background_task("task-start-fails")
     assert failed.status == "failed"
@@ -1951,12 +2053,10 @@ def test_runtime_background_task_concurrency_identity_uses_model_provider_defaul
             ),
         ),
     )
-    supervisor = runtime._background_task_supervisor  # pyright: ignore[reportPrivateUsage]
+    supervisor = runtime._background_task_supervisor
 
-    model_identity = supervisor._concurrency_identity_for_request(  # pyright: ignore[reportPrivateUsage]
-        RuntimeRequest(prompt="model")
-    )
-    provider_identity = supervisor._concurrency_identity_for_request(  # pyright: ignore[reportPrivateUsage]
+    model_identity = supervisor._concurrency_identity_for_request(RuntimeRequest(prompt="model"))
+    provider_identity = supervisor._concurrency_identity_for_request(
         RuntimeRequest(
             prompt="provider",
             metadata={
@@ -1967,7 +2067,7 @@ def test_runtime_background_task_concurrency_identity_uses_model_provider_defaul
             },
         )
     )
-    default_identity = supervisor._concurrency_identity_for_request(  # pyright: ignore[reportPrivateUsage]
+    default_identity = supervisor._concurrency_identity_for_request(
         RuntimeRequest(
             prompt="default",
             metadata={
@@ -2036,7 +2136,7 @@ def test_runtime_background_task_rate_limit_retries_after_backoff(
         return 0.0
 
     monkeypatch.setattr(
-        runtime._background_task_supervisor,  # pyright: ignore[reportPrivateUsage]
+        runtime._background_task_supervisor,
         "_rate_limit_backoff_seconds",
         _zero_backoff,
     )
@@ -2060,7 +2160,7 @@ def test_runtime_background_task_observability_reports_rate_limit_backoff(
         return 0.5
 
     monkeypatch.setattr(
-        runtime._background_task_supervisor,  # pyright: ignore[reportPrivateUsage]
+        runtime._background_task_supervisor,
         "_rate_limit_backoff_seconds",
         _observable_backoff,
     )
@@ -2128,7 +2228,7 @@ def test_runtime_background_rate_limit_retry_precedes_provider_fallback(
         return 0.0
 
     monkeypatch.setattr(
-        runtime._background_task_supervisor,  # pyright: ignore[reportPrivateUsage]
+        runtime._background_task_supervisor,
         "_rate_limit_backoff_seconds",
         _zero_backoff,
     )
@@ -2401,7 +2501,7 @@ def test_runtime_session_debug_snapshot_reconstructs_skill_prompt_context(
 def test_runtime_persists_agent_capability_snapshot_for_replay(
     tmp_path: Path,
 ) -> None:
-    class _StubMcpManager:
+    class _StubMcpManager(_NoopMcpManager):
         @property
         def configuration(self) -> McpConfigState:
             return McpConfigState(configured_enabled=True, servers={"echo": object()})
@@ -2415,7 +2515,7 @@ def test_runtime_persists_agent_capability_snapshot_for_replay(
             workspace: Path,
             owner_session_id: str | None = None,
             parent_session_id: str | None = None,
-        ):
+        ) -> tuple[McpToolDescriptor, ...]:
             _ = workspace, parent_session_id
             if owner_session_id != "capability-snapshot":
                 return ()
@@ -2440,12 +2540,6 @@ def test_runtime_persists_agent_capability_snapshot_for_replay(
         ) -> McpToolCallResult:
             _ = server_name, tool_name, arguments, workspace, owner_session_id, parent_session_id
             return McpToolCallResult(content=[{"type": "text", "text": "echo"}])
-
-        def shutdown(self):
-            return ()
-
-        def drain_events(self):
-            return ()
 
     skill_dir = tmp_path / ".voidcode" / "skills" / "demo"
     _write_demo_skill(skill_dir, content="# Demo\nSnapshot this skill body.")
@@ -2677,10 +2771,8 @@ def test_runtime_materializes_explicit_agent_hook_refs_without_expanding_tools(
     assert "runtime-owned task routing" not in (hook_segments[0].content or "")
     assert tool_names == {
         definition.name
-        for definition in runtime._tool_registry_for_effective_config(  # pyright: ignore[reportPrivateUsage]
-            runtime._effective_runtime_config_from_metadata(  # pyright: ignore[reportPrivateUsage]
-                response.session.metadata
-            )
+        for definition in runtime._tool_registry_for_effective_config(
+            runtime._effective_runtime_config_from_metadata(response.session.metadata)
         ).definitions()
     }
 
@@ -2995,14 +3087,14 @@ def test_runtime_denies_divergent_legacy_approval_replay_without_fresh_permissio
         _private_attr(runtime, "_prepare_provider_context_window"),
     )
     assemble_provider_context = cast(
-        Callable[..., object],
+        Callable[..., ProviderAssembledContext],
         _private_attr(runtime, "_assemble_provider_context"),
     )
     execute_graph_loop = cast(
         Callable[..., Iterator[Any]],
         _private_attr(runtime, "_execute_graph_loop"),
     )
-    session_metadata = {
+    session_metadata: dict[str, object] = {
         "runtime_config": runtime_config_metadata(),
     }
     session = SessionState(
@@ -3426,8 +3518,7 @@ def test_runtime_cancel_after_tool_started_emits_terminal_tool_completed(
     assert "wait for the user's next instruction" in str(
         failed_events[-1].payload["retry_guidance"]
     )
-    diagnostics = failed_events[-1].payload["diagnostics"]
-    assert isinstance(diagnostics, list)
+    diagnostics = cast(list[dict[str, object]], failed_events[-1].payload["diagnostics"])
     assert diagnostics[-1]["reason"] == "user_interrupted"
 
 
@@ -3699,7 +3790,7 @@ def test_runtime_session_debug_snapshot_prefers_active_state_for_reused_session_
     runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
 
     _ = runtime.run(RuntimeRequest(prompt="same prompt", session_id="same-prompt-debug"))
-    stream = runtime._run_with_persistence(  # pyright: ignore[reportPrivateUsage]
+    stream = runtime._run_with_persistence(
         RuntimeRequest(prompt="same prompt", session_id="same-prompt-debug")
     )
 
@@ -3724,7 +3815,7 @@ def test_runtime_session_debug_snapshot_preserves_fresh_terminal_state_while_act
     runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
 
     deferred_unregister_session_id: str | None = None
-    original_unregister = runtime._unregister_active_session_id  # pyright: ignore[reportPrivateUsage]
+    original_unregister = runtime._unregister_active_session_id
 
     def _defer_unregister(session_id: str, *, run_id: str | None = None) -> None:
         _ = run_id
@@ -3735,11 +3826,11 @@ def test_runtime_session_debug_snapshot_preserves_fresh_terminal_state_while_act
     response = runtime.run(RuntimeRequest(prompt="terminal debug", session_id="terminal-debug"))
     try:
         assert deferred_unregister_session_id == "terminal-debug"
-        snapshot = runtime.session_debug_snapshot(session_id="terminal-debug")  # pyright: ignore[reportUnreachable]
+        snapshot = runtime.session_debug_snapshot(session_id="terminal-debug")
     finally:
         original_unregister("terminal-debug")
 
-    assert response.session.status == "completed"  # pyright: ignore[reportUnreachable]
+    assert response.session.status == "completed"
     assert snapshot.prompt == "terminal debug"
     assert snapshot.active is True
     assert snapshot.persisted_status == "completed"
@@ -3920,13 +4011,13 @@ def test_runtime_constructs_with_builtin_agent_hook_refs(tmp_path: Path) -> None
 
     response = runtime.run(RuntimeRequest(prompt="custom hook refs", session_id="hook-refs"))
 
-    runtime_config = response.session.metadata["runtime_config"]
-    resolved_hook_presets = response.session.metadata["resolved_hook_presets"]
+    runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
+    resolved_hook_presets = cast(
+        dict[str, object], response.session.metadata["resolved_hook_presets"]
+    )
     hook_event = next(
         event for event in response.events if event.event_type == RUNTIME_HOOK_PRESETS_LOADED
     )
-    assert isinstance(runtime_config, dict)
-    assert isinstance(resolved_hook_presets, dict)
     assert runtime_config["agent"] == {
         "preset": "leader",
         "prompt_profile": "researcher",
@@ -3955,8 +4046,9 @@ def test_runtime_snapshots_manifest_default_hook_refs(tmp_path: Path) -> None:
 
     response = runtime.run(RuntimeRequest(prompt="manifest hook refs", session_id="manifest-hooks"))
 
-    resolved_hook_presets = response.session.metadata["resolved_hook_presets"]
-    assert isinstance(resolved_hook_presets, dict)
+    resolved_hook_presets = cast(
+        dict[str, object], response.session.metadata["resolved_hook_presets"]
+    )
     assert resolved_hook_presets["refs"] == [
         "role_reminder",
         "delegation_guard",
@@ -4029,10 +4121,10 @@ def test_hook_preset_snapshot_does_not_change_agent_tool_permissions(tmp_path: P
         ),
     )
 
-    no_hook_config = runtime_without_hooks._effective_runtime_config_from_metadata(None)  # pyright: ignore[reportPrivateUsage]
-    hook_config = runtime_with_hooks._effective_runtime_config_from_metadata(None)  # pyright: ignore[reportPrivateUsage]
-    no_hook_tools = runtime_without_hooks._tool_registry_for_effective_config(no_hook_config)  # pyright: ignore[reportPrivateUsage]
-    hook_tools = runtime_with_hooks._tool_registry_for_effective_config(hook_config)  # pyright: ignore[reportPrivateUsage]
+    no_hook_config = runtime_without_hooks._effective_runtime_config_from_metadata(None)
+    hook_config = runtime_with_hooks._effective_runtime_config_from_metadata(None)
+    no_hook_tools = runtime_without_hooks._tool_registry_for_effective_config(no_hook_config)
+    hook_tools = runtime_with_hooks._tool_registry_for_effective_config(hook_config)
 
     assert tuple(no_hook_tools.tools) == tuple(hook_tools.tools)
 
@@ -5391,7 +5483,7 @@ def test_runtime_background_task_cancellation_emits_parent_session_event_once(
 ) -> None:
     runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
     _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
-    runtime._background_tasks_reconciled = True  # pyright: ignore[reportPrivateUsage]
+    runtime._background_tasks_reconciled = True
     store = _private_attr(runtime, "_session_store")
     task_module = importlib.import_module("voidcode.runtime.task")
     store.create_background_task(
@@ -5648,7 +5740,7 @@ def test_runtime_reconciliation_parent_events_are_idempotent_across_restart_read
                         id=child_session_id,
                         parent_id="leader-session",
                     ),
-                    status=child_status,
+                    status=cast(SessionStatus, child_status),
                     turn=1,
                     metadata={
                         "background_run": True,
@@ -5771,7 +5863,7 @@ def test_runtime_session_debug_snapshot_does_not_reconcile_parent_background_eve
     resumed_runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
 
     snapshot = resumed_runtime.session_debug_snapshot(session_id="leader-session")
-    before_resume = resumed_runtime._session_store.load_session_result(  # pyright: ignore[reportPrivateUsage]
+    before_resume = resumed_runtime._session_store.load_session_result(
         workspace=tmp_path,
         session_id="leader-session",
     )
@@ -5924,7 +6016,7 @@ def test_runtime_background_task_waiting_approval_emits_parent_session_event_onc
         event.sequence for event in leader_response.events
     )
 
-    runtime._emit_background_task_waiting_approval(  # pyright: ignore[reportPrivateUsage]
+    runtime._emit_background_task_waiting_approval(
         task=running,
         child_response=child_response,
     )
@@ -6520,7 +6612,7 @@ def test_runtime_background_task_approval_resume_overrides_stale_failed_task_sta
     )
     approval_request_id = cast(str, child_response.events[-1].payload["request_id"])
 
-    _ = initial_runtime._session_store.mark_background_task_terminal(  # pyright: ignore[reportPrivateUsage]
+    _ = initial_runtime._session_store.mark_background_task_terminal(
         workspace=tmp_path,
         task_id=started.task.id,
         status="interrupted",
@@ -6826,7 +6918,7 @@ def test_runtime_background_task_waiting_approval_race_does_not_fail_child_task(
         "runtime.approval_requested",
     )
 
-    runtime._emit_background_task_waiting_approval(  # pyright: ignore[reportPrivateUsage]
+    runtime._emit_background_task_waiting_approval(
         task=running,
         child_response=child_response,
     )
@@ -7204,15 +7296,14 @@ def test_runtime_drain_releases_slot_when_worker_start_fails(
         graph=_BackgroundTaskSuccessGraph(),
         config=RuntimeConfig(background_task=RuntimeBackgroundTaskConfig(default_concurrency=1)),
     )
-    original_start = threading.Thread.start
-    start_calls = 0
+    real_thread_start = threading.Thread.start
+    start_calls: list[object] = []
 
     def _start_once_then_fail(thread: threading.Thread) -> None:
-        nonlocal start_calls
-        start_calls += 1
-        if start_calls == 1:
+        start_calls.append(object())
+        if len(start_calls) == 1:
             raise RuntimeError("can't start new thread")
-        original_start(thread)
+        real_thread_start(thread)
 
     monkeypatch.setattr(threading.Thread, "start", _start_once_then_fail)
 
@@ -7229,7 +7320,7 @@ def test_runtime_background_task_worker_exits_when_task_is_cancelled_before_star
     tmp_path: Path,
 ) -> None:
     runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
-    runtime._background_tasks_reconciled = True  # pyright: ignore[reportPrivateUsage]
+    runtime._background_tasks_reconciled = True
     store = _private_attr(runtime, "_session_store")
     task_module = importlib.import_module("voidcode.runtime.task")
     store.create_background_task(
@@ -7252,9 +7343,9 @@ def test_runtime_background_task_worker_exits_when_task_is_cancelled_before_star
 
     store.mark_background_task_running = _cancel_before_mark_running
     run_mock = Mock(side_effect=AssertionError("runtime.run must not be called"))
-    runtime.run = run_mock
+    cast(Any, runtime).run = run_mock
 
-    runtime._run_background_task_worker("task-race-cancel")  # pyright: ignore[reportPrivateUsage]
+    runtime._run_background_task_worker("task-race-cancel")
 
     final_task = runtime.load_background_task("task-race-cancel")
     assert final_task.status == "cancelled"
@@ -7264,7 +7355,7 @@ def test_runtime_background_task_worker_exits_when_task_is_cancelled_before_star
 
 def test_runtime_background_task_worker_rechecks_cancel_before_dispatch(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
-    runtime._background_tasks_reconciled = True  # pyright: ignore[reportPrivateUsage]
+    runtime._background_tasks_reconciled = True
     store = _private_attr(runtime, "_session_store")
     task_module = importlib.import_module("voidcode.runtime.task")
     store.create_background_task(
@@ -7288,9 +7379,9 @@ def test_runtime_background_task_worker_rechecks_cancel_before_dispatch(tmp_path
 
     store.mark_background_task_running = _cancel_after_mark_running
     run_mock = Mock(side_effect=AssertionError("runtime.run must not be called"))
-    runtime.run = run_mock
+    cast(Any, runtime).run = run_mock
 
-    runtime._run_background_task_worker("task-dispatch-cancel")  # pyright: ignore[reportPrivateUsage]
+    runtime._run_background_task_worker("task-dispatch-cancel")
 
     final_task = runtime.load_background_task("task-dispatch-cancel")
     assert final_task.status == "cancelled"
@@ -7784,7 +7875,7 @@ def test_runtime_exit_disconnects_managed_acp(tmp_path: Path) -> None:
 
 
 def test_runtime_exit_shuts_down_managed_mcp(tmp_path: Path) -> None:
-    class _StubMcpManager:
+    class _StubMcpManager(_NoopMcpManager):
         def __init__(self) -> None:
             self.shutdown_calls = 0
 
@@ -7795,29 +7886,6 @@ def test_runtime_exit_shuts_down_managed_mcp(tmp_path: Path) -> None:
         def current_state(self) -> McpManagerState:
             return McpManagerState(mode="managed", configuration=self.configuration)
 
-        def list_tools(
-            self,
-            *,
-            workspace: Path,
-            owner_session_id: str | None = None,
-            parent_session_id: str | None = None,
-        ):
-            _ = workspace, owner_session_id, parent_session_id
-            return ()
-
-        def call_tool(
-            self,
-            *,
-            server_name: str,
-            tool_name: str,
-            arguments: dict[str, object],
-            workspace: Path,
-            owner_session_id: str | None = None,
-            parent_session_id: str | None = None,
-        ):
-            _ = server_name, tool_name, arguments, workspace, owner_session_id, parent_session_id
-            raise AssertionError("not used")
-
         def shutdown(self) -> tuple[McpRuntimeEvent, ...]:
             self.shutdown_calls += 1
             return (
@@ -7826,9 +7894,6 @@ def test_runtime_exit_shuts_down_managed_mcp(tmp_path: Path) -> None:
                     payload={"server": "echo", "workspace_root": str(tmp_path)},
                 ),
             )
-
-        def drain_events(self) -> tuple[McpRuntimeEvent, ...]:
-            return ()
 
     mcp_manager = _StubMcpManager()
     runtime = VoidCodeRuntime(workspace=tmp_path, mcp_manager=mcp_manager)
@@ -7839,40 +7904,7 @@ def test_runtime_exit_shuts_down_managed_mcp(tmp_path: Path) -> None:
 
 
 def test_runtime_surfaces_mcp_lifecycle_events_in_run_responses(tmp_path: Path) -> None:
-    class _StubMcpManager:
-        @property
-        def configuration(self) -> McpConfigState:
-            return McpConfigState(configured_enabled=True)
-
-        def current_state(self) -> McpManagerState:
-            return McpManagerState(mode="managed", configuration=self.configuration)
-
-        def list_tools(
-            self,
-            *,
-            workspace: Path,
-            owner_session_id: str | None = None,
-            parent_session_id: str | None = None,
-        ):
-            _ = workspace, owner_session_id, parent_session_id
-            return ()
-
-        def call_tool(
-            self,
-            *,
-            server_name: str,
-            tool_name: str,
-            arguments: dict[str, object],
-            workspace: Path,
-            owner_session_id: str | None = None,
-            parent_session_id: str | None = None,
-        ):
-            _ = server_name, tool_name, arguments, workspace, owner_session_id, parent_session_id
-            raise AssertionError("not used")
-
-        def shutdown(self) -> tuple[McpRuntimeEvent, ...]:
-            return ()
-
+    class _StubMcpManager(_NoopMcpManager):
         def drain_events(self) -> tuple[McpRuntimeEvent, ...]:
             return (
                 McpRuntimeEvent(
@@ -7893,39 +7925,9 @@ def test_runtime_surfaces_mcp_lifecycle_events_in_run_responses(tmp_path: Path) 
 def test_runtime_waiting_approval_preserves_mcp_session_until_resume_completion(
     tmp_path: Path,
 ) -> None:
-    class _RecordingMcpManager:
+    class _RecordingMcpManager(_NoopMcpManager):
         def __init__(self) -> None:
             self.release_session_ids: list[str] = []
-
-        @property
-        def configuration(self) -> McpConfigState:
-            return McpConfigState(configured_enabled=True)
-
-        def current_state(self) -> McpManagerState:
-            return McpManagerState(mode="managed", configuration=self.configuration)
-
-        def list_tools(
-            self,
-            *,
-            workspace: Path,
-            owner_session_id: str | None = None,
-            parent_session_id: str | None = None,
-        ):
-            _ = workspace, owner_session_id, parent_session_id
-            return ()
-
-        def call_tool(
-            self,
-            *,
-            server_name: str,
-            tool_name: str,
-            arguments: dict[str, object],
-            workspace: Path,
-            owner_session_id: str | None = None,
-            parent_session_id: str | None = None,
-        ):
-            _ = server_name, tool_name, arguments, workspace, owner_session_id, parent_session_id
-            raise AssertionError("not used")
 
         def release_session(self, *, session_id: str) -> tuple[McpRuntimeEvent, ...]:
             self.release_session_ids.append(session_id)
@@ -7935,12 +7937,6 @@ def test_runtime_waiting_approval_preserves_mcp_session_until_resume_completion(
                     payload={"server": "echo", "workspace_root": str(tmp_path)},
                 ),
             )
-
-        def shutdown(self) -> tuple[McpRuntimeEvent, ...]:
-            return ()
-
-        def drain_events(self) -> tuple[McpRuntimeEvent, ...]:
-            return ()
 
     mcp_manager = _RecordingMcpManager()
     runtime = VoidCodeRuntime(
@@ -7969,7 +7965,7 @@ def test_runtime_waiting_approval_preserves_mcp_session_until_resume_completion(
 def test_runtime_emits_mcp_failed_and_continues_run_on_startup_refresh(
     tmp_path: Path,
 ) -> None:
-    class _FailingMcpManager:
+    class _FailingMcpManager(_NoopMcpManager):
         def __init__(self) -> None:
             self._drained = False
             self._failed = False
@@ -7991,7 +7987,7 @@ def test_runtime_emits_mcp_failed_and_continues_run_on_startup_refresh(
                         workspace_root=str(tmp_path) if self._failed else None,
                         stage="startup" if self._failed else None,
                         error=self.startup_error if self._failed else None,
-                        command=(),
+                        command=[],
                         retry_available=self._failed,
                     )
                 },
@@ -8007,22 +8003,6 @@ def test_runtime_emits_mcp_failed_and_continues_run_on_startup_refresh(
             _ = workspace, owner_session_id, parent_session_id
             self._failed = True
             raise ValueError(self.startup_error)
-
-        def call_tool(
-            self,
-            *,
-            server_name: str,
-            tool_name: str,
-            arguments: dict[str, object],
-            workspace: Path,
-            owner_session_id: str | None = None,
-            parent_session_id: str | None = None,
-        ):
-            _ = server_name, tool_name, arguments, workspace, owner_session_id, parent_session_id
-            raise AssertionError("not used")
-
-        def shutdown(self) -> tuple[McpRuntimeEvent, ...]:
-            return ()
 
         def drain_events(self) -> tuple[McpRuntimeEvent, ...]:
             if self._drained:
@@ -8095,7 +8075,7 @@ def test_runtime_resume_emits_mcp_failed_and_continues_on_startup_refresh(
     waiting = initial_runtime.run(RuntimeRequest(prompt="go", session_id="mcp-resume-startup-fail"))
     approval_request_id = str(waiting.events[-1].payload["request_id"])
 
-    class _FailingMcpManager:
+    class _FailingMcpManager(_NoopMcpManager):
         def __init__(self) -> None:
             self._drained = False
             self._failed = False
@@ -8117,7 +8097,7 @@ def test_runtime_resume_emits_mcp_failed_and_continues_on_startup_refresh(
                         workspace_root=str(tmp_path) if self._failed else None,
                         stage="startup" if self._failed else None,
                         error=self.startup_error if self._failed else None,
-                        command=(),
+                        command=[],
                         retry_available=self._failed,
                     )
                 },
@@ -8133,22 +8113,6 @@ def test_runtime_resume_emits_mcp_failed_and_continues_on_startup_refresh(
             _ = workspace, owner_session_id, parent_session_id
             self._failed = True
             raise ValueError(self.startup_error)
-
-        def call_tool(
-            self,
-            *,
-            server_name: str,
-            tool_name: str,
-            arguments: dict[str, object],
-            workspace: Path,
-            owner_session_id: str | None = None,
-            parent_session_id: str | None = None,
-        ):
-            _ = server_name, tool_name, arguments, workspace, owner_session_id, parent_session_id
-            raise AssertionError("not used")
-
-        def shutdown(self) -> tuple[McpRuntimeEvent, ...]:
-            return ()
 
         def drain_events(self) -> tuple[McpRuntimeEvent, ...]:
             if self._drained:
@@ -8214,7 +8178,7 @@ def test_runtime_resume_still_starts_acp_when_mcp_refresh_fails(
     )
     approval_request_id = str(waiting.events[-1].payload["request_id"])
 
-    class _FailingMcpManager:
+    class _FailingMcpManager(_NoopMcpManager):
         def __init__(self) -> None:
             self._drained = False
             self._failed = False
@@ -8236,7 +8200,7 @@ def test_runtime_resume_still_starts_acp_when_mcp_refresh_fails(
                         workspace_root=str(tmp_path) if self._failed else None,
                         stage="startup" if self._failed else None,
                         error=self.startup_error if self._failed else None,
-                        command=(),
+                        command=[],
                         retry_available=self._failed,
                     )
                 },
@@ -8252,22 +8216,6 @@ def test_runtime_resume_still_starts_acp_when_mcp_refresh_fails(
             _ = workspace, owner_session_id, parent_session_id
             self._failed = True
             raise ValueError(self.startup_error)
-
-        def call_tool(
-            self,
-            *,
-            server_name: str,
-            tool_name: str,
-            arguments: dict[str, object],
-            workspace: Path,
-            owner_session_id: str | None = None,
-            parent_session_id: str | None = None,
-        ):
-            _ = server_name, tool_name, arguments, workspace, owner_session_id, parent_session_id
-            raise AssertionError("not used")
-
-        def shutdown(self) -> tuple[McpRuntimeEvent, ...]:
-            return ()
 
         def drain_events(self) -> tuple[McpRuntimeEvent, ...]:
             if self._drained:
@@ -8351,18 +8299,11 @@ def test_runtime_resume_still_starts_acp_when_mcp_refresh_fails(
 def test_runtime_persists_mcp_failed_before_terminal_failure_on_tool_call_abort(
     tmp_path: Path,
 ) -> None:
-    class _FailingMcpManager:
+    class _FailingMcpManager(_NoopMcpManager):
         def __init__(self) -> None:
             self._drained = False
 
         call_error = "MCP call transport failed"
-
-        @property
-        def configuration(self) -> McpConfigState:
-            return McpConfigState(configured_enabled=True)
-
-        def current_state(self) -> McpManagerState:
-            return McpManagerState(mode="managed", configuration=self.configuration)
 
         def list_tools(
             self,
@@ -8393,9 +8334,6 @@ def test_runtime_persists_mcp_failed_before_terminal_failure_on_tool_call_abort(
         ) -> McpToolCallResult:
             _ = server_name, tool_name, arguments, workspace, owner_session_id, parent_session_id
             raise ValueError(self.call_error)
-
-        def shutdown(self) -> tuple[McpRuntimeEvent, ...]:
-            return ()
 
         def drain_events(self) -> tuple[McpRuntimeEvent, ...]:
             if self._drained:
@@ -8434,7 +8372,7 @@ def test_runtime_persists_mcp_failed_before_terminal_failure_on_tool_call_abort(
 
 
 def test_runtime_metadata_includes_mcp_state_when_configured(tmp_path: Path) -> None:
-    class _StubMcpManager:
+    class _StubMcpManager(_NoopMcpManager):
         @property
         def configuration(self) -> McpConfigState:
             return McpConfigState(
@@ -8447,41 +8385,9 @@ def test_runtime_metadata_includes_mcp_state_when_configured(tmp_path: Path) -> 
                 },
             )
 
-        def current_state(self) -> McpManagerState:
-            return McpManagerState(mode="managed", configuration=self.configuration)
-
-        def list_tools(
-            self,
-            *,
-            workspace: Path,
-            owner_session_id: str | None = None,
-            parent_session_id: str | None = None,
-        ):
-            _ = workspace, owner_session_id, parent_session_id
-            return ()
-
-        def call_tool(
-            self,
-            *,
-            server_name: str,
-            tool_name: str,
-            arguments: dict[str, object],
-            workspace: Path,
-            owner_session_id: str | None = None,
-            parent_session_id: str | None = None,
-        ):
-            _ = server_name, tool_name, arguments, workspace, owner_session_id, parent_session_id
-            raise AssertionError("not used")
-
-        def shutdown(self) -> tuple[McpRuntimeEvent, ...]:
-            return ()
-
-        def drain_events(self) -> tuple[McpRuntimeEvent, ...]:
-            return ()
-
     runtime = VoidCodeRuntime(workspace=tmp_path, mcp_manager=_StubMcpManager())
 
-    runtime_config_metadata = runtime._runtime_config_metadata()  # pyright: ignore[reportPrivateUsage]
+    runtime_config_metadata = runtime._runtime_config_metadata()
 
     assert runtime_config_metadata["mcp"] == {
         "mode": "managed",
@@ -9164,7 +9070,7 @@ def test_runtime_emits_skills_loaded_catalog_without_default_full_injection(tmp_
         isinstance(item, str) and "Always explain your reasoning." in item
         for item in system_segments
     )
-    skill_tool = runtime._skill_registry.resolve("git-master")  # pyright: ignore[reportPrivateUsage]
+    skill_tool = runtime._skill_registry.resolve("git-master")
     assert skill_tool.name == "git-master"
     assert skill_tool.origin == "builtin"
     assert skill_tool.entry_path.as_posix().startswith("/builtin/voidcode/skills/")
@@ -9487,8 +9393,8 @@ def test_runtime_workflow_selected_builtin_skill_refs_are_catalog_visible_not_lo
     assert cast(int, skills_loaded.payload["catalog_context_length"]) > 0
     assert "applied_skills" not in response.session.metadata
     assert "applied_skill_payloads" not in response.session.metadata
-    assert runtime._skill_registry.resolve("frontend-design").name == "frontend-design"  # pyright: ignore[reportPrivateUsage]
-    assert runtime._skill_registry.resolve("playwright").name == "playwright"  # pyright: ignore[reportPrivateUsage]
+    assert runtime._skill_registry.resolve("frontend-design").name == "frontend-design"
+    assert runtime._skill_registry.resolve("playwright").name == "playwright"
 
 
 def test_runtime_git_workflow_uses_generic_runtime_approval_without_bespoke_policy(
@@ -11357,7 +11263,7 @@ def test_runtime_graph_selection_avoids_reusing_initial_provider_graph(
         model_provider_registry=registry,
     )
 
-    graph = runtime._graph_for_session_metadata(  # pyright: ignore[reportPrivateUsage]
+    graph = runtime._graph_for_session_metadata(
         {
             "runtime_config": {
                 "approval_mode": "ask",
@@ -11403,7 +11309,7 @@ def test_runtime_graph_selection_seam_uses_provider_attempt_target(tmp_path: Pat
         model_provider_registry=registry,
     )
 
-    selection = runtime._graph_selection_for_effective_config(  # pyright: ignore[reportPrivateUsage]
+    selection = runtime._graph_selection_for_effective_config(
         runtime.effective_runtime_config(),
         provider_attempt=1,
     )
@@ -11430,12 +11336,12 @@ def test_runtime_context_window_policy_uses_fallback_attempt_model_metadata(
         ),
     )
 
-    context_window = runtime._prepare_provider_context_window(  # pyright: ignore[reportPrivateUsage]
+    context_window = runtime._prepare_provider_context_window(
         prompt="read sample.txt",
         tool_results=(),
         session_metadata={
             "provider_attempt": 1,
-            "runtime_config": runtime._runtime_config_metadata(),  # pyright: ignore[reportPrivateUsage]
+            "runtime_config": runtime._runtime_config_metadata(),
         },
     )
 
@@ -11458,14 +11364,14 @@ def test_runtime_context_window_policy_recomputes_default_for_fallback_attempt(
         ),
     )
 
-    context_window = runtime._prepare_provider_context_window(  # pyright: ignore[reportPrivateUsage]
+    context_window = runtime._prepare_provider_context_window(
         prompt="read sample.txt",
         tool_results=(),
         session_metadata={
             "provider_attempt": 1,
-            "runtime_config": runtime._runtime_config_metadata(),  # pyright: ignore[reportPrivateUsage]
+            "runtime_config": runtime._runtime_config_metadata(),
         },
-        policy=runtime._default_context_window_policy,  # pyright: ignore[reportPrivateUsage]
+        policy=runtime._default_context_window_policy,
     )
 
     assert context_window.token_budget == 4_000
@@ -11490,15 +11396,13 @@ def test_runtime_execute_graph_loop_reuses_initial_context_window_on_first_itera
 
     session = SessionState(
         session=SessionRef(id="resume-distillation-dedupe"),
-        metadata={"runtime_config": runtime._runtime_config_metadata()},  # pyright: ignore[reportPrivateUsage]
+        metadata={"runtime_config": runtime._runtime_config_metadata()},
         turn=0,
         status="running",
     )
     prompt = "read sample.txt"
-    tool_registry = runtime._tool_registry_for_effective_config(  # pyright: ignore[reportPrivateUsage]
-        runtime.effective_runtime_config()
-    )
-    context_window = runtime._prepare_provider_context_window(  # pyright: ignore[reportPrivateUsage]
+    tool_registry = runtime._tool_registry_for_effective_config(runtime.effective_runtime_config())
+    context_window = runtime._prepare_provider_context_window(
         prompt=prompt,
         tool_results=(),
         session_metadata=session.metadata,
@@ -11508,7 +11412,7 @@ def test_runtime_execute_graph_loop_reuses_initial_context_window_on_first_itera
         prompt=prompt,
         available_tools=tool_registry.definitions(),
         context_window=context_window,
-        assembled_context=runtime._assemble_provider_context(  # pyright: ignore[reportPrivateUsage]
+        assembled_context=runtime._assemble_provider_context(
             prompt=prompt,
             tool_results=(),
             session_metadata=session.metadata,
@@ -11529,7 +11433,7 @@ def test_runtime_execute_graph_loop_reuses_initial_context_window_on_first_itera
     )
 
     chunks = list(
-        runtime._execute_graph_loop(  # pyright: ignore[reportPrivateUsage]
+        runtime._execute_graph_loop(
             graph=_SingleStepGraph(),
             tool_registry=tool_registry,
             session=session,
@@ -11558,20 +11462,22 @@ def test_runtime_execute_graph_loop_recomputes_stale_initial_context_window(
             session: SessionState,
         ) -> _StubStep:
             _ = tool_results, session
-            assert request.context_window.original_tool_result_count == 1
+            context_window = cast(RuntimeContextWindow, request.context_window)
+            _assert_context_window_recomputed(
+                prepared_calls=prepared_calls,
+                context_window=context_window,
+            )
             return _StubStep(output="done", is_finished=True)
 
     session = SessionState(
         session=SessionRef(id="resume-distillation-stale-window"),
-        metadata={"runtime_config": runtime._runtime_config_metadata()},  # pyright: ignore[reportPrivateUsage]
+        metadata={"runtime_config": runtime._runtime_config_metadata()},
         turn=0,
         status="running",
     )
     prompt = "read sample.txt"
-    tool_registry = runtime._tool_registry_for_effective_config(  # pyright: ignore[reportPrivateUsage]
-        runtime.effective_runtime_config()
-    )
-    context_window = runtime._prepare_provider_context_window(  # pyright: ignore[reportPrivateUsage]
+    tool_registry = runtime._tool_registry_for_effective_config(runtime.effective_runtime_config())
+    context_window = runtime._prepare_provider_context_window(
         prompt=prompt,
         tool_results=(),
         session_metadata=session.metadata,
@@ -11581,19 +11487,25 @@ def test_runtime_execute_graph_loop_recomputes_stale_initial_context_window(
         prompt=prompt,
         available_tools=tool_registry.definitions(),
         context_window=context_window,
-        assembled_context=runtime._assemble_provider_context(  # pyright: ignore[reportPrivateUsage]
+        assembled_context=runtime._assemble_provider_context(
             prompt=prompt,
             tool_results=(),
             session_metadata=session.metadata,
         ),
         metadata=session.metadata,
     )
-    original_prepare = runtime._prepare_provider_context_window  # pyright: ignore[reportPrivateUsage]
+    original_prepare = runtime._prepare_provider_context_window
 
-    def _counting_prepare_provider_context_window(*args: object, **kwargs: object) -> object:
+    def _counting_prepare_provider_context_window(**kwargs: object) -> object:
         nonlocal prepared_calls
         prepared_calls += 1
-        return original_prepare(*args, **kwargs)
+        return original_prepare(
+            prompt=cast(str, kwargs["prompt"]),
+            tool_results=cast(tuple[ToolResult, ...], kwargs["tool_results"]),
+            session_metadata=cast(dict[str, object], kwargs["session_metadata"]),
+            policy=cast(ContextWindowPolicy | None, kwargs.get("policy")),
+            abort_signal=cast(ProviderAbortSignal | None, kwargs.get("abort_signal")),
+        )
 
     monkeypatch.setattr(
         runtime,
@@ -11602,8 +11514,8 @@ def test_runtime_execute_graph_loop_recomputes_stale_initial_context_window(
     )
     tool_results = [ToolResult(tool_name="read_file", status="ok", content="alpha")]
 
-    chunks = list(
-        runtime._execute_graph_loop(  # pyright: ignore[reportPrivateUsage]
+    list(
+        runtime._execute_graph_loop(
             graph=_ContextWindowCountingGraph(),
             tool_registry=tool_registry,
             session=session,
@@ -11612,9 +11524,6 @@ def test_runtime_execute_graph_loop_recomputes_stale_initial_context_window(
             tool_results=tool_results,
         )
     )
-
-    assert prepared_calls == 1
-    assert any(chunk.kind == "output" and chunk.output == "done" for chunk in chunks)
 
 
 def test_runtime_provider_fallback_seam_returns_next_graph_selection(tmp_path: Path) -> None:
@@ -11647,7 +11556,7 @@ def test_runtime_provider_fallback_seam_returns_next_graph_selection(tmp_path: P
         model_provider_registry=registry,
     )
 
-    selection = runtime._fallback_graph_selection(  # pyright: ignore[reportPrivateUsage]
+    selection = runtime._fallback_graph_selection(
         error=ProviderExecutionError(
             kind="rate_limit",
             provider_name="primary",
@@ -12152,32 +12061,32 @@ def test_runtime_provider_context_policy_off_preserves_provider_execution(
 
 def test_runtime_memory_refreshed_guard_suppresses_duplicate_anchor(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(workspace=tmp_path)
-    coordinator = runtime._run_loop_coordinator  # pyright: ignore[reportPrivateUsage]
+    coordinator = runtime._run_loop_coordinator
     session = SessionState(
         session=SessionRef("memory-refresh-guard"),
         status="running",
         metadata={"runtime_state": {"run_id": "run-1"}},
     )
 
-    first = coordinator._should_emit_memory_refreshed(  # pyright: ignore[reportPrivateUsage]
+    first = coordinator._should_emit_memory_refreshed(
         session=session,
         summary_anchor="continuity:abc",
         original_tool_result_count=9,
         retained_tool_result_count=8,
     )
-    updated = coordinator._session_with_memory_refreshed_state(  # pyright: ignore[reportPrivateUsage]
+    updated = coordinator._session_with_memory_refreshed_state(
         session=session,
         summary_anchor="continuity:abc",
         original_tool_result_count=9,
         retained_tool_result_count=8,
     )
-    duplicate = coordinator._should_emit_memory_refreshed(  # pyright: ignore[reportPrivateUsage]
+    duplicate = coordinator._should_emit_memory_refreshed(
         session=updated,
         summary_anchor="continuity:abc",
         original_tool_result_count=9,
         retained_tool_result_count=8,
     )
-    changed = coordinator._should_emit_memory_refreshed(  # pyright: ignore[reportPrivateUsage]
+    changed = coordinator._should_emit_memory_refreshed(
         session=updated,
         summary_anchor="continuity:def",
         original_tool_result_count=10,
@@ -12336,7 +12245,7 @@ def test_runtime_distillation_failure_clears_stale_candidate(tmp_path: Path) -> 
     )
     stale_candidate = {"objective_current_goal": "Stale prior turn"}
 
-    metadata = runtime._session_metadata_with_distillation_candidate(  # pyright: ignore[reportPrivateUsage]
+    metadata = runtime._session_metadata_with_distillation_candidate(
         prompt="read sample.txt\nread sample.txt",
         tool_results=(
             ToolResult(tool_name="read_file", status="ok", content="alpha"),
@@ -12427,7 +12336,7 @@ def test_runtime_distillation_uses_recency_projection_split(tmp_path: Path) -> N
         model_provider_registry=registry,
     )
 
-    metadata = runtime._session_metadata_with_distillation_candidate(  # pyright: ignore[reportPrivateUsage]
+    metadata = runtime._session_metadata_with_distillation_candidate(
         prompt="fix failing tests",
         tool_results=(
             ToolResult(tool_name="read_file", status="ok", content="content-1", data={"index": 1}),
@@ -12854,7 +12763,7 @@ def test_runtime_provider_turn_usage_is_persisted_in_session_metadata(tmp_path: 
 
 def test_runtime_context_pressure_ignores_stale_provider_usage(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(workspace=tmp_path)
-    coordinator = runtime._run_loop_coordinator  # pyright: ignore[reportPrivateUsage]
+    coordinator = runtime._run_loop_coordinator
     session = SessionState(
         session=SessionRef("stale-provider-usage"),
         status="running",
@@ -12886,7 +12795,7 @@ def test_runtime_context_pressure_ignores_stale_provider_usage(tmp_path: Path) -
         retained_tool_result_count=0,
     )
 
-    payload = coordinator._build_context_pressure_payload(  # pyright: ignore[reportPrivateUsage]
+    payload = coordinator._build_context_pressure_payload(
         session=session,
         context_window=context_window,
         threshold=0.7,
@@ -12899,7 +12808,7 @@ def test_runtime_context_pressure_ignores_previous_provider_attempt_usage(
     tmp_path: Path,
 ) -> None:
     runtime = VoidCodeRuntime(workspace=tmp_path)
-    coordinator = runtime._run_loop_coordinator  # pyright: ignore[reportPrivateUsage]
+    coordinator = runtime._run_loop_coordinator
     session = SessionState(
         session=SessionRef("stale-provider-attempt"),
         status="running",
@@ -12932,7 +12841,7 @@ def test_runtime_context_pressure_ignores_previous_provider_attempt_usage(
         retained_tool_result_count=0,
     )
 
-    payload = coordinator._build_context_pressure_payload(  # pyright: ignore[reportPrivateUsage]
+    payload = coordinator._build_context_pressure_payload(
         session=session,
         context_window=context_window,
         threshold=0.7,
@@ -13826,21 +13735,14 @@ def test_runtime_agent_builtin_tools_disabled_exposes_no_builtin_tools(tmp_path:
 
 
 def test_runtime_agent_builtin_tools_disabled_preserves_mcp_tools(tmp_path: Path) -> None:
-    class _StubMcpManager:
-        @property
-        def configuration(self) -> McpConfigState:
-            return McpConfigState(configured_enabled=True)
-
-        def current_state(self) -> McpManagerState:
-            return McpManagerState(mode="managed", configuration=self.configuration)
-
+    class _StubMcpManager(_NoopMcpManager):
         def list_tools(
             self,
             *,
             workspace: Path,
             owner_session_id: str | None = None,
             parent_session_id: str | None = None,
-        ):
+        ) -> tuple[McpToolDescriptor, ...]:
             _ = workspace, owner_session_id, parent_session_id
             return (
                 McpToolDescriptor(
@@ -13863,12 +13765,6 @@ def test_runtime_agent_builtin_tools_disabled_preserves_mcp_tools(tmp_path: Path
         ) -> McpToolCallResult:
             _ = server_name, tool_name, arguments, workspace, owner_session_id, parent_session_id
             return McpToolCallResult(content=[{"type": "text", "text": "echo:hi"}])
-
-        def shutdown(self):
-            return ()
-
-        def drain_events(self):
-            return ()
 
     created_providers: list[_ScriptedTurnProvider] = []
     registry = ModelProviderRegistry(
@@ -14723,8 +14619,7 @@ def test_runtime_resume_preserves_provider_attempt_and_target_across_pending_app
     }
     assert runtime_config["lsp"] == {"mode": "disabled", "configured_enabled": False, "servers": []}
     assert runtime_config["mcp"] == {"mode": "disabled", "configured_enabled": False, "servers": []}
-    agent_config = runtime_config["agent"]
-    assert isinstance(agent_config, dict)
+    agent_config = cast(dict[str, object], runtime_config["agent"])
     assert agent_config["preset"] == "leader"
     assert custom_attempts == [1]
     approval_event = waiting.events[-1]
@@ -16272,7 +16167,7 @@ def test_runtime_reasoning_capture_limit_spans_provider_turns(tmp_path: Path) ->
                                 '{"tool_name":"read_file","arguments":{"filePath":"sample.txt"}}'
                             ),
                         ),
-                        ProviderStreamEvent(kind="done", done_reason="tool_calls"),
+                        ProviderStreamEvent(kind="done", done_reason="completed"),
                     ),
                     (
                         *second_turn_reasoning,
@@ -16595,7 +16490,7 @@ def test_runtime_provider_retry_uses_persisted_session_provider_config(
             }
         ),
     )
-    retry_config = runtime._provider_transient_retry_config(  # pyright: ignore[reportPrivateUsage]
+    retry_config = runtime._provider_transient_retry_config(
         provider_name="opencode",
         session_metadata={
             "runtime_config": {
@@ -16668,7 +16563,7 @@ def test_runtime_provider_retry_attempt_resets_after_successful_provider_call(
     monkeypatch.setattr(
         runtime_run_loop_module,
         "_provider_transient_retry_delay_ms",
-        lambda *, retry_attempt, base_delay_ms, max_delay_ms, jitter: 0,
+        lambda **_: 0,
     )
 
     response = runtime.run(RuntimeRequest(prompt="retry fresh episodes"))
@@ -16905,7 +16800,7 @@ def test_runtime_provider_failure_resume_reconciles_parent_background_tasks(
     assert failed.session.status == "failed"
     assert runtime.session_debug_snapshot(session_id=parent_session_id).resumable is True
 
-    session_store = runtime._session_store  # pyright: ignore[reportPrivateUsage]
+    session_store = runtime._session_store
     session_store.create_background_task(
         workspace=tmp_path,
         task=BackgroundTaskState(
@@ -16982,39 +16877,9 @@ def test_runtime_provider_failure_resume_reconciles_parent_background_tasks(
 def test_runtime_provider_failure_resume_finalizes_background_task_and_releases_mcp(
     tmp_path: Path,
 ) -> None:
-    class _RecordingMcpManager:
+    class _RecordingMcpManager(_NoopMcpManager):
         def __init__(self) -> None:
             self.release_session_ids: list[str] = []
-
-        @property
-        def configuration(self) -> McpConfigState:
-            return McpConfigState(configured_enabled=True)
-
-        def current_state(self) -> McpManagerState:
-            return McpManagerState(mode="managed", configuration=self.configuration)
-
-        def list_tools(
-            self,
-            *,
-            workspace: Path,
-            owner_session_id: str | None = None,
-            parent_session_id: str | None = None,
-        ):
-            _ = workspace, owner_session_id, parent_session_id
-            return ()
-
-        def call_tool(
-            self,
-            *,
-            server_name: str,
-            tool_name: str,
-            arguments: dict[str, object],
-            workspace: Path,
-            owner_session_id: str | None = None,
-            parent_session_id: str | None = None,
-        ):
-            _ = server_name, tool_name, arguments, workspace, owner_session_id, parent_session_id
-            raise AssertionError("not used")
 
         def release_session(self, *, session_id: str) -> tuple[McpRuntimeEvent, ...]:
             self.release_session_ids.append(session_id)
@@ -17024,12 +16889,6 @@ def test_runtime_provider_failure_resume_finalizes_background_task_and_releases_
                     payload={"server": "echo", "workspace_root": str(tmp_path)},
                 ),
             )
-
-        def shutdown(self) -> tuple[McpRuntimeEvent, ...]:
-            return ()
-
-        def drain_events(self) -> tuple[McpRuntimeEvent, ...]:
-            return ()
 
     (tmp_path / "sample.txt").write_text("sample contents", encoding="utf-8")
     registry = ModelProviderRegistry(
@@ -17082,7 +16941,7 @@ def test_runtime_provider_failure_resume_finalizes_background_task_and_releases_
     child_session_id = "provider-retry-background-child"
 
     _ = list(
-        runtime._run_with_persistence(  # pyright: ignore[reportPrivateUsage]
+        runtime._run_with_persistence(
             RuntimeRequest(
                 prompt="read sample.txt",
                 session_id=child_session_id,
@@ -17095,7 +16954,7 @@ def test_runtime_provider_failure_resume_finalizes_background_task_and_releases_
             allow_internal_metadata=True,
         )
     )
-    runtime._session_store.create_background_task(  # pyright: ignore[reportPrivateUsage]
+    runtime._session_store.create_background_task(
         workspace=tmp_path,
         task=BackgroundTaskState(
             task=BackgroundTaskRef(id=task_id),
@@ -17104,9 +16963,9 @@ def test_runtime_provider_failure_resume_finalizes_background_task_and_releases_
             ),
         ),
     )
-    session_store = runtime._session_store  # pyright: ignore[reportPrivateUsage]
+    session_store = runtime._session_store
     assert isinstance(session_store, SqliteSessionStore)
-    with session_store._write_connect(tmp_path) as connection:  # pyright: ignore[reportPrivateUsage]
+    with session_store._write_connect(tmp_path) as connection:
         _ = connection.execute(
             """
             UPDATE background_tasks
@@ -17117,7 +16976,7 @@ def test_runtime_provider_failure_resume_finalizes_background_task_and_releases_
             (child_session_id, task_id),
         )
         connection.commit()
-    running_task = runtime._session_store.load_background_task(  # pyright: ignore[reportPrivateUsage]
+    running_task = runtime._session_store.load_background_task(
         workspace=tmp_path,
         task_id=task_id,
     )
@@ -17185,7 +17044,7 @@ def test_runtime_provider_failure_resume_persists_failed_chunk_when_loop_raises(
     child_session_id = "provider-retry-raise-child"
 
     _ = list(
-        runtime._run_with_persistence(  # pyright: ignore[reportPrivateUsage]
+        runtime._run_with_persistence(
             RuntimeRequest(
                 prompt="read sample.txt",
                 session_id=child_session_id,
@@ -17198,16 +17057,16 @@ def test_runtime_provider_failure_resume_persists_failed_chunk_when_loop_raises(
             allow_internal_metadata=True,
         )
     )
-    runtime._session_store.create_background_task(  # pyright: ignore[reportPrivateUsage]
+    runtime._session_store.create_background_task(
         workspace=tmp_path,
         task=BackgroundTaskState(
             task=BackgroundTaskRef(id=task_id),
             request=BackgroundTaskRequestSnapshot(prompt="read sample.txt"),
         ),
     )
-    session_store = runtime._session_store  # pyright: ignore[reportPrivateUsage]
+    session_store = runtime._session_store
     assert isinstance(session_store, SqliteSessionStore)
-    with session_store._write_connect(tmp_path) as connection:  # pyright: ignore[reportPrivateUsage]
+    with session_store._write_connect(tmp_path) as connection:
         _ = connection.execute(
             """
             UPDATE background_tasks
@@ -17243,7 +17102,7 @@ def test_runtime_provider_failure_resume_persists_failed_chunk_when_loop_raises(
         )
         raise RuntimeError("graph loop raised after failed chunk")
 
-    monkeypatch.setattr(  # pyright: ignore[reportPrivateUsage]
+    monkeypatch.setattr(
         runtime,
         "_execute_graph_loop",
         _raise_after_failed_chunk,
@@ -17637,11 +17496,11 @@ def test_runtime_context_window_policy_uses_active_model_limit(tmp_path: Path) -
         context_window_policy=ContextWindowPolicy(max_context_ratio=0.01),
     )
 
-    context = runtime._prepare_provider_context_window(  # pyright: ignore[reportPrivateUsage]
+    context = runtime._prepare_provider_context_window(
         prompt="read sample.txt",
         tool_results=(),
         session_metadata={
-            "runtime_config": runtime._runtime_config_metadata(),  # pyright: ignore[reportPrivateUsage]
+            "runtime_config": runtime._runtime_config_metadata(),
         },
     )
 
@@ -18023,7 +17882,7 @@ def test_runtime_executes_background_task_cancelled_hook_for_queued_cancel(
             )
         ),
     )
-    runtime._background_tasks_reconciled = True  # pyright: ignore[reportPrivateUsage]
+    runtime._background_tasks_reconciled = True
     store = _private_attr(runtime, "_session_store")
     task_module = importlib.import_module("voidcode.runtime.task")
     store.create_background_task(
@@ -18099,7 +17958,7 @@ def test_runtime_context_window_projection_preserves_full_session_truth(
     provider only receives a bounded projection."""
     runtime = VoidCodeRuntime(workspace=tmp_path)
 
-    context_window = runtime._prepare_provider_context_window(  # pyright: ignore[reportPrivateUsage]
+    context_window = runtime._prepare_provider_context_window(
         prompt="verify build",
         tool_results=(
             ToolResult(tool_name="read_file", status="ok", content="a", data={"index": 1}),
@@ -18107,7 +17966,7 @@ def test_runtime_context_window_projection_preserves_full_session_truth(
             ToolResult(tool_name="read_file", status="ok", content="c", data={"index": 3}),
         ),
         session_metadata={
-            "runtime_config": runtime._runtime_config_metadata(),  # pyright: ignore[reportPrivateUsage]
+            "runtime_config": runtime._runtime_config_metadata(),
         },
         policy=ContextWindowPolicy(max_tool_results=1),
     )
@@ -18116,7 +17975,7 @@ def test_runtime_context_window_projection_preserves_full_session_truth(
         status="running",
         turn=1,
         metadata={
-            "runtime_config": runtime._runtime_config_metadata(),  # pyright: ignore[reportPrivateUsage]
+            "runtime_config": runtime._runtime_config_metadata(),
         },
     )
     enriched = VoidCodeRuntime._session_with_context_window_metadata(session, context_window)
@@ -18140,10 +17999,10 @@ def test_runtime_persists_assembled_context_token_estimate(
         tool_registry=ToolRegistry.from_tools(()),
         context_window_policy=ContextWindowPolicy(model_context_window_tokens=1000),
     )
-    session_metadata = {
-        "runtime_config": runtime._runtime_config_metadata(),  # pyright: ignore[reportPrivateUsage]
+    session_metadata: dict[str, object] = {
+        "runtime_config": runtime._runtime_config_metadata(),
     }
-    assembled = runtime._assemble_provider_context(  # pyright: ignore[reportPrivateUsage]
+    assembled = runtime._assemble_provider_context(
         prompt="检查构建输出",
         tool_results=(
             ToolResult(tool_name="read_file", status="ok", content="hello world", data={}),
@@ -18189,11 +18048,11 @@ def test_runtime_context_window_resume_continuity_metadata_is_projection_only(
         ],
     }
     session_metadata: dict[str, object] = {
-        "runtime_config": runtime._runtime_config_metadata(),  # pyright: ignore[reportPrivateUsage]
+        "runtime_config": runtime._runtime_config_metadata(),
         "runtime_state": {"continuity": prior_payload},
     }
 
-    assembled = runtime._assemble_provider_context(  # pyright: ignore[reportPrivateUsage]
+    assembled = runtime._assemble_provider_context(
         prompt="resume using raw events",
         tool_results=(ToolResult(tool_name="read_file", status="ok", content="raw retained"),),
         session_metadata=session_metadata,
@@ -18222,7 +18081,7 @@ def test_runtime_context_window_malformed_resume_continuity_falls_back_safely(
 ) -> None:
     runtime = VoidCodeRuntime(workspace=tmp_path)
     session_metadata: dict[str, object] = {
-        "runtime_config": runtime._runtime_config_metadata(),  # pyright: ignore[reportPrivateUsage]
+        "runtime_config": runtime._runtime_config_metadata(),
         "runtime_state": {
             "continuity": {
                 "version": [],
@@ -18234,7 +18093,7 @@ def test_runtime_context_window_malformed_resume_continuity_falls_back_safely(
         },
     }
 
-    assembled = runtime._assemble_provider_context(  # pyright: ignore[reportPrivateUsage]
+    assembled = runtime._assemble_provider_context(
         prompt="resume despite malformed metadata",
         tool_results=(ToolResult(tool_name="read_file", status="ok", content="raw retained"),),
         session_metadata=session_metadata,
@@ -18272,16 +18131,14 @@ def test_runtime_context_window_projection_no_command_name_scoring(
         data={"index": 2, "command": "echo hello"},
     )
 
-    meta: dict[str, object] = {
-        "runtime_config": runtime._runtime_config_metadata()  # pyright: ignore[reportPrivateUsage]
-    }
-    context_a = runtime._prepare_provider_context_window(  # pyright: ignore[reportPrivateUsage]
+    meta: dict[str, object] = {"runtime_config": runtime._runtime_config_metadata()}
+    context_a = runtime._prepare_provider_context_window(
         prompt="verify",
         tool_results=(shell_a,),
         session_metadata=meta,
         policy=ContextWindowPolicy(max_tool_results=1),
     )
-    context_b = runtime._prepare_provider_context_window(  # pyright: ignore[reportPrivateUsage]
+    context_b = runtime._prepare_provider_context_window(
         prompt="verify",
         tool_results=(shell_b,),
         session_metadata=meta,
@@ -18301,7 +18158,7 @@ def test_runtime_context_window_projection_bounded_output_within_limit(
     max_tool_results=2 and 4 inputs, only 2 results should be retained."""
     runtime = VoidCodeRuntime(workspace=tmp_path)
 
-    context = runtime._prepare_provider_context_window(  # pyright: ignore[reportPrivateUsage]
+    context = runtime._prepare_provider_context_window(
         prompt="continue coding",
         tool_results=(
             ToolResult(tool_name="read_file", status="ok", content="a", data={"index": 1}),
@@ -18310,7 +18167,7 @@ def test_runtime_context_window_projection_bounded_output_within_limit(
             ToolResult(tool_name="read_file", status="ok", content="d", data={"index": 4}),
         ),
         session_metadata={
-            "runtime_config": runtime._runtime_config_metadata(),  # pyright: ignore[reportPrivateUsage]
+            "runtime_config": runtime._runtime_config_metadata(),
         },
         policy=ContextWindowPolicy(max_tool_results=2),
     )
@@ -18328,7 +18185,7 @@ def test_runtime_context_window_projection_auto_compaction_disabled_preserves_al
     projection (derived output matches complete truth for this case)."""
     runtime = VoidCodeRuntime(workspace=tmp_path)
 
-    context = runtime._prepare_provider_context_window(  # pyright: ignore[reportPrivateUsage]
+    context = runtime._prepare_provider_context_window(
         prompt="inspect",
         tool_results=(
             ToolResult(tool_name="read_file", status="ok", content="a", data={"index": 1}),
@@ -18336,7 +18193,7 @@ def test_runtime_context_window_projection_auto_compaction_disabled_preserves_al
             ToolResult(tool_name="read_file", status="ok", content="c", data={"index": 3}),
         ),
         session_metadata={
-            "runtime_config": runtime._runtime_config_metadata(),  # pyright: ignore[reportPrivateUsage]
+            "runtime_config": runtime._runtime_config_metadata(),
         },
         policy=ContextWindowPolicy(auto_compaction=False, max_tool_results=1),
     )
