@@ -46,6 +46,8 @@ _CONTINUITY_SUMMARY_PREFIX = "Runtime continuity summary:"
 
 logger = logging.getLogger(__name__)
 _PROVIDER_TOOL_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
+_MAX_PROVIDER_TOOL_NAME_LENGTH = 64
+_PROVIDER_TOOL_NAME_HASH_LENGTH = 8
 _PROVIDERS_REQUIRING_REASONING_CONTENT_WITH_TOOL_CALLS = frozenset({"deepseek"})
 
 
@@ -142,12 +144,28 @@ def _normalize_tool_call_id(value: str | None, *, fallback: str) -> str:
     return normalized or fallback
 
 
+def _truncate_provider_tool_name(base: str, *, suffix: str = "") -> str:
+    limit = _MAX_PROVIDER_TOOL_NAME_LENGTH - len(suffix)
+    if limit <= 0:
+        raise ValueError("provider tool name suffix exceeds maximum length")
+    truncated = base[:limit].rstrip("_-")
+    if not truncated:
+        truncated = "tool"[:limit]
+    if not truncated:
+        raise ValueError("provider tool name limit is too small")
+    return f"{truncated}{suffix}"
+
+
 def _sanitize_provider_tool_name(tool_name: str) -> str:
-    if _PROVIDER_TOOL_NAME_PATTERN.fullmatch(tool_name):
+    if (
+        _PROVIDER_TOOL_NAME_PATTERN.fullmatch(tool_name)
+        and len(tool_name) <= _MAX_PROVIDER_TOOL_NAME_LENGTH
+    ):
         return tool_name
     normalized = re.sub(r"[^a-zA-Z0-9_-]", "_", tool_name).strip("_") or "tool"
-    suffix = hashlib.sha1(tool_name.encode("utf-8")).hexdigest()[:8]
-    return f"{normalized}_{suffix}"
+    digest = hashlib.sha1(tool_name.encode("utf-8")).hexdigest()
+    suffix = f"_{digest[:_PROVIDER_TOOL_NAME_HASH_LENGTH]}"
+    return _truncate_provider_tool_name(normalized, suffix=suffix)
 
 
 def _reasoning_content_for_tool_message(segment: object) -> str | None:
@@ -212,9 +230,11 @@ class LiteLLMBackendSingleAgentProvider:
             candidate = base_candidate
             if provider_to_original.get(candidate) not in {None, tool_name}:
                 suffix = hashlib.sha1(tool_name.encode("utf-8")).hexdigest()
-                index = 8
+                index = _PROVIDER_TOOL_NAME_HASH_LENGTH + 2
+                normalized = re.sub(r"[^a-zA-Z0-9_-]", "_", tool_name).strip("_") or "tool"
                 while provider_to_original.get(candidate) not in {None, tool_name}:
-                    candidate = f"{base_candidate}_{suffix[:index]}"
+                    collision_suffix = f"_{suffix[:index]}"
+                    candidate = _truncate_provider_tool_name(normalized, suffix=collision_suffix)
                     index += 2
             original_to_provider[tool_name] = candidate
             provider_to_original[candidate] = tool_name

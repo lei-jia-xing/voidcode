@@ -1806,6 +1806,69 @@ def test_provider_adapter_sanitizes_provider_tool_schema_and_decodes_runtime_too
     assert result.tool_call.arguments == {"query": "triangle"}
 
 
+def test_provider_adapter_caps_long_sanitized_tool_names_to_provider_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = LiteLLMBackendSingleAgentProvider(name="deepseek", config=None)
+    long_tool_name = "mcp/" + "very-long-server-name-" * 3 + "tool/" + "search-github-results-" * 2
+    request = _build_turn_request(model_name="deepseek")
+    request = ProviderTurnRequest(
+        assembled_context=_assembled_from_legacy(
+            prompt=request.prompt,
+            tool_results=request.tool_results,
+            context_window=request.context_window,
+            applied_skills=request.applied_skills,
+        ),
+        available_tools=(
+            ToolDefinition(
+                name=long_tool_name,
+                description="search github code",
+                input_schema={"query": {"type": "string"}},
+                read_only=True,
+            ),
+        ),
+        raw_model="deepseek/deepseek-v4-pro",
+        provider_name="deepseek",
+        model_name="deepseek-v4-pro",
+        attempt=request.attempt,
+        abort_signal=request.abort_signal,
+    )
+    original_to_provider, _provider_to_original = provider._provider_tool_name_maps(request)
+    provider_tool_name = original_to_provider[long_tool_name]
+    assert len(provider_tool_name) <= 64
+    assert provider_tool_name.endswith("_" + provider_tool_name.split("_")[-1])
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        tool_calls=[
+            {
+                "id": "call-1",
+                "function": {
+                    "name": provider_tool_name,
+                    "arguments": json.dumps({"query": "triangle"}),
+                },
+            }
+        ],
+    )
+
+    result = provider.propose_turn(request)
+
+    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+    assert isinstance(payload_obj, dict)
+    payload = cast(dict[str, object], payload_obj)
+    tools_obj = payload.get("tools")
+    assert isinstance(tools_obj, list)
+    tool_payload = cast(dict[str, object], tools_obj[0])
+    function_obj = tool_payload.get("function")
+    assert isinstance(function_obj, dict)
+    function = cast(dict[str, object], function_obj)
+    assert function["name"] == provider_tool_name
+    assert len(cast(str, function["name"])) <= 64
+    assert result.tool_call is not None
+    assert result.tool_call.tool_name == long_tool_name
+    assert result.tool_call.arguments == {"query": "triangle"}
+
+
 def test_deepseek_provider_reinjects_reasoning_content_for_tool_history(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
