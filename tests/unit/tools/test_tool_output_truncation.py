@@ -47,6 +47,10 @@ def test_cap_tool_result_output_caps_by_line_count_and_saves_full_output(tmp_pat
     assert artifact["status"] == "available"
     assert artifact["producer"] == "voidcode.tool_output.v1"
     assert capped.data["artifact_id"] == artifact["artifact_id"]
+    assert "retry_guidance" in capped.data
+    diagnostics = capped.data["diagnostics"]
+    assert isinstance(diagnostics, list)
+    assert diagnostics[-1]["reason"] == "tool_output_truncated"
     artifact_path = Path(cast(str, artifact["path"]))
     assert artifact_path.read_text(encoding="utf-8") == content
     assert artifact_path.stat().st_mode & 0o777 == 0o600
@@ -127,7 +131,7 @@ def test_tool_output_artifact_reference_metadata_is_bounded_and_safe(tmp_path: P
     assert "artifact-line-0" in capped.content
     assert "artifact-line-10" not in capped.content
     assert capped.reference == f"artifact:{capped.data['artifact_id']}"
-    assert "Use artifact retrieval by artifact_id or tool_call_id" in capped.content
+    assert "Use background_output with full_session=true" in capped.content
     raw_artifact = capped.data["artifact"]
     assert isinstance(raw_artifact, dict)
     artifact = cast(dict[str, object], raw_artifact)
@@ -385,6 +389,10 @@ def test_cap_tool_result_output_caps_large_errors(tmp_path: Path) -> None:
     assert "error-4" not in capped.error
     assert "Tool error truncated" in capped.error
     assert capped.truncated is True
+    diagnostics = capped.data["diagnostics"]
+    assert isinstance(diagnostics, list)
+    assert diagnostics[-1]["reason"] == "tool_error_truncated"
+    assert "full error" in diagnostics[-1]["retry_guidance"]
     assert isinstance(capped.reference, str)
     raw_artifact = capped.data["artifact"]
     assert isinstance(raw_artifact, dict)
