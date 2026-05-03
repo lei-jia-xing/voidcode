@@ -2801,12 +2801,29 @@ def _parse_categories_config(
             raise ValueError(
                 f"runtime config field 'categories.{key}.model' must be a non-empty string"
             )
+        normalized_model = model.strip() if isinstance(model, str) else None
         fallback_models = _parse_string_list(
             category_payload.get("fallback_models"),
             field_path=f"categories.{key}.fallback_models",
         )
+        if fallback_models:
+            if normalized_model is None:
+                raise ValueError(
+                    "runtime config field 'categories."
+                    f"{key}.model' is required when 'categories.{key}.fallback_models' "
+                    "is provided"
+                )
+            validated_fallback = parse_provider_fallback_payload(
+                {
+                    "preferred_model": normalized_model,
+                    "fallback_models": list(fallback_models),
+                },
+                source=f"runtime config field 'categories.{key}.fallback_models'",
+            )
+            assert validated_fallback is not None
+            fallback_models = validated_fallback.fallback_models
         parsed[key] = RuntimeCategoryConfig(
-            model=model.strip() if isinstance(model, str) else None,
+            model=normalized_model,
             fallback_models=fallback_models,
         )
     return parsed

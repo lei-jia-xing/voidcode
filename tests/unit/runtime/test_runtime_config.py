@@ -1821,6 +1821,28 @@ def test_runtime_config_rejects_unknown_category_model_override(tmp_path: Path) 
         _ = load_runtime_config(tmp_path, env={})
 
 
+def test_runtime_config_rejects_duplicate_category_fallback_models(tmp_path: Path) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps(
+            {
+                "categories": {
+                    "quick": {
+                        "model": "opencode/gpt-5.4",
+                        "fallback_models": ["opencode/gpt-5.4", "openai/gpt-4.1"],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="provider fallback chain must not contain duplicate models",
+    ):
+        _ = load_runtime_config(tmp_path, env={})
+
+
 def test_runtime_config_parses_repo_local_max_steps(tmp_path: Path) -> None:
     runtime_config_path(tmp_path).write_text(
         json.dumps({"max_steps": 7}),
