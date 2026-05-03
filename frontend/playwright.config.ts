@@ -1,5 +1,6 @@
 import { defineConfig, devices } from '@playwright/test';
 import * as dotenv from 'dotenv';
+import * as os from 'os';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -13,7 +14,7 @@ export default defineConfig({
   retries: process.env.CI ? 2 : 0,
   workers: process.env.CI ? 1 : undefined,
   reporter: process.env.CI ? 'html' : 'list',
-  outputDir: process.env.CI ? 'test-results/' : '/tmp/playwright-test-results/',
+  outputDir: process.env.CI ? 'test-results/' : path.join(os.tmpdir(), 'playwright-test-results'),
   use: {
     trace: 'off',
   },

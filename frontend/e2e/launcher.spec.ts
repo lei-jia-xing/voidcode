@@ -1,6 +1,7 @@
 import { test, expect, type Page } from "@playwright/test";
 import { spawn, ChildProcess } from "child_process";
 import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
 import { fileURLToPath } from "url";
 
@@ -30,6 +31,10 @@ function sseBody(chunks: JsonValue[]) {
   return chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n`).join("\n");
 }
 
+function uvExecutable() {
+  return process.platform === "win32" ? "uv.cmd" : "uv";
+}
+
 async function installMockRuntime(page: Page) {
   const workspaceSnapshot = {
     current: {
@@ -50,7 +55,7 @@ async function installMockRuntime(page: Page) {
     ],
     candidates: [
       {
-        path: "/tmp/voidcode-demo",
+        path: path.join(os.tmpdir(), "voidcode-demo"),
         label: "voidcode-demo",
         available: true,
         current: false,
@@ -432,7 +437,7 @@ test.describe("VoidCode Web Launcher", () => {
     const port = Math.floor(Math.random() * 50000) + 10000;
 
     proc = spawn(
-      "uv",
+      uvExecutable(),
       [
         "run",
         "voidcode",
