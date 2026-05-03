@@ -353,7 +353,7 @@ export const useAppStore = create<AppState>()(
     (set, get) => ({
       language: "en",
       agentPreset: "leader",
-      providerModel: "opencode-go/glm-5.1",
+      providerModel: "deepseek/deepseek-v4-pro",
       reasoningEffort: "",
       workspaces: null,
       workspacesStatus: "idle",
