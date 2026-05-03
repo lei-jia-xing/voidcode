@@ -2020,6 +2020,59 @@ def test_runtime_config_merges_partial_builtin_formatter_override(tmp_path: Path
     )
 
 
+def test_runtime_config_formatter_preserves_hooks_enabled_when_formatter_enabled_omitted(
+    tmp_path: Path,
+) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps(
+            {
+                "hooks": {"enabled": True},
+                "formatter": {"languages": {"python": {"command": ["uvx", "ruff", "format"]}}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.hooks is not None
+    assert config.hooks.enabled is True
+    assert config.hooks.formatter_presets["python"].command == ("uvx", "ruff", "format")
+
+
+def test_runtime_config_formatter_preserves_hooks_formatter_presets_when_languages_omitted(
+    tmp_path: Path,
+) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "enabled": True,
+                    "formatter_presets": {
+                        "php": {
+                            "command": ["php-cs-fixer", "fix"],
+                            "extensions": [".php"],
+                            "root_markers": ["composer.json", ".php-cs-fixer.php"],
+                        }
+                    },
+                },
+                "formatter": {"enabled": True},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.hooks is not None
+    assert config.hooks.enabled is True
+    assert config.hooks.formatter_presets["php"] == RuntimeFormatterPresetConfig(
+        command=("php-cs-fixer", "fix"),
+        extensions=(".php",),
+        root_markers=("composer.json", ".php-cs-fixer.php"),
+    )
+
+
 def test_runtime_config_prefers_explicit_override_over_repo_file_and_environment(
     tmp_path: Path,
 ) -> None:

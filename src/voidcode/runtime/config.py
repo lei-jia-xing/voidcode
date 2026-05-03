@@ -1097,9 +1097,13 @@ def _parse_formatter_config(raw_formatter: object) -> RuntimeFormatterConfig | N
         field_path="formatter",
     )
     enabled = _parse_optional_bool(formatter_payload.get("enabled"), field_path="formatter.enabled")
-    languages = _parse_formatter_presets_config(
-        formatter_payload.get("languages"),
-        field_path="formatter.languages",
+    languages = (
+        _parse_formatter_presets_config(
+            formatter_payload.get("languages"),
+            field_path="formatter.languages",
+        )
+        if "languages" in formatter_payload
+        else {}
     )
     return RuntimeFormatterConfig(enabled=enabled, languages=languages)
 
@@ -1112,8 +1116,10 @@ def _apply_formatter_config(
     if formatter is None:
         return hooks
     base_hooks = hooks or RuntimeHooksConfig()
+    formatter_presets = dict(base_hooks.formatter_presets)
+    formatter_presets.update(formatter.languages)
     return RuntimeHooksConfig(
-        enabled=formatter.enabled,
+        enabled=formatter.enabled if formatter.enabled is not None else base_hooks.enabled,
         timeout_seconds=base_hooks.timeout_seconds,
         pre_tool=base_hooks.pre_tool,
         post_tool=base_hooks.post_tool,
@@ -1130,7 +1136,7 @@ def _apply_formatter_config(
         on_background_task_result_read=base_hooks.on_background_task_result_read,
         on_delegated_result_available=base_hooks.on_delegated_result_available,
         on_context_pressure=base_hooks.on_context_pressure,
-        formatter_presets=formatter.languages,
+        formatter_presets=formatter_presets,
     )
 
 

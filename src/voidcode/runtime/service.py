@@ -7925,6 +7925,16 @@ class VoidCodeRuntime:
     ) -> RuntimeProviderFallbackConfig | None:
         if request_agent is not None and request_agent.provider_fallback is not None:
             return request_agent.provider_fallback
+        category_config = self._category_config(category)
+        if category_config is not None and category_config.fallback_models and model is not None:
+            return RuntimeProviderFallbackConfig(
+                preferred_model=model,
+                fallback_models=tuple(
+                    fallback_model
+                    for fallback_model in category_config.fallback_models
+                    if fallback_model != model
+                ),
+            )
         preset_agent = self._preset_agent_config(selected_preset)
         provider_fallback = self._provider_fallback_for_agent_selection(
             model=model,

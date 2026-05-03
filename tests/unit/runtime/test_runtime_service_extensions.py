@@ -4212,6 +4212,57 @@ def test_runtime_delegated_child_rebases_duplicate_fallback_model(
     )
 
 
+def test_runtime_category_delegation_prefers_category_fallback_models(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_BackgroundTaskSuccessGraph(),
+        config=RuntimeConfig(
+            provider_fallback=RuntimeProviderFallbackConfig(
+                preferred_model="openai/global-model",
+                fallback_models=("openai/global-fallback",),
+            ),
+            categories={
+                "quick": RuntimeCategoryConfig(
+                    model="openai/category-model",
+                    fallback_models=(
+                        "openai/category-model",
+                        "openai/category-fallback",
+                        "custom/demo",
+                    ),
+                )
+            },
+            agents={
+                "worker": RuntimeAgentConfig(
+                    preset="worker",
+                    prompt_profile="worker",
+                    model="openai/worker-model",
+                    execution_engine="provider",
+                    provider_fallback=RuntimeProviderFallbackConfig(
+                        preferred_model="openai/worker-model",
+                        fallback_models=("openai/worker-fallback",),
+                    ),
+                )
+            },
+        ),
+    )
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+
+    response = runtime.run(
+        RuntimeRequest(
+            prompt="delegated child",
+            parent_session_id="leader-session",
+            metadata={"delegation": {"mode": "sync", "category": "quick"}},
+        )
+    )
+
+    assert runtime.effective_runtime_config(
+        session_id=response.session.session.id
+    ).provider_fallback == RuntimeProviderFallbackConfig(
+        preferred_model="openai/category-model",
+        fallback_models=("openai/category-fallback", "custom/demo"),
+    )
+
+
 def test_runtime_subagent_type_uses_agent_preset_model_before_global_model(
     tmp_path: Path,
 ) -> None:

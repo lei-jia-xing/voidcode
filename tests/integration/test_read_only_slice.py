@@ -3666,12 +3666,12 @@ def test_provider_runtime_executes_read_path_and_persists_config(tmp_path: Path)
     assert runtime_config_payload == {
         "approval_mode": "allow",
         "execution_engine": "provider",
+        "fallback_models": [],
         "max_steps": None,
         "lsp": {"configured_enabled": False, "mode": "disabled", "servers": []},
         "mcp": {"configured_enabled": False, "mode": "disabled", "servers": []},
         "model": "opencode/gpt-5.4",
         "permission": _DEFAULT_PERMISSION_METADATA,
-        "provider_fallback": None,
         "resolved_provider": {
             "active_target": {
                 "raw_model": "opencode/gpt-5.4",
@@ -4637,13 +4637,13 @@ def test_runtime_resume_uses_persisted_runtime_config_over_fresh_resume_override
     assert replay.session.metadata["runtime_config"] == {
         "approval_mode": "allow",
         "execution_engine": "deterministic",
+        "fallback_models": [],
         "max_steps": None,
         "tool_timeout_seconds": None,
         "lsp": {"configured_enabled": False, "mode": "disabled", "servers": []},
         "mcp": {"configured_enabled": False, "mode": "disabled", "servers": []},
         "model": "session/model",
         "permission": _DEFAULT_PERMISSION_METADATA,
-        "provider_fallback": None,
         "resolved_provider": {
             "active_target": {
                 "raw_model": "session/model",
