@@ -280,7 +280,7 @@ describe("useAppStore integration flow", () => {
     useAppStore.setState({
       language: "en",
       agentPreset: "leader",
-      providerModel: "opencode-go/glm-5.1",
+      providerModel: "deepseek/deepseek-v4-pro",
       workspaces: null,
       workspacesStatus: "idle",
       workspacesError: null,
@@ -424,7 +424,7 @@ describe("useAppStore integration flow", () => {
       operator_guidance: null,
     });
     runtimeClientMocks.validateProviderCredentialsMock.mockResolvedValue({
-      provider: "opencode-go",
+      provider: "deepseek",
       configured: true,
       ok: true,
       status: "ok",
@@ -1331,6 +1331,73 @@ describe("useAppStore integration flow", () => {
     expect(state.backgroundTaskOutputError).toBeNull();
   });
 
+  it("keeps delegated child output selected while refreshing session-scoped task lists", async () => {
+    const childTask = makeBackgroundTaskSummary("task-child", "child task");
+    const childOutput: BackgroundTaskOutput = {
+      task: {
+        task_id: "task-child",
+        status: "completed",
+        parent_session_id: "session-parent",
+        requested_child_session_id: "requested-child",
+        child_session_id: "child-session",
+        approval_request_id: null,
+        question_request_id: null,
+        approval_blocked: false,
+        summary_output: "child summary",
+        error: null,
+        result_available: true,
+        cancellation_cause: null,
+        routing: { mode: "subagent", subagent_type: "explore" },
+      },
+      session_result: {
+        session: makeSessionState("child-session", "completed"),
+        prompt: "child prompt",
+        status: "completed",
+        summary: "child summary",
+        output: "child output",
+        error: null,
+        last_event_sequence: 2,
+        transcript: [
+          makeEvent(
+            1,
+            "runtime.request_received",
+            { prompt: "child prompt" },
+            "runtime",
+            "child-session",
+          ),
+          makeEvent(
+            2,
+            "graph.response_ready",
+            { output: "child output" },
+            "graph",
+            "child-session",
+          ),
+        ],
+      },
+      output: "child output",
+    };
+
+    useAppStore.setState({
+      currentSessionId: "session-parent",
+      selectedBackgroundTaskOutputId: "task-child",
+      backgroundTaskOutput: childOutput,
+      backgroundTaskOutputStatus: "success",
+    });
+    runtimeClientMocks.listSessionBackgroundTasksMock.mockResolvedValue([
+      childTask,
+    ]);
+
+    await useAppStore.getState().loadBackgroundTasks();
+
+    const state = useAppStore.getState();
+    expect(state.backgroundTasks).toEqual([childTask]);
+    expect(state.selectedBackgroundTaskOutputId).toBe("task-child");
+    expect(state.backgroundTaskOutput).toEqual(childOutput);
+    expect(
+      runtimeClientMocks.listSessionBackgroundTasksMock,
+    ).toHaveBeenCalledWith("session-parent");
+  });
+
   it("surfaces approval lookup failure when no pending request exists", async () => {
     const sessionId = "broken-session";
     const requestReceived = makeEvent(
@@ -1632,7 +1699,7 @@ describe("useAppStore integration flow", () => {
         provider_stream: true,
         agent: {
           preset: "leader",
-          model: "opencode-go/glm-5.1",
+          model: "deepseek/deepseek-v4-pro",
           execution_engine: "provider",
         },
       },
@@ -1669,7 +1736,7 @@ describe("useAppStore integration flow", () => {
       metadata: {
         agent: {
           preset: "leader",
-          model: "opencode-go/glm-5.1",
+          model: "deepseek/deepseek-v4-pro",
           execution_engine: "provider",
         },
       },
@@ -1753,22 +1820,22 @@ describe("useAppStore integration flow", () => {
     ]);
     useAppStore.setState({
       reasoningEffort: "high",
-      providerModel: "opencode-go/glm-5.1",
+      providerModel: "deepseek/deepseek-v4-pro",
       providers: [
         {
-          name: "opencode-go",
-          label: "OpenCode Go",
+          name: "deepseek",
+          label: "DeepSeek",
           configured: true,
           current: true,
         },
       ],
       providerModels: {
-        "opencode-go": {
-          provider: "opencode-go",
+        deepseek: {
+          provider: "deepseek",
           configured: true,
-          models: ["glm-5.1"],
+          models: ["deepseek-v4-pro"],
           model_metadata: {
-            "glm-5.1": {
+            "deepseek-v4-pro": {
               supports_reasoning_effort: false,
               default_reasoning_effort: null,
             },
@@ -1787,7 +1854,7 @@ describe("useAppStore integration flow", () => {
       metadata: {
         agent: {
           preset: "leader",
-          model: "opencode-go/glm-5.1",
+          model: "deepseek/deepseek-v4-pro",
           execution_engine: "provider",
         },
       },
@@ -2170,7 +2237,7 @@ describe("useAppStore integration flow", () => {
       metadata: {
         agent: {
           preset: "leader",
-          model: "opencode-go/glm-5.1",
+          model: "deepseek/deepseek-v4-pro",
           execution_engine: "provider",
         },
       },
@@ -2210,7 +2277,7 @@ describe("useAppStore integration flow", () => {
       metadata: {
         agent: {
           preset: "leader",
-          model: "opencode-go/glm-5.1",
+          model: "deepseek/deepseek-v4-pro",
           execution_engine: "provider",
         },
       },
@@ -2355,29 +2422,29 @@ describe("useAppStore integration flow", () => {
 
   it("updates runtime-owned settings without expecting provider_api_key in the response", async () => {
     runtimeClientMocks.updateSettingsMock.mockResolvedValue({
-      provider: "opencode-go",
+      provider: "deepseek",
       provider_api_key_present: true,
-      model: "opencode-go/glm-5.1",
+      model: "deepseek/deepseek-v4-pro",
     });
 
     await useAppStore.getState().updateSettings({
-      provider: "opencode-go",
+      provider: "deepseek",
       provider_api_key: "secret-key",
-      model: "opencode-go/glm-5.1",
+      model: "deepseek/deepseek-v4-pro",
     });
 
     const state = useAppStore.getState();
     expect(runtimeClientMocks.updateSettingsMock).toHaveBeenCalledWith({
-      provider: "opencode-go",
+      provider: "deepseek",
       provider_api_key: "secret-key",
-      model: "opencode-go/glm-5.1",
+      model: "deepseek/deepseek-v4-pro",
     });
     expect(state.settings).toEqual({
-      provider: "opencode-go",
+      provider: "deepseek",
       provider_api_key_present: true,
-      model: "opencode-go/glm-5.1",
+      model: "deepseek/deepseek-v4-pro",
     });
-    expect(state.providerModel).toBe("opencode-go/glm-5.1");
+    expect(state.providerModel).toBe("deepseek/deepseek-v4-pro");
   });
 
   it("records provider credential validation results by provider", async () => {
