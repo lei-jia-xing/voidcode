@@ -472,7 +472,7 @@ def test_edit_tool_keeps_edit_successful_when_formatter_times_out(tmp_path: Path
     diagnostics = result.data["diagnostics"]
     assert isinstance(diagnostics, list)
     first_diagnostic = cast(dict[str, object], diagnostics[0])
-    assert "timed out after 10.0s" in str(first_diagnostic["message"])
+    assert "timed out after 30.0s" in str(first_diagnostic["message"])
     assert file_path.read_text(encoding="utf-8") == "print('bye')\n"
 
 

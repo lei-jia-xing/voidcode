@@ -765,7 +765,7 @@ def test_shell_exec_uses_existing_tool_timeout_when_runtime_timeout_is_unset(
     ]
 
     assert len(completed_events) == 1
-    assert completed_events[0].payload["timeout"] == 30
+    assert completed_events[0].payload["timeout"] == 120
     assert completed_events[0].payload["cwd"] == str(tmp_path.resolve())
     assert completed_events[0].payload["exit_code"] == 0
     assert completed_events[0].payload["stdout_truncated"] is False

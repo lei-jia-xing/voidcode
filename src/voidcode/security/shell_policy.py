@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-DEFAULT_TIMEOUT_SECONDS = 30
-MAX_TIMEOUT_SECONDS = 120
+DEFAULT_TIMEOUT_SECONDS = 120
+MAX_TIMEOUT_SECONDS = 600
 
 
 @dataclass(frozen=True, slots=True)

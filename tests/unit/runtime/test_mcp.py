@@ -17,7 +17,13 @@ from voidcode.mcp import (
     McpManagerState as CanonicalMcpManagerState,
 )
 from voidcode.runtime.config import RuntimeMcpConfig, RuntimeMcpServerConfig
-from voidcode.runtime.mcp import McpConfigState, McpManagerState, McpRuntimeEvent, build_mcp_manager
+from voidcode.runtime.mcp import (
+    DEFAULT_MCP_REQUEST_TIMEOUT_SECONDS,
+    McpConfigState,
+    McpManagerState,
+    McpRuntimeEvent,
+    build_mcp_manager,
+)
 
 _MCP_SERVER_SCRIPT = r"""
 from __future__ import annotations
@@ -281,6 +287,10 @@ def test_mcp_manager_accepts_remote_http_transport_metadata(
 
     assert requested_urls == ["https://mcp.example.test"]
     assert [tool.tool_name for tool in tools] == ["search"]
+
+
+def test_mcp_manager_defaults_to_production_request_timeout() -> None:
+    assert DEFAULT_MCP_REQUEST_TIMEOUT_SECONDS == 30.0
 
 
 def test_mcp_manager_gracefully_closes_server_stdin_on_shutdown(tmp_path: Path) -> None:
@@ -605,6 +615,7 @@ while True:
 
     config = RuntimeMcpConfig(
         enabled=True,
+        request_timeout_seconds=0.2,
         servers={
             "silent": RuntimeMcpServerConfig(
                 transport="stdio",

@@ -8,7 +8,7 @@ from typing import Literal
 
 from ..hook.config import RuntimeFormatterPresetConfig, RuntimeHooksConfig
 
-FORMATTER_TIMEOUT_SECONDS = 10.0
+FORMATTER_TIMEOUT_SECONDS = 30.0
 
 type FormatterExecutionStatus = Literal[
     "not_configured",

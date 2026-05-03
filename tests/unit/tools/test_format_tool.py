@@ -261,7 +261,7 @@ def test_format_tool_bounds_formatter_timeout(tmp_path: Path) -> None:
 
     with patch(
         "voidcode.tools._formatter.subprocess.run",
-        side_effect=subprocess.TimeoutExpired(cmd=["custom-formatter"], timeout=10.0),
+        side_effect=subprocess.TimeoutExpired(cmd=["custom-formatter"], timeout=30.0),
     ):
         result = tool.invoke(
             ToolCall(tool_name="format_file", arguments={"path": "example.py"}),
@@ -269,5 +269,5 @@ def test_format_tool_bounds_formatter_timeout(tmp_path: Path) -> None:
         )
 
     assert result.status == "error"
-    assert "timed out after 10.0s" in (result.error or "")
+    assert "timed out after 30.0s" in (result.error or "")
     assert result.data["attempted_commands"] == [["custom-formatter", str(target)]]

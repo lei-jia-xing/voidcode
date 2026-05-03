@@ -109,7 +109,7 @@ def test_shell_exec_emits_consistent_security_metadata(tmp_path: Path) -> None:
 
     assert result.status == "ok"
     assert result.data["cwd"] == str(tmp_path.resolve())
-    assert result.data["timeout"] == 30
+    assert result.data["timeout"] == 120
     assert result.data["truncated"] is False
     assert result.data["stdout_truncated"] is False
     assert result.data["stderr_truncated"] is False

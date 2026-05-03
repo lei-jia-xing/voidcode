@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import shutil
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -38,7 +40,7 @@ def test_shell_exec_tool_runs_command_in_workspace(tmp_path: Path) -> None:
     assert isinstance(stdout, str)
     assert stdout.strip() == str(tmp_path.resolve())
     assert result.data.get("stderr") == ""
-    assert result.data.get("timeout") == 30
+    assert result.data.get("timeout") == 120
     assert result.data.get("truncated") is False
     assert result.data.get("stdout_truncated") is False
     assert result.data.get("stderr_truncated") is False
@@ -47,7 +49,7 @@ def test_shell_exec_tool_runs_command_in_workspace(tmp_path: Path) -> None:
 def test_shell_exec_tool_supports_shell_operators(tmp_path: Path) -> None:
     tool = ShellExecTool()
     command = "printf 'alpha\\n' > sample.txt && cat sample.txt"
-    if sys.platform.startswith("win"):
+    if shutil.which("cmd.exe") is not None:
         command = "echo alpha>sample.txt && type sample.txt"
 
     result = tool.invoke(
@@ -140,6 +142,21 @@ def test_shell_exec_tool_respects_timeout(tmp_path: Path) -> None:
         )
 
 
+def test_shell_exec_tool_caps_explicit_timeout_at_production_max(tmp_path: Path) -> None:
+    tool = ShellExecTool()
+
+    result = tool.invoke(
+        ToolCall(
+            tool_name="shell_exec",
+            arguments={"command": _cwd_command(), "timeout": 9999},
+        ),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert result.data.get("timeout") == 600
+
+
 def test_shell_exec_timeout_cleanup_falls_back_without_killpg(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -214,6 +231,32 @@ def test_shell_exec_windows_timeout_cleanup_falls_back_after_taskkill_nonzero(
 
     assert calls == [["taskkill", "/PID", "5678", "/T", "/F"]]
     assert killed is True
+
+
+def test_shell_exec_posix_timeout_cleanup_ignores_taskkill_in_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[int, int]] = []
+    killed = False
+
+    class _FakeProcess:
+        pid = 6789
+
+        def kill(self) -> None:
+            nonlocal killed
+            killed = True
+
+    def fake_killpg(pid: int, signal_value: int) -> None:
+        calls.append((pid, signal_value))
+
+    monkeypatch.setattr("voidcode.tools.shell_exec.os.name", "posix")
+    monkeypatch.setattr("voidcode.tools.shell_exec.shutil.which", lambda _name: "/usr/bin/taskkill")
+    monkeypatch.setattr("voidcode.tools.shell_exec.os.killpg", fake_killpg)
+
+    kill_timed_out_process(cast(subprocess.Popen[str], _FakeProcess()))
+
+    assert calls == [(6789, signal.SIGKILL)]
+    assert killed is False
 
 
 def test_shell_exec_tool_returns_full_output_for_large_subprocess(tmp_path: Path) -> None:
