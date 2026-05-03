@@ -79,11 +79,12 @@ _REPO_CONFIG_KEYS = frozenset(
         "approval_mode",
         "permission",
         "model",
-        "execution_engine",
+        "fallback_models",
         "max_steps",
         "tool_timeout_seconds",
         "reasoning_effort",
         "hooks",
+        "formatter",
         "tools",
         "skills",
         "context_window",
@@ -91,7 +92,6 @@ _REPO_CONFIG_KEYS = frozenset(
         "background_task",
         "mcp",
         "tui",
-        "provider_fallback",
         "providers",
         "agent",
         "agents",
@@ -122,6 +122,7 @@ _HOOKS_CONFIG_KEYS = frozenset(
         "formatter_presets",
     }
 )
+_FORMATTER_CONFIG_KEYS = frozenset({"enabled", "languages"})
 _CONTEXT_WINDOW_CONFIG_KEYS = frozenset(
     {
         "version",
@@ -185,11 +186,9 @@ _AGENT_CONFIG_KEYS = frozenset(
         "manifest_hook_refs",
         "hook_refs",
         "model",
-        "execution_engine",
         "tools",
         "skills",
         "mcp_binding",
-        "provider_fallback",
         "fallback_models",
     }
 )
@@ -286,6 +285,12 @@ class RuntimeToolsConfig:
     local: RuntimeToolsLocalConfig | None = None
     allowlist: tuple[str, ...] | None = None
     default: tuple[str, ...] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeFormatterConfig:
+    enabled: bool | None = None
+    languages: Mapping[str, RuntimeFormatterPresetConfig] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -434,6 +439,7 @@ class RuntimeAgentConfig:
 @dataclass(frozen=True, slots=True)
 class RuntimeCategoryConfig:
     model: str | None = None
+    fallback_models: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -448,6 +454,7 @@ class RuntimeConfig:
     tool_timeout_seconds: int | None = None
     reasoning_effort: str | None = None
     hooks: RuntimeHooksConfig | None = None
+    formatter: RuntimeFormatterConfig | None = None
     tools: RuntimeToolsConfig | None = None
     skills: RuntimeSkillsConfig | None = None
     context_window: RuntimeContextWindowConfig | None = None
@@ -477,6 +484,7 @@ class RuntimeConfigOverrides:
     tool_timeout_seconds_configured: bool = False
     reasoning_effort: str | None = None
     hooks: RuntimeHooksConfig | None = None
+    formatter: RuntimeFormatterConfig | None = None
     tools: RuntimeToolsConfig | None = None
     skills: RuntimeSkillsConfig | None = None
     context_window: RuntimeContextWindowConfig | None = None
@@ -639,6 +647,7 @@ def load_runtime_config(
             environment=env_overrides.reasoning_effort,
         ),
         hooks=repo_local.hooks,
+        formatter=repo_local.formatter,
         tools=repo_local.tools,
         skills=repo_local.skills,
         context_window=repo_local.context_window,
@@ -742,8 +751,15 @@ def _load_repo_local_config(
         allow_none=True,
     )
 
+    raw_fallback_models = payload.get("fallback_models")
+    provider_fallback = _parse_runtime_fallback_models_config(raw_fallback_models, model=raw_model)
+
     raw_hooks = payload.get("hooks")
     hooks = _parse_hooks_config(raw_hooks)
+
+    raw_formatter = payload.get("formatter")
+    formatter = _parse_formatter_config(raw_formatter)
+    hooks = _apply_formatter_config(hooks=hooks, formatter=formatter)
 
     raw_tools = payload.get("tools")
     tools = _parse_tools_config(raw_tools)
@@ -765,9 +781,6 @@ def _load_repo_local_config(
 
     raw_tui = payload.get("tui")
     tui = _parse_tui_config(raw_tui)
-
-    raw_provider_fallback = payload.get("provider_fallback")
-    provider_fallback = _parse_provider_fallback_config(raw_provider_fallback)
 
     raw_providers = payload.get("providers")
     providers = _parse_providers_config(raw_providers, env=env)
@@ -819,6 +832,7 @@ def _load_repo_local_config(
         tool_timeout_seconds_configured=tool_timeout_seconds_configured,
         reasoning_effort=parsed_reasoning_effort,
         hooks=hooks,
+        formatter=formatter,
         tools=tools,
         skills=skills,
         context_window=context_window,
@@ -1066,6 +1080,62 @@ def _parse_hooks_config(raw_hooks: object) -> RuntimeHooksConfig | None:
         on_background_task_result_read=on_background_task_result_read,
         on_delegated_result_available=on_delegated_result_available,
         on_context_pressure=on_context_pressure,
+        formatter_presets=formatter_presets,
+    )
+
+
+def _parse_formatter_config(raw_formatter: object) -> RuntimeFormatterConfig | None:
+    if raw_formatter is None:
+        return None
+    if not isinstance(raw_formatter, dict):
+        raise ValueError("runtime config field 'formatter' must be an object when provided")
+
+    formatter_payload = cast(dict[str, object], raw_formatter)
+    _reject_unknown_config_keys(
+        formatter_payload,
+        allowed_keys=_FORMATTER_CONFIG_KEYS,
+        field_path="formatter",
+    )
+    enabled = _parse_optional_bool(formatter_payload.get("enabled"), field_path="formatter.enabled")
+    languages = (
+        _parse_formatter_presets_config(
+            formatter_payload.get("languages"),
+            field_path="formatter.languages",
+        )
+        if "languages" in formatter_payload
+        else {}
+    )
+    return RuntimeFormatterConfig(enabled=enabled, languages=languages)
+
+
+def _apply_formatter_config(
+    *,
+    hooks: RuntimeHooksConfig | None,
+    formatter: RuntimeFormatterConfig | None,
+) -> RuntimeHooksConfig | None:
+    if formatter is None:
+        return hooks
+    base_hooks = hooks or RuntimeHooksConfig()
+    formatter_presets = dict(base_hooks.formatter_presets)
+    formatter_presets.update(formatter.languages)
+    return RuntimeHooksConfig(
+        enabled=formatter.enabled if formatter.enabled is not None else base_hooks.enabled,
+        timeout_seconds=base_hooks.timeout_seconds,
+        pre_tool=base_hooks.pre_tool,
+        post_tool=base_hooks.post_tool,
+        on_session_start=base_hooks.on_session_start,
+        on_session_end=base_hooks.on_session_end,
+        on_session_idle=base_hooks.on_session_idle,
+        on_background_task_registered=base_hooks.on_background_task_registered,
+        on_background_task_started=base_hooks.on_background_task_started,
+        on_background_task_progress=base_hooks.on_background_task_progress,
+        on_background_task_completed=base_hooks.on_background_task_completed,
+        on_background_task_failed=base_hooks.on_background_task_failed,
+        on_background_task_cancelled=base_hooks.on_background_task_cancelled,
+        on_background_task_notification_enqueued=base_hooks.on_background_task_notification_enqueued,
+        on_background_task_result_read=base_hooks.on_background_task_result_read,
+        on_delegated_result_available=base_hooks.on_delegated_result_available,
+        on_context_pressure=base_hooks.on_context_pressure,
         formatter_presets=formatter_presets,
     )
 
@@ -2627,15 +2697,9 @@ def _parse_agent_provider_fallback_config(
     *,
     model: object,
 ) -> RuntimeProviderFallbackConfig | None:
-    raw_provider_fallback = payload.get("provider_fallback")
     raw_fallback_models = payload.get("fallback_models")
-    if raw_provider_fallback is not None and raw_fallback_models is not None:
-        raise ValueError(
-            "runtime config field 'agent.fallback_models' cannot be combined with "
-            "'agent.provider_fallback'"
-        )
     if raw_fallback_models is None:
-        return _parse_provider_fallback_config(raw_provider_fallback)
+        return None
     if not isinstance(model, str) or not model.strip():
         raise ValueError(
             "runtime config field 'agent.model' is required when 'agent.fallback_models' "
@@ -2646,7 +2710,7 @@ def _parse_agent_provider_fallback_config(
             "preferred_model": model.strip(),
             "fallback_models": raw_fallback_models,
         },
-        source="runtime config field 'agent.provider_fallback'",
+        source="runtime config field 'agent.fallback_models'",
     )
 
 
@@ -2727,12 +2791,41 @@ def _parse_categories_config(
                 f"runtime config field 'categories.{key}' must be an object when provided"
             )
         category_payload = cast(dict[str, object], value)
+        _reject_unknown_config_keys(
+            category_payload,
+            allowed_keys=frozenset({"model", "fallback_models"}),
+            field_path=f"categories.{key}",
+        )
         model = category_payload.get("model")
         if model is not None and (not isinstance(model, str) or not model.strip()):
             raise ValueError(
                 f"runtime config field 'categories.{key}.model' must be a non-empty string"
             )
-        parsed[key] = RuntimeCategoryConfig(model=model.strip() if isinstance(model, str) else None)
+        normalized_model = model.strip() if isinstance(model, str) else None
+        fallback_models = _parse_string_list(
+            category_payload.get("fallback_models"),
+            field_path=f"categories.{key}.fallback_models",
+        )
+        if fallback_models:
+            if normalized_model is None:
+                raise ValueError(
+                    "runtime config field 'categories."
+                    f"{key}.model' is required when 'categories.{key}.fallback_models' "
+                    "is provided"
+                )
+            validated_fallback = parse_provider_fallback_payload(
+                {
+                    "preferred_model": normalized_model,
+                    "fallback_models": list(fallback_models),
+                },
+                source=f"runtime config field 'categories.{key}.fallback_models'",
+            )
+            assert validated_fallback is not None
+            fallback_models = validated_fallback.fallback_models
+        parsed[key] = RuntimeCategoryConfig(
+            model=normalized_model,
+            fallback_models=fallback_models,
+        )
     return parsed
 
 
@@ -2746,6 +2839,8 @@ def serialize_runtime_categories_config(
         payload: dict[str, object] = {}
         if category.model is not None:
             payload["model"] = category.model
+        if category.fallback_models:
+            payload["fallback_models"] = list(category.fallback_models)
         serialized[category_name] = payload
     return serialized
 
@@ -2801,6 +2896,26 @@ def parse_runtime_categories_payload(
         return _parse_categories_config(raw_categories)
     except ValueError as exc:
         raise ValueError(f"{source}: {exc}") from exc
+
+
+def _parse_runtime_fallback_models_config(
+    raw_fallback_models: object,
+    *,
+    model: object,
+) -> RuntimeProviderFallbackConfig | None:
+    if raw_fallback_models is None:
+        return None
+    if not isinstance(model, str) or not model.strip():
+        raise ValueError(
+            "runtime config field 'model' is required when 'fallback_models' is provided"
+        )
+    return parse_provider_fallback_payload(
+        {
+            "preferred_model": model.strip(),
+            "fallback_models": raw_fallback_models,
+        },
+        source="runtime config field 'fallback_models'",
+    )
 
 
 def parse_runtime_context_window_payload(
@@ -2945,8 +3060,6 @@ def serialize_runtime_agent_config(agent: RuntimeAgentConfig | None) -> dict[str
         payload["hook_refs"] = list(agent.hook_refs)
     if agent.model is not None:
         payload["model"] = agent.model
-    if agent.execution_engine is not None:
-        payload["execution_engine"] = agent.execution_engine
     if agent.tools is not None:
         payload["tools"] = _serialize_runtime_agent_tools_config(agent.tools)
     if agent.skills is not None:
@@ -2957,7 +3070,7 @@ def serialize_runtime_agent_config(agent: RuntimeAgentConfig | None) -> dict[str
     if agent.mcp_binding is not None:
         payload["mcp_binding"] = agent.mcp_binding.to_payload()
     if agent.provider_fallback is not None:
-        payload["provider_fallback"] = serialize_provider_fallback_config(agent.provider_fallback)
+        payload["fallback_models"] = list(agent.provider_fallback.fallback_models)
     return {key: value for key, value in payload.items() if value is not None}
 
 

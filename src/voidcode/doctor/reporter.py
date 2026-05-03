@@ -136,7 +136,7 @@ def _create_first_task_readiness(
             status="not_ready",
             summary="No provider-backed readiness check ran for the first coding task.",
             next_step=(
-                "Run `voidcode config init --execution-engine provider --model provider/model"
+                "Run `voidcode config init --model provider/model"
                 f"{workspace_arg}` with a real provider/model, then run `{doctor_command}` again."
             ),
             blockers=["provider.readiness check is missing"],
@@ -189,7 +189,6 @@ def _first_task_details(
 ) -> dict[str, Any]:
     details = dict(result.details)
     return {
-        "execution_engine": "provider",
         "workspace_config_valid": True,
         "provider": details.get("provider"),
         "model": details.get("model"),
@@ -216,7 +215,7 @@ def _local_tool_availability(results: list[CapabilityCheckResult]) -> list[dict[
 def _next_step_for_provider_status(provider_status: str, workspace_arg: str) -> str:
     if provider_status == "missing_model":
         return (
-            "Run `voidcode config init --execution-engine provider --model provider/model"
+            "Run `voidcode config init --model provider/model"
             f"{workspace_arg}` with a real provider/model, then rerun doctor."
         )
     if provider_status in {"missing_auth", "unconfigured"}:
@@ -274,8 +273,6 @@ def format_report(report: CapabilityReport, *, verbose: bool = False) -> str:
         lines.append(f"  summary: {readiness.summary}")
         lines.append(f"  next: {readiness.next_step}")
         details = readiness.details
-        if "execution_engine" in details:
-            lines.append(f"  execution_engine: {details['execution_engine']}")
         if "workspace_config_valid" in details:
             lines.append(f"  workspace_config_valid: {details['workspace_config_valid']}")
         if "provider" in details:

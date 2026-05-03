@@ -1585,7 +1585,7 @@ def test_prepare_provider_context_dropped_tool_diagnostics_omit_raw_content() ->
                     "path": "secret.txt",
                 },
             ),
-            ToolResult(tool_name="list", status="ok", content="secret.txt", data={}),
+            ToolResult(tool_name="glob", status="ok", content="secret.txt", data={}),
         ),
         session_metadata={},
         policy=ContextWindowPolicy(max_tool_results=1),

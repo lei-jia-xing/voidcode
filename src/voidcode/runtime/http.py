@@ -1861,9 +1861,12 @@ class RuntimeTransportApp:
             "cancellation_cause": task.cancellation_cause,
             "error": task.error,
             "created_at": task.created_at,
+            "created_at_unix_ms": task.created_at_unix_ms,
             "updated_at": task.updated_at,
             "started_at": task.started_at,
+            "started_at_unix_ms": task.started_at_unix_ms,
             "finished_at": task.finished_at,
+            "finished_at_unix_ms": task.finished_at_unix_ms,
             "cancel_requested_at": task.cancel_requested_at,
             "routing": RuntimeTransportApp._serialize_subagent_routing(task.routing_identity),
             "observability": (
@@ -1881,6 +1884,7 @@ class RuntimeTransportApp:
             "error": task.error,
             "created_at": task.created_at,
             "updated_at": task.updated_at,
+            "created_at_unix_ms": task.created_at_unix_ms,
             "observability": (
                 None if task.observability is None else task.observability.as_payload()
             ),
@@ -2029,7 +2033,6 @@ class RuntimeTransportApp:
         return {
             "provider": snapshot.provider,
             "model": snapshot.model,
-            "execution_engine": snapshot.execution_engine,
             "segment_count": snapshot.segment_count,
             "message_count": snapshot.message_count,
             "context_window": snapshot.context_window,
@@ -2125,6 +2128,8 @@ class RuntimeTransportApp:
             "error": result.error,
             "result_available": result.result_available,
             "cancellation_cause": result.cancellation_cause,
+            "duration_seconds": result.duration_seconds,
+            "tool_call_count": result.tool_call_count,
             "routing": RuntimeTransportApp._serialize_subagent_routing(result.routing),
             "observability": (
                 None if result.observability is None else result.observability.as_payload()
@@ -2287,7 +2292,6 @@ class RuntimeTransportApp:
             "mode": summary.mode,
             "selectable": summary.selectable,
             "configured": summary.configured,
-            "execution_engine": summary.execution_engine,
             "model": summary.model,
             "model_label": summary.model_label,
             "model_source": summary.model_source,

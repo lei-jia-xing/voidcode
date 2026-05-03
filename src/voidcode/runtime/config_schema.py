@@ -67,10 +67,10 @@ def runtime_config_json_schema() -> dict[str, object]:
                 "minLength": 1,
                 "description": "Provider/model identifier in `provider/model` form.",
             },
-            "execution_engine": {
-                "type": "string",
-                "enum": ["deterministic", "provider"],
-                "description": "Execution engine used to advance graph steps.",
+            "fallback_models": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1},
+                "description": "Ordered fallback models tried after the primary model.",
             },
             "max_steps": {
                 "type": "integer",
@@ -120,6 +120,18 @@ def runtime_config_json_schema() -> dict[str, object]:
                     "on_delegated_result_available": {"$ref": "#/$defs/commandList"},
                     "on_context_pressure": {"$ref": "#/$defs/commandList"},
                     "formatter_presets": {
+                        "type": "object",
+                        "additionalProperties": {"$ref": "#/$defs/formatterPresetConfig"},
+                    },
+                },
+            },
+            "formatter": {
+                "type": "object",
+                "additionalProperties": False,
+                "description": "Formatting behavior exposed as a top-level user-facing capability.",
+                "properties": {
+                    "enabled": {"type": "boolean"},
+                    "languages": {
                         "type": "object",
                         "additionalProperties": {"$ref": "#/$defs/formatterPresetConfig"},
                     },
@@ -237,15 +249,6 @@ def runtime_config_json_schema() -> dict[str, object]:
                             },
                         },
                     },
-                },
-            },
-            "provider_fallback": {
-                "type": "object",
-                "additionalProperties": False,
-                "description": "Provider fallback chain configuration.",
-                "properties": {
-                    "preferred_model": {"type": "string", "minLength": 1},
-                    "fallback_models": {"type": "array", "items": {"type": "string"}},
                 },
             },
             "providers": {
@@ -520,28 +523,13 @@ def runtime_config_json_schema() -> dict[str, object]:
                     },
                     "hook_refs": {"type": "array", "items": {"type": "string"}},
                     "model": {"type": "string", "minLength": 1},
-                    "execution_engine": {
-                        "type": "string",
-                        "enum": ["deterministic", "provider"],
-                    },
                     "tools": {"$ref": "#/$defs/agentToolsConfig"},
                     "skills": {"$ref": "#/$defs/skillsConfig"},
                     "mcp_binding": {"$ref": "#/$defs/agentMcpBindingConfig"},
-                    "provider_fallback": {
-                        "type": "object",
-                        "additionalProperties": False,
-                        "properties": {
-                            "preferred_model": {"type": "string", "minLength": 1},
-                            "fallback_models": {"type": "array", "items": {"type": "string"}},
-                        },
-                    },
                     "fallback_models": {
                         "type": "array",
                         "items": {"type": "string", "minLength": 1},
-                        "description": (
-                            "Agent-scoped shorthand for provider_fallback.fallback_models; "
-                            "requires agent.model as the preferred model."
-                        ),
+                        "description": "Agent-scoped fallback model chain; requires agent.model.",
                     },
                 },
             },
@@ -563,9 +551,13 @@ def runtime_config_json_schema() -> dict[str, object]:
             },
             "categoryConfig": {
                 "type": "object",
-                "additionalProperties": True,
+                "additionalProperties": False,
                 "properties": {
                     "model": {"type": "string", "minLength": 1},
+                    "fallback_models": {
+                        "type": "array",
+                        "items": {"type": "string", "minLength": 1},
+                    },
                 },
             },
             "workflowPresetConfig": {
@@ -685,7 +677,6 @@ def generate_starter_runtime_config(
     *,
     approval_mode: str = "ask",
     model: str | None = None,
-    execution_engine: str | None = None,
     max_steps: int | None = None,
     include_examples: bool = False,
     include_schema_reference: bool = True,
@@ -694,23 +685,10 @@ def generate_starter_runtime_config(
         raise ValueError(
             f"approval_mode must be one of: allow, deny, ask; received {approval_mode!r}"
         )
-    if execution_engine is not None and execution_engine not in {
-        "deterministic",
-        "provider",
-    }:
-        raise ValueError(
-            "execution_engine must be one of: deterministic, provider; received "
-            f"{execution_engine!r}"
-        )
     if max_steps is not None and max_steps < 1:
         raise ValueError("max_steps must be an integer greater than or equal to 1")
     if model is not None:
         _validate_model_reference(model)
-    if execution_engine == "provider" and model is None:
-        raise ValueError(
-            "execution_engine provider requires model; pass --model provider/model "
-            "or omit execution_engine to use runtime defaults"
-        )
 
     payload: dict[str, object] = {}
     if include_schema_reference:
@@ -718,11 +696,12 @@ def generate_starter_runtime_config(
     payload["approval_mode"] = approval_mode
     if model is not None:
         payload["model"] = model
-    if execution_engine is not None:
-        payload["execution_engine"] = execution_engine
     if max_steps is not None:
         payload["max_steps"] = max_steps
     if include_examples:
+        payload["formatter"] = {"enabled": True}
+        payload["lsp"] = {"enabled": True}
+        payload["mcp"] = {"enabled": True}
         payload["tools"] = {"builtin": {"enabled": True}}
         payload["skills"] = {"enabled": True}
     return payload

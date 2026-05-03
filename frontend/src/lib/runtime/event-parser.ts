@@ -257,6 +257,18 @@ function getToolStatusPayload(event: EventEnvelope): ToolStatusPayload | null {
   return toolStatus as ToolStatusPayload;
 }
 
+function responseTextFromPayload(
+  payload: Record<string, unknown>,
+): string | undefined {
+  return (
+    nonEmptyString(payload.output) ??
+    nonEmptyString(payload.output_preview) ??
+    nonEmptyString(payload.summary) ??
+    nonEmptyString(payload.content) ??
+    nonEmptyString(payload.text)
+  );
+}
+
 function applyToolStatus(
   currentAssistant: ChatMessage | null,
   toolStatus: ToolStatusPayload,
@@ -669,12 +681,13 @@ export function deriveChatMessages(
       }
     } else if (event.event_type === "graph.response_ready") {
       if (currentAssistant) {
-        const output =
-          typeof event.payload?.output === "string"
-            ? event.payload.output
-            : typeof event.payload?.output_preview === "string"
-              ? event.payload.output_preview
-              : "";
+        const output = responseTextFromPayload(event.payload) ?? "";
+        if (output) currentAssistant.content = output;
+        currentAssistant.status = "completed";
+      }
+    } else if (event.event_type === "runtime.completed") {
+      if (currentAssistant) {
+        const output = responseTextFromPayload(event.payload);
         if (output) currentAssistant.content = output;
         currentAssistant.status = "completed";
       }

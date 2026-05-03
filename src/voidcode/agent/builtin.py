@@ -8,7 +8,6 @@ from .prompts import render_builtin_prompt_profile
 
 _READ_ONLY_WORKSPACE_TOOLS = (
     "read_file",
-    "list",
     "glob",
     "grep",
     "ast_grep_search",

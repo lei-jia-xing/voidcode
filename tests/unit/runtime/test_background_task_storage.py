@@ -54,11 +54,17 @@ def test_background_task_storage_create_load_and_list(tmp_path: Path) -> None:
     loaded = store.load_background_task(workspace=tmp_path, task_id="task-a")
     listed = store.list_background_tasks(workspace=tmp_path)
 
-    assert loaded == task
+    assert loaded.task == task.task
+    assert loaded.request == task.request
+    assert loaded.status == task.status
+    assert loaded.created_at == task.created_at
+    assert loaded.updated_at == task.updated_at
+    assert loaded.created_at_unix_ms is not None
     assert len(listed) == 1
     assert listed[0].task.id == "task-a"
     assert listed[0].status == "queued"
     assert listed[0].prompt == "read sample.txt"
+    assert listed[0].created_at_unix_ms is not None
 
 
 def test_background_task_storage_preserves_stable_request_metadata_round_trip(

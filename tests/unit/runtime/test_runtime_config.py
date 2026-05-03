@@ -732,15 +732,16 @@ def test_runtime_config_prefers_repo_file_model_over_environment(tmp_path: Path)
     assert config.model == "repo/model"
 
 
-def test_runtime_config_prefers_repo_file_execution_engine_over_environment(tmp_path: Path) -> None:
+def test_runtime_config_rejects_repo_file_execution_engine(tmp_path: Path) -> None:
     runtime_config_path(tmp_path).write_text(
         json.dumps({"execution_engine": "deterministic"}),
         encoding="utf-8",
     )
 
-    config = load_runtime_config(tmp_path, env={EXECUTION_ENGINE_ENV_VAR: "provider"})
-
-    assert config.execution_engine == "deterministic"
+    with pytest.raises(
+        ValueError, match="runtime config field 'execution_engine' is not supported"
+    ):
+        _ = load_runtime_config(tmp_path, env={EXECUTION_ENGINE_ENV_VAR: "provider"})
 
 
 def test_runtime_config_prefers_repo_file_max_steps_over_environment(tmp_path: Path) -> None:
@@ -778,14 +779,9 @@ def test_runtime_config_treats_null_repo_file_tool_timeout_as_explicit_override(
     assert config.tool_timeout_seconds is None
 
 
-def test_runtime_config_prefers_explicit_execution_engine_over_repo_file_and_environment(
+def test_runtime_config_explicit_execution_engine_still_overrides_environment(
     tmp_path: Path,
 ) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps({"execution_engine": "deterministic"}),
-        encoding="utf-8",
-    )
-
     config = load_runtime_config(
         tmp_path,
         execution_engine="provider",
@@ -833,7 +829,6 @@ def test_runtime_config_parses_extension_domains(tmp_path: Path) -> None:
     runtime_config_path(tmp_path).write_text(
         json.dumps(
             {
-                "execution_engine": "deterministic",
                 "max_steps": 6,
                 "tools": {
                     "builtin": {"enabled": True},
@@ -847,10 +842,8 @@ def test_runtime_config_parses_extension_domains(tmp_path: Path) -> None:
                     "enabled": False,
                     "servers": {"pyright": {"command": ["pyright-langserver", "--stdio"]}},
                 },
-                "provider_fallback": {
-                    "preferred_model": "opencode/gpt-5.4",
-                    "fallback_models": ["opencode/gpt-5.3", "custom/demo"],
-                },
+                "model": "opencode/gpt-5.4",
+                "fallback_models": ["opencode/gpt-5.3", "custom/demo"],
                 "providers": {
                     "openai": {
                         "api_key": "openai-inline-key",
@@ -907,7 +900,7 @@ def test_runtime_config_parses_extension_domains(tmp_path: Path) -> None:
 
     config = load_runtime_config(tmp_path, env={})
 
-    assert config.execution_engine == "deterministic"
+    assert config.execution_engine == "provider"
     assert config.max_steps == 6
     assert config.tools == RuntimeToolsConfig(
         builtin=RuntimeToolsBuiltinConfig(enabled=True),
@@ -1258,7 +1251,7 @@ def test_runtime_config_derives_java_lsp_defaults_when_workspace_matches(
 
 def test_runtime_config_accepts_provider_execution_engine(tmp_path: Path) -> None:
     runtime_config_path(tmp_path).write_text(
-        json.dumps({"execution_engine": "provider", "model": "opencode/gpt-5.4"}),
+        json.dumps({"model": "opencode/gpt-5.4"}),
         encoding="utf-8",
     )
 
@@ -1278,10 +1271,7 @@ def test_runtime_config_parses_agent_preset_from_repo_file(tmp_path: Path) -> No
                     "tools": {"builtin": {"enabled": True}},
                     "skills": {"enabled": True, "paths": [".voidcode/skills"]},
                     "mcp_binding": {"profile": "docs", "servers": ["context7", "github"]},
-                    "provider_fallback": {
-                        "preferred_model": "opencode/gpt-5.4",
-                        "fallback_models": ["custom/demo"],
-                    },
+                    "fallback_models": ["custom/demo"],
                 }
             }
         ),
@@ -1462,7 +1452,6 @@ def test_runtime_agent_payload_round_trips_through_serialization() -> None:
         "prompt_profile": "leader",
         "prompt_materialization": _prompt_materialization_payload("leader"),
         "model": "opencode/gpt-5.4",
-        "execution_engine": "provider",
         "tools": {
             "builtin": {"enabled": True},
             "allowlist": ["read_file", "grep"],
@@ -1501,7 +1490,6 @@ def test_runtime_agent_serialization_materialization_preserves_prompt_profile_ov
         "prompt_materialization": _prompt_materialization_payload("researcher"),
         "prompt_ref": "researcher",
         "prompt_source": "builtin",
-        "execution_engine": "provider",
     }
 
 
@@ -1527,7 +1515,6 @@ def test_runtime_agent_payload_round_trips_explicit_empty_tool_boundaries() -> N
         "preset": "leader",
         "prompt_profile": "leader",
         "prompt_materialization": _prompt_materialization_payload("leader"),
-        "execution_engine": "provider",
         "tools": {"allowlist": [], "default": []},
     }
 
@@ -1718,11 +1705,7 @@ def test_runtime_config_parses_agents_fallback_models_shorthand(tmp_path: Path) 
         "prompt_profile": "worker",
         "prompt_materialization": _prompt_materialization_payload("worker"),
         "model": "opencode/gpt-5.4",
-        "execution_engine": "provider",
-        "provider_fallback": {
-            "preferred_model": "opencode/gpt-5.4",
-            "fallback_models": ["opencode/gpt-5.3", "custom/demo"],
-        },
+        "fallback_models": ["opencode/gpt-5.3", "custom/demo"],
     }
 
 
@@ -1835,6 +1818,28 @@ def test_runtime_config_rejects_unknown_category_model_override(tmp_path: Path) 
     )
 
     with pytest.raises(ValueError, match="categories.mystery"):
+        _ = load_runtime_config(tmp_path, env={})
+
+
+def test_runtime_config_rejects_duplicate_category_fallback_models(tmp_path: Path) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps(
+            {
+                "categories": {
+                    "quick": {
+                        "model": "opencode/gpt-5.4",
+                        "fallback_models": ["opencode/gpt-5.4", "openai/gpt-4.1"],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="provider fallback chain must not contain duplicate models",
+    ):
         _ = load_runtime_config(tmp_path, env={})
 
 
@@ -2034,6 +2039,59 @@ def test_runtime_config_merges_partial_builtin_formatter_override(tmp_path: Path
                 cwd_policy="workspace",
             ),
         },
+    )
+
+
+def test_runtime_config_formatter_preserves_hooks_enabled_when_formatter_enabled_omitted(
+    tmp_path: Path,
+) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps(
+            {
+                "hooks": {"enabled": True},
+                "formatter": {"languages": {"python": {"command": ["uvx", "ruff", "format"]}}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.hooks is not None
+    assert config.hooks.enabled is True
+    assert config.hooks.formatter_presets["python"].command == ("uvx", "ruff", "format")
+
+
+def test_runtime_config_formatter_preserves_hooks_formatter_presets_when_languages_omitted(
+    tmp_path: Path,
+) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "enabled": True,
+                    "formatter_presets": {
+                        "php": {
+                            "command": ["php-cs-fixer", "fix"],
+                            "extensions": [".php"],
+                            "root_markers": ["composer.json", ".php-cs-fixer.php"],
+                        }
+                    },
+                },
+                "formatter": {"enabled": True},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.hooks is not None
+    assert config.hooks.enabled is True
+    assert config.hooks.formatter_presets["php"] == RuntimeFormatterPresetConfig(
+        command=("php-cs-fixer", "fix"),
+        extensions=(".php",),
+        root_markers=("composer.json", ".php-cs-fixer.php"),
     )
 
 
@@ -2369,26 +2427,24 @@ def test_runtime_config_rejects_invalid_max_steps(
             id="lsp-server-init-options-shape",
         ),
         pytest.param(
-            {"provider_fallback": []},
-            "runtime config field 'provider_fallback'",
+            {"fallback_models": []},
+            "runtime config field 'model' is required when 'fallback_models' is provided",
             id="provider-fallback-shape",
         ),
         pytest.param(
             {"provider_fallback": {"preferred_model": 1}},
-            "runtime config field 'provider_fallback.preferred_model'",
+            "runtime config field 'provider_fallback' is not supported",
             id="provider-fallback-preferred-type",
         ),
         pytest.param(
-            {"provider_fallback": {"preferred_model": "opencode/gpt-5.4", "fallback_models": [1]}},
-            "runtime config field 'provider_fallback.fallback_models\\[0\\]'",
+            {"model": "opencode/gpt-5.4", "fallback_models": [1]},
+            "runtime config field 'fallback_models.fallback_models\\[0\\]'",
             id="provider-fallback-list-item-type",
         ),
         pytest.param(
             {
-                "provider_fallback": {
-                    "preferred_model": "opencode/gpt-5.4",
-                    "fallback_models": ["opencode/gpt-5.4"],
-                }
+                "model": "opencode/gpt-5.4",
+                "fallback_models": ["opencode/gpt-5.4"],
             },
             "provider fallback chain must not contain duplicate models",
             id="provider-fallback-duplicates",

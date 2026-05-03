@@ -651,7 +651,8 @@ def test_session_storage_rejects_non_canonical_schema_with_wrong_existing_table_
     with pytest.raises(
         RuntimeError,
         match=(
-            r"table 'session_event_deliveries' missing columns: dedupe_key.*"
+            r"table 'background_tasks' missing columns: created_at_unix_ms, "
+            r"finished_at_unix_ms, started_at_unix_ms.*"
             r"This pre-MVP build does not migrate old schemas\. "
             r"Reset local runtime storage with: remove '.*[\\/]wrong-table-shape\.sqlite3' "
             r"plus matching -wal/-shm files\."

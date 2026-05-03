@@ -234,7 +234,6 @@ def build_tool_display(
     elif tool_name in {
         "grep",
         "glob",
-        "list",
         "code_search",
         "ast_grep_search",
         "ast_grep_preview",
@@ -242,10 +241,8 @@ def build_tool_display(
         query_keys: tuple[str, ...]
         if tool_name in {"grep", "code_search", "ast_grep_search", "ast_grep_preview"}:
             query_keys = ("pattern", "query")
-        elif tool_name == "glob":
-            query_keys = ("pattern",)
         else:
-            query_keys = ("path",)
+            query_keys = ("pattern",)
         query = _first_primitive(arguments, *query_keys)
         summary = query if query else title
         args = _extract_primitive_args(arguments, *query_keys)

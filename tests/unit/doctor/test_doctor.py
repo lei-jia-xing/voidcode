@@ -216,7 +216,7 @@ class TestCreateDoctorForConfig:
         assert readiness.status == CapabilityCheckStatus.ERROR
         assert readiness.details == {
             "model": "malformed-model",
-            "execution_engine": "provider",
+            "fallback_models": [],
             "status": "invalid_config",
         }
         assert readiness.error_message is not None

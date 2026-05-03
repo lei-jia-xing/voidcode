@@ -339,7 +339,6 @@ def test_transport_agents_endpoint_serializes_stable_summary_fields() -> None:
             "mode": "primary",
             "selectable": True,
             "configured": True,
-            "execution_engine": "provider",
             "model": "opencode/gpt-5.4",
             "model_label": "gpt-5.4",
             "model_source": "configured",

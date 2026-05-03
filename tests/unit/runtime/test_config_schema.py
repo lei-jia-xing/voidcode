@@ -59,10 +59,7 @@ def test_runtime_config_json_schema_exposes_core_fields() -> None:
     assert agent_properties["fallback_models"] == {
         "type": "array",
         "items": {"type": "string", "minLength": 1},
-        "description": (
-            "Agent-scoped shorthand for provider_fallback.fallback_models; "
-            "requires agent.model as the preferred model."
-        ),
+        "description": "Agent-scoped fallback model chain; requires agent.model.",
     }
     assert agent_properties["mcp_binding"] == {"$ref": "#/$defs/agentMcpBindingConfig"}
     agent_mcp_binding_config = cast(dict[str, object], defs["agentMcpBindingConfig"])
@@ -262,7 +259,6 @@ def test_generate_starter_runtime_config_excludes_secrets() -> None:
     payload = generate_starter_runtime_config(
         approval_mode="deny",
         model="opencode-go/glm-5",
-        execution_engine="provider",
         max_steps=7,
         include_examples=True,
     )
@@ -271,8 +267,10 @@ def test_generate_starter_runtime_config_excludes_secrets() -> None:
         "$schema": RUNTIME_CONFIG_SCHEMA_ID,
         "approval_mode": "deny",
         "model": "opencode-go/glm-5",
-        "execution_engine": "provider",
         "max_steps": 7,
+        "formatter": {"enabled": True},
+        "lsp": {"enabled": True},
+        "mcp": {"enabled": True},
         "tools": {"builtin": {"enabled": True}},
         "skills": {"enabled": True},
     }
@@ -290,10 +288,6 @@ def test_generate_starter_runtime_config_validates_inputs() -> None:
         generate_starter_runtime_config(model="provider/")
     with pytest.raises(ValueError, match="provider/model"):
         generate_starter_runtime_config(model="/gpt-5")
-    with pytest.raises(ValueError, match="requires model"):
-        generate_starter_runtime_config(execution_engine="provider")
-    with pytest.raises(ValueError, match="execution_engine"):
-        generate_starter_runtime_config(execution_engine="remote")
     with pytest.raises(ValueError, match="max_steps"):
         generate_starter_runtime_config(max_steps=0)
 

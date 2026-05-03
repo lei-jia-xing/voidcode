@@ -6,6 +6,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from time import time
 from typing import Protocol, cast, final, runtime_checkable
 
 from .contracts import (
@@ -292,6 +293,9 @@ class SqliteSessionStore:
             ("updated_at", "INTEGER", 1, None, 0),
             ("started_at", "INTEGER", 0, None, 0),
             ("finished_at", "INTEGER", 0, None, 0),
+            ("created_at_unix_ms", "INTEGER", 0, None, 0),
+            ("started_at_unix_ms", "INTEGER", 0, None, 0),
+            ("finished_at_unix_ms", "INTEGER", 0, None, 0),
         ),
         "session_notifications": (
             ("notification_id", "TEXT", 0, None, 1),
@@ -445,7 +449,10 @@ class SqliteSessionStore:
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
                 started_at INTEGER,
-                finished_at INTEGER
+                finished_at INTEGER,
+                created_at_unix_ms INTEGER,
+                started_at_unix_ms INTEGER,
+                finished_at_unix_ms INTEGER
             )
             """
         )
@@ -1059,6 +1066,7 @@ class SqliteSessionStore:
             error=cast(str | None, row["error"]),
             created_at=cast(int, row["created_at"]),
             updated_at=cast(int, row["updated_at"]),
+            created_at_unix_ms=cast(int | None, row["created_at_unix_ms"]),
         )
 
     @staticmethod
@@ -2122,6 +2130,7 @@ class SqliteSessionStore:
                 session_id=linked_session_id,
             )
             timestamp = self._next_background_task_timestamp(connection=connection)
+            wall_clock_ms = self._current_unix_ms()
             _ = connection.execute(
                 """
                 INSERT INTO background_tasks (
@@ -2131,8 +2140,12 @@ class SqliteSessionStore:
                     routing_description, routing_command, approval_request_id,
                     question_request_id, cancellation_cause, result_available,
                     allocate_session_id, session_id, error, cancel_requested_at,
-                    created_at, updated_at, started_at, finished_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    created_at, updated_at, started_at, finished_at,
+                    created_at_unix_ms, started_at_unix_ms, finished_at_unix_ms
+                ) VALUES (
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                )
                 """,
                 (
                     task_id,
@@ -2160,6 +2173,9 @@ class SqliteSessionStore:
                     timestamp,
                     task.started_at,
                     task.finished_at,
+                    wall_clock_ms,
+                    task.started_at_unix_ms,
+                    task.finished_at_unix_ms,
                 ),
             )
             connection.commit()
@@ -2188,6 +2204,7 @@ class SqliteSessionStore:
                 connection.execute(
                     """
                     SELECT task_id, status, prompt, session_id, error, created_at, updated_at
+                           , created_at_unix_ms
                     FROM background_tasks
                     WHERE workspace = ?
                     ORDER BY updated_at DESC, task_id ASC
@@ -2206,6 +2223,7 @@ class SqliteSessionStore:
                 connection.execute(
                     """
                     SELECT task_id, status, prompt, session_id, error, created_at, updated_at
+                           , created_at_unix_ms
                     FROM background_tasks
                     WHERE workspace = ? AND status = 'queued'
                     ORDER BY created_at ASC, task_id ASC
@@ -2224,6 +2242,7 @@ class SqliteSessionStore:
                 connection.execute(
                     """
                     SELECT task_id, status, prompt, session_id, error, created_at, updated_at
+                           , created_at_unix_ms
                     FROM background_tasks
                     WHERE workspace = ? AND request_parent_session_id = ?
                     ORDER BY updated_at DESC, task_id ASC
@@ -2255,16 +2274,19 @@ class SqliteSessionStore:
                 connection.commit()
                 return self._background_task_state_from_row(current)
             updated_at = self._next_background_task_timestamp(connection=connection)
+            started_at_unix_ms = self._current_unix_ms()
             _ = connection.execute(
                 """
                 UPDATE background_tasks
-                SET status = ?, session_id = ?, started_at = COALESCE(started_at, ?), updated_at = ?
+                SET status = ?, session_id = ?, started_at = COALESCE(started_at, ?),
+                    started_at_unix_ms = COALESCE(started_at_unix_ms, ?), updated_at = ?
                 WHERE workspace = ? AND task_id = ? AND status = 'queued'
                 """,
                 (
                     "running",
                     session_id,
                     updated_at,
+                    started_at_unix_ms,
                     updated_at,
                     str(workspace),
                     task_id,
@@ -2310,11 +2332,12 @@ class SqliteSessionStore:
                 cancellation_cause = error
             result_available = 1 if status in ("completed", "failed", "interrupted") else 0
             updated_at = self._next_background_task_timestamp(connection=connection)
+            finished_at_unix_ms = self._current_unix_ms()
             _ = connection.execute(
                 """
                 UPDATE background_tasks
                 SET status = ?, error = ?, finished_at = ?, updated_at = ?,
-                    cancellation_cause = ?, result_available = ?
+                    cancellation_cause = ?, result_available = ?, finished_at_unix_ms = ?
                 WHERE workspace = ? AND task_id = ?
                 """,
                 (
@@ -2324,6 +2347,7 @@ class SqliteSessionStore:
                     updated_at,
                     cancellation_cause,
                     result_available,
+                    finished_at_unix_ms,
                     str(workspace),
                     task_id,
                 ),
@@ -2580,8 +2604,15 @@ class SqliteSessionStore:
             updated_at=cast(int, row["updated_at"]),
             started_at=cast(int | None, row["started_at"]),
             finished_at=cast(int | None, row["finished_at"]),
+            created_at_unix_ms=cast(int | None, row["created_at_unix_ms"]),
+            started_at_unix_ms=cast(int | None, row["started_at_unix_ms"]),
+            finished_at_unix_ms=cast(int | None, row["finished_at_unix_ms"]),
             cancel_requested_at=cast(int | None, row["cancel_requested_at"]),
         )
+
+    @staticmethod
+    def _current_unix_ms() -> int:
+        return int(time() * 1000)
 
     def _background_task_runtime_row(
         self,

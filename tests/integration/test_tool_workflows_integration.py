@@ -16,7 +16,6 @@ from voidcode.tools import (
     ApplyPatchTool,
     EditTool,
     GlobTool,
-    ListTool,
     MultiEditTool,
     TodoWriteTool,
     ToolCall,
@@ -187,7 +186,7 @@ def test_todo_write_tool_persists_summary_integration(tmp_path: Path) -> None:
     assert isinstance(todos_raw, list)
 
 
-def test_glob_and_list_tools_handle_paths_and_ignores_integration(tmp_path: Path) -> None:
+def test_glob_tool_handles_paths_and_ignores_integration(tmp_path: Path) -> None:
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "main.py").write_text("print('x')\n", encoding="utf-8")
     (tmp_path / "build").mkdir()
@@ -203,17 +202,6 @@ def test_glob_and_list_tools_handle_paths_and_ignores_integration(tmp_path: Path
     assert glob_result.status == "ok"
     assert "src/main.py" in glob_result.content
     assert "build/generated.py" not in glob_result.content
-
-    list_tool = ListTool()
-    list_result = list_tool.invoke(
-        ToolCall(tool_name="list", arguments={"ignore": ["build/**"]}),
-        workspace=tmp_path,
-    )
-    assert list_result.content is not None
-
-    assert list_result.status == "ok"
-    assert "src/" in list_result.content
-    assert "build/" not in list_result.content
 
 
 def test_web_search_tool_uses_fallback_when_no_exa_key_integration(tmp_path: Path) -> None:

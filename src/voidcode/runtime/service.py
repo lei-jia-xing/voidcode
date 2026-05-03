@@ -132,7 +132,6 @@ from .config import (
     parse_runtime_tools_payload,
     save_global_web_settings,
     serialize_provider_configs,
-    serialize_provider_fallback_config,
     serialize_runtime_agent_config,
     serialize_runtime_agents_config,
     serialize_runtime_categories_config,
@@ -297,8 +296,8 @@ _PERSISTED_RUNTIME_CONFIG_KEYS = frozenset(
         "tool_timeout_seconds",
         "reasoning_effort",
         "model",
+        "fallback_models",
         "providers",
-        "provider_fallback",
         "resolved_provider",
         "resolved_hook_presets",
         "tools",
@@ -372,8 +371,8 @@ _SKILL_BINDING_SCOPE_KEYS = (
     "tool_timeout_seconds",
     "reasoning_effort",
     "model",
+    "fallback_models",
     "providers",
-    "provider_fallback",
     "resolved_provider",
     "agent",
     "lsp",
@@ -1441,8 +1440,6 @@ class VoidCodeRuntime:
         provider_name = active_target.provider
         model_name = active_target.model
         if provider_name is None or model_name is None:
-            return
-        if provider_name.strip().lower() == "opencode-go":
             return
         metadata = self._metadata_for_provider_model(provider_name, model_name)
         if metadata is None:
@@ -3540,13 +3537,14 @@ class VoidCodeRuntime:
             "session_id": session_id,
             "approval_mode": effective_config.approval_mode,
             "model": effective_config.model,
-            "execution_engine": effective_config.execution_engine,
+            "fallback_models": (
+                list(effective_config.provider_fallback.fallback_models)
+                if effective_config.provider_fallback is not None
+                else []
+            ),
             "max_steps": effective_config.max_steps,
             "reasoning_effort": getattr(effective_config, "reasoning_effort", None),
             "agent": serialize_runtime_agent_config(getattr(effective_config, "agent", None)),
-            "provider_fallback": serialize_provider_fallback_config(
-                getattr(effective_config, "provider_fallback", None)
-            ),
             "resolved_provider": resolved_provider_snapshot(
                 getattr(effective_config, "resolved_provider", None)
             ),
@@ -3617,9 +3615,11 @@ class VoidCodeRuntime:
             )
             payload[category] = {
                 "model": category_config.model if category_config is not None else None,
+                "fallback_models": (
+                    list(category_config.fallback_models) if category_config is not None else []
+                ),
                 "effective_model": model,
                 "selected_preset": route.selected_preset,
-                "selected_execution_engine": route.execution_engine,
             }
         return payload
 
@@ -3638,11 +3638,6 @@ class VoidCodeRuntime:
                 preset_agent=preset_agent,
                 base_provider_fallback=base_provider_fallback,
             )
-            execution_engine = (
-                preset_agent.execution_engine
-                if preset_agent is not None and preset_agent.execution_engine is not None
-                else manifest.execution_engine
-            )
             fallback_models = (
                 list(provider_fallback.fallback_models) if provider_fallback is not None else []
             )
@@ -3651,7 +3646,6 @@ class VoidCodeRuntime:
                 "fallback_models": fallback_models,
                 "effective_model": model,
                 "effective_fallback_models": fallback_models,
-                "selected_execution_engine": execution_engine,
             }
         return payload
 
@@ -3681,11 +3675,35 @@ class VoidCodeRuntime:
         raw_model = payload.get("model")
         base_model = raw_model if isinstance(raw_model, str) else None
         base_provider_fallback = None
-        if "provider_fallback" in payload:
-            base_provider_fallback = parse_provider_fallback_payload(
-                payload.get("provider_fallback"),
-                source="persisted runtime_config.provider_fallback",
-            )
+        if "fallback_models" in payload:
+            raw_fallback_models = payload.get("fallback_models")
+            if raw_fallback_models in (None, []):
+                raw_fallback_models = None
+            if raw_fallback_models is not None:
+                fallback_model_source = base_model
+                raw_resolved_provider_for_fallback = payload.get("resolved_provider")
+                if fallback_model_source is None and isinstance(
+                    raw_resolved_provider_for_fallback, dict
+                ):
+                    active_target = cast(dict[str, object], raw_resolved_provider_for_fallback).get(
+                        "active_target"
+                    )
+                    if isinstance(active_target, dict):
+                        raw_active_model = cast(dict[str, object], active_target).get("raw_model")
+                        if isinstance(raw_active_model, str) and raw_active_model:
+                            fallback_model_source = raw_active_model
+                if fallback_model_source is None:
+                    raise ValueError(
+                        "persisted runtime_config.model is required when "
+                        "fallback_models are present"
+                    )
+                base_provider_fallback = parse_provider_fallback_payload(
+                    {
+                        "preferred_model": fallback_model_source,
+                        "fallback_models": raw_fallback_models,
+                    },
+                    source="persisted runtime_config.fallback_models",
+                )
         categories = parse_runtime_categories_payload(
             payload.get("categories"),
             source="persisted runtime_config.categories",
@@ -4089,8 +4107,6 @@ class VoidCodeRuntime:
             "reasoning_effort": effort,
             "status": "not_requested" if effort is None else "unknown",
             "forwarded": False,
-            "translated": False,
-            "ignored": False,
         }
         if provider_name is None or model_name is None:
             payload["status"] = "unavailable"
@@ -4106,43 +4122,13 @@ class VoidCodeRuntime:
             payload["reasoning_visibility"] = metadata.reasoning_visibility
         if effort is None:
             return payload
-        normalized_provider = provider_name.strip().lower()
-        normalized_model = model_name.strip().lower()
-        if normalized_provider == "opencode-go":
-            payload["status"] = "ignored"
-            payload["ignored"] = True
-            payload["reason"] = "opencode_go_adapter_does_not_forward_reasoning_effort"
-            return payload
         if metadata is not None and metadata.supports_reasoning_effort is False:
             payload["status"] = "unsupported"
             payload["reason"] = "model_metadata_disallows_reasoning_effort"
             return payload
-        if normalized_provider == "glm" or normalized_model.startswith(("glm-5", "glm-z1")):
-            payload["status"] = "translated"
-            payload["translated"] = True
-            payload["provider_parameter"] = "extra_body.thinking.type"
-            disabled_efforts = {"none", "off", "disable", "disabled"}
-            payload["provider_value"] = (
-                "disabled" if effort.lower() in disabled_efforts else "enabled"
-            )
-            return payload
-        direct_reasoning_effort_providers = {
-            "openai",
-            "anthropic",
-            "google",
-            "gemini",
-            "vertex_ai",
-            "litellm",
-            "grok",
-        }
-        if normalized_provider in direct_reasoning_effort_providers:
-            payload["status"] = "forwarded"
-            payload["forwarded"] = True
-            payload["provider_parameter"] = "reasoning_effort"
-            return payload
-        payload["status"] = "best_effort"
-        payload["forwarded"] = metadata is None or metadata.supports_reasoning_effort is not False
-        payload["reason"] = "provider_metadata_unknown"
+        payload["status"] = "forwarded"
+        payload["forwarded"] = True
+        payload["provider_parameter"] = "reasoning_effort"
         return payload
 
     def _reasoning_controls_diagnostic_for_config(
@@ -7094,7 +7080,7 @@ class VoidCodeRuntime:
             execution_key_map = {
                 "execution_engine": "execution_engine",
                 "model": "model",
-                "provider_fallback": "provider_fallback",
+                "fallback_models": "fallback_models",
                 "resolved_provider": "resolved_provider",
                 "reasoning_effort": "reasoning_effort",
             }
@@ -7218,8 +7204,12 @@ class VoidCodeRuntime:
             "execution": {
                 "execution_engine": effective_config.execution_engine,
                 "model": effective_config.model,
+                "fallback_models": (
+                    list(effective_config.provider_fallback.fallback_models)
+                    if effective_config.provider_fallback is not None
+                    else []
+                ),
                 "resolved_provider": runtime_config_payload.get("resolved_provider"),
-                "provider_fallback": runtime_config_payload.get("provider_fallback"),
                 "reasoning_effort": effective_config.reasoning_effort,
             },
         }
@@ -7532,8 +7522,10 @@ class VoidCodeRuntime:
             "execution_engine": effective_config.execution_engine,
             "max_steps": effective_config.max_steps,
             "tool_timeout_seconds": effective_config.tool_timeout_seconds,
-            "provider_fallback": serialize_provider_fallback_config(
-                effective_config.provider_fallback
+            "fallback_models": (
+                list(effective_config.provider_fallback.fallback_models)
+                if effective_config.provider_fallback is not None
+                else []
             ),
             "resolved_provider": resolved_provider_snapshot(effective_config.resolved_provider),
         }
@@ -7801,14 +7793,9 @@ class VoidCodeRuntime:
             agent = parse_runtime_agent_payload(
                 {
                     "preset": resolved_route.selected_preset,
-                    "execution_engine": resolved_route.execution_engine,
                     **({"model": delegated_model} if delegated_model is not None else {}),
                     **(
-                        {
-                            "provider_fallback": serialize_provider_fallback_config(
-                                delegated_provider_fallback
-                            )
-                        }
+                        {"fallback_models": list(delegated_provider_fallback.fallback_models)}
                         if delegated_provider_fallback is not None
                         else {}
                     ),
@@ -7833,11 +7820,6 @@ class VoidCodeRuntime:
                 raise RuntimeRequestError(
                     "request metadata 'agent.preset' must match delegated child preset "
                     f"'{resolved_route.selected_preset}'"
-                )
-            if agent.execution_engine != resolved_route.execution_engine:
-                raise RuntimeRequestError(
-                    "request metadata 'agent.execution_engine' must match delegated child "
-                    f"execution engine '{resolved_route.execution_engine}'"
                 )
             if agent.model is None:
                 delegated_model = self._delegated_model_for_route(
@@ -7941,6 +7923,16 @@ class VoidCodeRuntime:
     ) -> RuntimeProviderFallbackConfig | None:
         if request_agent is not None and request_agent.provider_fallback is not None:
             return request_agent.provider_fallback
+        category_config = self._category_config(category)
+        if category_config is not None and category_config.fallback_models and model is not None:
+            return RuntimeProviderFallbackConfig(
+                preferred_model=model,
+                fallback_models=tuple(
+                    fallback_model
+                    for fallback_model in category_config.fallback_models
+                    if fallback_model != model
+                ),
+            )
         preset_agent = self._preset_agent_config(selected_preset)
         provider_fallback = self._provider_fallback_for_agent_selection(
             model=model,
@@ -8531,19 +8523,47 @@ class VoidCodeRuntime:
                     )
                 ) from exc
         provider_fallback = None
-        if "provider_fallback" in runtime_config:
-            try:
-                provider_fallback = parse_provider_fallback_payload(
-                    runtime_config.get("provider_fallback"),
-                    source="persisted runtime_config.provider_fallback",
-                )
-            except ValueError as exc:
-                raise ValueError(
-                    format_invalid_provider_config_error(
-                        "persisted runtime_config.provider_fallback",
-                        str(exc),
+        if "fallback_models" in runtime_config:
+            raw_fallback_models = runtime_config.get("fallback_models")
+            if raw_fallback_models in (None, []):
+                raw_fallback_models = None
+            if raw_fallback_models is None:
+                provider_fallback = None
+            else:
+                fallback_model_source = model
+                raw_resolved_provider_for_fallback = runtime_config.get("resolved_provider")
+                if fallback_model_source is None and isinstance(
+                    raw_resolved_provider_for_fallback, dict
+                ):
+                    active_target = cast(dict[str, object], raw_resolved_provider_for_fallback).get(
+                        "active_target"
                     )
-                ) from exc
+                    if isinstance(active_target, dict):
+                        raw_model = cast(dict[str, object], active_target).get("raw_model")
+                        if isinstance(raw_model, str) and raw_model:
+                            fallback_model_source = raw_model
+                if fallback_model_source is None:
+                    fallback_model_source = self._config.model
+                if fallback_model_source is None:
+                    raise ValueError(
+                        "persisted runtime_config.model is required when "
+                        "fallback_models are present"
+                    )
+                try:
+                    provider_fallback = parse_provider_fallback_payload(
+                        {
+                            "preferred_model": fallback_model_source,
+                            "fallback_models": raw_fallback_models,
+                        },
+                        source="persisted runtime_config.fallback_models",
+                    )
+                except ValueError as exc:
+                    raise ValueError(
+                        format_invalid_provider_config_error(
+                            "persisted runtime_config.fallback_models",
+                            str(exc),
+                        )
+                    ) from exc
         tools = self._config.tools
         if "tools" in runtime_config:
             tools = _parse_persisted_runtime_tools_config(runtime_config.get("tools"))

@@ -3,6 +3,48 @@ import { deriveChatMessages } from "./event-parser";
 import { EventEnvelope } from "./types";
 
 describe("Tool Status Contract", () => {
+  it("reconstructs every assistant turn from replayed completion events", () => {
+    const events: EventEnvelope[] = [
+      {
+        session_id: "test",
+        sequence: 1,
+        event_type: "runtime.request_received",
+        source: "runtime",
+        payload: { prompt: "First question" },
+      },
+      {
+        session_id: "test",
+        sequence: 2,
+        event_type: "runtime.completed",
+        source: "runtime",
+        payload: { output: "First answer" },
+      },
+      {
+        session_id: "test",
+        sequence: 3,
+        event_type: "runtime.request_received",
+        source: "runtime",
+        payload: { prompt: "Second question" },
+      },
+      {
+        session_id: "test",
+        sequence: 4,
+        event_type: "graph.response_ready",
+        source: "graph",
+        payload: { output_preview: "Second answer" },
+      },
+    ];
+
+    const messages = deriveChatMessages(events, "Second answer");
+
+    expect(messages.map((message) => message.content)).toEqual([
+      "First question",
+      "First answer",
+      "Second question",
+      "Second answer",
+    ]);
+  });
+
   it("renders backend-provided tool status and label", () => {
     const events: EventEnvelope[] = [
       {

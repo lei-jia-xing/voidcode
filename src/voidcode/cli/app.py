@@ -54,7 +54,6 @@ from ..runtime.config import (
     RUNTIME_CONFIG_FILE_NAME,
     RuntimeConfig,
     load_runtime_config,
-    serialize_provider_fallback_config,
     serialize_runtime_agent_config,
 )
 from ..runtime.config_schema import (
@@ -1292,7 +1291,6 @@ def _serialize_provider_context_snapshot(
     return {
         "provider": snapshot.provider,
         "model": snapshot.model,
-        "execution_engine": snapshot.execution_engine,
         "segment_count": snapshot.segment_count,
         "message_count": snapshot.message_count,
         "context_window": snapshot.context_window,
@@ -1803,15 +1801,16 @@ def _handle_config_show_command(args: argparse.Namespace) -> int:
             "session_id": session_id,
             "approval_mode": effective_config.approval_mode,
             "model": effective_config.model,
-            "execution_engine": effective_config.execution_engine,
+            "fallback_models": (
+                list(effective_config.provider_fallback.fallback_models)
+                if effective_config.provider_fallback is not None
+                else []
+            ),
             "max_steps": effective_config.max_steps,
             "reasoning_effort": getattr(effective_config, "reasoning_effort", None),
             "agent": serialize_runtime_agent_config(getattr(effective_config, "agent", None)),
             "agents": agents,
             "categories": categories,
-            "provider_fallback": serialize_provider_fallback_config(
-                getattr(effective_config, "provider_fallback", None)
-            ),
             "resolved_provider": resolved_provider_snapshot(
                 getattr(effective_config, "resolved_provider", None)
             ),
@@ -1834,7 +1833,6 @@ def _serialize_agent_summary(summary: AgentSummary) -> dict[str, object]:
         "mode": summary.mode,
         "selectable": summary.selectable,
         "configured": summary.configured,
-        "execution_engine": summary.execution_engine,
         "model": summary.model,
         "model_label": summary.model_label,
         "model_source": summary.model_source,
@@ -1874,7 +1872,6 @@ def _handle_agents_list_command(args: argparse.Namespace) -> int:
             ("mode", summary.mode),
             ("selectable", summary.selectable),
             ("configured", summary.configured),
-            ("execution_engine", summary.execution_engine),
             ("model", summary.model),
             ("provider", summary.provider),
         ]
@@ -2034,7 +2031,6 @@ def _handle_config_init_command(args: argparse.Namespace) -> int:
         payload = generate_starter_runtime_config(
             approval_mode=cast(str, args.approval_mode),
             model=cast(str | None, getattr(args, "model", None)),
-            execution_engine=cast(str | None, getattr(args, "execution_engine", None)),
             max_steps=cast(int | None, getattr(args, "max_steps", None)),
             include_examples=cast(bool, args.with_examples),
         )
@@ -3027,7 +3023,6 @@ def config_schema() -> int:
 @_workspace_option("Workspace root where .voidcode.json should be generated.")
 @click.option("--approval-mode", type=click.Choice(_APPROVAL_MODES), default="ask")
 @click.option("--model")
-@click.option("--execution-engine", type=click.Choice(_EXECUTION_ENGINES))
 @click.option("--max-steps", type=int)
 @click.option("--with-examples", is_flag=True)
 @click.option("--print", "print_config", is_flag=True)
@@ -3036,7 +3031,6 @@ def config_init(
     workspace: Path,
     approval_mode: str,
     model: str | None,
-    execution_engine: str | None,
     max_steps: int | None,
     with_examples: bool,
     print_config: bool,
@@ -3050,7 +3044,6 @@ def config_init(
             workspace=workspace,
             approval_mode=approval_mode,
             model=model,
-            execution_engine=execution_engine,
             max_steps=max_steps,
             with_examples=with_examples,
             print=print_config,

@@ -394,6 +394,9 @@ class BackgroundTaskState:
     updated_at: int = 0
     started_at: int | None = None
     finished_at: int | None = None
+    created_at_unix_ms: int | None = None
+    started_at_unix_ms: int | None = None
+    finished_at_unix_ms: int | None = None
     cancel_requested_at: int | None = None
     observability: BackgroundTaskObservability | None = None
 
@@ -431,6 +434,7 @@ class StoredBackgroundTaskSummary:
     error: str | None
     created_at: int
     updated_at: int
+    created_at_unix_ms: int | None = None
     observability: BackgroundTaskObservability | None = None
 
 
