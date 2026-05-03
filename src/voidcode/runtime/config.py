@@ -1786,10 +1786,11 @@ def _merge_builtin_mcp_server_defaults(
     if descriptor is None:
         return dict(raw_server)
     merged = dict(raw_server)
-    merged.setdefault("transport", descriptor.transport)
-    if descriptor.command:
+    if "transport" not in merged:
+        merged["transport"] = "stdio" if "command" in merged else descriptor.transport
+    if descriptor.command and merged.get("transport") == "stdio":
         merged.setdefault("command", list(descriptor.command))
-    if descriptor.url is not None:
+    if descriptor.url is not None and merged.get("transport") == "remote-http":
         merged.setdefault("url", descriptor.url)
     if descriptor.scope:
         merged.setdefault("scope", descriptor.scope)
