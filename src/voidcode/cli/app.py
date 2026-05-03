@@ -7,7 +7,7 @@ import shlex
 import sys
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
-from typing import Protocol, TypeGuard, cast
+from typing import Protocol, TypedDict, TypeGuard, cast
 
 import click
 
@@ -95,6 +95,12 @@ class _CliUsageError(Exception):
     def __init__(self, message: str, *, exit_code: int = 2) -> None:
         super().__init__(message)
         self.exit_code = exit_code
+
+
+class _RunCommandConfigKwargs(TypedDict, total=False):
+    approval_mode: PermissionDecision | None
+    model: str
+    reasoning_effort: str | None
 
 
 def _namespace(**values: object) -> argparse.Namespace:
@@ -201,12 +207,14 @@ def _handle_run_command(args: argparse.Namespace) -> int:
     show_thinking = cast(bool, getattr(args, "show_thinking", False))
     cli_reasoning_effort = cast(str | None, getattr(args, "reasoning_effort", None))
     cli_model = cast(str | None, getattr(args, "model", None))
-    config = load_runtime_config(
-        workspace,
-        approval_mode=cast(PermissionDecision | None, getattr(args, "approval_mode", None)),
-        model=cli_model,
-        reasoning_effort=cli_reasoning_effort,
-    )
+    approval_mode = cast(PermissionDecision | None, getattr(args, "approval_mode", None))
+    config_kwargs: _RunCommandConfigKwargs = {
+        "approval_mode": approval_mode,
+        "reasoning_effort": cli_reasoning_effort,
+    }
+    if cli_model is not None:
+        config_kwargs["model"] = cli_model
+    config = load_runtime_config(workspace, **config_kwargs)
     runtime = VoidCodeRuntime(workspace=workspace, config=config)
     try:
         metadata: dict[str, object] = {}
