@@ -1,4 +1,3 @@
-# pyright: reportPrivateUsage=false
 from __future__ import annotations
 
 import logging
@@ -372,26 +371,17 @@ class RuntimeRunLoopCoordinator:
         progress_queue: queue.Queue[_ToolQueueItem] = queue.Queue(
             maxsize=_TOOL_PROGRESS_QUEUE_MAX_ITEMS
         )
-        dropped_progress_events = 0
-        dropped_lock = threading.Lock()
 
         def emit_tool_progress(payload: Mapping[str, object]) -> None:
-            nonlocal dropped_progress_events
-            with dropped_lock:
-                dropped = dropped_progress_events
-                dropped_progress_events = 0
             progress_payload: dict[str, object] = {
                 "tool": tool_call.tool_name,
                 "tool_call_id": tool_call_id,
                 **dict(payload),
             }
-            if dropped:
-                progress_payload["dropped_progress_events"] = dropped
             try:
                 progress_queue.put_nowait(_ToolProgressItem(progress_payload))
             except queue.Full:
-                with dropped_lock:
-                    dropped_progress_events += 1 + dropped
+                pass
 
         def invoke_tool() -> None:
             try:

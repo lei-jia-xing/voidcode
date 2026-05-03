@@ -1,4 +1,3 @@
-# pyright: reportPrivateUsage=false
 from __future__ import annotations
 
 import logging
@@ -397,7 +396,6 @@ class RuntimeResumeCoordinator:
             )
             for hook_chunk in idle_hook_outcome.chunks:
                 hook_event = cast(EventEnvelope, hook_chunk.event)
-                last_sequence = hook_event.sequence
                 loop_events.append(hook_event)
                 yield hook_chunk
             if idle_hook_outcome.failed_error is not None:
@@ -425,15 +423,15 @@ class RuntimeResumeCoordinator:
                     yield RuntimeStreamChunk(
                         kind="event", session=chunk.session, event=resequenced_event
                     )
+            end_hook_sequence = max(last_sequence, final_sequence)
             end_hook_outcome = runtime._run_lifecycle_hooks(
                 session=final_session,
-                sequence=max(last_sequence, final_sequence),
+                sequence=end_hook_sequence,
                 surface="session_end",
                 payload={"session_status": final_session.status, "resume": True},
             )
             for hook_chunk in end_hook_outcome.chunks:
                 hook_event = cast(EventEnvelope, hook_chunk.event)
-                last_sequence = hook_event.sequence
                 loop_events.append(hook_event)
                 yield hook_chunk
             if end_hook_outcome.failed_error is not None:
@@ -442,13 +440,10 @@ class RuntimeResumeCoordinator:
                     final_session.session.id,
                     end_hook_outcome.failed_error,
                 )
-            release_sequence = end_hook_outcome.last_sequence
             for release_event in runtime._release_mcp_session_events(
                 session_id=final_session.session.id,
-                start_sequence=release_sequence + 1,
+                start_sequence=end_hook_outcome.last_sequence + 1,
             ):
-                release_sequence = release_event.sequence
-                last_sequence = release_event.sequence
                 loop_events.append(release_event)
                 yield RuntimeStreamChunk(
                     kind="event",
@@ -892,7 +887,6 @@ class RuntimeResumeCoordinator:
             )
             for hook_chunk in idle_hook_outcome.chunks:
                 hook_event = cast(EventEnvelope, hook_chunk.event)
-                emitted_sequence = hook_event.sequence
                 loop_events.append(hook_event)
                 yield hook_chunk
             if idle_hook_outcome.failed_error is not None:
@@ -928,7 +922,6 @@ class RuntimeResumeCoordinator:
             )
             for hook_chunk in end_hook_outcome.chunks:
                 hook_event = cast(EventEnvelope, hook_chunk.event)
-                emitted_sequence = hook_event.sequence
                 loop_events.append(hook_event)
                 yield hook_chunk
             if end_hook_outcome.failed_error is not None:
@@ -941,7 +934,6 @@ class RuntimeResumeCoordinator:
                 session_id=session.session.id,
                 start_sequence=end_hook_outcome.last_sequence + 1,
             ):
-                emitted_sequence = release_event.sequence
                 loop_events.append(release_event)
                 yield RuntimeStreamChunk(
                     kind="event",
@@ -1266,7 +1258,6 @@ class RuntimeResumeCoordinator:
             )
             for hook_chunk in idle_hook_outcome.chunks:
                 hook_event = cast(EventEnvelope, hook_chunk.event)
-                last_sequence = hook_event.sequence
                 loop_events.append(hook_event)
                 yield hook_chunk
             if idle_hook_outcome.failed_error is not None:

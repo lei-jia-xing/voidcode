@@ -178,7 +178,7 @@ def test_provider_readiness_does_not_allocate_oauth_callback_state(tmp_path: Pat
     try:
         first = runtime.provider_readiness()
         second = runtime.provider_readiness()
-        pending_states = runtime.provider_auth_resolver._pending_callback_states  # pyright: ignore[reportPrivateUsage]
+        pending_states = runtime.provider_auth_resolver._pending_callback_states
     finally:
         runtime.__exit__(None, None, None)
 
