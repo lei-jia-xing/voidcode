@@ -42,7 +42,7 @@ SessionState(
 )
 
 StoredSessionSummary(
-    session: SessionRef(id: str),
+    session: SessionRef(id: str, parent_id: str | None = None),
     status: SessionStatus,
     turn: int,
     prompt: str,

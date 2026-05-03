@@ -43,6 +43,16 @@ describe("RuntimeClient integration contract", () => {
             last_request_type: "handshake",
           },
         },
+        background_tasks: {
+          active_worker_slots: 2,
+          queued_count: 3,
+          running_count: 1,
+          terminal_count: 5,
+          default_concurrency: 4,
+          provider_concurrency: { "opencode-go": 2 },
+          model_concurrency: { "opencode-go/glm-5.1": 1 },
+          status_counts: { queued: 3, running: 1, completed: 5 },
+        },
       }),
     } as Response);
 
@@ -61,6 +71,16 @@ describe("RuntimeClient integration contract", () => {
       },
     ]);
     expect(snapshot.acp?.details?.last_request_type).toBe("handshake");
+    expect(snapshot.background_tasks).toEqual({
+      active_worker_slots: 2,
+      queued_count: 3,
+      running_count: 1,
+      terminal_count: 5,
+      default_concurrency: 4,
+      provider_concurrency: { "opencode-go": 2 },
+      model_concurrency: { "opencode-go/glm-5.1": 1 },
+      status_counts: { queued: 3, running: 1, completed: 5 },
+    });
   });
 
   it("parses streamed SSE chunks and preserves backend tool status display payloads", async () => {

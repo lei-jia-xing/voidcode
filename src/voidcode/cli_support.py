@@ -71,9 +71,12 @@ def serialize_session_state(session: SessionState) -> dict[str, object]:
 
 
 def serialize_stored_session_summary(session: StoredSessionSummary) -> dict[str, object]:
+    session_payload: dict[str, object] = {"id": session.session.id}
+    parent_id = getattr(session.session, "parent_id", None)
+    if parent_id is not None:
+        session_payload["parent_id"] = parent_id
     return {
-        "id": session.session.id,
-        "parent_id": getattr(session.session, "parent_id", None),
+        "session": session_payload,
         "status": session.status,
         "turn": session.turn,
         "updated_at": session.updated_at,

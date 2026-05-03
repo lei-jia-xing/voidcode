@@ -119,11 +119,23 @@ export interface McpServerStatusDetail {
   retry_available?: boolean;
 }
 
+export interface RuntimeBackgroundTaskStatusSnapshot {
+  active_worker_slots: number;
+  queued_count: number;
+  running_count: number;
+  terminal_count: number;
+  default_concurrency: number;
+  provider_concurrency: Record<string, number>;
+  model_concurrency: Record<string, number>;
+  status_counts: Record<string, number>;
+}
+
 export interface RuntimeStatusSnapshot {
   git: GitStatusSnapshot;
   lsp: CapabilityStatusSnapshot;
   mcp: CapabilityStatusSnapshot;
   acp?: CapabilityStatusSnapshot;
+  background_tasks: RuntimeBackgroundTaskStatusSnapshot;
 }
 
 export interface ReviewChangedFile {

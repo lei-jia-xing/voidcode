@@ -777,7 +777,8 @@ def test_sessions_list_outputs_json() -> None:
     assert setup_result.returncode == 0
     assert list_result.returncode == 0
     assert payload["workspace"] == str(workspace)
-    assert payload["sessions"][0]["id"] == "list-json-session"
+    assert payload["sessions"][0]["session"] == {"id": "list-json-session"}
+    assert "id" not in payload["sessions"][0]
     assert payload["sessions"][0]["prompt"] == "read sample.txt"
 
 
