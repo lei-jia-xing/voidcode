@@ -156,6 +156,7 @@ class LineTrimmedReplacer:
 class BlockAnchorReplacer:
     _MAX_ANCHOR_LENGTH = 200
     _MAX_LINES_SCAN = 2000
+    _NEAR_MATCH_SCAN_LIMIT = 5  # lines around anchor to look for near matches
 
     @staticmethod
     def _similar(a: str, b: str) -> bool:
@@ -199,6 +200,66 @@ class BlockAnchorReplacer:
                     results.append(block)
                     break
         return results
+
+    @staticmethod
+    def _find_near_matches(content: str, old: str) -> list[dict[str, object]]:
+        """Find near-matches for diagnostic purposes when exact match fails."""
+        results: list[dict[str, object]] = []
+        original_lines = content.split("\n")
+        search_lines = old.split("\n")
+
+        if len(search_lines) < 3:
+            return results
+
+        if search_lines and search_lines[-1] == "":
+            search_lines = search_lines[:-1]
+
+        first_anchor = search_lines[0].strip()
+        last_anchor = search_lines[-1].strip()
+
+        # Find lines that are close to first_anchor
+        max_scan = min(len(original_lines), BlockAnchorReplacer._MAX_LINES_SCAN)
+        for i in range(max_scan):
+            if BlockAnchorReplacer._similar(original_lines[i].strip(), first_anchor):
+                # Found first anchor, now look for near-matches to last_anchor within reasonable range
+                upper = min(len(original_lines), i + BlockAnchorReplacer._MAX_LINES_SCAN)
+                found_last = False
+                for j in range(i + 2, upper):
+                    if BlockAnchorReplacer._similar(original_lines[j].strip(), last_anchor):
+                        found_last = True
+                        break
+
+                if not found_last:
+                    # First anchor matched but last didn't - provide context
+                    line_num = i + 1
+                    context_start = max(0, i - BlockAnchorReplacer._NEAR_MATCH_SCAN_LIMIT)
+                    context_end = min(
+                        len(original_lines), i + len(search_lines) + BlockAnchorReplacer._NEAR_MATCH_SCAN_LIMIT
+                    )
+                    snippet_lines = original_lines[context_start:context_end]
+                    snippet = "\n".join(snippet_lines[:10])  # limit snippet length
+                    results.append({"line": line_num, "snippet": snippet, "reason": "first anchor matched, last anchor not found"})
+
+        # Also check if last_anchor matches somewhere but first doesn't
+        for i in range(max_scan):
+            if BlockAnchorReplacer._similar(original_lines[i].strip(), last_anchor):
+                # Found something similar to last anchor, check if first anchor is nearby
+                lower = max(0, i - BlockAnchorReplacer._MAX_LINES_SCAN)
+                found_first = False
+                for j in range(lower, i - 1):
+                    if j >= 0 and BlockAnchorReplacer._similar(original_lines[j].strip(), first_anchor):
+                        found_first = True
+                        break
+
+                if not found_first:
+                    line_num = i + 1
+                    context_start = max(0, i - len(search_lines))
+                    context_end = min(len(original_lines), i + BlockAnchorReplacer._NEAR_MATCH_SCAN_LIMIT)
+                    snippet_lines = original_lines[context_start:context_end]
+                    snippet = "\n".join(snippet_lines[:10])
+                    results.append({"line": line_num, "snippet": snippet, "reason": "last anchor matched, first anchor not found"})
+
+        return results[:5]  # limit to 5 near-match hints
 
 
 class WhitespaceNormalizedReplacer:
@@ -341,8 +402,29 @@ def _replace(
             total_replacements += 1
             return current, total_replacements
 
-    # If we reach here, no replacer found any match
-    raise ValueError("Could not find oldString in the file using replacers.")
+    # If we reach here, no replacer found any match; build diagnostics
+    diagnostic_lines = [
+        f"Could not find oldString in the file using {len(replacers)} replacer(s):"
+    ]
+    for replacer in replacers:
+        diagnostic_lines.append(f"  - {replacer.__name__}")
+
+    # Provide near-match hints from BlockAnchorReplacer if available
+    if BlockAnchorReplacer in replacers:
+        near_matches = BlockAnchorReplacer._find_near_matches(content, old_string)
+        if near_matches:
+            diagnostic_lines.append(
+                f"\nNear-match hints from BlockAnchorReplacer ({len(near_matches)} found):"
+            )
+            for i, match in enumerate(near_matches[:3]):  # bound to 3 hints
+                snippet = match["snippet"]
+                if len(snippet) > 200:
+                    snippet = snippet[:200] + "..."
+                diagnostic_lines.append(
+                    f"  Hint {i + 1}: line ~{match['line']}: {snippet}"
+                )
+
+    raise ValueError("\n".join(diagnostic_lines))
 
 
 class EscapeNormalizedReplacer:

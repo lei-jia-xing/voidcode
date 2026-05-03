@@ -482,3 +482,68 @@ def test_tools_package_and_default_registry_export_edit_tool() -> None:
     assert "EditTool" in __import__("voidcode.tools", fromlist=["__all__"]).__all__
     assert registry.resolve("edit").definition.name == "edit"
     assert registry.resolve("edit").definition.read_only is False
+
+
+def test_edit_tool_diagnostics_list_replacers_on_mismatch(tmp_path: Path) -> None:
+    file_path = tmp_path / "test.txt"
+    file_path.write_text(
+        "line1\nline2\nline3\nline4\nline5\n",
+        encoding="utf-8",
+    )
+
+    tool = EditTool()
+
+    with pytest.raises(ValueError, match="Could not find oldString") as exc_info:
+        tool.invoke(
+            ToolCall(
+                tool_name="edit",
+                arguments={
+                    "path": "test.txt",
+                    "oldString": "nonexistent text here",
+                    "newString": "replacement",
+                },
+            ),
+            workspace=tmp_path,
+        )
+
+    error_message = str(exc_info.value)
+    # Verify all replacers are listed
+    assert "SimpleReplacer" in error_message
+    assert "LineTrimmedReplacer" in error_message
+    assert "BlockAnchorReplacer" in error_message
+    assert "WhitespaceNormalizedReplacer" in error_message
+    assert "IndentationFlexibleReplacer" in error_message
+
+
+def test_edit_tool_near_match_diagnostics_for_block_anchor(tmp_path: Path) -> None:
+    # Create content with block anchors that almost match
+    file_path = tmp_path / "test.txt"
+    file_path.write_text(
+        "alpha\nstart block\nkeep middle\nend block\nomega\n",
+        encoding="utf-8",
+    )
+
+    tool = EditTool()
+
+    # Use oldString with slightly modified anchors (typo in start, correct end)
+    with pytest.raises(ValueError, match="Could not find oldString") as exc_info:
+        tool.invoke(
+            ToolCall(
+                tool_name="edit",
+                arguments={
+                    "path": "test.txt",
+                    # "start blok" has typo, "end block" is correct - should trigger near-match
+                    "oldString": "start blok\nkeep middle\nend block",
+                    "newString": "start block\nupdated middle\nend block",
+                },
+            ),
+            workspace=tmp_path,
+        )
+
+    error_message = str(exc_info.value)
+    # Should list replacers
+    assert "Tried" in error_message or "replacer" in error_message.lower()
+    # Should provide near-match hints from BlockAnchorReplacer
+    assert "Near-match hints" in error_message or "Hint" in error_message
+    # Should mention the line number or context
+    assert "line" in error_message.lower() or "start block" in error_message
