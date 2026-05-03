@@ -39,15 +39,63 @@ class LspOperation(enum.Enum):
     OUTGOING_CALLS = "callHierarchy/outgoingCalls"
 
 
+_LSP_OPERATION_ALIASES: dict[str, LspOperation] = {
+    "gotodefinition": LspOperation.GO_TO_DEFINITION,
+    "definition": LspOperation.GO_TO_DEFINITION,
+    "findreferences": LspOperation.FIND_REFERENCES,
+    "references": LspOperation.FIND_REFERENCES,
+    "hover": LspOperation.HOVER,
+    "documentsymbol": LspOperation.DOCUMENT_SYMBOL,
+    "symbol": LspOperation.DOCUMENT_SYMBOL,
+    "workspacesymbol": LspOperation.WORKSPACE_SYMBOL,
+    "gotoimplementation": LspOperation.GO_TO_IMPLEMENTATION,
+    "implementation": LspOperation.GO_TO_IMPLEMENTATION,
+    "incomingcalls": LspOperation.INCOMING_CALLS,
+    "outgoingcalls": LspOperation.OUTGOING_CALLS,
+}
+
+
 class LspTool:
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="lsp",
         description="LSP client for basic code intelligence lookups.",
         input_schema={
-            "operation": {"type": "string"},
-            "filePath": {"type": "string"},
-            "line": {"type": "integer"},
-            "character": {"type": "integer"},
+            "operation": {
+                "type": "string",
+                "description": (
+                    "LSP operation. Preferred names include goToDefinition, "
+                    "findReferences, hover, documentSymbol, workspaceSymbol, "
+                    "goToImplementation, incomingCalls, and outgoingCalls. "
+                    "Protocol method strings like textDocument/definition "
+                    "also work."
+                ),
+            },
+            "filePath": {
+                "type": "string",
+                "description": (
+                    "Workspace-relative file path used for target selection and server resolution."
+                ),
+            },
+            "line": {
+                "type": "integer",
+                "description": (
+                    "1-based line number as shown in editors. Required for "
+                    "position-based operations."
+                ),
+            },
+            "character": {
+                "type": "integer",
+                "description": (
+                    "1-based character number as shown in editors. Required "
+                    "for position-based operations."
+                ),
+            },
+            "query": {
+                "type": "string",
+                "description": (
+                    "Optional workspaceSymbol search query. Empty string requests all symbols."
+                ),
+            },
             "server": {"type": "string"},
         },
         read_only=True,
@@ -56,6 +104,26 @@ class LspTool:
     def __init__(self, *, requester: LspRequester) -> None:
         self._requester = requester
         self._converter = lsp_converters.get_converter()
+
+    @staticmethod
+    def _parse_operation(value: object) -> LspOperation:
+        if isinstance(value, LspOperation):
+            return value
+        if not isinstance(value, str):
+            raise ValueError(f"Unsupported LSP operation: {value}")
+        try:
+            return LspOperation(value)
+        except Exception:
+            pass
+        try:
+            return LspOperation[value]
+        except Exception:
+            pass
+        normalized = "".join(character for character in value if character.isalnum()).lower()
+        alias = _LSP_OPERATION_ALIASES.get(normalized)
+        if alias is not None:
+            return alias
+        raise ValueError(f"Unsupported LSP operation: {value}")
 
     @staticmethod
     def _invoke_requester(
@@ -85,10 +153,13 @@ class LspTool:
         file_path = call.arguments.get("filePath")
         line = call.arguments.get("line")
         character = call.arguments.get("character")
+        query = call.arguments.get("query")
         server = call.arguments.get("server")
 
         if server is not None and not isinstance(server, str):
             raise ValueError("lsp requires a string 'server' argument when provided")
+        if query is not None and not isinstance(query, str):
+            raise ValueError("lsp requires a string 'query' argument when provided")
         if not isinstance(file_path, str):
             raise ValueError("lsp requires a string 'filePath' argument")
         if isinstance(line, (int, float)):
@@ -101,26 +172,20 @@ class LspTool:
         else:
             character_value = None
 
-        if line_value is None or character_value is None:
-            raise ValueError("lsp requires numeric 'line' and 'character' arguments (1-based)")
-        if line_value < 1 or character_value < 1:
-            raise ValueError("lsp line and character must be >= 1")
         if op_value is None:
             raise ValueError("lsp invocation requires 'operation' argument")
 
-        try:
-            if isinstance(op_value, LspOperation):
-                operation = op_value
-            else:
-                operation = LspOperation(op_value)
-        except Exception:
-            if isinstance(op_value, str):
-                try:
-                    operation = LspOperation[op_value]
-                except Exception as exc:
-                    raise ValueError(f"Unsupported LSP operation: {op_value}") from exc
-            else:
-                raise ValueError(f"Unsupported LSP operation: {op_value}") from None
+        operation = self._parse_operation(op_value)
+        position_required = operation not in (
+            LspOperation.DOCUMENT_SYMBOL,
+            LspOperation.WORKSPACE_SYMBOL,
+        )
+        if position_required and (line_value is None or character_value is None):
+            raise ValueError("lsp requires numeric 'line' and 'character' arguments (1-based)")
+        if line_value is not None and line_value < 1:
+            raise ValueError("lsp line and character must be >= 1")
+        if character_value is not None and character_value < 1:
+            raise ValueError("lsp line and character must be >= 1")
 
         relative_path = Path(file_path)
         workspace_root = workspace.resolve()
@@ -130,19 +195,44 @@ class LspTool:
         if not candidate.is_file():
             raise ValueError(f"lsp target does not exist: {file_path}")
 
-        position = lsp_types.Position(line=line_value - 1, character=character_value - 1)
-        text_document = lsp_types.TextDocumentIdentifier(uri=candidate.as_uri())
-        params: dict[str, object] = self._converter.unstructure(
-            lsp_types.TextDocumentPositionParams(text_document=text_document, position=position),
-            unstructure_as=lsp_types.TextDocumentPositionParams,
+        position = (
+            lsp_types.Position(line=line_value - 1, character=character_value - 1)
+            if line_value is not None and character_value is not None
+            else None
         )
+        text_document = lsp_types.TextDocumentIdentifier(uri=candidate.as_uri())
+        params: dict[str, object]
+        if operation == LspOperation.DOCUMENT_SYMBOL:
+            params = cast(
+                dict[str, object],
+                self._converter.unstructure(
+                    lsp_types.DocumentSymbolParams(text_document=text_document),
+                    unstructure_as=lsp_types.DocumentSymbolParams,
+                ),
+            )
+        elif position is not None:
+            params = cast(
+                dict[str, object],
+                self._converter.unstructure(
+                    lsp_types.TextDocumentPositionParams(
+                        text_document=text_document, position=position
+                    ),
+                    unstructure_as=lsp_types.TextDocumentPositionParams,
+                ),
+            )
+        else:
+            params = cast(dict[str, object], {"textDocument": {"uri": candidate.as_uri()}})
         if operation == LspOperation.WORKSPACE_SYMBOL:
-            params = self._converter.unstructure(
-                lsp_types.WorkspaceSymbolParams(query=""),
-                unstructure_as=lsp_types.WorkspaceSymbolParams,
+            params = cast(
+                dict[str, object],
+                self._converter.unstructure(
+                    lsp_types.WorkspaceSymbolParams(query=query or ""),
+                    unstructure_as=lsp_types.WorkspaceSymbolParams,
+                ),
             )
 
         if operation in (LspOperation.INCOMING_CALLS, LspOperation.OUTGOING_CALLS):
+            assert position is not None
             prepare_result = self._invoke_requester(
                 self._requester,
                 server_name=server,
@@ -171,7 +261,7 @@ class LspTool:
                 item = cast(dict[str, object], prepare_payload)
             if item is None:
                 raise ValueError("LSP prepareCallHierarchy returned no item")
-            params = {"item": item}
+            params = cast(dict[str, object], {"item": item})
 
             response = self._invoke_requester(
                 self._requester,
