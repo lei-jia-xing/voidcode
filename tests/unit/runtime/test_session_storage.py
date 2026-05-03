@@ -10,6 +10,7 @@ import pytest
 
 from voidcode.runtime.contracts import RuntimeRequest, RuntimeResponse
 from voidcode.runtime.events import EventEnvelope
+from voidcode.runtime.permission import PendingApproval
 from voidcode.runtime.question import PendingQuestion, PendingQuestionOption, PendingQuestionPrompt
 from voidcode.runtime.session import SessionRef, SessionState
 from voidcode.runtime.storage import SqliteSessionStore
@@ -224,9 +225,13 @@ def test_session_storage_persists_runtime_todos_and_filters_reverted_state(
 
     raw_runtime_state = loaded.session.metadata["runtime_state"]
     assert isinstance(raw_runtime_state, dict)
-    todos_state = cast(dict[str, object], raw_runtime_state)["todos"]
+    runtime_state = cast(dict[str, object], raw_runtime_state)
+    todos_state = runtime_state.get("todos")
     assert isinstance(todos_state, dict)
-    assert cast(list[dict[str, object]], todos_state["todos"])[0]["content"] == "persist me"
+    todos_state_payload = cast(dict[str, object], todos_state)
+    todos = todos_state_payload.get("todos")
+    assert isinstance(todos, list)
+    assert cast(dict[str, object], todos[0])["content"] == "persist me"
 
     store.revert_session(workspace=tmp_path, session_id="todo-session", sequence=3)
     reverted = store.load_session(workspace=tmp_path, session_id="todo-session")
@@ -1037,6 +1042,153 @@ def test_session_storage_persists_pending_question_and_question_notification(
     assert notifications[0].kind == "question_blocked"
     assert notifications[0].status == "unread"
     assert notifications[0].payload["request_id"] == "question-1"
+
+
+def test_session_storage_persists_pending_question_across_store_reopen(
+    tmp_path: Path,
+) -> None:
+    store = SqliteSessionStore()
+    request = RuntimeRequest(prompt="need input", session_id="question-reopen-session")
+    response = RuntimeResponse(
+        session=SessionState(
+            session=SessionRef(id="question-reopen-session"),
+            status="waiting",
+            turn=1,
+            metadata={},
+        ),
+        events=(
+            EventEnvelope(
+                session_id="question-reopen-session",
+                sequence=1,
+                event_type="runtime.question_requested",
+                source="runtime",
+                payload={
+                    "request_id": "question-reopen-1",
+                    "tool": "question",
+                    "question_count": 1,
+                    "questions": [
+                        {
+                            "header": "Runtime path",
+                            "question": "Which runtime path should we use?",
+                            "multiple": False,
+                            "options": [
+                                {"label": "Reuse existing", "description": "Keep current path"},
+                            ],
+                        }
+                    ],
+                },
+            ),
+        ),
+    )
+    pending_question = PendingQuestion(
+        request_id="question-reopen-1",
+        tool_name="question",
+        arguments={},
+        prompts=(
+            PendingQuestionPrompt(
+                question="Which runtime path should we use?",
+                header="Runtime path",
+                options=(
+                    PendingQuestionOption(
+                        label="Reuse existing",
+                        description="Keep current path",
+                    ),
+                ),
+                multiple=False,
+            ),
+        ),
+    )
+    store.save_pending_question(
+        workspace=tmp_path,
+        request=request,
+        response=response,
+        pending_question=pending_question,
+    )
+
+    reopened_store = SqliteSessionStore()
+    loaded_question = reopened_store.load_pending_question(
+        workspace=tmp_path,
+        session_id="question-reopen-session",
+    )
+    checkpoint = reopened_store.load_resume_checkpoint(
+        workspace=tmp_path,
+        session_id="question-reopen-session",
+    )
+    notifications = reopened_store.list_notifications(workspace=tmp_path)
+
+    assert loaded_question == pending_question
+    assert checkpoint is not None
+    assert checkpoint["kind"] == "question_wait"
+    assert checkpoint["pending_question_request_id"] == "question-reopen-1"
+    assert len(notifications) == 1
+    assert notifications[0].kind == "question_blocked"
+    assert notifications[0].status == "unread"
+    assert notifications[0].payload["request_id"] == "question-reopen-1"
+
+
+def test_session_storage_persists_pending_approval_across_store_reopen(
+    tmp_path: Path,
+) -> None:
+    store = SqliteSessionStore()
+    request = RuntimeRequest(prompt="write guarded file", session_id="approval-reopen-session")
+    response = RuntimeResponse(
+        session=SessionState(
+            session=SessionRef(id="approval-reopen-session"),
+            status="waiting",
+            turn=1,
+            metadata={},
+        ),
+        events=(
+            EventEnvelope(
+                session_id="approval-reopen-session",
+                sequence=1,
+                event_type="runtime.approval_requested",
+                source="runtime",
+                payload={
+                    "request_id": "approval-reopen-1",
+                    "tool": "write_file",
+                    "arguments": {"path": "danger.txt"},
+                    "target_summary": "write_file danger.txt",
+                    "reason": "write requires approval",
+                    "policy": {"mode": "ask"},
+                },
+            ),
+        ),
+    )
+    pending_approval = PendingApproval(
+        request_id="approval-reopen-1",
+        tool_name="write_file",
+        arguments={"path": "danger.txt"},
+        target_summary="write_file danger.txt",
+        reason="write requires approval",
+        request_event_sequence=1,
+    )
+    store.save_pending_approval(
+        workspace=tmp_path,
+        request=request,
+        response=response,
+        pending_approval=pending_approval,
+    )
+
+    reopened_store = SqliteSessionStore()
+    loaded_approval = reopened_store.load_pending_approval(
+        workspace=tmp_path,
+        session_id="approval-reopen-session",
+    )
+    checkpoint = reopened_store.load_resume_checkpoint(
+        workspace=tmp_path,
+        session_id="approval-reopen-session",
+    )
+    notifications = reopened_store.list_notifications(workspace=tmp_path)
+
+    assert loaded_approval == pending_approval
+    assert checkpoint is not None
+    assert checkpoint["kind"] == "approval_wait"
+    assert checkpoint["pending_approval_request_id"] == "approval-reopen-1"
+    assert len(notifications) == 1
+    assert notifications[0].kind == "approval_blocked"
+    assert notifications[0].status == "unread"
+    assert notifications[0].payload["request_id"] == "approval-reopen-1"
 
 
 def test_session_storage_fail_incomplete_background_tasks_keeps_question_waiting_children(
