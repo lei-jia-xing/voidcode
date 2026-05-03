@@ -50,13 +50,14 @@ describe("TodoPanel", () => {
 
     render(<TodoPanel snapshot={snapshot} />);
 
-    expect(screen.getByRole("button", { name: /show current todos/i })).toHaveAttribute(
-      "aria-expanded",
-      "false",
-    );
+    expect(
+      screen.getByRole("button", { name: /show current todos/i }),
+    ).toHaveAttribute("aria-expanded", "false");
     expect(screen.getByText("0/2 done")).toBeInTheDocument();
     expect(screen.queryByText("Fix tool grouping")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /show current todos/i }));
+    fireEvent.click(
+      screen.getByRole("button", { name: /show current todos/i }),
+    );
     expect(screen.getByText("Fix tool grouping")).toBeInTheDocument();
     expect(screen.getByText("Add tests")).toBeInTheDocument();
     expect(screen.getByText("in progress")).toBeInTheDocument();

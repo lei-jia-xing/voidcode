@@ -1406,33 +1406,74 @@ describe("useAppStore integration flow", () => {
     expect(runtimeClientMocks.cancelSessionMock).toHaveBeenCalledWith(
       sessionId,
     );
-    expect(useAppStore.getState().runStatus).toBe("idle");
+    expect(useAppStore.getState().runStatus).toBe("cancelling");
+
+    await useAppStore.getState().runTask("read second.txt");
+
+    expect(runtimeClientMocks.runStreamMock).toHaveBeenCalledTimes(1);
 
     gate.resolve();
     await runPromise;
+
+    expect(useAppStore.getState().runStatus).toBe("idle");
   });
 
-  it("unlocks the composer immediately when interrupting before a session id is available", async () => {
-    useAppStore.setState({
-      currentSessionId: null,
-      currentSessionState: null,
-      runStatus: "running",
-    });
+  it("keeps the run locked when interrupting before a session id is available", async () => {
+    const gate = createDeferred<void>();
+    const pendingSessionId = "pending-session-id";
+    const requestReceived = makeEvent(
+      1,
+      "runtime.request_received",
+      { prompt: "read before session id" },
+      "runtime",
+      pendingSessionId,
+    );
+
+    async function* stream() {
+      yield makeStreamChunk(pendingSessionId, "running", requestReceived);
+      await gate.promise;
+    }
+
+    runtimeClientMocks.runStreamMock.mockReturnValue(stream());
+
+    const runPromise = useAppStore.getState().runTask("read before session id");
+    await Promise.resolve();
+    useAppStore.setState({ currentSessionId: null, currentSessionState: null });
 
     await useAppStore.getState().cancelCurrentRun();
 
     expect(runtimeClientMocks.cancelSessionMock).not.toHaveBeenCalled();
+    expect(useAppStore.getState().runStatus).toBe("cancelling");
+
+    await useAppStore.getState().runTask("read second.txt");
+
+    expect(runtimeClientMocks.runStreamMock).toHaveBeenCalledTimes(1);
+
+    gate.resolve();
+    await runPromise;
+
     expect(useAppStore.getState().runStatus).toBe("idle");
   });
 
-  it("keeps the composer unlocked even when runtime says the run is no longer active", async () => {
-    useAppStore.setState({
-      currentSessionId: "stale-session",
-      currentSessionState: makeSessionState("stale-session", "running"),
-      runStatus: "running",
-    });
+  it("keeps the run locked until the stream settles when runtime says the run is no longer active", async () => {
+    const gate = createDeferred<void>();
+    const sessionId = "stale-session";
+    const requestReceived = makeEvent(
+      1,
+      "runtime.request_received",
+      { prompt: "read stale.txt" },
+      "runtime",
+      sessionId,
+    );
+
+    async function* stream() {
+      yield makeStreamChunk(sessionId, "running", requestReceived);
+      await gate.promise;
+    }
+
+    runtimeClientMocks.runStreamMock.mockReturnValue(stream());
     runtimeClientMocks.cancelSessionMock.mockResolvedValueOnce({
-      session_id: "stale-session",
+      session_id: sessionId,
       status: "not_active",
       interrupted: false,
       cancelled: false,
@@ -1440,11 +1481,24 @@ describe("useAppStore integration flow", () => {
       reason: null,
     });
 
+    const runPromise = useAppStore.getState().runTask("read stale.txt");
+    await Promise.resolve();
+    await Promise.resolve();
+
     await useAppStore.getState().cancelCurrentRun();
 
     expect(runtimeClientMocks.cancelSessionMock).toHaveBeenCalledWith(
-      "stale-session",
+      sessionId,
     );
+    expect(useAppStore.getState().runStatus).toBe("cancelling");
+
+    await useAppStore.getState().runTask("read second.txt");
+
+    expect(runtimeClientMocks.runStreamMock).toHaveBeenCalledTimes(1);
+
+    gate.resolve();
+    await runPromise;
+
     expect(useAppStore.getState().runStatus).toBe("idle");
   });
 

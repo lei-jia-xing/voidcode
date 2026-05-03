@@ -192,7 +192,9 @@ function numericToolValue(value: unknown): number | null {
     : null;
 }
 
-function lineDeltaFromDiff(diff: string | null): { additions: number; deletions: number } | null {
+function lineDeltaFromDiff(
+  diff: string | null,
+): { additions: number; deletions: number } | null {
   if (!diff) return null;
   let additions = 0;
   let deletions = 0;
@@ -204,7 +206,9 @@ function lineDeltaFromDiff(diff: string | null): { additions: number; deletions:
   return additions > 0 || deletions > 0 ? { additions, deletions } : null;
 }
 
-function lineDelta(tool: ChatTool): { additions: number; deletions: number } | null {
+function lineDelta(
+  tool: ChatTool,
+): { additions: number; deletions: number } | null {
   const data = resultData(tool);
   const additions =
     numericToolValue(data?.additions) ??
@@ -229,7 +233,9 @@ function lineDelta(tool: ChatTool): { additions: number; deletions: number } | n
   );
 }
 
-function formatLineDelta(delta: { additions: number; deletions: number } | null) {
+function formatLineDelta(
+  delta: { additions: number; deletions: number } | null,
+) {
   return delta ? `+${delta.additions}/-${delta.deletions}` : null;
 }
 
@@ -303,6 +309,104 @@ function ToolDetailBlock({
       >
         {preview}
       </pre>
+    </div>
+  );
+}
+
+function DiffDetailBlock({
+  label,
+  diff,
+}: {
+  label: string;
+  diff: string | null;
+}) {
+  if (!diff) return null;
+  const lines = diff.split("\n");
+
+  return (
+    <div className="mt-2 text-xs text-[var(--vc-text-muted)]">
+      <div className="mb-1 flex items-center justify-between gap-2 text-[11px] text-[var(--vc-text-subtle)]">
+        <span>{label}</span>
+        <CopyButton value={diff} label={label} />
+      </div>
+      <div className="max-h-72 overflow-auto rounded-[var(--vc-radius-control)] border border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] font-mono text-xs leading-relaxed">
+        {lines.map((line, index) => {
+          const isFileHeader =
+            line.startsWith("+++") ||
+            line.startsWith("---") ||
+            line.startsWith("diff --git") ||
+            line.startsWith("index ");
+          const isHunk = line.startsWith("@@");
+          const isAddition = line.startsWith("+") && !line.startsWith("+++");
+          const isDeletion = line.startsWith("-") && !line.startsWith("---");
+
+          const marker = isAddition
+            ? "+"
+            : isDeletion
+              ? "-"
+              : isHunk
+                ? "@@"
+                : isFileHeader
+                  ? "#"
+                  : " ";
+
+          let rowClassName =
+            "grid grid-cols-[2rem_minmax(0,1fr)] items-stretch text-[var(--vc-text-primary)]";
+          let markerClassName =
+            "flex items-start justify-center border-r border-[color:var(--vc-border-subtle)] px-2 py-1 text-[10px] font-bold leading-relaxed";
+          let contentClassName = "px-3 py-1 whitespace-pre-wrap break-words";
+
+          if (isFileHeader) {
+            rowClassName +=
+              " border-b border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-2)] text-[var(--vc-text-muted)]";
+            markerClassName += " text-[var(--vc-text-subtle)]";
+            contentClassName += " text-[var(--vc-text-muted)]";
+          } else if (isHunk) {
+            rowClassName +=
+              " bg-[rgba(99,110,123,0.18)] text-[#c7d2de] border-y border-[rgba(99,110,123,0.25)]";
+            markerClassName += " text-[#d7e2ef]";
+            contentClassName += " text-[#d7e2ef]";
+          } else if (isAddition) {
+            rowClassName +=
+              " bg-[rgba(46,160,67,0.22)] text-[#e6ffec] border-y border-[rgba(46,160,67,0.28)]";
+            markerClassName += " bg-[rgba(46,160,67,0.34)] text-[#aff5b4]";
+            contentClassName += " text-[#e6ffec]";
+          } else if (isDeletion) {
+            rowClassName +=
+              " bg-[rgba(248,81,73,0.2)] text-[#ffe7e5] border-y border-[rgba(248,81,73,0.28)]";
+            markerClassName += " bg-[rgba(248,81,73,0.32)] text-[#ffb8b0]";
+            contentClassName += " text-[#ffe7e5]";
+          } else {
+            rowClassName += " bg-[var(--vc-surface-1)]";
+            markerClassName += " text-[var(--vc-text-subtle)]";
+          }
+
+          return (
+            <div
+              key={`${line}-${index}`}
+              className={rowClassName}
+              data-diff-line={
+                isAddition
+                  ? "addition"
+                  : isDeletion
+                    ? "deletion"
+                    : isHunk
+                      ? "hunk"
+                      : isFileHeader
+                        ? "header"
+                        : "context"
+              }
+            >
+              <div className={markerClassName} data-diff-marker>
+                {marker}
+              </div>
+              <div className={contentClassName} data-diff-content>
+                {line || " "}
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -395,10 +499,7 @@ function ToolDisclosureRow({
         </div>
       )}
       {canExpand && expanded && (
-        <div
-          id={panelId}
-          className="ml-8 pb-2 text-[var(--vc-text-muted)]"
-        >
+        <div id={panelId} className="ml-8 pb-2 text-[var(--vc-text-muted)]">
           {children}
         </div>
       )}
@@ -454,15 +555,31 @@ function toolOutputSummary(tool: ChatTool): string | null {
   );
 }
 
+function isReadonlyTool(tool: ChatTool) {
+  return (
+    tool.display?.kind === "context" ||
+    tool.name === "read_file" ||
+    tool.name === "read" ||
+    tool.name === "list" ||
+    tool.name === "glob" ||
+    tool.name === "grep" ||
+    tool.name === "code_search" ||
+    tool.name === "ast_grep_search"
+  );
+}
+
 function ReadToolActivity({ tool }: { tool: ChatTool }) {
-  const path = primaryPath(tool) ?? toolDisplayTitle(tool, tool.name);
-  const output = toolOutputSummary(tool);
+  const path = primaryPath(tool) ?? toolDisplaySubtitle(tool) ?? undefined;
+  const subtitle =
+    tool.display?.kind === "context"
+      ? toolDisplaySubtitle(tool, path ?? undefined)
+      : path;
   return (
     <ToolDisclosureRow
       tool={tool}
       title={toolDisplayTitle(tool, "Read")}
-      subtitle={path}
-      args={primitiveArgs(tool.arguments, ["path", "filePath"])}
+      subtitle={subtitle}
+      args={curatedArgs(tool, { omit: ["path", "filePath"] })}
       icon={toolIcon(tool)}
     >
       {tool.error ? (
@@ -472,9 +589,7 @@ function ReadToolActivity({ tool }: { tool: ChatTool }) {
           copyValue={tool.error}
           tone="error"
         />
-      ) : (
-        <ToolDetailBlock label="Output" value={output} copyValue={output} />
-      )}
+      ) : null}
     </ToolDisclosureRow>
   );
 }
@@ -509,7 +624,7 @@ function WriteToolActivity({
         />
       ) : (
         <>
-          <ToolDetailBlock label="Diff" value={diff} copyValue={diff} />
+          <DiffDetailBlock label="Diff" diff={diff} />
           {!diff && tool.content && (
             <ToolDetailBlock
               label="Output"
@@ -545,7 +660,8 @@ function ShellToolActivity({
     toolValue(data?.exitCode) ??
     toolValue(data?.code);
   const error = tool.error ?? toolValue(data?.error);
-  const failed = tool.status === "failed" || (exitCode !== null && exitCode !== "0");
+  const failed =
+    tool.status === "failed" || (exitCode !== null && exitCode !== "0");
   const title = t("tool.shell.title");
   const summary = toolDisplayTitle(tool, command);
   const subtitle =
@@ -691,7 +807,9 @@ function SkillToolActivity({
       ) : (
         <>
           {description && (
-            <div className="mt-2 text-[var(--vc-text-muted)]">{description}</div>
+            <div className="mt-2 text-[var(--vc-text-muted)]">
+              {description}
+            </div>
           )}
           {sourcePath && (
             <div className="mt-2 text-[11px] text-[var(--vc-text-subtle)]">
@@ -869,169 +987,6 @@ function TodoToolActivity({ tool }: { tool: ChatTool }) {
   );
 }
 
-type ToolGroupKind =
-  | "read"
-  | "lookup"
-  | "edit"
-  | "command"
-  | "subagent"
-  | "skill"
-  | "todo"
-  | "other";
-
-function toolGroupKind(tool: ChatTool): ToolGroupKind {
-  if (tool.name === "read_file" || tool.name === "read") return "read";
-  if (
-    tool.name === "list" ||
-    tool.name === "glob" ||
-    tool.name === "grep" ||
-    tool.name === "code_search" ||
-    tool.name === "ast_grep_search"
-  ) {
-    return "lookup";
-  }
-  if (tool.name === "shell_exec" || tool.name === "bash") return "command";
-  if (
-    tool.name === "write_file" ||
-    tool.name === "write" ||
-    tool.name === "edit" ||
-    tool.name === "multi_edit" ||
-    tool.name === "apply_patch"
-  ) {
-    return "edit";
-  }
-  if (tool.name === "task") return "subagent";
-  if (tool.name === "skill") return "skill";
-  if (tool.name === "todo_write") return "todo";
-  return "other";
-}
-
-function toolGroupIcon(tools: ChatTool[]) {
-  if (tools.some((tool) => toolGroupKind(tool) === "command")) {
-    return <Terminal className="h-3.5 w-3.5" />;
-  }
-  if (tools.some((tool) => toolGroupKind(tool) === "edit")) {
-    return <Pencil className="h-3.5 w-3.5" />;
-  }
-  if (tools.some((tool) => toolGroupKind(tool) === "read")) {
-    return <FileText className="h-3.5 w-3.5" />;
-  }
-  return <Wrench className="h-3.5 w-3.5" />;
-}
-
-function uniqueCount(values: (string | null)[]) {
-  return new Set(values.filter((value): value is string => Boolean(value))).size;
-}
-
-function editedPathCount(tools: ChatTool[]) {
-  const paths = new Set<string>();
-  for (const tool of tools) {
-    const data = resultData(tool);
-    const directPath = primaryPath(tool);
-    if (directPath) paths.add(directPath);
-    const changes = data?.changes;
-    if (Array.isArray(changes)) {
-      for (const change of changes) {
-        if (!change || typeof change !== "object") continue;
-        const path = toolValue((change as Record<string, unknown>).path);
-        if (path) paths.add(path);
-      }
-    }
-  }
-  return paths.size || tools.length;
-}
-
-function toolGroupSummary(tools: ChatTool[], t: ReturnType<typeof useTranslation>["t"]) {
-  const parts: string[] = [];
-  const reads = tools.filter((tool) => toolGroupKind(tool) === "read");
-  const lookups = tools.filter((tool) => toolGroupKind(tool) === "lookup");
-  const edits = tools.filter((tool) => toolGroupKind(tool) === "edit");
-  const commands = tools.filter((tool) => toolGroupKind(tool) === "command");
-  const subagents = tools.filter((tool) => toolGroupKind(tool) === "subagent");
-  const skills = tools.filter((tool) => toolGroupKind(tool) === "skill");
-  const todos = tools.filter((tool) => toolGroupKind(tool) === "todo");
-  const others = tools.filter((tool) => toolGroupKind(tool) === "other");
-
-  if (reads.length > 0) {
-    parts.push(
-      t("tool.group.read", {
-        count: uniqueCount(reads.map(primaryPath)) || reads.length,
-      }),
-    );
-  }
-  if (lookups.length > 0) {
-    parts.push(t("tool.group.lookup", { count: lookups.length }));
-  }
-  if (edits.length > 0) {
-    parts.push(t("tool.group.edit", { count: editedPathCount(edits) }));
-  }
-  if (commands.length > 0) {
-    parts.push(t("tool.group.command", { count: commands.length }));
-  }
-  if (subagents.length > 0) {
-    parts.push(t("tool.group.subagent", { count: subagents.length }));
-  }
-  if (skills.length > 0) {
-    parts.push(t("tool.group.skill", { count: skills.length }));
-  }
-  if (todos.length > 0) {
-    parts.push(t("tool.group.todo", { count: todos.length }));
-  }
-  if (others.length > 0) {
-    parts.push(t("tool.group.other", { count: others.length }));
-  }
-
-  return parts.join(t("tool.group.separator"));
-}
-
-function ToolGroupActivity({ tools }: { tools: ChatTool[] }) {
-  const { t } = useTranslation();
-  const panelId = useId();
-  const [expanded, setExpanded] = useState(false);
-  const summary = toolGroupSummary(tools, t);
-
-  return (
-    <div className="text-xs" data-tool-row="tool-group">
-      <button
-        type="button"
-        onClick={() => setExpanded((value) => !value)}
-        className="group flex w-full items-center gap-2 py-1.5 text-left transition-colors hover:text-[var(--vc-text-primary)] focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--vc-focus-ring)]"
-        aria-expanded={expanded}
-        aria-controls={panelId}
-        aria-label={t(expanded ? "tool.group.hide" : "tool.group.show")}
-      >
-        {expanded ? (
-          <ChevronDown className="h-3 w-3 shrink-0 text-[var(--vc-text-subtle)]" />
-        ) : (
-          <ChevronRight className="h-3 w-3 shrink-0 text-[var(--vc-text-subtle)]" />
-        )}
-        <span className="flex h-5 w-5 shrink-0 items-center justify-center text-[var(--vc-text-subtle)]">
-          {toolGroupIcon(tools)}
-        </span>
-        <span
-          className="min-w-0 flex-1 truncate text-sm font-semibold text-[var(--vc-text-muted)]"
-        >
-          {summary}
-        </span>
-      </button>
-      {expanded && (
-        <div
-          id={panelId}
-          className="ml-5 space-y-1.5 pb-1 pt-1"
-        >
-          {tools.map((tool, idx) => (
-            <ToolActivity
-              key={tool.id ?? `${tool.name}-${idx}`}
-              tool={tool}
-              forceCollapsed
-            />
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
 function GenericToolActivity({ tool }: { tool: ChatTool }) {
   const output = toolOutputSummary(tool);
   return (
@@ -1187,13 +1142,6 @@ function QuestionCard({
 
 function ToolActivities({ tools }: { tools: ChatTool[] }) {
   if (tools.length === 0) return null;
-  if (tools.length > 1) {
-    return (
-      <div className="mb-3">
-        <ToolGroupActivity tools={tools} />
-      </div>
-    );
-  }
   return (
     <div className="mb-3 space-y-2">
       {tools.map((tool, idx) => (
@@ -1210,8 +1158,7 @@ function ToolActivity({
   tool: ChatTool;
   forceCollapsed?: boolean;
 }) {
-  if (tool.name === "read_file" || tool.name === "read")
-    return <ReadToolActivity tool={tool} />;
+  if (isReadonlyTool(tool)) return <ReadToolActivity tool={tool} />;
   if (
     tool.name === "write_file" ||
     tool.name === "write" ||

@@ -370,24 +370,33 @@ describe("ChatThread", () => {
       />,
     );
 
-    expect(
-      screen.getByText("read 1 file(s), edited 1 file(s), ran 1 command(s)"),
-    ).toBeInTheDocument();
-    fireEvent.click(
-      screen.getByRole("button", { name: /show tool calls/i }),
-    );
     expect(screen.getByText("Read")).toBeInTheDocument();
     expect(screen.getByText("src/app.ts")).toBeInTheDocument();
     expect(screen.getByText(/offset=10/)).toBeInTheDocument();
     expect(screen.getByText(/limit=20/)).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /show details for read/i }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("Output")).not.toBeInTheDocument();
     expect(screen.getByText("Write")).toBeInTheDocument();
     expect(screen.getByText("src/app.ts · 3 bytes")).toBeInTheDocument();
     expect(screen.getByText("+1/-0")).toBeInTheDocument();
-    expect(screen.queryByText(/\+new/)).not.toBeInTheDocument();
-    fireEvent.click(
-      screen.getByRole("button", { name: /show details for write/i }),
+    expect(screen.getByText("--- a/src/app.ts").parentElement).toHaveAttribute(
+      "data-diff-line",
+      "header",
     );
-    expect(screen.getByText(/\+new/)).toBeInTheDocument();
+    expect(screen.getByText("@@ -0,0 +1 @@").parentElement).toHaveAttribute(
+      "data-diff-line",
+      "hunk",
+    );
+    expect(screen.getByText("+new").parentElement).toHaveAttribute(
+      "data-diff-line",
+      "addition",
+    );
+    expect(screen.getByText("+new").previousSibling).toHaveAttribute(
+      "data-diff-marker",
+    );
+    expect(screen.getByText("+new").previousSibling).toHaveTextContent("+");
     expect(screen.getByText("Shell")).toBeInTheDocument();
     expect(screen.getByText("pytest tests/unit")).toBeInTheDocument();
     expect(screen.queryByText("$ pytest tests/unit")).not.toBeInTheDocument();
@@ -557,6 +566,57 @@ describe("ChatThread", () => {
     expect(screen.getByText("bg_123")).toBeInTheDocument();
     expect(screen.getByText("ses_child")).toBeInTheDocument();
     expect(screen.getByText("frontend-ui-ux")).toBeInTheDocument();
+  });
+
+  it("renders apply_patch as its own card with visible diff", () => {
+    render(
+      <ChatThread
+        {...baseProps}
+        messages={[
+          {
+            id: "msg-1",
+            role: "assistant",
+            content: "",
+            thinking: [],
+            tools: [
+              {
+                id: "patch-1",
+                name: "apply_patch",
+                status: "completed",
+                arguments: {
+                  patch:
+                    "*** Begin Patch\n*** Update File: src/app.ts\n@@\n-old\n+new\n*** End Patch",
+                },
+                result: {
+                  diff: "--- a/src/app.ts\n+++ b/src/app.ts\n@@ -1 +1 @@\n-old\n+new",
+                },
+              },
+            ],
+            approval: null,
+            status: "completed",
+            sequence: 1,
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText("Write")).toBeInTheDocument();
+    expect(screen.getByText("+1/-1")).toBeInTheDocument();
+    expect(screen.getByText("--- a/src/app.ts").parentElement).toHaveAttribute(
+      "data-diff-line",
+      "header",
+    );
+    expect(screen.getByText("-old").parentElement).toHaveAttribute(
+      "data-diff-line",
+      "deletion",
+    );
+    expect(screen.getByText("+new").parentElement).toHaveAttribute(
+      "data-diff-line",
+      "addition",
+    );
+    expect(screen.getByText("-old").previousSibling).toHaveTextContent("-");
+    expect(screen.getByText("+new").previousSibling).toHaveTextContent("+");
+    expect(screen.queryByText("Output")).not.toBeInTheDocument();
   });
 
   it("renders todo updates as a progress list", () => {
@@ -986,16 +1046,19 @@ describe("Tool Card Display Contract", () => {
     );
 
     expect(
-      container.querySelector('[data-tool-row="context-group"]'),
-    ).toBeNull();
-    expect(screen.getByText("read 1 file(s), searched 1 time(s)")).toBeInTheDocument();
-    fireEvent.click(
-      screen.getByRole("button", { name: /show tool calls/i }),
-    );
-    expect(container.querySelector('[data-tool-row="read_file"]')).not.toBeNull();
+      container.querySelector('[data-tool-row="read_file"]'),
+    ).not.toBeNull();
     expect(container.querySelector('[data-tool-row="grep"]')).not.toBeNull();
     expect(screen.getByText("Read src/app.ts")).toBeInTheDocument();
     expect(screen.getByText("Search TODO")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", {
+        name: /show details for read src\/app\.ts/i,
+      }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /show details for search todo/i }),
+    ).not.toBeInTheDocument();
     expect(screen.queryByText(/secret/)).not.toBeInTheDocument();
   });
 
@@ -1172,14 +1235,16 @@ describe("Tool Card Display Contract", () => {
       <ChatThread {...baseProps} messages={messages} />,
     );
 
-    expect(
-      screen.getByText("read 1 file(s), searched 1 time(s), ran 1 command(s), used 2 tool(s)"),
-    ).toBeInTheDocument();
-    fireEvent.click(
-      screen.getByRole("button", { name: /show tool calls/i }),
-    );
     expect(screen.getByText("Read README.md")).toBeInTheDocument();
     expect(screen.getByText("Search TODO")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", {
+        name: /show details for read readme\.md/i,
+      }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /show details for search todo/i }),
+    ).not.toBeInTheDocument();
 
     expect(screen.getByText("Shell")).toBeInTheDocument();
     expect(

@@ -217,7 +217,9 @@ describe("App", () => {
 
     render(<App />);
 
-    expect(screen.getByRole("status", { name: "Model working" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("status", { name: "Model working" }),
+    ).toBeInTheDocument();
     expect(screen.queryByText("Agent Idle")).not.toBeInTheDocument();
     expect(screen.queryByText("Agent Busy")).not.toBeInTheDocument();
   });
@@ -1017,9 +1019,9 @@ describe("App", () => {
 
     const promptElements = screen.getAllByText("test prompt subtitle");
     expect(promptElements.length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText("session-123456789").length).toBeGreaterThanOrEqual(
-      1,
-    );
+    expect(
+      screen.getAllByText("session-123456789").length,
+    ).toBeGreaterThanOrEqual(1);
   });
 
   it("renders concise deterministic titles for long session prompts in header and sidebar", () => {

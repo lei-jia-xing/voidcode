@@ -13,7 +13,9 @@ import type { TodoPanelSnapshot } from "./todoPanelModel";
 
 function TodoStatusIcon({ status }: { status: string }) {
   if (status === "completed") {
-    return <CircleCheck className="h-3.5 w-3.5 text-[var(--vc-confirm-text)]" />;
+    return (
+      <CircleCheck className="h-3.5 w-3.5 text-[var(--vc-confirm-text)]" />
+    );
   }
   if (status === "in_progress") {
     return <CircleDot className="h-3.5 w-3.5 text-[var(--vc-text-primary)]" />;
@@ -34,7 +36,11 @@ function priorityClassName(priority: string) {
   return "border-[color:var(--vc-border-strong)] text-[var(--vc-text-muted)]";
 }
 
-export function TodoPanel({ snapshot }: { snapshot: TodoPanelSnapshot | null }) {
+export function TodoPanel({
+  snapshot,
+}: {
+  snapshot: TodoPanelSnapshot | null;
+}) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   if (!snapshot || snapshot.items.length === 0) return null;
@@ -74,25 +80,25 @@ export function TodoPanel({ snapshot }: { snapshot: TodoPanelSnapshot | null }) 
         </button>
         {expanded && (
           <div className="max-h-40 space-y-1 overflow-y-auto py-1 pr-1">
-          {snapshot.items.map((item, index) => (
-            <div
-              key={`${item.content}-${index}`}
-              className="flex items-center gap-2 px-1.5 py-1 text-xs text-[var(--vc-text-muted)]"
-            >
-              <TodoStatusIcon status={item.status} />
-              <span className="min-w-0 flex-1 truncate text-[var(--vc-text-primary)]">
-                {item.content}
-              </span>
-              <span className="shrink-0 text-[11px] text-[var(--vc-text-subtle)]">
-                {t(`todo.status.${item.status}`, item.status)}
-              </span>
-              <span
-                className={`shrink-0 rounded-[var(--vc-radius-control)] border px-1.5 py-0.5 text-[10px] uppercase ${priorityClassName(item.priority)}`}
+            {snapshot.items.map((item, index) => (
+              <div
+                key={`${item.content}-${index}`}
+                className="flex items-center gap-2 px-1.5 py-1 text-xs text-[var(--vc-text-muted)]"
               >
-                {t(`todo.priority.${item.priority}`, item.priority)}
-              </span>
-            </div>
-          ))}
+                <TodoStatusIcon status={item.status} />
+                <span className="min-w-0 flex-1 truncate text-[var(--vc-text-primary)]">
+                  {item.content}
+                </span>
+                <span className="shrink-0 text-[11px] text-[var(--vc-text-subtle)]">
+                  {t(`todo.status.${item.status}`, item.status)}
+                </span>
+                <span
+                  className={`shrink-0 rounded-[var(--vc-radius-control)] border px-1.5 py-0.5 text-[10px] uppercase ${priorityClassName(item.priority)}`}
+                >
+                  {t(`todo.priority.${item.priority}`, item.priority)}
+                </span>
+              </div>
+            ))}
           </div>
         )}
       </div>

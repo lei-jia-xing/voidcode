@@ -58,7 +58,9 @@ function normalizeTodoItems(rawTodos: unknown[]): TodoPanelItem[] {
     }));
 }
 
-function parseTodosFromContent(content: string | null | undefined): TodoPanelItem[] {
+function parseTodosFromContent(
+  content: string | null | undefined,
+): TodoPanelItem[] {
   if (!content) return [];
   const itemPattern =
     /^\s*\d+\.\s+\[(pending|in_progress|completed|cancelled)\/(high|medium|low)\]\s+(.+?)\s*$/;

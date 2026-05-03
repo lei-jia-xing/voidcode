@@ -134,7 +134,7 @@ function App() {
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const lastMessageCountRef = useRef(0);
 
-  const isRunning = runStatus === "running";
+  const isRunning = runStatus === "running" || runStatus === "cancelling";
   const isReplayLoading = replayStatus === "loading";
   const isApprovalSubmitting = approvalStatus === "submitting";
   const isWaitingApproval = currentSessionState?.status === "waiting";
