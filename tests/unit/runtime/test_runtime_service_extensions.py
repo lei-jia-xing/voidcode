@@ -11846,16 +11846,23 @@ def test_runtime_provider_compaction_emits_continuity_state_and_persists_metadat
         "summary_source": summary_source,
         "continuity_state": expected_continuity,
     }
-    assert response.session.metadata["context_window"] == {
+    response_context_window = cast(dict[str, object], response.session.metadata["context_window"])
+    assert response_context_window == {
         "compacted": True,
         "compaction_reason": "tool_result_window",
         "original_tool_result_count": 2,
         "retained_tool_result_count": 1,
         "max_tool_result_count": 1,
+        "model_context_window_tokens": 1_000_000,
         "continuity_state": expected_continuity,
         "summary_anchor": summary_anchor,
         "summary_source": summary_source,
+        "estimated_context_tokens": response_context_window["estimated_context_tokens"],
+        "estimated_context_token_source": "unicode_aware_chars",
+        "estimated_context_token_exact": False,
     }
+    assert isinstance(response_context_window["estimated_context_tokens"], int)
+    assert response_context_window["estimated_context_tokens"] > 0
     runtime_state = cast(dict[str, object], response.session.metadata["runtime_state"])
     assert runtime_state["continuity"] == expected_continuity
     assert runtime_state["continuity_summary"] == {

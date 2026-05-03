@@ -938,9 +938,20 @@ class RuntimeRunLoopCoordinator:
                 skill_prompt_context=skill_prompt_context,
                 preserved_system_segments=tuple(preserved_system_segments),
             )
+            context_window_payload = {
+                **assembled_context.metadata,
+                **context_window.metadata_payload(),
+            }
+            for estimate_key in (
+                "estimated_context_tokens",
+                "estimated_context_token_source",
+                "estimated_context_token_exact",
+            ):
+                if estimate_key in assembled_context.metadata:
+                    context_window_payload[estimate_key] = assembled_context.metadata[estimate_key]
             session = runtime._session_with_context_window_payload_metadata(
                 session,
-                assembled_context.metadata,
+                context_window_payload,
             )
             active_graph_request = GraphRunRequest(
                 session=session,
