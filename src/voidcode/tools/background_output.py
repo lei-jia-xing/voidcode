@@ -6,7 +6,11 @@ from typing import Protocol
 
 from pydantic import BaseModel, ValidationError, field_validator
 
-from ..runtime.contracts import BackgroundTaskResult, RuntimeSessionResult
+from ..runtime.contracts import (
+    BackgroundTaskResult,
+    RuntimeSessionResult,
+    UnknownSessionError,
+)
 from ..runtime.task import is_background_task_terminal
 from ._pydantic_args import format_validation_error
 from .contracts import ToolCall, ToolDefinition, ToolResult
@@ -119,60 +123,64 @@ class BackgroundOutputTool:
         empty_child_output = False
 
         if args.full_session and result.child_session_id is not None:
-            session_result = self._runtime.session_result(session_id=result.child_session_id)
-            empty_child_output = (
-                session_result.status == "completed" and session_result.output == ""
-            )
-            safe_summary = _background_session_safe_summary(
-                result=result,
-                session_result=session_result,
-            )
-            transcript_events = session_result.transcript[: args.message_limit]
-            transcript = [
-                {
-                    "sequence": event.sequence,
-                    "event_type": event.event_type,
-                    "source": event.source,
+            try:
+                session_result = self._runtime.session_result(session_id=result.child_session_id)
+            except UnknownSessionError:
+                session_result = None
+            if session_result is not None:
+                empty_child_output = (
+                    session_result.status == "completed" and session_result.output == ""
+                )
+                safe_summary = _background_session_safe_summary(
+                    result=result,
+                    session_result=session_result,
+                )
+                transcript_events = session_result.transcript[: args.message_limit]
+                transcript = [
+                    {
+                        "sequence": event.sequence,
+                        "event_type": event.event_type,
+                        "source": event.source,
+                    }
+                    for event in transcript_events
+                ]
+                output_available = session_result.output is not None
+                full_session_reference = f"session:{session_result.session.session.id}"
+                payload["session"] = {
+                    "session_id": session_result.session.session.id,
+                    "child_session_id": session_result.session.session.id,
+                    "status": session_result.status,
+                    "summary": session_result.summary,
+                    "error": session_result.error,
+                    "last_event_sequence": session_result.last_event_sequence,
+                    "message_limit": args.message_limit,
+                    "transcript_count": len(transcript),
+                    "transcript_truncated": len(session_result.transcript) > len(transcript),
+                    "transcript": transcript,
+                    "output_available": output_available,
+                    "full_output_preserved": output_available,
+                    "full_session_reference": full_session_reference,
+                    "retrieval_hint": (
+                        "Use sessions resume "
+                        f"{session_result.session.session.id} or "
+                        f"background_output(task_id='{result.task_id}', "
+                        "full_session=true) from an operator context to inspect full child output."
+                    ),
                 }
-                for event in transcript_events
-            ]
-            output_available = session_result.output is not None
-            full_session_reference = f"session:{session_result.session.session.id}"
-            payload["session"] = {
-                "session_id": session_result.session.session.id,
-                "child_session_id": session_result.session.session.id,
-                "status": session_result.status,
-                "summary": session_result.summary,
-                "error": session_result.error,
-                "last_event_sequence": session_result.last_event_sequence,
-                "message_limit": args.message_limit,
-                "transcript_count": len(transcript),
-                "transcript_truncated": len(session_result.transcript) > len(transcript),
-                "transcript": transcript,
-                "output_available": output_available,
-                "full_output_preserved": output_available,
-                "full_session_reference": full_session_reference,
-                "retrieval_hint": (
-                    "Use sessions resume "
-                    f"{session_result.session.session.id} or "
-                    f"background_output(task_id='{result.task_id}', "
-                    "full_session=true) from an operator context to inspect full child output."
-                ),
-            }
-            payload["summary_output"] = safe_summary
-            payload["message"] = {
-                **result.delegated_message.as_payload(),
-                "summary_output": safe_summary,
-            }
-            content = _background_session_digest(
-                result=result,
-                session_result=session_result,
-                safe_summary=safe_summary,
-                transcript_count=len(transcript),
-                transcript_truncated=len(session_result.transcript) > len(transcript),
-                output_available=output_available,
-                full_session_reference=full_session_reference,
-            )
+                payload["summary_output"] = safe_summary
+                payload["message"] = {
+                    **result.delegated_message.as_payload(),
+                    "summary_output": safe_summary,
+                }
+                content = _background_session_digest(
+                    result=result,
+                    session_result=session_result,
+                    safe_summary=safe_summary,
+                    transcript_count=len(transcript),
+                    transcript_truncated=len(session_result.transcript) > len(transcript),
+                    output_available=output_available,
+                    full_session_reference=full_session_reference,
+                )
 
         guidance = _background_output_guidance(
             result=result,
@@ -184,12 +192,21 @@ class BackgroundOutputTool:
             payload["guidance"] = guidance
             content = f"{content}\n\nGuidance: {guidance}"
 
+        retry_guidance = guidance
+        if retry_guidance is None and not is_background_task_terminal(result.status):
+            retry_guidance = (
+                "Report the current status and continue other work, or use "
+                "background_output(block=true) "
+                "if you intentionally want to wait in this turn. Do not loop on immediate polling."
+            )
+
         return ToolResult(
             tool_name=self.definition.name,
             status="ok",
             content=content,
             data=payload,
             reference=_background_result_reference(result),
+            retry_guidance=retry_guidance,
         )
 
 

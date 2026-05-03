@@ -12,6 +12,7 @@ from voidcode.runtime.contracts import (
     RuntimeRequest,
     RuntimeResponse,
     RuntimeSessionResult,
+    UnknownSessionError,
 )
 from voidcode.runtime.task import (
     BackgroundTaskRef,
@@ -78,6 +79,28 @@ class _RecordingBackgroundOutputRuntime:
 
     def session_result(self, *, session_id: str) -> RuntimeSessionResult:
         raise AssertionError(session_id)
+
+
+class _MissingSessionBackgroundOutputRuntime(_RecordingBackgroundOutputRuntime):
+    def load_background_task_result(
+        self,
+        task_id: str,
+        *,
+        emit_result_read_hook: bool = True,
+    ) -> BackgroundTaskResult:
+        _ = emit_result_read_hook
+        self.task_ids.append(task_id)
+        return BackgroundTaskResult(
+            task_id=task_id,
+            parent_session_id="leader-session",
+            child_session_id="child-session",
+            status="completed",
+            summary_output="done",
+            result_available=True,
+        )
+
+    def session_result(self, *, session_id: str) -> RuntimeSessionResult:
+        raise UnknownSessionError(f"unknown session: {session_id}")
 
 
 class _RecordingBackgroundCancelRuntime:
@@ -207,6 +230,27 @@ def test_background_output_tool_rejects_invalid_task_id_values(task_id: object) 
                 ToolCall(tool_name="background_output", arguments={"task_id": task_id}),
                 workspace=Path(temp_dir),
             )
+
+
+@CI_SETTINGS
+@given(task_id=_non_blank_text)
+def test_background_output_full_session_tolerates_missing_child_session(task_id: str) -> None:
+    tool = BackgroundOutputTool(runtime=_MissingSessionBackgroundOutputRuntime())
+
+    with TemporaryDirectory() as temp_dir:
+        result = tool.invoke(
+            ToolCall(
+                tool_name="background_output",
+                arguments={"task_id": task_id, "full_session": True},
+            ),
+            workspace=Path(temp_dir),
+        )
+
+    assert result.status == "ok"
+    assert result.reference == "session:child-session"
+    assert result.data["task_id"] == task_id
+    assert result.data["child_session_id"] == "child-session"
+    assert "session" not in result.data
 
 
 @CI_SETTINGS
