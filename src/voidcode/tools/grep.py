@@ -10,6 +10,7 @@ from pydantic import ValidationError
 
 from ..security.path_policy import resolve_workspace_path as resolve_workspace_path_policy
 from ._pydantic_args import GrepArgs, format_validation_error
+from ._repair import raise_tool_diagnostic
 from .contracts import ToolCall, ToolDefinition, ToolResult
 
 MAX_MATCHES = 200
@@ -151,11 +152,19 @@ class GrepTool:
         try:
             pattern = re.compile(args.pattern if args.regex else re.escape(args.pattern))
         except re.error as exc:
-            raise ValueError(
-                "grep Validation error: pattern: invalid regex pattern "
-                f"({exc.msg}) (received str). "
-                "Please retry with corrected arguments that satisfy the tool schema."
-            ) from exc
+            raise_tool_diagnostic(
+                message=(
+                    "grep Validation error: pattern: invalid regex pattern "
+                    f"({exc.msg}) (received str). "
+                    "Please retry with corrected arguments that satisfy the tool schema."
+                ),
+                error_kind="tool_input_validation",
+                reason="invalid_regex",
+                retry_guidance=(
+                    "Retry with a valid regex pattern, or set regex=false for a literal search."
+                ),
+                details={"pattern": args.pattern, "regex_error": exc.msg},
+            )
         targets = self._collect_targets(
             candidate,
             project_root=effective_root,
@@ -206,6 +215,39 @@ class GrepTool:
         summary = f"Found {total_occurrences} match(es) for {args.pattern!r} in {path_display}"
         if preview_lines:
             summary = summary + "\n" + "\n".join(preview_lines)
+        truncated = len(matches) >= MAX_MATCHES
+        if truncated:
+            summary += (
+                "\n[TRUNCATED] Results truncated at "
+                f"{MAX_MATCHES} matching lines. Refine the path, include/exclude filters, "
+                "or pattern before relying on this as complete."
+            )
+        diagnostics: list[dict[str, object]] = []
+        if total_occurrences == 0:
+            diagnostics.append(
+                {
+                    "source": self.definition.name,
+                    "severity": "info",
+                    "reason": "no_matches",
+                    "message": (
+                        "No matches found. Broaden the path/include filter, verify the search "
+                        "text with read_file, or retry with regex=false for literal text."
+                    ),
+                }
+            )
+        if truncated:
+            diagnostics.append(
+                {
+                    "source": self.definition.name,
+                    "severity": "warning",
+                    "reason": "results_truncated",
+                    "message": f"grep stopped after {MAX_MATCHES} matching lines.",
+                    "retry_guidance": (
+                        "Refine path/include/exclude filters or use a more specific pattern before "
+                        "treating these results as complete."
+                    ),
+                }
+            )
 
         return ToolResult(
             tool_name=self.definition.name,
@@ -217,8 +259,8 @@ class GrepTool:
                 "regex": args.regex,
                 "context": args.context,
                 "match_count": total_occurrences,
-                "truncated": len(matches) >= MAX_MATCHES,
-                "partial": len(matches) >= MAX_MATCHES,
+                "truncated": truncated,
+                "partial": truncated,
                 "matches": [
                     {
                         "file": match.file,
@@ -230,7 +272,8 @@ class GrepTool:
                     }
                     for match in matches
                 ],
+                "diagnostics": diagnostics,
             },
-            truncated=len(matches) >= MAX_MATCHES,
-            partial=len(matches) >= MAX_MATCHES,
+            truncated=truncated,
+            partial=truncated,
         )
