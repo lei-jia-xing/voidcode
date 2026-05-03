@@ -1747,6 +1747,171 @@ def test_provider_adapter_synthetic_feedback_strips_argument_sentinels(
     assert '"byte_count"' not in feedback
 
 
+def test_provider_adapter_sanitizes_provider_tool_schema_and_decodes_runtime_tool_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = LiteLLMBackendSingleAgentProvider(name="deepseek", config=None)
+    request = _build_turn_request(model_name="deepseek")
+    request = ProviderTurnRequest(
+        assembled_context=_assembled_from_legacy(
+            prompt=request.prompt,
+            tool_results=request.tool_results,
+            context_window=request.context_window,
+            applied_skills=request.applied_skills,
+        ),
+        available_tools=(
+            ToolDefinition(
+                name="mcp/grep_app/searchGitHub",
+                description="search github code",
+                input_schema={"query": {"type": "string"}},
+                read_only=True,
+            ),
+        ),
+        raw_model="deepseek/deepseek-v4-pro",
+        provider_name="deepseek",
+        model_name="deepseek-v4-pro",
+        attempt=request.attempt,
+        abort_signal=request.abort_signal,
+    )
+    original_to_provider, _provider_to_original = provider._provider_tool_name_maps(request)
+    provider_tool_name = original_to_provider["mcp/grep_app/searchGitHub"]
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        tool_calls=[
+            {
+                "id": "call-1",
+                "function": {
+                    "name": provider_tool_name,
+                    "arguments": json.dumps({"query": "triangle"}),
+                },
+            }
+        ],
+    )
+
+    result = provider.propose_turn(request)
+
+    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+    assert isinstance(payload_obj, dict)
+    payload = cast(dict[str, object], payload_obj)
+    tools_obj = payload.get("tools")
+    assert isinstance(tools_obj, list)
+    tool_payload = cast(dict[str, object], tools_obj[0])
+    function_obj = tool_payload.get("function")
+    assert isinstance(function_obj, dict)
+    function = cast(dict[str, object], function_obj)
+    assert function["name"] == provider_tool_name
+    assert result.tool_call is not None
+    assert result.tool_call.tool_name == "mcp/grep_app/searchGitHub"
+    assert result.tool_call.arguments == {"query": "triangle"}
+
+
+def test_deepseek_provider_reinjects_reasoning_content_for_tool_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = LiteLLMBackendSingleAgentProvider(name="deepseek", config=None)
+    tool_results = (
+        ToolResult(
+            tool_name="glob",
+            status="ok",
+            content=".voidcode.json",
+            data={
+                "tool_call_id": "glob_0",
+                "arguments": {"pattern": "*"},
+                "reasoning_content": "Need to inspect the workspace before coding.",
+            },
+        ),
+    )
+    request = ProviderTurnRequest(
+        assembled_context=_assembled_from_legacy(
+            prompt="build the triangle app",
+            tool_results=tool_results,
+            context_window=_StubContextWindow(
+                prompt="build the triangle app",
+                tool_results=tool_results,
+            ),
+            applied_skills=(),
+        ),
+        available_tools=(ToolDefinition(name="glob", description="glob files", read_only=True),),
+        raw_model="deepseek/deepseek-v4-pro",
+        provider_name="deepseek",
+        model_name="deepseek-v4-pro",
+        attempt=0,
+        abort_signal=None,
+    )
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        completion_content="ok",
+    )
+
+    _ = provider.propose_turn(request)
+
+    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+    assert isinstance(payload_obj, dict)
+    payload = cast(dict[str, object], payload_obj)
+    messages_obj = payload.get("messages")
+    assert isinstance(messages_obj, list)
+    messages = cast(list[dict[str, object]], messages_obj)
+    assistant_message = messages[1]
+    assert assistant_message["role"] == "assistant"
+    assert assistant_message["reasoning_content"] == (
+        "Need to inspect the workspace before coding."
+    )
+    assert "tool_calls" in assistant_message
+
+
+def test_deepseek_provider_falls_back_to_blank_reasoning_content_for_tool_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = LiteLLMBackendSingleAgentProvider(name="deepseek", config=None)
+    tool_results = (
+        ToolResult(
+            tool_name="glob",
+            status="ok",
+            content=".voidcode.json",
+            data={
+                "tool_call_id": "glob_0",
+                "arguments": {"pattern": "*"},
+            },
+        ),
+    )
+    request = ProviderTurnRequest(
+        assembled_context=_assembled_from_legacy(
+            prompt="build the triangle app",
+            tool_results=tool_results,
+            context_window=_StubContextWindow(
+                prompt="build the triangle app",
+                tool_results=tool_results,
+            ),
+            applied_skills=(),
+        ),
+        available_tools=(ToolDefinition(name="glob", description="glob files", read_only=True),),
+        raw_model="deepseek/deepseek-v4-pro",
+        provider_name="deepseek",
+        model_name="deepseek-v4-pro",
+        attempt=0,
+        abort_signal=None,
+    )
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        completion_content="ok",
+    )
+
+    _ = provider.propose_turn(request)
+
+    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+    assert isinstance(payload_obj, dict)
+    payload = cast(dict[str, object], payload_obj)
+    messages_obj = payload.get("messages")
+    assert isinstance(messages_obj, list)
+    messages = cast(list[dict[str, object]], messages_obj)
+    assistant_message = messages[1]
+    assert assistant_message["role"] == "assistant"
+    assert assistant_message["reasoning_content"] == " "
+
+
 def test_provider_adapter_infers_tool_feedback_when_metadata_omits_mode(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

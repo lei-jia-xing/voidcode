@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -44,6 +45,8 @@ _SYNTHETIC_TOOL_FEEDBACK_PREFIX = "Completed tool calls for current request:"
 _CONTINUITY_SUMMARY_PREFIX = "Runtime continuity summary:"
 
 logger = logging.getLogger(__name__)
+_PROVIDER_TOOL_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
+_PROVIDERS_REQUIRING_REASONING_CONTENT_WITH_TOOL_CALLS = frozenset({"deepseek"})
 
 
 def _usage_int(raw: object) -> int:
@@ -139,6 +142,39 @@ def _normalize_tool_call_id(value: str | None, *, fallback: str) -> str:
     return normalized or fallback
 
 
+def _sanitize_provider_tool_name(tool_name: str) -> str:
+    if _PROVIDER_TOOL_NAME_PATTERN.fullmatch(tool_name):
+        return tool_name
+    normalized = re.sub(r"[^a-zA-Z0-9_-]", "_", tool_name).strip("_") or "tool"
+    suffix = hashlib.sha1(tool_name.encode("utf-8")).hexdigest()[:8]
+    return f"{normalized}_{suffix}"
+
+
+def _reasoning_content_for_tool_message(segment: object) -> str | None:
+    metadata = getattr(segment, "metadata", None)
+    if not isinstance(metadata, dict):
+        return None
+    data = metadata.get("data")
+    if isinstance(data, dict):
+        reasoning_content = data.get("reasoning_content")
+        if isinstance(reasoning_content, str) and reasoning_content:
+            return reasoning_content
+    return None
+
+
+def _reasoning_content_from_tool_data(segment: object) -> str | None:
+    metadata = getattr(segment, "metadata", None)
+    if not isinstance(metadata, dict):
+        return None
+    data = metadata.get("data")
+    if not isinstance(data, dict):
+        return None
+    reasoning_content = data.get("reasoning_content")
+    if isinstance(reasoning_content, str) and reasoning_content:
+        return reasoning_content
+    return None
+
+
 @dataclass(frozen=True, slots=True)
 class _StreamedToolCallAccumulator:
     tool_call_id: str | None = None
@@ -157,7 +193,57 @@ class LiteLLMBackendSingleAgentProvider:
     )
 
     @staticmethod
-    def _to_tool_schema(tool: ToolDefinition) -> dict[str, object]:
+    def _provider_tool_name_maps(
+        request: ProviderTurnRequest,
+    ) -> tuple[dict[str, str], dict[str, str]]:
+        original_to_provider: dict[str, str] = {}
+        provider_to_original: dict[str, str] = {}
+        tool_names = dict.fromkeys(
+            tool.name
+            for tool in request.available_tools
+            if isinstance(tool.name, str) and tool.name
+        )
+        for segment in request.assembled_context.segments:
+            tool_name = segment.tool_name
+            if isinstance(tool_name, str) and tool_name:
+                tool_names.setdefault(tool_name, None)
+        for tool_name in tool_names:
+            base_candidate = _sanitize_provider_tool_name(tool_name)
+            candidate = base_candidate
+            if provider_to_original.get(candidate) not in {None, tool_name}:
+                suffix = hashlib.sha1(tool_name.encode("utf-8")).hexdigest()
+                index = 8
+                while provider_to_original.get(candidate) not in {None, tool_name}:
+                    candidate = f"{base_candidate}_{suffix[:index]}"
+                    index += 2
+            original_to_provider[tool_name] = candidate
+            provider_to_original[candidate] = tool_name
+        return original_to_provider, provider_to_original
+
+    @staticmethod
+    def _provider_tool_name(
+        tool_name: str | None,
+        *,
+        original_to_provider: Mapping[str, str],
+    ) -> str | None:
+        if tool_name is None:
+            return None
+        return original_to_provider.get(tool_name, tool_name)
+
+    @staticmethod
+    def _runtime_tool_name(
+        tool_name: str,
+        *,
+        provider_to_original: Mapping[str, str],
+    ) -> str:
+        return provider_to_original.get(tool_name, tool_name)
+
+    @staticmethod
+    def _to_tool_schema(
+        tool: ToolDefinition,
+        *,
+        original_to_provider: Mapping[str, str],
+    ) -> dict[str, object]:
         input_schema = tool.input_schema or {}
         parameters: dict[str, object]
         if _is_object_json_schema(input_schema):
@@ -172,7 +258,10 @@ class LiteLLMBackendSingleAgentProvider:
         return {
             "type": "function",
             "function": {
-                "name": tool.name,
+                "name": LiteLLMBackendSingleAgentProvider._provider_tool_name(
+                    tool.name,
+                    original_to_provider=original_to_provider,
+                ),
                 "description": tool.description,
                 "parameters": parameters,
             },
@@ -283,6 +372,20 @@ class LiteLLMBackendSingleAgentProvider:
 
     def _build_messages(self, request: ProviderTurnRequest) -> list[dict[str, object]]:
         assembled_context = request.assembled_context
+        original_to_provider, _provider_to_original = self._provider_tool_name_maps(request)
+        requires_reasoning_content = (request.provider_name or self.name) in (
+            _PROVIDERS_REQUIRING_REASONING_CONTENT_WITH_TOOL_CALLS
+        )
+        reasoning_content_by_tool_call_id: dict[str, str] = {}
+        if requires_reasoning_content:
+            for segment in assembled_context.segments:
+                if segment.role != "tool":
+                    continue
+                if not isinstance(segment.tool_call_id, str) or not segment.tool_call_id:
+                    continue
+                reasoning_content = _reasoning_content_from_tool_data(segment)
+                if reasoning_content:
+                    reasoning_content_by_tool_call_id[segment.tool_call_id] = reasoning_content
         messages: list[dict[str, object]] = []
         if self._tool_feedback_mode_for_request(request) == "synthetic_user_message":
             tool_feedback_lines: list[str] = []
@@ -305,7 +408,10 @@ class LiteLLMBackendSingleAgentProvider:
                         else {}
                     )
                     payload = {
-                        "tool_name": segment.tool_name,
+                        "tool_name": self._provider_tool_name(
+                            segment.tool_name,
+                            original_to_provider=original_to_provider,
+                        ),
                         "arguments": sanitized_arguments,
                         "status": metadata.get("status"),
                         "content": segment.content or "",
@@ -363,12 +469,27 @@ class LiteLLMBackendSingleAgentProvider:
                     {
                         "role": "assistant",
                         "content": segment.content,
+                        **(
+                            {
+                                "reasoning_content": (
+                                    reasoning_content_by_tool_call_id.get(
+                                        segment.tool_call_id or ""
+                                    )
+                                    or " "
+                                )
+                            }
+                            if requires_reasoning_content
+                            else {}
+                        ),
                         "tool_calls": [
                             {
                                 "id": tool_call_id,
                                 "type": "function",
                                 "function": {
-                                    "name": segment.tool_name,
+                                    "name": self._provider_tool_name(
+                                        segment.tool_name,
+                                        original_to_provider=original_to_provider,
+                                    ),
                                     "arguments": arguments,
                                 },
                             }
@@ -385,7 +506,10 @@ class LiteLLMBackendSingleAgentProvider:
                     else {}
                 )
                 payload = {
-                    "tool_name": segment.tool_name,
+                    "tool_name": self._provider_tool_name(
+                        segment.tool_name,
+                        original_to_provider=original_to_provider,
+                    ),
                     "content": segment.content or "",
                     "status": metadata.get("status"),
                     "error": metadata.get("error"),
@@ -494,7 +618,11 @@ class LiteLLMBackendSingleAgentProvider:
         return {"api_key": self.config.api_key}
 
     @staticmethod
-    def _extract_first_tool_call(message: dict[str, object]) -> ToolCall | None:
+    def _extract_first_tool_call(
+        message: dict[str, object],
+        *,
+        provider_to_original: Mapping[str, str] | None = None,
+    ) -> ToolCall | None:
         raw_tool_calls = message.get("tool_calls")
         if not isinstance(raw_tool_calls, list) or not raw_tool_calls:
             return None
@@ -510,6 +638,10 @@ class LiteLLMBackendSingleAgentProvider:
         tool_name_obj = function.get("name")
         if not isinstance(tool_name_obj, str) or not tool_name_obj:
             return None
+        runtime_tool_name = LiteLLMBackendSingleAgentProvider._runtime_tool_name(
+            tool_name_obj,
+            provider_to_original=provider_to_original or {},
+        )
         parsed_arguments: dict[str, object] = {}
         arguments_obj = function.get("arguments")
         if isinstance(arguments_obj, str) and arguments_obj.strip():
@@ -523,10 +655,10 @@ class LiteLLMBackendSingleAgentProvider:
         tool_call_id_obj = first_tool_call.get("id")
         tool_call_id = _normalize_tool_call_id(
             tool_call_id_obj if isinstance(tool_call_id_obj, str) else None,
-            fallback=tool_name_obj,
+            fallback=runtime_tool_name,
         )
         return ToolCall(
-            tool_name=tool_name_obj,
+            tool_name=runtime_tool_name,
             arguments=parsed_arguments,
             tool_call_id=tool_call_id,
         )
@@ -574,6 +706,7 @@ class LiteLLMBackendSingleAgentProvider:
 
     def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
         model_identifier = self._model_identifier(request)
+        original_to_provider, provider_to_original = self._provider_tool_name_maps(request)
         timeout_seconds = (
             _DEFAULT_COMPLETION_TIMEOUT_SECONDS
             if self.config is None or self.config.timeout_seconds is None
@@ -593,7 +726,10 @@ class LiteLLMBackendSingleAgentProvider:
         payload.update(self._completion_kwargs_for_request(request))
         self._apply_ssl_verify_payload(payload)
         if request.available_tools:
-            payload["tools"] = [self._to_tool_schema(tool) for tool in request.available_tools]
+            payload["tools"] = [
+                self._to_tool_schema(tool, original_to_provider=original_to_provider)
+                for tool in request.available_tools
+            ]
             payload["tool_choice"] = "auto"
 
         try:
@@ -612,7 +748,10 @@ class LiteLLMBackendSingleAgentProvider:
                 return ProviderTurnResult(output="", usage=usage)
             message = cast(dict[str, object], message_obj)
 
-            tool_call = self._extract_first_tool_call(message)
+            tool_call = self._extract_first_tool_call(
+                message,
+                provider_to_original=provider_to_original,
+            )
             if tool_call is not None:
                 return ProviderTurnResult(tool_call=tool_call, usage=usage)
 
@@ -629,6 +768,7 @@ class LiteLLMBackendSingleAgentProvider:
 
     def stream_turn(self, request: ProviderTurnRequest) -> Iterator[ProviderStreamEvent]:
         model_identifier = self._model_identifier(request)
+        original_to_provider, provider_to_original = self._provider_tool_name_maps(request)
         timeout_seconds = (
             _DEFAULT_COMPLETION_TIMEOUT_SECONDS
             if self.config is None or self.config.timeout_seconds is None
@@ -648,7 +788,10 @@ class LiteLLMBackendSingleAgentProvider:
         payload.update(self._stream_completion_kwargs_for_request(request))
         self._apply_ssl_verify_payload(payload)
         if request.available_tools:
-            payload["tools"] = [self._to_tool_schema(tool) for tool in request.available_tools]
+            payload["tools"] = [
+                self._to_tool_schema(tool, original_to_provider=original_to_provider)
+                for tool in request.available_tools
+            ]
             payload["tool_choice"] = "auto"
 
         try:
@@ -769,7 +912,8 @@ class LiteLLMBackendSingleAgentProvider:
                             },
                         }
                     ]
-                }
+                },
+                provider_to_original=provider_to_original,
             )
             if tool_payload is not None:
                 event_payload: dict[str, object] = {
