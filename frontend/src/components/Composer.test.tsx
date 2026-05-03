@@ -132,6 +132,31 @@ describe("Composer", () => {
     expect(onReasoningEffortChange).toHaveBeenCalledWith("low");
   });
 
+  it("prefers session context window metadata over selected model metadata", () => {
+    render(
+      <Composer
+        {...baseProps}
+        sessionMetadata={{
+          context_window: { model_context_window_tokens: 512_000 },
+        }}
+        providerModels={{
+          "opencode-go": {
+            ...baseProps.providerModels["opencode-go"],
+            model_metadata: {
+              "opencode-go/glm-5.1": {
+                context_window: 198_000,
+                max_output_tokens: 128_000,
+              },
+            },
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText("512K ctx · 128K out")).toBeInTheDocument();
+    expect(screen.queryByText("198K ctx · 128K out")).not.toBeInTheDocument();
+  });
+
   it("hides reasoning effort controls for models without effort support", () => {
     render(
       <Composer
@@ -281,6 +306,28 @@ describe("Composer", () => {
     expect(
       screen.queryByRole("button", { name: /Worker/ }),
     ).not.toBeInTheDocument();
+  });
+
+  it("does not invent a leader label when the backend-selected agent differs", () => {
+    render(
+      <Composer
+        {...baseProps}
+        agentPreset="product"
+        agentPresets={[
+          {
+            id: "product",
+            label: "Product",
+            description: null,
+            mode: "primary",
+            selectable: true,
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Agent" })).toHaveTextContent(
+      "Product",
+    );
   });
 
   it("shows empty state when no providers are configured", () => {
