@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import cast
 
@@ -2659,6 +2660,38 @@ def test_runtime_config_rejects_invalid_extension_domain_shapes(
 
     with pytest.raises(ValueError, match=match):
         _ = load_runtime_config(tmp_path, env={})
+
+
+def test_user_runtime_config_path_uses_windows_appdata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.setenv("APPDATA", str(tmp_path / "Roaming"))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
+
+    assert user_runtime_config_path() == tmp_path / "Roaming" / "voidcode" / "config.json"
+
+
+def test_load_global_web_settings_uses_windows_appdata_from_explicit_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sys, "platform", "win32")
+    config_path = tmp_path / "Roaming" / "voidcode" / "config.json"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        json.dumps(
+            {
+                "providers": {"deepseek": {"api_key": "secret"}},
+                "web": {"provider": "deepseek"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    settings = load_global_web_settings(env={"APPDATA": str(tmp_path / "Roaming")})
+
+    assert settings == RuntimeWebSettings(provider="deepseek", provider_api_key_present=True)
 
 
 def test_parse_tui_config_returns_defaults_when_fields_missing() -> None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,6 +19,12 @@ from .models import (
 )
 
 _AGENT_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_-]*$")
+
+
+def _running_on_windows() -> bool:
+    return sys.platform == "win32"
+
+
 _SUPPORTED_FRONTMATTER_FIELDS = frozenset(
     {
         "id",
@@ -79,6 +86,15 @@ def is_valid_agent_manifest_id(agent_id: str) -> bool:
 
 def user_agent_manifest_dir(env: Mapping[str, str] | None = None) -> Path:
     environment = os.environ if env is None else env
+    if _running_on_windows():
+        config_home = environment.get("APPDATA") or os.environ.get("APPDATA")
+        if config_home:
+            return Path(config_home).expanduser() / "voidcode" / "agents"
+        local_config_home = environment.get("LOCALAPPDATA") or os.environ.get("LOCALAPPDATA")
+        if local_config_home:
+            return Path(local_config_home).expanduser() / "voidcode" / "agents"
+        return Path.home() / "AppData" / "Roaming" / "voidcode" / "agents"
+
     config_home = environment.get("XDG_CONFIG_HOME")
     if config_home:
         return Path(config_home).expanduser() / "voidcode" / "agents"
