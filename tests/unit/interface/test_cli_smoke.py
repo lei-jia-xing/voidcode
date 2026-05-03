@@ -2623,7 +2623,7 @@ def test_config_show_outputs_mcp_visibility_without_secrets() -> None:
     assert server["server"] == "context7"
     assert server["status"] == "disabled"
     assert server["scope"] == "session"
-    assert server["transport"] == "stdio"
+    assert server["transport"] == "remote-http"
     assert server["command"] == [
         "env",
         "API_KEY=<redacted>",
