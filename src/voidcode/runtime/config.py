@@ -871,7 +871,7 @@ def _parse_permission_config(raw_permission: object) -> ExternalDirectoryPermiss
     write_rules = _parse_permission_rules(
         permission_payload.get("external_directory_write"),
         field_path="permission.external_directory_write",
-        default=(("*", "deny"),),
+        default=(("*", "ask"),),
     )
     pattern_rules = _parse_pattern_permission_rules(permission_payload.get("rules"))
     return ExternalDirectoryPermissionConfig(

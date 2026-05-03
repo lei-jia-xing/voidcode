@@ -144,7 +144,7 @@ from voidcode.tools.runtime_context import current_runtime_tool_context
 
 _DEFAULT_PERMISSION_METADATA = {
     "external_directory_read": {"*": "ask"},
-    "external_directory_write": {"*": "deny"},
+    "external_directory_write": {"*": "ask"},
 }
 
 
@@ -11096,6 +11096,57 @@ def test_runtime_effective_runtime_config_recovers_persisted_max_steps(tmp_path:
     assert effective.model == "session/model"
     assert effective.execution_engine == "deterministic"
     assert effective.max_steps == 7
+
+
+def test_runtime_effective_runtime_config_defaults_missing_persisted_external_write_to_ask(
+    tmp_path: Path,
+) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("config session\n", encoding="utf-8")
+
+    initial_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            approval_mode="allow",
+            execution_engine="deterministic",
+            model="session/model",
+        ),
+    )
+    response = initial_runtime.run(
+        RuntimeRequest(prompt="read sample.txt", session_id="persisted-missing-external-write")
+    )
+    runtime_config_metadata = cast(dict[str, object], response.session.metadata["runtime_config"])
+    permission_metadata = cast(dict[str, object], runtime_config_metadata["permission"])
+    del permission_metadata["external_directory_write"]
+
+    store = _private_attr(initial_runtime, "_session_store")
+    stored = store.load_session(
+        workspace=tmp_path,
+        session_id="persisted-missing-external-write",
+    )
+    session_metadata = dict(stored.session.metadata)
+    session_runtime_config = cast(dict[str, object], session_metadata["runtime_config"])
+    session_permission = cast(dict[str, object], session_runtime_config["permission"])
+    del session_permission["external_directory_write"]
+    store.save_run(
+        workspace=tmp_path,
+        request=RuntimeRequest(
+            prompt="read sample.txt",
+            session_id="persisted-missing-external-write",
+        ),
+        response=RuntimeResponse(
+            session=replace(stored.session, metadata=session_metadata),
+            output=stored.output,
+            events=stored.events,
+        ),
+        clear_pending_approval=False,
+    )
+
+    effective = VoidCodeRuntime(workspace=tmp_path).effective_runtime_config(
+        session_id="persisted-missing-external-write"
+    )
+
+    assert effective.permission.write.rules == (("*", "ask"),)
 
 
 def test_runtime_effective_runtime_config_recovers_persisted_tool_timeout(tmp_path: Path) -> None:

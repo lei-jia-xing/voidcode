@@ -8728,7 +8728,7 @@ def _parse_persisted_external_permission_config(
             rules=_parse_persisted_external_permission_rules(
                 payload.get("external_directory_write"),
                 field_path="permission.external_directory_write",
-                default=(("*", "deny"),),
+                default=(("*", "ask"),),
             )
         ),
         rules=_parse_persisted_pattern_permission_rules(payload.get("rules")),
