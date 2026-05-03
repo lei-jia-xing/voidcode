@@ -198,6 +198,26 @@ def test_edit_tool_rejects_when_old_string_not_found(tmp_path: Path) -> None:
     assert "No nearby text match found" in message
 
 
+def test_edit_tool_no_match_with_unindented_old_string_keeps_diagnostics(
+    tmp_path: Path,
+) -> None:
+    file_path = tmp_path / "test.txt"
+    file_path.write_text("hello", encoding="utf-8")
+
+    tool = EditTool()
+
+    with pytest.raises(ValueError, match="Could not find oldString") as exc_info:
+        tool.invoke(
+            ToolCall(
+                tool_name="edit",
+                arguments={"path": "test.txt", "oldString": "missing", "newString": "b"},
+            ),
+            workspace=tmp_path,
+        )
+
+    assert "Replacers attempted:" in str(exc_info.value)
+
+
 def test_edit_tool_reports_near_match_context_when_old_string_is_stale(
     tmp_path: Path,
 ) -> None:

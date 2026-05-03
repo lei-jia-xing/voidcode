@@ -15,6 +15,13 @@ from ._formatter import (
     formatter_diagnostics,
     formatter_payload,
 )
+from ._repair import (
+    bounded_block_preview,
+    bounded_candidate_diff,
+    line_prefix_retry_guidance,
+    looks_line_number_prefixed,
+    raise_tool_diagnostic,
+)
 from .contracts import ToolCall, ToolDefinition, ToolResult
 
 
@@ -32,54 +39,6 @@ def _convert_line_endings(text: str, ending: str) -> str:
     if ending == "\n":
         return _normalize_line_endings(text)
     return text.replace("\n", "\r\n")
-
-
-def _preview_line(text: str, *, max_length: int = 96) -> str:
-    line = text.replace("\t", "\\t")
-    if len(line) <= max_length:
-        return line
-    return f"{line[: max_length - 3]}..."
-
-
-def _bounded_block_preview(lines: list[str], start: int, length: int) -> str:
-    context_before = 1
-    context_after = 1
-    first = max(0, start - context_before)
-    last = min(len(lines), start + length + context_after)
-    preview_lines: list[str] = []
-    for index in range(first, last):
-        marker = ">" if start <= index < start + length else " "
-        preview_lines.append(f"    {marker} L{index + 1}: {_preview_line(lines[index])}")
-    return "\n".join(preview_lines)
-
-
-def _bounded_candidate_diff(old_string: str, candidate: str, *, max_lines: int = 14) -> str:
-    diff_lines = list(
-        difflib.unified_diff(
-            old_string.splitlines(),
-            candidate.splitlines(),
-            fromfile="oldString",
-            tofile="current",
-            lineterm="",
-            n=1,
-        )
-    )
-    if not diff_lines:
-        return ""
-
-    if len(diff_lines) > max_lines:
-        diff_lines = [*diff_lines[: max_lines - 1], "... diff truncated ..."]
-
-    return "\n".join(f"    {line}" for line in diff_lines)
-
-
-def _looks_line_number_prefixed(text: str) -> bool:
-    non_empty_lines = [line for line in text.split("\n") if line.strip()]
-    if not non_empty_lines:
-        return False
-
-    prefixed_count = sum(1 for line in non_empty_lines if re.match(r"^\s*\d+\s*[:|]\s?", line))
-    return prefixed_count >= max(1, len(non_empty_lines) // 2)
 
 
 def _near_match_hints(content: str, old_string: str, *, limit: int = 2) -> list[str]:
@@ -130,9 +89,9 @@ def _near_match_hints(content: str, old_string: str, *, limit: int = 2) -> list[
     for ratio, start, note, block in candidates[:limit]:
         hints.append(
             f"  - L{start + 1} ({round(ratio * 100)}% similar; {note})\n"
-            f"{_bounded_block_preview(lines, start, window_size)}\n"
+            f"{bounded_block_preview(lines, start, window_size)}\n"
             "    Diff (- oldString, + current):\n"
-            f"{_bounded_candidate_diff(old_string, block)}"
+            f"{bounded_candidate_diff(old_string, block).replace('expected', 'oldString')}"
         )
     return hints
 
@@ -162,11 +121,8 @@ def _edit_mismatch_message(
     else:
         lines.append("No nearby text match found; re-read the file before retrying the edit.")
 
-    if _looks_line_number_prefixed(old_string):
-        lines.append(
-            "oldString appears to include read output line prefixes like '42: '; "
-            "remove those prefixes and retry with only file text."
-        )
+    if looks_line_number_prefixed(old_string):
+        lines.append(line_prefix_retry_guidance())
 
     return "\n".join(lines)
 
@@ -377,6 +333,9 @@ class IndentationFlexibleReplacer:
             if match and match.group(1):
                 min_indent = min(min_indent, len(match.group(1)))
 
+        if min_indent == float("inf"):
+            return text
+
         dedented = [line[min_indent:] if len(line) >= min_indent else line for line in lines]
         return "\n".join(dedented)
 
@@ -480,12 +439,21 @@ def _replace(
             return current, total_replacements
 
     # If we reach here, no replacer found any match
-    raise ValueError(
-        _edit_mismatch_message(
-            content=current,
-            old_string=old_string,
-            attempted_replacers=attempted_replacers,
-        )
+    raise_tool_diagnostic(
+        message=_edit_mismatch_message(
+            content=current, old_string=old_string, attempted_replacers=attempted_replacers
+        ),
+        error_kind="tool_input_mismatch",
+        reason="old_string_not_found",
+        retry_guidance=(
+            "Use read_file on the target path, copy exact current file text without line-number "
+            "prefixes, then retry edit with that exact oldString."
+        ),
+        details={
+            "attempted_replacers": attempted_replacers,
+            "old_string_line_count": len(old_string.splitlines()),
+            "line_number_prefix_suspected": looks_line_number_prefixed(old_string),
+        },
     )
 
 
