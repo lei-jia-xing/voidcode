@@ -97,7 +97,7 @@ Python 测试现在同时包含示例型测试和一小批基于 Hypothesis 的 
 
 1. `docs/contracts/runtime-events.md`：稳定事件词汇表与顺序语义的权威来源。
 2. CLI / HTTP / replay 输出：验证某次 run 实际暴露给客户端的事件序列。
-3. `.voidcode/sessions.sqlite3` 中持久化的 session transcript：验证恢复 / 重放是否与首次运行保持一致。
+3. `$XDG_STATE_HOME/voidcode/sessions.sqlite3` 中持久化的 session transcript：验证恢复 / 重放是否与首次运行保持一致。
 
 对于工具调用，当前稳定契约建议按下面四个阶段理解：
 
