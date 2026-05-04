@@ -374,7 +374,7 @@ def test_session_storage_bootstraps_canonical_schema_for_fresh_database(tmp_path
         "updated_at",
     ]
     assert delivery_columns == ["workspace_id", "session_id", "dedupe_key", "delivered_at"]
-    assert schema_version == 3
+    assert schema_version == 4
     assert any(row[2] == 1 and row[3] == "u" for row in notification_indexes)
 
 
@@ -513,7 +513,7 @@ def test_session_storage_rejects_runtime_schema_version_mismatch(tmp_path: Path)
 
     with pytest.raises(
         RuntimeError,
-        match=r"schema version mismatch: expected 3 got 999.*future-runtime\.sqlite3",
+        match=r"schema version mismatch: expected 4 got 999.*future-runtime\.sqlite3",
     ):
         store.list_sessions(workspace=tmp_path)
 
@@ -523,7 +523,7 @@ def test_session_storage_rejects_non_canonical_schema_missing_runtime_columns(
 ) -> None:
     database_path = tmp_path / "invalid-sessions.sqlite3"
     with closing(sqlite3.connect(database_path)) as connection:
-        _ = connection.execute("PRAGMA user_version = 3")
+        _ = connection.execute("PRAGMA user_version = 4")
         _ = connection.execute(
             """
             CREATE TABLE sessions (
@@ -621,7 +621,7 @@ def test_session_storage_rejects_non_canonical_schema_with_wrong_existing_table_
 ) -> None:
     database_path = tmp_path / "wrong-table-shape.sqlite3"
     with closing(sqlite3.connect(database_path)) as connection:
-        _ = connection.execute("PRAGMA user_version = 3")
+        _ = connection.execute("PRAGMA user_version = 4")
         _ = connection.execute(
             """
             CREATE TABLE sessions (

@@ -45,6 +45,7 @@ from .task import (
     is_continuation_loop_terminal,
     is_continuation_loop_transition_allowed,
     parse_continuation_loop_strategy,
+    parse_continuation_loop_verification_status,
     validate_background_task_id,
     validate_continuation_loop_id,
 )
@@ -218,6 +219,22 @@ class SessionStore(Protocol):
         self, *, workspace: Path, loop_id: str
     ) -> ContinuationLoopState: ...
 
+    def mark_continuation_loop_verification_pending(
+        self, *, workspace: Path, loop_id: str
+    ) -> ContinuationLoopState: ...
+
+    def mark_continuation_loop_verified(
+        self, *, workspace: Path, loop_id: str
+    ) -> ContinuationLoopState: ...
+
+    def mark_continuation_loop_verification_failed(
+        self,
+        *,
+        workspace: Path,
+        loop_id: str,
+        error: str | None = None,
+    ) -> ContinuationLoopState: ...
+
     def mark_continuation_loop_terminal(
         self,
         *,
@@ -270,7 +287,7 @@ class _SQLitePolicy:
 @final
 class SqliteSessionStore:
     _database_path: Path | None
-    _SCHEMA_VERSION = 3
+    _SCHEMA_VERSION = 4
     _RESUME_CHECKPOINT_KINDS = frozenset(
         {"approval_wait", "question_wait", "provider_failure_retryable", "terminal"}
     )
@@ -351,6 +368,8 @@ class SqliteSessionStore:
             ("iteration", "INTEGER", 1, None, 0),
             ("intensive", "INTEGER", 1, None, 0),
             ("strategy", "TEXT", 1, None, 0),
+            ("verification_status", "TEXT", 1, None, 0),
+            ("verification_promise", "TEXT", 1, None, 0),
             ("created_at", "INTEGER", 1, None, 0),
             ("updated_at", "INTEGER", 1, None, 0),
             ("finished_at", "INTEGER", 0, None, 0),
@@ -545,6 +564,8 @@ class SqliteSessionStore:
                 iteration INTEGER NOT NULL,
                 intensive INTEGER NOT NULL,
                 strategy TEXT NOT NULL,
+                verification_status TEXT NOT NULL,
+                verification_promise TEXT NOT NULL,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
                 finished_at INTEGER,
@@ -2653,15 +2674,27 @@ class SqliteSessionStore:
         if loop.iteration < 0:
             raise ValueError("continuation loop iteration must be non-negative")
         _ = parse_continuation_loop_strategy(loop.strategy)
+        _ = parse_continuation_loop_verification_status(loop.verification_status)
+        if loop.intensive and loop.verification_status == "not_required":
+            raise ValueError(
+                "intensive continuation loop verification_status must require verification"
+            )
+        if not loop.intensive and loop.verification_status != "not_required":
+            raise ValueError(
+                "non-intensive continuation loop verification_status must be not_required"
+            )
+        if not loop.verification_promise:
+            raise ValueError("continuation loop verification_promise must be non-empty")
         with self._write_connect(workspace) as connection:
             timestamp = self._next_continuation_loop_timestamp(connection=connection)
             _ = connection.execute(
                 """
                 INSERT INTO continuation_loops (
                     loop_id, workspace_id, status, prompt, session_id, completion_promise,
-                    max_iterations, iteration, intensive, strategy, created_at, updated_at,
-                    finished_at, cancel_requested_at, error
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    max_iterations, iteration, intensive, strategy, verification_status,
+                    verification_promise, created_at, updated_at, finished_at,
+                    cancel_requested_at, error
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     loop_id,
@@ -2674,6 +2707,8 @@ class SqliteSessionStore:
                     loop.iteration,
                     1 if loop.intensive else 0,
                     loop.strategy,
+                    loop.verification_status,
+                    loop.verification_promise,
                     timestamp,
                     timestamp,
                     loop.finished_at,
@@ -2702,7 +2737,8 @@ class SqliteSessionStore:
                 connection.execute(
                     """
                     SELECT loop_id, status, prompt, session_id, iteration, max_iterations,
-                           intensive, created_at, updated_at, error
+                           intensive, verification_status, verification_promise, created_at,
+                           updated_at, error
                     FROM continuation_loops
                     WHERE workspace_id = ?
                     ORDER BY updated_at DESC, created_at DESC, loop_id ASC
@@ -2728,8 +2764,12 @@ class SqliteSessionStore:
                 return self._continuation_loop_state_from_row(current)
             next_iteration = cast(int, current["iteration"]) + 1
             max_iterations = cast(int, current["max_iterations"])
+            intensive = bool(cast(int, current["intensive"]))
+            verification_status = parse_continuation_loop_verification_status(
+                cast(str, current["verification_status"])
+            )
             next_status: ContinuationLoopStatus = (
-                "exhausted" if next_iteration >= max_iterations else "active"
+                "exhausted" if next_iteration >= max_iterations and not intensive else "active"
             )
             updated_at = self._next_continuation_loop_timestamp(connection=connection)
             finished_at = updated_at if next_status == "exhausted" else None
@@ -2738,18 +2778,146 @@ class SqliteSessionStore:
                 if next_status == "exhausted"
                 else cast(str | None, current["error"])
             )
+            next_verification_status = (
+                "pending"
+                if (
+                    intensive
+                    and next_iteration >= max_iterations
+                    and verification_status != "verified"
+                )
+                else verification_status
+            )
+            if next_verification_status == "pending" and error is None:
+                error = "intensive continuation loop reached verification pending state"
             _ = connection.execute(
                 """
                 UPDATE continuation_loops
-                SET iteration = ?, status = ?, updated_at = ?, finished_at = ?, error = ?
+                SET iteration = ?, status = ?, verification_status = ?, updated_at = ?,
+                    finished_at = ?, error = ?
                 WHERE workspace_id = ? AND loop_id = ? AND status = 'active'
                 """,
                 (
                     next_iteration,
                     next_status,
+                    next_verification_status,
                     updated_at,
                     finished_at,
                     error,
+                    str(workspace),
+                    loop_id,
+                ),
+            )
+            updated_row = self._continuation_loop_row(
+                connection=connection,
+                workspace=workspace,
+                loop_id=loop_id,
+            )
+            connection.commit()
+        return self._continuation_loop_state_from_row(updated_row)
+
+    def mark_continuation_loop_verification_pending(
+        self, *, workspace: Path, loop_id: str
+    ) -> ContinuationLoopState:
+        loop_id = validate_continuation_loop_id(loop_id)
+        with self._write_connect(workspace) as connection:
+            current = self._continuation_loop_row(
+                connection=connection,
+                workspace=workspace,
+                loop_id=loop_id,
+            )
+            if not bool(cast(int, current["intensive"])):
+                raise ValueError("only intensive continuation loops can require verification")
+            current_status = self._parse_continuation_loop_status(cast(str, current["status"]))
+            current_verification_status = parse_continuation_loop_verification_status(
+                cast(str, current["verification_status"])
+            )
+            if current_status != "active" or current_verification_status == "verified":
+                connection.commit()
+                return self._continuation_loop_state_from_row(current)
+            updated_at = self._next_continuation_loop_timestamp(connection=connection)
+            error = cast(str | None, current["error"])
+            if error is None:
+                error = "intensive continuation loop awaiting verification"
+            _ = connection.execute(
+                """
+                UPDATE continuation_loops
+                SET verification_status = 'pending', error = ?, updated_at = ?
+                WHERE workspace_id = ? AND loop_id = ? AND status = 'active'
+                """,
+                (error, updated_at, str(workspace), loop_id),
+            )
+            updated_row = self._continuation_loop_row(
+                connection=connection,
+                workspace=workspace,
+                loop_id=loop_id,
+            )
+            connection.commit()
+        return self._continuation_loop_state_from_row(updated_row)
+
+    def mark_continuation_loop_verified(
+        self, *, workspace: Path, loop_id: str
+    ) -> ContinuationLoopState:
+        loop_id = validate_continuation_loop_id(loop_id)
+        with self._write_connect(workspace) as connection:
+            current = self._continuation_loop_row(
+                connection=connection,
+                workspace=workspace,
+                loop_id=loop_id,
+            )
+            if not bool(cast(int, current["intensive"])):
+                raise ValueError("only intensive continuation loops can be verified")
+            current_status = self._parse_continuation_loop_status(cast(str, current["status"]))
+            if current_status != "active":
+                connection.commit()
+                return self._continuation_loop_state_from_row(current)
+            updated_at = self._next_continuation_loop_timestamp(connection=connection)
+            _ = connection.execute(
+                """
+                UPDATE continuation_loops
+                SET status = 'completed', verification_status = 'verified', error = NULL,
+                    finished_at = ?, updated_at = ?
+                WHERE workspace_id = ? AND loop_id = ? AND status = 'active'
+                """,
+                (updated_at, updated_at, str(workspace), loop_id),
+            )
+            updated_row = self._continuation_loop_row(
+                connection=connection,
+                workspace=workspace,
+                loop_id=loop_id,
+            )
+            connection.commit()
+        return self._continuation_loop_state_from_row(updated_row)
+
+    def mark_continuation_loop_verification_failed(
+        self,
+        *,
+        workspace: Path,
+        loop_id: str,
+        error: str | None = None,
+    ) -> ContinuationLoopState:
+        loop_id = validate_continuation_loop_id(loop_id)
+        with self._write_connect(workspace) as connection:
+            current = self._continuation_loop_row(
+                connection=connection,
+                workspace=workspace,
+                loop_id=loop_id,
+            )
+            if not bool(cast(int, current["intensive"])):
+                raise ValueError("only intensive continuation loops can fail verification")
+            current_status = self._parse_continuation_loop_status(cast(str, current["status"]))
+            if current_status != "active":
+                connection.commit()
+                return self._continuation_loop_state_from_row(current)
+            updated_at = self._next_continuation_loop_timestamp(connection=connection)
+            _ = connection.execute(
+                """
+                UPDATE continuation_loops
+                SET verification_status = 'failed', error = ?, updated_at = ?
+                WHERE workspace_id = ? AND loop_id = ? AND status = 'active'
+                """,
+                (
+                    error or "intensive continuation loop verification failed",
+                    updated_at,
                     str(workspace),
                     loop_id,
                 ),
@@ -2788,6 +2956,35 @@ class SqliteSessionStore:
             ):
                 connection.commit()
                 return self._continuation_loop_state_from_row(current)
+            if (
+                bool(cast(int, current["intensive"]))
+                and status == "completed"
+                and parse_continuation_loop_verification_status(
+                    cast(str, current["verification_status"])
+                )
+                != "verified"
+            ):
+                updated_at = self._next_continuation_loop_timestamp(connection=connection)
+                _ = connection.execute(
+                    """
+                    UPDATE continuation_loops
+                    SET verification_status = 'pending', error = ?, updated_at = ?
+                    WHERE workspace_id = ? AND loop_id = ? AND status = 'active'
+                    """,
+                    (
+                        error or "intensive continuation loop awaiting verification",
+                        updated_at,
+                        str(workspace),
+                        loop_id,
+                    ),
+                )
+                updated_row = self._continuation_loop_row(
+                    connection=connection,
+                    workspace=workspace,
+                    loop_id=loop_id,
+                )
+                connection.commit()
+                return self._continuation_loop_state_from_row(updated_row)
             updated_at = self._next_continuation_loop_timestamp(connection=connection)
             _ = connection.execute(
                 """
@@ -3209,6 +3406,10 @@ class SqliteSessionStore:
             iteration=cast(int, row["iteration"]),
             intensive=bool(cast(int, row["intensive"])),
             strategy=parse_continuation_loop_strategy(cast(str, row["strategy"])),
+            verification_status=parse_continuation_loop_verification_status(
+                cast(str, row["verification_status"])
+            ),
+            verification_promise=cast(str, row["verification_promise"]),
             created_at=cast(int, row["created_at"]),
             updated_at=cast(int, row["updated_at"]),
             finished_at=cast(int | None, row["finished_at"]),
@@ -3227,6 +3428,10 @@ class SqliteSessionStore:
             iteration=cast(int, row["iteration"]),
             max_iterations=cast(int, row["max_iterations"]),
             intensive=bool(cast(int, row["intensive"])),
+            verification_status=parse_continuation_loop_verification_status(
+                cast(str, row["verification_status"])
+            ),
+            verification_promise=cast(str, row["verification_promise"]),
             created_at=cast(int, row["created_at"]),
             updated_at=cast(int, row["updated_at"]),
             error=cast(str | None, row["error"]),
