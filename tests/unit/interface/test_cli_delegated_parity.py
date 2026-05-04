@@ -165,6 +165,20 @@ def test_cli_parser_has_serve_subcommand() -> None:
     assert "serve" in actions
 
 
+def test_cli_parser_has_continuation_loop_subcommands() -> None:
+    """``voidcode loops`` must expose the runtime-owned loop lifecycle surface."""
+    cli = importlib.import_module("voidcode.cli")
+    parser = cli.build_parser()
+    loops_parser = None
+    for action in parser._subparsers._group_actions:
+        if hasattr(action, "_parser_class") and "loops" in (action.choices or {}):
+            loops_parser = action.choices["loops"]
+            break
+    assert loops_parser is not None
+    sub_actions = {a.dest for a in loops_parser._subparsers._group_actions[0]._choices_actions}
+    assert {"start", "status", "cancel", "list"}.issubset(sub_actions)
+
+
 # ---------------------------------------------------------------------------
 # 2. CLI run: delegated task creation via task tool inside run
 # ---------------------------------------------------------------------------
